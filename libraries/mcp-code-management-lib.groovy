@@ -369,9 +369,11 @@ private String stripAppConfigHtml(value) {
     // Hubitat embeds via <style>/<script>: the tags strip above but the
     // "selector{...}" / "fn(){...}" bodies remain mashed into the text (e.g. the
     // Local Variables `lvTable` page). Only blocks containing ; or : inside the
-    // braces are removed, so prose like "{x}" is preserved.
+    // braces are removed, so prose like "{x}" is preserved. A `<` opens a tag only when a
+    // tag name, `/` or `!` follows: RM renders its less-than comparators as a raw `<`
+    // ("is < 100<span ...>"), which a bare `<[^>]+>` would swallow up to the next tag.
     if (s.contains("<")) {
-        s = s.replaceAll(/<[^>]+>/, "").replaceAll(/[^{}]*\{[^{}]*[;:][^{}]*\}/, "")
+        s = s.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").replaceAll(/[^{}]*\{[^{}]*[;:][^{}]*\}/, "")
     }
     // Decode the common HTML entities Hubitat escapes user-typed names with: a
     // rule the user named "Heat On <67" is stored (and listed) as "Heat On &lt;67".
@@ -489,7 +491,7 @@ private List _extractEmbeddedActions(String html, boolean markDisabled = false, 
             div.description = stripAppConfigHtml(innerRaw) ?: null
             div.disabledText = disabledText
         } else {
-            def inner = innerRaw.replaceAll(/<[^>]+>/, "").replaceAll(/&nbsp;|&#65291|&#x[0-9a-fA-F]+;|&#\d+;/, "").trim()
+            def inner = innerRaw.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").replaceAll(/&nbsp;|&#65291|&#x[0-9a-fA-F]+;|&#\d+;/, "").trim()
             div.description = inner ?: null
         }
         divs << div

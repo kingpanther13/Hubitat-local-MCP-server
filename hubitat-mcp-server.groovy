@@ -558,7 +558,7 @@ def advancedOverridesPage() {
                   defaultValue: false
         }
         section("Native app edit backups") {
-            paragraph "By default, edits to the same native app reuse its newest File Manager baseline for one hour. Restoring that baseline returns the app to the start of the edit chain, undoing every later edit in the hour. This avoids uploading the same app before every small edit. Deletes and destructive Required Expression replacement still take a fresh snapshot."
+            paragraph "By default, edits to the same native app reuse its newest File Manager baseline for one hour. Restoring that baseline returns the app to the start of the edit chain, undoing every later edit in the hour. This avoids uploading the same app before every small edit. Deletes and a standalone Required Expression replacement still take a fresh snapshot."
             input "backupEveryRuleWrite", "bool", title: "Back up before every native app edit",
                   description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit.",
                   defaultValue: false
@@ -2374,7 +2374,8 @@ def _mrtrWriteTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
-            "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device"] as Set
+            "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device",
+            "hub_restore_backup"] as Set
 }
 
 // Reads whose single hub fetch grows with hub size and can outrun the relay. They continue
@@ -2407,7 +2408,7 @@ def _mrtrReadContinuationActive() {
 private Set _mrtrDetachedWorkerTools() {
     return ["hub_set_rule", "hub_set_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
-            "hub_manage_virtual_device", "hub_update_device"] as Set
+            "hub_manage_virtual_device", "hub_update_device", "hub_restore_backup"] as Set
 }
 
 def _mrtrEligibleCall(outerToolName, leafToolName, args) {
@@ -2430,6 +2431,12 @@ def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     // live relay-failure evidence and detached-worker coverage; app deletion can
     // target this server and library deletion has different verification semantics.
     if (leaf == "hub_delete_item") return leafArgs.type?.toString() == "driver"
+    // Only a rule snapshot restore: a hub DB restore reboots the hub, and an app code restore can
+    // recompile this server under its own worker.
+    if (leaf == "hub_restore_backup") {
+        return (leafArgs.scope == null || leafArgs.scope.toString() == "source") &&
+            leafArgs.backupKey?.toString()?.startsWith("rm-rule_")
+    }
     if (leaf == "hub_call_rule") {
         def ids = leafArgs.ruleId
         def idCount = (ids instanceof List) ? ids.size() : (ids == null ? 0 : 1)
@@ -5046,7 +5053,7 @@ def getGatewayConfig() {
             tools: ["hub_call_device_command", "hub_call_device_swap", "hub_call_device_replace", "hub_update_device", "hub_create_device", "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events", "hub_get_hub_mesh", "hub_update_hub_mesh"],
             summaries: [
                 hub_call_device_command: "Send one device command, or batch up to 20 mixed commands in one call (commands cannot be combined with waitFor). Args: deviceId, command, parameters?, waitFor? | commands: [{deviceId, command, parameters?}]",
-                hub_call_device_swap: "Replace a device across ALL apps/rules that reference it (built-in Swap Device tool). Args: from_device_id, to_device_id, confirm",
+                hub_call_device_swap: "Swap a device: apps/rules using from_device_id run on to_device_id's hardware afterwards (the hub exchanges the two identities). Args: from_device_id, to_device_id, confirm",
                 hub_call_device_replace: "Replace a dead device's hardware while KEEPING its id + all app/rule references (re-points to new_device_id; list_options=true reads compatible candidates). Args: old_device_id, new_device_id?, list_options?, confirm",
                 hub_update_device: "Update applicable device identity, configuration, driver, history, dashboard/mesh, retry, or assistant fields after hub_get_device(mode='configuration'). Args: deviceId plus one or more editable properties; confirm is required for high-impact fields.",
                 hub_create_device: "Create a device from a driver-type id (hub_list_drivers include='all'); for LAN/integration/software drivers, NOT radio hardware (pair those). Args: deviceTypeId, label?, confirm",
@@ -5059,7 +5066,7 @@ def getGatewayConfig() {
             ],
             searchHints: [
                 hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
-                hub_call_device_swap: "swap replace device migrate references substitute rewire apps rules everywhere retire failing hardware",
+                hub_call_device_swap: "swap replace device exchange identities move automations new hardware retire failing hardware",
                 hub_call_device_replace: "replace device hardware failed dead broken re-point preserve keep id references rules dashboard compatible replacement candidates getReplacementOptions",
                 hub_update_device: "rename relabel move room device edit configuration preferences driver type zigbee history limits dashboard mesh retry homekit alexa google assistant tags",
                 hub_create_device: "create add device from driver type instantiate lan integration cloud software component install new deviceTypeId driverId",
@@ -9105,9 +9112,13 @@ private Map _ruleCompiledState(Integer appId) {
                 // actionList is RM's own ordered array of action indices — the only display-ordered
                 // source there is (appSettings key order is arbitrary). Carried through raw so
                 // callers reuse this fetch rather than opening a second path to the endpoint.
+                // eval['0'] is the committed Required Expression's token list (the other eval keys
+                // are IF expressions in actions). An eval map without "0" has no committed expression;
+                // no eval map at all leaves it unknown (null), never a false "empty".
+                def reTokens = (parsed.eval instanceof Map) ? ((parsed.eval["0"] instanceof List) ? (parsed.eval["0"] as List).size() : 0) : null
                 return [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
                         paused: parsed.paused instanceof Boolean ? parsed.paused : null,
-                        predicate: pred,
+                        predicate: pred, requiredExpressionTokens: reTokens,
                         actionList: (parsed.actionList instanceof List ? parsed.actionList : null),
                         endpoint: "ruleBuilderJson"]
             }
@@ -9282,7 +9293,7 @@ private List _rmCoerceActionIndices(List raw) {
  * The rule's action indices in display order, straight from the compiled
  * rule. Null when the compiled state is unreadable or carries no list.
  */
-private List _rmOrderedActionIndices(Integer appId) {
+List _rmOrderedActionIndices(Integer appId) {
     _rmCoerceActionIndices(_ruleCompiledState(appId)?.actionList)
 }
 
@@ -9449,6 +9460,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     def validationErrors = []      // VRB graph-rule validation problems (its `broken` equivalent)
     Boolean broken = null          // authoritative boolean: RM compiled state, or VRB validationErrors non-empty
     def predicate = null           // compact {hasPredicate, predCapabs} from ruleBuilderJson (RM)
+    Integer requiredExpressionTokens = null   // committed Required Expression token count (RM); null = not read
     String ruleFormat = null       // rm | vrb-graph | vrb-classic | basic-rule | button-controller | classic-app — what was inspected
     def sourcesUsed = []
     def compiledReadError = null   // a thrown/bad-200 compiled-state read, surfaced if the HTML path also fails
@@ -9467,6 +9479,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             paused = cs.paused
             if (cs.label != null) label = cs.label
             if (cs.predicate != null) predicate = cs.predicate
+            if (cs.requiredExpressionTokens != null) requiredExpressionTokens = cs.requiredExpressionTokens as Integer
             compiledActionList = _rmCoerceActionIndices(cs.actionList)   // null in -> null out
             if (cs.validationErrors) validationErrors = cs.validationErrors
             if (ruleFormat == "rm" && broken == true) {
@@ -9530,6 +9543,15 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             }
             if (label?.contains("*BROKEN*")) {
                 issues << "label contains *BROKEN* marker — rule has at least one malformed trigger or action".toString()
+            }
+            // "Use Required Expression" switched on with no committed expression: RM runs the rule
+            // as if there were no gate at all.
+            if (cfg?.settings?.useST?.toString() == "true") {
+                if (ruleFormat == "rm" && requiredExpressionTokens == 0) {
+                    issues << "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED. Rebuild it with hub_set_rule(addRequiredExpression=...), or turn useST off if no gate is wanted.".toString()
+                } else if (requiredExpressionTokens == null) {
+                    checkErrors << "Required Expression is enabled (useST) but the committed expression was not read, so an ungated rule is not ruled out -- re-check it, or read its expression with hub_get_app_config.".toString()
+                }
             }
             // Scan for the broken-state strings RM emits in its rendered output. Read BOTH
             // formats the hub serves: the body-element format the live UI renderer uses
@@ -9666,6 +9688,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
         checkErrors: checkErrors
     ]
     if (predicate != null) result.predicate = predicate
+    if (requiredExpressionTokens != null) result.requiredExpressionTokens = requiredExpressionTokens
     return result
 }
 
@@ -10014,7 +10037,7 @@ private Map _rmPostSettings(Integer appId, Map body, Map cache = null) {
  * if still divergent after retry — the caller should surface this and
  * suggest hub_restore_backup.
  */
-private Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = null, Map cache = null) {
+Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = null, Map cache = null) {
     if (schema == null) {
         schema = _rmCollectInputSchema(_rmFetchConfigJson(appId)?.configPage)
     }
@@ -10444,15 +10467,17 @@ A malformed `waitFor` spec is rejected before the command fires, so the device i
 
 ### hub_call_device_swap
 
-Drives the hub's built-in Swap Device tool; use to migrate device references to new hardware or swap out a failing device without editing each automation.
+Drives the hub's built-in Swap Device tool; use to move automations onto new hardware or swap out a failing device without editing each automation.
 
-The hub only offers compatible replacement devices: an incompatible to_device_id fails with a structured error listing the compatible options.
+The hub exchanges the two device records' identities -- name, label, network id, driver, room, notes and current state; event history stays with the id -- and leaves every app and rule reference on its id. Afterwards `from_device_id` (the id its apps use) is the replacement hardware, and `to_device_id` holds the old device's identity, so any app that used `to_device_id` now runs on the OLD hardware. Check `hub_list_device_dependents` for BOTH ids before swapping. The tool verifies the swap by that exchange and returns `swapped`, `identityExchanged`, the post-swap `fromDevice` / `toDevice`, and `fromDeviceDependents` / `toDeviceDependents` (how many apps used each id before the swap); it suggests removing `to_device_id` only when nothing used it. Running it again swaps the devices back, so never retry a swap whose outcome is unconfirmed -- inspect both devices with `hub_get_device` first. The swap runs when the hub renders the transient Swap Device instance's page, and every render swaps again, so the tool renders it once and deletes it; a `leftoverSwapInstance` in the result must be deleted without opening its page.
+
+The hub only offers compatible replacement devices: an incompatible to_device_id fails with a structured error listing the compatible options. Child devices (including every MCP-created virtual device) are not eligible.
 
 ### hub_call_device_replace
 
 DESTRUCTIVE. Re-points `old_device_id` onto `new_device_id`'s node; the new hardware adopts the OLD id, so the old device's rules and dashboard tiles stay intact. Use when a Z-Wave/Zigbee device died and you paired a compatible replacement.
 
-Differs from `hub_call_device_swap`, which instead migrates references onto the NEW device's id.
+Differs from `hub_call_device_swap`, which keeps BOTH devices and exchanges their identities (the replacement takes over the old id; the old device moves to the replacement's id).
 
 **Two-step flow:**
 1. Call with `list_options=true` first to read the hub's compatible replacement candidates for `old_device_id` (read-only, no confirm).
@@ -10904,7 +10929,9 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 - `scope=source` (default) -- restore an app/driver/rule by `backupKey` (for deleted code use hub_create_*; deleted rules DO recreate).
 - App/driver source restores report `undoAvailable=true` only after verifying the pre-restore file. Use the returned `preRestoreBackup` handle to undo. A failed required pre-restore capture aborts before saving the source. Only a retry whose live source already matches the target backup may succeed without verified undo, with `undoAvailable=false` and a warning; do not rely on an older undo record for that restore.
 - Native rule restore requires confirmed absence from the app inventory before recreating an unreadable rule. If the config read fails and absence cannot be confirmed, inspect the rule/inventory and retry when readable.
-- A native rule snapshot (type `rm-rule`) replays its settings in place when the rule still exists. If the rule was deleted, the restore creates a NEW rule and replays the settings onto it. The result then carries the new `ruleId`, the `originalRuleId` and `recreated: true`, so update anything that referenced the old id.
+- A native rule snapshot restores in place by default (`preserveRuleId` defaults to true), keeping the rule's id; see the settings replay below. A rule that no longer exists gets a new id either way, so it is restored through the App Cloner import below when the backup carries an export.
+- A Rule Machine rule snapshot (type `rm-rule`) also carries Hubitat's own App Cloner export of the rule when the cloner can produce one (it cannot for a rule with a Required Expression). With `preserveRuleId: false` such a backup restores through the App Cloner import: an exact copy of the app, settings and app state alike, created as a NEW app (`ruleId`, with `originalRuleId` and `restoredVia: "nativeImport"`). The copy must match the backup (the same trigger and action ids, not broken) before the old app is deleted (its pre-delete backup is `replacedRuleBackup`); a copy that does not match is deleted and the old rule left as it was. Update anything that referenced the old id: Run Rule, Pause Rule and Private Boolean actions in other rules, dashboards. A rule disabled before the restore leaves its copy disabled (`leftDisabled: true`). The backup remembers its copy, so restoring it again, with either `preserveRuleId`, returns that copy (`alreadyRestored: true`) instead of creating another; a copy still disabled that the restore meant to enable is reported with `success: false`. If the import creates the copy but cannot stage it disabled, the old rule is NOT deleted: the result names the copy in `importedAppId` with `partial: true`; delete one of the two before retrying. The import is skipped for the settings replay below (`restoredVia: "settingsReplay"`, the reason in `nativeImportSkipped`) when the export cannot be used -- a device it names no longer exists, or no rule is left to seed the import.
+- Without a native export (or with the default `preserveRuleId: true`), a native rule snapshot replays its settings in place when the rule still exists. If the rule was deleted, the restore creates a NEW rule and replays the settings onto it. The result then carries the new `ruleId`, the `originalRuleId` and `recreated: true`, so update anything that referenced the old id. A Required Expression lives in Rule Machine's app state, which a settings replay cannot write, so the restore then makes the rule's expression match the snapshot: it rebuilds the snapshot's expression (each condition re-walked from its saved settings), or removes the live one when the snapshot had none, and confirms the rendered result before the old expression's tokens are removed. `requiredExpressionRestored: true` means it matches. A snapshot expression naming a device deleted since the backup is not rebuilt: the live expression stays (`preRestoreExpressionKept: true`) and the error names the device. Conditions are compared by their rendered text, so a device renamed since the backup reads as a mismatch: the rebuild is backed out with `requiredExpressionRestored: false`, and the expression is set with `hub_set_rule`. A failed rebuild puts back what was committed before it: `preRestoreExpressionKept` (true or false) when the rule had an expression; otherwise `requiredExpressionPartial` when part of the snapshot's expression got committed (the error says whether it is only the first condition). Conditions it could not remove are listed in `leftoverConditionIds`. `requiredExpressionRestored: false` turns the result into `success: false` + `partial: true` with the reason in `error`, and the rule's expression must be rebuilt with `hub_set_rule`. Triggers and actions also live in app state: a trigger, action or condition the live rule has beyond the snapshot is removed (`removedTriggers` / `removedActions` / `removedConditionIds`), while one the snapshot has and the rule lacks cannot be rebuilt by a replay. It is named in `missingTriggers` / `missingActions` with `structureRestored: false`, `success: false` and `partial: true`; add it back with `hub_set_rule`. Actions the backup also has are moved back into its order; an order the moves cannot restore is reported in `actionOrder` with `structureRestored: false`, and a failed closing Update Rule in `updateRuleFailed`. A device deleted since the backup is left out of the replay (listed in `settingsSkipped`, `partial: true`), because Rule Machine stops rendering a rule whose picker names a missing device. A settings replay writes back the settings the backup holds. For a Rule Machine rule, settings added after the backup go with the trigger, action or condition the restore removes. For any other app type (Basic Rules among them), every non-button setting the app gained after the backup is emptied and listed in `settingsCleared` (the hub keeps no way to delete one), and the app is finished with its own commit -- its Done where it has no Update button, since an Update click breaks a Basic Rule's page (a Done that does not commit returns `success: false`). The App Cloner restore has no such leftovers, since it builds a new app from the backup alone.
 
 - `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub. A full local backup (`fullBackup:true`) is refused: Hubitat restores those only through its own full-restore flow.
 - `scope=hub_uploaded` -- upload an external `.lzf` fetched from `backupUrl`, then restore (open-world).''',
@@ -11233,7 +11260,7 @@ For READING an RM rule's current state, use **hub_get_app_config** in the hub_re
 For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
 ### Safety model for native CRUD
-1. Every existing-app edit has a full File Manager rollback baseline (configure/json + statusJson); by default, edits to the same app reuse the newest baseline for one hour. The response's backup.backupKey is the restore handle, and restoring a reused baseline undoes every edit made after it. Deletes and destructive Required Expression replacement always take a fresh snapshot.
+1. Every existing-app edit has a full File Manager rollback baseline (configure/json + statusJson); by default, edits to the same app reuse the newest baseline for one hour. The response's backup.backupKey is the restore handle, and restoring a reused baseline undoes every edit made after it. Deletes and a standalone Required Expression replacement always take a fresh snapshot.
 2. Multi-device capability inputs (capability.X with multiple=true) require a 3-field POST payload group (settings[name]=csv, name.type=capability.X, name.multiple=true). Omitting name.multiple=true poisons the AppSetting DB flag and every render throws `Command 'size' is not supported by device`. hub_set_rule emits the full group automatically from the input schema — callers never have to think about this.
 3. After every write, the multiple flags in the live appSettings are verified. If any flipped, one automatic retry fires with the full group. Persistent divergence throws and the response surfaces hub_restore_backup as the next step.
 4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
@@ -11299,7 +11326,7 @@ This is the generic upsert tool for ANY classic SmartApp. It is separate from th
 
 **RM authoring shortcuts and `walkStep` are EDIT-only here.** `walkStep` and the RM authoring shortcuts also work on this tool, but ONLY on EDIT (appId present) for RM-wire-format classic apps; the CREATE arm (no appId) honors NONE of them and rejects rather than silently dropping them. `walkStep` has the same shape as `hub_set_rule`'s `walkStep` — see `hub_get_tool_guide(section='set_rule_reference_walkstep')`. For Rule Machine RULES use `hub_set_rule`.
 
-**Edit backups.** Existing-app edits ensure a File Manager baseline exists. By default the newest baseline for the same app is reused for one hour; restoring it undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for a fresh snapshot on every edit. Deletes and destructive Required Expression replacement always take a fresh snapshot.
+**Edit backups.** Existing-app edits ensure a File Manager baseline exists. By default the newest baseline for the same app is reused for one hour; restoring it undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for a fresh snapshot on every edit. Deletes and a standalone Required Expression replacement always take a fresh snapshot.
 
 **CREATE by `appType`** covers the enum types (`rule_machine` / `button_controller` / `groups_scenes` / `notifier` / `basic_rule` / `room_lighting`). Other classic apps can usually still be created through their PARENT app's own page, driven like any other app: e.g. the Room Lighting parent's "Create Room Lights from Group, Scene or Scene Transition" input (`newScene`) creates a Room Lights instance from an existing group or scene when written with `hub_set_native_app(appId=<parent id>, settings={newScene:[<group/scene app id>]})`. Inspect the parent with `hub_get_app_config` or `walkStep` introspect first.
 
@@ -11397,7 +11424,7 @@ Reference for the `hub_set_rule` structured shortcuts (`addTrigger`, `addAction`
 
 To READ a rule's current configuration -- before an edit to discover the right input names, or to verify after a write -- use `hub_read_apps_code -> hub_get_app_config(appId)`. It is NOT in the `hub_manage_rule_machine` / `hub_manage_native_rules_and_apps` rule gateways; the rule-read tool lives in `hub_read_apps_code`.
 
-Each edit response includes the File Manager baseline under `backup.backupKey`. By default the newest same-rule baseline is reused for one hour, so a sequence of small edits does not upload the same rule before every call. Restoring it returns the rule to the baseline timestamp and undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for strict per-write snapshots. Deletes and destructive Required Expression replacement remain fresh regardless.
+Each edit response includes the File Manager baseline under `backup.backupKey`. By default the newest same-rule baseline is reused for one hour, so a sequence of small edits does not upload the same rule before every call. Restoring it returns the rule to the baseline timestamp and undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for strict per-write snapshots. Deletes and a standalone Required Expression replacement remain fresh regardless.
 
 ### `addTrigger` capability families
 
@@ -11566,16 +11593,17 @@ Combine multiple conditions with `operator: 'AND'|'OR'|'XOR'` (one operator appl
 
 `addRequiredExpression` refuses (`requiredExpressionAlreadyExists:true`) when the rule already has a committed Required Expression. To CHANGE it, use `replaceRequiredExpression` -- same `appId`, no clone. The spec shape is IDENTICAL to `addRequiredExpression` (`{conditions:[...], operator|operators}`, all the same per-condition fields and extended per-capability shapes, including nested `subExpression`), so the replacement may be single-condition, multi-condition, or nested. Semantics are WHOLE-expression replace (the entire formula is cleared), matching `addRequiredExpression`'s add semantics.
 
-Mechanism: clicks `cancelST` ("Delete Required Expression") to remove the whole committed expression, then builds the new condition(s) by delegating to the same `addRequiredExpression` walker (which navigates fresh from `mainPage`, sets `useST`, reaches the `cond` new-condition selector, and seals via `hasRule`/`doneST` + the sub-page Done), and fires `updateRule`.
+Mechanism: RM's own expression editor ("Edit Required Expression" -> "Edit Expression"). The new expression is appended AFTER the existing one -- each condition walked by the same validated walker `addRequiredExpression` uses -- and the old tokens are removed only once the new expression is complete; then the editor closes and `updateRule` fires.
 
 - Precondition: a committed Required Expression MUST already exist. If none does, returns `success:false, requiredExpressionMissing:true` steering you to `addRequiredExpression` -- a replace never silently becomes an add.
-- Destructive-window contract: the `cancelST` delete is immediately destructive (the committed gate is gone the instant it is clicked). Protections: (1) the ENTIRE spec is validated BEFORE the click (conditions/operator/operators rules, deviceId existence), so a malformed spec fails with the OLD expression intact; (2) after the delete succeeds, ANY failure auto-restores the pre-op backup -- INCLUDING a post-commit health flip (the rebuild baked but left the rule unhealthy, e.g. a ghost-`ifThen` clear wrapped it in `IF(**Broken Condition**)`) OR a rejected trailing `updateRule` click, because the trailing finalize runs inside the same restore window as the delete. The result then carries `requiredExpressionReplaced:false` + `requiredExpressionRestored:true` (original restored from backup) OR `requiredExpressionRestored:false` (DELETED and auto-restore also failed -- the error names the `hub_restore_backup(backupKey=...)` recovery) OR `requiredExpressionRestored:false` + `requiredExpressionRestoredAs:<newId>` (auto-restore could not reuse the original appId and recreated the rule under a NEW id -- the original appId is dead; use the new id and delete the husk). A post-delete failure is NEVER a benign no-op.
-- Fail-loud: if the `cancelST` delete is silently rejected (STPage still shows the committed-expression controls), the helper restores the pre-op backup and returns `success:false` naming the step; the existing expression is preserved. Inspect via `hub_get_app_config(appId)`.
-- Success envelope: `requiredExpressionReplaced:true` means a NEW expression was committed and its trailing `updateRule` fired, not merely that the old one was deleted. It carries the same `conditionIndices`/`settingsApplied`/`settingsSkipped`/`partial`/`repairHints` envelope as `addRequiredExpression`. A rejected trailing `updateRule` never gives a committed-but-not-live result here. It falls inside the destructive window and auto-restores, returning `success:false` + `requiredExpressionReplaced:false` + `requiredExpressionRestored:*`, and `updateRuleFailed`/`expressionNotLive`/`updateRuleError` stay set to show why.
-- Deleted-condition residue: on a SUCCESSFUL replace the deleted condition's underlying settings linger in the pool but are NOT part of the active formula -- harmless, renders cleanly, no cleanup write issued. New slot indices continue past the deleted slot.
+- Validation before any click: the spec's shape, operators, deviceIds and Mode names are checked before the rule is touched. Values only the live page can check (a numeric mode id, a capability's state options, a Custom Attribute) are checked as the condition is built.
+- A failed build changes nothing: the editor is trimmed back to the original tokens, the conditions the attempt created are removed, and the original expression is committed again. The result is `success:false`, `requiredExpressionReplaced:false`, `originalPreserved:true`. If backing out cannot be confirmed, `originalPreserved:false` + `partial:true`, the conditions it created are kept and named in `leftoverConditionIds`, and the error says to inspect the rule.
+- A failure AFTER the switch -- a rejected trailing `updateRule`, or new rule-health problems that were not there before -- rolls the expression back to the original tokens (the original conditions are still in the rule's pool): `requiredExpressionReplaced:false` + `requiredExpressionRestored:true`, or `requiredExpressionRestored:false` when the rollback itself could not be confirmed. `updateRuleFailed`/`expressionNotLive`/`updateRuleError` stay set to show why.
+- Success envelope: `requiredExpressionReplaced:true` means the new expression is committed and its trailing `updateRule` fired. It carries the same `conditionIndices`/`settingsApplied`/`settingsSkipped`/`partial`/`repairHints` envelope as `addRequiredExpression`.
+- Replaced conditions stay listed as unused under Manage Conditions -- the same as editing the expression in the RM UI. They are not part of the active formula and do not affect evaluation.
 - Committed-RE detection: a committed expression is detected by the `cancelST` + `editST` control pair (a two-field tell, intentionally narrower than `addRequiredExpression`'s three-field check because that pair is firmware-stable on 5.1.8 while `stopOnST` varies across revisions).
 
-Also a valid `patches[]` op (reported as `op: 'replaceRequiredExpression'`). Inside a `patches[]` batch the auto-restore is scoped to a per-op snapshot taken just before the op, so a failed replace op does NOT revert earlier successful ops in the same batch.
+Also a valid `patches[]` op (reported as `op: 'replaceRequiredExpression'`). Inside a batch a failed build backs out the same way without touching earlier ops, and the batch-end rollback (a rejected batch-end `updateRule`, or a health regression when the replace is the only op) reverts only this op's expression.
 
 ### `addAction` variable-sourced values, not-yet-mapped capabilities, wire-format quirks
 
@@ -11618,7 +11646,7 @@ Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch
 
 - **Auto-updateRule**: main-page `settings` writes are auto-followed by an implicit `updateRule` click so `initialize()` re-fires. Sub-page writes (`pageName=selectTriggers`/`selectActions`/...) SKIP the auto-click so the wizard's `stateAttribute` (`moreCond`, `editCond`, `editAct`, ...) survives -- commit the wizard via its own Done button (RM triggers: `hasAll`; RM actions: `actionDone`), then issue a final `hub_set_rule(button='updateRule')` yourself to re-initialize.
 - **mainPage boolean flags** -- some rule-level toggles are plain mainPage booleans you set directly via `settings`, distinct from the structured shortcuts:
-  - `settings:{useST:true}` -- the "Use Required Expression" flag. It only EXPOSES the Required Expression sub-page (the "Define Required Expression" href); it does NOT author any condition. Use `addRequiredExpression` to build the actual expression (which sets `useST` for you). Setting `useST:true` bare, with no expression, just reveals an empty RE surface.
+  - `settings:{useST:true}` -- the "Use Required Expression" flag. It only EXPOSES the Required Expression sub-page (the "Define Required Expression" href); it does NOT author any condition. Use `addRequiredExpression` to build the actual expression (which sets `useST` for you). Setting `useST:true` bare, with no committed expression, leaves the rule running UNGATED: the write's health check flags it and the call returns `success:false` until an expression is added.
   - `settings:{isFunction:true}` -- the "function mode" flag (the rule returns a value so other rules can call it as a function). No structured shortcut; write it directly.
   Both are mainPage writes, so they auto-commit via `updateRule` per the Auto-updateRule rule above.
 - **Wizard-Done auto-finalize**: clicking `hasAll` on `selectTriggers` commits the trigger but RM 5.1 leaves a residual `isCondTrig.<N>` ("Conditional Trigger?") prompt; the tool auto-writes `isCondTrig.<N>=false` to clear it without consuming a trigger index, reported as `wizardDoneAutoRetry: 'OK' | 'OK after finalize ...' | 'WARN: ...'`. (Earlier versions clicked `hasAll` twice, which allocated phantom **Broken Trigger** rows; the finalize-via-`isCondTrig` path keeps indices contiguous 1, 2, 3.)
@@ -11649,7 +11677,7 @@ Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch
 
 Trailing-updateRule failure slots (`addRequiredExpression`, `addTrigger`, `addLocalVariable`, `removeLocalVariable`, bulk `addTriggers`/`addActions`, `patches`, and the action/trigger mutation dispatchers):
 - `addRequiredExpression`: `updateRuleFailed: true` + `expressionNotLive: true` + `updateRuleError: <message>` when the post-commit `updateRule` click is rejected. `success` flips false and `partial` flips true. The expression IS committed but not live, and `repairHints` points at `hub_set_rule(button='updateRule', confirm=true)`.
-- `replaceRequiredExpression`: the old expression was already deleted, so a rejected trailing `updateRule` auto-restores the pre-op backup. The result is `success:false` + `requiredExpressionReplaced:false` + `requiredExpressionRestored:*`, and the three updateRule slots stay set. In a `patches[]` batch, a batch-end `updateRule` failure rolls the replace op back the same way. A clean replace returns `requiredExpressionReplaced:true`. With no committed expression to replace, it returns `requiredExpressionMissing:true` (success:false).
+- `replaceRequiredExpression`: a rejected trailing `updateRule` rolls the expression back to the original (the original conditions are still in the rule's pool). The result is `success:false` + `requiredExpressionReplaced:false` + `requiredExpressionRestored:*`, and the three updateRule slots stay set. In a `patches[]` batch, a batch-end `updateRule` failure rolls the replace op back the same way. A clean replace returns `requiredExpressionReplaced:true`. With no committed expression to replace, it returns `requiredExpressionMissing:true` (success:false).
 - `addTrigger`: `updateRuleFailed: true` + `subscriptionsNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The trigger row IS in the rule's appSettings but the running rule instance never re-subscribed to its device events -- retry `updateRule` to populate subscriptions.
 - `addLocalVariable`: `updateRuleFailed: true` + `variableNotLive: true` + `updateRuleError: <message>` with the same `success`/`partial` flip. The variable IS created on the hub but the rule's action map never re-evaluates against the new variable until updateRule fires -- retry as above.
 - `removeLocalVariable`: removes a local variable via RM's `deleteGV`/`delConfirm` wizard, then verifies it left `state.allLocalVars`. A verify miss returns `success: false` + `partial: true` + `repairHints` (the `delConfirm` commit is the fragile step; or the variable is still referenced by an action/expression -- remove those refs first). On a rejected trailing `updateRule`: `updateRuleFailed: true` + `variableNotLive: true` + `updateRuleError: <message>` -- retry as above. List current locals via `hub_list_rule_local_variables` (in `hub_read_rules`).
@@ -11882,7 +11910,7 @@ Hubitat's cloud relay can end one HTTP request while hub-side work continues. MC
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, and `hub_update_device`. When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
+The modern path applies to `hub_set_rule`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, `hub_update_device`, and `hub_restore_backup` for a rule backup (`scope=source` with an `rm-rule_` key). When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
 
 The first write request reserves the operation and starts its first slice at once; a write that finishes within that request's wait budget returns an ordinary `resultType: "complete"` result in one round trip, so a client that never echoes `requestState` still completes fast writes. Only work still running at the budget returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
 

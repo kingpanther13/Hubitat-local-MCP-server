@@ -420,6 +420,41 @@ def toolExportNativeApp(args) {
     }
     def sourceLabel = sourceCfg.app.label?.toString() ?: "app-${sourceAppId}"
 
+    def exported = _appClonerExportJson(sourceAppId)
+    String jsonContent = exported.json
+    Integer clonerAppId = exported.clonerAppId
+    def result = [
+        success: true,
+        sourceAppId: sourceAppId,
+        sourceLabel: sourceLabel,
+        clonerAppId: clonerAppId,
+        contentLength: jsonContent.length(),
+        jsonContent: jsonContent,
+        note: "Exported source ${sourceAppId} via appCloner. Pass jsonContent to hub_import_native_app to re-create the rule."
+    ]
+    if (saveAs) {
+        try {
+            uploadHubFile(saveAs, jsonContent.getBytes("UTF-8"))
+            result.savedAs = saveAs
+            String hubIp = null
+            try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall through */ }
+            if (hubIp) {
+                result.savedUrl = "http://${hubIp}/local/${saveAs}"
+            } else {
+                // Don't emit a literally-broken http://<HUB_IP>/... URL — flag
+                // the lookup failure instead.
+                mcpLog("warn", "rm-native", "hub_export_native_app: location.hub.localIP unavailable; savedUrl omitted from result")
+            }
+        } catch (Exception fileErr) {
+            result.saveError = fileErr.message
+            mcpLog("warn", "rm-native", "hub_export_native_app: saveAs '${saveAs}' upload failed: ${fileErr.message}")
+        }
+    }
+    return result
+}
+
+// Hubitat's App Cloner export of one app: [json, clonerAppId]. Throws when the cloner renders none.
+Map _appClonerExportJson(Integer sourceAppId) {
     def initRes = _appClonerInit(sourceAppId)
     Integer clonerAppId = initRes.clonerAppId
     String referrer = initRes.referrer
@@ -467,35 +502,7 @@ def toolExportNativeApp(args) {
             }
             throw new IllegalStateException("appCloner export fired but ${reason} for cloner ${clonerAppId}")
         }
-
-        def result = [
-            success: true,
-            sourceAppId: sourceAppId,
-            sourceLabel: sourceLabel,
-            clonerAppId: clonerAppId,
-            contentLength: jsonContent.length(),
-            jsonContent: jsonContent,
-            note: "Exported source ${sourceAppId} via appCloner. Pass jsonContent to hub_import_native_app to re-create the rule."
-        ]
-        if (saveAs) {
-            try {
-                uploadHubFile(saveAs, jsonContent.getBytes("UTF-8"))
-                result.savedAs = saveAs
-                String hubIp = null
-                try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall through */ }
-                if (hubIp) {
-                    result.savedUrl = "http://${hubIp}/local/${saveAs}"
-                } else {
-                    // Don't emit a literally-broken http://<HUB_IP>/... URL — flag
-                    // the lookup failure instead.
-                    mcpLog("warn", "rm-native", "hub_export_native_app: location.hub.localIP unavailable; savedUrl omitted from result")
-                }
-            } catch (Exception fileErr) {
-                result.saveError = fileErr.message
-                mcpLog("warn", "rm-native", "hub_export_native_app: saveAs '${saveAs}' upload failed: ${fileErr.message}")
-            }
-        }
-        return result
+        return [json: jsonContent, clonerAppId: clonerAppId]
     } finally {
         // Reap the transient cloner on every path (success or throw) so repeated
         // exports don't accumulate hidden 'Export/Import/Clone' apps (BUG-8).
@@ -811,7 +818,216 @@ private Map _rmReadBackupSnapshot(Map entry) {
     return snapshot as Map
 }
 
-private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
+// Hubitat's App Cloner export of an app, kept in its backup so a restore can bring back app
+// state (triggers, actions, IF conditions) that a settings replay cannot. A rule with a Required
+// Expression is never exported (the cloner renders nothing for it).
+Map _rmNativeExportForBackup(Integer appId) {
+    try {
+        return [json: _appClonerExportJson(appId).json]
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "Backup for app ${appId}: App Cloner export failed (${e.message}); this backup restores by settings replay")
+        return [error: e.message ?: e.toString()]
+    }
+}
+
+// Restore through Hubitat's own App Cloner import: an exact copy (settings and app state) as a NEW
+// app, then the old app is deleted. Returns [fallback: reason] for the settings replay when the
+// export cannot be used: unparseable, no Rule Machine rule left to seed the import, or a device that
+// no longer exists (an import would not reuse it). Throws IllegalArgumentException, before anything
+// is created, when the old rule cannot be deleted because of app protection.
+// The copy an earlier native restore of this backup produced, when it still exists: returned rather
+// than importing or recreating again. Null when there is none.
+Map _rmPriorNativeCopy(Map entry, Integer savedId, boolean exists, String fileName) {
+    def recorded = entry?.restoredAppId
+    Integer priorCopy = recorded?.toString()?.isInteger() ? (recorded.toString() as Integer) : null
+    if (priorCopy == null || priorCopy == savedId) return null
+    // The hub answers {} for an id that no longer exists.
+    if (!_rmReadRuleState(priorCopy)) return null
+    def out = [type: "rm-rule", ruleId: priorCopy, originalRuleId: savedId, restoredVia: "nativeImport", backupFile: fileName, alreadyRestored: true]
+    if (exists) {
+        out.success = false
+        out.partial = true
+        out.error = "This backup was already imported as app ${priorCopy}, and rule ${savedId} still exists.".toString()
+        out.note = "Nothing was created. Keep one of the two: delete rule ${savedId} and enable app ${priorCopy} (hub_set_app_disabled(disabled=false)), or delete app ${priorCopy}, then retry the restore.".toString()
+    } else if (entry?.restoredKeepDisabled != true && _rmIsAppDisabled(priorCopy) != false) {
+        // A copy the restore meant to enable is disabled (the earlier run stopped before its re-enable),
+        // or its state could not be read.
+        Boolean disabled = _rmIsAppDisabled(priorCopy)
+        out.success = false
+        out.partial = true
+        out.error = (disabled == true ?
+            "This backup was already restored as app ${priorCopy}, but that app is still disabled." :
+            "This backup was already restored as app ${priorCopy}, but whether that app is enabled could not be read.").toString()
+        out.note = "Nothing was created. Check app ${priorCopy} with hub_list_apps(scope='instances') and enable it with hub_set_app_disabled(disabled=false) if it is disabled.".toString()
+    } else {
+        out.success = true
+        out.note = "This backup was already restored as app ${priorCopy}; nothing was created. To restore it again, delete app ${priorCopy} first.".toString()
+    }
+    return out
+}
+
+private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exists, String fileName, String backupKey = null) {
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(snapshot.nativeExport.toString()) } catch (Exception e) {
+        mcpLog("warn", "rm-native", "Restore of app ${savedId}: the backup's App Cloner export does not parse (${e.message}); restoring by settings replay")
+        return [fallback: "the backup's App Cloner export could not be parsed"]
+    }
+    def gone = [:]
+    def deadDevices = ((parsed?.deviceReplacements instanceof Map) ? (parsed.deviceReplacements as Map).keySet() : [])
+        .collect { it.toString() }.findAll { _rmDeviceGone(it, gone) }
+    if (deadDevices) {
+        mcpLog("info", "rm-native", "Restore of app ${savedId}: device(s) ${deadDevices} no longer exist, so the App Cloner import is skipped for the settings replay")
+        return [fallback: "device(s) ${deadDevices.join(', ')} named by the App Cloner export no longer exist".toString()]
+    }
+    Integer hint = exists ? savedId : null
+    if (hint == null) {
+        try {
+            def kids = _appClonerSnapshotChildren(_discoverParentAppId(snapshot?.appType ?: "rule_machine"))
+            hint = (kids?.ids ?: []).collect { it.toString() }.find { it.isInteger() }?.toInteger()
+        } catch (Exception e) {
+            mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding a Rule Machine rule to seed the import failed (${e.message})")
+            hint = null
+        }
+        if (hint == null) return [fallback: "no Rule Machine rule was found to seed the App Cloner import"]
+    }
+    // The old rule is deleted after the import, so its protection is checked before anything is created.
+    if (exists) {
+        try { _requireUnprotectedAppDeletion(savedId) } catch (IllegalArgumentException protExc) {
+            throw new IllegalArgumentException("Cannot restore rule ${savedId} as a new copy, because the old rule could not then be deleted: ${protExc.message} Pass preserveRuleId:true to restore it in place instead.".toString(), protExc)
+        }
+    }
+    def label = snapshot?.appLabel ?: "rule ${savedId}"
+    def imp
+    try {
+        imp = toolImportNativeApp([jsonContent: snapshot.nativeExport, parentHintAppId: hint, stageDisabled: true, confirm: true])
+    } catch (Exception impExc) {
+        mcpLog("error", "rm-native", "Restore of app ${savedId}: the App Cloner import threw (${impExc.message})")
+        imp = [success: false, clonerAppId: -1, error: impExc.message ?: impExc.toString()]
+    }
+    Integer newId = imp?.newAppId as Integer
+    if (newId == null) {
+        def out = [success: false, type: "rm-rule", ruleId: savedId, originalRuleId: savedId, restoredVia: "nativeImport", backupFile: fileName]
+        if (imp?.clonerAppId == null) {
+            // The import never started, so nothing was created.
+            out.error = "The App Cloner import of the backup could not start: ${imp?.error ?: imp?.note}".toString()
+            out.note = (exists ? "Nothing was created or deleted. Retry, or pass preserveRuleId:true to restore rule ${savedId} in place by settings replay." :
+                "Nothing was created. Retry the restore.").toString()
+            return out
+        }
+        // The import ran, but its copy was not found: it may exist, enabled and running.
+        out.partial = true
+        out.error = "The App Cloner import of the backup ran, but its new app could not be identified: ${imp?.error ?: imp?.note}".toString()
+        out.note = ("A copy labelled '${label}' may now exist under Rule Machine, enabled. Find it with hub_list_apps(scope='instances') and disable or delete it before anything else. " +
+            (exists ? "Rule ${savedId} was NOT deleted. " : "") + "Do not retry the restore until you have checked.").toString()
+        return out
+    }
+    if (imp?.success != true) {
+        // A copy exists but may not be disabled, so the caller decides what stays.
+        def failed = [success: false, partial: true, type: "rm-rule", ruleId: savedId, originalRuleId: savedId, importedAppId: newId,
+                      restoredVia: "nativeImport", backupFile: fileName,
+                      error: "The backup was imported as app ${newId}, but staging it failed: ${imp?.error ?: imp?.note}".toString(),
+                      note: (exists ?
+                          "Rule ${savedId} was NOT deleted, and app ${newId} may be running alongside it. Delete app ${newId} (hub_delete_native_app) to go back to rule ${savedId}, or delete rule ${savedId} to keep the copy. Do not retry the restore before one of them is gone." :
+                          "App ${newId} is the restored rule, but it may not be disabled as intended. Check it with hub_get_app_config(appId=${newId}); do not retry the restore, which would create another copy.").toString()]
+        if (imp?.stageFailures) failed.stageFailures = imp.stageFailures
+        return failed
+    }
+    // The copy replaces the old rule only once it matches the backup: same triggers and actions, not broken.
+    String mismatch = _rmNativeCopyMismatch(newId, snapshot)
+    if (mismatch) {
+        def dropped
+        try { dropped = toolDeleteNativeApp([appId: newId, force: true, confirm: true])?.success == true } catch (Exception dropExc) {
+            mcpLog("warn", "rm-native", "Restore of app ${savedId}: deleting the mismatched copy ${newId} threw (${dropExc.message})")
+            dropped = false
+        }
+        def failed = [success: false, type: "rm-rule", ruleId: savedId, originalRuleId: savedId, restoredVia: "nativeImport", backupFile: fileName,
+                      error: "The App Cloner copy of the backup does not match it: ${mismatch}.".toString(),
+                      note: ((dropped ? "The copy was deleted" : "The copy is app ${newId}, left disabled; delete it with hub_delete_native_app") +
+                          (exists ? ", and rule ${savedId} was not changed." : ".") +
+                          (exists ? " Pass preserveRuleId:true to restore by settings replay instead." : "")).toString()]
+        if (!dropped) { failed.partial = true; failed.importedAppId = newId }
+        return failed
+    }
+    // A rule disabled now stays disabled through the restore.
+    boolean liveDisabled = exists && _rmIsAppDisabled(savedId) == true
+    _rmRecordNativeRestore(backupKey, newId, liveDisabled || snapshot?.configJson?.app?.disabled == true)
+    def out = [success: true, type: "rm-rule", ruleId: newId, originalRuleId: savedId, recreated: true,
+               restoredVia: "nativeImport", backupFile: fileName]
+    if (exists) {
+        def del
+        try { del = toolDeleteNativeApp([appId: savedId, confirm: true]) } catch (Exception delExc) {
+            del = [success: false, error: delExc.message ?: delExc.toString()]
+        }
+        if (del?.success != true) {
+            out.success = false
+            out.partial = true
+            out.error = "The backup was imported as app ${newId}, but the old rule ${savedId} could not be deleted: ${del?.hubMessage ?: del?.error}".toString()
+            out.note = "App ${newId} is the restored copy and is left DISABLED so the two never run together. Delete rule ${savedId} (hub_delete_native_app, force:true if it has children), then enable ${newId} with hub_set_app_disabled(disabled=false).".toString()
+            return out
+        }
+        out.replacedRuleBackup = del?.backup?.backupKey
+    }
+    // The import is staged disabled; leave it disabled when the app was disabled at backup time or before the restore.
+    def reenableFailed = []
+    if (liveDisabled) out.leftDisabled = true
+    if (snapshot?.configJson?.app?.disabled != true && !liveDisabled) {
+        def failed = (imp.stagedDisabled ?: [newId]).findAll { id ->
+            try { toolSetAppDisabled([appId: id, disabled: false])?.success != true } catch (Exception enableExc) {
+                mcpLog("warn", "rm-native", "Restore of app ${savedId}: re-enabling app ${id} threw (${enableExc.message})")
+                true
+            }
+        }
+        if (failed) {
+            reenableFailed = failed
+            out.success = false
+            out.partial = true
+            out.error = "The backup was restored as app ${newId}, but app(s) ${failed} could not be re-enabled.".toString()
+        }
+    }
+    out.note = ("Restored with Hubitat's App Cloner import as a NEW app ${newId} -- an exact copy of the backup, triggers and actions included" +
+        (exists ? "; the old rule ${savedId} was deleted" : "") +
+        ". Update anything that referenced rule ${savedId} (Run Rule actions, dashboards)." +
+        (exists ? " Pass preserveRuleId:true to restore in place by settings replay instead." : "") +
+        (reenableFailed ? " Re-enable app(s) ${reenableFailed} with hub_set_app_disabled(disabled=false)." : "") +
+        (liveDisabled ? " Rule ${savedId} was disabled, so app ${newId} is left disabled too." : "")).toString()
+    return out
+}
+
+// Null when the imported copy matches the backup's Rule Machine state (trigger and action ids, not
+// broken); otherwise why not. Unreadable counts as a mismatch, since the old rule goes next.
+String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
+    def snap = [:]
+    (snapshot?.statusJson?.appState ?: []).each { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
+    def copy = _rmReadRuleState(copyId)
+    if (!copy) return "app ${copyId}'s state could not be read".toString()
+    if (copy.broken == true) return "app ${copyId} reads as broken".toString()
+    def keys = { m -> (m instanceof Map) ? (m as Map).keySet().collect { it.toString() }.sort() : [] }
+    def list = { l -> (l instanceof List) ? (l as List).collect { it.toString() } : [] }
+    def problems = []
+    if (keys(copy.capabstrue) != keys(snap.capabstrue)) problems << "triggers ${keys(copy.capabstrue)} vs the backup's ${keys(snap.capabstrue)}".toString()
+    if (list(copy.actionList) != list(snap.actionList)) problems << "actions ${list(copy.actionList)} vs the backup's ${list(snap.actionList)}".toString()
+    return problems ? problems.join("; ") : null
+}
+
+// Record on the backup entry the app a native restore created (and whether it is meant to stay
+// disabled), so a retry returns it instead of importing again.
+void _rmRecordNativeRestore(String backupKey, Integer newId, boolean keepDisabled = false) {
+    if (!backupKey) return
+    try {
+        _withBackupLock("record restore of ${backupKey}") {
+            Map manifest = _itemBackupManifest()
+            if (manifest[backupKey] instanceof Map) {
+                (manifest[backupKey] as Map).restoredAppId = newId
+                (manifest[backupKey] as Map).restoredKeepDisabled = keepDisabled
+                _commitItemBackupManifest(manifest)
+            }
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "Recording that backup ${backupKey} was restored as app ${newId} failed (${e.message}); a retry would import it again")
+    }
+}
+
+private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean preserveRuleId = true, String backupKey = null) {
     def fileName = entry.fileName
     Map snapshot = preparedSnapshot != null ? preparedSnapshot : _rmReadBackupSnapshot(entry)
     def savedId = snapshot.ruleId as Integer
@@ -850,7 +1066,24 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
     if (!reg) {
         throw new IllegalArgumentException("Backup references unknown appType '${savedAppType}'. Supported: ${_appTypeRegistry().keySet().join(', ')}")
     }
+    String nativeSkipped = null
+    def priorCopy = _rmPriorNativeCopy(entry, savedId, exists, fileName?.toString())
+    if (priorCopy && (!exists || !preserveRuleId)) return priorCopy
+    // A deleted rule gets a new id either way, so it comes back through the exact copy when the backup has one.
+    if ((!preserveRuleId || !exists) && snapshot?.nativeExport) {
+        if (savedAppType != "rule_machine") {
+            nativeSkipped = "App Cloner restore is used for Rule Machine rules only"
+        } else {
+            def nativeOut = _rmRestoreViaNativeImport(snapshot, savedId, exists, fileName?.toString(), backupKey)
+            if (nativeOut?.fallback) nativeSkipped = nativeOut.fallback.toString()
+            else return nativeOut
+        }
+    }
 
+    // Finish the way the app type commits: Rule Machine's updateRule, or for an app without that
+    // button (Basic Rule, Button Controller) the page's Done -- clicking updateRule there stores it
+    // as a pending action delete and the page then fails to load.
+    String commitButton = reg.containsKey("commitButton") ? reg.commitButton : _resolveCommitButton(snapshot?.configJson?.app?.appType?.name?.toString())
     def ruleId
     if (exists) {
         ruleId = savedId
@@ -866,7 +1099,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
             def firstSchema = _rmCollectInputSchema(firstPage?.configPage)
             def seedBody = _rmBuildSettingsBody(ruleId, [origLabel: savedLabel ?: "restored-app-${savedId}"], firstSchema)
             hubInternalPostForm("/installedapp/update/json", seedBody)
-            _rmClickAppButton(ruleId, "updateRule")
+            if (commitButton) _rmClickAppButton(ruleId, commitButton)
         } catch (Exception e) {
             try { _rmForceDeleteApp(ruleId) } catch (Exception ce) {
                 mcpLog("warn", "rm-native", "_rmRestoreFromBackup: orphan cleanup of newly-created app ${ruleId} failed after recreate error (${ce.message}) -- app may be left in an empty-label state; clean up manually via hub_delete_native_app(appId=${ruleId})")
@@ -917,6 +1150,10 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
         if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds.put(n, st.deviceIdsForDeviceList)
     }
     def skippedMaps = []
+    // A device deleted since the backup must not go back into a picker: RM's pages then dereference
+    // a null device and stop rendering (seen live on fw 2.5.2.129).
+    def deviceGone = [:]
+    def skippedDevices = []
     replaySettings = replaySettings.collectEntries { k, v ->
         String key = k.toString()
         boolean isPicker = _isDevicePickerType(savedSchema.get(key)?.type)
@@ -927,13 +1164,40 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
             return [(key): v]
         }
         def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds.get(key) : _devicePickerIds(v)
-        return [(key): (ids instanceof List ? ids.collect { it?.toString() } : ids)]
+        if (ids instanceof List) {
+            ids = ids.collect { it?.toString() }
+            def gone = ids.findAll { _rmDeviceGone(it, deviceGone) }
+            if (gone) {
+                skippedDevices << [key: key, ids: gone]
+                ids = ids - gone
+                if (!ids) return [:]
+            }
+        }
+        return [(key): ids]
     }
+    boolean isRm = savedAppType == "rule_machine"
+    def settingsCleared = []
+    def clearMiss = null
+    def commitMiss = null
     String step = "settings replay"
     try {
         _rmUpdateAppSettings(ruleId, replaySettings, savedSchema)
-        step = "the final updateRule click"
-        _rmClickAppButton(ruleId, "updateRule")
+        if (exists && !isRm) {
+            // A replay writes back only the backup's keys; a key the app gained later would stay and
+            // mix with the restored values. Rule Machine's own removal handles its rows (reconcile below).
+            try { settingsCleared = _rmClearSettingsNotInBackup(ruleId, savedSettings) } catch (Exception clearExc) {
+                mcpLog("warn", "rm-native", "restore of app ${ruleId}: emptying settings the backup did not have failed (${clearExc.message})")
+                clearMiss = clearExc.message ?: clearExc.toString()
+            }
+        }
+        if (commitButton) {
+            step = "the final ${commitButton} click".toString()
+            _rmClickAppButton(ruleId, commitButton)
+        } else {
+            step = "the closing Done"
+            def done = _rmSubmitMainPageDone(ruleId)
+            if (done?.done != true) commitMiss = done?.reason ?: "the page's Done did not commit"
+        }
     } catch (Exception e) {
         mcpLog("error", "rm-native", "restore of rule ${ruleId} from ${fileName} failed during ${step}: ${e.message}")
         return [
@@ -942,10 +1206,14 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
             ruleId: ruleId,
             originalRuleId: savedId,
             failedStep: step,
+            restoredVia: "settingsReplay",
+            nativeImportSkipped: nativeSkipped,
             error: "Restore applied partially; failed during ${step}: ${e.message}",
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
-                : "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or call hub_set_rule(appId=${ruleId}, button='updateRule').")
+                : (commitButton == "updateRule"
+                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or call hub_set_rule(appId=${ruleId}, button='updateRule')."
+                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or call hub_set_native_app(appId=${ruleId}${commitButton ? ", button='" + commitButton + "'" : ''}).")).toString()
         ]
     }
 
@@ -958,17 +1226,131 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null) {
         ruleId: ruleId,
         originalRuleId: savedId,
         recreated: !exists,
+        restoredVia: "settingsReplay",
         backupFile: fileName,
         settingsApplied: replaySettings.keySet().toList(),
         settingsSkipped: skippedButtons.collect { key -> [key: key, reason: "button input excluded from replay"] }
-            + skippedMaps.collect { key -> [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] },
+            + skippedMaps.collect { key -> [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] }
+            + skippedDevices.collect { sd -> [key: sd.key, reason: "device(s) ${sd.ids.join(', ')} no longer exist on the hub; left out of the replay".toString()] },
         note: exists ? "Settings restored in place." : "Rule was deleted; recreated with new id ${ruleId} and replayed settings."
     ]
+    if (settingsCleared) {
+        out.settingsCleared = settingsCleared
+        out.note = "${out.note} Settings the app gained after the backup were emptied: ${settingsCleared.join(', ')}.".toString()
+    }
+    if (clearMiss) {
+        out.partial = true
+        out.note = "${out.note} Settings the app gained after the backup could not be emptied (${clearMiss}); compare hub_get_app_config(appId=${ruleId}, includeSettings=true) with hub_get_backup.".toString()
+    }
+    if (commitMiss) {
+        out.success = false
+        out.partial = true
+        out.error = "Settings were replayed, but the app's closing Done did not commit: ${commitMiss}".toString()
+        out.note = "${out.note} Open the app and click Done so its subscriptions match the restored settings.".toString()
+    }
+    if (nativeSkipped) {
+        out.nativeImportSkipped = nativeSkipped
+        out.note = "${out.note} The backup's App Cloner copy was not used: ${nativeSkipped}.".toString()
+    }
+    if (skippedDevices) {
+        out.partial = true
+        out.note = "${out.note} Device(s) deleted since the backup were left out: ${skippedDevices.collect { "${it.key} (${it.ids.join(', ')})" }.join(', ')}. Pick replacements with hub_set_rule if the rule needs them.".toString()
+    }
     if (skippedMaps) {
         out.partial = true
         out.note = "${out.note} ${skippedMaps.size()} saved setting(s) could NOT be replayed (see settingsSkipped): ${skippedMaps.join(', ')}. Inspect with hub_get_app_config(appId=${ruleId}) and set them by hand if the rule needs them.".toString()
     }
+    // A Required Expression lives in RM app state, which the settings replay cannot write: bring it
+    // back to the snapshot's expression explicitly, and never report success over a missing gate.
+    // Both live in Rule Machine's own app state; other app types have neither.
+    def reOutcome = [:]
+    def structure = [:]
+    if (isRm) {
+        try {
+            reOutcome = _rmRestoreRequiredExpression(ruleId, snapshot)
+        } catch (Exception reExc) {
+            reOutcome = [requiredExpressionRestored: false, requiredExpressionError: reExc.message ?: reExc.toString()]
+        }
+        try {
+            structure = _rmReconcileRuleStructure(ruleId, snapshot)
+        } catch (Exception stExc) {
+            structure = [structureRestored: false, structureError: stExc.message ?: stExc.toString()]
+        }
+    }
+    if (reOutcome) out.putAll(reOutcome)
+    if (structure) out.putAll(structure)
+    if (out.leftoverConditionIds && structure?.removedConditionIds) {
+        def gone = (structure.removedConditionIds as List)*.toString()
+        out.leftoverConditionIds = (out.leftoverConditionIds as List).findAll { !gone.contains(it.toString()) }
+        if (!out.leftoverConditionIds) out.remove("leftoverConditionIds")
+    }
+    if (structure?.structureRestored == false) {
+        out.success = false
+        out.partial = true
+        out.error = "Settings were restored, but the rule's triggers/actions do not match the backup: ${structure.structureError}".toString()
+        out.note = "${out.note} Triggers and actions live in Rule Machine state, which a settings replay cannot rebuild -- add the missing ones with hub_set_rule(addTriggers / addActions), checking hub_get_app_config(appId=${ruleId}) against hub_get_backup.".toString()
+    } else if (structure?.removedTriggers || structure?.removedActions || structure?.removedConditionIds) {
+        out.note = "${out.note} Removed what the backup did not have (triggers ${structure.removedTriggers ?: []}, actions ${structure.removedActions ?: []}, conditions ${structure.removedConditionIds ?: []}).".toString()
+    }
+    if (reOutcome?.requiredExpressionRestored == false) {
+        out.success = false
+        out.partial = true
+        out.error = [out.error, "Settings were restored, but the rule's Required Expression does not match the backup: ${reOutcome.requiredExpressionError}"].findAll { it }.join(" ").toString()
+        out.note = "${out.note} The Required Expression was NOT restored -- inspect it with hub_get_app_config(appId=${ruleId}) and rebuild it with hub_set_rule(addRequiredExpression or replaceRequiredExpression).".toString()
+    } else if (reOutcome?.requiredExpressionRemoved == true) {
+        out.note = "${out.note} The backup had no Required Expression, so the rule's expression was removed.".toString()
+    } else if (reOutcome?.requiredExpressionRestored == true) {
+        out.note = "${out.note} Required Expression confirmed to match the backup.".toString()
+    }
     return out
+}
+
+// Empty every non-button setting the app has that the backup does not, through the same update
+// endpoint as the replay (an emptied setting reads as unset; the hub keeps no way to delete one).
+// Returns the keys emptied.
+List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings) {
+    def status = _rmFetchStatusJson(appId)
+    if (!(status?.appSettings instanceof List)) return []
+    def saved = savedSettings.keySet().collect { it.toString() } as Set
+    def extra = (status.appSettings as List).findAll { rec ->
+        def n = rec?.name?.toString()
+        // A device picker reports its devices in deviceIdsForDeviceList, with a null value.
+        boolean hasValue = (rec?.value != null && rec?.value != "") ||
+            (rec?.deviceIdsForDeviceList instanceof List && !(rec.deviceIdsForDeviceList as List).isEmpty())
+        n && !saved.contains(n) && rec?.type?.toString() != "button" && hasValue
+    }
+    if (!extra) return []
+    def body = [id: appId.toString()]
+    extra.each { rec ->
+        def n = rec.name.toString()
+        body["settings[${n}]".toString()] = ""
+        if (rec.type) body["${n}.type".toString()] = rec.type.toString()
+        body["${n}.multiple".toString()] = (rec.multiple == true).toString()
+    }
+    _rmPostSettings(appId, body)
+    return extra.collect { it.name.toString() }.sort()
+}
+
+// True only when the hub positively says the device is gone (404 or an empty object). An empty or
+// unreadable answer keeps the id: dropping a live device from a restore is worse than keeping it.
+private boolean _rmDeviceGone(String id, Map cache) {
+    if (!id) return false
+    if (cache.containsKey(id)) return cache.get(id) as boolean
+    boolean gone = false
+    try {
+        def txt = hubInternalGet("/device/fullJson/${id}")
+        if (txt) {
+            def parsed = new groovy.json.JsonSlurper().parseText(txt)
+            gone = (parsed instanceof Map) && parsed.isEmpty()
+        }
+    } catch (Exception e) {
+        // Without a status, only the hub's own "status code: 404 ... Not Found" wording counts.
+        Integer status = _httpStatusOf(e)
+        def msg = e.message ?: ""
+        gone = (status != null) ? status == 404 : (msg ==~ /(?s).*status code:? 404\b.*/ && msg.contains("Not Found"))
+    }
+    cache.put(id, gone)
+    return gone
 }
 
 def _getAllToolDefinitions_partAppCloner() {

@@ -319,6 +319,73 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
     // ---------- shape-check (not status-check) ----------
 
+    @spock.lang.Unroll
+    def "auto: useST on with #desc -> ungated issue=#flagged"() {
+        given: "the rule switched Use Required Expression on; eval['0'] is its committed expression"
+        seedHealthy(100, [eval: evalState])
+        hubGet.register('/installedapp/configure/json/100') {
+            JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(configJson(100)) + [settings: [useST: useST]])
+        }
+
+        when:
+        def health = script._rmCheckRuleHealth(100)
+
+        then:
+        health.ok == !flagged
+        health.issues.any { it.contains("runs UNGATED") } == flagged
+
+        where:
+        desc                                   | useST  | evalState              || flagged
+        'no committed expression'              | "true" | [:]                    || true
+        'an empty expression'                  | "true" | ["0": []]              || true
+        'a committed expression'               | "true" | ["0": [1]]             || false
+        'only IF expressions in actions'       | "true" | ["1": ["2"]]           || true
+        'Use Required Expression off'          | ""     | [:]                    || false
+    }
+
+    def "auto: the committed token count is returned with the verdict"() {
+        given:
+        seedHealthy(100, [eval: ["0": [1, "AND", 2]]])
+        hubGet.register('/installedapp/configure/json/100') {
+            JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(configJson(100)) + [settings: [useST: "true"]])
+        }
+
+        expect:
+        script._rmCheckRuleHealth(100).requiredExpressionTokens == 3
+    }
+
+    def "auto: a rule state without an eval map leaves the token count unknown, never zero"() {
+        given:
+        seedHealthy(100, [eval: null])
+        hubGet.register('/installedapp/configure/json/100') {
+            JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(configJson(100)) + [settings: [useST: "true"]])
+        }
+
+        when:
+        def h = script._rmCheckRuleHealth(100)
+
+        then:
+        h.requiredExpressionTokens == null
+        !h.issues.any { it.contains("runs UNGATED") }
+        h.checkErrors.any { it.contains("ungated rule is not ruled out") }
+    }
+
+    def "configPage: useST on with the expression unread is reported as unchecked, not as clean"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/100') {
+            JsonOutput.toJson(new groovy.json.JsonSlurper().parseText(configJson(100)) + [settings: [useST: "true"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { statusJson(100) }
+
+        when:
+        def h = script._rmCheckRuleHealth(100, "configPage")
+
+        then:
+        h.checkErrors.any { it.contains("ungated rule is not ruled out") }
+        !h.issues.any { it.contains("runs UNGATED") }
+    }
+
     def "auto: empty {} (nonexistent id) is ignored as a JSON source and falls back to HTML"() {
         given:
         settingsMap.enableRead = true

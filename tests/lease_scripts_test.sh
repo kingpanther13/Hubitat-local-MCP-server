@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Regression guard for the e2e lease scripts: acquire-side response parsing + release-side
 # compare-and-clear. Two bug classes it locks down:
-#   1. ACQUIRE false-empty -- a JSON-RPC ERROR envelope (e.g. -32603 the main app emits while its
-#      class is recompiled by another run's deploy) must NEVER read as "released". That false-empty
+#   1. ACQUIRE false-empty -- a JSON-RPC ERROR envelope (e.g. -32603 while the hub is busy) must
+#      NEVER read as "released". That false-empty
 #      let a run claim over a still-valid lease and double-booked the single shared test hub.
 #   2. RELEASE over-clear -- lease_release.sh must blank _TEST_HUB_LEASED_BY ONLY when WE still hold
 #      it. A degraded read or a lease now held by ANOTHER run must be left alone (else a slow/cancelled
 #      run could wipe the new holder's live lease -- a milder replay of the same double-book).
 #
+# The lease is read and written through the watchdog's hub_manage_variables (action get / set).
 # get_lease_value is extracted from lease_acquire.sh and run directly (re-extracted every run, so the
 # test can't drift from the shipped parser); lease_release.sh is driven end-to-end with a curl stub
 # on PATH. Pure shell + jq; no hub, no secrets.
@@ -26,12 +27,15 @@ type get_lease_value >/dev/null 2>&1 || { echo "could not load get_lease_value f
 fail=0
 
 # ---------- acquire-side parse guard ----------
-check() {  # check <name> <canned-response> <HELD|RELEASED|POLL>
-  local name="$1" want="$3" out got
+check() {  # check <name> <canned-response> <HELD|RELEASED|POLL|MISSING>
+  local name="$1" want="$3" out got rc=0
   CANNED_RESP="$2"                              # global: read by the stub (avoids colliding with
   mcp_call() { printf '%s' "$CANNED_RESP"; }    # get_lease_value's own `local resp`)
-  if out="$(get_lease_value 2>/dev/null)"; then
+  out="$(get_lease_value 2>/dev/null)" || rc=$?
+  if [ "$rc" -eq 0 ]; then
     [ -z "$out" ] && got=RELEASED || got=HELD
+  elif [ "$rc" -eq 2 ]; then
+    got=MISSING
   else
     got=POLL
   fi
@@ -47,14 +51,15 @@ echo "acquire parse (get_lease_value):"
 held_text="$(jq -nc '{name:"_TEST_HUB_LEASED_BY",type:"string",value:(({by:"ci-run-X",until:1}|tojson))}')"
 check "held lease"          "$(jq -nc --arg t "$held_text" '{result:{content:[{text:$t}]}}')"   HELD
 check "released (value '')" "$(jq -nc '{result:{content:[{text:({value:""}|tojson)}]}}')"        RELEASED
-check "-32603 recompile"    '{"error":{"code":-32603,"message":"Internal error"}}'               POLL
-check "-32602 not found"    '{"error":{"code":-32602,"message":"Variable not found: X"}}'         RELEASED
+check "released (value {})" "$(jq -nc '{result:{content:[{text:({value:"{}"}|tojson)}]}}')"      RELEASED
+check "-32603 error"        '{"error":{"code":-32603,"message":"Internal error"}}'               POLL
+check "-32602 not found"    '{"error":{"code":-32602,"message":"Invalid params: Variable not found: X"}}' MISSING
 check "-32602 other"        '{"error":{"code":-32602,"message":"Invalid params"}}'                POLL
 check "non-JSON 504 body"   '<html>504 Gateway Timeout</html>'                                    POLL
 
 # ---------- release-side compare-and-clear guard ----------
-# Drive the REAL lease_release.sh end-to-end with a curl stub on PATH: the GET (hub_get_variable)
-# returns a canned lease (or fails for __FAIL__), and a clear POST (hub_set_variable, value:"") is
+# Drive the REAL lease_release.sh end-to-end with a curl stub on PATH: the read (action get)
+# returns a canned lease (or fails for __FAIL__), and a clear (action set, value:"") is
 # recorded. We assert WHO gets cleared. The held fixtures use the real wire shape -- {by,until} is a
 # JSON STRING inside .value -- so the test exercises the same parse the script ships.
 STUBDIR="$(mktemp -d)"
@@ -62,12 +67,12 @@ cat > "$STUBDIR/curl" <<'STUB'
 #!/usr/bin/env bash
 payload=""
 while [ $# -gt 0 ]; do [ "$1" = "-d" ] && { payload="$2"; shift; }; shift; done
-if printf '%s' "$payload" | grep -q hub_get_variable; then
+if printf '%s' "$payload" | grep -q '"action":"get"'; then
   [ "$REL_CANNED_GET" = "__FAIL__" ] && exit 22   # simulate curl --fail (e.g. 504)
   printf '%s' "$REL_CANNED_GET"
-elif printf '%s' "$payload" | grep -q hub_set_variable; then
+elif printf '%s' "$payload" | grep -q '"action":"set"'; then
   echo CLEAR >> "$REL_CLEAR_LOG"                  # record that a clear was attempted
-  printf '{"result":{}}'
+  printf '{"result":{"content":[{"text":"{\\"success\\":true}"}]}}'
 fi
 exit 0
 STUB
@@ -77,7 +82,7 @@ rel_check() {  # rel_check <name> <canned-get> <by-arg> <CLEAR|KEEP>
   local name="$1" want="$4" got
   REL_CLEAR_LOG="$(mktemp)"; export REL_CLEAR_LOG
   REL_CANNED_GET="$2"; export REL_CANNED_GET
-  PATH="$STUBDIR:$PATH" MCP_URL="stub://x" bash "$SRC_REL" "$3" >/dev/null 2>&1
+  PATH="$STUBDIR:$PATH" WATCHDOG_URL="stub://x" bash "$SRC_REL" "$3" >/dev/null 2>&1
   [ -s "$REL_CLEAR_LOG" ] && got=CLEAR || got=KEEP
   rm -f "$REL_CLEAR_LOG"
   if [ "$got" = "$want" ]; then

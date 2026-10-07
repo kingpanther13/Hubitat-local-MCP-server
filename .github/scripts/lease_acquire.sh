@@ -2,7 +2,9 @@
 # Acquire test hub lease for a CI run.
 #
 # Usage:  lease_acquire.sh <by-identifier>
-# Env:    MCP_URL — full cloud OAuth URL with access_token
+# Env:    WATCHDOG_URL — the watchdog v3 cloud OAuth URL with access_token. The lease is read and
+#                        written through the WATCHDOG, never the MCP server under test: a PR that
+#                        breaks that server must not stop the watchdog from installing over it.
 #         LEASE_WAIT_TIMEOUT_S        — max seconds to WAIT for a successfully-read but HELD
 #                                       lease to free before aborting (default 14400 = 4h).
 #                                       Native concurrency (the hub-e2e-serialized group) already
@@ -28,14 +30,16 @@
 # UNREADABLE past LEASE_UNREACHABLE_TIMEOUT_S (the fast-fail for a down hub/app), or if the
 # post-write race-check shows another claim last.
 #
-# Lease shape (JSON, written into Hubitat Hub Variable `_TEST_HUB_LEASED_BY`):
+# Lease shape (JSON, written into Hubitat Hub Variable `_TEST_HUB_LEASED_BY`, a String variable that
+# must already exist -- the watchdog cannot create one, and the hub drops a String variable created
+# empty, so create it with "{}"):
 #   {"by":"<who>","since":<epoch_ms>,"until":<epoch_ms>}
-# Empty string = released. See protocol in CLAUDE.md / issue #77 for context.
+# Empty string or {} = released. See protocol in CLAUDE.md / issue #77 for context.
 
 set -euo pipefail
 
 BY="${1:?Usage: $0 <by-identifier>}"
-: "${MCP_URL:?MCP_URL env var required (full cloud OAuth URL with access_token)}"
+: "${WATCHDOG_URL:?WATCHDOG_URL env var required (watchdog v3 cloud OAuth URL with access_token)}"
 
 LEASE_DURATION_MIN=30
 LEASE_WAIT_TIMEOUT_S="${LEASE_WAIT_TIMEOUT_S:-14400}"
@@ -57,7 +61,7 @@ fmt_ts() { python3 -c "import datetime,sys; print(datetime.datetime.fromtimestam
 mcp_call() {
   local attempt=1 resp
   while [ "$attempt" -le 5 ]; do
-    if resp=$(curl -sS --fail --max-time 30 -X POST "$MCP_URL" \
+    if resp=$(curl -sS --fail --max-time 30 -X POST "$WATCHDOG_URL" \
         -H "Content-Type: application/json" -d "$1" 2>/dev/null); then
       printf '%s' "$resp"
       return 0
@@ -72,29 +76,30 @@ mcp_call() {
 
 get_lease_value() {
   # Prints the lease value (may be "" when released) + exit 0 for a well-formed tools/call
-  # result OR a "variable not found" error -- a FRESH hub where _TEST_HUB_LEASED_BY was never
-  # created reads as released, so the first claim can bootstrap it (the claim write
-  # auto-creates the var). Any OTHER non-result response exits non-zero so the caller polls
-  # (read-fail path) and never falsely claims: a -32603 the main app emits mid-recompile during
-  # another run's deploy, a transport failure, a non-JSON body. `jq -e` distinguishes a real
+  # result. A missing variable exits 2: the watchdog cannot create it, so no claim could land.
+  # Any OTHER non-result response exits 1 so the caller polls (read-fail path) and never falsely
+  # claims: a JSON-RPC error, a transport failure, a non-JSON body. `jq -e` distinguishes a real
   # result from an error envelope; without it a missing .result.content collapsed to "" and
   # read as "released", double-booking the single hub.
   local resp
-  resp="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"tool":"hub_get_variable","args":{"name":"_TEST_HUB_LEASED_BY"}}}}')" || return 1
-  # "Variable not found" -> the lease var was never created -> released/free. (A transient
-  # not-found can't false-claim: the empty-break still requires a confirming second read.)
+  resp="$(mcp_call '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_manage_variables","arguments":{"action":"get","name":"_TEST_HUB_LEASED_BY"}}}')" || return 1
   if printf '%s' "$resp" | jq -e '(.error.message // "") | test("not found"; "i")' >/dev/null 2>&1; then
-    return 0
+    echo "::error::Hub variable _TEST_HUB_LEASED_BY does not exist on the test hub. Create it (type String, value {}) in Settings > Hub Variables; the watchdog cannot create one." >&2
+    return 2
   fi
   local text
   text="$(printf '%s' "$resp" | jq -e -r '.result.content[0].text')" || return 1
-  printf '%s' "$text" | jq -e -r '.value // ""' || return 1
+  local value
+  value="$(printf '%s' "$text" | jq -e -r '.value // ""')" || return 1
+  [ "$(printf '%s' "$value" | jq -c . 2>/dev/null)" = "{}" ] && value=""
+  printf '%s' "$value"
 }
 
 set_lease_value() {
-  # Arg is the JSON-stringified value (already double-quoted + escaped).
-  local value_json="$1"
-  mcp_call "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"hub_manage_variables\",\"arguments\":{\"tool\":\"hub_set_variable\",\"args\":{\"name\":\"_TEST_HUB_LEASED_BY\",\"value\":${value_json}}}}}" >/dev/null
+  # Arg is the lease string; "" releases. Fails unless the watchdog confirms the write.
+  local resp
+  resp="$(mcp_call "$(jq -nc --arg v "$1" '{jsonrpc:"2.0",id:2,method:"tools/call",params:{name:"hub_manage_variables",arguments:{action:"set",name:"_TEST_HUB_LEASED_BY",value:$v,confirm:true}}}')")" || return 1
+  printf '%s' "$resp" | jq -e '.result.content[0].text | fromjson | .success == true' >/dev/null 2>&1
 }
 
 # True (exit 0) ONLY when the lease holder is a GitHub Actions run that has already FINISHED, so
@@ -133,12 +138,14 @@ while :; do
   # a down hub never frees the lease, so waiting the full LEASE_WAIT_TIMEOUT_S there just burns
   # ~10min per run (and every queued run repeats it). Read failures therefore get their own
   # short LEASE_UNREACHABLE_TIMEOUT_S budget and fast-fail past it.
-  if ! CURRENT="$(get_lease_value)"; then
+  rc=0; CURRENT="$(get_lease_value)" || rc=$?
+  [ "$rc" -eq 2 ] && exit 1
+  if [ "$rc" -ne 0 ]; then
     NOW_S=$(( $(now_ms) / 1000 ))
     [ -z "$read_fail_since" ] && read_fail_since="$NOW_S"
     UNREACH_S=$(( NOW_S - read_fail_since ))
     if [ "$UNREACH_S" -ge "$LEASE_UNREACHABLE_TIMEOUT_S" ]; then
-      echo "::error::Test hub MCP endpoint unreachable for ${UNREACH_S}s (5xx on every lease read) -- the hub or its MCP server app is down, not the lease held. Aborting fast instead of waiting out the ${LEASE_WAIT_TIMEOUT_S}s held-lease budget."
+      echo "::error::Test hub watchdog endpoint unreachable for ${UNREACH_S}s (5xx on every lease read) -- the hub or its watchdog app is down, not the lease held. Aborting fast instead of waiting out the ${LEASE_WAIT_TIMEOUT_S}s held-lease budget."
       exit 1
     fi
     echo "::warning::Lease read failed (cloud gateway); endpoint unreachable ${UNREACH_S}s/${LEASE_UNREACHABLE_TIMEOUT_S}s, retrying next poll..."
@@ -212,15 +219,13 @@ done
 NOW_MS="$(now_ms)"
 EXPIRES_MS=$((NOW_MS + LEASE_DURATION_MIN * 60 * 1000))
 
-# Build the lease JSON, then JSON-stringify it for the set_variable arg.
+# Build the lease JSON (the variable's string value).
 CLAIM_JSON="$(jq -nc \
   --arg  by    "$BY" \
   --argjson since "$NOW_MS" \
   --argjson until "$EXPIRES_MS" \
   '{by: $by, since: $since, until: $until}')"
-CLAIM_AS_STRING="$(printf '%s' "$CLAIM_JSON" | jq -Rs .)"
-
-set_lease_value "$CLAIM_AS_STRING"
+set_lease_value "$CLAIM_JSON" || { echo "::error::The watchdog did not confirm the lease write; aborting."; exit 1; }
 
 # Post-write race-check: re-read after a short delay. If "by" isn't us, someone else's claim
 # landed last and stole the lease — abort. Ride out a lone transient read failure here the way

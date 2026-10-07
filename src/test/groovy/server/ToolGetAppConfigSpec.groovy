@@ -1923,6 +1923,32 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         result.disabledActions == [[text: "Notify Pushover: 'Fixed mismatch'"]]
     }
 
+    @spock.lang.Unroll
+    def "RM's raw less-than comparator survives tag stripping (#cmp) in paragraphs and embedded action rows"() {
+        given:
+        settingsMap.enableRead = true
+        // RM renders the comparator as a raw `<` inside span markup (captured from a hub log line);
+        // a bare `<[^>]+>` tag pattern swallowed "< 100<span ...>" as one tag (issue #508).
+        def cond = "IF (Variable local<span style='color:black'>(0)</span> is ${cmp} 100<span style='color:green'>(T)</span><span style='color:green'> [TRUE]</span>) THEN"
+        def html = "${cond}\n" +
+            "<input type='hidden' name='1.0.true.type' value='button'>" +
+            "<div class='submitOnChange' onclick='buttonClick(this)' data-stateAttribute='doAct' style='color:purple'>${cond}</div>"
+        hubGet.register('/installedapp/configure/json/35/selectActions') { params -> rmActionsPageJson(html, 'selectActions') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, pageName: 'selectActions'])
+
+        then:
+        result.page.sections[0].paragraphs[0].contains("IF (Variable local(0) is ${cmp} 100(T) [TRUE]) THEN")
+        result.page.sections[0].embeddedActions[0].description == "IF (Variable local(0) is ${cmp} 100(T) [TRUE]) THEN"
+
+        and: 'the direct helper agrees'
+        script.stripAppConfigHtml(cond) == "IF (Variable local(0) is ${cmp} 100(T) [TRUE]) THEN"
+
+        where:
+        cmp << ['<', '<=']
+    }
+
     def "several disabled spans across paragraphs and sections are all marked, in order"() {
         given:
         settingsMap.enableRead = true

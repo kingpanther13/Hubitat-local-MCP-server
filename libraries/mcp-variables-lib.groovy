@@ -1235,16 +1235,18 @@ def toolDeleteHubVariable(args) {
         def previousType  = hubVar.type
         def hadConnector  = hubVar.deviceId != null
         def appId = hubVarsAppId ?: _findHubVariablesAppId()
-        // The wizard's first click sequence after a fresh create/edit can be
-        // dropped silently by the hub (state-machine race that priming
-        // alone doesn't reliably defeat). Retry the full click
-        // sequence once if the verification fails — empirically the second
-        // attempt always commits.
+        // The two clicks only arm the delete (state deleteGV + deleteConfirm); the hub performs it on
+        // the page's next render, which the UI gets from its reload after the click. Render it here so
+        // the delete runs now -- an armed delete left behind would remove a same-named variable created
+        // later, the next time anything renders the page.
         def stillThere = null
         for (int attempt = 0; attempt < 2; attempt++) {
             _primeHubVarsWizard(appId, "hub_delete_variable pre-click attempt-${attempt + 1}")
             _rmClickAppButton(appId, varName, "deleteGV", "hubVar")
             _rmClickAppButton(appId, "delConfirm", null, "hubVar")
+            try { hubInternalGet("/installedapp/configure/json/${appId}/hubVar") } catch (Exception renderExc) {
+                mcpLog("warn", "hub-vars", "hub_delete_variable: rendering the Hub Variables page after the confirm failed (${renderExc.message})")
+            }
             // Brief pause + verification. If the var is gone, we're done.
             for (int v = 0; v < 8; v++) {
                 try { stillThere = getGlobalVar(varName) } catch (Exception e) { stillThere = null }

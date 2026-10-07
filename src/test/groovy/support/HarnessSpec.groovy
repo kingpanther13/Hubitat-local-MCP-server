@@ -573,6 +573,9 @@ abstract class HarnessSpec extends Specification {
         target.metaClass.hubInternalGet = { String p, Map pp = [:], Integer t = 30 ->
             hubGetRef.call(p, pp)
         }
+        // A backup's App Cloner export drives a whole cloner session; specs about it opt in by
+        // overriding this.
+        target.metaClass._rmNativeExportForBackup = { Integer appId -> [skipped: "not exported in the test harness"] }
         // Replace HubitatAppScript's private factory closures so the
         // script's own concrete addChildApp / getChildApps / getChildAppById
         // route to spec-controlled fixtures. See class javadoc for why

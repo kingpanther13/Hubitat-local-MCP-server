@@ -1292,6 +1292,65 @@ class MrtrContinuationSpec extends ToolSpecBase {
         itemType << ['app', 'library']
     }
 
+    def "a rule backup restore runs once in a detached worker and replays its terminal result"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = true
+        def args = [tool: 'hub_restore_backup', args: [scope: 'source', backupKey: 'rm-rule_55_20261007-000000-000', confirm: true]]
+        def dispatched = []
+        script.metaClass.toolRestoreItemBackup = { Map actual ->
+            dispatched << new LinkedHashMap(actual)
+            [success: true, type: 'rm-rule', ruleId: 56, restoredVia: 'nativeImport']
+        }
+
+        when: 'the first HTTP leg schedules the restore instead of running it inline'
+        def scheduled = modernCall('hub_manage_backup', args)
+        String stateId = scheduled.result.requestState
+
+        then:
+        scheduled.result.resultType == 'input_required'
+        dispatched.isEmpty()
+        runInMillisCalls.size() == 1
+        runInMillisCalls[0][0..1] == [50, 'runMrtrSlice']
+
+        when:
+        script.runMrtrSlice(new LinkedHashMap(runInMillisCalls[0][2].data as Map))
+        def complete = modernCall('hub_manage_backup', args, stateId)
+        def replay = modernCall('hub_manage_backup', args, stateId)
+
+        then:
+        dispatched == [args.args]
+        complete.result.resultType == 'complete'
+        mcpDriver.parseInner(complete).ruleId == 56
+        mcpDriver.parseInner(replay).ruleId == 56
+        dispatched.size() == 1
+    }
+
+    def "modern hub_restore_backup keeps #label on the synchronous path"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.useGateways = true
+        def dispatched = []
+        script.metaClass.toolRestoreItemBackup = { Map actual ->
+            dispatched << new LinkedHashMap(actual)
+            [success: true]
+        }
+        def args = [tool: 'hub_restore_backup', args: restoreArgs + [confirm: true]]
+
+        when:
+        def response = modernCall('hub_manage_backup', args)
+
+        then: 'only a rule snapshot restore runs in the background'
+        response.result.resultType == 'complete'
+        dispatched.size() == 1
+        runInMillisCalls.isEmpty()
+
+        where:
+        label               | restoreArgs
+        'an app code restore' | [scope: 'source', backupKey: 'app_228_20261007-000000-000']
+        'a hub DB restore'    | [scope: 'hub_local', fileName: 'backup.lzf']
+    }
+
     def "gateway driver update runs once in a detached worker and replays its terminal result"() {
         given:
         settingsMap.enableWrite = true

@@ -145,7 +145,7 @@ class ToolNativeAccessSurfacesSpec extends ToolSpecBase {
         ['101', '202'].each { id ->
             hubGet.register("/device/fullJson/${id}") {
                 steps << "device:${id}".toString()
-                JsonOutput.toJson([device: [id: id], appsUsing: [], appsUsingCount: 0])
+                JsonOutput.toJson([device: [id: id, deviceNetworkId: "DNI-${id}".toString()], appsUsing: [], appsUsingCount: 0])
             }
         }
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean r = false ->

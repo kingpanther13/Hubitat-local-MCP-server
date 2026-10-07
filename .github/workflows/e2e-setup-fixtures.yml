@@ -18,8 +18,9 @@ name: E2E setup permanent fixtures (manual)
 # the suite calls -- so a green run here is real evidence about fixture creation. The surrounding
 # checks (read-back, non-child assertion, priming) are this path's own and the suite does not run them.
 #
-# Scope: talks ONLY to MCP_URL (the server under test). It does not arm the watchdog, deploy code,
-# take the lease, or run a single test. It creates devices and flips one setting; it deletes nothing.
+# Scope: the fixtures go through MCP_URL (the server under test); the lease is read and written
+# through the watchdog, as in hub-e2e.yml. It does not arm the watchdog, deploy code, or run a single
+# test. It creates devices and flips one setting; it deletes nothing.
 # No `environment:` on purpose -- the hub secret is repo-level (the e2e job declares none either;
 # environments there exist only as the fork-PR approval gate).
 
@@ -89,12 +90,12 @@ jobs:
             echo "HUBITAT_ACCESS_TOKEN=$TOKEN"
           } >> "$GITHUB_ENV"
 
-      # The runner refuses any hub that has never been leased for e2e (it reads the
-      # _TEST_HUB_LEASED_BY hub variable the lease protocol writes), so a FRESH hub is leased here
-      # first -- that creates the variable -- and released after, exactly as hub-e2e.yml does.
+      # The runner refuses any hub without the _TEST_HUB_LEASED_BY hub variable the lease protocol
+      # writes, so the hub is leased here first and released after, exactly as hub-e2e.yml does. On a
+      # fresh hub, create that String variable (value {}) in Hub Variables first: the watchdog cannot create one.
       - name: Acquire test hub lease
         env:
-          MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+          WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/lease_acquire.sh "fixtures-${{ github.run_id }}"
 
@@ -104,5 +105,5 @@ jobs:
       - name: Release test hub lease
         if: always()
         env:
-          MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
+          WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
         run: bash .github/scripts/lease_release.sh "fixtures-${{ github.run_id }}"

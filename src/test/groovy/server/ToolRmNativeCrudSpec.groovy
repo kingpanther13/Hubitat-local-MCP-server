@@ -1128,6 +1128,27 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- recent edit-baseline reuse ----------
 
+    def "a standalone Required Expression replace takes a fresh backup inside the reuse window"() {
+        given:
+        enableWrite()
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "reuse-re") }
+        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
+        def files = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> files[fn] = b }
+        script.metaClass.downloadHubFile = { String fn -> files[fn] }
+
+        when:
+        def first = script._rmBackupBeforeEdit(504, "pre-addAction")
+        clock[0] += 5 * 60 * 1000L
+        def replace = script._rmBackupBeforeEdit(504, "pre-replaceRequiredExpression")
+
+        then:
+        replace.backupKey != first.backupKey
+        replace.baselineReused == false
+    }
+
     def "ordinary edits reuse one same-rule backup for an hour but never share across rules"() {
         given:
         enableWrite()
@@ -2885,22 +2906,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
 
         and: "the flag is left intact -- a non-action-page edit must not consume the deferred clear"
-        atomicStateMap.predClearPending?.get("100") == true
-    }
-
-    def "replaceRequiredExpression restore preserves the deferred predCapabs-clear flag when no backup exists"() {
-        // A rollback that cannot restore anything must keep its recovery intent.
-        given:
-        enableWrite()
-        atomicStateMap.predClearPending = ["100": true]
-
-        when: "the restore runs with no usable backup handle (null fileName -> early return)"
-        def result = script._rmRestoreCommittedREFromBackup(100, [fileName: null], "boom")
-
-        then: "the restore reports the RE was NOT restored (no backup to restore from)"
-        result.requiredExpressionRestored == false
-
-        and: "the deferred clear remains available for a later recovery attempt"
         atomicStateMap.predClearPending?.get("100") == true
     }
 
