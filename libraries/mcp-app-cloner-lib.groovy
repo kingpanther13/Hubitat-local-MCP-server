@@ -849,12 +849,16 @@ Map _rmPriorNativeCopy(Map entry, Integer savedId, boolean exists, String fileNa
         out.partial = true
         out.error = "This backup was already imported as app ${priorCopy}, and rule ${savedId} still exists.".toString()
         out.note = "Nothing was created. Keep one of the two: delete rule ${savedId} and enable app ${priorCopy} (hub_set_app_disabled(disabled=false)), or delete app ${priorCopy}, then retry the restore.".toString()
-    } else if (_rmIsAppDisabled(priorCopy) == true && entry?.restoredKeepDisabled != true) {
-        // A copy left disabled that the restore meant to enable: the earlier run stopped before its re-enable.
+    } else if (entry?.restoredKeepDisabled != true && _rmIsAppDisabled(priorCopy) != false) {
+        // A copy the restore meant to enable is disabled (the earlier run stopped before its re-enable),
+        // or its state could not be read.
+        Boolean disabled = _rmIsAppDisabled(priorCopy)
         out.success = false
         out.partial = true
-        out.error = "This backup was already restored as app ${priorCopy}, but that app is still disabled.".toString()
-        out.note = "Nothing was created. The earlier restore stopped before enabling app ${priorCopy}: enable it with hub_set_app_disabled(disabled=false).".toString()
+        out.error = (disabled == true ?
+            "This backup was already restored as app ${priorCopy}, but that app is still disabled." :
+            "This backup was already restored as app ${priorCopy}, but whether that app is enabled could not be read.").toString()
+        out.note = "Nothing was created. Check app ${priorCopy} with hub_list_apps(scope='instances') and enable it with hub_set_app_disabled(disabled=false) if it is disabled.".toString()
     } else {
         out.success = true
         out.note = "This backup was already restored as app ${priorCopy}; nothing was created. To restore it again, delete app ${priorCopy} first.".toString()

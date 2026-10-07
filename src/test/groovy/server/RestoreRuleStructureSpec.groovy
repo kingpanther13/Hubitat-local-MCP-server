@@ -603,6 +603,23 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         out.restoredVia == "settingsReplay"
     }
 
+    def "an earlier copy whose enabled state cannot be read is reported, not returned as done"() {
+        given:
+        def rec = nativeStubs()
+        script.metaClass._rmIsAppDisabled = { Integer id -> null }
+        hubGet.register('/app/ruleBuilderJson/200') { params -> '{"actionList":["1"]}' }
+        hubGet.register('/installedapp/configure/json/100') { params -> throw new RuntimeException("404") }
+        hubGet.register('/hub2/appsList') { params -> '{"apps":[{"data":{"id":21,"type":"Rule Machine","installed":true},"children":[]}]}' }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json", restoredAppId: 200], nativeSnapshot())
+
+        then:
+        out.success == false
+        out.error.contains("could not be read")
+        rec.imports.isEmpty()
+    }
+
     def "an earlier copy left disabled that was meant to run is reported, not returned as done"() {
         given:
         def rec = nativeStubs(liveDisabled: true)
