@@ -8227,18 +8227,39 @@ class TestRunner:
         })
         new_id = None
         try:
+            label = ((self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": int(app_id)}}) or {}).get("app") or {}).get("label")
+            assert label, f"rule {app_id} has no readable label to find its restored copy by"
             dele = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_delete_native_app", "args": {"appId": int(app_id), "force": True, "confirm": True}})
             backup_key = (dele.get("backup") or {}).get("backupKey")
             assert dele.get("success") is True and backup_key, f"deleting the rule returned no backup: {dele}"
             self._untrack_native_app(app_id)
-            restored = self.client.call_tool("hub_manage_backup", {
-                "tool": "hub_restore_backup", "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
-            new_id = restored.get("ruleId")
+
+            # The import and re-enable outrun the cloud relay, so a lost response is resolved by
+            # reading the hub: a same-label rule under a new id.
+            def _restored() -> str | None:
+                for _ in range(20):
+                    found = self._find_app_id_by_label(label)
+                    if found and str(found) != str(app_id):
+                        return found
+                    time.sleep(3.0)
+                return None
+
+            rw = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_backup", {
+                    "tool": "hub_restore_backup", "args": {"scope": "source", "backupKey": backup_key, "confirm": True}}),
+                _restored, "deleted rule restore")
+            if rw["relayDropped"]:
+                assert rw["committed"], f"the restore left no copy of deleted rule {app_id} after a relay 504"
+                new_id = rw["evidence"]
+            else:
+                restored = rw["response"]
+                new_id = restored.get("ruleId")
+                assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport", \
+                    f"the deleted rule was not restored through the App Cloner copy: {restored}"
             if new_id:
                 self.created_native_app_ids.append(str(new_id))
-            assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport", \
-                f"the deleted rule was not restored through the App Cloner copy: {restored}"
             blob = str(self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": int(new_id)}})).lower()
             assert "turns on" in blob, f"the restored rule does not carry its trigger: {blob[:600]}"
