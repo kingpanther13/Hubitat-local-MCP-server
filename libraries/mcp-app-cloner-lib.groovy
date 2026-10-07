@@ -906,7 +906,8 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         if (imp?.clonerAppId == null) {
             // The import never started, so nothing was created.
             out.error = "The App Cloner import of the backup could not start: ${imp?.error ?: imp?.note}".toString()
-            out.note = "Nothing was created or deleted. Retry, or pass preserveRuleId:true to restore rule ${savedId} in place by settings replay.".toString()
+            out.note = (exists ? "Nothing was created or deleted. Retry, or pass preserveRuleId:true to restore rule ${savedId} in place by settings replay." :
+                "Nothing was created. Retry the restore.").toString()
             return out
         }
         // The import ran, but its copy was not found: it may exist, enabled and running.
@@ -939,7 +940,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
                       error: "The App Cloner copy of the backup does not match it: ${mismatch}.".toString(),
                       note: ((dropped ? "The copy was deleted" : "The copy is app ${newId}, left disabled; delete it with hub_delete_native_app") +
                           (exists ? ", and rule ${savedId} was not changed." : ".") +
-                          " Pass preserveRuleId:true to restore by settings replay instead.").toString()]
+                          (exists ? " Pass preserveRuleId:true to restore by settings replay instead." : "")).toString()]
         if (!dropped) { failed.partial = true; failed.importedAppId = newId }
         return failed
     }
@@ -981,7 +982,8 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     }
     out.note = ("Restored with Hubitat's App Cloner import as a NEW app ${newId} -- an exact copy of the backup, triggers and actions included" +
         (exists ? "; the old rule ${savedId} was deleted" : "") +
-        ". Update anything that referenced rule ${savedId} (Run Rule actions, dashboards). Pass preserveRuleId:true to restore in place by settings replay instead." +
+        ". Update anything that referenced rule ${savedId} (Run Rule actions, dashboards)." +
+        (exists ? " Pass preserveRuleId:true to restore in place by settings replay instead." : "") +
         (reenableFailed ? " Re-enable app(s) ${reenableFailed} with hub_set_app_disabled(disabled=false)." : "") +
         (liveDisabled ? " Rule ${savedId} was disabled, so app ${newId} is left disabled too." : "")).toString()
     return out

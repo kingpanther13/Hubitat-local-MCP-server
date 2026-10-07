@@ -566,6 +566,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         then:
         out.restoredVia == "nativeImport"
         out.ruleId == 200
+        !out.note.contains("preserveRuleId")
         rec.imports.size() == 1
         rec.deletes.isEmpty()
         rec.replays.isEmpty()
