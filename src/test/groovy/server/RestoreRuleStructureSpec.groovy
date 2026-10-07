@@ -122,6 +122,28 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         flags == [[3, true], [2, true]]
     }
 
+    def "a balanced set removed part way names the open block"() {
+        given: "rows 2 (IF) and 3 (END-IF) are extra, and the IF's delete fails after the END-IF went"
+        script.metaClass._rmDeleteAction = { Integer appId, Integer idx, boolean skip ->
+            if (idx == 2) throw new IllegalStateException("click not accepted")
+            [success: true]
+        }
+        def settings = [[name: "actSubType.1", value: "getLogMsg"], [name: "actSubType.2", value: "getIfThen"], [name: "actSubType.3", value: "getEndIf"]]
+        hubGet.register('/installedapp/statusJson/100') { params -> groovy.json.JsonOutput.toJson([appSettings: settings, appState: []]) }
+        def orders = [[1, 2, 3], [1, 2]]
+        script.metaClass._rmOrderedActionIndices = { Integer appId -> orders.size() > 1 ? orders.remove(0) : orders[0] }
+        def snap = snapshotState(actionList: ["1"])
+        liveStates([[actionList: ["1", "2", "3"]], [actionList: ["1", "2"]]])
+
+        when:
+        def out = script._rmReconcileRuleStructure(100, snap)
+
+        then:
+        out.structureRestored == false
+        out.structuralIssues
+        out.structureError.contains("unbalanced")
+    }
+
     def "a set of extra rows that would unbalance the rule keeps the per-row refusal"() {
         given: "only the END-IF (row 3) is extra; its IF (row 2) is in the backup"
         def flags = []
@@ -413,7 +435,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         script.metaClass._rmUpdateAppSettings = { Integer id, Map st, Map schema -> rec.replays << st }
         script.metaClass._rmNativeCopyMismatch = { Integer id, Map snap -> opts.mismatch }
         script.metaClass._rmIsAppDisabled = { Integer id -> opts.liveDisabled == true }
-        script.metaClass._rmRecordNativeRestore = { String key, Integer id -> rec.recorded << [key, id] }
+        script.metaClass._rmRecordNativeRestore = { String key, Integer id, boolean keep = false -> rec.recorded << [key, id, keep] }
         script.metaClass._rmRestoreRequiredExpression = { Integer id, Map snap -> [:] }
         script.metaClass._rmReconcileRuleStructure = { Integer id, Map snap -> [:] }
         hubGet.register('/installedapp/configure/json/100') { params -> '{"app":{"id":100},"configPage":{"sections":[]},"settings":{}}' }
@@ -509,7 +531,7 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot(), false, "rm-rule_100_x")
 
         then:
-        rec.recorded == [["rm-rule_100_x", 200]]
+        rec.recorded == [["rm-rule_100_x", 200, false]]
         rec.deletes == [100]
     }
 
@@ -528,6 +550,63 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         out.alreadyRestored == true
         out.ruleId == 200
         rec.imports.isEmpty()
+    }
+
+    def "a deleted rule restores through the App Cloner copy by default"() {
+        given:
+        def rec = nativeStubs()
+        hubGet.register('/installedapp/configure/json/100') { params -> throw new RuntimeException("404") }
+        hubGet.register('/hub2/appsList') { params -> '{"apps":[{"data":{"id":21,"type":"Rule Machine","installed":true},"children":[{"data":{"id":300,"type":"Rule-5.1","installed":true},"children":[]}]}]}' }
+        atomicStateMap.parentAppIds = [rule_machine: 21]
+        hubGet.register('/installedapp/configure/json/21') { params -> '{"app":{"id":21},"configPage":{"sections":[]},"childApps":[{"id":300}]}' }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json"], nativeSnapshot())
+
+        then:
+        out.restoredVia == "nativeImport"
+        out.ruleId == 200
+        rec.imports.size() == 1
+        rec.deletes.isEmpty()
+        rec.replays.isEmpty()
+    }
+
+    def "a deleted rule whose backup already has a copy returns it even when restoring in place"() {
+        given:
+        def rec = nativeStubs()
+        hubGet.register('/app/ruleBuilderJson/200') { params -> '{"actionList":["1"]}' }
+        hubGet.register('/installedapp/configure/json/100') { params -> throw new RuntimeException("404") }
+        hubGet.register('/hub2/appsList') { params -> '{"apps":[{"data":{"id":21,"type":"Rule Machine","installed":true},"children":[]}]}' }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json", restoredAppId: 200], nativeSnapshot(), true)
+
+        then:
+        out.alreadyRestored == true
+        out.ruleId == 200
+        rec.imports.isEmpty()
+        rec.replays.isEmpty()
+    }
+
+    def "an earlier copy left disabled that was meant to run is reported, not returned as done"() {
+        given:
+        def rec = nativeStubs(liveDisabled: true)
+        hubGet.register('/app/ruleBuilderJson/200') { params -> '{"actionList":["1"]}' }
+        hubGet.register('/installedapp/configure/json/100') { params -> throw new RuntimeException("404") }
+        hubGet.register('/hub2/appsList') { params -> '{"apps":[{"data":{"id":21,"type":"Rule Machine","installed":true},"children":[]}]}' }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json", restoredAppId: 200, restoredKeepDisabled: keep], nativeSnapshot())
+
+        then:
+        out.success == success
+        out.ruleId == 200
+        rec.imports.isEmpty()
+
+        where:
+        keep  || success
+        false || false
+        true  || true
     }
 
     def "a rule disabled before the restore leaves its copy disabled"() {

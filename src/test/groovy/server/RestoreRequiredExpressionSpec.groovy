@@ -63,6 +63,19 @@ class RestoreRequiredExpressionSpec extends ToolSpecBase {
         fake.posts.isEmpty()
     }
 
+    def "a deleted trigger device sharing a condition's number does not block the rebuild"() {
+        given:
+        fake.withTokens([])
+        hubGet.register('/device/fullJson/9') { params -> '{}' }
+        def snap = snapshot([1], [rCapab_1: "Mode", modes1: ["3"], tDev1: ["9": "Gone"]], ["1": "Mode is 3"])
+
+        when:
+        def out = script._rmRestoreRequiredExpression(100, snap)
+
+        then:
+        out.requiredExpressionRestored == true
+    }
+
     def "a snapshot expression is rebuilt on a rule that has none"() {
         given:
         fake.withTokens([])

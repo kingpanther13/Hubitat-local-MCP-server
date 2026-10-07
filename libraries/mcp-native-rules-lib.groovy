@@ -13953,9 +13953,23 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
             mcpLog("warn", "rm-native", "restore: block balance check for app ${appId} failed (${e.message}); extra rows are removed one by one under the per-row check")
         }
     }
+    boolean actionDeleteFailed = false
     extraActs.reverse().each { idx ->
         try { _rmDeleteAction(appId, idx as Integer, setBalanced); removed.actions << idx }
-        catch (Exception e) { failures << "action ${idx} (${e.message})".toString() }
+        catch (Exception e) { failures << "action ${idx} (${e.message})".toString(); actionDeleteFailed = true }
+    }
+    // Rows removed as a balanced set without the per-row check: a set left half done can leave an open block.
+    def blockIssues = []
+    if (setBalanced && actionDeleteFailed) {
+        try {
+            def ordered = _rmOrderedActionIndices(appId)
+            if (ordered != null) {
+                def byName = (_rmFetchStatusJson(appId)?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+                blockIssues = _rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(byName, ([] as Set), ordered))
+            }
+        } catch (Exception e) {
+            mcpLog("warn", "rm-native", "restore: re-checking block balance on app ${appId} failed (${e.message})")
+        }
     }
     // Conditions any expression uses (the Required Expression or an action's IF) stay.
     def inExpr = ((live.eval instanceof Map) ? (live.eval as Map).values() : []).collectMany { v ->
@@ -14015,6 +14029,10 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
     if (liveOrder != wantOrder.findAll { liveOrder.contains(it) }) {
         out.actionOrder = [live: acts(after), backup: wantOrder]
         problems << "the actions run in the order ${acts(after)}, not the backup's ${wantOrder}${orderError ? ' (' + orderError + ')' : ''}".toString()
+    }
+    if (blockIssues) {
+        out.structuralIssues = blockIssues
+        problems << "removing the extra rows stopped part way, leaving the rule's blocks unbalanced: ${blockIssues.join('; ')} -- fix them with hub_set_rule(removeAction)".toString()
     }
     if (updateRuleError) {
         out.updateRuleFailed = true
@@ -14110,7 +14128,8 @@ List _rmExpressionDeadDevices(Map snapshot, List condIds) {
     def recs = (snapshot?.statusJson?.appSettings ?: []).findAll { it instanceof Map }.collectEntries { [(it.name?.toString()): it] }
     def devices = [] as LinkedHashSet
     ((settings.keySet().collect { it.toString() }) + recs.keySet()).unique().each { String name ->
-        def m = name =~ /^[A-Za-z]+_?(\d+)$/
+        // Condition settings end in _<id> (rDev_3); trigger settings (tDev3) share the digits but not the underscore.
+        def m = name =~ /^[A-Za-z]+_(\d+)$/
         if (!m.matches() || !ids.contains((m[0] as List)[1].toString())) return
         def rec = recs.get(name)
         def v = settings.get(name)

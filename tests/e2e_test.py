@@ -8204,16 +8204,47 @@ class TestRunner:
                 f"the restored rule does not carry both triggers: {blob[:600]}"
             assert not self._app_still_present(app_id), \
                 f"the old rule {app_id} is still installed after the native restore"
-            # The same backup restored again returns the copy instead of importing a second one.
+            # The same backup restored again, here with the default preserveRuleId, returns the copy
+            # instead of creating a second rule.
             again = self.client.call_tool("hub_manage_backup", {
                 "tool": "hub_restore_backup",
-                "args": {"scope": "source", "backupKey": backup_key, "confirm": True, "preserveRuleId": False}})
+                "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
             assert again.get("alreadyRestored") is True and str(again.get("ruleId")) == str(new_id), \
                 f"a repeated native restore did not return the existing copy {new_id}: {again}"
         finally:
             if new_id:
                 self._delete_native(new_id)
             self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy(self) -> None:
+        # A deleted rule gets a new id either way, so the default restore brings it back through the
+        # App Cloner copy, triggers included, rather than a replay that cannot rebuild them.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("RestoreDeleted", {
+            "addTriggers": [{"capability": "Switch", "deviceIds": [sw], "state": "on"}],
+            "addActions": [{"capability": "log", "message": "E2E restore deleted probe"}],
+        })
+        new_id = None
+        try:
+            dele = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_delete_native_app", "args": {"appId": int(app_id), "force": True, "confirm": True}})
+            backup_key = (dele.get("backup") or {}).get("backupKey")
+            assert dele.get("success") is True and backup_key, f"deleting the rule returned no backup: {dele}"
+            self._untrack_native_app(app_id)
+            restored = self.client.call_tool("hub_manage_backup", {
+                "tool": "hub_restore_backup", "args": {"scope": "source", "backupKey": backup_key, "confirm": True}})
+            new_id = restored.get("ruleId")
+            if new_id:
+                self.created_native_app_ids.append(str(new_id))
+            assert restored.get("success") is True and restored.get("restoredVia") == "nativeImport", \
+                f"the deleted rule was not restored through the App Cloner copy: {restored}"
+            blob = str(self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": int(new_id)}})).lower()
+            assert "turns on" in blob, f"the restored rule does not carry its trigger: {blob[:600]}"
+        finally:
+            if new_id:
+                self._delete_native(new_id)
 
     @test("native_apps")
     def test_rm_rule_restore_puts_actions_back_in_order(self) -> None:
