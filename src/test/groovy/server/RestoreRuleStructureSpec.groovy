@@ -588,6 +588,20 @@ class RestoreRuleStructureSpec extends ToolSpecBase {
         rec.replays.isEmpty()
     }
 
+    def "a recorded copy that was deleted since is not returned"() {
+        given: "the hub answers {} for the deleted copy's id"
+        def rec = nativeStubs()
+        hubGet.register('/app/ruleBuilderJson/200') { params -> '{}' }
+
+        when:
+        def out = script._rmRestoreFromBackup([fileName: "f.json", restoredAppId: 200], nativeSnapshot())
+
+        then:
+        !out.alreadyRestored
+        out.ruleId == 100
+        out.restoredVia == "settingsReplay"
+    }
+
     def "an earlier copy left disabled that was meant to run is reported, not returned as done"() {
         given:
         def rec = nativeStubs(liveDisabled: true)

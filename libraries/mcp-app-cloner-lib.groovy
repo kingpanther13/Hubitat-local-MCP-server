@@ -840,7 +840,9 @@ Map _rmNativeExportForBackup(Integer appId) {
 Map _rmPriorNativeCopy(Map entry, Integer savedId, boolean exists, String fileName) {
     def recorded = entry?.restoredAppId
     Integer priorCopy = recorded?.toString()?.isInteger() ? (recorded.toString() as Integer) : null
-    if (priorCopy == null || priorCopy == savedId || _rmReadRuleState(priorCopy) == null) return null
+    if (priorCopy == null || priorCopy == savedId) return null
+    // The hub answers {} for an id that no longer exists.
+    if (!_rmReadRuleState(priorCopy)) return null
     def out = [type: "rm-rule", ruleId: priorCopy, originalRuleId: savedId, restoredVia: "nativeImport", backupFile: fileName, alreadyRestored: true]
     if (exists) {
         out.success = false
@@ -991,7 +993,7 @@ String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
     def snap = [:]
     (snapshot?.statusJson?.appState ?: []).each { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
     def copy = _rmReadRuleState(copyId)
-    if (copy == null) return "app ${copyId}'s state could not be read".toString()
+    if (!copy) return "app ${copyId}'s state could not be read".toString()
     if (copy.broken == true) return "app ${copyId} reads as broken".toString()
     def keys = { m -> (m instanceof Map) ? (m as Map).keySet().collect { it.toString() }.sort() : [] }
     def list = { l -> (l instanceof List) ? (l as List).collect { it.toString() } : [] }
