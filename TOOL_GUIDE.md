@@ -31,7 +31,8 @@ Detailed reference for MCP Rule Server tools, the same text `hub_get_tool_guide`
 ## Best-Practice Reference
 
 The "Require Best-Practice Guide Acknowledgment" gate is ON by default. While it is on, every write
-tool requires the `bestPracticeKey` argument on the call (through a gateway, inside its `args`),
+tool requires the `bestPracticeKey` argument on the call (through a gateway, inside its `args`; a
+direct tool also accepts it inside its `args` object, for clients that drop undeclared arguments),
 carrying the acknowledgment key published at the top of the guide section that covers that tool.
 Each section has its own key, so a key from one section does not unlock a tool another section
 covers. Keys rotate hourly and the previous hour's key is still accepted: when a key is refused,

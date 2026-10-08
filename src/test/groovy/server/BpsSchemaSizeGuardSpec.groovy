@@ -21,4 +21,20 @@ class BpsSchemaSizeGuardSpec extends ToolSpecBase {
         then:
         offenders == []
     }
+
+    // Issue #518: a client that drops undeclared top-level arguments loses the key on a direct
+    // (non-gateway) write tool, so each one declares an opaque `args` object to carry it -- the
+    // gateways' own `args` already does this for their sub-tools. Kept property-less so no schema
+    // names the key.
+    def "every direct write tool declares an opaque args object"() {
+        given:
+        def proxied = script.getGatewayConfig().values().collectMany { it.tools } as Set
+        def reads = script.getReadOnlyToolNames() as Set
+        def direct = script.getAllToolDefinitions().findAll { !proxied.contains(it.name) && !reads.contains(it.name) }
+
+        expect:
+        direct*.name.sort() == ['hub_create_backup', 'hub_manage_mode', 'hub_manage_virtual_device', 'hub_set_hsm',
+                                'hub_set_mode_manager', 'hub_set_system_settings', 'hub_update_firmware', 'hub_update_package']
+        direct.findAll { it.inputSchema?.properties?.args != [type: 'object'] }*.name == []
+    }
 }

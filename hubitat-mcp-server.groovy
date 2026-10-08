@@ -2762,8 +2762,9 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs, boo
     }
     if (checkKey && !readLeaf && settings.enableMandatoryBPS != false) {
         String bpsSection = _bpsSectionForTool(leaf)
-        if (!hubBpsKeyAccepted(bpsSection, leafArgs?.bestPracticeKey)) {
-            throw new IllegalArgumentException(_bpsBlockMessage(bpsSection, leafArgs?.bestPracticeKey))
+        def bpsKey = hubBpsKeyFromArgs(leafArgs)
+        if (!hubBpsKeyAccepted(bpsSection, bpsKey)) {
+            throw new IllegalArgumentException(_bpsBlockMessage(bpsSection, bpsKey))
         }
     }
 }
@@ -5972,8 +5973,9 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])
             && !bpsChecked) {
         String bpsSection = _bpsSectionForTool(toolName)
-        if (!hubBpsKeyAccepted(bpsSection, args?.bestPracticeKey)) {
-            throw new IllegalArgumentException(_bpsBlockMessage(bpsSection, args?.bestPracticeKey))
+        def bpsKey = hubBpsKeyFromArgs(args)
+        if (!hubBpsKeyAccepted(bpsSection, bpsKey)) {
+            throw new IllegalArgumentException(_bpsBlockMessage(bpsSection, bpsKey))
         }
     }
 
@@ -10092,6 +10094,13 @@ def hubBpsGuideKey(String section, Long atMs = null) {
     return "I-HAVE-READ-THE-GUIDE-${section}-${digest.substring(0, 8)}".toString()
 }
 
+// The key may also ride in an opaque `args` object: some clients drop undeclared top-level
+// arguments, and the key is deliberately undeclared (BpsSchemaSizeGuardSpec).
+def hubBpsKeyFromArgs(args) {
+    if (!(args instanceof Map)) return null
+    return args.bestPracticeKey ?: ((args.args instanceof Map) ? args.args.bestPracticeKey : null)
+}
+
 // Current OR previous hour's key (grace so a read just before rotation is not stranded).
 boolean hubBpsKeyAccepted(String section, value) {
     if (value == null) return false
@@ -10116,6 +10125,8 @@ String _bpsBlockMessage(String section, value) {
         why = " The key you passed doesn't match this section's current or previous hour's key: it expired (keys rotate hourly), was mistyped, or came from another hub. Read the section again."
     } else if (offeredSection ==~ /[a-z_]+/) {
         why = " The key you passed belongs to section '${offeredSection}', not this tool's section."
+    } else if (!v) {
+        why = " No key arrived. If you passed one, your client dropped it: put it inside an `args` object on this call instead."
     }
     return ("Mandatory best-practice acknowledgment is enabled for write tools.${why} Read hub_get_tool_guide(section='${section}') " +
         "and pass the acknowledgment key published at the top of that section as the bestPracticeKey argument on this call. " +
@@ -10252,7 +10263,8 @@ def getToolGuideSections() {
         best_practice_reference: '''## Best-Practice Reference
 
 The "Require Best-Practice Guide Acknowledgment" gate is ON by default. While it is on, every write
-tool requires the `bestPracticeKey` argument on the call (through a gateway, inside its `args`),
+tool requires the `bestPracticeKey` argument on the call (through a gateway, inside its `args`; a
+direct tool also accepts it inside its `args` object, for clients that drop undeclared arguments),
 carrying the acknowledgment key published at the top of the guide section that covers that tool.
 Each section has its own key, so a key from one section does not unlock a tool another section
 covers. Keys rotate hourly and the previous hour's key is still accepted: when a key is refused,

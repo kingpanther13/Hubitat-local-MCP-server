@@ -16244,6 +16244,35 @@ class TestRunner:
             self._set_bps(enableMandatoryBPS=False)
 
     @test("best_practice_gating")
+    def test_bps_direct_tool_key_inside_args(self) -> None:
+        """Gate ON: a direct (non-gateway) write takes the key inside its opaque `args` object, for
+        clients that drop undeclared top-level arguments (issue #518). The catalog declares that
+        `args` but no schema names the key."""
+        tools = self.client.list_tools().get("tools", [])
+        backup = next((t for t in tools if t.get("name") == "hub_create_backup"), None)
+        assert backup is not None, "hub_create_backup missing from tools/list"
+        assert (backup.get("inputSchema") or {}).get("properties", {}).get("args") == {"type": "object"}, \
+            f"hub_create_backup does not declare an opaque args object: {backup.get('inputSchema')}"
+        declaring = [t.get("name") for t in tools
+                     if "bestPracticeKey" in ((t.get("inputSchema") or {}).get("properties") or {})]
+        assert not declaring, f"schemas must not declare bestPracticeKey: {declaring}"
+        self._set_bps(enableMandatoryBPS=True)
+        try:
+            key = self._read_bps_key("backup")
+            try:
+                self.client.call_tool("hub_create_backup", {"confirm": True, "mock": True})
+                raise AssertionError("gate ON but a keyless hub_create_backup was not blocked")
+            except McpError as e:
+                msg = str(e)
+                assert "section='backup'" in msg, f"block does not point at the backup section: {msg}"
+                assert "inside an `args` object" in msg, f"missing-key block does not mention args: {msg}"
+            res = self.client.call_tool("hub_create_backup",
+                                        {"confirm": True, "mock": True, "args": {"bestPracticeKey": key}})
+            assert res.get("success") is True, f"key inside args did not pass the gate: {res}"
+        finally:
+            self._set_bps(enableMandatoryBPS=False)
+
+    @test("best_practice_gating")
     def test_bps_gate_message_not_double_coached(self) -> None:
         """The gate's own missing-key refusal is returned as-is, NOT augmented with the reactive per-tool
         suffix -- even though the failing tool (hub_call_device_command) HAS a section."""

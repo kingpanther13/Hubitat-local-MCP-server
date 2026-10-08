@@ -398,7 +398,8 @@ action="delete": provide the target deviceNetworkId.
                     ],
                     deviceLabel: [type: "string", description: "Display label (required for create)"],
                     deviceNetworkId: [type: "string", description: "Device network ID; auto-generated on create when omitted, REQUIRED for delete (find via hub_list_devices(filter='virtual'))."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."]
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."],
+                    args: [type: "object"]
                 ],
                 required: ["action", "confirm"]
                 // deviceType/customDriver XOR is enforced at runtime in toolManageVirtualDevice
