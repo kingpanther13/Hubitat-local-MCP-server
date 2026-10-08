@@ -1670,6 +1670,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.5.7** - fix: accept bestPracticeKey inside args on direct write tools. PRs: [#519](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/519)
 - **v4.5.6** - fix: Required Expression replace/restore, device swap verification, comparator rendering. PRs: [#515](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/515)
 - **v4.5.5** - feat: guide-first on every write tool and per-section rotating acknowledgment keys. PRs: [#501](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/501)
 - **v4.5.4** - feat: #431 read-gap tools — backup schedule, network settings, variable dependents, Z-Wave brand, app menu/mode metadata. PRs: [#487](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/487)
