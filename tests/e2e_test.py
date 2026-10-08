@@ -2591,6 +2591,12 @@ class TestRunner:
             f"hub_create_backup schedule contract missing from inputSchema: {schema}"
         assert "confirm" not in (schema.get("required") or []), \
             "confirm must be runtime-conditional so scheduleOnly+schedule can omit it"
+        # Direct write tools carry the BPS key in an opaque args object for clients that drop
+        # undeclared arguments (issue #518); no schema may name the key itself.
+        assert props.get("args") == {"type": "object"}, f"hub_create_backup lacks the opaque args object: {schema}"
+        declaring = [t.get("name") for t in tools
+                     if "bestPracticeKey" in ((t.get("inputSchema") or {}).get("properties") or {})]
+        assert not declaring, f"schemas must not declare bestPracticeKey: {declaring}"
 
     def _get_rooms_catalog(self) -> dict:
         """The hub_read_rooms({}) gateway-catalog disclosure -- a deterministic static enumeration.
@@ -16001,6 +16007,19 @@ class TestRunner:
                 "args": {"name": var_name, "confirm": True, "bestPracticeKey": key}})
             if var_name in self.created_variable_names:
                 self.created_variable_names.remove(var_name)
+            # 3. A DIRECT write takes the key inside its opaque args object (issue #518: clients
+            # that drop undeclared arguments). The keyless refusal points there.
+            backup_key = self._read_bps_key("backup")
+            try:
+                self.client.call_tool("hub_create_backup", {"confirm": True, "mock": True})
+                raise AssertionError("gate ON but a keyless hub_create_backup was not blocked")
+            except McpError as e:
+                msg = str(e)
+                assert "section='backup'" in msg, f"block does not point at the backup section: {msg}"
+                assert "inside an `args` object" in msg, f"missing-key block does not mention args: {msg}"
+            res = self.client.call_tool("hub_create_backup",
+                                        {"confirm": True, "mock": True, "args": {"bestPracticeKey": backup_key}})
+            assert res.get("success") is True, f"key inside args did not pass the gate: {res}"
         finally:
             self._set_bps(enableMandatoryBPS=False)
 
@@ -16240,35 +16259,6 @@ class TestRunner:
                 self._assert_bps_blocked("hub_manage_variables", "hub_create_variable", {
                     "name": "BAT_E2E_BPS_WrongKey", "type": "String", "value": "v",
                     "confirm": True, "bestPracticeKey": bad}, "best_practice_reference")
-        finally:
-            self._set_bps(enableMandatoryBPS=False)
-
-    @test("best_practice_gating")
-    def test_bps_direct_tool_key_inside_args(self) -> None:
-        """Gate ON: a direct (non-gateway) write takes the key inside its opaque `args` object, for
-        clients that drop undeclared top-level arguments (issue #518). The catalog declares that
-        `args` but no schema names the key."""
-        tools = self.client.list_tools().get("tools", [])
-        backup = next((t for t in tools if t.get("name") == "hub_create_backup"), None)
-        assert backup is not None, "hub_create_backup missing from tools/list"
-        assert (backup.get("inputSchema") or {}).get("properties", {}).get("args") == {"type": "object"}, \
-            f"hub_create_backup does not declare an opaque args object: {backup.get('inputSchema')}"
-        declaring = [t.get("name") for t in tools
-                     if "bestPracticeKey" in ((t.get("inputSchema") or {}).get("properties") or {})]
-        assert not declaring, f"schemas must not declare bestPracticeKey: {declaring}"
-        self._set_bps(enableMandatoryBPS=True)
-        try:
-            key = self._read_bps_key("backup")
-            try:
-                self.client.call_tool("hub_create_backup", {"confirm": True, "mock": True})
-                raise AssertionError("gate ON but a keyless hub_create_backup was not blocked")
-            except McpError as e:
-                msg = str(e)
-                assert "section='backup'" in msg, f"block does not point at the backup section: {msg}"
-                assert "inside an `args` object" in msg, f"missing-key block does not mention args: {msg}"
-            res = self.client.call_tool("hub_create_backup",
-                                        {"confirm": True, "mock": True, "args": {"bestPracticeKey": key}})
-            assert res.get("success") is True, f"key inside args did not pass the gate: {res}"
         finally:
             self._set_bps(enableMandatoryBPS=False)
 

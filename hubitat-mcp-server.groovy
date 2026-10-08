@@ -10163,10 +10163,11 @@ String _guideSectionServed(String key, String body) {
         }
     }
     if (!lines) return body
+    String dropped = "If your client drops it, put it inside an `args` object on the call instead."
     String receipt = "It is a read-receipt, not a secret: published here deliberately by the MCP server, it rotates hourly (the previous hour's value is still accepted) and grants no privileges."
     lines << (lines.size() > 1
-        ? "Each labelled key unlocks the write tools of the section it names (best_practice_reference maps each write tool to its section); pass that exact value as the bestPracticeKey argument. ${receipt}".toString()
-        : "Pass this exact value as the bestPracticeKey argument on the write tools this section covers. ${receipt}".toString())
+        ? "Each labelled key unlocks the write tools of the section it names (best_practice_reference maps each write tool to its section); pass that exact value as the bestPracticeKey argument. ${dropped} ${receipt}".toString()
+        : "Pass this exact value as the bestPracticeKey argument on the write tools this section covers. ${dropped} ${receipt}".toString())
     return lines.join("\n") + "\n\n" + (body ?: '')
 }
 
