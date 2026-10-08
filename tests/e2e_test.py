@@ -2591,6 +2591,12 @@ class TestRunner:
             f"hub_create_backup schedule contract missing from inputSchema: {schema}"
         assert "confirm" not in (schema.get("required") or []), \
             "confirm must be runtime-conditional so scheduleOnly+schedule can omit it"
+        # Direct write tools carry the BPS key in an opaque args object for clients that drop
+        # undeclared arguments (issue #518); no schema may name the key itself.
+        assert props.get("args") == {"type": "object"}, f"hub_create_backup lacks the opaque args object: {schema}"
+        declaring = [t.get("name") for t in tools
+                     if "bestPracticeKey" in ((t.get("inputSchema") or {}).get("properties") or {})]
+        assert not declaring, f"schemas must not declare bestPracticeKey: {declaring}"
 
     def _get_rooms_catalog(self) -> dict:
         """The hub_read_rooms({}) gateway-catalog disclosure -- a deterministic static enumeration.
@@ -16001,6 +16007,19 @@ class TestRunner:
                 "args": {"name": var_name, "confirm": True, "bestPracticeKey": key}})
             if var_name in self.created_variable_names:
                 self.created_variable_names.remove(var_name)
+            # 3. A DIRECT write takes the key inside its opaque args object (issue #518: clients
+            # that drop undeclared arguments). The keyless refusal points there.
+            backup_key = self._read_bps_key("backup")
+            try:
+                self.client.call_tool("hub_create_backup", {"confirm": True, "mock": True})
+                raise AssertionError("gate ON but a keyless hub_create_backup was not blocked")
+            except McpError as e:
+                msg = str(e)
+                assert "section='backup'" in msg, f"block does not point at the backup section: {msg}"
+                assert "inside an `args` object" in msg, f"missing-key block does not mention args: {msg}"
+            res = self.client.call_tool("hub_create_backup",
+                                        {"confirm": True, "mock": True, "args": {"bestPracticeKey": backup_key}})
+            assert res.get("success") is True, f"key inside args did not pass the gate: {res}"
         finally:
             self._set_bps(enableMandatoryBPS=False)
 

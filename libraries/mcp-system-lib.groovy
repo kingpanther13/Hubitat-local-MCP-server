@@ -1460,7 +1460,8 @@ def _getAllToolDefinitions_partSystem() {
                     name: [type: "string", description: "New mode name (create), or the new name (rename)."],
                     mode: [type: "string", description: "Target for rename/delete/activate: id or name (from hub_list_modes)."],
                     icon: [type: "string", description: "OPTIONAL icon for create/rename, e.g. fa-moon."],
-                    confirm: [type: "boolean", description: "REQUIRED for action=delete: true + a backup <24h (hub_create_backup). Confirms a backup <24h + that breaking mode references is intended."]
+                    confirm: [type: "boolean", description: "REQUIRED for action=delete: true + a backup <24h (hub_create_backup). Confirms a backup <24h + that breaking mode references is intended."],
+                    args: [type: "object"]
                 ],
                 required: ["action"]
             ]
@@ -1472,7 +1473,8 @@ def _getAllToolDefinitions_partSystem() {
                 type: "object",
                 properties: [
                     manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate."],
-                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide(section='hub_admin_write_system')."]
+                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide(section='hub_admin_write_system')."],
+                    args: [type: "object"]
                 ]
             ]
         ],
@@ -1487,7 +1489,8 @@ def _getAllToolDefinitions_partSystem() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    armCommand: [type: "string", enum: ["armAway", "armHome", "armNight", "disarm"], description: "HSM arm command."]
+                    armCommand: [type: "string", enum: ["armAway", "armHome", "armNight", "disarm"], description: "HSM arm command."],
+                    args: [type: "object"]
                 ],
                 required: ["armCommand"]
             ]
@@ -1516,7 +1519,8 @@ def _getAllToolDefinitions_partSystem() {
                         wifiSsid: [type: "string", description: "WiFi SSID to join."],
                         wifiPassword: [type: "string", description: "WiFi password (psk)."]
                     ]],
-                    confirm: [type: "boolean", description: "REQUIRED (true) for timeZone or network changes; both need a backup <24h (hub_create_backup)."]
+                    confirm: [type: "boolean", description: "REQUIRED (true) for timeZone or network changes; both need a backup <24h (hub_create_backup)."],
+                    args: [type: "object"]
                 ]
             ]
         ],
@@ -1579,7 +1583,8 @@ PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually p
                 type: "object",
                 properties: [
                     statusOnly: [type: "boolean", description: "Poll the hub's update status only and return without applying anything. No confirm/backup needed. Default false."],
-                    confirm: [type: "boolean", description: "REQUIRED to apply (omit for statusOnly): must be true. Confirms a backup <24h exists and the user approved the install + reboot."]
+                    confirm: [type: "boolean", description: "REQUIRED to apply (omit for statusOnly): must be true. Confirms a backup <24h exists and the user approved the install + reboot."],
+                    args: [type: "object"]
                 ]
             ]
         ],

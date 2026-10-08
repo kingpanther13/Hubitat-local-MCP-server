@@ -909,7 +909,8 @@ A real deploy is accepted quickly with `status: "in_progress"` and runs in the b
                     ref: [type: "string", description: "Branch, tag, or commit SHA to deploy (e.g. 'main' or a PR head SHA)."],
                     dryRun: [type: "boolean", description: "OPTIONAL. When true, report the deploy plan with NO writes (skips the confirm/backup gate). Default false."],
                     baseUrl: [type: "string", description: "OPTIONAL raw-source base override (no trailing slash); defaults to the canonical repo.[[FLAT_TRIM]] Per-call URLs are built as <baseUrl>/<ref>/<path>. Use for forks / CI branches on a different remote.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."]
+                    confirm: [type: "boolean", description: "REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."],
+                    args: [type: "object"]
                 ],
                 required: ["ref"]
             ]

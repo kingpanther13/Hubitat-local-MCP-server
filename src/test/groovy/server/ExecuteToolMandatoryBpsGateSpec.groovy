@@ -17,7 +17,8 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
     static final String BLOCK_HEAD = 'Mandatory best-practice acknowledgment is enabled for write tools.'
     static final String ANY_KEY = /I-HAVE-READ-THE-GUIDE-[a-z_]+-[0-9a-f]{8}/
     static final String WRONG_CODE = "The key you passed doesn't match this section's current or previous hour's key: it expired (keys rotate hourly), was mistyped, or came from another hub. Read the section again."
-    static final List<String> WHY_STEMS = ['The key format changed', "doesn't match this section's", 'belongs to section']
+    static final String NO_KEY = 'No key arrived. If you passed one, your client dropped it: put it inside an `args` object on this call instead.'
+    static final List<String> WHY_STEMS = ['The key format changed', "doesn't match this section's", 'belongs to section', 'No key arrived']
 
     def setup() {
         // Representative writes; stubbed so a past-the-gate dispatch returns a sentinel instead
@@ -86,7 +87,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         e.message.startsWith(BLOCK_HEAD)
         e.message.contains("hub_get_tool_guide(section='${section}')")
         !(e.message =~ ANY_KEY)
-        WHY_STEMS.findAll { e.message.contains(it) } == []
+        WHY_STEMS.findAll { e.message.contains(it) } == ['No key arrived']
 
         where:
         tool                 | args                                     || section
@@ -166,13 +167,67 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         [chokepoint, variant] << [['executeTool', 'modern path'],
                                   ['missing', 'unknown format', 'cached bps-ack', 'expired', 'mistyped', 'other section']].combinations()
         sentence = [
-            'missing'       : null,
+            'missing'       : NO_KEY,
             'unknown format': null,
             'cached bps-ack': 'The key format changed; a cached bps-ack key no longer works.',
             'expired'       : WRONG_CODE,
             'mistyped'      : WRONG_CODE,
             'other section' : "The key you passed belongs to section 'best_practice_reference', not this tool's section."
         ][variant]
+    }
+
+    // Issue #518: clients that drop undeclared top-level arguments can carry the key inside the
+    // opaque `args` object the direct write tools declare.
+    def "a direct write tool accepts the key inside its args object"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+
+        expect:
+        script.executeTool("hub_set_hsm", [armCommand: "armHome", args: [bestPracticeKey: key('best_practice_reference')]]).stubbed == true
+    }
+
+    def "a wrong or misplaced key inside args is still refused -- #label"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+
+        def otherKey = key('set_rule_reference')
+        def argsValue = [
+            'wrong key'    : [bestPracticeKey: 'not-the-key'],
+            'other section': [bestPracticeKey: otherKey],
+            'list args'    : [[bestPracticeKey: otherKey]],
+            'string args'  : 'bestPracticeKey'
+        ][label]
+        def offered = argsValue instanceof Map ? argsValue.bestPracticeKey : null
+
+        when:
+        script.executeTool("hub_set_hsm", [armCommand: "armHome", args: argsValue])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == script._bpsBlockMessage('best_practice_reference', offered)
+
+        where:
+        label << ['wrong key', 'other section', 'list args', 'string args']
+    }
+
+    def "the modern-path chokepoint also reads the key from a direct tool's args object"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+        def section = script._bpsSectionForTool('hub_manage_virtual_device')
+
+        when:
+        script._mrtrValidateAccess('hub_manage_virtual_device', 'hub_manage_virtual_device', [action: 'delete', args: [:]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == script._bpsBlockMessage(section, null)
+
+        when:
+        script._mrtrValidateAccess('hub_manage_virtual_device', 'hub_manage_virtual_device',
+            [action: 'delete', args: [bestPracticeKey: key(section)]])
+
+        then:
+        noExceptionThrown()
     }
 
     def "keys rotate hourly: previous hour accepted, two hours old refused"() {
