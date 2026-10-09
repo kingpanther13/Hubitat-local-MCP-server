@@ -2021,7 +2021,7 @@ private void _rmValidateRoundZeroActionSpec(Map actionSpec) {
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // The body runs as a closure so its call sites live in the closure's own class: the app class is
     // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
-    def _impl = { ->
+    def _impl = {
     if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec. RM is not touched.")
     // Discover mode -- return static schema without touching the hub.
     // No capability field required; no Write master gate; no backup.
@@ -5695,7 +5695,7 @@ private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean co
 private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String action) {
     // The body runs as a closure so its call sites live in the closure's own class: the app class is
     // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
-    def _impl = { ->
+    def _impl = {
     def actType = null
     def actSubType = null
     def fields = [:]  // key: field name with @N placeholder, value: the value
@@ -8371,7 +8371,7 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
 Map _rmWalkStep(Integer appId, Map spec) {
     // The body runs as a closure so its call sites live in the closure's own class: the app class is
     // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
-    def _impl = { ->
+    def _impl = {
     // "drive" runs an ordered sequence of single-step operations in ONE call --
     // the progressive flow that replaces the manual introspect -> navigate ->
     // write each field -> done -> finalize loop the caller used to issue as N
@@ -11678,7 +11678,7 @@ private Map _rmRevealStep(Integer appId, String page, String pattern, Closure tr
 private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cIdx) {
     // The body runs as a closure so its call sites live in the closure's own class: the app class is
     // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
-    def _impl = { ->
+    def _impl = {
     def writeST               = ctx.writeST as Closure
     def cancelInFlightCond    = ctx.cancelInFlightCondition as Closure
     def condIdx               = ctx.condIdx as Integer
@@ -14815,7 +14815,7 @@ private void _rmRejectNonDeviceMapSettings(Integer appId, String pageName, Map s
 def _applyNativeAppEdit(args) {
     // The body runs as a closure so its call sites live in the closure's own class: the app class is
     // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
-    def _impl = { ->
+    def _impl = {
     // Discover mode short-circuit: {addTrigger: {discover: true}} or
     // {addAction: {discover: true}} returns static schema with no hub
     // interaction -- bypass the in-handler requireDestructiveConfirm gate (confirm
