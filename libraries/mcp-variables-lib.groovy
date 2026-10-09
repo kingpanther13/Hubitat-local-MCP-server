@@ -1522,7 +1522,7 @@ def _getAllToolDefinitions_partVariables() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Optional: only hub variables of this type."],
+                    type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "[[FLAT_TRIM]]Optional: only hub variables of this type.[[/FLAT_TRIM]]"],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the hubVariables list.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ]
@@ -1541,13 +1541,13 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_set_variable",
-            description: "Set an existing variable's value, or add to a Number/Decimal hub variable with increment. For hub variables, value type must match the variable's declared type.[[FLAT_TRIM]] Falls back to the rule_engine namespace when no hub variable matches. Creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both — see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
+            description: "Set an existing variable's value[[FLAT_TRIM]], or add to a Number/Decimal hub variable with increment[[/FLAT_TRIM]]. For hub variables, value type must match the variable's declared type.[[FLAT_TRIM]] Falls back to the rule_engine namespace when no hub variable matches. Creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both — see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Variable name"],
                     value: [type: "string", description: "Variable value (string, number, or boolean as string).[[FLAT_TRIM]] Optional when mesh_shared is given.[[/FLAT_TRIM]]"],
-                    increment: [type: "number", description: "Add this amount atomically to a Number/Decimal hub variable (instead of value; send alone)."],
+                    increment: [type: "number", description: "[[FLAT_TRIM]]Add this amount atomically to a Number/Decimal hub variable (instead of value; send alone).[[/FLAT_TRIM]]"],
                     mesh_shared: [type: "boolean", description: "Hub Mesh: share/unshare this hub variable.[[FLAT_TRIM]] true shares into the mesh, false unshares; hub variables only; may accompany value or stand alone.[[/FLAT_TRIM]]"]
                 ],
                 required: ["name"]

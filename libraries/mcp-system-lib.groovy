@@ -1523,7 +1523,7 @@ def _getAllToolDefinitions_partSystem() {
                     identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
                     includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
                     includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.[[FLAT_TRIM]] The check is async, so appUpdate reflects the prior completed check and carries checkInProgress; call again in a few seconds for the freshest result.[[/FLAT_TRIM]]", default: false],
-                    includeSubscriptions: [type: "boolean", description: "Include Hubitat subscription status under `subscriptions`.", default: false],
+                    includeSubscriptions: [type: "boolean", description: "[[FLAT_TRIM]]Include Hubitat subscription status under `subscriptions`.[[/FLAT_TRIM]]", default: false],
                     includeNetwork: [type: "boolean", description: "Include the hub's network config under `network`.[[FLAT_TRIM]] IP mode, the saved static IP/gateway/subnet (reported whether or not static is the active mode; null on DHCP-only hubs), DNS, Ethernet autoneg and Wi-Fi SSID (never the Wi-Fi password); the read counterpart of hub_set_system_settings(network:...).[[/FLAT_TRIM]]", default: false]
                 ]
             ]
@@ -1580,7 +1580,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_set_system_settings",
-            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, network config, and dismissing a hub alert. All optional — pass only what changes. See hub_get_tool_guide(section='hub_admin_write_system') for the per-field write model and reboot caveats.""",
+            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, network config[[FLAT_TRIM]], and dismissing a hub alert[[/FLAT_TRIM]]. All optional — pass only what changes. See hub_get_tool_guide(section='hub_admin_write_system') for the per-field write model and reboot caveats.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1591,17 +1591,17 @@ def _getAllToolDefinitions_partSystem() {
                     zipCode: [type: "string", description: "Postal/zip code, e.g. 10001."],
                     temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale."],
                     darkMode: [type: "boolean", description: "Hub admin UI dark mode (true) or light (false)."],
-                    dismissAlert: [type: "object", description: "Dismiss a hub alert: {key, version?} from healthAlerts.items."],
+                    dismissAlert: [type: "object", description: "[[FLAT_TRIM]]Dismiss a hub alert: {key, version?} from healthAlerts.items.[[/FLAT_TRIM]]"],
                     network: [type: "object", description: "⚠️ Hub network config — can DISCONNECT the hub; needs confirm=true + a backup <24h.", properties: [
-                        ipMode: [type: "string", enum: ["dhcp", "static"], description: "IP mode."],
-                        address: [type: "string", description: "Static IP address."],
-                        netmask: [type: "string", description: "Static subnet mask."],
-                        gateway: [type: "string", description: "Static gateway."],
-                        nameserver: [type: "string", description: "DNS nameserver(s)."],
-                        useDNSFallover: [type: "boolean", description: "DHCP DNS failover."],
-                        ethernetAutoneg: [type: "boolean", description: "Ethernet autonegotiation."],
-                        wifiSsid: [type: "string", description: "WiFi SSID to join."],
-                        wifiPassword: [type: "string", description: "WiFi password (psk)."]
+                        ipMode: [type: "string", enum: ["dhcp", "static"], description: "[[FLAT_TRIM]]IP mode.[[/FLAT_TRIM]]"],
+                        address: [type: "string", description: "[[FLAT_TRIM]]Static IP address.[[/FLAT_TRIM]]"],
+                        netmask: [type: "string", description: "[[FLAT_TRIM]]Static subnet mask.[[/FLAT_TRIM]]"],
+                        gateway: [type: "string", description: "[[FLAT_TRIM]]Static gateway.[[/FLAT_TRIM]]"],
+                        nameserver: [type: "string", description: "[[FLAT_TRIM]]DNS nameserver(s).[[/FLAT_TRIM]]"],
+                        useDNSFallover: [type: "boolean", description: "[[FLAT_TRIM]]DHCP DNS failover.[[/FLAT_TRIM]]"],
+                        ethernetAutoneg: [type: "boolean", description: "[[FLAT_TRIM]]Ethernet autonegotiation.[[/FLAT_TRIM]]"],
+                        wifiSsid: [type: "string", description: "[[FLAT_TRIM]]WiFi SSID to join.[[/FLAT_TRIM]]"],
+                        wifiPassword: [type: "string", description: "[[FLAT_TRIM]]WiFi password (psk).[[/FLAT_TRIM]]"]
                     ]],
                     confirm: [type: "boolean", description: "REQUIRED (true) for timeZone or network changes; both need a backup <24h (hub_create_backup)."],
                     args: [type: "object"]

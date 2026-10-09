@@ -2832,7 +2832,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     type: [type: "string", description: "Which stats to return. Default: device.", enum: ["device", "app", "both"], default: "device"],
                     sortBy: [type: "string", description: "Sort results by field. Default: pct (% busy).", enum: ["pct", "count", "stateSize", "totalMs", "name"], default: "pct"],
                     limit: [type: "integer", description: "Max entries to return. Default: 20, 0 for all.", default: 20],
-                    includeCloudCalls: [type: "boolean", description: "Also return per-app cloud-call counts under cloudCalls. Default false."]
+                    includeCloudCalls: [type: "boolean", description: "[[FLAT_TRIM]]Also return per-app cloud-call counts under cloudCalls. Default false.[[/FLAT_TRIM]]"]
                 ]
             ]
         ],
@@ -2895,12 +2895,12 @@ def _getAllToolDefinitions_partDiagnostics() {
                     include_topology: [type: "boolean", description: "Also include the mesh route/topology map. Z-Wave/Zigbee only. Default false."],
                     node_id: [type: "string", description: "Per-node status for this id (Z-Wave, or Matter commissioning with radio='matter').[[FLAT_TRIM]] On Z-Wave JS it adds the interview details and link-test status.[[/FLAT_TRIM]]"],
                     include_status: [type: "boolean", description: "Attach lifecycle status pollers under result.status. Default false.[[FLAT_TRIM]] Repair, join, exclude, antenna test, node replace, Zigbee, Z-Wave JS readiness, Z-Wave local backup, batch firmware.[[/FLAT_TRIM]]"],
-                    include_logs: [type: "boolean", description: "Attach Matter chip-tool logs ({text}, ANSI) under result.matterLogs. Default false."],
-                    include_channel_scan: [type: "boolean", description: "Attach Zigbee channel energy-scan results under result.channelScan. Default false."],
-                    include_smartstart: [type: "boolean", description: "Attach the Z-Wave SmartStart provisioning list under result.smartStart. Default false."],
+                    include_logs: [type: "boolean", description: "Matter chip-tool logs under result.matterLogs.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
+                    include_channel_scan: [type: "boolean", description: "Zigbee channel-scan results under result.channelScan.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
+                    include_smartstart: [type: "boolean", description: "Z-Wave SmartStart list under result.smartStart.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
                     include_firmware: [type: "boolean", description: "Attach firmware-eligible Z-Wave devices + files under result.firmware. Default false.[[FLAT_TRIM]] With node_id also that node's targets, offered updates (updateId), progress, and batch candidates.[[/FLAT_TRIM]]"],
-                    include_devices: [type: "boolean", description: "Attach Zigbee devices with their last-message time under result.zigbeeDevices. Default false."],
-                    backup_job_id: [type: "string", description: "Z-Wave backup/import/restore job id to read under result.zwaveBackupJob."]
+                    include_devices: [type: "boolean", description: "[[FLAT_TRIM]]Attach Zigbee devices with their last-message time under result.zigbeeDevices. Default false.[[/FLAT_TRIM]]"],
+                    backup_job_id: [type: "string", description: "[[FLAT_TRIM]]Z-Wave backup/import/restore job id to read under result.zwaveBackupJob.[[/FLAT_TRIM]]"]
                 ]
             ]
         ],
@@ -2921,7 +2921,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     enabled: [type: "boolean", description: "Enable (true) or disable (false) the Z-Wave radio."],
                     region: [type: "string", description: "Z-Wave RF region (e.g. 'US', 'EU'). Must match a region your hub hardware supports."],
                     long_range_channel: [type: "integer", enum: [0, 1, 255], description: "Z-Wave Long Range channel: 255=Auto, 0=Channel A, 1=Channel B (US_LR hubs)."],
-                    zwave_js: [type: "boolean", description: "Z-Wave stack: true=Z-Wave JS, false=legacy. REBOOTS the hub; send alone with confirm=true."],
+                    zwave_js: [type: "boolean", description: "true=Z-Wave JS, false=legacy stack. REBOOTS the hub.[[FLAT_TRIM]] Send alone with confirm=true.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Required true to DISABLE the radio or switch the stack (backup <24h also enforced)."]
                 ]
             ]
@@ -2953,10 +2953,10 @@ def _getAllToolDefinitions_partDiagnostics() {
                     security_keys: [type: "object", description: "grant_keys: S2 grant booleans; local_backup_keys: the network keys as hex.[[FLAT_TRIM]] grant_keys e.g. {S2Authenticated:true}; local_backup_keys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, long_range: {S2_Authenticated, S2_AccessControl}}.[[/FLAT_TRIM]]"],
                     security_code: [type: "object", description: "grant_code only: S2 DSK, e.g. {accept:true, securityCode:'12345'}."],
                     node_dsk: [type: "string", description: "smartstart_delete only: the DSK from hub_get_radio_details(include_smartstart=true)."],
-                    backup_url: [type: "string", description: "local_backup_import: http(s) URL of the backup (8 MB max)."],
-                    link_test: [type: "object", description: "link_test_start: {rounds? (10), interval_ms? (1000)}."],
-                    cc: [type: "object", description: "cc_command: {command_class, method_name, endpoint?, args?}."],
-                    backup_id: [type: "string", description: "local_backup_download: jobId; local_backup_keys: importId."],
+                    backup_url: [type: "string", description: "[[FLAT_TRIM]]local_backup_import: http(s) URL of the backup (8 MB max).[[/FLAT_TRIM]]"],
+                    link_test: [type: "object", description: "[[FLAT_TRIM]]link_test_start: {rounds? (10), interval_ms? (1000)}.[[/FLAT_TRIM]]"],
+                    cc: [type: "object", description: "[[FLAT_TRIM]]cc_command: {command_class, method_name, endpoint?, args?}.[[/FLAT_TRIM]]"],
+                    backup_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_download: jobId; local_backup_keys: importId.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Required true for exclusion_start, node_remove, cc_command (backup <24h also enforced)."]
                 ],
                 required: ["action"]
@@ -2981,8 +2981,8 @@ def _getAllToolDefinitions_partDiagnostics() {
                 properties: [
                     action: [type: "string", enum: ["enable", "disable", "pair", "cancel_pair", "open_pairing_window"], description: "The Matter operation.[[FLAT_TRIM]] enable/disable (needs a hub reboot), pair by setup_code, cancel_pair, open_pairing_window to share a commissioned node.[[/FLAT_TRIM]]"],
                     setup_code: [type: "string", description: "pair only: the 11- or 21-digit Matter setup/pairing code."],
-                    wifi_ssid: [type: "string", description: "pair: Wi-Fi SSID (default: the hub's stored network).[[FLAT_TRIM]] Thread devices ignore it; the stored network is in hub_get_radio_details(radio='matter') wifiCredentials.[[/FLAT_TRIM]]"],
-                    wifi_password: [type: "string", description: "pair: Wi-Fi password (omit for the stored one)."],
+                    wifi_ssid: [type: "string", description: "[[FLAT_TRIM]]pair: Wi-Fi SSID (default: the hub's stored network). Thread devices ignore it; the stored network is in hub_get_radio_details(radio='matter') wifiCredentials.[[/FLAT_TRIM]]"],
+                    wifi_password: [type: "string", description: "[[FLAT_TRIM]]pair: Wi-Fi password (omit for the stored one).[[/FLAT_TRIM]]"],
                     node_id: [type: "string", description: "Node id (open_pairing_window, cancel_pair)."],
                     confirm: [type: "boolean", description: "Required true to disable Matter (backup <24h also enforced)."]
                 ],
@@ -3003,9 +3003,9 @@ Requires Write master.""",
                     node_id: [description: "Z-Wave node id."],
                     file_name: [type: "string", description: "Firmware file name (device_firmware_start, batch_start)."],
                     target_index: [description: "Optional Z-Wave firmware target index."],
-                    update_id: [description: "*_start_available: updateId from firmware.node.available."],
-                    batch: [type: "object", description: "Batch actions: {node_ids, inactivity_timeout_seconds? (600)}."],
-                    import_id: [type: "string", description: "local_backup_restore: importId."],
+                    update_id: [description: "[[FLAT_TRIM]]*_start_available: updateId from firmware.node.available.[[/FLAT_TRIM]]"],
+                    batch: [type: "object", description: "[[FLAT_TRIM]]Batch actions: {node_ids, inactivity_timeout_seconds? (600)}.[[/FLAT_TRIM]]"],
+                    import_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_restore: importId.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true.[[FLAT_TRIM]] Confirms backup was created and the user approved this destructive op.[[/FLAT_TRIM]]"]
                 ],
                 required: ["target", "action", "confirm"]

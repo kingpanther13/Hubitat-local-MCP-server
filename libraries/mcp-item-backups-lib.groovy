@@ -1322,17 +1322,17 @@ A transport drop can lose the response while the hub still commits this write; v
                     mock: [type: "boolean", description: "Developer Mode only: stamp the 24h gate record; no real backup (test envs)."],
                     mockEpoch: [type: "integer", description: "Developer Mode only, with mock=true: stamp this epoch-millis instead of now (test envs; lets tests set a stale gate record)."],
                     schedule: [type: "object", description: "Optional: set the automatic-backup schedule. Omitted fields keep their current value (read-merged from the hub).[[FLAT_TRIM]] If cloud backup is enabled you MUST pass cloudBackupPassword (the hub doesn't expose it for read-back) or pass cloudBackupFrequency=0 to turn cloud backup off.[[/FLAT_TRIM]]", properties: [
-                        hour: [type: "integer", description: "Hour 0-23 (kept if omitted)"],
-                        minute: [type: "integer", description: "Minute 0-59 (kept if omitted)"],
-                        localBackupFrequency: [type: "integer", enum: [0, 1, 2, 3, 5, 7, 14, 21, 28], description: "Local backup interval in DAYS (0=off); kept if omitted"],
-                        cloudBackupFrequency: [type: "integer", enum: [0, 1, 2, 3, 5, 7, 14, 21, 28], description: "Cloud backup interval in DAYS (0=off); kept if omitted"],
-                        cloudBackupPassword: [type: "string", description: "Cloud-backup encryption password. Required when cloud backup is/stays enabled."]
+                        hour: [type: "integer", description: "[[FLAT_TRIM]]Hour 0-23 (kept if omitted)[[/FLAT_TRIM]]"],
+                        minute: [type: "integer", description: "[[FLAT_TRIM]]Minute 0-59 (kept if omitted)[[/FLAT_TRIM]]"],
+                        localBackupFrequency: [type: "integer", enum: [0, 1, 2, 3, 5, 7, 14, 21, 28], description: "[[FLAT_TRIM]]Local backup interval in DAYS (0=off); kept if omitted[[/FLAT_TRIM]]"],
+                        cloudBackupFrequency: [type: "integer", enum: [0, 1, 2, 3, 5, 7, 14, 21, 28], description: "[[FLAT_TRIM]]Cloud backup interval in DAYS (0=off); kept if omitted[[/FLAT_TRIM]]"],
+                        cloudBackupPassword: [type: "string", description: "[[FLAT_TRIM]]Cloud-backup encryption password. Required when cloud backup is/stays enabled.[[/FLAT_TRIM]]"]
                     ]],
                     scheduleOnly: [type: "boolean", description: "With schedule/networkBackup: settings only, no backup now."],
-                    full: [type: "boolean", description: "Full local backup (database + files + radio data).[[FLAT_TRIM]] Needs the Full Local Backup subscription.[[/FLAT_TRIM]]"],
-                    networkBackup: [type: "object", description: "Network-share backup: {enabled?, networkPath?, username?, password?}; omitted fields keep their value."],
-                    testNetworkBackup: [type: "boolean", description: "Test the network share."],
-                    cloudDownload: [type: "object", description: "Copy a cloud backup into File Manager: {path, cloudBackupPassword, part? (database|files)}; send alone."],
+                    full: [type: "boolean", description: "[[FLAT_TRIM]]Full local backup (database + files + radio data). Needs the Full Local Backup subscription.[[/FLAT_TRIM]]"],
+                    networkBackup: [type: "object", description: "[[FLAT_TRIM]]Network-share backup: {enabled?, networkPath?, username?, password?}; omitted fields keep their value.[[/FLAT_TRIM]]"],
+                    testNetworkBackup: [type: "boolean", description: "[[FLAT_TRIM]]Test the network share.[[/FLAT_TRIM]]"],
+                    cloudDownload: [type: "object", description: "[[FLAT_TRIM]]Copy a cloud backup into File Manager: {path, cloudBackupPassword, part? (database|files)}; send alone.[[/FLAT_TRIM]]"],
                     args: [type: "object"]
                 ]
             ]
@@ -1389,7 +1389,7 @@ A transport drop can lose the response while the hub still commits this write; v
                     path: [type: "string", description: "scope=hub_cloud: `path` from hub_list_backups."],
                     cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
                     backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL of the .lzf or full .tar.gz."],
-                    fullRestore: [type: "object", description: "Full backups: {restoreZigbee?, restoreZwave?, restoreFiles?, deleteExistingFiles?, allowZwaveFirmwareMismatch?} (default false)."],
+                    fullRestore: [type: "object", description: "[[FLAT_TRIM]]Full backups: {restoreZigbee?, restoreZwave?, restoreFiles?, deleteExistingFiles?, allowZwaveFirmwareMismatch?} (default false).[[/FLAT_TRIM]]"],
                     preserveRuleId: [type: "boolean", description: "Keep the rule id (default true).[[FLAT_TRIM]] true: restore an RM/native app backup in place by settings replay; a replay empties settings the app gained after the backup (settingsCleared). false: restore a Rule Machine backup that carries an App Cloner export as an exact copy with a NEW id, deleting the old rule once the copy matches the backup.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."],
                 ],
