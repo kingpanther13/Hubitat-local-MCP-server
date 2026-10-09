@@ -2399,6 +2399,11 @@ private Map _zwaveBackupDownload(String jobId) {
 // reaches READY with a report (which keys it still needs) before a restore.
 private Map _zwaveBackupImport(String url) {
     if (!(url ==~ /(?i)^https?:\/\/.+/)) throw new IllegalArgumentException("backup_url must be an http(s) URL, got: ${url}")
+    Long urlSize = _urlSizeBytes(url)
+    if (urlSize != null && urlSize > 8L * 1024 * 1024) {
+        return [success: false, action: "local_backup_import", error: "The backup at backup_url is ${(urlSize / (1024 * 1024)) as long} MB, over the 8 MB in-app upload limit.",
+                note: "Import it from Settings > Z-Wave Details > Z-Wave local backup in the Hubitat web UI. Nothing was fetched."]
+    }
     byte[] bytes
     try {
         bytes = _fetchBytesFromUrl(url)
@@ -3027,7 +3032,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     cc: [type: "object", description: "[[FLAT_TRIM]]cc_command: {command_class (decimal or 0x hex), method_name, endpoint?, args?}.[[/FLAT_TRIM]]"],
                     job_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_download: the jobId from local_backup_create.[[/FLAT_TRIM]]"],
                     import_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_keys: the importId from local_backup_import.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "Required true for exclusion_start, node_remove, cc_command (backup <24h also enforced)."]
+                    confirm: [type: "boolean", description: "Required true for exclusion_start, node_remove, link_test_start, cc_command (backup <24h also enforced)."]
                 ],
                 required: ["action"]
             ]

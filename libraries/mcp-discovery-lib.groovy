@@ -421,8 +421,12 @@ private Map _platformApiPage(String pageId, cursor) {
     }
     def pgMethods = (pg instanceof Map) ? pg.get("methods") : null
     if (!(pgMethods instanceof List)) return [success: false, error: "API documentation page '${pageId}' has an unexpected shape."]
+    // A description past 20,000 characters is cut (descriptionTruncated), so one method always fits a page.
     def methods = pgMethods.findAll { it instanceof Map }.collect { m ->
-        [kind: m.kind, name: m.name, signature: m.signature, description: (m.descriptionMarkdown ?: m.summary)?.toString()?.trim()]
+        def text = (m.descriptionMarkdown ?: m.summary)?.toString()?.trim()
+        def entry = [kind: m.kind, name: m.name, signature: m.signature, description: text?.take(20000)]
+        if (text && text.length() > 20000) entry.descriptionTruncated = true
+        entry
     }
     // 40 methods a page, fewer when their descriptions would push a page past ~60 KB.
     def paged = _paginateList(methods, cursor != null ? cursor : "", 40, "hub_get_tool_guide")

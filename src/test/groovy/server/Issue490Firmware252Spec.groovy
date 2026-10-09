@@ -24,6 +24,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     @Shared List asyncPaths = []
     @Shared Closure httpPostHook = null
     @Shared Closure exceptionLineHook = null
+    @Shared Closure httpGetHook = null
     @Shared Closure stackTraceHook = null
 
     def setupSpec() {
@@ -32,6 +33,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         appExecutor.httpPost(*_) >> { args -> httpPostHook?.call(args[0], args[1]) }
         appExecutor.getExceptionMessageWithLine(_) >> { args -> exceptionLineHook?.call(args[0]) }
         appExecutor.getStackTrace(_) >> { args -> stackTraceHook?.call(args[0]) }
+        appExecutor.httpGet(*_) >> { args -> httpGetHook?.call(args[0], args[1]) }
     }
 
     def setup() {
@@ -39,6 +41,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         httpPostHook = null
         exceptionLineHook = null
         stackTraceHook = null
+        httpGetHook = null
     }
 
     def cleanup() {
@@ -1392,6 +1395,70 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         first.methods.size() < 40
         JsonOutput.toJson(first.methods).length() <= 60000
         first.nextCursor == first.methods.size().toString()
+    }
+
+    def "platform_api_page cuts a single oversized description and flags it"() {
+        given:
+        hubGet.register('/developer-docs/api-huge.json') { p ->
+            JsonOutput.toJson([id: 'api-huge', className: 'Huge', label: 'Huge', section: 'shared',
+                               methods: [[kind: 'method', name: 'm', signature: 'void m()', descriptionMarkdown: 'y' * 150000]]])
+        }
+
+        when:
+        def r = script.toolGetToolGuide(null, null, [platform_api_page: 'api-huge'])
+
+        then:
+        r.methods[0].description.length() == 20000
+        r.methods[0].descriptionTruncated == true
+    }
+
+    @Unroll
+    def "a backup URL over the in-app limit is refused before it is fetched: #label"() {
+        given:
+        enableWrite()
+        def fetched = []
+        script.metaClass._urlSizeBytes = { String url -> size }
+        script.metaClass._fetchBytesFromUrl = { String url -> fetched << url; ([0x1f, 0x8b, 8, 0] as byte[]) }
+
+        when:
+        def r = invoke.call(script)
+
+        then:
+        r.success == false
+        r.error.contains('MB')
+        fetched.isEmpty()
+
+        where:
+        label            | size              | invoke
+        'full restore'   | 40L * 1024 * 1024 | { s -> s.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://h/x/full.tar.gz', confirm: true]) }
+        'database'       | 9L * 1024 * 1024  | { s -> s.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://h/x/db.lzf', confirm: true]) }
+        'Z-Wave import'  | 9L * 1024 * 1024  | { s -> s.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz']) }
+    }
+
+    def "_urlSizeBytes reads the total from a ranged answer"() {
+        given:
+        def sent = [:]
+        httpGetHook = { Map params, Closure c -> sent.range = params.headers?.Range; c([status: 206, headers: ['Content-Range': 'bytes 0-0/12345']]) }
+
+        expect:
+        script._urlSizeBytes('https://h/x/full.tar.gz') == 12345L
+        sent.range == 'bytes=0-0'
+    }
+
+    def "a full local backup with no listed size is not downloaded"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/localBackups') { p -> '[{"name":"full_x.tar.gz","fullBackup":true}]' }
+        def downloads = []
+        script.metaClass.hubInternalBytes = { String m, String path, Map q = null, Map f = null, int t = 300 -> downloads << path; [status: 200, bytes: ([0x1f, 0x8b, 8, 0] as byte[])] }
+
+        when:
+        def r = script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'full_x.tar.gz', confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains('no size')
+        downloads.isEmpty()
     }
 
     @Unroll

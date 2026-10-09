@@ -1126,7 +1126,11 @@ private Map _restoreOutcomeUnknown(String type, String location, Exception e) {
 // listed size is checked first so an archive over the in-app limit is never downloaded.
 private Map _restoreLocalFullBackup(String fileName, Map opts) {
     Long listed = _localBackupSizeBytes(fileName)
-    if (listed != null && listed > 16L * 1024 * 1024) {
+    if (listed == null) {
+        return [success: false, type: "hub-full", location: "hub_local", error: "The hub's backup list gives no size for '${fileName}', so it was not downloaded.",
+                note: "Nothing was restored. Retry, or restore it from Settings > Backup and Restore in the Hubitat web UI."]
+    }
+    if (listed > 16L * 1024 * 1024) {
         return [success: false, type: "hub-full", location: "hub_local", error: "The full backup is ${(listed / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
                 note: "Restore a large full backup from Settings > Backup and Restore in the Hubitat web UI (it accepts up to 150 MB). Nothing was restored."]
     }
@@ -1240,6 +1244,11 @@ private _restoreUploadedBackup(Map args) {
     boolean full = args.fullRestore != null || urlPath.toLowerCase().endsWith(".gz")
     if (full) {
         def opts = _fullRestoreOptions(args.fullRestore)
+        Long urlSize = _urlSizeBytes(url)
+        if (urlSize != null && urlSize > 16L * 1024 * 1024) {
+            return [success: false, type: "hub-full", location: "hub_uploaded", error: "The full backup at backupUrl is ${(urlSize / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
+                    note: "Restore a large full backup from Settings > Backup and Restore in the Hubitat web UI (it accepts up to 150 MB). Nothing was fetched or restored."]
+        }
         byte[] fullBytes
         try {
             fullBytes = _fetchBytesFromUrl(url)
@@ -1249,6 +1258,11 @@ private _restoreUploadedBackup(Map args) {
         if (!fullBytes || fullBytes.length == 0) return [success: false, type: "hub-full", location: "hub_uploaded", error: "Fetched 0 bytes from backupUrl.", note: "Nothing was restored."]
         String fname = urlPath.tokenize("/")?.last() ?: "full-backup.tar.gz"
         return _restoreFullFromBytes("hub_uploaded", fullBytes, fname, opts)
+    }
+    Long dbUrlSize = _urlSizeBytes(url)
+    if (dbUrlSize != null && dbUrlSize > 8L * 1024 * 1024) {
+        return [success: false, type: "hub-db", location: "hub_uploaded", error: "The backup at backupUrl is ${(dbUrlSize / (1024 * 1024)) as long} MB, over the 8 MB in-app upload limit.",
+                note: "Restore a very large backup via the Hubitat UI (Settings -> Backup and Restore), not this tool. Nothing was fetched."]
     }
     byte[] fileBytes
     try {
@@ -1290,6 +1304,24 @@ private _restoreUploadedBackup(Map args) {
         mcpLogError("hub-admin", "uploaded-backup restore request got no answer", e)
         return _restoreOutcomeUnknown("hub-db", "hub_uploaded", e)
     }
+}
+
+// A URL body's size before it is fetched: a one-byte Range request answers 206 with the total in
+// Content-Range on most hosts, and a host that ignores ranges gives Content-Length. Null when neither
+// says, and the caller then relies on its post-fetch cap. Non-private so the Spock harness can stub it.
+def _urlSizeBytes(String url) {
+    Long size = null
+    try {
+        httpGet([uri: url, timeout: 30, textParser: false, headers: [Range: "bytes=0-0"]]) { resp ->
+            def range = resp?.headers?.'Content-Range'?.toString() =~ /\/\s*(\d+)\s*$/
+            def length = resp?.headers?.'Content-Length'?.toString() =~ /(\d+)\s*$/
+            if (resp?.status == 206 && range.find()) size = range.group(1) as Long
+            else if (resp?.status == 200 && length.find()) size = length.group(1) as Long
+        }
+    } catch (Exception e) {
+        mcpLog("debug", "hub-admin", "size check for backupUrl failed: ${e.message}")
+    }
+    return size
 }
 
 // Fetch raw bytes from an http(s) URL (the .lzf to upload). Binary fetch via httpGet with textParser off.

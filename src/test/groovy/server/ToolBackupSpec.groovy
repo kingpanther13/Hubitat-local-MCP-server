@@ -328,7 +328,7 @@ class ToolBackupSpec extends ToolSpecBase {
     def "scope=hub_local routes a full local backup through the full-restore flow"() {
         given:
         enableWrite()
-        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true}]' }
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true,"fileSize":"7 MB"}]' }
         def seen = stubFullRestore()
 
         when:
@@ -361,18 +361,19 @@ class ToolBackupSpec extends ToolSpecBase {
         def r = script.toolRestoreItemBackup([scope: 'hub_local', fileName: fileName, confirm: true])
 
         then:
-        r.success == true
+        r.success == ok
         (r.type == 'hub-full') == full
         hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' } == !full
-        hubGet.calls.any { it.path == '/hub2/restoreFullLocalBackup' } == full
+        // A full backup with no listed size is refused before it is downloaded.
+        hubGet.calls.any { it.path == '/hub2/restoreFullLocalBackup' } == (full && ok)
 
         where:
-        label                                     | fileName      | listBody                                    | full
-        'the list marks it full (any name)'       | 'odd.lzf'     | '[{"name":"odd.lzf","fullBackup":true}]'    | true
-        'the list wins over a .tar.gz name'       | 'db.tar.gz'   | '[{"name":"db.tar.gz","fullBackup":false}]' | false
-        'list unreadable, .tar.gz name'           | 'x.tar.gz'    | null                                        | true
-        'list unreadable, .lzf name'              | 'x.lzf'       | null                                        | false
-        'list readable without it, .tar.gz name'  | 'gone.tar.gz' | '[]'                                        | true
+        label                                     | fileName      | listBody                                                     | full  | ok
+        'the list marks it full (any name)'       | 'odd.lzf'     | '[{"name":"odd.lzf","fullBackup":true,"fileSize":"7 MB"}]'  | true  | true
+        'the list wins over a .tar.gz name'       | 'db.tar.gz'   | '[{"name":"db.tar.gz","fullBackup":false}]'                  | false | true
+        'list unreadable, .tar.gz name'           | 'x.tar.gz'    | null                                                         | true  | false
+        'list unreadable, .lzf name'              | 'x.lzf'       | null                                                         | false | true
+        'list readable without it, .tar.gz name'  | 'gone.tar.gz' | '[]'                                                         | true  | false
     }
 
     def "fullRestore on a database backup is refused before anything is sent"() {
@@ -391,7 +392,7 @@ class ToolBackupSpec extends ToolSpecBase {
     def "an unknown fullRestore field and deleteExistingFiles without restoreFiles are refused before anything is sent"() {
         given:
         enableWrite()
-        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true}]' }
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true,"fileSize":"7 MB"}]' }
         def seen = stubFullRestore()
 
         when:
@@ -412,7 +413,7 @@ class ToolBackupSpec extends ToolSpecBase {
     def "a Z-Wave mismatch from the full restore is reported with its remedy: #flag"() {
         given:
         enableWrite()
-        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true}]' }
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true,"fileSize":"7 MB"}]' }
         stubFullRestore()
         hubGet.register('/hub2/restoreFullLocalBackup') { params -> body }
 
@@ -435,7 +436,7 @@ class ToolBackupSpec extends ToolSpecBase {
         given:
         enableWrite()
         settingsMap.useGateways = useGateways
-        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true}]' }
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true,"fileSize":"7 MB"}]' }
         stubFullRestore()
 
         when:
