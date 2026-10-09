@@ -1,0 +1,1015 @@
+package server
+
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import spock.lang.Shared
+import spock.lang.Unroll
+import support.TestHub
+import support.TestLocation
+import support.ToolSpecBase
+
+/**
+ * Firmware 2.5.2 adoption (issue #490): alert feed + dismissal, pending-update detection,
+ * subscriptions, cloud calls, Zigbee last-message, Z-Wave JS reads and writes, Z-Wave network
+ * backup, the 2.5.2 Matter pairing request, firmware-service and batch flashes, full local
+ * backups, network-share backups, cloud backup downloads, File Manager folders, deprecated
+ * apps, platform app-usage lookup, bounded event windows, typed variable listing + atomic
+ * increment, and the on-hub API documentation served through hub_get_tool_guide.
+ */
+class Issue490Firmware252Spec extends ToolSpecBase {
+
+    @Shared private TestLocation sharedLocation = new TestLocation()
+
+    def setupSpec() {
+        appExecutor.getLocation() >> sharedLocation
+    }
+
+    def cleanup() {
+        sharedLocation.hub = null
+    }
+
+    private void enableWrite() {
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+    }
+
+    private TestHub hubOnFirmware(String fw) {
+        def h = new TestHub()
+        h.firmwareVersionString = fw
+        return h
+    }
+
+    private List<Map> jsonPosts() {
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null ->
+            posts << [path: path, body: new JsonSlurper().parseText(body)]
+            return [success: true, jobId: 'job-1', importId: 'imp-1', nodeId: 7, report: [missingKeys: []]]
+        }
+        return posts
+    }
+
+    // ---------------- alerts, pending update, subscriptions ----------------
+
+    static final String HUB_DATA_252 = JsonOutput.toJson([version: '2.5.2.129', safeMode: false,
+        alerts: [alertItems: [[key: 'PLATFORM_UPDATE_AVAILABLE', version: '2.5.2.134', dismissible: true, message: 'Platform update 2.5.2.134 available.']],
+                 alertMessages: [:], headerMessages: [], databaseSize: 24]])
+
+    def "platformUpdate on 2.5.2.129 comes from the PLATFORM_UPDATE_AVAILABLE alert item"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.2.129')
+        hubGet.register('/hub2/hubData') { p -> HUB_DATA_252 }
+
+        when:
+        def r = script.toolGetHubInfo([:])
+
+        then:
+        r.platformUpdate.available == true
+        r.platformUpdate.availableVersion == '2.5.2.134'
+        r.platformUpdate.currentVersion == '2.5.2.129'
+    }
+
+    @Unroll
+    def "without the alert item platformUpdate asks the platform's latest-version check (latest=#latest)"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.2.129')
+        hubGet.register('/hub2/hubData') { p -> JsonOutput.toJson([version: '2.5.2.129', alerts: [alertItems: []]]) }
+        script.metaClass.getLatestAvailablePlatformVersion = { -> latest }
+
+        when:
+        def r = script.toolGetHubInfo([:])
+
+        then:
+        r.platformUpdate.available == available
+        r.platformUpdate.availableVersion == version
+
+        where:
+        latest      | available | version
+        '2.5.2.134' | true      | '2.5.2.134'
+        '2.5.2.129' | false     | null
+    }
+
+    def "platformUpdate stays null with a note when neither the alert nor the platform check answers"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.2.129')
+        hubGet.register('/hub2/hubData') { p -> JsonOutput.toJson([version: '2.5.2.129', alerts: [alertItems: []]]) }
+        script.metaClass.getLatestAvailablePlatformVersion = { -> throw new RuntimeException('cloud down') }
+
+        when:
+        def r = script.toolGetHubInfo([:])
+
+        then:
+        r.platformUpdate.available == null
+        r.platformUpdate.note.contains('Check for Updates')
+    }
+
+    def "healthAlerts prefer the /hub/alertsJson feed: items with dismissal handles and spammyDeviceDetails"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.2.129')
+        hubGet.register('/hub2/hubData') { p -> HUB_DATA_252 }
+        hubGet.register('/hub/alertsJson') { p ->
+            JsonOutput.toJson([alertItems: [[key: 'SPAMMY_DEVICES', message: 'Too many events', dismissible: true, version: '3']],
+                               spammyDeviceDetails: [[id: 12, name: 'Chatty', count: '900']], maxEvents: 11, maxStates: '20'])
+        }
+
+        when:
+        def r = script.toolGetHubInfo([includeHealthAlerts: true])
+
+        then:
+        r.healthAlerts.active == ['SPAMMY_DEVICES']
+        r.healthAlerts.items == [[key: 'SPAMMY_DEVICES', message: 'Too many events', version: '3', dismissible: true]]
+        r.healthAlerts.details.spammyDeviceDetails[0].name == 'Chatty'
+        r.healthAlerts.details.maxEvents == 11
+    }
+
+    def "healthAlerts fall back to the hub data alert block when the feed is unreadable"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.2.129')
+        hubGet.register('/hub2/hubData') { p -> HUB_DATA_252 }
+
+        when:
+        def r = script.toolGetHubInfo([includeHealthAlerts: true])
+
+        then:
+        r.healthAlerts.active == ['PLATFORM_UPDATE_AVAILABLE']
+        r.healthAlerts.items[0].version == '2.5.2.134'
+    }
+
+    def "includeSubscriptions projects the four subscriptions"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.2.129')
+        hubGet.register('/hub2/hubData') { p -> HUB_DATA_252 }
+        hubGet.register('/hub/subscriptions/json') { p ->
+            JsonOutput.toJson([loaded: true, updatedAt: 1791442961968L,
+                hubProtect: [isActive: true, pendingCancellation: false, end_ts: '2027-08-13T20:51:56.000Z', trialAvailable: false],
+                remoteAdmin: [isActive: true, end_ts: '2027-08-13T20:51:56.000Z'],
+                cloudBackup: [isActive: false, end_ts: null, trialAvailable: true],
+                fullLocalBackup: [isActive: true, end_ts: '2027-08-13T20:51:56.000Z'],
+                hasAvailableTrial: true, fullLocalBackupSupported: false])
+        }
+
+        when:
+        def r = script.toolGetHubInfo([includeSubscriptions: true])
+
+        then:
+        r.subscriptions.hubProtect == [active: true, pendingCancellation: false, endsAt: '2027-08-13T20:51:56.000Z', trialAvailable: false]
+        r.subscriptions.cloudBackup.active == false
+        r.subscriptions.cloudBackup.trialAvailable == true
+        r.subscriptions.fullLocalBackup.active == true
+        r.subscriptions.fullLocalBackupSupported == false
+    }
+
+    def "hub_get_info leaves subscriptions out unless asked"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.2.129')
+        hubGet.register('/hub2/hubData') { p -> HUB_DATA_252 }
+
+        when:
+        def r = script.toolGetHubInfo([:])
+
+        then:
+        !r.containsKey('subscriptions')
+        !hubGet.calls.any { it.path == '/hub/subscriptions/json' }
+    }
+
+    def "dismissAlert sends key and version to /hub/dismissAlert"() {
+        given:
+        hubGet.register('/hub/dismissAlert') { p -> '' }
+
+        when:
+        def r = script.toolSetSystemSettings([dismissAlert: [key: 'PLATFORM_UPDATE_AVAILABLE', version: '2.5.2.134']])
+
+        then:
+        r.success == true
+        r.applied == ['dismissAlert']
+        hubGet.calls.find { it.path == '/hub/dismissAlert' }.params == [key: 'PLATFORM_UPDATE_AVAILABLE', version: '2.5.2.134']
+    }
+
+    def "dismissAlert without a key is refused before any hub call"() {
+        when:
+        script.toolSetSystemSettings([dismissAlert: [version: '1']])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('dismissAlert must be {key')
+        hubGet.calls.isEmpty()
+    }
+
+    @Unroll
+    def "dismissAlert reaches the hub through dispatch (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        hubGet.register('/hub/dismissAlert') { p -> '' }
+
+        when:
+        def response = mcpDriver.callTool('hub_set_system_settings', [dismissAlert: [key: 'POWER_LOSS_RECOVERED']])
+
+        then:
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.applied == ['dismissAlert']
+        hubGet.calls.find { it.path == '/hub/dismissAlert' }.params == [key: 'POWER_LOSS_RECOVERED']
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "hub_update_firmware drops the owner's account email from the check payload"() {
+        expect:
+        !script._parseFirmwareCheck('{"version":"2.5.2.134","accountEmails":["a@b.c"]}').containsKey('accountEmails')
+        script._parseFirmwareCheck('{"version":"2.5.2.134","accountEmails":["a@b.c"]}').version == '2.5.2.134'
+    }
+
+    // ---------------- performance: cloud calls ----------------
+
+    def "includeCloudCalls groups the hourly series per app, newest first, sorted by total"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/logs/json') { p -> JsonOutput.toJson([uptime: '1d', deviceStats: [[id: 1, name: 'D', pct: 1.0, cloudCallCount: 4]], appStats: []]) }
+        hubGet.register('/logs/cloudCalls/json') { p ->
+            JsonOutput.toJson([apps: [[id: 72, name: 'Google Home', installed: true, total: 57, currentHour: 2],
+                                      [id: 194, name: 'MCP Rule Server', installed: true, total: 159, currentHour: 0]],
+                               hours: [[appId: 72, hourStart: 1000L, count: 2], [appId: 72, hourStart: 2000L, count: 3], [appId: 194, hourStart: 1000L, count: 4]],
+                               timeZone: 'US/Eastern', startedAt: 500L])
+        }
+
+        when:
+        def r = script.toolGetPerformanceStats([includeCloudCalls: true])
+
+        then:
+        r.deviceStats[0].cloudCalls == 4
+        r.cloudCalls.apps*.name == ['MCP Rule Server', 'Google Home']
+        r.cloudCalls.apps[1].hourly*.count == [3, 2]
+        r.cloudCalls.timeZone == 'US/Eastern'
+    }
+
+    def "an unreadable cloud-calls endpoint is an error block, not a failed stats read"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/logs/json') { p -> JsonOutput.toJson([uptime: '1d', deviceStats: [], appStats: []]) }
+
+        when:
+        def r = script.toolGetPerformanceStats([includeCloudCalls: true])
+
+        then:
+        r.uptime == '1d'
+        r.cloudCalls.error.contains('/logs/cloudCalls/json')
+    }
+
+    // ---------------- radio reads ----------------
+
+    def "include_devices lists Zigbee devices with their last message, silent ones first"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/zigbeeDetails/json') { p -> JsonOutput.toJson([channel: 25]) }
+        long nowMs = script.now()
+        hubGet.register('/hub/zigbee/getDevicesJson') { p ->
+            JsonOutput.toJson([status: true, devices: [[id: 1, zigbeeId: 'AA', name: 'Fresh', lastMessage: nowMs - 60000L],
+                                                       [id: 2, zigbeeId: 'BB', name: 'Silent', lastMessage: null],
+                                                       [id: 3, zigbeeId: 'CC', name: 'Stale', lastMessage: nowMs - 7200000L]]])
+        }
+
+        when:
+        def r = script.toolGetRadioDetails([radio: 'zigbee', include_devices: true])
+
+        then:
+        r.zigbeeDevices.devices*.name == ['Silent', 'Stale', 'Fresh']
+        r.zigbeeDevices.devices[1].minutesSinceLastMessage == 120
+        r.zigbeeDevices.devices[0].lastMessage == null
+    }
+
+    def "include_status adds the Z-Wave JS, Z-Wave local backup and batch firmware pollers"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true, zwaveJS: false]) }
+        hubGet.register('/hub/zwave2/updateStatus') { p -> JsonOutput.toJson([updateInProgress: false, zwaveJSReady: false]) }
+        hubGet.register('/hub/zwave/localBackup/status') { p -> JsonOutput.toJson([available: false, entitled: true, firmwareVersion: '7.18']) }
+        hubGet.register('/hub/zwave/deviceFirmware/batchProgress') { p -> JsonOutput.toJson([success: false, message: 'Batch firmware updates require Z-Wave JS']) }
+
+        when:
+        def r = script.toolGetRadioDetails([radio: 'zwave', include_status: true])
+
+        then:
+        r.status.zwaveJs.zwaveJSReady == false
+        r.status.zwaveLocalBackup.entitled == true
+        r.status.zwaveFirmwareBatch.message.contains('Z-Wave JS')
+    }
+
+    @Unroll
+    def "node_id adds Z-Wave JS node details only on a Z-Wave JS hub (zwaveJS=#js)"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true, zwaveJS: js]) }
+        hubGet.register('/hub/zwave2/getNodeState') { p -> 'Done' }
+        hubGet.register('/hub/zwave2/nodeDetails') { p -> JsonOutput.toJson([nodeId: 5, commandClasses: []]) }
+        hubGet.register('/hub/zwave2/linkReliability/status') { p -> JsonOutput.toJson([running: false]) }
+
+        when:
+        def r = script.toolGetRadioDetails([radio: 'zwave', node_id: '5'])
+
+        then:
+        r.containsKey('nodeDetails') == js
+        r.containsKey('linkReliability') == js
+
+        where:
+        js << [true, false]
+    }
+
+    def "include_firmware with node_id reads the node's targets, offered updates, progress and batch candidates"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/zwaveDetails/json') { p -> JsonOutput.toJson([enabled: true]) }
+        ['/hub/zwave/deviceFirmware/devices', '/hub/zwave/deviceFirmware/files', '/hub/zwave/deviceFirmware/details',
+         '/hub/zwave/deviceFirmware/available', '/hub/zwave/deviceFirmware/progress', '/hub/zwave/deviceFirmware/batchCandidates'].each { ep ->
+            hubGet.register(ep) { p -> JsonOutput.toJson([success: true, path: ep]) }
+        }
+
+        when:
+        def r = script.toolGetRadioDetails([radio: 'zwave', include_firmware: true, node_id: '9'])
+
+        then:
+        r.firmware.node.keySet() == ['details', 'available', 'progress', 'batchCandidates'] as Set
+        hubGet.calls.findAll { it.path == '/hub/zwave/deviceFirmware/available' }*.params == [[nodeId: '9']]
+    }
+
+    def "radio='matter' attaches the hub's Matter Wi-Fi credentials (never a password)"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/matterDetails/json') { p -> JsonOutput.toJson([enabled: true]) }
+        hubGet.register('/hub/matter/wifiCredentials') { p -> JsonOutput.toJson([selectedSsid: 'Home', storedSsid: 'Home', hasStoredPassword: true, passwordPlaceholder: '********', availableNetworks: ['Home']]) }
+
+        when:
+        def r = script.toolGetRadioDetails([radio: 'matter'])
+
+        then:
+        r.wifiCredentials.storedSsid == 'Home'
+        !JsonOutput.toJson(r).contains('"password"')
+    }
+
+    def "backup_job_id reads the Z-Wave backup job"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/zwaveDetails/json') { p -> '{}' }
+        hubGet.register('/hub/zwave/localBackup/job/job-1') { p -> JsonOutput.toJson([stage: 'DONE', percent: 100]) }
+
+        when:
+        def r = script.toolGetRadioDetails([radio: 'zwave', backup_job_id: 'job-1'])
+
+        then:
+        r.zwaveBackupJob.stage == 'DONE'
+    }
+
+    // ---------------- Z-Wave writes ----------------
+
+    def "hub_set_zwave zwave_js switches the stack and is confirm-gated and sent alone"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/zwave2/enable') { p -> '{"success":true}' }
+
+        when:
+        def r = script.toolSetZwave([zwave_js: true, confirm: true])
+
+        then:
+        r.success == true
+        r.rebooting == true
+        hubGet.calls*.path == ['/hub/zwave2/enable']
+    }
+
+    @Unroll
+    def "hub_set_zwave zwave_js is refused before any hub call: #label"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolSetZwave(args)
+
+        then:
+        thrown(IllegalArgumentException)
+        hubGet.calls.isEmpty()
+
+        where:
+        label                 | args
+        'no confirm'          | [zwave_js: false]
+        'combined with region'| [zwave_js: true, region: 'US', confirm: true]
+        'not a boolean'       | [zwave_js: 'yes', confirm: true]
+    }
+
+    def "hub_set_zwave reports the hub's refusal of the stack switch"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/zwave2/disable') { p -> '{"success":false,"message":"not available"}' }
+
+        when:
+        def r = script.toolSetZwave([zwave_js: false, confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains('not available')
+    }
+
+    def "reinterview, link test and cc_command send the 2.5.2 node-state requests"() {
+        given:
+        enableWrite()
+        def posts = jsonPosts()
+        hubGet.register('/hub/zwave2/reinterview') { p -> 'ok' }
+
+        when:
+        def re = script.toolCallZwave([action: 'reinterview', node_id: '12'])
+        def lt = script.toolCallZwave([action: 'link_test_start', node_id: '12', rounds: 5])
+        def ls = script.toolCallZwave([action: 'link_test_stop', node_id: '12'])
+        def cc = script.toolCallZwave([action: 'cc_command', node_id: '12', command_class: 37, method_name: 'set', cc_args: [true], confirm: true])
+
+        then:
+        re.success && lt.success && ls.success && cc.success
+        hubGet.calls.find { it.path == '/hub/zwave2/reinterview' }.params == [node: '12']
+        posts[0] == [path: '/hub/zwave2/linkReliability/start', body: [nodeId: 12, rounds: 5, intervalMs: 1000]]
+        posts[1] == [path: '/hub/zwave2/linkReliability/abort', body: [nodeId: 12]]
+        posts[2] == [path: '/hub/zwave2/ccCommand', body: [nodeId: 12, endpoint: 0, commandClass: 37, methodName: 'set', args: [true]]]
+    }
+
+    @Unroll
+    def "cc_command is refused before anything is sent: #label"() {
+        given:
+        enableWrite()
+        def posts = jsonPosts()
+
+        when:
+        script.toolCallZwave([action: 'cc_command', node_id: node] + extra)
+
+        then:
+        thrown(IllegalArgumentException)
+        posts.isEmpty()
+
+        where:
+        label               | node  | extra
+        'no confirm'        | '12'  | [command_class: 37, method_name: 'get']
+        'no method'         | '12'  | [command_class: 37, confirm: true]
+        'node not a number' | 'abc' | [command_class: 37, method_name: 'get', confirm: true]
+        'args not a list'   | '12'  | [command_class: 37, method_name: 'get', cc_args: 'x', confirm: true]
+    }
+
+    def "local_backup_create starts a job and local_backup_keys normalizes the keys"() {
+        given:
+        enableWrite()
+        def posts = jsonPosts()
+        script.metaClass.hubInternalPost = { String path, Map body = null, int t = 30, boolean r = false -> '{"success":true,"jobId":"job-9"}' }
+
+        when:
+        def c = script.toolCallZwave([action: 'local_backup_create'])
+        def k = script.toolCallZwave([action: 'local_backup_keys', import_id: 'imp-1',
+                                      security_keys: [S0_Legacy: ' 0xAABB ', S2_Unauthenticated: 'cc', S2_Authenticated: 'dd', S2_AccessControl: 'ee']])
+
+        then:
+        c.success == true
+        c.jobId == 'job-9'
+        k.success == true
+        posts[0].path == '/hub/zwave/localBackup/securityKeys/imp-1'
+        posts[0].body.securityKeys.S0_Legacy == 'AABB'
+        posts[0].body.securityKeysLongRange == [:]
+    }
+
+    def "local_backup_download saves the finished archive to File Manager"() {
+        given:
+        enableWrite()
+        def saved = [:]
+        script.metaClass.hubInternalBytes = { String m, String path, Map q = null, Map f = null, int t = 300 -> saved.path = path; [status: 200, bytes: [1, 2, 3] as byte[]] }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> saved.name = name; saved.size = bytes.length }
+
+        when:
+        def r = script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9'])
+
+        then:
+        r.success == true
+        saved == [path: '/hub/zwave/localBackup/download/job-9', name: 'zwave-backup-job-9.tar.gz', size: 3]
+    }
+
+    def "local_backup_import uploads the fetched backup and returns the importId"() {
+        given:
+        enableWrite()
+        def up = [:]
+        script.metaClass._fetchBytesFromUrl = { String url -> 'NVM'.getBytes('UTF-8') }
+        script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> up.path = path; up.fileName = fileName; [success: true, importId: 'imp-7'] }
+
+        when:
+        def r = script.toolCallZwave([action: 'local_backup_import', backup_url: 'https://host/dir/net.tar.gz'])
+
+        then:
+        r.success == true
+        r.importId == 'imp-7'
+        up == [path: '/hub/zwave/localBackup/upload', fileName: 'net.tar.gz']
+    }
+
+    def "local_backup_restore, firmware-service and batch flashes go through the destructive tool"() {
+        given:
+        enableWrite()
+        def posts = jsonPosts()
+
+        when:
+        def rs = script.toolCallDestructiveOps([target: 'zwave', action: 'local_backup_restore', import_id: 'imp-1', confirm: true])
+        def sa = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start_available', node_id: '4', update_id: 'u-1', confirm: true])
+        def sb = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_start', node_id: '4', node_ids: ['5', '6'], file_name: 'fw.otz', confirm: true])
+        def sba = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_start_available', node_id: '4', node_ids: ['5'], update_id: 'u-1', inactivity_timeout_seconds: 120, confirm: true])
+        def ab = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_abort', confirm: true])
+
+        then:
+        [rs, sa, sb, sba, ab].every { it.success == true }
+        posts*.path == ['/hub/zwave/localBackup/restore/imp-1', '/hub/zwave/deviceFirmware/startAvailable',
+                        '/hub/zwave/deviceFirmware/startBatch', '/hub/zwave/deviceFirmware/startAvailableBatch', '/hub/zwave/deviceFirmware/abortBatch']
+        posts[0].body == [confirmation: 'RESTORE']
+        posts[1].body == [nodeId: 4, updateId: 'u-1']
+        posts[2].body == [sourceNodeId: 4, nodeIds: [5, 6], inactivityTimeoutSeconds: 600, target: 0, fileName: 'fw.otz']
+        posts[3].body == [sourceNodeId: 4, nodeIds: [5], inactivityTimeoutSeconds: 120, updateId: 'u-1']
+        posts[4].body == [:]
+    }
+
+    def "a refused firmware start surfaces the hub's message"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null -> [success: false, message: 'Not allowed over Remote Admin'] }
+
+        when:
+        def r = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start_available', node_id: '4', update_id: 'u-1', confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains('Remote Admin')
+    }
+
+    // ---------------- Matter ----------------
+
+    def "pair sends the 2.5.2 network-credentials request with the hub's stored Wi-Fi by default"() {
+        given:
+        enableWrite()
+        def posts = jsonPosts()
+        hubGet.register('/hub/matter/wifiCredentials') { p -> JsonOutput.toJson([selectedSsid: 'Home', storedSsid: 'Home', hasStoredPassword: true, passwordPlaceholder: '********']) }
+
+        when:
+        def r = script.toolCallMatter([action: 'pair', setup_code: ' 12345678901 '])
+
+        then:
+        r.success == true
+        r.nodeId == '7'
+        posts == [[path: '/hub/matter/pairWithNetworkCredentials', body: [setupCode: '12345678901', ssid: 'Home', password: '********']]]
+        !hubGet.calls.any { it.path == '/hub/matter/pair' }
+    }
+
+    def "pair with an explicit network sends it and skips the stored credentials"() {
+        given:
+        enableWrite()
+        def posts = jsonPosts()
+
+        when:
+        script.toolCallMatter([action: 'pair', setup_code: '1', wifi_ssid: 'Guest', wifi_password: 'pw'])
+
+        then:
+        posts[0].body == [setupCode: '1', ssid: 'Guest', password: 'pw']
+        !hubGet.calls.any { it.path == '/hub/matter/wifiCredentials' }
+    }
+
+    def "a nodeId of 0 is a failed pairing; cancel_pair calls cancelPair"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null -> [nodeId: '0', error: 'bad code'] }
+        hubGet.register('/hub/matter/wifiCredentials') { p -> '{}' }
+        hubGet.register('/hub/matter/cancelPair') { p -> '{"success":true}' }
+
+        when:
+        def failed = script.toolCallMatter([action: 'pair', setup_code: '1'])
+        def cancel = script.toolCallMatter([action: 'cancel_pair', node_id: '42'])
+
+        then:
+        failed.success == false
+        failed.error.contains('bad code')
+        cancel.success == true
+        hubGet.calls.find { it.path == '/hub/matter/cancelPair' }.params == [nodeId: '42']
+    }
+
+    // ---------------- backups ----------------
+
+    private void backupStubs() {
+        hubGet.register('/hub2/backup/json') { p -> '{"localBackupFrequency":1,"cloudBackupFrequency":0,"databaseCleanupTimeHour":3,"databaseCleanupJobMinute":0,"hasFullLocalBackup":true,"fullLocalBackupSupported":false,"fileManagerBackupExcludedCount":0,"lastNetworkBackupMessage":"","zwaveJsEnabled":false}' }
+        hubGet.register('/hub2/networkBackup/settings') { p -> '{"enabled":true,"networkPath":"//nas/b","username":"u","password":"secret"}' }
+        hubGet.register('/hub/backup/statusJson') { p -> '{"backupInProgress":false,"cloudBackupInProgress":false,"fullLocalBackupInProgress":false}' }
+        script.metaClass.asynchttpGet = { String handler, Map params -> null }
+        script.metaClass.pauseExecution = { long ms -> null }
+        script.metaClass.getHubSecurityCookie = { -> null }
+    }
+
+    def "hub_list_backups surfaces the 2.5.2 schedule fields and the network share without its password"() {
+        given:
+        backupStubs()
+        hubGet.register('/hub2/localBackups') { p -> '[]' }
+
+        when:
+        def r = script.toolListItemBackups([scope: 'hub_local'])
+
+        then:
+        r.schedule.hasFullLocalBackup == true
+        r.schedule.fileManagerBackupExcludedCount == 0
+        r.networkBackup == [enabled: true, networkPath: '//nas/b', username: 'u', passwordSet: true]
+        !JsonOutput.toJson(r).contains('secret')
+        !r.partial
+    }
+
+    def "full=true creates a full backup and confirms it by a NEW full entry"() {
+        given:
+        backupStubs()
+        int reads = 0
+        hubGet.register('/hub2/localBackups') { p ->
+            reads++
+            reads == 1 ? '[{"name":"full_old.tar.gz","fullBackup":true,"createTimeOrig":"2026-10-01T07:00:00+0000"}]' :
+                         '[{"name":"full_new.tar.gz","fullBackup":true,"createTimeOrig":"2026-10-08T07:00:00+0000"}]'
+        }
+
+        when:
+        def r = script.toolCreateHubBackup([full: true, confirm: true])
+
+        then:
+        r.success == true
+        r.full == true
+        r.confirmed == true
+        stateMap.lastBackupTimestamp != null
+    }
+
+    def "full=true is refused when the hub does not offer full local backups"() {
+        given:
+        backupStubs()
+        hubGet.register('/hub2/backup/json') { p -> '{"hasFullLocalBackup":false}' }
+
+        when:
+        def r = script.toolCreateHubBackup([full: true, confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains('hasFullLocalBackup')
+        !hubGet.calls.any { it.path == '/hub2/localBackups' }
+    }
+
+    def "a database backup is not confirmed by a full backup that lands meanwhile"() {
+        given:
+        backupStubs()
+        hubGet.register('/hub/backup/statusJson') { p -> '{"backupInProgress":true,"cloudBackupInProgress":false}' }
+        int reads = 0
+        hubGet.register('/hub2/localBackups') { p ->
+            reads++
+            reads == 1 ? '[{"name":"db.lzf","fullBackup":false,"createTimeOrig":"2026-10-01T07:00:00+0000"}]' :
+                         '[{"name":"db.lzf","fullBackup":false,"createTimeOrig":"2026-10-01T07:00:00+0000"},{"name":"full.tar.gz","fullBackup":true,"createTimeOrig":"2099-01-01T00:00:00+0000"}]'
+        }
+
+        when:
+        def r = script.toolCreateHubBackup([confirm: true])
+
+        then:
+        r.success == false
+        r.confirmed == false
+    }
+
+    def "networkBackup read-merges and keeps the saved password; testNetworkBackup tests the share"() {
+        given:
+        backupStubs()
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null ->
+            posts << [path: path, body: new JsonSlurper().parseText(body)]; [success: true, message: 'Connection successful']
+        }
+
+        when:
+        def r = script.toolCreateHubBackup([networkBackup: [networkPath: '//nas/new'], testNetworkBackup: true, scheduleOnly: true])
+
+        then:
+        r.success == true
+        posts*.path == ['/hub2/networkBackup/settings', '/hub2/networkBackup/test']
+        posts[0].body == [enabled: true, networkPath: '//nas/new', username: 'u', password: 'secret']
+        r.networkBackup.passwordSet == true
+        !r.networkBackup.containsKey('password')
+        !hubGet.calls.any { it.path == '/hub2/localBackups' }
+    }
+
+    def "an unknown networkBackup field is refused before anything is written"() {
+        given:
+        backupStubs()
+
+        when:
+        script.toolCreateHubBackup([networkBackup: [share: 'x'], scheduleOnly: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('Unknown networkBackup field')
+    }
+
+    def "cloudDownload copies a cloud backup into File Manager without creating a backup"() {
+        given:
+        backupStubs()
+        def seen = [:]
+        script.metaClass.hubInternalBytes = { String m, String path, Map q = null, Map form = null, int t = 300 -> seen.req = [m: m, path: path, form: form]; [status: 200, bytes: 'LZF'.getBytes('UTF-8')] }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> seen.name = name }
+
+        when:
+        def r = script.toolCreateHubBackup([cloudDownload: [path: 'cloud/abc.lzf', cloudBackupPassword: 'pw', saveAs: 'mine.lzf']])
+
+        then:
+        r.success == true
+        seen.req == [m: 'POST', path: '/hub2/downloadCloudDatabaseBackup', form: [fileName: 'cloud/abc.lzf', password: 'pw']]
+        seen.name == 'mine.lzf'
+        !hubGet.calls.any { it.path == '/hub2/localBackups' }
+    }
+
+    def "cloudDownload refuses to combine with other backup settings"() {
+        when:
+        script.toolCreateHubBackup([cloudDownload: [path: 'p', cloudBackupPassword: 'x'], full: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('cloudDownload runs on its own')
+    }
+
+    def "scope=hub_uploaded with a .tar.gz URL runs the full-restore flow"() {
+        given:
+        enableWrite()
+        def up = [:]
+        script.metaClass._fetchBytesFromUrl = { String url -> 'FULL'.getBytes('UTF-8') }
+        script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> up.path = path; up.fileName = fileName; [success: true] }
+        hubGet.register('/hub2/restoreFullLocalBackup') { p -> '{"success":true}' }
+
+        when:
+        def r = script.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://host/x/full_backup.tar.gz?dl=1', confirm: true])
+
+        then:
+        r.success == true
+        r.type == 'hub-full'
+        up == [path: '/hub2/uploadFullLocalBackup', fileName: 'full_backup.tar.gz']
+        !hubGet.calls.any { it.path == '/hub2/restoreUploadedBackup' }
+    }
+
+    // ---------------- files ----------------
+
+    def "hub_list_files lists a folder with entry types, backup flags and free space"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/fileManager/json') { p ->
+            JsonOutput.toJson([backupSelection: [excludedFiles: 1], freeSpace: 991530715,
+                               files: [[type: 'dir', name: 'sub', size: '0'], [type: 'file', name: 'a.js', size: '10', date: '1', backupIncluded: false]]])
+        }
+
+        when:
+        def r = script.toolListFiles([folder: '/webcore/'])
+
+        then:
+        hubGet.calls[0].params == [folder: 'webcore']
+        r.folder == 'webcore'
+        r.freeSpaceBytes == 991530715
+        r.filesExcludedFromFullBackup == 1
+        r.files.find { it.name == 'sub' } == [name: 'sub', type: 'dir']
+        r.files.find { it.name == 'a.js' }.directDownload == 'http://<HUB_IP>/local/webcore/a.js'
+        r.files.find { it.name == 'a.js' }.backupIncluded == false
+    }
+
+    @Unroll
+    def "hub_list_files refuses an unsafe folder: #folder"() {
+        when:
+        script.toolListFiles([folder: folder])
+
+        then:
+        thrown(IllegalArgumentException)
+        hubGet.calls.isEmpty()
+
+        where:
+        folder << ['../etc', 'a/../b', 'a//b', 'x;rm']
+    }
+
+    // ---------------- apps, dependents, events ----------------
+
+    def "hub_list_apps instances carry the hub's deprecated flag"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub2/appsList') { p ->
+            JsonOutput.toJson([apps: [[data: [id: 5, name: 'Sonos Integration', type: 'Sonos', disabled: false, user: false, hidden: false, deprecated: true], children: []],
+                                      [data: [id: 6, name: 'Rule Machine', type: 'RM', disabled: false, user: false, hidden: false], children: []]]])
+        }
+
+        when:
+        def r = script.toolListInstalledApps([:])
+
+        then:
+        r.apps.find { it.id == 5 }.deprecated == true
+        r.apps.find { it.id == 6 }.deprecated == false
+    }
+
+    def "hub_list_device_dependents adds the apps only getAppsUsingDevice reports"() {
+        given:
+        childDevicesList << [id: '42', label: 'Kitchen', name: 'Switch']
+        hubGet.register('/device/fullJson/42') { p ->
+            JsonOutput.toJson([name: 'Switch', appsUsing: [[id: 100, name: 'Rule-5.1', label: 'R', disabled: false]], appsUsingCount: 1])
+        }
+        script.metaClass.getAppsUsingDevice = { Long id ->
+            [[id: 100L, name: 'Rule-5.1', label: 'R'], [id: 3L, name: 'Easy Mobile Dashboard', label: 'Favorites', disabled: false]]
+        }
+
+        when:
+        def r = script.toolGetDeviceInUseBy([deviceId: '42'])
+
+        then:
+        r.appsUsing*.id == [100, 3L]
+        r.appsUsing[1].name == 'Easy Mobile Dashboard'
+        r.count == 2
+        !r.containsKey('countMismatch')
+    }
+
+    def "hub_list_device_dependents keeps its own list when the platform lookup is missing"() {
+        given:
+        childDevicesList << [id: '42', label: 'Kitchen', name: 'Switch']
+        hubGet.register('/device/fullJson/42') { p -> JsonOutput.toJson([name: 'Switch', appsUsing: [[id: 100, name: 'Rule-5.1', label: 'R']], appsUsingCount: 1]) }
+
+        when:
+        def r = script.toolGetDeviceInUseBy([deviceId: '42'])
+
+        then:
+        r.appsUsing*.id == [100]
+        r.count == 1
+    }
+
+    def "until bounds the location history window"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/logs/eventsJson') { p ->
+            JsonOutput.toJson([[name: 'mode', value: 'Night', date: '2026-10-08T03:00:00.000+0000'],
+                               [name: 'mode', value: 'Day', date: '2026-10-08T02:10:00.000+0000'],
+                               [name: 'mode', value: 'Away', date: '2026-10-08T01:00:00.000+0000']])
+        }
+
+        when:
+        def r = script.toolGetDeviceHistory([since: '2026-10-08T02:00:00.000+0000', until: '2026-10-08T02:15:00.000+0000'])
+
+        then:
+        r.events*.value == ['Day']
+        r.untilTimestamp != null
+    }
+
+    def "until earlier than the window start is refused"() {
+        when:
+        script.toolGetDeviceHistory([since: '2026-10-08T02:00:00.000+0000', until: '2026-10-08T01:00:00.000+0000'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('until must be later')
+    }
+
+    // ---------------- variables ----------------
+
+    def "hub_list_variables type filter keeps one hub type and drops rule-engine variables"() {
+        given:
+        settingsMap.enableRead = true
+        stateMap.ruleVariables = [r: 1]
+        script.metaClass.getAllGlobalVars = { -> [n: [type: 'integer', value: 1], s: [type: 'string', value: 'x']] }
+
+        when:
+        def r = script.toolListVariables([type: 'Number'])
+
+        then:
+        r.hubVariables*.name == ['n']
+        r.ruleVariables == []
+    }
+
+    def "increment adds atomically through addValueToGlobalVar"() {
+        given:
+        def adds = []
+        def current = [value: 10]
+        script.metaClass.getGlobalVar = { String n -> [type: 'integer', value: current.value] }
+        script.metaClass.addValueToGlobalVar = { String n, Object v -> adds << [n, v]; current.value = current.value + (v as int); true }
+
+        when:
+        def r = script.toolSetVariable([name: 'counter', increment: 5])
+
+        then:
+        r.success == true
+        adds == [['counter', 5]]
+        r.previousValue == 10
+        r.value == 15
+    }
+
+    @Unroll
+    def "increment is refused before any write: #label"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> var }
+        def adds = []
+        script.metaClass.addValueToGlobalVar = { String n, Object v -> adds << v; true }
+
+        when:
+        script.toolSetVariable([name: 'v'] + args)
+
+        then:
+        thrown(IllegalArgumentException)
+        adds.isEmpty()
+
+        where:
+        label              | var                              | args
+        'with value'       | [type: 'integer', value: 1]      | [increment: 1, value: '2']
+        'not a number'     | [type: 'integer', value: 1]      | [increment: 'abc']
+        'string variable'  | [type: 'string', value: 'x']     | [increment: 1]
+        'no hub variable'  | null                             | [increment: 1]
+    }
+
+    // ---------------- platform API docs ----------------
+
+    static final String DOCS_INDEX = JsonOutput.toJson([schemaVersion: 1, contentRevision: '64', guides: [[id: 'allowed-imports', title: 'Allowed imports', summary: 'Check which external imports are available.', url: 'https://docs2.hubitat.com/x']],
+        pages: [[id: 'api-com-hubitat-app-devicewrapper', className: 'com.hubitat.app.DeviceWrapper', label: 'Device wrapper', section: 'shared', topic: 'Device wrapper',
+                 methods: [[kind: 'method', name: 'eventsBetween', signature: 'List<Event> eventsBetween(Date startDate, Date endDate, Map options = null)', summary: 'Read recent events within a date range.'],
+                           [kind: 'method', name: 'eventsSince', signature: 'List<Event> eventsSince(Date startDate, Map options = null)', summary: 'Read recent events after a date.']]],
+                [id: 'api-hubitat-zwave-x', className: 'hubitat.zwave.X', label: 'X', section: 'protocols', topic: 'Z-Wave',
+                 methods: [[kind: 'method', name: 'events', signature: 'void events()', summary: 'protocol events between frames']]]]])
+
+    def "platform_api_search ranks app and shared methods first and pages 25 at a time"() {
+        given:
+        hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
+
+        when:
+        def r = script.toolGetToolGuide(null, null, [platform_api_search: 'eventsBetween'])
+
+        then:
+        r.success == true
+        r.total == 1
+        r.matches[0].name == 'eventsBetween'
+        r.matches[0].pageId == 'api-com-hubitat-app-devicewrapper'
+        !r.containsKey('nextCursor')
+    }
+
+    def "a broad platform_api_search puts shared-API hits ahead of protocol pages"() {
+        given:
+        hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
+
+        when:
+        def r = script.toolGetToolGuide(null, null, [platform_api_search: 'events'])
+
+        then:
+        r.matches.findIndexOf { it.section == 'shared' } < r.matches.findIndexOf { it.section == 'protocols' }
+    }
+
+    def "platform_api_page returns a class's methods with full descriptions"() {
+        given:
+        hubGet.register('/developer-docs/api-com-hubitat-app-devicewrapper.json') { p ->
+            JsonOutput.toJson([id: 'api-com-hubitat-app-devicewrapper', className: 'com.hubitat.app.DeviceWrapper', label: 'Device wrapper', section: 'shared',
+                               methods: (1..45).collect { [kind: 'method', name: "m${it}", signature: "void m${it}()", descriptionMarkdown: "Does ${it}."] }])
+        }
+
+        when:
+        def first = script.toolGetToolGuide(null, null, [platform_api_page: 'api-com-hubitat-app-devicewrapper'])
+        def second = script.toolGetToolGuide(null, first.nextCursor, [platform_api_page: 'api-com-hubitat-app-devicewrapper'])
+
+        then:
+        first.totalMethods == 45
+        first.methods.size() == 40
+        first.methods[0].description == 'Does 1.'
+        second.methods.size() == 5
+        !second.containsKey('nextCursor')
+    }
+
+    @Unroll
+    def "API docs arguments are validated: #label"() {
+        when:
+        script.toolGetToolGuide(section, null, extra)
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        label                 | section  | extra
+        'with a section'      | 'rules'  | [platform_api_search: 'x']
+        'both lookups'        | null     | [platform_api_search: 'x', platform_api_page: 'y']
+        'bad page id'         | null     | [platform_api_page: '../etc']
+        'empty search'        | null     | [platform_api_search: '   ']
+    }
+
+    @Unroll
+    def "platform_api_search reaches a client through hub_get_tool_guide dispatch (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
+
+        when:
+        def response = mcpDriver.callTool('hub_get_tool_guide', [platform_api_search: 'eventsBetween'])
+
+        then:
+        response.error == null
+        response.result.isError != true
+        mcpDriver.parseInner(response).matches[0].name == 'eventsBetween'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    // ---------------- diagnostics helpers ----------------
+
+    def "_typeName and _exceptionWithLine fall back without the 2.5.2 platform helpers"() {
+        expect:
+        script._typeName([a: 1]) == 'Map'
+        script._typeName(null) == 'null'
+        script._exceptionWithLine(new IllegalStateException('boom')) == 'java.lang.IllegalStateException: boom'
+    }
+
+    def "_typeName uses getObjectClassName when the platform has it"() {
+        given:
+        script.metaClass.getObjectClassName = { Object o -> 'java.util.LinkedHashMap' }
+
+        expect:
+        script._typeName([a: 1]) == 'LinkedHashMap'
+    }
+}

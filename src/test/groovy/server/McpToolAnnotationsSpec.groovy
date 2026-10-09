@@ -322,7 +322,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         def expectedIdempotent = [
             'hub_update_custom_rule', 'hub_delete_custom_rule',
             'hub_set_hsm', 'hub_set_mode_manager', 'hub_update_hub_mesh',
-            'hub_set_variable', 'hub_delete_variable', 'hub_create_connector', 'hub_delete_connector',
+            'hub_delete_variable', 'hub_create_connector', 'hub_delete_connector',
             'hub_update_mcp_settings', 'hub_set_log_level', 'hub_delete_debug_logs',
             'hub_delete_captured_state',
             'hub_update_device', 'hub_delete_device',
@@ -345,6 +345,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_custom_rule', 'hub_import_custom_rule', 'hub_clone_custom_rule',
             'hub_export_custom_rule',
             'hub_create_variable',
+            // hub_set_variable(increment) adds again on a retry.
+            'hub_set_variable',
             'hub_create_backup',
             'hub_reboot', 'hub_shutdown', 'hub_update_firmware', 'hub_call_gc',
             'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_ops',

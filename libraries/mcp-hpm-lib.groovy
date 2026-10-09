@@ -320,7 +320,7 @@ def toolGetHpmDrift(args) {
         } else {
             def userAppTypesParsed = new groovy.json.JsonSlurper().parseText(userAppTypesText)
             if (!(userAppTypesParsed instanceof List)) {
-                def actualTypeName = (userAppTypesParsed instanceof Map) ? "Map" : (userAppTypesParsed == null ? "null" : "unknown")
+                def actualTypeName = _typeName(userAppTypesParsed)
                 def rawPreview = userAppTypesParsed?.toString() ?: ""
                 def actualPreview = rawPreview.length() > 200 ? rawPreview.take(200) + " (truncated)" : rawPreview
                 orphanDetection = [enabled: false, reason: "Unexpected /hub2/userAppTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-app signals were not evaluated this call"]
@@ -352,7 +352,7 @@ def toolGetHpmDrift(args) {
         } else {
             def userDeviceTypesParsed = new groovy.json.JsonSlurper().parseText(userDeviceTypesText)
             if (!(userDeviceTypesParsed instanceof List)) {
-                def actualTypeName = (userDeviceTypesParsed instanceof Map) ? "Map" : (userDeviceTypesParsed == null ? "null" : "unknown")
+                def actualTypeName = _typeName(userDeviceTypesParsed)
                 def rawPreview = userDeviceTypesParsed?.toString() ?: ""
                 def actualPreview = rawPreview.length() > 200 ? rawPreview.take(200) + " (truncated)" : rawPreview
                 orphanDriverDetection = [enabled: false, reason: "Unexpected /hub2/userDeviceTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-driver signals were not evaluated this call"]

@@ -3588,6 +3588,14 @@ def toolGetDeviceHistory(args) {
     def limit = Math.min(args.limit ?: 100, 500)
     def attributeFilter = args.attribute
     def (sinceDate, sinceMode, effectiveHoursBack, sinceEcho) = _resolveSinceWindow(args, hoursBack)
+    // Optional window END (inclusive), in the same formats as since: a bounded history slice.
+    Date untilDate = null
+    if (args.until != null) {
+        untilDate = _parseSinceArg(args.until)
+        if (untilDate == null) throw new IllegalArgumentException("until is not a valid timestamp: '${args.until}'. Use the ISO-8601 form this tool emits in 'date' or epoch milliseconds.")
+        if (!untilDate.after(sinceDate)) throw new IllegalArgumentException("until must be later than the window start (${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}).")
+    }
+    def untilEcho = (untilDate != null) ? untilDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ") : null
 
     // App-scope branch: events an installed app/rule emitted, read from the same
     // endpoint the admin UI's per-app Events page uses. The endpoint takes no
@@ -3635,6 +3643,7 @@ def toolGetDeviceHistory(args) {
             // returned `date` fed back as `since` never replays itself. At the exact-millisecond
             // boundary this is a deliberate tightening from the prior inclusive behaviour.
             if (evtDate != null && !evtDate.after(sinceDate)) continue
+            if (untilDate != null && evtDate != null && evtDate.after(untilDate)) continue
             appResults << [
                 name: evt.name,
                 value: evt.value,
@@ -3659,6 +3668,7 @@ def toolGetDeviceHistory(args) {
         // both would imply hoursBack bounded the result when `since` did.
         if (sinceMode == "relative") appResult.hoursBack = effectiveHoursBack
         else appResult.since = sinceEcho
+        if (untilEcho) appResult.untilTimestamp = untilEcho
         // Mirror the hub-log path: surface rows that escaped the time window
         // because their date would not parse (the window is always active here).
         if (timeFilterUnparseable > 0) appResult.timeFilterUnparseable = timeFilterUnparseable
@@ -3705,6 +3715,7 @@ def toolGetDeviceHistory(args) {
             try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
             catch (Exception ignored) { timeFilterUnparseable++ }
             if (evtDate != null && !evtDate.after(sinceDate)) continue
+            if (untilDate != null && evtDate != null && evtDate.after(untilDate)) continue
             locResults << [
                 name: evt.name,
                 value: evt.value,
@@ -3728,6 +3739,7 @@ def toolGetDeviceHistory(args) {
         ]
         if (sinceMode == "relative") locResult.hoursBack = effectiveHoursBack
         else locResult.since = sinceEcho
+        if (untilEcho) locResult.untilTimestamp = untilEcho
         // Mirror the hub-log path: surface rows that escaped the always-active
         // time window because their date would not parse.
         if (timeFilterUnparseable > 0) locResult.timeFilterUnparseable = timeFilterUnparseable
@@ -3742,11 +3754,11 @@ def toolGetDeviceHistory(args) {
     _requireDeviceToolAccess(deviceId)
     def full = _fetchDeviceFullJson(deviceId)
     if (!(full?.device instanceof Map)) return [success: false, isError: true, error: "Device metadata fetch failed (/device/fullJson/${deviceId})", note: 'Check native device details and retry.']
-    return _deviceHistoryBypass(args, full, sinceDate, sinceMode, effectiveHoursBack, sinceEcho, attributeFilter, limit)
+    return _deviceHistoryBypass(args, full, sinceDate, sinceMode, effectiveHoursBack, sinceEcho, attributeFilter, limit, untilDate)
 
 }
 
-private Map _deviceHistoryBypass(args, Map fj, sinceDate, sinceMode, effectiveHoursBack, sinceEcho, attributeFilter, limit) {
+private Map _deviceHistoryBypass(args, Map fj, sinceDate, sinceMode, effectiveHoursBack, sinceEcho, attributeFilter, limit, Date untilDate = null) {
     def deviceLabel = _bypassDeviceLabel(fj, args.deviceId)
     def rows = _fetchBypassDeviceEvents(args.deviceId)
     if (rows == null) {
@@ -3764,6 +3776,7 @@ private Map _deviceHistoryBypass(args, Map fj, sinceDate, sinceMode, effectiveHo
         try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
         catch (Exception ignored) { timeFilterUnparseable++ }
         if (evtDate != null && !evtDate.after(sinceDate)) continue
+        if (untilDate != null && evtDate != null && evtDate.after(untilDate)) continue
         results << _mapBypassEventRow(evt)
         if (results.size() >= limit) break
     }
@@ -3780,6 +3793,7 @@ private Map _deviceHistoryBypass(args, Map fj, sinceDate, sinceMode, effectiveHo
     ]
     if (sinceMode == "relative") deviceResult.hoursBack = effectiveHoursBack
     else deviceResult.since = sinceEcho
+    if (untilDate != null) deviceResult.untilTimestamp = untilDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
     if (timeFilterUnparseable > 0) deviceResult.timeFilterUnparseable = timeFilterUnparseable
     return deviceResult
 }
@@ -5674,6 +5688,7 @@ Default: most-recent events for a device (deviceId + optional limit). Device eve
                     deviceId: [type: ["string", "integer"], description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."],
                     appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted). Mutually exclusive with deviceId."],
                     hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events.[[FLAT_TRIM]] Ignored when since is given.[[/FLAT_TRIM]]"],
+                    until: [type: ["string", "integer"], description: "Optional window end (inclusive), same formats as since; with since or hoursBack it returns one bounded slice of history."],
                     since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp; ISO-8601 with a numeric offset (-0600 or -06:00; e.g. 2026-06-23T10:00:00.000-0600) or epoch milliseconds.[[FLAT_TRIM]] This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500).[[FLAT_TRIM]] Higher values may slow hub.[[/FLAT_TRIM]]", default: 10]

@@ -3176,6 +3176,14 @@ class TestRunner:
         assert all(_iso_epoch_ms(r["date"]) > bookmark_ms for r in res_ms.get("events", []) if r.get("date")), \
             f"epoch-ms since returned an event at or before the bookmark: {res_ms}"
 
+        # until closes the window: nothing after it comes back, and it is echoed.
+        bounded = self.client.call_tool("hub_list_device_events", {"deviceId": dev_id, "hoursBack": 168, "until": bookmark_ms})
+        assert bounded.get("untilTimestamp"), f"until was not echoed: {bounded}"
+        assert all(_iso_epoch_ms(r["date"]) <= bookmark_ms for r in bounded.get("events", []) if r.get("date")), \
+            f"until returned an event after the window end: {bounded}"
+        self._expect_tool_refusal("hub_list_device_events", {"deviceId": dev_id, "since": bookmark_ms, "until": bookmark_ms - 1000},
+                                  "until must be later")
+
     @test("diagnostics")
     def test_radio_details_include_topology(self) -> None:
         # Item 3 (#257): include_topology folds the read-only mesh route map into hub_get_radio_details.
@@ -3198,6 +3206,10 @@ class TestRunner:
         # include_status fold must not error the call (its former standalone assertion).
         assert "error" not in result or isinstance(result.get("error"), str), \
             f"include_status unexpected error shape: {result}"
+        # 2.5.2: Z-Wave JS readiness, Z-Wave local backup and batch firmware pollers ride include_status.
+        status = result.get("status") or {}
+        for key in ("zwaveJs", "zwaveLocalBackup", "zwaveFirmwareBatch"):
+            assert key in status, f"include_status is missing the {key} poller: {sorted(status)}"
 
     @test("diagnostics")
     def test_radio_details_matter(self) -> None:
@@ -3208,6 +3220,10 @@ class TestRunner:
         # (a valid source string), proving radio='matter' dispatched rather than erroring.
         result = self.client.call_tool("hub_get_radio_details", {"radio": "matter"})
         assert isinstance(result, dict), "hub_get_radio_details radio='matter' did not return an object"
+        # radio='matter' also reads the Wi-Fi network the hub gives Matter devices -- never a password.
+        assert "wifiCredentials" in result, f"radio='matter' did not attach wifiCredentials: {sorted(result)}"
+        assert '"password"' not in json.dumps(result.get("wifiCredentials")), "Matter Wi-Fi read leaked a password field"
+        self._expect_tool_refusal("hub_call_matter", {"action": "cancel_pair"}, "cancel_pair requires node_id")
         source = result.get("source")
         assert source in ("hub_api", "hub_api_raw", "sdk_only"), \
             f"radio='matter' did not set a recognized source (fold path didn't fire?): {result}"
@@ -3221,6 +3237,15 @@ class TestRunner:
             # No Matter radio on this hub -- the note must steer toward the C-8 / C-8 Pro requirement.
             assert "matter" in str(result.get("note", "")).lower(), \
                 f"sdk_only fallback missing an actionable Matter note: {result}"
+
+    def _expect_tool_refusal(self, name: str, args: dict, needle: str) -> None:
+        """A validation refusal that fires before anything is sent: an isError carrying `needle`."""
+        try:
+            result = self.client.call_tool(name, args)
+        except McpToolError as exc:
+            assert needle in str(exc), f"{name} refused, but not with {needle!r}: {exc}"
+            return
+        raise AssertionError(f"{name} must refuse {args} with {needle!r}, got: {str(result)[:400]}")
 
     def _call_health_probe(self, args: dict) -> dict:
         try:
@@ -3338,6 +3363,11 @@ class TestRunner:
         zw_fw = (details.get("zwaveData") or {}).get("firmwareVersion") if isinstance(details.get("zwaveData"), dict) else None
         if zw_fw:
             assert details.get("zwaveVersion") not in (None, "unavailable"), f"zwaveVersion must be filled when the details carry firmware {zw_fw}: {details}"
+        # The 2.5.2 Z-Wave writes refuse bad shapes before anything reaches the radio.
+        self._expect_tool_refusal("hub_set_zwave", {"zwave_js": True, "region": "US", "confirm": True}, "send it on its own call")
+        self._expect_tool_refusal("hub_call_zwave", {"action": "cc_command", "node_id": "abc", "command_class": 37,
+                                                     "method_name": "get", "confirm": True}, "decimal Z-Wave node number")
+        self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_keys", "import_id": "x"}, "security_keys")
 
     @test("diagnostics")
     def test_set_zigbee_enabled_idempotent(self) -> None:
@@ -3345,8 +3375,11 @@ class TestRunner:
         # hub without a Zigbee radio (structured error / 5xx tolerated). Config read-back after.
         assert self._resilient_radio_write(
             "hub_set_zigbee", {"enabled": True}, "hub_set_zigbee(enabled=true)")
-        details = self.client.call_tool("hub_get_radio_details", {"radio": "zigbee"})
+        details = self.client.call_tool("hub_get_radio_details", {"radio": "zigbee", "include_devices": True})
         assert isinstance(details, dict), f"hub_get_radio_details read-back did not return an object: {details}"
+        devs = details.get("zigbeeDevices") or {}
+        assert "error" in devs or isinstance(devs.get("devices"), list), f"include_devices returned nothing usable: {devs}"
+        assert all("minutesSinceLastMessage" in d for d in devs.get("devices") or []), f"Zigbee activity rows lack their age: {devs}"
         # The Hub object has no zigbeeChannel on current firmware; the details JSON's channel fills it.
         zb_channel = (details.get("zigbeeData") or {}).get("channel") if isinstance(details.get("zigbeeData"), dict) else None
         if zb_channel is not None:
@@ -3471,6 +3504,9 @@ class TestRunner:
                           for s in ("confirm", "safety check", "required parameter"))
         assert refused, \
             f"hub_call_destructive_ops reset without confirm must be refused by the safety gate, got: {detail}"
+        # A batch firmware run without its target nodes is refused before anything is flashed.
+        self._expect_tool_refusal("hub_call_destructive_ops", {"target": "zwave", "action": "device_firmware_batch_start",
+                                                               "node_id": "4", "confirm": True}, "node_ids")
 
     @test("native_apps")
     def test_set_native_app_guide_meta_call_via_gateway(self) -> None:
@@ -12323,6 +12359,11 @@ class TestRunner:
         assert isinstance(app_type.get("system"), bool), f"appType.system missing/!bool: {app_type}"
         assert "menu" in app_type, f"appType summary missing menu key: {app_type}"
 
+        # Running instances carry the hub's deprecated flag (a retired app type, firmware 2.5.2).
+        inst = self.client.call_tool("hub_list_apps", {"scope": "instances", "cursor": ""})
+        assert inst.get("apps") and all(isinstance(a.get("deprecated"), bool) for a in inst["apps"]), \
+            f"app instances lack the deprecated flag: {(inst.get('apps') or [])[:3]}"
+
     @test("installed_app_reads")
     def test_list_app_events_structural(self) -> None:
         # Per-app events -- structural contract only. There is no cheap deterministic
@@ -12762,6 +12803,18 @@ class TestRunner:
                 assert got.get("source") == "hub", f"bulk var {it['name']} not in the hub namespace: {got}"
                 assert got.get("value") == it["value"], \
                     f"bulk var {it['name']} value mismatch on read-back: {got}"
+            # type filter: the Number lists, the String and Boolean do not, rule-engine vars drop out.
+            typed = self.client.call_tool("hub_read_variables", {"tool": "hub_list_variables", "args": {"type": "Number"}})
+            typed_names = [v.get("name") for v in typed.get("hubVariables") or []]
+            assert names[0] in typed_names and names[1] not in typed_names and names[2] not in typed_names, \
+                f"type=Number listing is wrong: {typed_names}"
+            assert typed.get("ruleVariables") == [], "a typed listing must leave rule-engine variables out"
+            # increment adds atomically on the hub and reports both values.
+            inc = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
+            assert inc.get("success") is True and inc.get("previousValue") == 1 and inc.get("value") == 6, \
+                f"increment did not add 5 to 1: {inc}"
+            self._expect_tool_refusal("hub_set_variable", {"name": names[1], "increment": 1}, "Number or Decimal hub variable")
         finally:
             for n in names:
                 self._delete_variable_safe(n)
@@ -13246,6 +13299,18 @@ class TestRunner:
         # The password must NEVER be returned, under any spelling.
         leaked = [k for k in sched if "password" in k.lower()]
         assert not leaked, f"schedule block leaked a password field: {leaked}"
+        # Firmware 2.5.2 full-backup fields, and the network-share settings without a password.
+        assert "hasFullLocalBackup" in sched, f"schedule lacks the 2.5.2 full-backup fields: {sorted(sched)}"
+        nb = listing.get("networkBackup")
+        if nb is not None:
+            assert set(nb) == {"enabled", "networkPath", "username", "passwordSet"}, f"networkBackup shape: {nb}"
+        else:
+            assert any("networkBackup" in str(e) for e in listing.get("hubBackupErrors") or []), \
+                f"networkBackup missing without a recorded read error: {sorted(listing)}"
+        self._expect_tool_refusal("hub_create_backup", {"cloudDownload": {"path": "p", "cloudBackupPassword": "x"}, "full": True},
+                                  "cloudDownload runs on its own")
+        self._expect_tool_refusal("hub_create_backup", {"networkBackup": {"share": "x"}, "scheduleOnly": True},
+                                  "Unknown networkBackup field")
         # scope=source must NOT carry a schedule block.
         src = self.client.call_tool("hub_manage_backup", {"tool": "hub_list_backups", "args": {}})
         assert "schedule" not in src, f"scope=source should not carry a schedule block: {sorted(src.keys())}"
@@ -13847,6 +13912,8 @@ class TestRunner:
             lat_detail = str(exc)
             rejected_lat = "latitude" in lat_detail.lower() or "between" in lat_detail.lower()
         assert rejected_lat, f"out-of-range latitude (999) must be rejected by validation, got: {lat_detail}"
+        # dismissAlert without a key is refused before anything reaches /hub/dismissAlert.
+        self._expect_tool_refusal("hub_set_system_settings", {"dismissAlert": {"version": "1"}}, "dismissAlert must be {key")
 
         # 3 -- the timeZone confirm gate: a tz change WITHOUT confirm must be refused (no reboot). The
         # refusal surfaces as a raised McpError/-32602 ("confirm"/"backup"/"safety check"), OR an
@@ -13965,7 +14032,7 @@ class TestRunner:
         cached = self._hub_info_optin
         if cached is None:
             cached = self.client.call_tool(
-                "hub_get_info", {"includeHealthAlerts": True, "includeAppUpdate": True})
+                "hub_get_info", {"includeHealthAlerts": True, "includeAppUpdate": True, "includeSubscriptions": True})
             self._hub_info_optin = cached
         return cached
 
@@ -13987,6 +14054,17 @@ class TestRunner:
         if isinstance(items, list):
             keys = sorted({str(i["key"]) for i in items if isinstance(i, dict) and i.get("key")})
             assert ha["active"] == keys, f"healthAlerts.active must list the alert item keys {keys}: {ha}"
+            # 2.5.2.129: each item is also served as a dismissal handle for hub_set_system_settings.
+            assert [i.get("key") for i in ha.get("items") or []] == [i.get("key") for i in items if isinstance(i, dict) and i.get("key")], \
+                f"healthAlerts.items must mirror the alert items: {ha.get('items')}"
+            assert all(isinstance(i.get("dismissible"), bool) for i in ha.get("items") or []), \
+                f"alert items must carry a dismissible flag: {ha.get('items')}"
+        # includeSubscriptions (same opt-in call): the four subscriptions, or an explicit error on old firmware.
+        subs = info.get("subscriptions") or {}
+        assert "error" in subs or "hubProtect" in subs, f"subscriptions block has neither data nor an error: {subs}"
+        if "hubProtect" in subs:
+            assert all(isinstance(subs[k].get("active"), bool) for k in ("hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup") if k in subs), \
+                f"subscription entries must carry active: {subs}"
 
     @test("system_tools")
     def test_hub_get_info_update_reads(self) -> None:
@@ -13996,6 +14074,13 @@ class TestRunner:
         res = self._get_hub_info_optin()
         assert "platformUpdate" in res, f"missing platformUpdate: {sorted(res)}"
         assert "available" in res["platformUpdate"], f"platformUpdate shape wrong: {res['platformUpdate']}"
+        pu = res["platformUpdate"]
+        # 2.5.2.129 dropped the update flag; the alert item or the platform's latest-version check
+        # answers instead, so null is left only with a note pointing at Check for Updates.
+        if pu.get("available") is True:
+            assert pu.get("availableVersion"), f"a pending update must name its version: {pu}"
+        elif pu.get("available") is None:
+            assert "Check for Updates" in str(pu.get("note")), f"an unknown pending-update state needs its note: {pu}"
         assert "appUpdate" in res, f"includeAppUpdate did not attach appUpdate: {sorted(res)}"
         au = res["appUpdate"]
         assert "installedVersion" in au, f"appUpdate shape wrong: {au}"
@@ -14122,9 +14207,14 @@ class TestRunner:
         """Test hub_get_performance_stats with type=app."""
         result = self.client.call_tool("hub_manage_logs", {
             "tool": "hub_get_performance_stats",
-            "args": {"type": "app", "limit": 5},
+            "args": {"type": "app", "limit": 5, "includeCloudCalls": True},
         })
         assert isinstance(result, dict), f"hub_get_performance_stats returned {type(result)}"
+        cc = result.get("cloudCalls")
+        assert isinstance(cc, dict) and ("error" in cc or isinstance(cc.get("apps"), list)), \
+            f"includeCloudCalls attached neither per-app cloud calls nor an error: {cc}"
+        assert all("total" in a and isinstance(a.get("hourly"), list) for a in (cc.get("apps") or [])), \
+            f"cloud-call app entries lack total/hourly: {cc}"
         assert "appSummary" in result, "Missing 'appSummary'"
         assert "appStats" in result, "Missing 'appStats'"
         assert isinstance(result["appStats"], list), "appStats should be a list"
@@ -14552,6 +14642,11 @@ class TestRunner:
     def test_export_bundle(self) -> None:
         """hub_export_bundle saves a bundle's .zip to the File Manager (independently confirmed via
         hub_list_files). Self-cleaning."""
+        # The listing it is confirmed through: 2.5.2 entry types, free space, and a safe folder argument.
+        listing = self.client.call_tool("hub_read_files", {"tool": "hub_list_files", "args": {"cursor": ""}})
+        assert "freeSpaceBytes" in listing, f"hub_list_files did not report free space: {sorted(listing)}"
+        assert all("type" in f for f in listing.get("files") or []), f"listing entries lack a type: {(listing.get('files') or [])[:3]}"
+        self._expect_tool_refusal("hub_list_files", {"folder": "../etc"}, "relative File Manager folder")
         # Reuse the immutable bundle id test_list_bundles already resolved; fall back to a fresh
         # hub_list_bundles + identical filter when the stash is unset (isolation run).
         if self._mcp_bundle_id:
@@ -16417,6 +16512,17 @@ class TestRunner:
             f"page 2 offset {second.get('offset')} does not resume where page 1 ended"
         )
         assert len(second.get("content", "")) > 0, "cursor page carried no content"
+
+        # The hub's own API documentation pages too: a ranked search, then one class page.
+        found = self.client.call_tool("hub_get_tool_guide", {"platform_api_search": "eventsBetween"})
+        if found.get("success") is False:
+            assert "2.5.2" in str(found.get("note")), f"an API-docs miss must name the firmware it needs: {found}"
+        else:
+            hit = next((m for m in found.get("matches") or [] if m.get("name") == "eventsBetween"), None)
+            assert hit, f"eventsBetween not among the API-docs matches: {(found.get('matches') or [])[:5]}"
+            page = self.client.call_tool("hub_get_tool_guide", {"platform_api_page": hit["pageId"]})
+            assert page.get("methods") and len(page["methods"]) <= 40, f"API page did not page at 40 methods: {str(page)[:300]}"
+        self._expect_tool_refusal("hub_get_tool_guide", {"section": "rules", "platform_api_search": "x"}, "separate lookups")
 
     @test("best_practice_gating")
     def test_guide_sub_section_is_a_cheap_slice_of_its_parent(self) -> None:

@@ -94,7 +94,7 @@ RULES = [
         # (`obj.getClass` in a GString triggers the no-arg method at runtime).
         "id": "SANDBOX-001",
         "pattern": r"\bgetClass\b",
-        "message": "getClass() blocked in Hubitat sandbox",
+        "message": "getClass() blocked in Hubitat sandbox -- for a class name use getObjectClassName(obj) (firmware 2.5.2+) or the _typeName(obj) helper",
         "severity": "error",
     },
     {
@@ -561,6 +561,7 @@ PERSISTED_STATE_INVENTORY = {
         "accessToken", "ruleToDelete", "customEngineMigrated", "ruleVariables",
         "headersReadable", "originLocalIpReadable", "updateCheck",
         "lastBackupTimestamp", "debugLogs", "hubSecurityRetired", "hubSecurityFwUnreadable", "setupVersion",
+        "clientTokens",
     },
     "atomicState": {
         "mrtrRequests", "packageDeployInFlight", "lastSelfDeploy", "reportErrors",

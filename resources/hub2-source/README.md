@@ -10,14 +10,31 @@ with the hub's HTTP surface. Every file is downloaded verbatim from a hub at
 | File(s) | What it is |
 |---|---|
 | `vue-hub2.min.js` (~3.3 MB, platform 2.5.0.143) | The modern **Vue 3 SPA** as one MONOLITH — every component body inline, so this is the file whose string literals carry the **whole endpoint corpus** (`/hub2/appsList`, `/device/runmethod`, `/app/saveOrUpdateJson`, …). Kept deliberately: the 2.5.1 build is code-split and its shell no longer contains those literals |
-| `vue-hub2-shell-2.5.1.min.js` (~573 KB, platform 2.5.1.181) | The 2.5.1 **shell** — routes, the chunk-filename map (`.u=function(e)`) for every lazily-loaded chunk, and the components that were not split out. Grep it for routing; use the current chunks below for their endpoints and the monolith as historical reference |
-| `vue-hub2-visual-rule-builder-20.min.js` (~583 KB, platform 2.5.1.181) | The **Visual Rule Builder 2.0** code-split chunk — the entire 2.0 editor: graph compose/decompose, dialogs, and its own endpoints |
-| `vue-hub2-device-details.min.js`, `vue-hub2-device-details-shared.min.js` (platform 2.5.1.181) | Current device details and shared configuration components; use these for device read/write contracts, including preferences and Assistants |
+| `vue-hub2-shell-2.5.2.min.js` (~610 KB, platform 2.5.2.129) | The 2.5.2 **shell** — routes, the chunk-filename map (`.u=function(e)`) for every lazily-loaded chunk, the alert store (`/hub/alertsJson`, `/hub/dismissAlert`), and the components that were not split out. Grep it for routing; use the current chunks below for their endpoints and the monolith as historical reference |
+| `vue-hub2-visual-rule-builder-20.min.js` (~585 KB, platform 2.5.2.129) | The **Visual Rule Builder 2.0** code-split chunk — the entire 2.0 editor: graph compose/decompose, dialogs, and its own endpoints |
+| `vue-hub2-device-details.min.js`, `vue-hub2-device-details-shared.min.js` (platform 2.5.2.129) | Current device details and shared configuration components; use these for device read/write contracts, including preferences and Assistants |
+| `vue-hub2-{backup-restore,zwave-info,zwave-node-state,zwave-local-backup,add-device,alerts,matter-info,file-manager,subscriptions,cloud-calls,developer-documentation,cron-expression-generator,registration}.min.js` (platform 2.5.2.129) | The 2.5.2 chunks behind the endpoints in *Firmware 2.5.2 endpoints* below: full local backups, network-share backup, cloud downloads, Z-Wave JS, the Z-Wave firmware updater and local backup, Matter pairing with network credentials, alerts, File Manager folders, subscriptions, cloud calls and the on-hub API documentation |
 | `appUI.js`, `main.js`, `helpers.js`, `hub2utils.js`, `hubitat.min.js`, `success-compiled.js` | The **classic server-rendered `dynamicPage` engine** — the client side of the legacy app-config flow that Rule Machine and every other classic app still use |
 
 ## Capture state
 
-The two device chunks were captured **2026-09-08** from platform **2.5.1.181**,
+**2026-10-08, platform 2.5.2.129 (C-8):** the shell (now `vue-hub2-shell-2.5.2.min.js`,
+replacing the 2.5.1 shell), the VRB 2.0 chunk, both device chunks, `main.js` and
+`hubitat.min.js` were re-captured, and thirteen 2.5.2 chunks were added (see the
+table). The device and VRB chunks carry the same endpoint literals as their 2.5.1
+captures; the shell adds `/hub/alertsJson`, `/hub/dismissAlert` (replacing
+`/hub/dismissPlatformUpdate` and `/hub/dismissWeakZigbee`), `/hub/backup/statusJson`,
+`/hub/subscriptions`, `/hub/developerDocumentation` and `/hub2/createFullLocalBackup`.
+`appUI.js`, `helpers.js`, `hub2utils.js` and `success-compiled.js` were left alone:
+2.5.2.129 still serves them minified, with the same endpoint-literal deltas as 2.5.1.181
+(see below). SHA-256 of the 2.5.2.129 captures:
+
+- Shell: `4cfa23004ee6a1e756c34f981107982a210970242cd44e3e409b94fe2f03b387`
+- Device details: `11a300a4a6f9f9f4099a24ef0f784bdaafa57fd9b9a0d978581180e9f1fee8a8`
+- Shared device details: `90ccd285277ce8aab5a010d5c9607f25e90c11caebcbf1052aad8395075aa201`
+- VRB 2.0: `027c95200b4ac68ee698f13471f21b6778707de8852c68310038a7fbc1e720f3`
+
+The notes below record the earlier captures. The two device chunks were first captured **2026-09-08** from platform **2.5.1.181**,
 using the filenames mapped by the live shell. Their source paths are
 `/ui2/js/vue-hub2-device-details.min.js` and
 `/ui2/js/vue-hub2-device-details-shared.min.js`. SHA-256:
@@ -36,8 +53,8 @@ The shared component supplies the current `/device/update` form and
 `/device/updateAssistants` JSON contracts. The old monolith remains historical
 reference for components whose current chunks have not been captured.
 
-`vue-hub2-shell-2.5.1.min.js`, `main.js` and `vue-hub2-visual-rule-builder-20.min.js`
-were captured **2026-09-03** from a Hubitat **C-8** on platform **2.5.1.181**.
+The 2.5.1 shell, `main.js` and `vue-hub2-visual-rule-builder-20.min.js`
+were first captured **2026-09-03** from a Hubitat **C-8** on platform **2.5.1.181**.
 `vue-hub2.min.js` is still the **2.5.0.143 monolith** (captured 2026-05-26 / 2026-06-08),
 on purpose: the 2.5.1 SPA is code-split, so the shell that replaced it holds only a
 fraction of the endpoint literals (five of five sampled endpoints — `/hub2/appsList`,
@@ -188,7 +205,7 @@ HSM, onboarding).
 shrank from ~3.3 MB (2.5.0.143) to ~573 KB (2.5.1.181) because component bodies
 moved into lazily-loaded chunks; that shell keeps only the routes and the
 chunk-id → filename map (the `.u=function(e)` map, `"js/vue-hub2-" + {…}[e] +
-".min.js"`) and is vendored here as `vue-hub2-shell-2.5.1.min.js`. The
+".min.js"`); the current one is vendored here as `vue-hub2-shell-2.5.2.min.js`. The
 `vue-hub2.min.js` in this folder is deliberately the 2.5.0.143 MONOLITH, because
 it still carries the historical endpoint corpus inline. **Use the current device
 chunks for device contracts, the VRB 2.0 chunk for that editor, and the shell for
@@ -208,7 +225,7 @@ user-facing app type ("Visual Rules Builder" parent; children are hidden type
   `/app/ruleBuilder20Json/<id>`. **Live and OUT OF BETA on the 2.5.1 stable
   line** — it shipped 2.5.1.138 as "Visual Rule Builder 2.0 (beta)" and is now
   the format newly-created VRB rules speak on such a hub. Its component body is
-  **not in the shell**: `vue-hub2-shell-2.5.1.min.js` registers only the route, so grep the
+  **not in the shell**: `vue-hub2-shell-2.5.2.min.js` registers only the route, so grep the
   vendored chunk `vue-hub2-visual-rule-builder-20.min.js` for anything 2.0.
   A graph-format rule answers on `ruleBuilder20Json` and a classic rule does
   not, which is how the MCP VRB tools detect a rule's serialization; on 2.5.1
@@ -471,6 +488,40 @@ caller rather than hidden.
 | `GET  /device/updateLabel?deviceId=&label=` · `/device/updateRoom?deviceId=&room=<roomName>` | Dedicated label / room setters → `true`. `updateRoom` is keyed on the room NAME (not the id), and SILENTLY CREATES a spurious room for a name it doesn't match exactly (so callers must validate the name exists first AND send the canonical casing). `hub_create_device` tries `updateLabel` first for the optional `label`. **`updateLabel` availability varies by hub: live-found 404 on a 2.5.0.157 hub** (same sometimes-absent dedicated-setter class as `/device/setShowOnHome` / `/device/setDefaultCurrentState` above), so BOTH `hub_update_device` AND the `hub_create_device` post-create label step fall back to the portable wholesale `POST /device/update` form (which carries a `label` field) when this endpoint fails; only if BOTH paths fail does `hub_create_device` warn (non-fatal, pointing the caller at `hub_update_device`). |
 | `GET  /hub/compatibleDevices` | Hubitat's static compatible-device catalog — a JSON array (~1083 entries, ~1MB) of `{brand, name, deviceType, productNumber, protocol, driverName, deviceTypeId, appTypeId, integrationAppName, supportedHubs, joinInstructions, excludeInstructions, factoryResetInstructions, notes, additionalHardware, affiliateLink, zwaveAllianceId, zwaveAllianceXml, id}` with HTML pairing/exclude/factory-reset instructions. This is what the Vue "instructionSearch" page renders. Read-only. Backs `hub_get_compatible_devices` (filtered + paginated). |
 
+## Firmware 2.5.2 endpoints (platform 2.5.2.129)
+
+Read from the 2.5.2 chunks and probed read-only on a C-8 running 2.5.2.129. Writes that
+touch a radio, restore a backup or flash firmware were taken from the chunks only.
+
+| Endpoint | Notes |
+|---|---|
+| `GET  /hub/alertsJson` | The alert feed the shell polls every 15 s: `{alertItems:[{key, message, version?, dismissible, detailed}], alertMessages, headerMessages, databaseSize, lastCloudBackupMessage, spammyDeviceDetails, maxEvents, maxStates}`. A superset of `/hub2/hubData` `alerts`, which on .129 dropped the boolean alert flags. A pending update is the `PLATFORM_UPDATE_AVAILABLE` item, whose `version` is the build. Feeds `hub_get_info(includeHealthAlerts)` and `platformUpdate` |
+| `GET  /hub/dismissAlert?key=&version=` | Dismisses one alert (`version` only when the item has one). Replaces `/hub/dismissPlatformUpdate` and `/hub/dismissWeakZigbee`. `hub_set_system_settings(dismissAlert)` |
+| `GET  /hub/subscriptions/json?t=` | `{loaded, updatedAt, hubProtect, remoteAdmin, cloudBackup, fullLocalBackup, hasAvailableTrial, fullLocalBackupSupported}`; each subscription is `{isActive, pendingCancellation, end_ts, trialAvailable}`. `POST /hub/subscriptions/refresh` (body `{}`) re-reads them from the cloud. `hub_get_info(includeSubscriptions)` |
+| `GET  /logs/cloudCalls/json` | Per-app cloud calls: `{apps:[{id, name, installed, total, currentHour}], hours:[{appId, hourStart, count}], timeZone, startedAt, generatedAt}`. `/logs/json` `deviceStats[]`/`appStats[]` gained `cloudCallCount`. `hub_get_performance_stats(includeCloudCalls)` |
+| `GET  /hub/backup/statusJson` | Adds `fullLocalBackupInProgress` beside `backupInProgress`, `cloudBackupInProgress`, `restoreInProgress`, `cloudRestoreInProgress` |
+| `GET  /hub2/backup/json` | Adds `hasFullLocalBackup`, `fullLocalBackupSupported`, `fileManagerBackupExcludedCount`, `lastNetworkBackupMessage`, `lastCloudBackupDegraded`, `zwaveJsEnabled`, `zigbeeDisabled`, `zwaveDisabled`, `freshDatabase` |
+| `GET  /hub2/localBackups` | Entries carry `fileSize` (text, e.g. `"3 MB"`), `fullBackup`, `hasZWave`, `hasZigbee`, `platformVersion`. A full backup is `full_<scheduled\|manual>_<hubUID>_<model>_<build>_<time>_<...>.tar.gz` |
+| `GET  /hub2/createLocalBackup?full=<bool>` | Creates a local backup and answers `{success, message}` when it is written (the UI's Remote Admin path; on the LAN the UI downloads `/hub2/createFullLocalBackup` or `/hub2/createLocalDatabaseBackup` instead). `hub_create_backup(full=true)` |
+| `POST /hub2/uploadFullLocalBackup` (multipart `uploadFile`, `.gz`, 150 MB max) then `GET /hub2/restoreFullLocalBackup?suppressZWaveFirmwareMismatchHubNewer=&restoreZb=&restoreZw=&restoreFiles=&deleteExistingFiles=&t=` | Full restore. The answer is `{success}` (hub reboots), or `zwaveFirmwareMismatchBackupNewer`, `zwaveFirmwareMismatchHubNewer` (retry with the suppress flag), or `zwaveStackMismatch` with `backupZWaveStack` / `activeZWaveStack` / `zwaveStackMismatchMessage`. The UI offers no restore for a local full entry, only `GET /hub2/downloadLocalBackup?fileName=` and re-upload; `hub_restore_backup` does that download and upload itself |
+| `GET/POST /hub2/networkBackup/settings`, `POST /hub2/networkBackup/test` | Network-share copy of full backups: `{enabled, networkPath, username, password}` (the GET returns the password; the MCP server never does). Both POSTs take the same JSON and answer `{success, message}` |
+| `POST /hub2/downloadCloudDatabaseBackup`, `POST /hub2/downloadCloudFilesBackup` | Form body `{fileName: <cloud path>, password}`; the body is the `.lzf` database or the File Manager `.tar.gz`. `hub_create_backup(cloudDownload)` saves it to File Manager |
+| `GET  /hub/fileManager/json?folder=` | Lists a subfolder. Entries carry `type` (`file`/`dir`) and `backupIncluded`; the response adds `freeSpace` and `backupSelection.excludedFiles` (files over the full backup's 100 MiB limit) |
+| `POST /hub/matter/pairWithNetworkCredentials` | Matter pairing on 2.5.2, JSON `{setupCode, ssid, password}`; replaces `GET /hub/matter/pair?setupCode=`, which no 2.5.2 chunk references. Answers `{nodeId, error}`; nodeId `"0"` is a failure. The UI sends the stored SSID and the `passwordPlaceholder` from `GET /hub/matter/wifiCredentials` (`{availableNetworks, selectedSsid, storedSsid, hasStoredPassword, passwordPlaceholder}`, never the password) to reuse the stored password. `GET /hub/matter/cancelPair?nodeId=` stops a pairing |
+| `GET  /hub/zwave2/enable`, `/hub/zwave2/disable` | Switch to Z-Wave JS / back to the legacy stack; the hub reboots. `zwaveDetails/json` carries `zwaveJS`, `zwaveJSAvailable`, `zwaveJSReady`, `zwaveJSVersion`, `updateInProgress`, `zwaveLocalBackupEntitled`, and per-node `interviewComplete` / `interviewStage` |
+| `GET  /hub/zwave2/updateStatus` | `{updateInProgress, zwaveJSReady, zwaveJSVersion, interviewStatus:{totalNodes, completedNodes, pendingNodes, nodes}}` |
+| `GET  /hub/zwave2/reinterview?node=`, `/hub/zwave2/nodeDetails?node=`, `/hub/zwave2/linkReliability/status?node=` | Z-Wave JS node re-interview, interview + command-class details, and link-test status |
+| `POST /hub/zwave2/linkReliability/start` `{nodeId, rounds, intervalMs}` · `/abort` `{nodeId}` | Link reliability test (UI defaults 10 rounds, 1 s) |
+| `POST /hub/zwave2/ccCommand` | `{nodeId, endpoint, commandClass, methodName, args}`; `args` is the positional list, or `[{…}]` for an object-style method |
+| `GET  /hub/zwave/localBackup/status` | `{available, entitled, firmwareVersion, zwaveJSVersion}`; `available` needs Z-Wave JS |
+| `POST /hub/zwave/localBackup/create` → `{success, jobId}`; `GET …/job/<id>` → `{stage, percent, message, report?}`; `GET …/download/<id>` | Z-Wave network backup. Stages end at `DONE`, `READY` (an inspected import) or `FAILED` |
+| `POST /hub/zwave/localBackup/upload` (multipart `uploadFile`, 100 MB; `.tar .gz .tgz .zip .bin .bkp`) → `{success, importId}`; `POST …/securityKeys/<importId>` `{securityKeys:{S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl}, securityKeysLongRange:{S2_Authenticated, S2_AccessControl}}`; `POST …/restore/<importId>` `{confirmation:"RESTORE"}` → `{success, jobId}` | Z-Wave network import and restore |
+| `GET  /hub/zwave/deviceFirmware/{details,available,progress,batchCandidates}?nodeId=` · `GET …/batchProgress` | Firmware updater reads (`available` lists firmware-service updates with an `updateId`; batches need Z-Wave JS) |
+| `POST /hub/zwave/deviceFirmware/startAvailable` `{nodeId, updateId}` · `startBatch` `{sourceNodeId, target, fileName, nodeIds, inactivityTimeoutSeconds}` · `startAvailableBatch` `{sourceNodeId, updateId, nodeIds, inactivityTimeoutSeconds}` · `abortBatch` `{}` | Firmware updater writes. 2.5.2 refuses device firmware updates over Remote Admin |
+| `GET  /hub/zigbee/getDevicesJson` | `{status, devices:[{id, zigbeeId, name, lastMessage}]}`; `lastMessage` is epoch ms or null. `hub_get_radio_details(include_devices)` |
+| `GET  /hub2/appsList` | `systemAppTypes[]`, `userAppTypes[]` and every `apps[].data` carry `deprecated` (Device Firmware Updater and the legacy Sonos Integration on 2.5.2) |
+| `GET  /developer-docs/index.json`, `/developer-docs/<pageId>.json` | The on-hub Groovy API documentation (`/hub/developerDocumentation`): the index (~4.6 MB, 1,769 pages, 15 guides linking to docs2.hubitat.com) and one page per class with `descriptionMarkdown` per method. `hub_get_tool_guide(platform_api_search / platform_api_page)` |
+
 ## Working with the files
 
 String literals survive minification, so `grep` is the fastest way to find a
@@ -499,7 +550,7 @@ bytes, fetch them to a scratch path and diff the string literals rather than
 replacing the readable copies.
 
 To pick up another code-split chunk, read the chunk-id → filename map out of the
-shell (`grep -o '\.u=function(e)...' vue-hub2-shell-2.5.1.min.js`) and fetch
+shell (`grep -o '\.u=function(e)...' vue-hub2-shell-2.5.2.min.js`) and fetch
 `/ui2/js/vue-hub2-<name>.min.js` the same way.
 
 Record the platform version + capture date in *Capture state* at the top of this

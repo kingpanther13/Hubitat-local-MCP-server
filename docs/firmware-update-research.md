@@ -7,7 +7,7 @@ the HPM source, and this repo's code.
 > **UPDATE (#259, live-verified on FW 2.5.0.157):** the `/hub/cloud/*` family is the working,
 > token-free path and is what `hub_update_firmware` uses — this supersedes the `/management/*`
 > token-gated guess and the "no local check endpoint" gap noted below:
-> - `GET /hub/cloud/checkForUpdate` → `{version, upgrade, status:"UPDATE_AVAILABLE"|..., releaseNotesUrl, beta, hubCount, accountEmails[...]}` (a working local availability check; `hub_update_firmware` returns this verbatim under `available` — `accountEmails` is the hub owner's own email).
+> - `GET /hub/cloud/checkForUpdate` → `{version, upgrade, status:"UPDATE_AVAILABLE"|..., releaseNotesUrl, beta, hubCount, accountEmails[...]}` (a working local availability check; `hub_update_firmware` returns it under `available` with `accountEmails`, the hub owner's own email, removed).
 > - `GET /hub/cloud/updatePlatform` → applies (downloads, installs, self-reboots).
 > - `GET /hub/cloud/checkUpdateStatus` → `{status:"IDLE"|...}` (install progress; `hub_update_firmware(statusOnly=true)` polls it).
 > Note: `/hub/cloud/checkForUpdate` was MORE current than `/hub2/hubData.alerts.platformUpdateAvailable` (cloud said UPDATE_AVAILABLE 2.5.0.159 while hubData still read false). Rollback is still UI-only.

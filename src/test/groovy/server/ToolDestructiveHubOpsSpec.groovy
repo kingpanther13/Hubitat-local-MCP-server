@@ -283,12 +283,11 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         postedPath == null                       // firmware install must NOT plain-reboot
         result.success == true
         result.message.contains('Firmware update')
-        // available is the checkForUpdate payload returned VERBATIM (transparent -- the owner's own
-        // account email is intentionally surfaced, not redacted).
+        // available is the checkForUpdate payload minus the owner's account email.
         result.available.version == '2.5.0.157'
         result.available.upgrade == true
         result.available.status == 'UPDATE_AVAILABLE'
-        result.available.accountEmails == ['secret@example.com']
+        !result.available.containsKey('accountEmails')
         result.warning.contains('hub_get_info')
     }
 

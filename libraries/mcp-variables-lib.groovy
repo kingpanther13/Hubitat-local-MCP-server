@@ -197,6 +197,15 @@ def toolListVariables(args = null) {
         [name: name, value: value, source: "rule_engine"]
     } ?: []
 
+    // type filter: the hub-variable type as hub_create_variable names it, matched against the
+    // hub's stored type (integer, bigdecimal, string, boolean, datetime).
+    if (args?.type != null) {
+        def hubType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][args.type.toString()]
+        if (hubType == null) throw new IllegalArgumentException("type must be one of Number, Decimal, String, Boolean, DateTime.")
+        hubVariables = hubVariables.findAll { it.type?.toString()?.toLowerCase() == hubType }
+        ruleVariables = []
+    }
+
     def cursor = args?.cursor
     def paged = _paginateList(hubVariables, cursor, 100, "hub_list_variables")
     // Both per-list totals are always emitted so a caller can distinguish "1000 hub
@@ -980,6 +989,38 @@ def toolRemoveConnector(args) {
     ]
 }
 
+// Atomic numeric add on a Number/Decimal hub variable via the platform's addValueToGlobalVar(), so
+// concurrent increments cannot lose an update the way a read-then-set can.
+private Map _incrementHubVariable(String name, increment) {
+    def amount
+    try { amount = (increment instanceof Number) ? increment : new BigDecimal(increment.toString().trim()) }
+    catch (Exception e) { throw new IllegalArgumentException("increment must be a number (negative to subtract), got: ${increment}") }
+    def hv
+    try { hv = getGlobalVar(name) } catch (Exception e) {
+        throw new IllegalArgumentException("Unable to read hub variable '${name}' (${e.message ?: e}). Retry.")
+    }
+    if (hv == null) throw new IllegalArgumentException("increment applies only to hub variables; '${name}' is not a hub variable.")
+    def type = hv.type?.toString()?.toLowerCase()
+    if (!(type in ["integer", "bigdecimal"])) throw new IllegalArgumentException("increment needs a Number or Decimal hub variable; '${name}' is ${hv.type}.")
+    def before = hv.value
+    def ok
+    try {
+        ok = addValueToGlobalVar(name, amount)
+    } catch (Exception e) {
+        mcpLogError("variables", "addValueToGlobalVar failed for '${name}'", e)
+        return [success: false, name: name, error: "Increment failed: ${e.message}", note: "A variable linked from another hub over Hub Mesh cannot be incremented here; change it on its source hub."]
+    }
+    def after = null
+    try { after = getGlobalVar(name)?.value } catch (Exception ignored) { }
+    if (ok == false) {
+        return [success: false, name: name, value: after, error: "The hub did not apply the increment.",
+                note: "A variable linked from another hub over Hub Mesh cannot be incremented here; change it on its source hub."]
+    }
+    def out = [success: true, name: name, source: "hub", type: hv.type, increment: amount, previousValue: before, value: after]
+    if (type == "integer" && (amount as BigDecimal).stripTrailingZeros().scale() > 0) out.note = "A Number variable stores whole numbers; the hub rounded the result."
+    return out
+}
+
 def toolSetVariable(Map args) {
     args = args ?: [:]
     def name = args.name
@@ -994,8 +1035,12 @@ def toolSetVariable(Map args) {
 
     // VALIDATION FIRST -- everything below throws before any hub call / state write, so a rejected
     // call can be corrected and retried without a half-applied change.
+    if (args.containsKey("increment")) {
+        if (hasValue || hasMeshShared) throw new IllegalArgumentException("increment runs on its own; send value or mesh_shared on a separate call.")
+        return _incrementHubVariable(name.toString(), args.increment)
+    }
     if (!hasValue && !hasMeshShared) {
-        throw new IllegalArgumentException("Provide value, mesh_shared, or both.")
+        throw new IllegalArgumentException("Provide value, increment, mesh_shared, or value with mesh_shared.")
     }
     if (hasMeshShared && !(args.mesh_shared instanceof Boolean)) {
         throw new IllegalArgumentException("mesh_shared must be a boolean (true or false), got: ${args.mesh_shared}")
@@ -1477,6 +1522,7 @@ def _getAllToolDefinitions_partVariables() {
             inputSchema: [
                 type: "object",
                 properties: [
+                    type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Optional: list only hub variables of this type (rule-engine variables are left out)."],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the hubVariables list.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ]
@@ -1495,12 +1541,13 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_set_variable",
-            description: "Set an existing variable's value. For hub variables, value type must match the variable's declared type.[[FLAT_TRIM]] Falls back to the rule_engine namespace when no hub variable matches. Creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both — see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
+            description: "Set an existing variable's value, or add to a Number/Decimal hub variable with increment. For hub variables, value type must match the variable's declared type.[[FLAT_TRIM]] Falls back to the rule_engine namespace when no hub variable matches. Creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both — see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Variable name"],
                     value: [type: "string", description: "Variable value (string, number, or boolean as string).[[FLAT_TRIM]] Optional when mesh_shared is given.[[/FLAT_TRIM]]"],
+                    increment: [type: "number", description: "Add this amount (negative subtracts) to a Number or Decimal hub variable in one atomic hub operation, instead of value. Send alone."],
                     mesh_shared: [type: "boolean", description: "Hub Mesh: share/unshare this hub variable.[[FLAT_TRIM]] true shares into the mesh, false unshares; hub variables only; may accompany value or stand alone.[[/FLAT_TRIM]]"]
                 ],
                 required: ["name"]
@@ -1598,8 +1645,8 @@ def _idempotentWriteToolNames_partVariables() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
     return [
-        // Variables + connectors
-        "hub_set_variable", "hub_delete_variable", "hub_create_connector", "hub_delete_connector"
+        // Variables + connectors. hub_set_variable is not here: its increment re-adds on a retry.
+        "hub_delete_variable", "hub_create_connector", "hub_delete_connector"
     ]
 }
 
@@ -1608,9 +1655,9 @@ def _toolDisplayMeta_partVariables() {
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
         // Variables
-        hub_list_variables: [title: "List Variables", summary: "List all hub and rule-engine variables."],
+        hub_list_variables: [title: "List Variables", summary: "List hub and rule-engine variables, optionally only hub variables of one type."],
         hub_get_variable: [title: "Get Variable", summary: "Get a variable's value and metadata (optionally the apps that reference it)."],
-        hub_set_variable: [title: "Set Variable", summary: "Set an existing variable's value."],
+        hub_set_variable: [title: "Set Variable", summary: "Set an existing variable's value or atomically add to a numeric hub variable."],
         hub_create_variable: [title: "Create Variable", summary: "Create a new hub variable."],
         hub_delete_variable: [title: "Delete Variable", summary: "Permanently delete a hub variable and any connector it has."],
         hub_create_connector: [title: "Create Variable Connector", summary: "Create a virtual-device connector for a hub variable."],
