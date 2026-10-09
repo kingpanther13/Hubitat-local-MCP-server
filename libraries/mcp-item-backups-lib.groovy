@@ -969,6 +969,14 @@ private Map _downloadCloudBackup(spec) {
     if (!(part in ["database", "files"])) throw new IllegalArgumentException("cloudDownload.part must be 'database' or 'files'.")
     String ext = (part == "files") ? ".tar.gz" : ".lzf"
     String name = "cloud-backup-${part}-${new Date(now()).format('yyyyMMdd-HHmmss')}${ext}"
+    // The whole copy is held in memory, so it is sized first from the cloud list's total.
+    Long total = _cloudBackupSizeBytes(spec.path.toString())
+    if (total == null || total > 16L * 1024 * 1024) {
+        return [success: false, cloudDownload: true,
+                error: (total == null) ? "The hub's cloud backup list gives no size for '${spec.path}', so it was not downloaded." :
+                                         "That cloud backup is ${(total / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
+                note: "Check the path with hub_list_backups(scope='hub_cloud'), or download it from Settings > Backup and Restore in the Hubitat web UI. Nothing was saved."]
+    }
     try {
         def got = hubInternalBytes("POST", (part == "files") ? "/hub2/downloadCloudFilesBackup" : "/hub2/downloadCloudDatabaseBackup", null,
                                    [fileName: spec.path.toString(), password: spec.cloudBackupPassword.toString()])
@@ -1028,14 +1036,33 @@ private Long _localBackupSizeBytes(String fileName) {
         def raw = hubInternalGet("/hub2/localBackups")
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
         def entry = (parsed instanceof List) ? parsed.find { it instanceof Map && it.name?.toString() == fileName } : null
-        def m = (entry?.fileSize ?: entry?.size)?.toString() =~ /(?i)^\s*([\d.]+)\s*(B|KB|MB|GB)?\s*$/
-        if (!m.find()) return null
-        def mult = [B: 1L, KB: 1024L, MB: 1024L * 1024, GB: 1024L * 1024 * 1024].get((m.group(2) ?: "B").toUpperCase())
-        return ((m.group(1) as BigDecimal) * mult) as Long
+        return _parseSizeBytes(entry?.fileSize ?: entry?.size)
     } catch (Exception e) {
         mcpLog("warn", "hub-admin", "_localBackupSizeBytes: local backup list unreadable (${e.message})")
         return null
     }
+}
+
+// A cloud backup's total size from the hub's cloud list: an upper bound for either part.
+private Long _cloudBackupSizeBytes(String path) {
+    try {
+        def raw = hubInternalGet("/hub2/cloudBackups", [force: false])
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        def list = (parsed instanceof Map && parsed.backups instanceof List) ? parsed.backups : []
+        def entry = list.find { it instanceof Map && it.path?.toString() == path }
+        return _parseSizeBytes(entry?.fileSize)
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "_cloudBackupSizeBytes: cloud backup list unreadable (${e.message})")
+        return null
+    }
+}
+
+// "7 MB" / "512 KB" / a bare byte count -> bytes; null when it is not one of those.
+private Long _parseSizeBytes(value) {
+    def m = value?.toString() =~ /(?i)^\s*([\d.]+)\s*(B|KB|MB|GB)?\s*$/
+    if (!m.find()) return null
+    def mult = [B: 1L, KB: 1024L, MB: 1024L * 1024, GB: 1024L * 1024 * 1024].get((m.group(2) ?: "B").toUpperCase())
+    return ((m.group(1) as BigDecimal) * mult) as Long
 }
 
 // A full local backup as the hub lists it (fullBackup:true); the .tar.gz name decides when the list
@@ -1426,7 +1453,7 @@ A transport drop can lose the response while the hub still commits this write; v
         // ==================== Source-code item backup tools ====================
         [
             name: "hub_list_backups",
-            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups — a local backup's name and a cloud backup's path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule or share read joins hubBackupErrors (partial:true), never failing the listing. See hub_get_tool_guide(section='backup').[[/FLAT_TRIM]]",
+            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups — a local backup's name and a cloud backup's path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule read joins hubBackupErrors (partial:true) and a failed share read stays inside networkBackup; neither fails the listing. See hub_get_tool_guide(section='backup').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [

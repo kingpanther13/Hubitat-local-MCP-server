@@ -12817,10 +12817,19 @@ class TestRunner:
                 f"type=Number listing is wrong: {typed_names}"
             assert typed.get("ruleVariables") == [], "a typed listing must leave rule-engine variables out"
             # increment adds atomically on the hub and reports both values. Right after the bulk
-            # create the platform load limiter can refuse the call; bounce it like other writes.
-            inc, limited = self._call_with_limiter_bounce("hub_manage_variables", "hub_set_variable",
-                                                          {"name": names[0], "increment": 5}, "increment")
-            assert not limited, f"increment still refused by the load limiter: {limited}"
+            # create the platform load limiter can refuse the call: bounce it, and retry only when
+            # the read-back shows the first attempt added nothing (a retry must never add twice).
+            inc = self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
+            if "excessive hub load" in str(inc.get("error", "")):
+                self._clear_load_throttle(f"increment: {inc.get('error')}")
+                now_val = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_get_variable", "args": {"name": names[0]}}).get("value")
+                if now_val == 1:
+                    inc = self.client.call_tool("hub_manage_variables", {
+                        "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
+                else:
+                    inc = {"success": now_val == 6, "previousValue": 1, "value": now_val}
             assert inc.get("success") is True and inc.get("previousValue") == 1 and inc.get("value") == 6, \
                 f"increment did not add 5 to 1: {inc}"
             self._expect_tool_refusal("hub_set_variable", {"name": names[1], "increment": 1}, "Number or Decimal hub variable")

@@ -1012,9 +1012,10 @@ private Map _incrementHubVariable(String name, increment) {
     } catch (Exception e) {
         mcpLogError("variables", "addValueToGlobalVar failed for '${name}'", e)
         String why = e.message?.toString() ?: ""
-        return [success: false, name: name, error: "Increment failed: ${why}",
-                note: why.contains("excessive hub load") ? "The hub's load limiter refused the call and nothing was added. Wait a moment, check the value with hub_get_variable, then retry." :
-                      "A variable linked from another hub over Hub Mesh cannot be incremented here; change it on its source hub."]
+        def note = why.contains("excessive hub load") ? "The hub's load limiter refused the call. Wait a moment, check the value with hub_get_variable, then retry if it did not change." :
+                   "Check the value with hub_get_variable before retrying."
+        if (why.toLowerCase().contains("mesh") || why.toLowerCase().contains("linked")) note += " A variable linked from another hub over Hub Mesh is changed on its source hub."
+        return [success: false, name: name, error: "Increment failed: ${why}", note: note]
     }
     def after = null
     boolean readBack = true

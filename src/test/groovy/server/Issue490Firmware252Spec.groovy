@@ -803,6 +803,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         then:
         r.success == false
         r.note.contains('load limiter')
+        !r.note.contains('Hub Mesh')
     }
 
     def "an unreadable network-share block does not mark the backup listing partial"() {
@@ -939,6 +940,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     def "cloudDownload copies a cloud backup into File Manager without creating a backup"() {
         given:
         backupStubs()
+        hubGet.register('/hub2/cloudBackups') { p -> '{"backups":[{"path":"cloud/abc.lzf","fileSize":"7 MB"}]}' }
         def seen = [:]
         script.metaClass.hubInternalBytes = { String m, String path, Map q = null, Map form = null, int t = 300 -> seen.req = [m: m, path: path, form: form]; [status: 200, bytes: '-- H2 0.5/B -- \nDATA'.getBytes('UTF-8')] }
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> seen.name = name }
@@ -955,6 +957,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
     def "cloudDownload refuses to save a reply that is not a backup"() {
         given:
+        hubGet.register('/hub2/cloudBackups') { p -> '{"backups":[{"path":"cloud/abc","fileSize":"7 MB"}]}' }
         def saved = []
         script.metaClass.hubInternalBytes = { String m, String path, Map q = null, Map form = null, int t = 300 -> [status: 200, error: 'Invalid password'] }
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> saved << name }
@@ -966,6 +969,27 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         r.success == false
         r.error.contains('Invalid password')
         saved.isEmpty()
+    }
+
+    @Unroll
+    def "cloudDownload is refused before downloading when the cloud list gives #label"() {
+        given:
+        hubGet.register('/hub2/cloudBackups') { p -> listBody }
+        def downloads = []
+        script.metaClass.hubInternalBytes = { String m, String path, Map q = null, Map form = null, int t = 300 -> downloads << path; [status: 200, bytes: ([0x1f, 0x8b, 8, 0] as byte[])] }
+
+        when:
+        def r = script.toolCreateHubBackup([cloudDownload: [path: 'cloud/abc', cloudBackupPassword: 'pw', part: 'files'], confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains(expected)
+        downloads.isEmpty()
+
+        where:
+        label            | listBody                                                 | expected
+        'a large backup' | '{"backups":[{"path":"cloud/abc","fileSize":"40 MB"}]}'  | '16 MB'
+        'no size'        | '{"backups":[{"path":"cloud/abc"}]}'                     | 'no size'
     }
 
     def "cloudDownload refuses to combine with other backup settings"() {
