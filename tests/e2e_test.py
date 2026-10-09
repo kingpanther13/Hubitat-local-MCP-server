@@ -12819,17 +12819,24 @@ class TestRunner:
             # increment adds atomically on the hub and reports both values. Right after the bulk
             # create the platform load limiter can refuse the call: bounce it, and retry only when
             # the read-back shows the first attempt added nothing (a retry must never add twice).
+            # The penalty window can outlast one bounce, so a refused call is retried after a
+            # bounce and then two short waits.
             inc = self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
-            if "excessive hub load" in str(inc.get("error", "")):
-                self._clear_load_throttle(f"increment: {inc.get('error')}")
+            for wait_s in (0, 10, 20):
+                if "excessive hub load" not in str(inc.get("error", "")):
+                    break
+                if wait_s == 0:
+                    self._clear_load_throttle(f"increment: {inc.get('error')}")
+                else:
+                    time.sleep(wait_s)
                 now_val = self.client.call_tool("hub_manage_variables", {
                     "tool": "hub_get_variable", "args": {"name": names[0]}}).get("value")
-                if now_val == 1:
-                    inc = self.client.call_tool("hub_manage_variables", {
-                        "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
-                else:
+                if now_val != 1:
                     inc = {"success": now_val == 6, "previousValue": 1, "value": now_val}
+                    break
+                inc = self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
             assert inc.get("success") is True and inc.get("previousValue") == 1 and inc.get("value") == 6, \
                 f"increment did not add 5 to 1: {inc}"
             self._expect_tool_refusal("hub_set_variable", {"name": names[1], "increment": 1}, "Number or Decimal hub variable")
