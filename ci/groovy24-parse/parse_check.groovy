@@ -51,6 +51,9 @@ def BLOCKED_EXACT = [
     'java.net.MulticastSocket', 'java.net.URLClassLoader',
     'java.util.ArrayDeque',
 ] as Set
+// Constant-pool budget for one compiled app class; see Gate 3 in checkFile.
+CLASS_CP_BUDGET = 64000
+
 def isBlocked = { String fqn ->
     if (!fqn) return false
     if (BLOCKED_EXACT.contains(fqn)) return true
@@ -198,7 +201,44 @@ def checkFile = { String path ->
         println "OK   (Groovy ${GroovySystem.version} parse + sandbox class check): ${path}"
     }
 
+    // Gate 3: class size. The JVM caps a class at 65535 constant-pool entries, and the hub
+    // compiles the app with every #include inlined into one class: past the cap it refuses to
+    // load the app at all ("Class too large"), which no parse-level check sees. The hub's own
+    // compile adds entries on top of this count: 65,237 here loaded on a C-8, 65,439 did not.
+    def size = classSize(f.name, resolved)
+    if (size.tooLarge) {
+        System.err.println "FAIL (class too large for the JVM): ${path}"
+        System.err.println "  ${size.message}"
+        rc = 1
+    } else if (size.error) {
+        System.err.println "FAIL (class size not measured: ${size.error}): ${path}"
+        rc = 1
+    } else if (size.cp > CLASS_CP_BUDGET) {
+        System.err.println "FAIL (class over budget): ${path}: ${size.name} uses ${size.cp} constant-pool entries, budget ${CLASS_CP_BUDGET}"
+        System.err.println "  The hub refuses to load the app past ~65,300 here. Shrink the class before adding code."
+        rc = 1
+    } else {
+        println "CLASS SIZE ${path}: ${size.name} uses ${size.cp} constant-pool entries (budget ${CLASS_CP_BUDGET})"
+    }
+
     return rc
+}
+
+// Generate bytecode and read the largest class's constant-pool count (class-file bytes 8-9).
+def classSize(String name, String source) {
+    def cu = new CompilationUnit(new CompilerConfiguration())
+    cu.addSource(name, source)
+    try {
+        cu.compile(Phases.CLASS_GENERATION)
+    } catch (Throwable e) {
+        def msg = (e.message ?: e.toString())
+        return msg.contains('Class too large') ? [tooLarge: true, message: msg.take(300)] : [error: msg.take(200)]
+    }
+    def sizes = cu.classes.collect { gc ->
+        byte[] b = gc.bytes
+        [name: gc.name, cp: ((b[8] & 0xff) << 8) | (b[9] & 0xff)]
+    }
+    return sizes ? sizes.max { it.cp } : [error: 'no classes generated']
 }
 if (selfTest) {
     def binding = new Binding([checkFile: checkFile, repoRoot: repoRoot, resolverClass: resolverClass])
