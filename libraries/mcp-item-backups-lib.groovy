@@ -539,6 +539,7 @@ def toolCreateHubBackup(args) {
         if (args.schedule != null || args.networkBackup != null || args.testNetworkBackup == true || args.full == true) {
             throw new IllegalArgumentException("cloudDownload runs on its own; send schedule / networkBackup / full on a separate call.")
         }
+        if (!args.confirm) throw new IllegalArgumentException("cloudDownload writes the backup to File Manager: pass confirm=true.")
         return _downloadCloudBackup(args.cloudDownload)
     }
     def schedulePresent = args.schedule != null

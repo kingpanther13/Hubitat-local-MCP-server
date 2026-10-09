@@ -316,7 +316,7 @@ class ToolBackupSpec extends ToolSpecBase {
     private Map stubFullRestore() {
         def seen = [:]
         script.metaClass.hubInternalBytes = { String method, String path, Map query = null, Map form = null, int t = 300 ->
-            seen.download = [method: method, path: path, query: query]; [status: 200, bytes: 'FULLBYTES'.getBytes('UTF-8')]
+            seen.download = [method: method, path: path, query: query]; [status: 200, bytes: ([0x1f, 0x8b, 8, 0] as byte[])]
         }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes ->
             seen.upload = [path: path, field: field, fileName: fileName, size: bytes.length]; [success: true]

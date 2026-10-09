@@ -353,11 +353,11 @@ def toolGetToolGuide(section, cursor = null, Map apiDocs = null) {
     return _withGuidePage(result, fullGuide, cursor)
 }
 
-// The hub's own Groovy API reference (firmware 2.5.2+, Settings > For Developers > API
-// documentation), served from /developer-docs. A search downloads and parses the whole index (several
-// MB) in the app on every call and returns only ranked matches, 25 per page; a class page returns its
-// methods 40 per page. `methods` is read with Map.get: the sandbox blocks it as a property name.
 private Map _platformApiSearch(String query, cursor) {
+    // The hub's own Groovy API reference (firmware 2.5.2+, Settings > For Developers > API
+    // documentation), served from /developer-docs. A search downloads and parses the whole index
+    // (several MB) on every call and returns only ranked matches, 25 per page; a class page returns
+    // its methods 40 per page. `methods` is read with Map.get: the sandbox blocks it as a property.
     def terms = query.toLowerCase().split(/\s+/).findAll { it }
     if (!terms) throw new IllegalArgumentException("platform_api_search needs at least one word, e.g. 'eventsBetween' or 'hub variable'.")
     def index
@@ -424,7 +424,11 @@ private Map _platformApiPage(String pageId, cursor) {
     def methods = pgMethods.findAll { it instanceof Map }.collect { m ->
         [kind: m.kind, name: m.name, signature: m.signature, description: (m.descriptionMarkdown ?: m.summary)?.toString()?.trim()]
     }
+    // 40 methods a page, fewer when their descriptions would push a page past ~60 KB.
     def paged = _paginateList(methods, cursor != null ? cursor : "", 40, "hub_get_tool_guide")
+    while (paged.page.size() > 1 && groovy.json.JsonOutput.toJson(paged.page).length() > 60000) {
+        paged = _paginateList(methods, cursor != null ? cursor : "", paged.page.size() - 1, "hub_get_tool_guide")
+    }
     def out = [success: true, pageId: pg.id, className: pg.className, label: pg.label, section: pg.section, topic: pg.topic, usage: pg.usage,
                extendsClass: pg.extendsClass, totalMethods: methods.size(), methods: paged.page]
     if (paged.nextCursor != null) out.nextCursor = paged.nextCursor

@@ -1344,10 +1344,11 @@ private Map _shapeCloudCalls(Map raw) {
         if (!(h instanceof Map) || h.appId == null || h.hourStart == null) return
         def key = h.appId.toString()
         if (!hoursByApp.get(key)) hoursByApp.put(key, [])
-        hoursByApp.get(key) << [hourStart: formatTimestamp(h.hourStart as Long), count: h.count]
+        hoursByApp.get(key) << [epoch: h.hourStart as Long, count: h.count]
     }
     def apps = (raw.apps instanceof List ? raw.apps : []).findAll { it instanceof Map }.collect { a ->
-        def series = (hoursByApp.get(a.id?.toString()) ?: []).reverse()
+        def series = (hoursByApp.get(a.id?.toString()) ?: []).sort { -(it.epoch as long) }
+                                                            .collect { [hourStart: formatTimestamp(it.epoch as Long), count: it.count] }
         [id: a.id, name: a.name, installed: a.installed, total: a.total, currentHour: a.currentHour,
          hourly: series.take(168)]
     }.sort { -((it.total ?: 0) as long) }
@@ -2282,24 +2283,24 @@ def toolCallZwave(args) {
                 return [success: true, action: action, jobId: resp.jobId, message: "Z-Wave network backup started.",
                         note: "Poll hub_get_radio_details(backup_job_id='${resp.jobId}') until stage is DONE, then save it with action='local_backup_download'.", response: resp]
             case "local_backup_download":
-                if (!args.backup_id) throw new IllegalArgumentException("local_backup_download requires backup_id (the jobId from local_backup_create).")
-                return _zwaveBackupDownload(args.backup_id.toString())
+                if (!args.job_id) throw new IllegalArgumentException("local_backup_download requires job_id (the jobId from local_backup_create).")
+                return _zwaveBackupDownload(args.job_id.toString())
             case "local_backup_import":
                 if (!args.backup_url) throw new IllegalArgumentException("local_backup_import requires backup_url: an http(s) URL to a Hubitat or Z-Wave JS UI backup, archive, or raw NVM file.")
                 return _zwaveBackupImport(args.backup_url.toString())
             case "local_backup_keys":
-                if (!args.backup_id) throw new IllegalArgumentException("local_backup_keys requires backup_id (the importId from local_backup_import).")
+                if (!args.import_id) throw new IllegalArgumentException("local_backup_keys requires import_id (the importId from local_backup_import).")
                 if (!(args.security_keys instanceof Map)) throw new IllegalArgumentException("local_backup_keys requires security_keys: {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl} as 32-hex-digit strings, plus optional long_range: {S2_Authenticated, S2_AccessControl}.")
                 def lrKeys = (args.security_keys.long_range instanceof Map) ? args.security_keys.long_range : [:]
                 def mainKeys = args.security_keys.findAll { k, v -> k != "long_range" }
                 _zwValidateNetworkKeys(mainKeys, ["S0_Legacy", "S2_Unauthenticated", "S2_Authenticated", "S2_AccessControl"], "security_keys")
                 _zwValidateNetworkKeys(lrKeys, ["S2_Authenticated", "S2_AccessControl"], "security_keys.long_range")
                 def keyBody = [securityKeys: _zwNormalizeKeys(mainKeys), securityKeysLongRange: _zwNormalizeKeys(lrKeys)]
-                resp = _radioPost("/hub/zwave/localBackup/securityKeys/${URLEncoder.encode(args.backup_id.toString(), 'UTF-8')}", groovy.json.JsonOutput.toJson(keyBody))
+                resp = _radioPost("/hub/zwave/localBackup/securityKeys/${URLEncoder.encode(args.import_id.toString(), 'UTF-8')}", groovy.json.JsonOutput.toJson(keyBody))
                 if (!(resp instanceof Map) || resp.success != true) {
                     return [success: false, action: action, error: "The hub did not accept the security keys: ${(resp instanceof Map) ? (resp.message ?: 'no reason given') : resp}"]
                 }
-                return [success: true, action: action, importId: args.backup_id.toString(), report: resp.report,
+                return [success: true, action: action, importId: args.import_id.toString(), report: resp.report,
                         message: "Security keys saved for the imported backup.",
                         note: "Restore it with hub_call_destructive_ops(target='zwave', action='local_backup_restore', import_id=...)."]
             case "smartstart_delete":
@@ -3024,7 +3025,8 @@ def _getAllToolDefinitions_partDiagnostics() {
                     backup_url: [type: "string", description: "[[FLAT_TRIM]]local_backup_import: http(s) URL of the backup (8 MB max).[[/FLAT_TRIM]]"],
                     link_test: [type: "object", description: "[[FLAT_TRIM]]link_test_start (confirm=true): {rounds? (10), interval_ms? (1000)}.[[/FLAT_TRIM]]"],
                     cc: [type: "object", description: "[[FLAT_TRIM]]cc_command: {command_class (decimal or 0x hex), method_name, endpoint?, args?}.[[/FLAT_TRIM]]"],
-                    backup_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_download: jobId; local_backup_keys: importId.[[/FLAT_TRIM]]"],
+                    job_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_download: the jobId from local_backup_create.[[/FLAT_TRIM]]"],
+                    import_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_keys: the importId from local_backup_import.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "Required true for exclusion_start, node_remove, cc_command (backup <24h also enforced)."]
                 ],
                 required: ["action"]

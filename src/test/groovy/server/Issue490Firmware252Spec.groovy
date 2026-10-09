@@ -19,9 +19,20 @@ import support.ToolSpecBase
 class Issue490Firmware252Spec extends ToolSpecBase {
 
     @Shared private TestLocation sharedLocation = new TestLocation()
+    // asynchttpGet and httpPost are AppExecutor API methods: a script.metaClass override never
+    // intercepts them, so record them through the shared mock seam instead.
+    @Shared List asyncPaths = []
+    @Shared Closure httpPostHook = null
 
     def setupSpec() {
         appExecutor.getLocation() >> sharedLocation
+        appExecutor.asynchttpGet(*_) >> { args -> asyncPaths << args[1]?.path }
+        appExecutor.httpPost(*_) >> { args -> httpPostHook?.call(args[0], args[1]) }
+    }
+
+    def setup() {
+        asyncPaths.clear()
+        httpPostHook = null
     }
 
     def cleanup() {
@@ -517,7 +528,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         when:
         def c = script.toolCallZwave([action: 'local_backup_create'])
-        def k = script.toolCallZwave([action: 'local_backup_keys', backup_id: 'imp-1',
+        def k = script.toolCallZwave([action: 'local_backup_keys', import_id: 'imp-1',
                                       security_keys: [S0_Legacy: ' 0xAABBCCDDEEFF00112233445566778899 ', S2_Unauthenticated: 'c' * 32, S2_Authenticated: 'd' * 32,
                                                       S2_AccessControl: 'e' * 32, long_range: [S2_Authenticated: '0x' + '1' * 32]]])
 
@@ -538,7 +549,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         def posts = jsonPosts()
 
         when:
-        script.toolCallZwave([action: 'local_backup_keys', backup_id: 'imp-1', security_keys: keys])
+        script.toolCallZwave([action: 'local_backup_keys', import_id: 'imp-1', security_keys: keys])
 
         then:
         thrown(IllegalArgumentException)
@@ -560,7 +571,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> saved.name = name; saved.size = bytes.length }
 
         when:
-        def r = script.toolCallZwave([action: 'local_backup_download', backup_id: 'job-9'])
+        def r = script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9'])
 
         then:
         r.success == true
@@ -577,7 +588,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> saved << name }
 
         when:
-        def r = script.toolCallZwave([action: 'local_backup_download', backup_id: 'job-9'])
+        def r = script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9'])
 
         then:
         r.success == false
@@ -737,7 +748,6 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.register('/hub2/backup/json') { p -> '{"localBackupFrequency":1,"cloudBackupFrequency":0,"databaseCleanupTimeHour":3,"databaseCleanupJobMinute":0,"hasFullLocalBackup":true,"fullLocalBackupSupported":false,"fileManagerBackupExcludedCount":0,"lastNetworkBackupMessage":"","zwaveJsEnabled":false}' }
         hubGet.register('/hub2/networkBackup/settings') { p -> '{"enabled":true,"networkPath":"//nas/b","username":"u","password":"secret"}' }
         hubGet.register('/hub/backup/statusJson') { p -> '{"backupInProgress":false,"cloudBackupInProgress":false,"fullLocalBackupInProgress":false}' }
-        script.metaClass.asynchttpGet = { String handler, Map params -> null }
         script.metaClass.pauseExecution = { long ms -> null }
         script.metaClass.getHubSecurityCookie = { -> null }
     }
@@ -776,8 +786,6 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     def "full=true creates a full backup and confirms it by a NEW full entry"() {
         given:
         backupStubs()
-        def fired = []
-        script.metaClass.asynchttpGet = { String handler, Map params -> fired << params.path }
         int reads = 0
         hubGet.register('/hub2/localBackups') { p ->
             reads++
@@ -793,22 +801,20 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         r.full == true
         r.confirmed == true
         stateMap.lastBackupTimestamp != null
-        fired == ['/hub2/createFullLocalBackup']
+        asyncPaths == ['/hub2/createFullLocalBackup']
     }
 
     def "mock=true with full=true stamps the gate without a real backup"() {
         given:
         backupStubs()
         settingsMap.enableDeveloperMode = true
-        def fired = []
-        script.metaClass.asynchttpGet = { String handler, Map params -> fired << params.path }
 
         when:
         def r = script.toolCreateHubBackup([full: true, mock: true, confirm: true])
 
         then:
         r.success == true
-        fired.isEmpty()
+        asyncPaths.isEmpty()
         stateMap.lastBackupTimestamp != null
     }
 
@@ -901,7 +907,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> seen.name = name }
 
         when:
-        def r = script.toolCreateHubBackup([cloudDownload: [path: 'cloud/abc.lzf', cloudBackupPassword: 'pw']])
+        def r = script.toolCreateHubBackup([cloudDownload: [path: 'cloud/abc.lzf', cloudBackupPassword: 'pw'], confirm: true])
 
         then:
         r.success == true
@@ -917,7 +923,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> saved << name }
 
         when:
-        def r = script.toolCreateHubBackup([cloudDownload: [path: 'cloud/abc', cloudBackupPassword: 'pw']])
+        def r = script.toolCreateHubBackup([cloudDownload: [path: 'cloud/abc', cloudBackupPassword: 'pw'], confirm: true])
 
         then:
         r.success == false
@@ -1009,7 +1015,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     def "_postMultipartBackup sends the file between the multipart header and trailer"() {
         given:
         def sent = [:]
-        script.metaClass.httpPost = { Map params, Closure c -> sent.params = params; c([status: 200, data: [success: true]]) }
+        httpPostHook = { Map params, Closure c -> sent.params = params; c([status: 200, data: [success: true]]) }
 
         when:
         script._postMultipartBackup('/hub2/uploadBackup', 'uploadFile', 'x.lzf', [1, 2, 3] as byte[])
@@ -1214,6 +1220,50 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         type << ['Number', 'integer']
     }
 
+    def "an increment the hub refuses or throws on is a failed write, not a validation error"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [type: 'integer', value: 1] }
+        script.metaClass.addValueToGlobalVar = { String n, Object v -> if (v == 1) return false; throw new RuntimeException('linked variable') }
+
+        when:
+        def refused = script.toolSetVariable([name: 'counter', increment: 1])
+        def threw = script.toolSetVariable([name: 'counter', increment: 2])
+
+        then:
+        refused.success == false
+        refused.error.contains('did not apply')
+        threw.success == false
+        threw.error.contains('linked variable')
+    }
+
+    def "a Number variable given a fractional increment says the hub rounded it"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [type: 'integer', value: 1] }
+        script.metaClass.addValueToGlobalVar = { String n, Object v -> true }
+
+        when:
+        def r = script.toolSetVariable([name: 'counter', increment: 1.5])
+
+        then:
+        r.success == true
+        r.note.contains('rounded')
+    }
+
+    def "an unreadable variable is a failed increment with nothing written"() {
+        given:
+        def adds = []
+        script.metaClass.getGlobalVar = { String n -> throw new RuntimeException('busy') }
+        script.metaClass.addValueToGlobalVar = { String n, Object v -> adds << v; true }
+
+        when:
+        def r = script.toolSetVariable([name: 'counter', increment: 1])
+
+        then:
+        r.success == false
+        r.note.contains('Nothing was changed')
+        adds.isEmpty()
+    }
+
     def "an increment whose read-back fails says the value is unverified"() {
         given:
         int reads = 0
@@ -1322,6 +1372,22 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         !second.containsKey('nextCursor')
     }
 
+    def "platform_api_page shortens a page whose descriptions would run past ~60 KB"() {
+        given:
+        hubGet.register('/developer-docs/api-big.json') { p ->
+            JsonOutput.toJson([id: 'api-big', className: 'Big', label: 'Big', section: 'shared',
+                               methods: (1..40).collect { [kind: 'method', name: "m${it}", signature: "void m${it}()", descriptionMarkdown: 'x' * 3000] }])
+        }
+
+        when:
+        def first = script.toolGetToolGuide(null, null, [platform_api_page: 'api-big'])
+
+        then:
+        first.methods.size() < 40
+        JsonOutput.toJson(first.methods).length() <= 60000
+        first.nextCursor == first.methods.size().toString()
+    }
+
     @Unroll
     def "API docs arguments are validated: #label"() {
         when:
@@ -1363,6 +1429,29 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script._typeName([a: 1]) == 'Map'
         script._typeName(null) == 'null'
         script._exceptionWithLine(new IllegalStateException('boom')) == 'java.lang.IllegalStateException: boom'
+    }
+
+    def "_exceptionWithLine and _exceptionStack use the 2.5.2 platform helpers when present"() {
+        given:
+        script.metaClass.getExceptionMessageWithLine = { Throwable t -> 'IllegalStateException: boom on line 42' }
+        script.metaClass.getStackTrace = { Throwable t -> 'at app.method(app:42)\n' + ('x' * 3000) }
+
+        expect:
+        script._exceptionWithLine(new IllegalStateException('boom')) == 'IllegalStateException: boom on line 42'
+        script._exceptionStack(new IllegalStateException('boom')).length() == 2000
+    }
+
+    def "an error record keeps the failing line and the stack frames"() {
+        given:
+        def records = []
+        script.metaClass.mcpLog = { String level, String component, String message, String ruleId = null, Map extra = null -> records << extra }
+
+        when:
+        script.mcpLogError('test', 'failed', new IllegalStateException('boom'))
+
+        then:
+        records[0].stackTrace.startsWith('java.lang.IllegalStateException: boom')
+        records[0].stackTrace.contains('\n')
     }
 
     def "_typeName uses getObjectClassName when the platform has it"() {

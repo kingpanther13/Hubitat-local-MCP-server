@@ -498,7 +498,9 @@ def toolSetSystemSettings(args) {
             applied << "dismissAlert"
         } catch (Exception e) {
             mcpLogError("hub-admin", "hub_set_system_settings /hub/dismissAlert failed", e)
-            return [success: false, error: "Failed to dismiss alert '${q.key}': ${e.message}", applied: applied,
+            def hubSays = null
+            try { hubSays = e.response?.data?.toString()?.trim()?.take(200) } catch (Exception ignored) { }
+            return [success: false, error: "Failed to dismiss alert '${q.key}': ${hubSays ?: e.message}", applied: applied,
                     note: (applied ? "Already applied: ${applied}. " : "") + "Alert dismissal needs firmware 2.5.2.129 or later and a dismissible alert."]
         }
     }

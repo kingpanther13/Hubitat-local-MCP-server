@@ -2878,8 +2878,8 @@ def toolGetDeviceInUseBy(args) {
         // Defensive shape check: if firmware drifts and appsUsing arrives as a Map
         // (or anything other than List), the collect{} below would produce all-null
         // entries silently. Surface that loud rather than letting the paginator
-        // hand the LLM a bag of nulls. instanceof-based shape labelling because the
-        // Hubitat sandbox returns null for .class on parsed-Map values.
+        // hand the LLM a bag of nulls. _typeName labels the shape (the sandbox returns
+        // null for .class on parsed-Map values).
         if (parsed?.appsUsing != null && !(parsed.appsUsing instanceof List)) {
             String shape = _typeName(parsed.appsUsing)
             mcpLog("warn", "installed-apps", "hub_list_device_dependents: appsUsing is ${shape} not List for device ${deviceId} -- treating as empty")

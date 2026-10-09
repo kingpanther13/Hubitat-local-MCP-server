@@ -3374,7 +3374,7 @@ class TestRunner:
         self._expect_tool_refusal("hub_call_zwave", {"action": "cc_command", "node_id": "abc",
                                                      "cc": {"command_class": 37, "method_name": "get"}},
                                   "decimal Z-Wave node number")
-        self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_keys", "backup_id": "x"}, "security_keys")
+        self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_keys", "import_id": "x"}, "security_keys")
 
     @test("diagnostics")
     def test_set_zigbee_enabled_idempotent(self) -> None:

@@ -124,7 +124,7 @@ def test_event_bookmark_reaches_history_after_expected_zero_refusals(refusal):
         if explicit:
             result["since"] = since if isinstance(since, str) else dates[0]
         else:
-            result["hoursBack"] = args["hoursBack"]
+            result["hoursBack"] = args.get("hoursBack", 24)
         return _raw_tool_body(result)
 
     client._send = send
