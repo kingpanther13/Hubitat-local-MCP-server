@@ -1939,22 +1939,26 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     def "_fetchBytesFromUrl asks for no more than the cap plus one byte"() {
         given:
         def sent = [:]
-        httpGetHook = { Map params, Closure c -> sent.range = params.headers?.Range; c([status: 206, data: [1, 2] as byte[]]) }
+        httpGetHook = { Map params, Closure c -> sent.range = params.headers?.Range; c([status: 206, headers: ['Content-Length': '2'], data: [1, 2] as byte[]]) }
 
         expect:
         script._fetchBytesFromUrl('https://h/x/db.lzf', 4L) == ([1, 2] as byte[])
         sent.range == 'bytes=0-4'
     }
 
-    def "_fetchBytesFromUrl drops a range-ignoring answer that does not declare a body within the cap"() {
+    def "_fetchBytesFromUrl drops an answer that does not declare a body within the cap: #status"() {
         given:
-        httpGetHook = { Map params, Closure c -> c([status: 200, headers: headers, data: [1, 2, 3, 4, 5, 6] as byte[]]) }
+        httpGetHook = { Map params, Closure c -> c([status: status, headers: headers, data: [1, 2, 3, 4, 5, 6] as byte[]]) }
 
         expect:
         script._fetchBytesFromUrl('https://h/x/db.lzf', 4L) == null
 
         where:
-        headers << [[:], ['Content-Length': '6']]
+        status | headers
+        200    | [:]
+        200    | ['Content-Length': '6']
+        206    | [:]
+        206    | ['Content-Length': '6']
     }
 
     def "_probeUrl gives nothing when the request fails"() {

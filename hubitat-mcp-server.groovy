@@ -7792,9 +7792,9 @@ Map _fetchCappedBackup(String url, long cap) {
 def _fetchBytesFromUrl(String url, long maxBytes) {
     byte[] out = null
     httpGet([uri: url, timeout: 120, textParser: false, headers: [Range: "bytes=0-${maxBytes}"]]) { resp ->
-        // A host that ignores the range this time must still declare a body within the cap.
+        // Only a body that declares a length within the cap is read, whatever the host did with the range.
         def declared = resp?.headers?.'Content-Length'?.toString()
-        if (resp?.status == 206 || (declared?.isLong() && declared.toLong() <= maxBytes)) out = _bodyBytes(resp?.data)
+        if (resp?.status in [200, 206] && declared?.isLong() && declared.toLong() <= maxBytes + 1) out = _bodyBytes(resp?.data)
     }
     return out
 }
