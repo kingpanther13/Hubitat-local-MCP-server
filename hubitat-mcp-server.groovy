@@ -228,6 +228,7 @@ preferences {
     page(name: "mainPage")
     page(name: "confirmDeletePage")
     page(name: "confirmRegenerateTokenPage")
+    page(name: "clientTokensPage")
     page(name: "advancedOverridesPage")
 }
 
@@ -244,9 +245,9 @@ def mainPage() {
                 paragraph "Click 'Done' to generate access token, then reopen app to see endpoint URLs."
             } else {
                 paragraph "<b>Local Endpoint:</b> ${_transportStatusLabel(settings.enableLocalAccess)}"
-                paragraph "<code>${getFullLocalApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
+                paragraph "<code>${getFullLocalApiServerUrl()}/mcp?access_token=${_primaryAccessToken()}</code>"
                 paragraph "<b>Cloud Endpoint:</b> ${_transportStatusLabel(settings.enableCloudAccess)}"
-                paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
+                paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${_primaryAccessToken()}</code>"
                 paragraph "Clients that expect header auth can instead send the token as <code>Authorization: Bearer &lt;token&gt;</code> (no <code>?access_token=</code> needed) -- the Hubitat platform accepts it on both endpoints."
                 paragraph "<b>App ID:</b> ${app.id}"
                 paragraph "<b>Version:</b> ${currentVersion()}"
@@ -256,6 +257,9 @@ def mainPage() {
                 href name: "regenerateToken", page: "confirmRegenerateTokenPage",
                      title: "Regenerate access token",
                      description: "Issue a new token if the current one may be compromised. WARNING: the token is part of the endpoint URL above, so regenerating CHANGES both endpoint URLs -- you must re-copy the new URL into every MCP client afterward."
+                href name: "clientTokens", page: "clientTokensPage",
+                     title: "Per-client access tokens (${_clientTokens().size()})",
+                     description: "Give each MCP client its own token, so one can be revoked without changing the URL the others use."
             }
         }
 
@@ -468,6 +472,43 @@ def confirmDeletePage(params) {
     }
 }
 
+// state.accessToken holds every token comma-joined once a client token exists; the first is
+// the main one shown in the endpoint URLs.
+private String _primaryAccessToken() {
+    def raw = state.accessToken?.toString()
+    return raw ? raw.split(",")[0].trim() : null
+}
+
+// Per-client tokens (firmware 2.5.2 createAnotherAccessToken): label -> token.
+private Map _clientTokens() {
+    return (state.clientTokens instanceof Map) ? state.clientTokens : [:]
+}
+
+def clientTokensPage() {
+    dynamicPage(name: "clientTokensPage", title: "Per-client access tokens") {
+        section {
+            paragraph "Each client token works on both endpoints, in the URL or as an <code>Authorization: Bearer</code> header, exactly like the main token. Revoking one leaves the main token and every other client untouched, and regenerating the main token keeps these. Needs firmware 2.5.2 or later."
+        }
+        def tokens = _clientTokens()
+        def labels = tokens.keySet().sort()
+        def live = []
+        try { live = getAccessTokens() ?: [] } catch (Exception ignored) { }
+        labels.eachWithIndex { label, i ->
+            def token = tokens.get(label)
+            section(label.toString()) {
+                if (!live.contains(token)) paragraph "<b style='color: red;'>This token is no longer accepted by the hub.</b> Revoke it and create a new one."
+                paragraph "<code>${getFullLocalApiServerUrl()}/mcp?access_token=${token}</code>"
+                paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${token}</code>"
+                input "revokeClientToken_${i}", "button", title: "Revoke ${label}"
+            }
+        }
+        section("Add a client") {
+            input "newClientTokenLabel", "text", title: "Client name, 1-40 characters without commas, not already used (e.g. Claude Desktop)", required: false, submitOnChange: true
+            input "createClientTokenBtn", "button", title: "Create token for this client"
+        }
+    }
+}
+
 def confirmRegenerateTokenPage() {
     dynamicPage(name: "confirmRegenerateTokenPage", title: "Regenerate access token?") {
         section {
@@ -630,14 +671,54 @@ def appButtonHandler(btn) {
         }
         state.remove("ruleToDelete")
     } else if (btn == "regenerateTokenBtn") {
-        // User-initiated token rotation. Clearing state.accessToken then calling
-        // createAccessToken() re-issues a fresh token, which changes both endpoint
-        // URLs (the token is in the URL); the user must re-copy the new URL into
-        // every MCP client. initialize()'s !state.accessToken guard is the only
-        // other caller, so the token is otherwise stable (never auto-rotated).
-        state.remove("accessToken")
-        createAccessToken()
+        // User-initiated token rotation, which changes both endpoint URLs (the token is in the
+        // URL). createAccessToken() replaces EVERY token, client tokens included, so with client
+        // tokens present only the main one is swapped in place. initialize()'s !state.accessToken
+        // guard is the only other caller, so the token is otherwise stable (never auto-rotated).
+        if (_clientTokens()) {
+            resetSpecificAccessToken(_primaryAccessToken())
+        } else {
+            state.remove("accessToken")
+            createAccessToken()
+        }
         mcpLog("warn", "server", "MCP access token regenerated via UI; endpoint URLs changed, clients must re-copy the new URL")
+    } else if (btn == "createClientTokenBtn") {
+        def label = settings.newClientTokenLabel?.toString()?.trim()
+        if (!label || label.length() > 40 || label.contains(",") || _clientTokens().containsKey(label)) {
+            mcpLog("warn", "server", "MCP client token not created: the client name is empty, over 40 characters, has a comma, or is already used")
+        } else {
+            def token = createAnotherAccessToken()
+            def tokens = [:] + _clientTokens()
+            tokens.put(label, token)
+            state.clientTokens = tokens
+            app.removeSetting("newClientTokenLabel")
+            mcpLog("warn", "server", "MCP client token created for '${label}'")
+        }
+    } else if (btn?.startsWith("revokeClientToken_")) {
+        def labels = _clientTokens().keySet().sort()
+        def idx = btn.substring("revokeClientToken_".length())
+        def label = (idx.isInteger() && (idx as int) < labels.size()) ? labels[idx as int] : null
+        if (label != null) {
+            def token = _clientTokens().get(label)
+            // Fail closed: the client stays listed (and revocable) unless the hub confirms the
+            // token is gone, so a failed revoke never hides a token that still authenticates.
+            boolean revoked = false
+            try {
+                revokeSpecificAccessToken(token)
+                def live = getAccessTokens()
+                revoked = (live instanceof List) && !live.contains(token)
+            } catch (Exception e) {
+                mcpLog("error", "server", "revokeSpecificAccessToken failed for client '${label}': ${e.message}")
+            }
+            if (revoked) {
+                def tokens = [:] + _clientTokens()
+                tokens.remove(label)
+                state.clientTokens = tokens
+                mcpLog("warn", "server", "MCP client token revoked for '${label}'")
+            } else {
+                mcpLog("error", "server", "MCP client token for '${label}' is still accepted by the hub after the revoke; it stays listed -- revoke again")
+            }
+        }
     } else if (btn == "resetOverridesBtn") {
         app.removeSetting("disabled_tools")
         app.removeSetting("disabled_gateways")
@@ -4465,13 +4546,17 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
 
 // redactAccessTokens (Advanced page). Covers the three shapes a token reaches a tool result in:
 // an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
-// (app settings and state), and that same key inside JSON carried as a string (a file read or
-// an exported setting).
+// (app settings and state) or the clientTokens map of per-client tokens, and that same key
+// inside JSON carried as a string (a file read or an exported setting).
 private def _redactAccessTokens(value) {
     String marker = "***redacted (access token)***"
     if (value instanceof Map) {
         return value.collectEntries { k, v ->
             boolean tokenKey = k?.toString() ==~ /(?i)access_?token/
+            // clientTokens (per-client tokens by client name): every value is a token.
+            if (k?.toString() == "clientTokens" && v instanceof Map) {
+                return [(k): v.collectEntries { name, t -> [(name): marker] }]
+            }
             [(k): (tokenKey && v instanceof CharSequence) ? marker : _redactAccessTokens(v)]
         }
     }

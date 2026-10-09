@@ -4,7 +4,8 @@ This inventory covers `hubitat-mcp-server.groovy` and all 19 libraries it includ
 
 | Key | Purpose and owner | Count / byte growth | Mutation frequency | Why durable |
 | --- | --- | --- | --- | --- |
-| `state.accessToken` | Platform-created OAuth token; parent | One platform-sized string | Install and explicit UI rotation | MCP endpoint authentication must survive executions and reloads. |
+| `state.accessToken` | Platform-created OAuth token(s); parent | One platform-sized string per token (comma-joined once per-client tokens exist; the first is the main one) | Install and explicit UI rotation | MCP endpoint authentication must survive executions and reloads. |
+| `state.clientTokens` | Per-client MCP access tokens by client name; parent | One entry per client token the user creates in the app UI | Create or revoke in the app UI | Each client's endpoint authentication must survive executions and reloads; the platform keeps the token list itself, this map only names them. |
 | `state.ruleToDelete` | Pending custom-rule delete selected in the UI; parent | One rule ID | UI delete flow; removed after confirmation | Confirmation spans separate UI requests. |
 | `state.customEngineMigrated` | One-time legacy setting migration marker; parent | One boolean | Assigned idempotently by each `updated()` call | Prevents a later settings save from repeating the compatibility migration. |
 | `state.hubSecurityRetired` | One-time Hub Security credential-shed marker; parent | One boolean | Set once, by `updated()` or the first MCP request on firmware >= 2.5.0 | Makes the shed one-shot across class loads; an in-memory per-app memo settles the request hook once per class load, so warm requests read neither state nor firmware (an unreadable firmware or failed shed retries at most once a minute). |
