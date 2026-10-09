@@ -34,7 +34,9 @@ private void _attachRadioIncludes(result, args) {
     // the Z-Wave node-state read (plain text; "Done" when idle). Encode the id.
     def radio = args?.radio?.toString()?.toLowerCase()
     def nodeId = args?.node_id?.toString()?.trim()
-    def zwData = (result.zwaveData instanceof Map) ? result.zwaveData : (result.zwave instanceof Map && result.zwave.zwaveData instanceof Map ? result.zwave.zwaveData : null)
+    def zwData = null
+    if (result.zwaveData instanceof Map) zwData = result.zwaveData
+    else if (result.zwave instanceof Map && result.zwave.zwaveData instanceof Map) zwData = result.zwave.zwaveData
     boolean zwaveJs = zwData?.zwaveJS == true
     if (nodeId) {
         if (radio == "matter") {
@@ -2297,7 +2299,7 @@ def toolCallZwave(args) {
             case "local_backup_create":
                 resp = _radioPost("/hub/zwave/localBackup/create")
                 if (!(resp instanceof Map) || resp.success != true) {
-                    return [success: false, action: action, error: "The hub did not start a Z-Wave backup: ${(resp instanceof Map) ? (resp.message ?: 'no reason given') : resp}",
+                    return [success: false, action: action, error: "The hub did not start a Z-Wave backup: ${_radioReason(resp)}",
                             note: "Z-Wave local backup needs Z-Wave JS and the Full Local Backup subscription; status.zwaveLocalBackup in hub_get_radio_details(include_status=true) shows both."]
                 }
                 return [success: true, action: action, jobId: resp.jobId, message: "Z-Wave network backup started.",
@@ -2322,7 +2324,7 @@ def toolCallZwave(args) {
                 def keyBody = [securityKeys: _zwNormalizeKeys(mainKeys), securityKeysLongRange: _zwNormalizeKeys(lrKeys)]
                 resp = _radioPost("/hub/zwave/localBackup/securityKeys/${URLEncoder.encode(args.import_id.toString(), 'UTF-8')}", groovy.json.JsonOutput.toJson(keyBody))
                 if (!(resp instanceof Map) || resp.success != true) {
-                    return [success: false, action: action, error: "The hub did not accept the security keys: ${(resp instanceof Map) ? (resp.message ?: 'no reason given') : resp}"]
+                    return [success: false, action: action, error: "The hub did not accept the security keys: ${_radioReason(resp)}"]
                 }
                 return [success: true, action: action, importId: args.import_id.toString(), report: resp.report,
                         message: "Security keys saved for the imported backup.",
@@ -2437,8 +2439,9 @@ private Map _zwaveBackupDownload(String jobId) {
 // reaches READY with a report (which keys it still needs) before a restore.
 private Map _zwaveBackupImport(String url) {
     if (!(url ==~ /(?i)^https?:\/\/.+/)) throw new IllegalArgumentException("backup_url must be an http(s) URL, got: ${url}")
+    long maxBytes = 8L * 1024 * 1024
     def probe = _probeUrl(url)
-    if (probe.size != null && probe.size > 8L * 1024 * 1024) {
+    if (probe.size != null && probe.size > maxBytes) {
         return [success: false, action: "local_backup_import", error: "The backup at backup_url is ${(probe.size / (1024 * 1024)) as long} MB, over the 8 MB in-app upload limit.",
                 note: "Import it from Settings > Z-Wave Details > Z-Wave local backup in the Hubitat web UI. Nothing was imported."]
     }
@@ -2451,7 +2454,6 @@ private Map _zwaveBackupImport(String url) {
         }
     }
     if (!bytes || bytes.length == 0) return [success: false, action: "local_backup_import", error: "Fetched 0 bytes from backup_url."]
-    int maxBytes = 8 * 1024 * 1024
     if (bytes.length > maxBytes) {
         return [success: false, action: "local_backup_import", error: "The backup is over the 8 MB in-app upload limit.",
                 note: "Import it from Settings > Z-Wave Details > Z-Wave local backup in the Hubitat web UI."]
@@ -2654,13 +2656,16 @@ def toolCallDestructiveOps(args) {
                 def batchBody = [sourceNodeId: _zwNodeNumber(args.node_id.toString()),
                                  nodeIds: batch.node_ids.collect { _zwNodeNumber(it.toString()) },
                                  inactivityTimeoutSeconds: (batch.inactivity_timeout_seconds != null ? _zwIntArg(batch.inactivity_timeout_seconds, "batch.inactivity_timeout_seconds") : 600)]
-                if (fromService) batchBody.updateId = args.update_id
-                else {
+                String batchPath
+                if (fromService) {
+                    batchBody.updateId = args.update_id
+                    batchPath = "/hub/zwave/deviceFirmware/startAvailableBatch"
+                } else {
                     batchBody.target = (args.target_index != null ? args.target_index : 0)
                     batchBody.fileName = args.file_name.toString()
+                    batchPath = "/hub/zwave/deviceFirmware/startBatch"
                 }
-                resp = fromService ? _radioPost("/hub/zwave/deviceFirmware/startAvailableBatch", groovy.json.JsonOutput.toJson(batchBody))
-                                   : _radioPost("/hub/zwave/deviceFirmware/startBatch", groovy.json.JsonOutput.toJson(batchBody))
+                resp = _radioPost(batchPath, groovy.json.JsonOutput.toJson(batchBody))
                 return _zwFirmwareStartResult(action, resp, args.node_id)
             case "device_firmware_batch_abort":
                 if (radio != "zwave") throw new IllegalArgumentException("device_firmware_batch_abort is Z-Wave only.")
@@ -2674,7 +2679,7 @@ def toolCallDestructiveOps(args) {
                 if (!args.import_id) throw new IllegalArgumentException("local_backup_restore requires import_id (from hub_call_zwave(action='local_backup_import')).")
                 resp = _radioPost("/hub/zwave/localBackup/restore/${URLEncoder.encode(args.import_id.toString(), 'UTF-8')}", groovy.json.JsonOutput.toJson([confirmation: "RESTORE"]))
                 if (!(resp instanceof Map) || resp.success != true) {
-                    return [success: false, target: radio, action: action, error: "The hub did not start the restore: ${(resp instanceof Map) ? (resp.message ?: 'no reason given') : resp}",
+                    return [success: false, target: radio, action: action, error: "The hub did not start the restore: ${_radioReason(resp)}",
                             note: "The import must be READY with every security key supplied (hub_get_radio_details(backup_job_id=...))."]
                 }
                 mcpLog("warn", "hub-admin", "DESTRUCTIVE: Z-Wave network restore from import ${args.import_id} via MCP")

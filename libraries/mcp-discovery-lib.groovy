@@ -390,7 +390,10 @@ private Map _platformApiSearch(String query, cursor) {
             String lname = name.toLowerCase()
             String text = "${name} ${m.signature} ${m.summary}".toLowerCase()
             if (!terms.every { text.contains(it) }) return
-            int score = sectionBoost + (terms.any { it == lname } ? 4 : (terms.every { lname.contains(it) } ? 2 : 0))
+            // An exact method-name term ranks first, then a name holding every term.
+            int score = sectionBoost
+            if (terms.any { it == lname }) score += 4
+            else if (terms.every { lname.contains(it) }) score += 2
             hits << [score: score, pageId: pg.id, className: pg.className, label: pg.label, section: pg.section, kind: m.kind ?: "method",
                      name: name, signature: m.signature, summary: m.summary?.toString()?.take(400)]
         }
@@ -431,9 +434,10 @@ private Map _platformApiPage(String pageId, cursor) {
         entry
     }
     // 40 methods a page, fewer when their descriptions would push a page past ~60 KB.
-    def paged = _paginateList(methods, cursor != null ? cursor : "", 40, "hub_get_tool_guide")
+    def pageCursor = (cursor != null) ? cursor : ""
+    def paged = _paginateList(methods, pageCursor, 40, "hub_get_tool_guide")
     while (paged.page.size() > 1 && groovy.json.JsonOutput.toJson(paged.page).length() > 60000) {
-        paged = _paginateList(methods, cursor != null ? cursor : "", paged.page.size() - 1, "hub_get_tool_guide")
+        paged = _paginateList(methods, pageCursor, paged.page.size() - 1, "hub_get_tool_guide")
     }
     def out = [success: true, pageId: pg.id, className: pg.className, label: pg.label, section: pg.section, topic: pg.topic, usage: pg.usage,
                extendsClass: pg.extendsClass, totalMethods: methods.size(), methods: paged.page]

@@ -15963,7 +15963,8 @@ class TestRunner:
             )
             # The device page's parent app arrives as its identity only, never the raw app type.
             parent = dependents.get("parentApp")
-            assert parent is None or set(parent) <= {"id", "name", "label", "parentAppId"},                 f"parentApp must carry only its identity: {parent}"
+            assert parent is None or set(parent) <= {"id", "name", "label", "parentAppId"}, \
+                f"parentApp must carry only its identity: {parent}"
             assert "oauthClient" not in json.dumps(dependents), "hub_list_device_dependents leaked an OAuth client field"
 
             # Reversible writes are confined to the provisioned standalone fixture.

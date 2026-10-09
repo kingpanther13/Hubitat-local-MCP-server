@@ -1335,7 +1335,9 @@ private _restoreUploadedBackup(Map args) {
         return [success: false, type: "hub-uploaded", location: "hub_uploaded", error: "Fetched 0 bytes from backupUrl.", note: "Nothing was restored."]
     }
     if (_isGzip(fileBytes)) {
-        String seg = urlPath.tokenize("/") ? urlPath.tokenize("/")[-1] : null
+        // The file name is the URL path's last segment (never the host of a path-less URL).
+        def segs = urlPath.replaceFirst(/(?i)^https?:\/\/[^\/]*/, "").tokenize("/")
+        String seg = segs ? segs[-1] : null
         return _restoreFullFromBytes("hub_uploaded", fileBytes, (seg && seg.contains(".")) ? seg : "full-backup.tar.gz", opts ?: _fullRestoreOptions(null))
     }
     if (opts != null) {

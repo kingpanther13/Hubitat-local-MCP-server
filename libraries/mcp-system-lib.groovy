@@ -29,13 +29,14 @@ def _platformUpdateFromHub2(hub2) {
     def fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception e) { }
     def hubVer = (hub2 instanceof Map) ? hub2.version?.toString() : null
+    def current = fw ?: hubVer
     // available:null is the schema's documented "unreadable" signal -- honor it for a missing
     // /hub2/hubData and a present-but-unrecognized shape (alerts not a Map, or a non-Boolean
     // platformUpdateAvailable), so neither can masquerade as a confident "no update available".
     def alerts = (hub2 instanceof Map && hub2.alerts instanceof Map) ? hub2.alerts : null
     def pa = alerts?.platformUpdateAvailable
     if (alerts == null || (pa != null && !(pa instanceof Boolean))) {
-        return [available: null, currentVersion: fw ?: hubVer,
+        return [available: null, currentVersion: current,
                 note: "Pending-firmware status unreadable (/hub2/hubData missing, or its alerts block has an unrecognized shape)."]
     }
     // Firmware 2.5.2.129+ drops the flag: a pending update is a PLATFORM_UPDATE_AVAILABLE alert item
@@ -44,12 +45,11 @@ def _platformUpdateFromHub2(hub2) {
     // (a beta hub can run ahead of it).
     if (pa == null) {
         def item = (alerts.alertItems instanceof List) ? alerts.alertItems.find { it instanceof Map && it.key == "PLATFORM_UPDATE_AVAILABLE" } : null
-        if (item != null) return [available: true, currentVersion: fw ?: hubVer, availableVersion: item.version?.toString()]
+        if (item != null) return [available: true, currentVersion: current, availableVersion: item.version?.toString()]
         def latest = null
         try { latest = getLatestAvailablePlatformVersion()?.toString() } catch (Exception e) {
             mcpLog("warn", "server", "getLatestAvailablePlatformVersion failed: ${e.message}")
         }
-        def current = fw ?: hubVer
         Integer cmp = (latest && current) ? _compareVersions(latest, current) : null
         if (cmp != null) {
             def out = [available: cmp > 0, currentVersion: current]
@@ -60,7 +60,7 @@ def _platformUpdateFromHub2(hub2) {
                 note: "The hub data has no pending-update flag and the platform's latest-version check did not answer. Check Settings > Check for Updates in the Hubitat web UI."]
     }
     boolean avail = (pa == true)
-    def out = [available: avail, currentVersion: fw ?: hubVer]
+    def out = [available: avail, currentVersion: current]
     if (avail) out.availableVersion = alerts.platformUpdateVersion?.toString()
     return out
 }

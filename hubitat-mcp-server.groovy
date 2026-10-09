@@ -7669,9 +7669,8 @@ def hubInternalBytes(String method, String path, Map query = null, Map formBody 
         def d = resp?.data
         if (d instanceof Map) { out.error = (d.message ?: d.error ?: groovy.json.JsonOutput.toJson(d)).toString().take(300); return }
         if (d instanceof CharSequence) { out.error = d.toString().take(300); return }
-        def raw = null
-        try { raw = (d instanceof byte[]) ? d : d?.bytes } catch (Exception notBytes) { }
-        if (raw instanceof byte[] && raw.length > 0) out.bytes = raw
+        byte[] raw = _bodyBytes(d)
+        if (raw != null && raw.length > 0) out.bytes = raw
         else out.error = "the hub sent no archive (${_typeName(d)} body)".toString()
     }
     try {
@@ -7710,6 +7709,13 @@ def _bytesPreview(byte[] b) {
     return new String(b, 0, Math.min(b.length, 120), "UTF-8").replaceAll(/\s+/, " ").trim()
 }
 
+// An HTTP response body (byte[] or stream) as a byte[], or null when it yields none.
+def _bodyBytes(d) {
+    def raw = null
+    try { raw = (d instanceof byte[]) ? d : d?.bytes } catch (Exception notBytes) { }
+    return (raw instanceof byte[]) ? raw : null
+}
+
 // Size an http(s) URL before fetching it: a one-byte Range request answers 206 with the total in
 // Content-Range on most hosts ([size]). A host that ignores ranges answers 200 with the whole body,
 // which comes back as [size, bytes] so it is not fetched twice. [:] when neither happens.
@@ -7722,10 +7728,8 @@ def _probeUrl(String url) {
                 def range = resp?.headers?.'Content-Range'?.toString() =~ /\/\s*(\d+)\s*$/
                 if (range.find()) out.size = range.group(1) as Long
             } else if (resp?.status == 200) {
-                def d = resp?.data
-                def raw = null
-                try { raw = (d instanceof byte[]) ? d : d?.bytes } catch (Exception notBytes) { }
-                if (raw instanceof byte[]) { out.bytes = raw; out.size = (long) raw.length }
+                byte[] raw = _bodyBytes(resp?.data)
+                if (raw != null) { out.bytes = raw; out.size = (long) raw.length }
             }
         }
     } catch (Exception e) {
@@ -7738,10 +7742,7 @@ def _probeUrl(String url) {
 def _fetchBytesFromUrl(String url) {
     byte[] out = null
     httpGet([uri: url, timeout: 120, textParser: false]) { resp ->
-        def d = resp?.data
-        def raw = null
-        try { raw = (d instanceof byte[]) ? d : d?.bytes } catch (Exception notBytes) { }
-        if (raw instanceof byte[]) out = raw
+        out = _bodyBytes(resp?.data)
     }
     return out
 }
@@ -8494,8 +8495,12 @@ def _typeName(v) {
         def n = getObjectClassName(v)
         if (n) return n.toString().tokenize('.').last()
     } catch (Exception ignored) { }
-    return (v instanceof Map) ? "Map" : (v instanceof List) ? "List" : (v instanceof CharSequence) ? "String" :
-           (v instanceof Number) ? "Number" : (v instanceof Boolean) ? "Boolean" : "unknown"
+    if (v instanceof Map) return "Map"
+    if (v instanceof List) return "List"
+    if (v instanceof CharSequence) return "String"
+    if (v instanceof Number) return "Number"
+    if (v instanceof Boolean) return "Boolean"
+    return "unknown"
 }
 
 // Dotted numeric version compare (2.5.2.134 vs 2.5.2.129): 1, 0 or -1; null when either is not

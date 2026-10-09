@@ -59,13 +59,13 @@ def toolListFiles(args = null) {
     try {
         def parsed = new groovy.json.JsonSlurper().parseText(responseText)
         def fileList = []
+        String prefix = folder ? "${folder}/" : ""
 
         if (parsed instanceof List) {
             // Direct list response: [{name: "file.txt", size: 123}, ...]
-            String listPrefix = folder ? "${folder}/" : ""
             fileList = parsed.collect { f ->
                 def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
-                def entry = [name: name, directDownload: "http://<HUB_IP>/local/${listPrefix}${name}"]
+                def entry = [name: name, directDownload: "http://<HUB_IP>/local/${prefix}${name}"]
                 if (f instanceof Map) {
                     if (f.size != null) entry.size = f.size
                     if (f.date) entry.lastModified = f.date
@@ -77,7 +77,6 @@ def toolListFiles(args = null) {
             // An empty folder answers files:[]; only a shape without the key falls back to its values.
             def files = parsed.containsKey("files") ? parsed.get("files") : parsed.values()?.flatten()
             if (files instanceof List) {
-                String prefix = folder ? "${folder}/" : ""
                 fileList = files.collect { f ->
                     def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
                     def entry = [name: name]

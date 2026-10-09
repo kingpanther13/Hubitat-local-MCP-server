@@ -10,13 +10,12 @@ import os
 import sys
 import zipfile
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
 # tests/ is already on sys.path conceptually, but be explicit for safety.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
-
-from datetime import datetime
 
 import pytest
 

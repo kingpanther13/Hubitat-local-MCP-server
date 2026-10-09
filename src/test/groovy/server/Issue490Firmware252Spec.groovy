@@ -1929,7 +1929,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         enableWrite()
         def uploads = []
-        script.metaClass._fetchBytesFromUrl = { String url -> body }
+        script.metaClass._fetchBytesFromUrl = { String u -> body }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> uploads << path; [success: true] }
         hubGet.register('/hub2/restoreFullLocalBackup') { p -> '{"success":true}' }
         hubGet.register('/hub2/restoreUploadedBackup') { p -> '{"success":true}' }
@@ -1947,6 +1947,21 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         'an H2 file is a database backup'      | 'https://h/dl?id=6'     | '-- H2 0.5/B -- \nDATA'.getBytes('UTF-8') | [:]                             | true  | ['/hub2/uploadBackup']
         'anything else is refused'             | 'https://h/x/b.lzf'     | '<html>login</html>'.getBytes('UTF-8')   | [:]                             | false | []
         'fullRestore on a database file'       | 'https://h/dl?id=7'     | '-- H2 0.5/B -- \nDATA'.getBytes('UTF-8') | [fullRestore: [restoreZwave: true]] | false | []
+    }
+
+    def "a full backup from a URL with no path is uploaded under a file name, not the host"() {
+        given:
+        enableWrite()
+        def up = [:]
+        script.metaClass._fetchBytesFromUrl = { String u -> ([0x1f, 0x8b, 8, 0] as byte[]) }
+        script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> up.fileName = fileName; [success: true] }
+        hubGet.register('/hub2/restoreFullLocalBackup') { p -> '{"success":true}' }
+
+        when:
+        script.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://backups.example.com', confirm: true])
+
+        then:
+        up.fileName == 'full-backup.tar.gz'
     }
 
     def "an uploaded database restore whose upload throws is a failure, not an unknown outcome"() {
@@ -1986,7 +2001,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         enableWrite()
         def uploads = []
-        script.metaClass._fetchBytesFromUrl = { String url -> body }
+        script.metaClass._fetchBytesFromUrl = { String u -> body }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> uploads << path; answer }
 
         when:
