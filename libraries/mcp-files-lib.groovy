@@ -27,6 +27,7 @@ def toolListFiles(args = null) {
     if (folder && (!(folder ==~ /[A-Za-z0-9_.\/ -]+/) || folder.split("/").any { it == ".." || it == "." || it == "" })) {
         throw new IllegalArgumentException("folder must be a relative File Manager folder path such as 'webcore' (letters, digits, space, dot, underscore, hyphen, '/' between parts; no '..').")
     }
+    if (folder && _hubFirmwareBefore("2.5.2")) throw new IllegalArgumentException("folder needs firmware 2.5.2 or later; older File Manager has no subfolders.")
     // Try known File Manager API endpoints (varies by firmware version). Only the JSON endpoint
     // takes a folder (?folder=, as the File Manager page sends it).
     def endpoints = folder ? ["/hub/fileManager/json"] : ["/hub/fileManager/json", "/hub/fileManager"]
@@ -61,9 +62,10 @@ def toolListFiles(args = null) {
 
         if (parsed instanceof List) {
             // Direct list response: [{name: "file.txt", size: 123}, ...]
+            String listPrefix = folder ? "${folder}/" : ""
             fileList = parsed.collect { f ->
                 def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
-                def entry = [name: name, directDownload: "http://<HUB_IP>/local/${name}"]
+                def entry = [name: name, directDownload: "http://<HUB_IP>/local/${listPrefix}${name}"]
                 if (f instanceof Map) {
                     if (f.size != null) entry.size = f.size
                     if (f.date) entry.lastModified = f.date
@@ -72,7 +74,8 @@ def toolListFiles(args = null) {
             }
         } else if (parsed instanceof Map) {
             // Object response: {files: [...]} or {type: [...]}
-            def files = parsed.files ?: parsed.values()?.flatten()
+            // An empty folder answers files:[]; only a shape without the key falls back to its values.
+            def files = parsed.containsKey("files") ? parsed.get("files") : parsed.values()?.flatten()
             if (files instanceof List) {
                 String prefix = folder ? "${folder}/" : ""
                 fileList = files.collect { f ->

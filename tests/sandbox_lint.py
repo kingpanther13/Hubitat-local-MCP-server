@@ -216,6 +216,15 @@ RULES = [
         "severity": "error",
         "raw": True,
     },
+    {
+        # The sandbox refuses `x.methods` as a property read, even on a parsed JSON Map ("Subscript
+        # property 'methods' is not allowed from app or driver code", live, fw 2.5.2.129) -- the
+        # hubitat_ci harness does not, so only a hub catches it. Map.get("methods") is allowed.
+        "id": "SANDBOX-017",
+        "pattern": r"\.methods\b(?!\s*\()",
+        "message": "`.methods` property read is blocked by the Hubitat sandbox at runtime, even on a Map. Use map.get(\"methods\").",
+        "severity": "error",
+    },
 ]
 
 # ---------------------------------------------------------------------------
@@ -3388,6 +3397,16 @@ SELF_TEST_CASES = [
         "remove-based retired cache cleanup is NOT flagged",
         "atomicState.remove('toolSearchTokens')",
         [("PERSISTED_DERIVED_KEY", False)],
+    ),
+    (
+        "a .methods property read is flagged",
+        "def ms = page.methods.findAll { it }",
+        [("SANDBOX-017", True)],
+    ),
+    (
+        "Map.get('methods') is NOT flagged",
+        'def ms = page.get("methods")',
+        [("SANDBOX-017", False)],
     ),
     (
         "querystring embedded in a hubInternalGet path is flagged",

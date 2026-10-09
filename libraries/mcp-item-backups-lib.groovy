@@ -14,14 +14,14 @@ def toolListItemBackups(args = null) {
         if (hb.local != null) hubSections.hubLocalBackups = hb.local
         if (hb.cloud != null) hubSections.hubCloudBackups = hb.cloud
         if (hb.errors) { hubSections.hubBackupErrors = hb.errors; hubSections.partial = true }
+        // Network-share settings (firmware 2.5.2+): an unreadable block reports its own error and
+        // does not mark the listing partial, so older firmware still lists cleanly.
+        if (!_hubFirmwareBefore("2.5.2")) {
+            def netCfg = _readNetworkBackupSettings()
+            hubSections.networkBackup = netCfg.ok ? netCfg.settings : [error: netCfg.error]
+        }
         // Fold the automatic-backup schedule in alongside the hub-DB backups. A failed schedule
         // read joins the existing hubBackupErrors / partial path rather than failing the listing.
-        def netCfg = _readNetworkBackupSettings()
-        if (netCfg.ok) hubSections.networkBackup = netCfg.settings
-        else {
-            hubSections.hubBackupErrors = (hubSections.hubBackupErrors ?: []) + [netCfg.error]
-            hubSections.partial = true
-        }
         def sched = _readHubBackupSchedule()
         if (sched.ok) {
             hubSections.schedule = sched.schedule
@@ -528,17 +528,12 @@ private Map _toolRestoreSourceBackup(args) {
 // (vue-hub2.min.js): list = GET /hub2/localBackups (array) and GET /hub2/cloudBackups?force= ({backups:[]});
 // restore = GET /hub2/restoreLocalBackup?fileName= and GET /hub2/restoreCloudBackup?fileName=<path>&restorePassword=<pwd>&t=<ms>
 // (BOTH reboot the hub); delete = GET /hub2/deleteLocalBackup?fileName= and GET /hub2/deleteCloudBackup?path=;
-// schedule = POST /hub2/updateBackupSchedule. Upload/restore-uploaded are browser multipart .lzf uploads
-// (no headless MCP path) and are intentionally NOT implemented.
+// schedule = POST /hub2/updateBackupSchedule. hub_uploaded and the full-restore paths multipart-upload the
+// archive the way the browser does (_postMultipartBackup).
 
 def toolCreateHubBackup(args) {
     args = args ?: [:]
 
-    // Folded-in SCHEDULE update (no separate tool): a `schedule` object sets the hub's auto-backup
-    // schedule via /hub2/updateBackupSchedule. Only a scheduleOnly call that ALSO carries a schedule
-    // skips creating a backup (and skips confirm); every other shape creates a backup and needs
-    // confirm. Validate confirm for the create path BEFORE writing the schedule, so a confirm:false
-    // call can't mutate the schedule and then fail (no partial side effect).
     // cloudDownload copies an existing cloud backup into File Manager: its own mode, no backup made.
     if (args.cloudDownload != null) {
         if (args.schedule != null || args.networkBackup != null || args.testNetworkBackup == true || args.full == true) {
@@ -550,11 +545,30 @@ def toolCreateHubBackup(args) {
     def networkPresent = args.networkBackup != null
     def testNetwork = args.testNetworkBackup == true
     def scheduleOnly = args.scheduleOnly == true
+    // Settings ride along on the same call: a `schedule` object (/hub2/updateBackupSchedule) and the
+    // network-share settings. Only scheduleOnly WITH one of them skips creating a backup (and
+    // confirm); every other shape creates one and needs confirm. Everything is validated before the
+    // first write, so a refused call changes nothing.
     def willCreate = !(scheduleOnly && (schedulePresent || networkPresent || testNetwork))
     if (willCreate && !args.confirm) {
         throw new IllegalArgumentException("You must set confirm=true to create a backup (or pass scheduleOnly=true WITH schedule / networkBackup / testNetworkBackup to only change settings).")
     }
-    if (networkPresent) _validateNetworkBackupArgs(args.networkBackup)
+    def netCurrent = null
+    if (networkPresent || testNetwork) {
+        if (networkPresent) _validateNetworkBackupArgs(args.networkBackup)
+        netCurrent = _readNetworkBackupSettings()
+        if (!netCurrent.ok) {
+            def out = [success: false, error: netCurrent.error, note: "Nothing was changed."]
+            if (_hubFirmwareBefore("2.5.2")) out.note = "Nothing was changed. Network-share backups need firmware 2.5.2 or later."
+            return out
+        }
+        if (networkPresent) {
+            def spec = args.networkBackup
+            boolean enabled = spec.containsKey("enabled") ? spec.enabled == true : netCurrent.raw.enabled == true
+            def path = spec.containsKey("networkPath") ? spec.networkPath : netCurrent.raw.networkPath
+            if (enabled && !path) throw new IllegalArgumentException("networkBackup.enabled=true needs networkPath (e.g. //nas/backups); the hub has none stored.")
+        }
+    }
 
     def scheduleUpdated = false
     if (schedulePresent) {
@@ -567,9 +581,10 @@ def toolCreateHubBackup(args) {
     }
     def networkResult = null
     if (networkPresent || testNetwork) {
-        networkResult = _applyNetworkBackup(networkPresent ? args.networkBackup : null, testNetwork)
+        networkResult = _applyNetworkBackup(networkPresent ? args.networkBackup : null, testNetwork, netCurrent)
         if (networkResult.success != true) {
             networkResult.scheduleUpdated = scheduleUpdated
+            if (scheduleUpdated) networkResult.note = "The backup schedule was saved; the network backup settings were not. " + (networkResult.note ?: "")
             return networkResult
         }
     }
@@ -580,7 +595,7 @@ def toolCreateHubBackup(args) {
         if (networkResult) out.networkBackup = networkResult.networkBackup
         return out
     }
-    if (args.full == true) return _createFullLocalBackup(scheduleUpdated, networkResult?.networkBackup)
+    if (args.full == true && args.mock != true) return _createFullLocalBackup(scheduleUpdated, networkResult?.networkBackup)
 
     // The Write master is enforced centrally in executeTool; this tool creates the backup itself, so
     // it cannot require a pre-existing recent one (no requireDestructiveConfirm). Confirm for the
@@ -836,7 +851,8 @@ private Map _readHubBackupSchedule() {
 }
 
 // Network-share backup settings (firmware 2.5.2): GET /hub2/networkBackup/settings answers
-// {enabled, networkPath, username, password}. The password is never returned, only whether one is set.
+// {enabled, networkPath, username, password}. `raw` (with the password) is only for the read-merge
+// write; `settings` is what a response carries, with passwordSet instead of the password.
 private Map _readNetworkBackupSettings() {
     try {
         def raw = hubInternalGet("/hub2/networkBackup/settings")
@@ -861,18 +877,13 @@ private void _validateNetworkBackupArgs(spec) {
 
 // Read-merges the network-share settings (an omitted field keeps its value, the password included),
 // POSTs them to /hub2/networkBackup/settings, and/or POSTs /hub2/networkBackup/test, as the UI does.
-private Map _applyNetworkBackup(Map spec, boolean test) {
-    def cur = _readNetworkBackupSettings()
-    if (!cur.ok) return [success: false, error: cur.error, note: "Nothing was changed. Network-share backups need firmware 2.5.2 or later."]
+private Map _applyNetworkBackup(Map spec, boolean test, Map cur) {
     def merged = [enabled: cur.raw.enabled == true, networkPath: cur.raw.networkPath ?: "", username: cur.raw.username ?: "", password: cur.raw.password ?: ""]
     if (spec != null) {
         if (spec.containsKey("enabled")) merged.enabled = (spec.enabled == true)
         if (spec.containsKey("networkPath")) merged.networkPath = (spec.networkPath ?: "").toString()
         if (spec.containsKey("username")) merged.username = (spec.username ?: "").toString()
         if (spec.containsKey("password")) merged.password = (spec.password ?: "").toString()
-        if (merged.enabled && !merged.networkPath) {
-            return [success: false, error: "networkBackup.enabled=true needs networkPath (e.g. //nas/backups).", note: "Nothing was changed."]
-        }
     }
     def out = [success: true]
     try {
@@ -902,14 +913,15 @@ private Map _applyNetworkBackup(Map spec, boolean test) {
 }
 
 // Full local backup (.tar.gz: database, File Manager files up to 100 MiB, Zigbee and Z-Wave data):
-// GET /hub2/createLocalBackup?full=true, the request the 2.5.2 UI sends over Remote Admin. Fired
-// asynchronously like the database backup and confirmed by a newer full entry in the local list.
+// GET /hub2/createFullLocalBackup, the create-and-download request the 2.5.2 UI sends on the LAN
+// (/hub2/createLocalBackup?full=true is the Remote Admin form and 404s locally). Fired asynchronously
+// like /hub/backupDB, so the archive never loads into the app, and confirmed by a newer full entry.
 private Map _createFullLocalBackup(boolean scheduleUpdated, networkBackup) {
     def info = null
     try {
         def raw = hubInternalGet("/hub2/backup/json")
         info = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-    } catch (Exception e) { mcpLog("debug", "hub-admin", "full backup pre-check: /hub2/backup/json unreadable (${e.message})") }
+    } catch (Exception e) { mcpLog("warn", "hub-admin", "full backup pre-check: /hub2/backup/json unreadable (${e.message}); requesting the backup anyway") }
     if (info instanceof Map && info.hasFullLocalBackup == false) {
         return [success: false, full: true, scheduleUpdated: scheduleUpdated,
                 error: "This hub does not offer full local backups (hasFullLocalBackup is false).",
@@ -917,7 +929,7 @@ private Map _createFullLocalBackup(boolean scheduleUpdated, networkBackup) {
     }
     Long pre = _latestLocalHubBackupEpoch("full")
     long t0 = now()
-    def params = [uri: hubBaseUri(), path: "/hub2/createLocalBackup", query: [full: true], timeout: 600]
+    def params = [uri: hubBaseUri(), path: "/hub2/createFullLocalBackup", timeout: 600]
     def cookie = getHubSecurityCookie()
     if (cookie) params.headers = [Cookie: cookie]
     asynchttpGet("backupResponseSink", params)
@@ -932,7 +944,7 @@ private Map _createFullLocalBackup(boolean scheduleUpdated, networkBackup) {
     if (!confirmed) {
         return out + [success: false, confirmed: false,
                 error: "The full backup was requested but no new full backup appeared within ~60s.",
-                note: "A full backup with many File Manager files can take minutes. Check hub_list_backups(scope='hub_local') for a fullBackup:true entry before relying on it; the 24h destructive-confirm gate was not stamped."]
+                note: "A full backup with many File Manager files can take minutes. Check hub_list_backups(scope='hub_local') for a fullBackup:true entry before relying on it; a hub refusal shows in hub_get_logs(mode='mcp'). The 24h destructive-confirm gate was not stamped."]
     }
     def stamp = now()
     state.lastBackupTimestamp = stamp
@@ -955,7 +967,14 @@ private Map _downloadCloudBackup(spec) {
         def got = hubInternalBytes("POST", (part == "files") ? "/hub2/downloadCloudFilesBackup" : "/hub2/downloadCloudDatabaseBackup", null,
                                    [fileName: spec.path.toString(), password: spec.cloudBackupPassword.toString()])
         byte[] bytes = got.bytes
-        if (!bytes || bytes.length == 0) return [success: false, cloudDownload: true, error: "The hub returned no data for that cloud backup."]
+        if (!bytes || bytes.length == 0) {
+            return [success: false, cloudDownload: true, error: "The hub returned no backup for that cloud path${got.error ? ': ' + got.error : '.'}",
+                    note: "Check the path and the cloud backup password (hub_list_backups(scope='hub_cloud')). Nothing was saved."]
+        }
+        if (!((part == "files") ? _isGzip(bytes) : _isH2Database(bytes))) {
+            return [success: false, cloudDownload: true, error: "The hub's reply is not a ${part} backup: ${_bytesPreview(bytes)}",
+                    note: "Check the path and the cloud backup password. Nothing was saved."]
+        }
         uploadHubFile(name, bytes)
         return [success: true, cloudDownload: true, part: part, fileName: name, sizeBytes: bytes.length,
                 message: "Cloud backup ${part} saved to File Manager as ${name}.",
@@ -997,6 +1016,22 @@ private _listHubBackups(boolean wantLocal, boolean wantCloud) {
     return out
 }
 
+// A local backup's size in bytes from the hub's list ("7 MB"), or null when it is not listed.
+private Long _localBackupSizeBytes(String fileName) {
+    try {
+        def raw = hubInternalGet("/hub2/localBackups")
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        def entry = (parsed instanceof List) ? parsed.find { it instanceof Map && it.name?.toString() == fileName } : null
+        def m = (entry?.fileSize ?: entry?.size)?.toString() =~ /(?i)^\s*([\d.]+)\s*(B|KB|MB|GB)?\s*$/
+        if (!m.find()) return null
+        def mult = [B: 1L, KB: 1024L, MB: 1024L * 1024, GB: 1024L * 1024 * 1024].get((m.group(2) ?: "B").toUpperCase())
+        return ((m.group(1) as BigDecimal) * mult) as Long
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "_localBackupSizeBytes: local backup list unreadable (${e.message})")
+        return null
+    }
+}
+
 // A full local backup as the hub lists it (fullBackup:true); the .tar.gz name decides when the list
 // is unreadable or does not list the file.
 private boolean _isFullLocalHubBackup(String fileName) {
@@ -1019,6 +1054,8 @@ private Map _fullRestoreOptions(opts) {
     def m = (opts ?: [:]) as Map
     def unknown = m.keySet().findAll { !(it in known) }
     if (unknown) throw new IllegalArgumentException("Unknown fullRestore field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
+    def notBool = m.findAll { k, v -> v != null && !(v instanceof Boolean) }.keySet()
+    if (notBool) throw new IllegalArgumentException("fullRestore field(s) ${notBool.join(', ')} must be true or false.")
     if (m.deleteExistingFiles == true && m.restoreFiles != true) throw new IllegalArgumentException("fullRestore.deleteExistingFiles applies only with restoreFiles=true.")
     return known.collectEntries { k -> [(k): m.get(k) == true] }
 }
@@ -1026,19 +1063,28 @@ private Map _fullRestoreOptions(opts) {
 // Full restore as the 2.5.2 UI runs it: multipart-upload the .tar.gz to /hub2/uploadFullLocalBackup,
 // then GET /hub2/restoreFullLocalBackup with the restore choices. The hub reboots on success.
 private Map _restoreFullFromBytes(String location, byte[] bytes, String fileName, Map opts) {
+    if (!_isGzip(bytes)) {
+        return [success: false, type: "hub-full", location: location, error: "That is not a full backup archive (.tar.gz): ${_bytesPreview(bytes)}", note: "Nothing was restored."]
+    }
     int maxBytes = 16 * 1024 * 1024
     if (bytes.length > maxBytes) {
         return [success: false, type: "hub-full", location: location,
                 error: "The full backup is ${(bytes.length / (1024 * 1024)) as int} MB, over the 16 MB in-app limit.",
                 note: "Restore a large full backup from Settings > Backup and Restore in the Hubitat web UI (it accepts up to 150 MB). Nothing was restored."]
     }
+    def up
     try {
-        def up = _postMultipartBackup("/hub2/uploadFullLocalBackup", "uploadFile", fileName, bytes)
-        if (!(up instanceof Map) || up.success != true) {
-            return [success: false, type: "hub-full", location: location,
-                    error: "Upload of the full backup failed: ${(up instanceof Map) ? (up.message ?: up.error ?: 'hub rejected the upload') : 'unexpected response'}",
-                    note: "Nothing was restored."]
-        }
+        up = _postMultipartBackup("/hub2/uploadFullLocalBackup", "uploadFile", fileName, bytes)
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "full backup upload failed", e)
+        return [success: false, type: "hub-full", location: location, error: "Upload of the full backup failed: ${e.message}", note: "Nothing was restored."]
+    }
+    if (!(up instanceof Map) || up.success != true) {
+        return [success: false, type: "hub-full", location: location,
+                error: "Upload of the full backup failed: ${(up instanceof Map) ? (up.message ?: up.error ?: 'hub rejected the upload') : 'unexpected response'}",
+                note: "Nothing was restored."]
+    }
+    try {
         def q = [suppressZWaveFirmwareMismatchHubNewer: opts.allowZwaveFirmwareMismatch, restoreZb: opts.restoreZigbee, restoreZw: opts.restoreZwave,
                  restoreFiles: opts.restoreFiles, deleteExistingFiles: opts.deleteExistingFiles, t: now()]
         def raw = hubInternalGet("/hub2/restoreFullLocalBackup", q, 120)
@@ -1064,13 +1110,25 @@ private Map _restoreFullFromBytes(String location, byte[] bytes, String fileName
         }
         return out
     } catch (Exception e) {
-        mcpLogError("hub-admin", "full backup restore failed", e)
-        return [success: false, type: "hub-full", location: location, error: e.message, note: "Nothing was restored."]
+        mcpLogError("hub-admin", "full backup restore request got no answer", e)
+        return _restoreOutcomeUnknown("hub-full", location, e)
     }
 }
 
-// A full backup on this hub: the UI can only download and re-upload it, so do exactly that.
+// A restore request sent but not answered: the hub may already be rebooting into it.
+private Map _restoreOutcomeUnknown(String type, String location, Exception e) {
+    return [success: false, type: type, location: location, outcome: "unknown", error: "The restore request got no answer: ${e.message}",
+            note: "The hub may be rebooting into the restore. Do not resend: wait a few minutes, then check hub_get_info (uptime) before deciding."]
+}
+
+// A full backup on this hub: the UI can only download and re-upload it, so do exactly that. The
+// listed size is checked first so an archive over the in-app limit is never downloaded.
 private Map _restoreLocalFullBackup(String fileName, Map opts) {
+    Long listed = _localBackupSizeBytes(fileName)
+    if (listed != null && listed > 16L * 1024 * 1024) {
+        return [success: false, type: "hub-full", location: "hub_local", error: "The full backup is ${(listed / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
+                note: "Restore a large full backup from Settings > Backup and Restore in the Hubitat web UI (it accepts up to 150 MB). Nothing was restored."]
+    }
     byte[] bytes
     try {
         bytes = hubInternalBytes("GET", "/hub2/downloadLocalBackup", [fileName: fileName]).bytes
@@ -1081,7 +1139,8 @@ private Map _restoreLocalFullBackup(String fileName, Map opts) {
     return _restoreFullFromBytes("hub_local", bytes, fileName, opts)
 }
 
-// Hub-DB restore. BOTH reboot the hub. Confirm-gated by the caller (toolRestoreItemBackup).
+// Hub-DB restore. BOTH reboot the hub. Confirm-gated by the caller (toolRestoreItemBackup). A full
+// local backup goes to the download/upload/restoreFullLocalBackup flow instead (_restoreLocalFullBackup).
 // Wire format verified against vue-hub2.min.js:
 //   local: GET /hub2/restoreLocalBackup?fileName=<name>
 //   cloud: GET /hub2/restoreCloudBackup?fileName=<path>&restorePassword=<pwd>&restoreZb=&restoreZw=&restoreFiles=&deleteExistingFiles=&t=<ms>
@@ -1102,6 +1161,7 @@ private _restoreHubBackup(String location, Map args) {
         } else {
             if (!args.path) throw new IllegalArgumentException("scope=hub_cloud restore requires path (the cloud backup's `path` from hub_list_backups scope=hub_cloud)")
             if (!args.cloudBackupPassword) throw new IllegalArgumentException("scope=hub_cloud restore requires cloudBackupPassword (the encryption password set on the cloud backup)")
+            if (args.fullRestore != null) throw new IllegalArgumentException("fullRestore does not apply to scope=hub_cloud: a cloud restore brings back the database only.")
             def q = [
                 fileName: args.path.toString(),                       // the cloud backup id is its `path`
                 restorePassword: args.cloudBackupPassword.toString(),
@@ -1123,8 +1183,8 @@ private _restoreHubBackup(String location, Map args) {
     } catch (IllegalArgumentException iae) {
         throw iae
     } catch (Exception e) {
-        mcpLogError("hub-admin", "hub-DB restore failed", e)
-        return [success: false, type: "hub-db", location: location, error: e.message, note: "Nothing was restored."]
+        mcpLogError("hub-admin", "hub-DB restore request got no answer", e)
+        return _restoreOutcomeUnknown("hub-db", location, e)
     }
 }
 
@@ -1161,7 +1221,8 @@ def toolDeleteHubBackup(args) {
 }
 
 // scope=hub_uploaded: fetch an external .lzf from backupUrl, multipart-POST it to /hub2/uploadBackup,
-// then GET /hub2/restoreUploadedBackup (reboots). The use case is migrating a backup from ANOTHER hub
+// then GET /hub2/restoreUploadedBackup (reboots). A .gz archive (or fullRestore) goes through the
+// full-restore flow (/hub2/uploadFullLocalBackup) instead. The use case is migrating a backup from ANOTHER hub
 // or restoring an archived off-hub file (if the backup is already on this hub, use hub_local/hub_cloud).
 // OPEN-WORLD: it reaches the internet to fetch backupUrl. Confirm-gated by the caller.
 // CAVEAT: the binary multipart is unit-tested for orchestration but NOT validated against a live hub
@@ -1172,6 +1233,9 @@ private _restoreUploadedBackup(Map args) {
     if (!(url ==~ /(?i)^https?:\/\/.+/)) throw new IllegalArgumentException("backupUrl must be an http(s) URL, got: ${url}")
     // A .gz (full backup) or an explicit fullRestore goes through the full-restore flow.
     String urlPath = url.tokenize("?")[0]
+    if (args.fullRestore != null && urlPath.toLowerCase().endsWith(".lzf")) {
+        throw new IllegalArgumentException("fullRestore applies only to a full .tar.gz backup; backupUrl points at a .lzf database backup.")
+    }
     boolean full = args.fullRestore != null || urlPath.toLowerCase().endsWith(".gz")
     if (full) {
         def opts = _fullRestoreOptions(args.fullRestore)
@@ -1196,10 +1260,8 @@ private _restoreUploadedBackup(Map args) {
         return [success: false, type: "hub-db", location: "hub_uploaded", error: "Fetched 0 bytes from backupUrl.",
                 note: "The URL returned an empty body; check it points at a real .lzf backup."]
     }
-    // Cap the in-app multipart build: ByteArrayOutputStream is sandbox-blocked, so the body is
-    // assembled via a Byte list -- fine for a typical backup, but a several-MB file becomes a
-    // multi-million-element list that is slow/memory-heavy in the Groovy sandbox. Reject oversized
-    // backups and point them at the Hubitat UI restore (the browser path itself caps at 15 MB).
+    // Cap the in-app multipart build (the whole body is held in memory) and point oversized backups
+    // at the Hubitat UI restore (the browser path itself caps at 15 MB).
     int maxUploadBytes = 8 * 1024 * 1024
     if (fileBytes.length > maxUploadBytes) {
         return [success: false, type: "hub-db", location: "hub_uploaded",
@@ -1224,8 +1286,8 @@ private _restoreUploadedBackup(Map args) {
                 error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "restore did not report success") : "unexpected response",
                 note: "The backup uploaded but the restore did not confirm — verify hub state."]
     } catch (Exception e) {
-        mcpLogError("hub-admin", "uploaded-backup restore failed", e)
-        return [success: false, type: "hub-db", location: "hub_uploaded", error: e.message, note: "Nothing was restored."]
+        mcpLogError("hub-admin", "uploaded-backup restore request got no answer", e)
+        return _restoreOutcomeUnknown("hub-db", "hub_uploaded", e)
     }
 }
 
@@ -1282,7 +1344,7 @@ def _getAllToolDefinitions_partItemBackups() {
         // ==================== Hub-DB (whole-hub) backup tools — issue #259 item #1 ====================
         [
             name: "hub_create_backup",
-            description: """Create a full hub-database backup. REQUIRED before any Write master op (24h validity).[[FLAT_TRIM]] Whole-hub .lzf, or with full=true a full local backup (.tar.gz: database, File Manager files, Zigbee and Z-Wave data). Optionally set the automatic-backup schedule (`schedule`) and the network-share backup (`networkBackup`, `testNetworkBackup`); scheduleOnly=true changes those settings only. cloudDownload copies an existing cloud backup into File Manager instead. The only write tool needing no prior backup.[[/FLAT_TRIM]]
+            description: """Create a hub-database backup. REQUIRED before any Write master op (24h validity).[[FLAT_TRIM]] Whole-hub .lzf, or with full=true a full local backup (.tar.gz: database, File Manager files, Zigbee and Z-Wave data). Optionally set the automatic-backup schedule (`schedule`) and the network-share backup (`networkBackup`, `testNetworkBackup`); scheduleOnly=true changes those settings only. cloudDownload copies an existing cloud backup into File Manager instead. The only write tool needing no prior backup.[[/FLAT_TRIM]]
 [[FLAT_TRIM]]
 A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]

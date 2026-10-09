@@ -200,7 +200,9 @@ def toolListVariables(args = null) {
     // type filter: the hub-variable type as hub_create_variable names it, matched against the
     // hub's stored type (integer, bigdecimal, string, boolean, datetime).
     if (args?.type != null) {
-        def hubType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][args.type.toString()]
+        // Accepts the create names and the stored names the listing shows (integer, bigdecimal, ...).
+        def hubType = [number: "integer", integer: "integer", decimal: "bigdecimal", bigdecimal: "bigdecimal", string: "string",
+                       boolean: "boolean", datetime: "datetime"].get(args.type.toString().toLowerCase())
         if (hubType == null) throw new IllegalArgumentException("type must be one of Number, Decimal, String, Boolean, DateTime.")
         hubVariables = hubVariables.findAll { it.type?.toString()?.toLowerCase() == hubType }
         ruleVariables = []
@@ -997,7 +999,8 @@ private Map _incrementHubVariable(String name, increment) {
     catch (Exception e) { throw new IllegalArgumentException("increment must be a number (negative to subtract), got: ${increment}") }
     def hv
     try { hv = getGlobalVar(name) } catch (Exception e) {
-        throw new IllegalArgumentException("Unable to read hub variable '${name}' (${e.message ?: e}). Retry.")
+        mcpLogError("variables", "getGlobalVar failed for '${name}'", e)
+        return [success: false, name: name, error: "Could not read hub variable '${name}': ${e.message ?: e}", note: "Nothing was changed. Retry."]
     }
     if (hv == null) throw new IllegalArgumentException("increment applies only to hub variables; '${name}' is not a hub variable.")
     def type = hv.type?.toString()?.toLowerCase()
@@ -1011,12 +1014,21 @@ private Map _incrementHubVariable(String name, increment) {
         return [success: false, name: name, error: "Increment failed: ${e.message}", note: "A variable linked from another hub over Hub Mesh cannot be incremented here; change it on its source hub."]
     }
     def after = null
-    try { after = getGlobalVar(name)?.value } catch (Exception ignored) { }
+    boolean readBack = true
+    try { after = getGlobalVar(name)?.value } catch (Exception e) {
+        readBack = false
+        mcpLog("warn", "variables", "increment of '${name}' applied but the read-back failed: ${e.message}")
+    }
     if (ok == false) {
         return [success: false, name: name, value: after, error: "The hub did not apply the increment.",
                 note: "A variable linked from another hub over Hub Mesh cannot be incremented here; change it on its source hub."]
     }
     def out = [success: true, name: name, source: "hub", type: hv.type, increment: amount, previousValue: before, value: after]
+    if (!readBack) {
+        out.verified = false
+        out.note = "The increment was applied but the new value could not be read back; check it with hub_get_variable before changing it again."
+        return out
+    }
     if (type == "integer" && (amount as BigDecimal).stripTrailingZeros().scale() > 0) out.note = "A Number variable stores whole numbers; the hub rounded the result."
     return out
 }

@@ -3181,6 +3181,11 @@ class TestRunner:
         assert bounded.get("untilTimestamp"), f"until was not echoed: {bounded}"
         assert all(_iso_epoch_ms(r["date"]) <= bookmark_ms for r in bounded.get("events", []) if r.get("date")), \
             f"until returned an event after the window end: {bounded}"
+        # until alone (no since/hoursBack) bounds the default window too, rather than returning the latest events.
+        alone = self.client.call_tool("hub_list_device_events", {"deviceId": dev_id, "until": bookmark_ms})
+        assert alone.get("untilTimestamp"), f"until without a window start was ignored: {alone}"
+        assert all(_iso_epoch_ms(r["date"]) <= bookmark_ms for r in alone.get("events", []) if r.get("date")), \
+            f"until alone returned an event after the window end: {alone}"
         self._expect_tool_refusal("hub_list_device_events", {"deviceId": dev_id, "since": bookmark_ms, "until": bookmark_ms - 1000},
                                   "until must be later")
 
@@ -3364,9 +3369,10 @@ class TestRunner:
         if zw_fw:
             assert details.get("zwaveVersion") not in (None, "unavailable"), f"zwaveVersion must be filled when the details carry firmware {zw_fw}: {details}"
         # The 2.5.2 Z-Wave writes refuse bad shapes before anything reaches the radio.
-        self._expect_tool_refusal("hub_set_zwave", {"zwave_js": True, "region": "US", "confirm": True}, "send it on its own call")
+        # No confirm on these: if the shape check ever regressed, the confirm gate still refuses.
+        self._expect_tool_refusal("hub_set_zwave", {"zwave_js": True, "region": "US"}, "send it on its own call")
         self._expect_tool_refusal("hub_call_zwave", {"action": "cc_command", "node_id": "abc",
-                                                     "cc": {"command_class": 37, "method_name": "get"}, "confirm": True},
+                                                     "cc": {"command_class": 37, "method_name": "get"}},
                                   "decimal Z-Wave node number")
         self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_keys", "backup_id": "x"}, "security_keys")
 
@@ -13303,11 +13309,11 @@ class TestRunner:
         # Firmware 2.5.2 full-backup fields, and the network-share settings without a password.
         assert "hasFullLocalBackup" in sched, f"schedule lacks the 2.5.2 full-backup fields: {sorted(sched)}"
         nb = listing.get("networkBackup")
-        if nb is not None:
-            assert set(nb) == {"enabled", "networkPath", "username", "passwordSet"}, f"networkBackup shape: {nb}"
-        else:
-            assert any("networkBackup" in str(e) for e in listing.get("hubBackupErrors") or []), \
-                f"networkBackup missing without a recorded read error: {sorted(listing)}"
+        if self._hub_fw_at_least("2.5.2"):
+            assert isinstance(nb, dict) and set(nb) == {"enabled", "networkPath", "username", "passwordSet"}, \
+                f"networkBackup settings unreadable on 2.5.2+: {nb}"
+        assert not any("networkBackup" in str(e) for e in listing.get("hubBackupErrors") or []), \
+            f"a network-share read must not mark the listing partial: {listing.get('hubBackupErrors')}"
         self._expect_tool_refusal("hub_create_backup", {"cloudDownload": {"path": "p", "cloudBackupPassword": "x"}, "full": True},
                                   "cloudDownload runs on its own")
         self._expect_tool_refusal("hub_create_backup", {"networkBackup": {"share": "x"}, "scheduleOnly": True},
@@ -14025,6 +14031,18 @@ class TestRunner:
         assert readback.get("version") is not None and readback.get("version") == rooms_lib.get("version"), \
             f"library source/list versions differ: source={readback.get('version')}, list={rooms_lib.get('version')}"
 
+    def _hub_fw_at_least(self, version: str) -> bool:
+        """Whether the hub's firmware is at least `version` (dotted numbers), from one cached hub_get_info."""
+        fw = getattr(self, "_hub_fw_cached", None)
+        if fw is None:
+            fw = str(self.client.call_tool("hub_get_info", {}).get("firmwareVersion") or "")
+            self._hub_fw_cached = fw
+        def parts(v: str) -> list:
+            return [int(p) if p.isdigit() else 0 for p in v.split(".")]
+        have, want = parts(fw), parts(version)
+        width = max(len(have), len(want))
+        return bool(fw) and have + [0] * (width - len(have)) >= want + [0] * (width - len(want))
+
     def _get_hub_info_optin(self) -> dict:
         """hub_get_info with BOTH additive opt-in blocks in ONE call, shared by the two opt-in tests
         (they read DISJOINT keys: healthAlerts vs platformUpdate/appUpdate). Lazy + cached; the result is
@@ -14063,6 +14081,8 @@ class TestRunner:
         # includeSubscriptions (same opt-in call): the four subscriptions, or an explicit error on old firmware.
         subs = info.get("subscriptions") or {}
         assert "error" in subs or "hubProtect" in subs, f"subscriptions block has neither data nor an error: {subs}"
+        if self._hub_fw_at_least("2.5.2"):
+            assert "hubProtect" in subs, f"subscriptions unreadable on 2.5.2+: {subs}"
         if "hubProtect" in subs:
             assert all(isinstance(subs[k].get("active"), bool) for k in ("hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup") if k in subs), \
                 f"subscription entries must carry active: {subs}"
@@ -14079,7 +14099,7 @@ class TestRunner:
         # 2.5.2.129 dropped the update flag; the alert item or the platform's latest-version check
         # answers instead, so null is left only with a note pointing at Check for Updates.
         if pu.get("available") is True:
-            assert pu.get("availableVersion"), f"a pending update must name its version: {pu}"
+            assert "availableVersion" in pu, f"a pending update must carry availableVersion: {pu}"
         elif pu.get("available") is None:
             assert "Check for Updates" in str(pu.get("note")), f"an unknown pending-update state needs its note: {pu}"
         assert "appUpdate" in res, f"includeAppUpdate did not attach appUpdate: {sorted(res)}"
@@ -14214,6 +14234,8 @@ class TestRunner:
         cc = result.get("cloudCalls")
         assert isinstance(cc, dict) and ("error" in cc or isinstance(cc.get("apps"), list)), \
             f"includeCloudCalls attached neither per-app cloud calls nor an error: {cc}"
+        if self._hub_fw_at_least("2.5.2.129"):
+            assert isinstance(cc.get("apps"), list), f"cloud-call history unreadable on 2.5.2.129+: {cc}"
         assert all("total" in a and isinstance(a.get("hourly"), list) for a in (cc.get("apps") or [])), \
             f"cloud-call app entries lack total/hourly: {cc}"
         assert "appSummary" in result, "Missing 'appSummary'"
@@ -16516,9 +16538,11 @@ class TestRunner:
 
         # The hub's own API documentation pages too: a ranked search, then one class page.
         found = self.client.call_tool("hub_get_tool_guide", {"platform_api_search": "eventsBetween"})
-        if found.get("success") is False:
-            assert "2.5.2" in str(found.get("note")), f"an API-docs miss must name the firmware it needs: {found}"
+        if not self._hub_fw_at_least("2.5.2"):
+            assert found.get("success") is False and "2.5.2" in str(found.get("note")), \
+                f"an API-docs miss must name the firmware it needs: {found}"
         else:
+            assert found.get("success") is True, f"API-docs search failed on a 2.5.2+ hub: {found}"
             hit = next((m for m in found.get("matches") or [] if m.get("name") == "eventsBetween"), None)
             assert hit, f"eventsBetween not among the API-docs matches: {(found.get('matches') or [])[:5]}"
             page = self.client.call_tool("hub_get_tool_guide", {"platform_api_page": hit["pageId"]})

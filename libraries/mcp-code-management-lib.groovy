@@ -2844,7 +2844,7 @@ def _platformAppsUsingDevice(String deviceId) {
             [id: a.id, name: a.name, label: a.label, trueLabel: trueLabel, disabled: disabled == true]
         }
     } catch (Exception e) {
-        mcpLog("debug", "installed-apps", "getAppsUsingDevice(${deviceId}) unavailable: ${e.message}")
+        mcpLog(_hubFirmwareBefore("2.5.2") ? "debug" : "warn", "installed-apps", "getAppsUsingDevice(${deviceId}) unavailable: ${e.message}")
         return null
     }
 }
@@ -2910,7 +2910,8 @@ def toolGetDeviceInUseBy(args) {
         // leaves out of appsUsing, such as Easy Mobile Dashboards; add those it alone returns.
         boolean countMismatch = (count != appsUsingList.size())
         def seen = appsUsingList.collect { it.id?.toString() } as Set
-        def extra = (_platformAppsUsingDevice(deviceId) ?: []).findAll { !seen.contains(it.id?.toString()) }
+        def platformApps = _platformAppsUsingDevice(deviceId)
+        def extra = (platformApps ?: []).findAll { !seen.contains(it.id?.toString()) }
         if (extra) {
             appsUsingList.addAll(extra)
             count = Math.max(count as int, appsUsingList.size())
@@ -2924,12 +2925,15 @@ def toolGetDeviceInUseBy(args) {
             // device-name string instead of silent null.
             deviceName: parsed?.extraBreadcrumb ?: parsed?.name ?: parsed?.label,
             appsUsing: paged.page,
-            count: count,
-            parentApp: parsed?.parentApp
+            count: count
         ]
+        // The device page's raw parentApp carries the app type's OAuth secret; keep its identity only.
+        def pa = parsed?.parentApp
+        if (pa instanceof Map) result.parentApp = [id: pa.id, name: pa.name, label: pa.label, parentAppId: pa.parentAppId]
+        if (platformApps == null && !_hubFirmwareBefore("2.5.2")) result.platformLookup = "unavailable"
         // Surface the count/array disparity when firmware reports an appsUsingCount that
-        // doesn't match the appsUsing array length (truncation / paging signal). Caller
-        // can then decide whether to chase the missing entries via another path.
+        // doesn't match the appsUsing array length (truncation / paging signal), measured
+        // before the platform lookup above added its entries.
         if (countMismatch) {
             result.countMismatch = "appsUsingCount=${parsed?.appsUsingCount} but appsUsing array carries ${appsUsing.size()} entries -- firmware may be truncating"
         }

@@ -22,15 +22,15 @@ def _getHub2HubData() {
 
 // platformUpdate block: the pending HUB FIRMWARE update. Distinct from the appUpdate MCP-server-app
 // version check (hub_get_info with includeAppUpdate=true). currentVersion is the hub firmware string;
-// available + availableVersion come from /hub2/hubData.alerts (platformUpdateAvailable / platformUpdateVersion).
+// available + availableVersion come from /hub2/hubData.alerts: the platformUpdateAvailable flag on
+// older firmware, the PLATFORM_UPDATE_AVAILABLE alert item or getLatestAvailablePlatformVersion() after.
 def _platformUpdateFromHub2(hub2) {
     def fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception e) { }
     def hubVer = (hub2 instanceof Map) ? hub2.version?.toString() : null
     // available:null is the schema's documented "unreadable" signal -- honor it for a missing
-    // /hub2/hubData, a present-but-unrecognized shape (alerts not a Map, or a non-Boolean
-    // platformUpdateAvailable), and an alert block without the update flag, so none can masquerade
-    // as a confident "no update available".
+    // /hub2/hubData and a present-but-unrecognized shape (alerts not a Map, or a non-Boolean
+    // platformUpdateAvailable), so neither can masquerade as a confident "no update available".
     def alerts = (hub2 instanceof Map && hub2.alerts instanceof Map) ? hub2.alerts : null
     def pa = alerts?.platformUpdateAvailable
     if (alerts == null || (pa != null && !(pa instanceof Boolean))) {
@@ -39,7 +39,8 @@ def _platformUpdateFromHub2(hub2) {
     }
     // Firmware 2.5.2.129+ drops the flag: a pending update is a PLATFORM_UPDATE_AVAILABLE alert item
     // carrying the version. Without one (none pending, or the alert was dismissed), ask the platform:
-    // getLatestAvailablePlatformVersion() returns the newest build, or the running one when current.
+    // getLatestAvailablePlatformVersion() names the newest release; only a newer one is an update
+    // (a beta hub can run ahead of it).
     if (pa == null) {
         def item = (alerts.alertItems instanceof List) ? alerts.alertItems.find { it instanceof Map && it.key == "PLATFORM_UPDATE_AVAILABLE" } : null
         if (item != null) return [available: true, currentVersion: fw ?: hubVer, availableVersion: item.version?.toString()]
@@ -48,10 +49,10 @@ def _platformUpdateFromHub2(hub2) {
             mcpLog("warn", "server", "getLatestAvailablePlatformVersion failed: ${e.message}")
         }
         def current = fw ?: hubVer
-        if (latest && current) {
-            boolean newer = latest != current
-            def out = [available: newer, currentVersion: current]
-            if (newer) out.availableVersion = latest
+        Integer cmp = (latest && current) ? _compareVersions(latest, current) : null
+        if (cmp != null) {
+            def out = [available: cmp > 0, currentVersion: current]
+            if (cmp > 0) out.availableVersion = latest
             return out
         }
         return [available: null, currentVersion: current,
@@ -67,8 +68,9 @@ def _platformUpdateFromHub2(hub2) {
 // duplicating, the locally-derived memory/temp/DB warnings. `active` lists the currently-firing
 // alerts; `details` is the full alert map. Firmware 2.5.2.129+ reports alerts as alertItems
 // [{key, message, dismissible, version}] and drops the per-alert boolean flags older firmware sends,
-// so `active` comes from the item keys when present. The platform-update flag fields are surfaced
-// separately (platformUpdate), so they are dropped here.
+// so `active` comes from the item keys when present. On that firmware this also reads the hub's own
+// alert feed (GET /hub/alertsJson). The platform-update flag fields are surfaced separately
+// (platformUpdate), so they are dropped here.
 def _healthAlertsFromHub2(hub2) {
     if (!(hub2 instanceof Map)) return null
     def alerts = (hub2.alerts instanceof Map) ? ([:] + hub2.alerts) : [:]
@@ -109,7 +111,10 @@ private Map _hubSubscriptions() {
         def txt = hubInternalGet("/hub/subscriptions/json", [t: now()])
         raw = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
     } catch (Exception e) {
-        return [error: "Could not read /hub/subscriptions/json: ${e.message}", note: "Subscription status needs firmware 2.5.2 or later."]
+        mcpLogError("hub-admin", "subscription status read failed", e)
+        def out = [error: "Could not read /hub/subscriptions/json: ${e.message}"]
+        if (_hubFirmwareBefore("2.5.2")) out.note = "Subscription status needs firmware 2.5.2 or later."
+        return out
     }
     if (!(raw instanceof Map)) return [error: "/hub/subscriptions/json returned an unexpected shape."]
     def out = [:]

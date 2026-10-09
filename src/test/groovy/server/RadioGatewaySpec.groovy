@@ -122,8 +122,8 @@ class RadioGatewaySpec extends ToolSpecBase {
         !readOnly.contains('hub_set_zwave')
         !readOnly.contains('hub_call_destructive_ops')
 
-        and: 'set_* config writes are idempotent; call_* operations are not'
-        idempotent.contains('hub_set_zwave')
+        and: 'Zigbee config writes are idempotent; hub_set_zwave (its zwave_js switch reboots) and call_* operations are not'
+        !idempotent.contains('hub_set_zwave')
         idempotent.contains('hub_set_zigbee')
         !idempotent.contains('hub_call_zwave')
         !idempotent.contains('hub_call_zigbee')
@@ -131,15 +131,16 @@ class RadioGatewaySpec extends ToolSpecBase {
         !idempotent.contains('hub_call_destructive_ops')
     }
 
-    def "all radio tools are closed-world (radio is the closed system)"() {
+    def "radio tools are closed-world except hub_call_zwave, whose backup import fetches a URL"() {
         when:
         def openWorld = script.getOpenWorldToolNames()
 
         then:
-        ['hub_set_zwave', 'hub_call_zwave', 'hub_set_zigbee', 'hub_call_zigbee',
+        ['hub_set_zwave', 'hub_set_zigbee', 'hub_call_zigbee',
          'hub_call_matter', 'hub_call_destructive_ops', 'hub_get_radio_details'].each { t ->
             assert !openWorld.contains(t) : "${t} should be closed-world (openWorld=false)"
         }
+        openWorld.contains('hub_call_zwave')
     }
 
     // ---- Display meta (every tool + the new gateway need an entry) ----

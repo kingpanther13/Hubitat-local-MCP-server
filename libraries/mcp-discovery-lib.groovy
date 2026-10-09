@@ -354,8 +354,9 @@ def toolGetToolGuide(section, cursor = null, Map apiDocs = null) {
 }
 
 // The hub's own Groovy API reference (firmware 2.5.2+, Settings > For Developers > API
-// documentation), served from /developer-docs. The index is ~4.6 MB, so a search reads it on the
-// hub and returns only ranked matches, 25 per page; a class page returns its methods 40 per page.
+// documentation), served from /developer-docs. A search downloads and parses the whole index (several
+// MB) in the app on every call and returns only ranked matches, 25 per page; a class page returns its
+// methods 40 per page. `methods` is read with Map.get: the sandbox blocks it as a property name.
 private Map _platformApiSearch(String query, cursor) {
     def terms = query.toLowerCase().split(/\s+/).findAll { it }
     if (!terms) throw new IllegalArgumentException("platform_api_search needs at least one word, e.g. 'eventsBetween' or 'hub variable'.")
@@ -364,22 +365,25 @@ private Map _platformApiSearch(String query, cursor) {
         def raw = hubInternalGet("/developer-docs/index.json", null, 60)
         index = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
     } catch (Exception e) {
-        return [success: false, error: "Could not read the hub's API documentation index: ${e.message}",
-                note: "The on-hub API documentation needs firmware 2.5.2 or later."]
+        mcpLogError("discovery", "API documentation index read failed", e)
+        def out = [success: false, error: "Could not read the hub's API documentation index: ${e.message}"]
+        if (_hubFirmwareBefore("2.5.2")) out.note = "The on-hub API documentation needs firmware 2.5.2 or later."
+        return out
     }
     if (!(index instanceof Map) || !(index.pages instanceof List)) {
-        return [success: false, error: "The hub's API documentation index has an unexpected shape.", note: "The on-hub API documentation needs firmware 2.5.2 or later."]
+        return [success: false, error: "The hub's API documentation index has an unexpected shape."]
     }
     def hits = []
     index.pages.each { pg ->
         if (!(pg instanceof Map)) return
-        // Apps, drivers and shared APIs outrank the ~1,600 protocol (Z-Wave/Zigbee/Matter) pages.
+        // Apps, drivers and shared APIs outrank the many protocol (Z-Wave/Zigbee/Matter) pages.
         int sectionBoost = (pg.section == "protocols") ? 0 : 3
         String pageText = "${pg.id} ${pg.label} ${pg.className} ${pg.topic}".toLowerCase()
         if (terms.every { pageText.contains(it) }) {
             hits << [score: 3 + sectionBoost, pageId: pg.id, className: pg.className, label: pg.label, section: pg.section, kind: "page", usage: pg.usage]
         }
-        (pg.methods instanceof List ? pg.methods : []).each { m ->
+        def pgMethods = pg.get("methods")
+        (pgMethods instanceof List ? pgMethods : []).each { m ->
             if (!(m instanceof Map)) return
             String name = (m.name ?: "").toString()
             String lname = name.toLowerCase()
@@ -411,11 +415,13 @@ private Map _platformApiPage(String pageId, cursor) {
         def raw = hubInternalGet("/developer-docs/${pageId}.json", null, 30)
         pg = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
     } catch (Exception e) {
+        mcpLogError("discovery", "API documentation page read failed", e)
         return [success: false, error: "Could not read API documentation page '${pageId}': ${e.message}",
-                note: "Check the pageId with hub_get_tool_guide(platform_api_search=...). The on-hub API documentation needs firmware 2.5.2 or later."]
+                note: "Check the pageId with hub_get_tool_guide(platform_api_search=...)." + (_hubFirmwareBefore("2.5.2") ? " The on-hub API documentation needs firmware 2.5.2 or later." : "")]
     }
-    if (!(pg instanceof Map) || !(pg.methods instanceof List)) return [success: false, error: "API documentation page '${pageId}' has an unexpected shape."]
-    def methods = pg.methods.findAll { it instanceof Map }.collect { m ->
+    def pgMethods = (pg instanceof Map) ? pg.get("methods") : null
+    if (!(pgMethods instanceof List)) return [success: false, error: "API documentation page '${pageId}' has an unexpected shape."]
+    def methods = pgMethods.findAll { it instanceof Map }.collect { m ->
         [kind: m.kind, name: m.name, signature: m.signature, description: (m.descriptionMarkdown ?: m.summary)?.toString()?.trim()]
     }
     def paged = _paginateList(methods, cursor != null ? cursor : "", 40, "hub_get_tool_guide")
