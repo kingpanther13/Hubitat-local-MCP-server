@@ -1040,7 +1040,7 @@ def toolSetVariable(Map args) {
         return _incrementHubVariable(name.toString(), args.increment)
     }
     if (!hasValue && !hasMeshShared) {
-        throw new IllegalArgumentException("Provide value, increment, mesh_shared, or value with mesh_shared.")
+        throw new IllegalArgumentException("Provide value, mesh_shared, or both (or increment on its own).")
     }
     if (hasMeshShared && !(args.mesh_shared instanceof Boolean)) {
         throw new IllegalArgumentException("mesh_shared must be a boolean (true or false), got: ${args.mesh_shared}")
@@ -1522,7 +1522,7 @@ def _getAllToolDefinitions_partVariables() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Optional: list only hub variables of this type (rule-engine variables are left out)."],
+                    type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Optional: only hub variables of this type."],
                     cursor: [type: "string", description: "Opt-in pagination cursor for the hubVariables list.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ]
@@ -1547,7 +1547,7 @@ def _getAllToolDefinitions_partVariables() {
                 properties: [
                     name: [type: "string", description: "Variable name"],
                     value: [type: "string", description: "Variable value (string, number, or boolean as string).[[FLAT_TRIM]] Optional when mesh_shared is given.[[/FLAT_TRIM]]"],
-                    increment: [type: "number", description: "Add this amount (negative subtracts) to a Number or Decimal hub variable in one atomic hub operation, instead of value. Send alone."],
+                    increment: [type: "number", description: "Add this amount atomically to a Number/Decimal hub variable (instead of value; send alone)."],
                     mesh_shared: [type: "boolean", description: "Hub Mesh: share/unshare this hub variable.[[FLAT_TRIM]] true shares into the mesh, false unshares; hub variables only; may accompany value or stand alone.[[/FLAT_TRIM]]"]
                 ],
                 required: ["name"]

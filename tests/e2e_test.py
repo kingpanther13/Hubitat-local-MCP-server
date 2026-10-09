@@ -3365,9 +3365,10 @@ class TestRunner:
             assert details.get("zwaveVersion") not in (None, "unavailable"), f"zwaveVersion must be filled when the details carry firmware {zw_fw}: {details}"
         # The 2.5.2 Z-Wave writes refuse bad shapes before anything reaches the radio.
         self._expect_tool_refusal("hub_set_zwave", {"zwave_js": True, "region": "US", "confirm": True}, "send it on its own call")
-        self._expect_tool_refusal("hub_call_zwave", {"action": "cc_command", "node_id": "abc", "command_class": 37,
-                                                     "method_name": "get", "confirm": True}, "decimal Z-Wave node number")
-        self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_keys", "import_id": "x"}, "security_keys")
+        self._expect_tool_refusal("hub_call_zwave", {"action": "cc_command", "node_id": "abc",
+                                                     "cc": {"command_class": 37, "method_name": "get"}, "confirm": True},
+                                  "decimal Z-Wave node number")
+        self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_keys", "backup_id": "x"}, "security_keys")
 
     @test("diagnostics")
     def test_set_zigbee_enabled_idempotent(self) -> None:
@@ -3506,7 +3507,7 @@ class TestRunner:
             f"hub_call_destructive_ops reset without confirm must be refused by the safety gate, got: {detail}"
         # A batch firmware run without its target nodes is refused before anything is flashed.
         self._expect_tool_refusal("hub_call_destructive_ops", {"target": "zwave", "action": "device_firmware_batch_start",
-                                                               "node_id": "4", "confirm": True}, "node_ids")
+                                                               "node_id": "4", "confirm": True}, "batch.node_ids")
 
     @test("native_apps")
     def test_set_native_app_guide_meta_call_via_gateway(self) -> None:

@@ -16,6 +16,8 @@ from types import SimpleNamespace
 # tests/ is already on sys.path conceptually, but be explicit for safety.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
 
+from datetime import datetime
+
 import pytest
 
 # e2e_test.py imports `requests` at module level. Skip the whole module gracefully if
@@ -82,6 +84,10 @@ def _raw_tool_body(body, *, is_error=False):
     }
 
 
+def _iso_ms(text):
+    return int(datetime.strptime(text, "%Y-%m-%dT%H:%M:%S.%f%z").timestamp() * 1000)
+
+
 @pytest.mark.parametrize("refusal", [
     "Device not found: 0",
     "Device metadata fetch failed (/device/fullJson/0)",
@@ -103,10 +109,18 @@ def test_event_bookmark_reaches_history_after_expected_zero_refusals(refusal):
         assert str(args["deviceId"]) == "42"
         since = args.get("since")
         explicit = since is not None
+        until = args.get("until")
+        if until is not None and isinstance(since, int) and until <= since:
+            return _raw_tool_body({"success": False, "isError": True,
+                                   "error": "until must be later than the window start"}, is_error=True)
         rows = [] if since == "2099-01-01T00:00:00.000+0000" else [
             {"date": date, "name": "switch", "value": "on"} for date in dates[1 if explicit else 0:]]
+        if until is not None:
+            rows = [r for r in rows if _iso_ms(r["date"]) <= until]
         result = {"source": "device", "deviceId": "42", "events": rows, "count": len(rows),
                   "sinceMode": "explicit" if explicit else "relative", "sinceTimestamp": dates[0]}
+        if until is not None:
+            result["untilTimestamp"] = "2026-09-28T12:00:00.000+0000"
         if explicit:
             result["since"] = since if isinstance(since, str) else dates[0]
         else:
@@ -3009,7 +3023,12 @@ def test_export_bundle_uses_logical_writes_filtered_verification_and_exact_backu
     list_filters = []
 
     class NoDirectWritesClient:
+        # Only the File Manager listing reads (the 2.5.2 listing-shape check) go direct.
         def call_tool(self, name, arguments=None):
+            if name == "hub_read_files" and (arguments or {}).get("tool") == "hub_list_files":
+                return {"files": [{"name": "a.txt", "type": "file"}], "freeSpaceBytes": 1}
+            if name == "hub_list_files" and (arguments or {}).get("folder") == "../etc":
+                raise et.McpToolError(name, "folder must be a relative File Manager folder path such as 'webcore'")
             raise AssertionError(f"unexpected direct call: {name} {arguments}")
 
     runner = object.__new__(et.TestRunner)

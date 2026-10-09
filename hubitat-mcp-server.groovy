@@ -699,13 +699,25 @@ def appButtonHandler(btn) {
         def idx = btn.substring("revokeClientToken_".length())
         def label = (idx.isInteger() && (idx as int) < labels.size()) ? labels[idx as int] : null
         if (label != null) {
-            def tokens = [:] + _clientTokens()
-            def token = tokens.remove(label)
-            try { revokeSpecificAccessToken(token) } catch (Exception e) {
-                mcpLog("warn", "server", "revokeSpecificAccessToken failed for client '${label}': ${e.message}")
+            def token = _clientTokens().get(label)
+            // Fail closed: the client stays listed (and revocable) unless the hub confirms the
+            // token is gone, so a failed revoke never hides a token that still authenticates.
+            boolean revoked = false
+            try {
+                revokeSpecificAccessToken(token)
+                def live = getAccessTokens()
+                revoked = (live instanceof List) && !live.contains(token)
+            } catch (Exception e) {
+                mcpLog("error", "server", "revokeSpecificAccessToken failed for client '${label}': ${e.message}")
             }
-            state.clientTokens = tokens
-            mcpLog("warn", "server", "MCP client token revoked for '${label}'")
+            if (revoked) {
+                def tokens = [:] + _clientTokens()
+                tokens.remove(label)
+                state.clientTokens = tokens
+                mcpLog("warn", "server", "MCP client token revoked for '${label}'")
+            } else {
+                mcpLog("error", "server", "MCP client token for '${label}' is still accepted by the hub after the revoke; it stays listed -- revoke again")
+            }
         }
     } else if (btn == "resetOverridesBtn") {
         app.removeSetting("disabled_tools")
@@ -4534,13 +4546,17 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
 
 // redactAccessTokens (Advanced page). Covers the three shapes a token reaches a tool result in:
 // an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
-// (app settings and state), and that same key inside JSON carried as a string (a file read or
-// an exported setting).
+// (app settings and state) or the clientTokens map of per-client tokens, and that same key
+// inside JSON carried as a string (a file read or an exported setting).
 private def _redactAccessTokens(value) {
     String marker = "***redacted (access token)***"
     if (value instanceof Map) {
         return value.collectEntries { k, v ->
             boolean tokenKey = k?.toString() ==~ /(?i)access_?token/
+            // clientTokens (per-client tokens by client name): every value is a token.
+            if (k?.toString() == "clientTokens" && v instanceof Map) {
+                return [(k): v.collectEntries { name, t -> [(name): marker] }]
+            }
             [(k): (tokenKey && v instanceof CharSequence) ? marker : _redactAccessTokens(v)]
         }
     }
@@ -4768,7 +4784,7 @@ def getGatewayConfig() {
             description: "Manage hub variables (every type: Number, Decimal, String, Boolean, DateTime), their connector devices, and rule-engine variables. Issue #92: full read/write CRUD via the modern Hub Variable API + wizard; observe changes via hub_list_variable_changes.",
             tools: ["hub_list_variables", "hub_get_variable", "hub_set_variable", "hub_create_variable", "hub_delete_variable", "hub_create_connector", "hub_delete_connector", "hub_list_variable_changes"],
             summaries: [
-                hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables. Args: type?, cursor?",
+                hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables. Args: type, cursor",
                 hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable. Args: name, includeDependents?",
                 hub_set_variable: "Set an existing variable's value, or add to a Number/Decimal hub variable atomically. Falls back to rule_engine namespace when no hub var matches. Args: name, value | increment",
                 hub_create_variable: "Create a new hub variable, or several at once. Single: name, type (Number|Decimal|String|Boolean|DateTime), value, confirm=true. Bulk: variables=[{name,type,value},...], confirm=true (mutually exclusive with the single form). A String value must be non-empty",
@@ -4964,7 +4980,7 @@ def getGatewayConfig() {
             description: "Manage hub File Manager: list, read, write, and delete files stored on the hub.",
             tools: ["hub_list_files", "hub_read_file", "hub_write_file", "hub_delete_file"],
             summaries: [
-                hub_list_files: "List files and subfolders in File Manager (names, sizes, URLs, free space). Args: filter?, folder?, cursor?",
+                hub_list_files: "List files and subfolders in File Manager (names, sizes, URLs, free space). Args: filter, folder, cursor",
                 hub_read_file: "Read file content. Args: fileName, offset, length",
                 hub_write_file: "Write file to File Manager. Args: fileName, content, confirm=true",
                 hub_delete_file: "Delete file from File Manager (auto-backs up first to <name>_backup_<ts>, unless it's already a backup). Args: fileName, confirm=true"
@@ -5096,7 +5112,7 @@ def getGatewayConfig() {
             description: "Read-only hub File Manager access: list files and read file content. All operations are read-only; write/delete live in hub_manage_files.",
             tools: ["hub_list_files", "hub_read_file"],
             summaries: [
-                hub_list_files: "List files and subfolders in File Manager (names, sizes, URLs, free space). Args: filter?, folder?, cursor?",
+                hub_list_files: "List files and subfolders in File Manager (names, sizes, URLs, free space). Args: filter, folder, cursor",
                 hub_read_file: "Read file content. Args: fileName, offset, length"
             ],
             searchHints: [
@@ -5108,7 +5124,7 @@ def getGatewayConfig() {
             description: "Read-only hub-variable inspection: list all variables (with type/connector linkage), get one variable's value + metadata (optionally the apps that reference it), and watch the recent change timeline. All operations are read-only; variable create/set/delete and connectors live in hub_manage_variables.",
             tools: ["hub_list_variables", "hub_get_variable", "hub_list_variable_changes"],
             summaries: [
-                hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables. Args: type?, cursor?",
+                hub_list_variables: "List all hub variables (with type/connector linkage) and rule-engine variables. Args: type, cursor",
                 hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable. Args: name, includeDependents?",
                 hub_list_variable_changes: "Recent hub-variable changes from the retained 200-entry history. Args: name?, sinceMs?, limit?"
             ],
@@ -10524,12 +10540,12 @@ Dashboards or automations that reference the room may need updating.
 - Related radio tools: enable/disable, region, long-range channel and the Z-Wave JS stack switch via hub_set_zwave; radio reset (unpairs every device), Z-Wave firmware flashes and the Z-Wave network restore via hub_call_destructive_ops.
 - **Z-Wave JS actions** (the hub must run the Z-Wave JS stack; `zwaveJS` in hub_get_radio_details(radio='zwave')):
   - `reinterview` (node_id): re-runs the node interview; watch `interviewComplete` / `interviewStage` on the node.
-  - `link_test_start` (node_id, rounds default 10, interval_ms default 1000) / `link_test_stop` (node_id): the link reliability test. It switches the device on and off and may leave it in a different state. Read results with hub_get_radio_details(radio='zwave', node_id=N) under `linkReliability`.
-  - `cc_command` (node_id, command_class, method_name, endpoint default 0, cc_args, confirm=true): sends one command-class method, as the node page's command list does. The node's command classes and methods come from hub_get_radio_details(radio='zwave', node_id=N) `nodeDetails`. It talks to the device directly, outside the device allowlist, so it needs confirm and a recent backup.
+  - `link_test_start` (node_id, link_test={rounds default 10, interval_ms default 1000}) / `link_test_stop` (node_id): the link reliability test. It switches the device on and off and may leave it in a different state. Read results with hub_get_radio_details(radio='zwave', node_id=N) under `linkReliability`.
+  - `cc_command` (node_id, cc={command_class, method_name, endpoint default 0, args}, confirm=true): sends one command-class method, as the node page's command list does. The node's command classes and methods come from hub_get_radio_details(radio='zwave', node_id=N) `nodeDetails`. It talks to the device directly, outside the device allowlist, so it needs confirm and a recent backup.
 - **Z-Wave network backup** (Z-Wave JS plus the Full Local Backup subscription; `status.zwaveLocalBackup` in hub_get_radio_details(include_status=true) shows `available` and `entitled`):
   1. `local_backup_create` returns a `jobId`; poll hub_get_radio_details(backup_job_id=<jobId>) until `stage` is DONE.
-  2. `local_backup_download` (job_id, save_as?) saves the archive to File Manager.
-  3. To bring a network in: `local_backup_import` (backup_url, 8 MB max; a Hubitat backup, Z-Wave JS UI backup, archive or raw NVM file) returns an `importId`; poll its job until READY and read its `report`. Supply missing keys with `local_backup_keys` (import_id, security_keys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl}, security_keys_long_range {S2_Authenticated, S2_AccessControl}, hex, a 0x prefix is stripped). Then restore with hub_call_destructive_ops(target='zwave', action='local_backup_restore', import_id=...).
+  2. `local_backup_download` (backup_id = the jobId) saves the archive to File Manager under an unguessable name and deletes it after one hour. The archive holds the network's security keys and File Manager files are downloadable without authentication, so download it promptly.
+  3. To bring a network in: `local_backup_import` (backup_url, 8 MB max; a Hubitat backup, Z-Wave JS UI backup, archive or raw NVM file) returns an `importId`; poll its job until READY and read its `report`. Supply missing keys with `local_backup_keys` (backup_id = the importId, security_keys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, long_range: {S2_Authenticated, S2_AccessControl}}, hex, a 0x prefix is stripped). Then restore with hub_call_destructive_ops(target='zwave', action='local_backup_restore', import_id=...).
 
 ### hub_set_zigbee (configure the Zigbee radio: enable/disable, channel/power, radio settings, per-device ping)
 
@@ -10543,7 +10559,7 @@ Dashboards or automations that reference the room may need updating.
 The radio firmware-flash `action` values (the bullet above summarizes these as "a firmware flash"; an interrupted flash can brick hardware — never power-cycle during one):
 - `device_firmware_start` — Z-Wave device firmware OTA. Requires `node_id` + `file_name` (`file_name` comes from hub_get_radio_details(include_firmware=true)); optional `target_index` defaults to `node_id`.
 - `device_firmware_start_available` — flash the update the hub's firmware service offers for a node. Requires `node_id` + `update_id` (from hub_get_radio_details(include_firmware=true, node_id=N) `firmware.node.available`).
-- `device_firmware_batch_start` / `device_firmware_batch_start_available` (Z-Wave JS) — flash several matching devices in one run: `node_id` is the source node, `node_ids` the nodes to update (from `firmware.node.batchCandidates`), plus `file_name` (and optional `target_index`) or `update_id`. `inactivity_timeout_seconds` (default 600) gives up on a silent device. Follow the run in `status.zwaveFirmwareBatch` (include_status=true); stop it with `device_firmware_batch_abort`.
+- `device_firmware_batch_start` / `device_firmware_batch_start_available` (Z-Wave JS) — flash several matching devices in one run: `node_id` is the source node, `batch.node_ids` the nodes to update (from `firmware.node.batchCandidates`), plus `file_name` (and optional `target_index`) or `update_id`. `batch.inactivity_timeout_seconds` (default 600) gives up on a silent device. Follow the run in `status.zwaveFirmwareBatch` (include_status=true); stop it with `device_firmware_batch_abort`.
 - `device_firmware_abort` — abort an in-progress Z-Wave device flash. Requires `node_id`.
 - Firmware 2.5.2 refuses device firmware updates over Remote Admin; the hub's refusal message is returned.
 - `local_backup_restore` (target=zwave) — replaces the hub's Z-Wave network with an imported backup (`import_id` from hub_call_zwave local_backup_import, READY with every key supplied). Z-Wave devices are unavailable while Z-Wave JS restarts; poll the returned `jobId` with hub_get_radio_details(backup_job_id=...).
@@ -11085,7 +11101,7 @@ Also sets the hub's automatic-backup schedule. Pass a `schedule` object {hour 0-
 
 - **`full=true`** creates a full local backup (firmware 2.5.2+, Full Local Backup subscription): a `.tar.gz` with the database, File Manager files up to 100 MiB, and the Zigbee and Z-Wave radio data. It is confirmed by a new `fullBackup:true` entry in the local list and stamps the 24h gate like a database backup. A hub without the feature (`hasFullLocalBackup:false` in the schedule block) is refused before anything is sent. A large file set can take longer than the ~60s confirmation window; the result then says so and the backup may still appear.
 - **`networkBackup={enabled, networkPath, username, password}`** sets the network-share (SMB) copy the hub makes of each full backup. Omitted fields keep their value, the password included; the password is never returned. **`testNetworkBackup=true`** tests the share connection (after applying `networkBackup` when both are given). With `scheduleOnly=true` the call changes these settings without creating a backup.
-- **`cloudDownload={path, cloudBackupPassword, part?, saveAs?}`** copies a cloud backup into File Manager without creating a backup: `part='database'` (default) is the `.lzf` database, `part='files'` the File Manager archive. Send it alone. The copy lands at `http://<HUB_IP>/local/<saveAs>`.
+- **`cloudDownload={path, cloudBackupPassword, part?}`** copies a cloud backup into File Manager without creating a backup: `part='database'` (default) is the `.lzf` database, `part='files'` the File Manager archive. Send it alone. The copy lands at `http://<HUB_IP>/local/<fileName>` under an unguessable name and is deleted after one hour, because File Manager files are downloadable without authentication by anyone on the network who knows the name.
 
 ### hub_list_backups
 

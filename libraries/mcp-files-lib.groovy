@@ -363,12 +363,12 @@ def _getAllToolDefinitions_partFiles() {
         // File Manager Tools
         [
             name: "hub_list_files",
-            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL, plus subfolders (type 'dir') and the store's free space. Optionally filter by a case-insensitive substring of the file name, or list a subfolder. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only.",
+            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL, plus subfolders. Optionally filter by a case-insensitive substring of the file name, or list a subfolder. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
                     filter: [type: "string", description: "Optional case-insensitive substring to match against file names, e.g. \"backup\" or \"mcp-rm-backup\"."],
-                    folder: [type: "string", description: "Optional subfolder to list, e.g. \"webcore\" (a type 'dir' entry from the root listing). Default: the root."],
+                    folder: [type: "string", description: "Optional subfolder, e.g. \"webcore\"."],
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ]

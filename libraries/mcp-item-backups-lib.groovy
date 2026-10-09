@@ -941,26 +941,53 @@ private Map _createFullLocalBackup(boolean scheduleUpdated, networkBackup) {
             note: "Listed with fullBackup:true in hub_list_backups(scope='hub_local'); restore it with hub_restore_backup(scope='hub_local', fileName=..., fullRestore={...})."]
 }
 
+// File Manager files are served at /local/<name> without authentication, so a decrypted backup
+// copy gets an unguessable default name and is deleted an hour later.
+private String _backupCopyWarning() {
+    return "File Manager files can be downloaded by anyone on your network who knows the name, and this copy is decrypted. Keep it off the hub once downloaded."
+}
+
+private String _unguessableSuffix() {
+    return java.util.UUID.randomUUID().toString().replace("-", "")
+}
+
+private void _scheduleBackupCopyExpiry(String name) {
+    try { runIn(3600, "deleteExpiredBackupCopy", [data: [fileName: name], overwrite: false]) }
+    catch (Exception e) { mcpLog("warn", "hub-admin", "could not schedule the deletion of backup copy ${name}: ${e.message}") }
+}
+
+def deleteExpiredBackupCopy(data) {
+    def name = data?.fileName?.toString()
+    if (!name) return
+    try {
+        deleteHubFile(name)
+        mcpLog("info", "hub-admin", "Deleted expired backup copy ${name} from File Manager")
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "Could not delete expired backup copy ${name}: ${e.message}")
+    }
+}
+
 // Copies a cloud backup into File Manager: POST /hub2/downloadCloudDatabaseBackup (the .lzf database)
 // or /hub2/downloadCloudFilesBackup (the File Manager archive) with {fileName: <cloud path>, password}.
 private Map _downloadCloudBackup(spec) {
     if (!(spec instanceof Map) || !spec.path || !spec.cloudBackupPassword) {
-        throw new IllegalArgumentException("cloudDownload needs {path, cloudBackupPassword, part?, saveAs?}: path from hub_list_backups(scope='hub_cloud'), part 'database' (default) or 'files'.")
+        throw new IllegalArgumentException("cloudDownload needs {path, cloudBackupPassword, part?}: path from hub_list_backups(scope='hub_cloud'), part 'database' (default) or 'files'.")
     }
     def part = (spec.part ?: "database").toString()
     if (!(part in ["database", "files"])) throw new IllegalArgumentException("cloudDownload.part must be 'database' or 'files'.")
     String ext = (part == "files") ? ".tar.gz" : ".lzf"
-    String name = spec.saveAs?.toString() ?: "cloud-backup-${part}-${new Date(now()).format('yyyyMMdd-HHmmss')}${ext}"
-    if (!(name ==~ /[A-Za-z0-9_.-]+/)) throw new IllegalArgumentException("cloudDownload.saveAs may contain only letters, digits, dot, underscore, and hyphen.")
+    String name = "cloud-backup-${part}-${_unguessableSuffix()}${ext}"
     try {
         def got = hubInternalBytes("POST", (part == "files") ? "/hub2/downloadCloudFilesBackup" : "/hub2/downloadCloudDatabaseBackup", null,
                                    [fileName: spec.path.toString(), password: spec.cloudBackupPassword.toString()])
         byte[] bytes = got.bytes
         if (!bytes || bytes.length == 0) return [success: false, cloudDownload: true, error: "The hub returned no data for that cloud backup."]
         uploadHubFile(name, bytes)
+        _scheduleBackupCopyExpiry(name)
         return [success: true, cloudDownload: true, part: part, fileName: name, sizeBytes: bytes.length,
                 message: "Cloud backup ${part} saved to File Manager as ${name}.",
-                note: "Download it from http://<HUB_IP>/local/${name}. Delete the copy with hub_delete_file when it is no longer needed."]
+                warning: _backupCopyWarning(),
+                note: "Download it from http://<HUB_IP>/local/${name} within the hour; it is deleted automatically after one hour."]
     } catch (IllegalArgumentException iae) {
         throw iae
     } catch (Exception e) {
@@ -1301,21 +1328,11 @@ A transport drop can lose the response while the hub still commits this write; v
                         cloudBackupFrequency: [type: "integer", enum: [0, 1, 2, 3, 5, 7, 14, 21, 28], description: "Cloud backup interval in DAYS (0=off); kept if omitted"],
                         cloudBackupPassword: [type: "string", description: "Cloud-backup encryption password. Required when cloud backup is/stays enabled."]
                     ]],
-                    scheduleOnly: [type: "boolean", description: "With schedule / networkBackup / testNetworkBackup: change settings only, no backup now."],
-                    full: [type: "boolean", description: "Create a full local backup (database + File Manager files + radio data) instead of the database .lzf. Needs the Full Local Backup subscription."],
-                    networkBackup: [type: "object", description: "Optional: network-share (SMB) backup copy. Omitted fields keep their value; the password is never read back.", properties: [
-                        enabled: [type: "boolean", description: "Copy each full backup to the share."],
-                        networkPath: [type: "string", description: "Share path, e.g. //nas/backups."],
-                        username: [type: "string", description: "Share user name."],
-                        password: [type: "string", description: "Share password; omit to keep the saved one."]
-                    ]],
-                    testNetworkBackup: [type: "boolean", description: "Test the network share connection (after applying networkBackup, if given)."],
-                    cloudDownload: [type: "object", description: "Copy a cloud backup into File Manager (no backup is created). Send alone.", properties: [
-                        path: [type: "string", description: "The cloud backup's path from hub_list_backups(scope='hub_cloud')."],
-                        cloudBackupPassword: [type: "string", description: "The cloud backup encryption password."],
-                        part: [type: "string", enum: ["database", "files"], description: "database (.lzf, default) or files (the File Manager archive)."],
-                        saveAs: [type: "string", description: "File Manager name. Default cloud-backup-<part>-<time>."]
-                    ]],
+                    scheduleOnly: [type: "boolean", description: "With schedule/networkBackup: settings only, no backup now."],
+                    full: [type: "boolean", description: "Full local backup (database + files + radio data).[[FLAT_TRIM]] Needs the Full Local Backup subscription.[[/FLAT_TRIM]]"],
+                    networkBackup: [type: "object", description: "Network-share backup: {enabled?, networkPath?, username?, password?}; omitted fields keep their value."],
+                    testNetworkBackup: [type: "boolean", description: "Test the network share."],
+                    cloudDownload: [type: "object", description: "Copy a cloud backup into File Manager: {path, cloudBackupPassword, part? (database|files)}; send alone."],
                     args: [type: "object"]
                 ]
             ]
@@ -1371,14 +1388,8 @@ A transport drop can lose the response while the hub still commits this write; v
                     fileName: [type: "string", description: "scope=hub_local: backup name from hub_list_backups."],
                     path: [type: "string", description: "scope=hub_cloud: `path` from hub_list_backups."],
                     cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
-                    backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL to the .lzf (database) or .tar.gz (full backup) to upload+restore."],
-                    fullRestore: [type: "object", description: "Full backups only (a fullBackup:true local entry or a .tar.gz upload): what to restore besides the database. All default false.", properties: [
-                        restoreZigbee: [type: "boolean", description: "Restore the Zigbee radio data."],
-                        restoreZwave: [type: "boolean", description: "Restore the Z-Wave radio data."],
-                        restoreFiles: [type: "boolean", description: "Restore the File Manager files."],
-                        deleteExistingFiles: [type: "boolean", description: "With restoreFiles: delete current File Manager files first."],
-                        allowZwaveFirmwareMismatch: [type: "boolean", description: "Restore even though the hub's Z-Wave radio firmware is newer than the backup's."]
-                    ]],
+                    backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL of the .lzf or full .tar.gz."],
+                    fullRestore: [type: "object", description: "Full backups: {restoreZigbee?, restoreZwave?, restoreFiles?, deleteExistingFiles?, allowZwaveFirmwareMismatch?} (default false)."],
                     preserveRuleId: [type: "boolean", description: "Keep the rule id (default true).[[FLAT_TRIM]] true: restore an RM/native app backup in place by settings replay; a replay empties settings the app gained after the backup (settingsCleared). false: restore a Rule Machine backup that carries an App Cloner export as an exact copy with a NEW id, deleting the old rule once the copy matches the backup.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."],
                 ],

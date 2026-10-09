@@ -367,12 +367,21 @@ class RadioGatewaySpec extends ToolSpecBase {
     def "dispatch: hub_call_matter pair routes through executeTool and commissions by setup code"() {
         given:
         settingsMap.enableWrite = true
-        hubGet.register('/hub/matter/pair?setupCode=12345678901') { p -> JsonOutput.toJson([success: true]) }
+        // Firmware 2.5.2 pairs with POST /hub/matter/pairWithNetworkCredentials (issue #490).
+        hubGet.register('/hub/matter/wifiCredentials') { p -> JsonOutput.toJson([selectedSsid: '', hasStoredPassword: false]) }
+        def posted = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null ->
+            posted.path = path; posted.body = new JsonSlurper().parseText(body); [nodeId: 9, error: '']
+        }
         when:
         def r = script.executeTool('hub_call_matter', [action: 'pair', setup_code: '12345678901'])
         then:
         r.success == true
         r.action == 'pair'
+        r.nodeId == '9'
+        posted.path == '/hub/matter/pairWithNetworkCredentials'
+        posted.body.setupCode == '12345678901'
+        !hubGet.calls.any { it.path == '/hub/matter/pair' }
     }
 
     // ---- Silent-failure fix: a hub fault on a write surfaces as success:false ----

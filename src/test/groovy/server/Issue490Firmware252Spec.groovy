@@ -415,9 +415,9 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         when:
         def re = script.toolCallZwave([action: 'reinterview', node_id: '12'])
-        def lt = script.toolCallZwave([action: 'link_test_start', node_id: '12', rounds: 5])
+        def lt = script.toolCallZwave([action: 'link_test_start', node_id: '12', link_test: [rounds: 5]])
         def ls = script.toolCallZwave([action: 'link_test_stop', node_id: '12'])
-        def cc = script.toolCallZwave([action: 'cc_command', node_id: '12', command_class: 37, method_name: 'set', cc_args: [true], confirm: true])
+        def cc = script.toolCallZwave([action: 'cc_command', node_id: '12', cc: [command_class: 37, method_name: 'set', args: [true]], confirm: true])
 
         then:
         re.success && lt.success && ls.success && cc.success
@@ -442,10 +442,10 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         where:
         label               | node  | extra
-        'no confirm'        | '12'  | [command_class: 37, method_name: 'get']
-        'no method'         | '12'  | [command_class: 37, confirm: true]
-        'node not a number' | 'abc' | [command_class: 37, method_name: 'get', confirm: true]
-        'args not a list'   | '12'  | [command_class: 37, method_name: 'get', cc_args: 'x', confirm: true]
+        'no confirm'        | '12'  | [cc: [command_class: 37, method_name: 'get']]
+        'no method'         | '12'  | [cc: [command_class: 37], confirm: true]
+        'node not a number' | 'abc' | [cc: [command_class: 37, method_name: 'get'], confirm: true]
+        'args not a list'   | '12'  | [cc: [command_class: 37, method_name: 'get', args: 'x'], confirm: true]
     }
 
     def "local_backup_create starts a job and local_backup_keys normalizes the keys"() {
@@ -456,8 +456,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         when:
         def c = script.toolCallZwave([action: 'local_backup_create'])
-        def k = script.toolCallZwave([action: 'local_backup_keys', import_id: 'imp-1',
-                                      security_keys: [S0_Legacy: ' 0xAABB ', S2_Unauthenticated: 'cc', S2_Authenticated: 'dd', S2_AccessControl: 'ee']])
+        def k = script.toolCallZwave([action: 'local_backup_keys', backup_id: 'imp-1',
+                                      security_keys: [S0_Legacy: ' 0xAABB ', S2_Unauthenticated: 'cc', S2_Authenticated: 'dd', S2_AccessControl: 'ee', long_range: [S2_Authenticated: '0x11']]])
 
         then:
         c.success == true
@@ -465,7 +465,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         k.success == true
         posts[0].path == '/hub/zwave/localBackup/securityKeys/imp-1'
         posts[0].body.securityKeys.S0_Legacy == 'AABB'
-        posts[0].body.securityKeysLongRange == [:]
+        posts[0].body.securityKeysLongRange == [S2_Authenticated: '11']
+        !posts[0].body.securityKeys.containsKey('long_range')
     }
 
     def "local_backup_download saves the finished archive to File Manager"() {
@@ -476,11 +477,14 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> saved.name = name; saved.size = bytes.length }
 
         when:
-        def r = script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9'])
+        def r = script.toolCallZwave([action: 'local_backup_download', backup_id: 'job-9'])
 
         then:
         r.success == true
-        saved == [path: '/hub/zwave/localBackup/download/job-9', name: 'zwave-backup-job-9.tar.gz', size: 3]
+        saved.path == '/hub/zwave/localBackup/download/job-9'
+        saved.name ==~ /zwave-backup-[0-9a-f]{32}\.tar\.gz/
+        saved.size == 3
+        r.warning.contains('security keys')
     }
 
     def "local_backup_import uploads the fetched backup and returns the importId"() {
@@ -507,8 +511,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         when:
         def rs = script.toolCallDestructiveOps([target: 'zwave', action: 'local_backup_restore', import_id: 'imp-1', confirm: true])
         def sa = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start_available', node_id: '4', update_id: 'u-1', confirm: true])
-        def sb = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_start', node_id: '4', node_ids: ['5', '6'], file_name: 'fw.otz', confirm: true])
-        def sba = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_start_available', node_id: '4', node_ids: ['5'], update_id: 'u-1', inactivity_timeout_seconds: 120, confirm: true])
+        def sb = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_start', node_id: '4', batch: [node_ids: ['5', '6']], file_name: 'fw.otz', confirm: true])
+        def sba = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_start_available', node_id: '4', batch: [node_ids: ['5'], inactivity_timeout_seconds: 120], update_id: 'u-1', confirm: true])
         def ab = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_batch_abort', confirm: true])
 
         then:
@@ -704,12 +708,13 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> seen.name = name }
 
         when:
-        def r = script.toolCreateHubBackup([cloudDownload: [path: 'cloud/abc.lzf', cloudBackupPassword: 'pw', saveAs: 'mine.lzf']])
+        def r = script.toolCreateHubBackup([cloudDownload: [path: 'cloud/abc.lzf', cloudBackupPassword: 'pw']])
 
         then:
         r.success == true
         seen.req == [m: 'POST', path: '/hub2/downloadCloudDatabaseBackup', form: [fileName: 'cloud/abc.lzf', password: 'pw']]
-        seen.name == 'mine.lzf'
+        seen.name ==~ /cloud-backup-database-[0-9a-f]{32}\.lzf/
+        r.warning.contains('decrypted')
         !hubGet.calls.any { it.path == '/hub2/localBackups' }
     }
 

@@ -1523,7 +1523,7 @@ def _getAllToolDefinitions_partSystem() {
                     identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
                     includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
                     includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.[[FLAT_TRIM]] The check is async, so appUpdate reflects the prior completed check and carries checkInProgress; call again in a few seconds for the freshest result.[[/FLAT_TRIM]]", default: false],
-                    includeSubscriptions: [type: "boolean", description: "Include Hubitat subscription status (Hub Protect, Remote Admin, Cloud Backup, Full Local Backup: active, end date) under `subscriptions`.", default: false],
+                    includeSubscriptions: [type: "boolean", description: "Include Hubitat subscription status under `subscriptions`.", default: false],
                     includeNetwork: [type: "boolean", description: "Include the hub's network config under `network`.[[FLAT_TRIM]] IP mode, the saved static IP/gateway/subnet (reported whether or not static is the active mode; null on DHCP-only hubs), DNS, Ethernet autoneg and Wi-Fi SSID (never the Wi-Fi password); the read counterpart of hub_set_system_settings(network:...).[[/FLAT_TRIM]]", default: false]
                 ]
             ]
@@ -1591,10 +1591,7 @@ def _getAllToolDefinitions_partSystem() {
                     zipCode: [type: "string", description: "Postal/zip code, e.g. 10001."],
                     temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale."],
                     darkMode: [type: "boolean", description: "Hub admin UI dark mode (true) or light (false)."],
-                    dismissAlert: [type: "object", description: "Dismiss a hub alert: {key, version?} from hub_get_info(includeHealthAlerts=true) healthAlerts.items where dismissible is true.", properties: [
-                        key: [type: "string", description: "Alert key, e.g. PLATFORM_UPDATE_AVAILABLE."],
-                        version: [type: "string", description: "The alert's version, when the item carries one."]
-                    ]],
+                    dismissAlert: [type: "object", description: "Dismiss a hub alert: {key, version?} from healthAlerts.items."],
                     network: [type: "object", description: "⚠️ Hub network config — can DISCONNECT the hub; needs confirm=true + a backup <24h.", properties: [
                         ipMode: [type: "string", enum: ["dhcp", "static"], description: "IP mode."],
                         address: [type: "string", description: "Static IP address."],

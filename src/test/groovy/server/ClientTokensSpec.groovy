@@ -16,6 +16,7 @@ class ClientTokensSpec extends ToolSpecBase {
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 1L, label: 'MCP')
     @Shared List<String> calls = []
     @Shared int nextToken = 0
+    @Shared boolean revokeSticks = true
 
     def setupSpec() {
         appExecutor.getApp() >> sharedAppStub
@@ -30,13 +31,19 @@ class ClientTokensSpec extends ToolSpecBase {
             calls << "reset:${args[0]}"
             stateMap.accessToken = stateMap.accessToken.toString().replace(args[0].toString(), 'main-rotated')
         }
-        appExecutor.revokeSpecificAccessToken(_) >> { args -> calls << "revoke:${args[0]}" }
+        appExecutor.revokeSpecificAccessToken(_) >> { args ->
+            calls << "revoke:${args[0]}"
+            if (revokeSticks) {
+                stateMap.accessToken = stateMap.accessToken.toString().split(',').findAll { it != args[0] }.join(',')
+            }
+        }
         appExecutor.getAccessTokens() >> { stateMap.accessToken.toString().split(',').toList() }
     }
 
     def setup() {
         calls.clear()
         nextToken = 0
+        revokeSticks = true
         stateMap.accessToken = 'main'
         stateMap.remove('clientTokens')
         script.metaClass.mcpLog = { String level, String component, String msg -> }
@@ -83,6 +90,31 @@ class ClientTokensSpec extends ToolSpecBase {
         then:
         calls == ['revoke:client-b']
         stateMap.clientTokens == ['Alpha': 'client-a']
+        stateMap.accessToken == 'main,client-a'
+    }
+
+    def "a revoke the hub does not apply keeps the client listed (fails closed)"() {
+        given:
+        revokeSticks = false
+        stateMap.accessToken = 'main,client-a'
+        stateMap.clientTokens = ['Alpha': 'client-a']
+
+        when:
+        script.appButtonHandler('revokeClientToken_0')
+
+        then: 'the token still authenticates, so it must stay visible and revocable'
+        calls == ['revoke:client-a']
+        stateMap.clientTokens == ['Alpha': 'client-a']
+    }
+
+    def "response redaction masks every per-client token"() {
+        given:
+        settingsMap.redactAccessTokens = true
+
+        expect:
+        script._redactAccessTokens([state: [clientTokens: ['Alpha': 'client-a', 'Beta': 'client-b'], accessToken: 'main,client-a']]) ==
+            [state: [clientTokens: ['Alpha': '***redacted (access token)***', 'Beta': '***redacted (access token)***'],
+                     accessToken: '***redacted (access token)***']]
     }
 
     def "regenerating the main token rotates only it while client tokens exist"() {
