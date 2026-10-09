@@ -2318,7 +2318,7 @@ private Integer _zwNodeNumber(String nodeId) {
 
 // Saves a finished Z-Wave local backup to File Manager (the UI only offers it as a browser download).
 private Map _zwaveBackupDownload(String jobId) {
-    String name = "zwave-backup-${_unguessableSuffix()}.tar.gz"
+    String name = "zwave-backup-${jobId.replaceAll(/[^A-Za-z0-9_.-]/, '_')}.tar.gz"
     try {
         def got = hubInternalBytes("GET", "/hub/zwave/localBackup/download/${URLEncoder.encode(jobId, 'UTF-8')}")
         byte[] bytes = got.bytes
@@ -2327,11 +2327,9 @@ private Map _zwaveBackupDownload(String jobId) {
                     note: "The job must have finished (stage DONE in hub_get_radio_details(backup_job_id=...))."]
         }
         uploadHubFile(name, bytes)
-        _scheduleBackupCopyExpiry(name)
         return [success: true, action: "local_backup_download", jobId: jobId, fileName: name, sizeBytes: bytes.length,
                 message: "Z-Wave backup saved to File Manager as ${name}.",
-                warning: "This archive holds the Z-Wave network's security keys. " + _backupCopyWarning(),
-                note: "Download it from http://<HUB_IP>/local/${name} within the hour; it is deleted automatically after one hour."]
+                note: "Download it from http://<HUB_IP>/local/${name} and keep a copy off the hub."]
     } catch (IllegalArgumentException iae) {
         throw iae
     } catch (Exception e) {

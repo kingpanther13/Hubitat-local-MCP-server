@@ -482,9 +482,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         then:
         r.success == true
         saved.path == '/hub/zwave/localBackup/download/job-9'
-        saved.name ==~ /zwave-backup-[0-9a-f]{32}\.tar\.gz/
+        saved.name == 'zwave-backup-job-9.tar.gz'
         saved.size == 3
-        r.warning.contains('security keys')
     }
 
     def "local_backup_import uploads the fetched backup and returns the importId"() {
@@ -713,8 +712,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         then:
         r.success == true
         seen.req == [m: 'POST', path: '/hub2/downloadCloudDatabaseBackup', form: [fileName: 'cloud/abc.lzf', password: 'pw']]
-        seen.name ==~ /cloud-backup-database-[0-9a-f]{32}\.lzf/
-        r.warning.contains('decrypted')
+        seen.name ==~ /cloud-backup-database-\d{8}-\d{6}\.lzf/
         !hubGet.calls.any { it.path == '/hub2/localBackups' }
     }
 

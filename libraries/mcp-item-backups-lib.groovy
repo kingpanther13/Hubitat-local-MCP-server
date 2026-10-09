@@ -941,32 +941,6 @@ private Map _createFullLocalBackup(boolean scheduleUpdated, networkBackup) {
             note: "Listed with fullBackup:true in hub_list_backups(scope='hub_local'); restore it with hub_restore_backup(scope='hub_local', fileName=..., fullRestore={...})."]
 }
 
-// File Manager files are served at /local/<name> without authentication, so a decrypted backup
-// copy gets an unguessable default name and is deleted an hour later.
-private String _backupCopyWarning() {
-    return "File Manager files can be downloaded by anyone on your network who knows the name, and this copy is decrypted. Keep it off the hub once downloaded."
-}
-
-private String _unguessableSuffix() {
-    return java.util.UUID.randomUUID().toString().replace("-", "")
-}
-
-private void _scheduleBackupCopyExpiry(String name) {
-    try { runIn(3600, "deleteExpiredBackupCopy", [data: [fileName: name], overwrite: false]) }
-    catch (Exception e) { mcpLog("warn", "hub-admin", "could not schedule the deletion of backup copy ${name}: ${e.message}") }
-}
-
-def deleteExpiredBackupCopy(data) {
-    def name = data?.fileName?.toString()
-    if (!name) return
-    try {
-        deleteHubFile(name)
-        mcpLog("info", "hub-admin", "Deleted expired backup copy ${name} from File Manager")
-    } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "Could not delete expired backup copy ${name}: ${e.message}")
-    }
-}
-
 // Copies a cloud backup into File Manager: POST /hub2/downloadCloudDatabaseBackup (the .lzf database)
 // or /hub2/downloadCloudFilesBackup (the File Manager archive) with {fileName: <cloud path>, password}.
 private Map _downloadCloudBackup(spec) {
@@ -976,18 +950,16 @@ private Map _downloadCloudBackup(spec) {
     def part = (spec.part ?: "database").toString()
     if (!(part in ["database", "files"])) throw new IllegalArgumentException("cloudDownload.part must be 'database' or 'files'.")
     String ext = (part == "files") ? ".tar.gz" : ".lzf"
-    String name = "cloud-backup-${part}-${_unguessableSuffix()}${ext}"
+    String name = "cloud-backup-${part}-${new Date(now()).format('yyyyMMdd-HHmmss')}${ext}"
     try {
         def got = hubInternalBytes("POST", (part == "files") ? "/hub2/downloadCloudFilesBackup" : "/hub2/downloadCloudDatabaseBackup", null,
                                    [fileName: spec.path.toString(), password: spec.cloudBackupPassword.toString()])
         byte[] bytes = got.bytes
         if (!bytes || bytes.length == 0) return [success: false, cloudDownload: true, error: "The hub returned no data for that cloud backup."]
         uploadHubFile(name, bytes)
-        _scheduleBackupCopyExpiry(name)
         return [success: true, cloudDownload: true, part: part, fileName: name, sizeBytes: bytes.length,
                 message: "Cloud backup ${part} saved to File Manager as ${name}.",
-                warning: _backupCopyWarning(),
-                note: "Download it from http://<HUB_IP>/local/${name} within the hour; it is deleted automatically after one hour."]
+                note: "Download it from http://<HUB_IP>/local/${name}."]
     } catch (IllegalArgumentException iae) {
         throw iae
     } catch (Exception e) {
