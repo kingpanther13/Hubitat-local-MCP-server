@@ -3381,6 +3381,12 @@ class TestRunner:
                                                      "cc": {"command_class": 37, "method_name": "get"}},
                                   "decimal Z-Wave node number")
         self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_keys", "import_id": "x"}, "security_keys")
+        # local_backup_import fetches a URL: confirm first, and never the hub's own admin endpoints.
+        self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_import", "backup_url": "https://example.com/z.tar.gz"},
+                                  "confirm=true")
+        self._expect_tool_refusal("hub_call_zwave", {"action": "local_backup_import", "confirm": True,
+                                                     "backup_url": "http://127.0.0.1:8080/hub/zwave2/enable"},
+                                  "points at this hub")
 
     @test("diagnostics")
     def test_set_zigbee_enabled_idempotent(self) -> None:

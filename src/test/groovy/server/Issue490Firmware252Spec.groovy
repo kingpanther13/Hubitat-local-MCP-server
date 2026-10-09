@@ -41,7 +41,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         httpPostHook = null
         exceptionLineHook = null
         stackTraceHook = null
-        httpGetHook = null
+        // A ranged size probe answers with a small total, so the fetch-path specs reach their fetch stub.
+        httpGetHook = { Map params, Closure c -> if (params.headers?.Range) c([status: 206, headers: ['Content-Range': 'bytes 0-0/4']]) }
     }
 
     def cleanup() {
@@ -152,6 +153,18 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         then:
         r.platformUpdate.available == null
         r.platformUpdate.note.contains('Check for Updates')
+    }
+
+    def "healthAlerts skip the alert feed on firmware before 2.5.2.129"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.2.120')
+
+        when:
+        def out = script._healthAlertsFromHub2([safeMode: false, alerts: [hubLoadElevated: true]])
+
+        then:
+        !hubGet.calls.any { it.path == '/hub/alertsJson' }
+        !out.toString().contains('unavailable')
     }
 
     def "healthAlerts prefer the /hub/alertsJson feed: items with dismissal handles and spammyDeviceDetails"() {
@@ -780,11 +793,11 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         enableWrite()
         def up = [:]
-        script.metaClass._fetchBytesFromUrl = { String url -> 'NVM'.getBytes('UTF-8') }
+        script.metaClass._fetchBytesFromUrl = { String url, long cap -> 'NVM'.getBytes('UTF-8') }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> up.path = path; up.fileName = fileName; [success: true, importId: 'imp-7'] }
 
         when:
-        def r = script.toolCallZwave([action: 'local_backup_import', backup_url: 'https://files.example.com/dir/net.tar.gz?dl=1'])
+        def r = script.toolCallZwave([action: 'local_backup_import', backup_url: 'https://files.example.com/dir/net.tar.gz?dl=1', confirm: true])
 
         then:
         r.success == true
@@ -880,7 +893,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         enableWrite()
         sharedLocation.hub = hubOnFirmware('2.5.1.181')
         def posts = jsonPosts()
-        hubGet.register('/hub/matter/pair') { p -> '{"success":true}' }
+        hubGet.register('/hub/matter/pair') { p -> '7' }
 
         when:
         def r = script.toolCallMatter([action: 'pair', setup_code: '123'])
@@ -1344,7 +1357,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         enableWrite()
         def up = [:]
-        script.metaClass._fetchBytesFromUrl = { String url -> ([0x1f, 0x8b, 8, 0] as byte[]) }
+        script.metaClass._fetchBytesFromUrl = { String url, long cap -> ([0x1f, 0x8b, 8, 0] as byte[]) }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> up.path = path; up.fileName = fileName; [success: true] }
         hubGet.register('/hub2/restoreFullLocalBackup') { p -> '{"success":true}' }
 
@@ -1363,7 +1376,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         enableWrite()
         def fetched = []
-        script.metaClass._fetchBytesFromUrl = { String url -> fetched << url; ([0x1f, 0x8b, 8, 0] as byte[]) }
+        script.metaClass._fetchBytesFromUrl = { String url, long cap -> fetched << url; ([0x1f, 0x8b, 8, 0] as byte[]) }
 
         when:
         script.toolRestoreItemBackup([confirm: true] + args)
@@ -1399,7 +1412,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     def "a full restore request the hub never answers is an unknown outcome, not a failure"() {
         given:
         enableWrite()
-        script.metaClass._fetchBytesFromUrl = { String url -> ([0x1f, 0x8b, 8, 0] as byte[]) }
+        script.metaClass._fetchBytesFromUrl = { String url, long cap -> ([0x1f, 0x8b, 8, 0] as byte[]) }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> [success: true] }
         hubGet.register('/hub2/restoreFullLocalBackup') { p -> throw new RuntimeException('Read timed out') }
 
@@ -1884,7 +1897,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         enableWrite()
         def fetched = []
         script.metaClass._probeUrl = { String url, long cap -> [size: size] }
-        script.metaClass._fetchBytesFromUrl = { String url -> fetched << url; ([0x1f, 0x8b, 8, 0] as byte[]) }
+        script.metaClass._fetchBytesFromUrl = { String url, long cap -> fetched << url; ([0x1f, 0x8b, 8, 0] as byte[]) }
 
         when:
         def r = invoke.call(script)
@@ -1898,7 +1911,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         label            | size              | invoke
         'full restore'   | 40L * 1024 * 1024 | { s -> s.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://h/x/full.tar.gz', confirm: true]) }
         'database'       | 9L * 1024 * 1024  | { s -> s.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://h/x/db.lzf', confirm: true]) }
-        'Z-Wave import'  | 9L * 1024 * 1024  | { s -> s.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz']) }
+        'Z-Wave import'  | 9L * 1024 * 1024  | { s -> s.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz', confirm: true]) }
     }
 
     def "_probeUrl reads the total from a ranged answer"() {
@@ -1913,7 +1926,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
     def "_probeUrl keeps the whole body from a host that ignores the range"() {
         given:
-        httpGetHook = { Map params, Closure c -> c([status: 200, data: [1, 2, 3] as byte[]]) }
+        httpGetHook = { Map params, Closure c -> c([status: 200, headers: ['Content-Length': '3'], data: [1, 2, 3] as byte[]]) }
 
         when:
         def p = script._probeUrl('https://h/x/db.lzf', 16L * 1024 * 1024)
@@ -1921,6 +1934,27 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         then:
         p.size == 3L
         p.bytes == ([1, 2, 3] as byte[])
+    }
+
+    def "_fetchBytesFromUrl asks for no more than the cap plus one byte"() {
+        given:
+        def sent = [:]
+        httpGetHook = { Map params, Closure c -> sent.range = params.headers?.Range; c([status: 206, data: [1, 2] as byte[]]) }
+
+        expect:
+        script._fetchBytesFromUrl('https://h/x/db.lzf', 4L) == ([1, 2] as byte[])
+        sent.range == 'bytes=0-4'
+    }
+
+    def "_fetchBytesFromUrl drops a range-ignoring answer that does not declare a body within the cap"() {
+        given:
+        httpGetHook = { Map params, Closure c -> c([status: 200, headers: headers, data: [1, 2, 3, 4, 5, 6] as byte[]]) }
+
+        expect:
+        script._fetchBytesFromUrl('https://h/x/db.lzf', 4L) == null
+
+        where:
+        headers << [[:], ['Content-Length': '6']]
     }
 
     def "_probeUrl gives nothing when the request fails"() {
@@ -1936,12 +1970,107 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         httpGetHook = { Map params, Closure c -> c([status: 200, headers: headers, data: [1, 2, 3, 4, 5, 6] as byte[]]) }
 
         expect:
-        script._probeUrl('https://h/x/full.tar.gz', 4L) == [size: size]
+        script._probeUrl('https://h/x/full.tar.gz', 4L) == probe
 
         where:
-        headers                      || size
-        ['Content-Length': '99999'] || 99999L
-        [:]                          || 6L
+        headers                      || probe
+        ['Content-Length': '99999'] || [size: 99999L]
+        ['Content-Length': '6']     || [size: 6L]
+        [:]                          || [:]
+    }
+
+    def "a backup URL whose size the host does not report is not fetched"() {
+        given:
+        enableWrite()
+        def fetched = []
+        script.metaClass._probeUrl = { String url, long cap -> [:] }
+        script.metaClass._fetchBytesFromUrl = { String url, long cap -> fetched << url; ([0x1f, 0x8b, 8, 0] as byte[]) }
+
+        when:
+        def r = call(script)
+
+        then:
+        r.success == false
+        r.error.contains('did not report')
+        fetched.isEmpty()
+
+        where:
+        call << [{ s -> s.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://h/x/full.tar.gz', confirm: true]) },
+                 { s -> s.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz', confirm: true]) }]
+    }
+
+    def "a backup URL pointing at the hub itself is refused unless it is a File Manager file: #url"() {
+        given:
+        def hub = new TestHub()
+        hub.localIP = '192.168.1.50'
+        sharedLocation.hub = hub
+
+        when:
+        script._requireBackupUrl(url, 'backupUrl')
+
+        then:
+        thrown(IllegalArgumentException)
+
+        where:
+        url << ['http://127.0.0.1:8080/hub/zwave2/enable', 'http://localhost/hub/reboot', 'http://[::1]:8080/x', 'http://192.168.1.50/hub/zwave2/enable',
+                'http://127.1:8080/hub/x', 'http://0x7f.0.0.1/hub/x', 'http://2130706433/hub/x', 'http://[::ffff:127.0.0.1]/hub/x',
+                'http://evil.com@127.0.0.1/hub/x', 'http://127.0.0.1\\@evil.com/hub/x', 'http://0.0.0.0:8080/hub/x', 'http://localhost./hub/x',
+                'http://api.localhost/hub/x', 'http://192.168.1.50./hub/x',
+                'http://127.0.0.1:8080/local/../hub/zwave2/enable', 'http://127.0.0.1/local/%2e%2e/hub/x', 'http://127.0.0.1/local/..']
+    }
+
+    def "a backup URL to the hub's File Manager or another host is allowed: #url"() {
+        given:
+        def hub = new TestHub()
+        hub.localIP = '192.168.1.50'
+        sharedLocation.hub = hub
+
+        when:
+        script._requireBackupUrl(url, 'backupUrl')
+
+        then:
+        noExceptionThrown()
+
+        where:
+        url << ['http://192.168.1.50/local/db.lzf', 'http://127.0.0.1:8080/local/full.tar.gz', 'https://backups.example.com/b.lzf', 'http://192.168.1.60/hub/x']
+    }
+
+    def "local_backup_import needs confirm before anything is fetched"() {
+        given:
+        def fetched = []
+        script.metaClass._fetchBytesFromUrl = { String url, long cap -> fetched << url; 'NVM'.getBytes('UTF-8') }
+
+        when:
+        script.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz'])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('confirm')
+        fetched.isEmpty()
+    }
+
+    def "Matter pair reads the hub's node answer: #label"() {
+        given:
+        enableWrite()
+        sharedLocation.hub = hubOnFirmware(firmware)
+        hubGet.register('/hub/matter/pair') { p -> answer }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null -> new JsonSlurper().parseText(answer) }
+        hubGet.register('/hub/matter/wifiCredentials') { p -> JsonOutput.toJson([selectedSsid: '', storedSsid: '', hasStoredPassword: false]) }
+
+        when:
+        def r = script.toolCallMatter([action: 'pair', setup_code: '12345678901'])
+
+        then:
+        r.success == ok
+        r.nodeId == (ok ? '7' : null)
+
+        where:
+        label                      | firmware    | answer                        | ok
+        'old bare node id'         | '2.5.1.181' | '7'                           | true
+        'old refusal'              | '2.5.1.181' | '0'                           | false
+        '2.5.2 object'             | '2.5.2.129' | '{"nodeId":7,"error":""}'     | true
+        '2.5.2 bare node id'       | '2.5.2.129' | '7'                           | true
+        '2.5.2 refusal with error' | '2.5.2.129' | '{"nodeId":0,"error":"busy"}' | false
     }
 
     def "a backup URL's whole body from a range-ignoring host is restored without a second fetch"() {
@@ -1949,7 +2078,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         enableWrite()
         def fetched = []
         script.metaClass._probeUrl = { String url, long cap -> [size: 4L, bytes: ([0x1f, 0x8b, 8, 0] as byte[])] }
-        script.metaClass._fetchBytesFromUrl = { String url -> fetched << url; null }
+        script.metaClass._fetchBytesFromUrl = { String url, long cap -> fetched << url; null }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> [success: true] }
         hubGet.register('/hub2/restoreFullLocalBackup') { p -> '{"success":true}' }
 
@@ -1966,7 +2095,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         enableWrite()
         def uploads = []
-        script.metaClass._fetchBytesFromUrl = { String u -> body }
+        script.metaClass._fetchBytesFromUrl = { String u, long cap -> body }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> uploads << path; [success: true] }
         hubGet.register('/hub2/restoreFullLocalBackup') { p -> '{"success":true}' }
         hubGet.register('/hub2/restoreUploadedBackup') { p -> '{"success":true}' }
@@ -1990,7 +2119,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         enableWrite()
         def up = [:]
-        script.metaClass._fetchBytesFromUrl = { String u -> ([0x1f, 0x8b, 8, 0] as byte[]) }
+        script.metaClass._fetchBytesFromUrl = { String u, long cap -> ([0x1f, 0x8b, 8, 0] as byte[]) }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> up.fileName = fileName; [success: true] }
         hubGet.register('/hub2/restoreFullLocalBackup') { p -> '{"success":true}' }
 
@@ -2004,7 +2133,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     def "an uploaded database restore whose upload throws is a failure, not an unknown outcome"() {
         given:
         enableWrite()
-        script.metaClass._fetchBytesFromUrl = { String url -> '-- H2 0.5/B -- \nDATA'.getBytes('UTF-8') }
+        script.metaClass._fetchBytesFromUrl = { String url, long cap -> '-- H2 0.5/B -- \nDATA'.getBytes('UTF-8') }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> throw new RuntimeException('Read timed out') }
 
         when:
@@ -2038,7 +2167,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         enableWrite()
         def uploads = []
-        script.metaClass._fetchBytesFromUrl = { String u -> body }
+        script.metaClass._fetchBytesFromUrl = { String u, long cap -> body }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> uploads << path; answer }
 
         when:
@@ -2059,11 +2188,11 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         enableWrite()
         def ups = []
-        script.metaClass._fetchBytesFromUrl = { String url -> new byte[8 * 1024 * 1024 + 1] }
+        script.metaClass._fetchBytesFromUrl = { String url, long cap -> new byte[8 * 1024 * 1024 + 1] }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> ups << path; [success: true] }
 
         when:
-        def r = script.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz'])
+        def r = script.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz', confirm: true])
 
         then:
         r.success == false

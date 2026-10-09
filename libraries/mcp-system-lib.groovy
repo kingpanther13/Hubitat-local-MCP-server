@@ -77,9 +77,11 @@ def _healthAlertsFromHub2(hub2) {
     def alerts = (hub2.alerts instanceof Map) ? ([:] + hub2.alerts) : [:]
     // /hub/alertsJson (2.5.2.129+) is the hub's own alert feed: the hubData alert block plus
     // spammyDeviceDetails (the devices behind a too-many-events alert), maxEvents and maxStates.
-    def feed = _hubAlertsJson()
-    if (feed != null) alerts = [:] + feed
-    else if (!_hubFirmwareBefore("2.5.2.129")) alerts.feed = "unavailable"  // no spammyDeviceDetails this time
+    if (!_hubFirmwareBefore("2.5.2.129")) {
+        def feed = _hubAlertsJson()
+        if (feed != null) alerts = [:] + feed
+        else alerts.feed = "unavailable"  // no spammyDeviceDetails this time
+    }
     alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
     def out = [safeMode: hub2.safeMode == true]
     if (alerts.alertItems instanceof List) {

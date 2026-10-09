@@ -51,8 +51,10 @@ def BLOCKED_EXACT = [
     'java.net.MulticastSocket', 'java.net.URLClassLoader',
     'java.util.ArrayDeque',
 ] as Set
-// Constant-pool budget for one compiled app class; see Gate 3 in checkFile.
+// Constant-pool budget for one compiled app class, and bytecode budget for one method (the JVM
+// caps both at 65535); see Gate 3 in checkFile.
 CLASS_CP_BUDGET = 64000
+METHOD_CODE_BUDGET = 60000
 
 def isBlocked = { String fqn ->
     if (!fqn) return false
@@ -213,18 +215,26 @@ def checkFile = { String path ->
     } else if (size.error) {
         System.err.println "FAIL (class size not measured: ${size.error}): ${path}"
         rc = 1
-    } else if (size.cp > CLASS_CP_BUDGET) {
-        System.err.println "FAIL (class over budget): ${path}: ${size.name} uses ${size.cp} constant-pool entries, budget ${CLASS_CP_BUDGET}"
-        System.err.println "  The hub refuses to load the app past ~65,300 here. Shrink the class before adding code."
-        rc = 1
     } else {
-        println "CLASS SIZE ${path}: ${size.name} uses ${size.cp} constant-pool entries (budget ${CLASS_CP_BUDGET})"
+        if (size.cp > CLASS_CP_BUDGET) {
+            System.err.println "FAIL (class over budget): ${path}: ${size.name} uses ${size.cp} constant-pool entries, budget ${CLASS_CP_BUDGET}"
+            System.err.println "  The hub refused to load the app at 65,439 here. Shrink the class before adding code."
+            rc = 1
+        }
+        if (size.method.code > METHOD_CODE_BUDGET) {
+            System.err.println "FAIL (method over budget): ${path}: ${size.method.name} is ${size.method.code} bytes of bytecode, budget ${METHOD_CODE_BUDGET}"
+            System.err.println "  The JVM refuses a method over 65,535 bytes. Split it before adding code."
+            rc = 1
+        }
+        println "CLASS SIZE ${path}: ${size.name} uses ${size.cp} constant-pool entries (budget ${CLASS_CP_BUDGET}); " +
+            "largest method ${size.method.name} is ${size.method.code} bytes (budget ${METHOD_CODE_BUDGET})"
     }
 
     return rc
 }
 
-// Generate bytecode and read the largest class's constant-pool count (class-file bytes 8-9).
+// Generate bytecode, then report the largest class's constant-pool count and the largest method's
+// bytecode length across every generated class (closures included).
 def classSize(String name, String source) {
     def cu = new CompilationUnit(new CompilerConfiguration())
     cu.addSource(name, source)
@@ -234,11 +244,49 @@ def classSize(String name, String source) {
         def msg = (e.message ?: e.toString())
         return msg.contains('Class too large') ? [tooLarge: true, message: msg.take(300)] : [error: msg.take(200)]
     }
-    def sizes = cu.classes.collect { gc ->
-        byte[] b = gc.bytes
-        [name: gc.name, cp: ((b[8] & 0xff) << 8) | (b[9] & 0xff)]
+    def sizes = cu.classes.collect { gc -> classFileSizes(gc.name, gc.bytes) }
+    if (!sizes) return [error: 'no classes generated']
+    def out = sizes.max { it.cp }
+    return [name: out.name, cp: out.cp, method: sizes*.method.max { it.code }]
+}
+
+// Walk a class file: the constant pool (count at bytes 8-9), then fields and methods, reading each
+// method's Code attribute length.
+def classFileSizes(String className, byte[] b) {
+    def u2 = { int o -> ((b[o] & 0xff) << 8) | (b[o + 1] & 0xff) }
+    def u4 = { int o -> (((long) u2(o)) << 16) | u2(o + 2) }
+    int cp = u2(8)
+    def utf8 = [:]
+    int p = 10
+    for (int i = 1; i < cp; i++) {
+        int tag = b[p] & 0xff
+        if (tag == 1) { int len = u2(p + 1); utf8[i] = new String(b, p + 3, len, 'UTF-8'); p += 3 + len }
+        else if (tag in [5, 6]) { p += 9; i++ }
+        else if (tag in [3, 4, 9, 10, 11, 12, 17, 18]) p += 5
+        else if (tag == 15) p += 4
+        else p += 3   // 7, 8, 16, 19, 20
     }
-    return sizes ? sizes.max { it.cp } : [error: 'no classes generated']
+    p += 6
+    p += 2 + 2 * u2(p)
+    def skipMembers = { boolean methods ->
+        def best = [name: null, code: 0]
+        int count = u2(p); p += 2
+        count.times {
+            String member = utf8[u2(p + 2)]
+            int attrs = u2(p + 6); p += 8
+            attrs.times {
+                long len = u4(p + 2)
+                if (methods && utf8[u2(p)] == 'Code') {
+                    long code = u4(p + 10)
+                    if (code > best.code) best = [name: "${className}.${member}", code: code]
+                }
+                p += 6 + (int) len
+            }
+        }
+        return best
+    }
+    skipMembers(false)
+    return [name: className, cp: cp, method: skipMembers(true)]
 }
 if (selfTest) {
     def binding = new Binding([checkFile: checkFile, repoRoot: repoRoot, resolverClass: resolverClass])

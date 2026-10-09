@@ -2375,7 +2375,7 @@ def _mrtrWriteTools() {
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
             "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device",
-            "hub_restore_backup"] as Set
+            "hub_restore_backup", "hub_create_backup"] as Set
 }
 
 // Reads whose single hub fetch grows with hub size and can outrun the relay. They continue
@@ -2408,7 +2408,7 @@ def _mrtrReadContinuationActive() {
 private Set _mrtrDetachedWorkerTools() {
     return ["hub_set_rule", "hub_set_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
-            "hub_manage_virtual_device", "hub_update_device", "hub_restore_backup"] as Set
+            "hub_manage_virtual_device", "hub_update_device", "hub_restore_backup", "hub_create_backup"] as Set
 }
 
 def _mrtrEligibleCall(outerToolName, leafToolName, args) {
@@ -4878,7 +4878,7 @@ def getGatewayConfig() {
                 hub_get_radio_details: "Z-Wave/Zigbee/Matter radio info + read-only radio surface (topology, per-node state, status pollers, channel scan, SmartStart, firmware lists, Zigbee last-message times, Z-Wave backup jobs, Matter Wi-Fi). Args: radio?, node_id?, include_topology/status/logs/channel_scan/smartstart/firmware/devices?, backup_job_id?",
                 hub_set_zwave: "Configure the Z-Wave radio: enable/disable, region, long-range channel, or switch the stack to/from Z-Wave JS (reboots). Args: enabled?, region?, long_range_channel?, zwave_js?, confirm (to disable or switch stacks)",
                 hub_set_zigbee: "Configure the Zigbee radio (idempotent): enable/disable, channel + power, radio settings (rebuild-on-reboot, ping-inactive), per-device keep-alive ping. Args: enabled?, channel?, power_level?, rebuild_on_reboot?, ping_inactive?, ping_device?, confirm (to disable)",
-                hub_call_zwave: "Z-Wave lifecycle ops. Args: action (repair_start/cancel, repair_node, inclusion_start/stop, grant_keys/grant_code, exclusion_start/stop ⚠️, node_refresh/rediscover/reinitialize, refresh_stats, node_replace, node_replace_stop, node_remove ⚠️, antenna_test_start/continue, smartstart_delete; Z-Wave JS: reinterview, link_test_start/stop, cc_command ⚠️, local_backup_create/download/import/keys), node_id? (per-node), confirm (exclusion_start/node_remove/cc_command)",
+                hub_call_zwave: "Z-Wave lifecycle ops. Args: action (repair_start/cancel, repair_node, inclusion_start/stop, grant_keys/grant_code, exclusion_start/stop ⚠️, node_refresh/rediscover/reinitialize, refresh_stats, node_replace, node_replace_stop, node_remove ⚠️, antenna_test_start/continue, smartstart_delete; Z-Wave JS: reinterview, link_test_start/stop, cc_command ⚠️, local_backup_create/download/import/keys), node_id? (per-node), confirm (exclusion_start/node_remove/link_test_start/cc_command/local_backup_download/local_backup_import)",
                 hub_call_zigbee: "Zigbee ops. Args: action (radio_reboot, rebuild_network, channel_scan)",
                 hub_call_matter: "Matter ops. Args: action (enable/disable — needs hub reboot, pair, cancel_pair, open_pairing_window), setup_code? + wifi_ssid?/wifi_password? (pair), node_id? (cancel_pair/open_pairing_window), confirm (disable)"
             ],
@@ -7719,7 +7719,7 @@ def _bodyBytes(d) {
 // Size an http(s) URL before fetching it: a one-byte Range request answers 206 with the total in
 // Content-Range on most hosts ([size]). A host that ignores ranges answers 200 with the whole body,
 // which comes back as [size, bytes] so it is not fetched twice -- or as [size] alone when it is over
-// maxBytes. [:] when neither happens. Non-private so the Spock harness can stub it.
+// maxBytes. [:] when the size is unknown. Non-private so the Spock harness can stub it.
 def _probeUrl(String url, long maxBytes) {
     def out = [:]
     try {
@@ -7728,8 +7728,10 @@ def _probeUrl(String url, long maxBytes) {
                 def range = resp?.headers?.'Content-Range'?.toString() =~ /\/\s*(\d+)\s*$/
                 if (range.find()) out.size = range.group(1) as Long
             } else if (resp?.status == 200) {
+                // Without a declared length the body is not read: its size is unknown.
                 def declared = resp?.headers?.'Content-Length'?.toString()
-                if (declared?.isLong() && declared.toLong() > maxBytes) {
+                if (!declared?.isLong()) return
+                if (declared.toLong() > maxBytes) {
                     out.size = declared.toLong()
                     return
                 }
@@ -7741,16 +7743,58 @@ def _probeUrl(String url, long maxBytes) {
             }
         }
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "size check of a backup URL failed (${e.message}); its size is checked after the fetch")
+        mcpLog("warn", "hub-admin", "size check of a backup URL failed (${e.message}); it is not fetched")
     }
     return out
 }
 
-// Fetch raw bytes from an http(s) URL (a backup to upload). Non-private so the Spock harness can stub it.
-def _fetchBytesFromUrl(String url) {
+// A backup URL may not aim the app at the hub's own admin endpoints, which its loopback requests
+// reach without the hub login. File Manager files (/local/...) are plain downloads and stay allowed.
+// Only a plain host name or a dotted-quad IPv4 address is read, so no other address spelling can
+// disagree with the HTTP client; redirects and DNS are not followed here, the confirm gates cover them.
+void _requireBackupUrl(String url, String param) {
+    def m = url =~ /(?i)^https?:\/\/([a-z0-9.-]+)(?::\d{1,5})?(\/[^?#]*)?(?:[?#].*)?$/
+    if (url.contains("\\") || !m.matches()) {
+        throw new IllegalArgumentException("${param} must be an http(s) URL with a host name or IPv4 address (no user info or IPv6 literal), got: ${url}")
+    }
+    String host = m.group(1).toLowerCase().replaceAll(/\.$/, "")
+    boolean numeric = host.tokenize(".").every { it ==~ /0x[0-9a-f]*|\d+/ }
+    if (numeric && !(host ==~ /(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}/)) {
+        throw new IllegalArgumentException("${param} must spell an IPv4 address as four decimal parts, got: ${host}")
+    }
+    boolean self = host == "localhost" || host.endsWith(".localhost") || host.startsWith("127.") || host.startsWith("0.") ||
+        host == location?.hub?.localIP?.toString()
+    String path = m.group(2) ?: ""
+    if (self && !(path ==~ /\/local\/[^\/%]+/ && !(path ==~ /\/local\/\.+/))) {
+        throw new IllegalArgumentException("${param} points at this hub (${host}); only its File Manager files (/local/...) can be fetched from it.")
+    }
+}
+
+// Fetch a backup of at most cap bytes from an http(s) URL: sized first, and refused when the host
+// does not say how big it is, since the whole body is held in memory. [bytes] or [error].
+Map _fetchCappedBackup(String url, long cap) {
+    String limit = "${cap / (1024 * 1024)} MB"
+    def probe = _probeUrl(url, cap)
+    if (probe.size == null) return [error: "the host did not report the backup's size, so it was not fetched (the in-app limit is ${limit}); serve it from a host that answers range requests or sends Content-Length."]
+    if (probe.size > cap) return [error: "the backup is ${(probe.size / (1024 * 1024)) as long} MB, over the ${limit} in-app limit."]
+    byte[] bytes = probe.bytes
+    if (bytes == null) {
+        try { bytes = _fetchBytesFromUrl(url, cap) }
+        catch (Exception e) { return [error: "could not fetch the backup: ${e.message}"] }
+    }
+    if (!bytes) return [error: "the host returned no data."]
+    if (bytes.length > cap) return [error: "the backup is over the ${limit} in-app limit."]
+    return [bytes: bytes]
+}
+
+// Fetch raw bytes from an http(s) URL (a backup to upload), at most maxBytes + 1 of them: only a host
+// that answered the size probe's range request gets here. Non-private so the Spock harness can stub it.
+def _fetchBytesFromUrl(String url, long maxBytes) {
     byte[] out = null
-    httpGet([uri: url, timeout: 120, textParser: false]) { resp ->
-        out = _bodyBytes(resp?.data)
+    httpGet([uri: url, timeout: 120, textParser: false, headers: [Range: "bytes=0-${maxBytes}"]]) { resp ->
+        // A host that ignores the range this time must still declare a body within the cap.
+        def declared = resp?.headers?.'Content-Length'?.toString()
+        if (resp?.status == 206 || (declared?.isLong() && declared.toLong() <= maxBytes)) out = _bodyBytes(resp?.data)
     }
     return out
 }
@@ -10593,7 +10637,7 @@ Dashboards or automations that reference the room may need updating.
 - **Z-Wave network backup** (Z-Wave JS plus the Full Local Backup subscription; `status.zwaveLocalBackup` in hub_get_radio_details(include_status=true) shows `available` and `entitled`):
   1. `local_backup_create` returns a `jobId`; poll hub_get_radio_details(backup_job_id=<jobId>) until `stage` is DONE.
   2. `local_backup_download` (job_id = the jobId) saves the archive to File Manager as `zwave-backup-<jobId>.tar.gz`.
-  3. To bring a network in: `local_backup_import` (backup_url, 8 MB max; a Hubitat backup, Z-Wave JS UI backup, archive or raw NVM file) returns an `importId`; poll its job until READY and read its `report`. Supply missing keys with `local_backup_keys` (import_id = the importId, security_keys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, long_range: {S2_Authenticated, S2_AccessControl}}, each a 32-hex-digit network key, a 0x prefix stripped; other names or values are refused). Then restore with hub_call_destructive_ops(target='zwave', action='local_backup_restore', import_id=...).
+  3. To bring a network in: `local_backup_import` (backup_url, confirm=true, 8 MB max; a Hubitat backup, Z-Wave JS UI backup, archive or raw NVM file) returns an `importId`; poll its job until READY and read its `report`. Supply missing keys with `local_backup_keys` (import_id = the importId, security_keys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, long_range: {S2_Authenticated, S2_AccessControl}}, each a 32-hex-digit network key, a 0x prefix stripped; other names or values are refused). Then restore with hub_call_destructive_ops(target='zwave', action='local_backup_restore', import_id=...).
 
 ### hub_set_zigbee (configure the Zigbee radio: enable/disable, channel/power, radio settings, per-device ping)
 
@@ -10619,7 +10663,7 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 ### hub_call_matter (Matter radio: enable/disable, pair, cancel_pair, open pairing window)
 
 - `action=pair` (the 11- or 21-digit Matter setup code, or the MT: QR payload) uses the pairing request firmware 2.5.2 introduced, which carries Wi-Fi credentials for Wi-Fi Matter devices. Without `wifi_ssid` the hub's selected network is sent, as the web UI does; when that is the network the hub stores a password for, the hub's own password placeholder keeps the stored password. A network without a stored password needs `wifi_password` (`""` for an open network), and the call is refused when the hub's network cannot be read. Firmware before 2.5.2 pairs with the setup code alone. Thread devices ignore the credentials. Read the stored network with hub_get_radio_details(radio='matter') `wifiCredentials` (the password is never returned).
-- On firmware 2.5.2 and later a started pairing returns its `nodeId`; poll it with hub_get_radio_details(radio='matter', node_id=<nodeId>) and stop it with `action=cancel_pair` (node_id). A nodeId of 0 or an `error` means the pairing did not start. Firmware before 2.5.2 pairs with the setup code alone (any Wi-Fi arguments are ignored) and returns no nodeId.
+- A started pairing returns its `nodeId`; poll it with hub_get_radio_details(radio='matter', node_id=<nodeId>) and stop it with `action=cancel_pair` (node_id). A nodeId of 0 or an `error` means the pairing did not start. Firmware before 2.5.2 pairs with the setup code alone (any Wi-Fi arguments are ignored).
 - Matter requires a C-8 / C-8 Pro hub on supported firmware; the failure note repeats this.
 - `action=open_pairing_window` opens a share window for a commissioned node_id; the response carries the setup code to add that device to another fabric.
 - To RESET the Matter fabric (wipes commissioning, unpairs every Matter device) use hub_call_destructive_ops(target='matter', action='reset').
@@ -11171,7 +11215,7 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 - Without a native export (or with the default `preserveRuleId: true`), a native rule snapshot replays its settings in place when the rule still exists. If the rule was deleted, the restore creates a NEW rule and replays the settings onto it. The result then carries the new `ruleId`, the `originalRuleId` and `recreated: true`, so update anything that referenced the old id. A Required Expression lives in Rule Machine's app state, which a settings replay cannot write, so the restore then makes the rule's expression match the snapshot: it rebuilds the snapshot's expression (each condition re-walked from its saved settings), or removes the live one when the snapshot had none, and confirms the rendered result before the old expression's tokens are removed. `requiredExpressionRestored: true` means it matches. A snapshot expression naming a device deleted since the backup is not rebuilt: the live expression stays (`preRestoreExpressionKept: true`) and the error names the device. Conditions are compared by their rendered text, so a device renamed since the backup reads as a mismatch: the rebuild is backed out with `requiredExpressionRestored: false`, and the expression is set with `hub_set_rule`. A failed rebuild puts back what was committed before it: `preRestoreExpressionKept` (true or false) when the rule had an expression; otherwise `requiredExpressionPartial` when part of the snapshot's expression got committed (the error says whether it is only the first condition). Conditions it could not remove are listed in `leftoverConditionIds`. `requiredExpressionRestored: false` turns the result into `success: false` + `partial: true` with the reason in `error`, and the rule's expression must be rebuilt with `hub_set_rule`. Triggers and actions also live in app state: a trigger, action or condition the live rule has beyond the snapshot is removed (`removedTriggers` / `removedActions` / `removedConditionIds`), while one the snapshot has and the rule lacks cannot be rebuilt by a replay. It is named in `missingTriggers` / `missingActions` with `structureRestored: false`, `success: false` and `partial: true`; add it back with `hub_set_rule`. Actions the backup also has are moved back into its order; an order the moves cannot restore is reported in `actionOrder` with `structureRestored: false`, and a failed closing Update Rule in `updateRuleFailed`. A device deleted since the backup is left out of the replay (listed in `settingsSkipped`, `partial: true`), because Rule Machine stops rendering a rule whose picker names a missing device. A settings replay writes back the settings the backup holds. For a Rule Machine rule, settings added after the backup go with the trigger, action or condition the restore removes. For any other app type (Basic Rules among them), every non-button setting the app gained after the backup is emptied and listed in `settingsCleared` (the hub keeps no way to delete one), and the app is finished with its own commit -- its Done where it has no Update button, since an Update click breaks a Basic Rule's page (a Done that does not commit returns `success: false`). The App Cloner restore has no such leftovers, since it builds a new app from the backup alone.
 
 - `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub. A full local backup (`fullBackup:true`) never goes to the database restore: it runs the full-restore flow the web UI uses (the archive is read off the hub, uploaded to the full-restore endpoint, then restored).
-- `scope=hub_uploaded` -- fetch a backup from `backupUrl` and restore it (open-world). The fetched file decides the route: a `.tar.gz` full backup runs the full-restore flow, a `.lzf` database backup the database restore, and anything else is refused. `fullRestore` needs a full backup and is refused with a `.lzf` URL. The URL's size is read first with a one-byte range request: where the host answers it, a backup over 16 MB (8 MB for a `.lzf` URL) is refused before it is fetched; elsewhere the same limits apply after the fetch. A full local backup whose size the hub's list does not give is refused rather than downloaded.
+- `scope=hub_uploaded` -- fetch a backup from `backupUrl` and restore it (open-world). The fetched file decides the route: a `.tar.gz` full backup runs the full-restore flow, a `.lzf` database backup the database restore, and anything else is refused. `fullRestore` needs a full backup and is refused with a `.lzf` URL. The URL's size is read first with a one-byte range request (or the declared length of a host that ignores it): a backup over 16 MB (8 MB for a `.lzf` URL), or one whose size the host does not report, is refused before it is fetched. The URL may not point at this hub (loopback or its own address) except a File Manager file under `/local/`, and must use a host name or a dotted-quad IPv4 address. A full local backup whose size the hub's list does not give is refused rather than downloaded.
 - `fullRestore={restoreZigbee, restoreZwave, restoreFiles, deleteExistingFiles, allowZwaveFirmwareMismatch}` (booleans, all default false) picks what a full restore brings back besides the database, for a full `hub_local` backup or a `hub_uploaded` archive; `scope=hub_cloud` restores the database only and refuses it. `deleteExistingFiles` needs `restoreFiles`. A restore request the hub never answers returns `outcome: "unknown"`: the hub may be rebooting into the restore, so check it before retrying. A Z-Wave firmware or Z-Wave stack mismatch between hub and backup is refused with the reason; `allowZwaveFirmwareMismatch=true` restores over a hub whose Z-Wave firmware is newer. Full archives over 16 MB are refused in-app before they are downloaded (the web UI takes up to 150 MB).''',
 
         file_manager: '''## File Manager

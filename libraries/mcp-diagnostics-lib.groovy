@@ -2310,6 +2310,7 @@ def toolCallZwave(args) {
                 return _zwaveBackupDownload(args.job_id.toString())
             case "local_backup_import":
                 if (!args.backup_url) throw new IllegalArgumentException("local_backup_import requires backup_url: an http(s) URL to a Hubitat or Z-Wave JS UI backup, archive, or raw NVM file.")
+                if (!args.confirm) throw new IllegalArgumentException("local_backup_import fetches backup_url and uploads it to the hub: pass confirm=true.")
                 return _zwaveBackupImport(args.backup_url.toString())
             case "local_backup_keys":
                 if (!args.import_id) throw new IllegalArgumentException("local_backup_keys requires import_id (the importId from local_backup_import).")
@@ -2403,6 +2404,22 @@ private boolean _radioRefused(resp, boolean strict = false) {
     return resp != null
 }
 
+// The pair answer: {nodeId, error} on 2.5.2 or a bare node id (also the only shape before 2.5.2),
+// as the UI reads it; node "0" or none means the hub did not start pairing.
+private Map _matterPairAnswer(resp, String action, String wifiSsid) {
+    def node = (resp instanceof Map) ? resp.nodeId : resp
+    String nodeId = node?.toString()?.trim()
+    def err = (resp instanceof Map) ? resp.error : null
+    if (!(nodeId ==~ /[0-9A-Za-z_-]{1,40}/) || nodeId == "0" || err) {
+        return [success: false, action: action, error: "Matter pairing did not start: ${err ?: 'the hub returned no node'}",
+                note: "Check the setup code and that the device is in pairing mode. A Wi-Fi device also needs the right wifi_ssid / wifi_password.", response: resp]
+    }
+    def out = [success: true, action: action, nodeId: nodeId, message: "Matter commissioning started (node ${nodeId}).",
+               note: "Poll hub_get_radio_details(radio='matter', node_id='${nodeId}') for progress; stop it with action='cancel_pair'.", response: resp]
+    if (wifiSsid != null) out.wifiSsid = wifiSsid
+    return out
+}
+
 private String _radioReason(resp) {
     if (resp == null) return "the hub returned nothing"
     if (resp instanceof Map) return (resp.message ?: resp.error ?: "no reason given").toString()
@@ -2438,26 +2455,13 @@ private Map _zwaveBackupDownload(String jobId) {
 // Uploads a Z-Wave backup from a URL for inspection; the hub answers with an importId whose job
 // reaches READY with a report (which keys it still needs) before a restore.
 private Map _zwaveBackupImport(String url) {
-    if (!(url ==~ /(?i)^https?:\/\/.+/)) throw new IllegalArgumentException("backup_url must be an http(s) URL, got: ${url}")
-    long maxBytes = 8L * 1024 * 1024
-    def probe = _probeUrl(url, maxBytes)
-    if (probe.size != null && probe.size > maxBytes) {
-        return [success: false, action: "local_backup_import", error: "The backup at backup_url is ${(probe.size / (1024 * 1024)) as long} MB, over the 8 MB in-app upload limit.",
+    _requireBackupUrl(url, "backup_url")
+    def got = _fetchCappedBackup(url, 8L * 1024 * 1024)
+    if (got.error) {
+        return [success: false, action: "local_backup_import", error: "backup_url: ${got.error}",
                 note: "Import it from Settings > Z-Wave Details > Z-Wave local backup in the Hubitat web UI. Nothing was imported."]
     }
-    byte[] bytes = probe.bytes
-    if (bytes == null) {
-        try {
-            bytes = _fetchBytesFromUrl(url)
-        } catch (Exception e) {
-            return [success: false, action: "local_backup_import", error: "Could not fetch the backup from backup_url: ${e.message}"]
-        }
-    }
-    if (!bytes || bytes.length == 0) return [success: false, action: "local_backup_import", error: "Fetched 0 bytes from backup_url."]
-    if (bytes.length > maxBytes) {
-        return [success: false, action: "local_backup_import", error: "The backup is over the 8 MB in-app upload limit.",
-                note: "Import it from Settings > Z-Wave Details > Z-Wave local backup in the Hubitat web UI."]
-    }
+    byte[] bytes = got.bytes
     def segs = url.replaceFirst(/(?i)^https?:\/\/[^\/]*/, "").replaceFirst(/[?#].*$/, "").tokenize("/")
     String fileName = (segs && segs[-1].contains(".")) ? segs[-1] : "zwave-backup.tar.gz"
     try {
@@ -2534,10 +2538,9 @@ def toolCallMatter(args) {
                 if (_hubFirmwareBefore("2.5.2")) {
                     // Older firmware has no network-credentials pairing: the setup code alone.
                     resp = _radioGet("/hub/matter/pair", [setupCode: args.setup_code.toString().trim()])
-                    if (_radioRefused(resp)) return [success: false, action: action, error: "Matter pairing did not start: ${_radioReason(resp)}", response: resp]
-                    def started = [success: true, action: action, message: "Matter pairing started.", response: resp]
-                    if (args.wifi_ssid != null) started.note = "Firmware before 2.5.2 pairs with the setup code alone; wifi_ssid and wifi_password were not sent."
-                    return started
+                    def legacy = _matterPairAnswer(resp, action, null)
+                    if (legacy.success && args.wifi_ssid != null) legacy.note += " Firmware before 2.5.2 pairs with the setup code alone; wifi_ssid and wifi_password were not sent."
+                    return legacy
                 }
                 // The 2.5.2 UI always sends Wi-Fi credentials; Thread devices ignore them. Like the UI,
                 // default to the hub's selected network, with the password placeholder (the hub reads
@@ -2558,14 +2561,7 @@ def toolCallMatter(args) {
                 }
                 resp = _radioPost("/hub/matter/pairWithNetworkCredentials",
                     groovy.json.JsonOutput.toJson([setupCode: args.setup_code.toString().trim(), ssid: ssid ?: "", password: password ?: ""]))
-                def nodeOut = (resp instanceof Map) ? resp.nodeId : null
-                if (nodeOut == null || nodeOut.toString() == "0" || (resp instanceof Map && resp.error)) {
-                    return [success: false, action: action, error: "Matter pairing did not start: ${(resp instanceof Map && resp.error) ? resp.error : 'the hub returned no node'}",
-                            note: "Check the setup code and that the device is in pairing mode. A Wi-Fi device also needs the right wifi_ssid / wifi_password.", response: resp]
-                }
-                return [success: true, action: action, nodeId: nodeOut.toString(), wifiSsid: ssid ?: null,
-                        message: "Matter commissioning started (node ${nodeOut}).",
-                        note: "Poll hub_get_radio_details(radio='matter', node_id='${nodeOut}') for progress; stop it with action='cancel_pair'.", response: resp]
+                return _matterPairAnswer(resp, action, ssid ?: null)
             case "cancel_pair":
                 if (!args.node_id) throw new IllegalArgumentException("cancel_pair requires node_id (the nodeId pair returned).")
                 resp = _radioGet("/hub/matter/cancelPair", [nodeId: args.node_id.toString()])
@@ -3077,7 +3073,7 @@ def _getAllToolDefinitions_partDiagnostics() {
                     cc: [type: "object", description: "[[FLAT_TRIM]]cc_command: {command_class (decimal or 0x hex), method_name, endpoint?, args?}.[[/FLAT_TRIM]]"],
                     job_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_download: the jobId from local_backup_create.[[/FLAT_TRIM]]"],
                     import_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_keys: the importId from local_backup_import.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "Required true for exclusion_start, node_remove, link_test_start, cc_command.[[FLAT_TRIM]] A hub backup <24h is also enforced.[[/FLAT_TRIM]]"]
+                    confirm: [type: "boolean", description: "Required true for exclusion_start, node_remove, link_test_start, cc_command, local_backup_download, local_backup_import.[[FLAT_TRIM]] A hub backup <24h is also enforced.[[/FLAT_TRIM]]"]
                 ],
                 required: ["action"]
             ]

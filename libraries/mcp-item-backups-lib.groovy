@@ -1306,34 +1306,20 @@ def toolDeleteHubBackup(args) {
 private _restoreUploadedBackup(Map args) {
     if (!args.backupUrl) throw new IllegalArgumentException("scope=hub_uploaded restore requires backupUrl (an http(s) URL to the .lzf database backup or the .tar.gz full backup to upload and restore)")
     def url = args.backupUrl.toString()
-    if (!(url ==~ /(?i)^https?:\/\/.+/)) throw new IllegalArgumentException("backupUrl must be an http(s) URL, got: ${url}")
+    _requireBackupUrl(url, "backupUrl")
     String urlPath = url.tokenize("?")[0]
     boolean lzfUrl = urlPath.toLowerCase().endsWith(".lzf")
     if (args.fullRestore != null && lzfUrl) {
         throw new IllegalArgumentException("fullRestore applies only to a full .tar.gz backup; backupUrl points at a .lzf database backup.")
     }
     def opts = (args.fullRestore != null) ? _fullRestoreOptions(args.fullRestore) : null
-    // Size it first when the host says (8 MB for a .lzf, 16 MB otherwise); a host that ignores the
-    // range request sends the whole body, which is then used instead of fetching it again.
-    long probeCap = (lzfUrl ? 8L : 16L) * 1024 * 1024
-    def probe = _probeUrl(url, probeCap)
-    if (probe.size != null && probe.size > probeCap) {
-        return [success: false, type: lzfUrl ? "hub-db" : "hub-full", location: "hub_uploaded",
-                error: "The backup at backupUrl is ${(probe.size / (1024 * 1024)) as long} MB, over the ${probeCap / (1024 * 1024)} MB in-app limit.",
-                note: "Restore a large backup from Settings > Backup and Restore in the Hubitat web UI. Nothing was restored."]
+    // 8 MB for a .lzf, 16 MB otherwise.
+    def got = _fetchCappedBackup(url, (lzfUrl ? 8L : 16L) * 1024 * 1024)
+    if (got.error) {
+        return [success: false, type: lzfUrl ? "hub-db" : "hub-uploaded", location: "hub_uploaded", error: "backupUrl: ${got.error}",
+                note: "Nothing was restored. Verify the URL is reachable from the hub, or restore from Settings > Backup and Restore in the Hubitat web UI."]
     }
-    byte[] fileBytes = probe.bytes
-    if (fileBytes == null) {
-        try {
-            fileBytes = _fetchBytesFromUrl(url)
-        } catch (Exception e) {
-            return [success: false, type: "hub-uploaded", location: "hub_uploaded", error: "Could not fetch the backup from backupUrl: ${e.message}",
-                    note: "Nothing was restored. Verify the URL is reachable from the hub."]
-        }
-    }
-    if (fileBytes == null || fileBytes.length == 0) {
-        return [success: false, type: "hub-uploaded", location: "hub_uploaded", error: "Fetched 0 bytes from backupUrl.", note: "Nothing was restored."]
-    }
+    byte[] fileBytes = got.bytes
     if (_isGzip(fileBytes)) {
         // The file name is the URL path's last segment (never the host of a path-less URL).
         def segs = urlPath.replaceFirst(/(?i)^https?:\/\/[^\/]*/, "").tokenize("/")
