@@ -198,7 +198,38 @@ def checkFile = { String path ->
         println "OK   (Groovy ${GroovySystem.version} parse + sandbox class check): ${path}"
     }
 
+    // Gate 3: class size. The JVM caps a class at 65535 constant-pool entries, and the hub
+    // compiles the app with every #include inlined into one class: past the cap it refuses to
+    // load the app at all ("Class too large"), which no parse-level check sees.
+    def size = classSize(f.name, resolved)
+    if (size.tooLarge) {
+        System.err.println "FAIL (class too large for the JVM): ${path}"
+        System.err.println "  ${size.message}"
+        rc = 1
+    } else if (size.error) {
+        println "NOTICE (class size not measured: ${size.error}): ${path}"
+    } else {
+        println "CLASS SIZE ${path}: ${size.name} uses ${size.cp} of 65535 constant-pool entries"
+    }
+
     return rc
+}
+
+// Generate bytecode and read the largest class's constant-pool count (class-file bytes 8-9).
+def classSize(String name, String source) {
+    def cu = new CompilationUnit(new CompilerConfiguration())
+    cu.addSource(name, source)
+    try {
+        cu.compile(Phases.CLASS_GENERATION)
+    } catch (Throwable e) {
+        def msg = (e.message ?: e.toString())
+        return msg.contains('Class too large') ? [tooLarge: true, message: msg.take(300)] : [error: msg.take(200)]
+    }
+    def sizes = cu.classes.collect { gc ->
+        byte[] b = gc.bytes
+        [name: gc.name, cp: ((b[8] & 0xff) << 8) | (b[9] & 0xff)]
+    }
+    return sizes ? sizes.max { it.cp } : [error: 'no classes generated']
 }
 if (selfTest) {
     def binding = new Binding([checkFile: checkFile, repoRoot: repoRoot, resolverClass: resolverClass])
