@@ -296,6 +296,7 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
 }
 
 def toolGetToolGuide(section, cursor = null, Map apiDocs = null) {
+    // apiDocs: {platform_api_search?, platform_api_page?} -- the hub's own API documentation.
     if (apiDocs?.platform_api_search != null || apiDocs?.platform_api_page != null) {
         if (section) throw new IllegalArgumentException("section and platform_api_search / platform_api_page are separate lookups; send one.")
         if (apiDocs.platform_api_search != null && apiDocs.platform_api_page != null) {
@@ -421,7 +422,8 @@ private Map _platformApiPage(String pageId, cursor) {
     }
     def pgMethods = (pg instanceof Map) ? pg.get("methods") : null
     if (!(pgMethods instanceof List)) return [success: false, error: "API documentation page '${pageId}' has an unexpected shape."]
-    // A description past 20,000 characters is cut (descriptionTruncated), so one method always fits a page.
+    // A description past 20,000 characters is cut (descriptionTruncated), so a single-method page stays
+    // near the ~60 KB budget.
     def methods = pgMethods.findAll { it instanceof Map }.collect { m ->
         def text = (m.descriptionMarkdown ?: m.summary)?.toString()?.trim()
         def entry = [kind: m.kind, name: m.name, signature: m.signature, description: text?.take(20000)]

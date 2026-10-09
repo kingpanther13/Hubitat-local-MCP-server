@@ -533,7 +533,7 @@ class ToolBackupSpec extends ToolSpecBase {
         // is unverifiable live anyway); mock them and assert the ORCHESTRATION (fetch -> upload ->
         // restoreUploaded GET -> success).
         def calls = [:]
-        script.metaClass._fetchBytesFromUrl = { String url -> calls.fetched = url; 'BACKUPBYTES'.getBytes('UTF-8') }
+        script.metaClass._fetchBytesFromUrl = { String url -> calls.fetched = url; '-- H2 0.5/B -- BACKUPBYTES'.getBytes('UTF-8') }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes ->
             calls.uploaded = path; calls.bytes = bytes.length; return [success: true]
         }
@@ -546,7 +546,7 @@ class ToolBackupSpec extends ToolSpecBase {
         r.location == 'hub_uploaded'
         calls.fetched == 'https://host/b.lzf'
         calls.uploaded == '/hub2/uploadBackup'
-        calls.bytes == 11
+        calls.bytes == 26
     }
 
     def "scope=hub_uploaded requires backupUrl"() {

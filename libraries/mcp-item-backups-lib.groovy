@@ -558,6 +558,10 @@ def toolCreateHubBackup(args) {
     if (willCreate && !args.confirm) {
         throw new IllegalArgumentException("You must set confirm=true to create a backup (or pass scheduleOnly=true WITH schedule / networkBackup / testNetworkBackup to only change settings).")
     }
+    if (willCreate && args.full == true && args.mock != true) {
+        def unavailable = _fullBackupUnavailable()
+        if (unavailable) return unavailable
+    }
     def netCurrent = null
     if (networkPresent || testNetwork) {
         if (networkPresent) _validateNetworkBackupArgs(args.networkBackup)
@@ -589,8 +593,14 @@ def toolCreateHubBackup(args) {
     if (networkPresent || testNetwork) {
         networkResult = _applyNetworkBackup(networkPresent ? args.networkBackup : null, testNetwork, netCurrent)
         if (networkResult.success != true) {
+            // Say exactly what reached the hub: the schedule, the share settings, and no backup.
+            def saved = []
+            if (scheduleUpdated) saved << "the backup schedule"
+            if (networkResult.settingsSaved == true) saved << "the network share settings"
             networkResult.scheduleUpdated = scheduleUpdated
-            if (scheduleUpdated) networkResult.note = "The backup schedule was saved; the network backup settings were not. " + (networkResult.note ?: "")
+            if (willCreate) networkResult.backupCreated = false
+            networkResult.note = (saved ? "Saved: ${saved.join(' and ')}. " : "Nothing was saved. ") +
+                                 (willCreate ? "No backup was created. " : "") + (networkResult.note ?: "")
             return networkResult
         }
     }
@@ -728,8 +738,25 @@ def toolCreateHubBackup(args) {
     }
 }
 
-// asynchttpGet completion sink for the backup trigger: the .lzf body is deliberately never
-// read into this app (see toolCreateHubBackup -- the whole point of the async trigger).
+// Why a full local backup cannot be made here, checked before anything is written (null when it can
+// be, or when the hub's backup data is unreadable and the request is sent anyway).
+private Map _fullBackupUnavailable() {
+    def why = null
+    if (_hubFirmwareBefore("2.5.2")) {
+        why = "Full local backups need firmware 2.5.2 or later."
+    } else {
+        def info = null
+        try { info = _parseJsonOrNull(hubInternalGet("/hub2/backup/json")) }
+        catch (Exception e) { mcpLog("warn", "hub-admin", "full backup pre-check: /hub2/backup/json unreadable (${e.message}); requesting the backup anyway") }
+        if (info instanceof Map && info.hasFullLocalBackup == false) why = "This hub does not offer full local backups (hasFullLocalBackup is false)."
+    }
+    if (why == null) return null
+    return [success: false, full: true, scheduleUpdated: false, error: why,
+            note: "Full local backups need firmware 2.5.2 and the Full Local Backup subscription (hub_get_info(includeSubscriptions=true)). Nothing was changed; hub_create_backup without full makes a database backup."]
+}
+
+// asynchttpGet completion sink for the backup triggers (/hub/backupDB and /hub2/createFullLocalBackup):
+// the archive body is never read into this app; the new entry in the hub's backup list confirms it.
 def backupResponseSink(response, data) {
     // The async /hub/backupDB response is the one place a rejected backup request surfaces. It
     // arrives AFTER toolCreateHubBackup returns (so it can't gate that call -- statusJson confirmation
@@ -896,7 +923,7 @@ private Map _applyNetworkBackup(Map spec, boolean test, Map cur) {
         if (spec != null) {
             def r = hubInternalPostJson("/hub2/networkBackup/settings", groovy.json.JsonOutput.toJson(merged))
             if (!(r instanceof Map) || r.success != true) {
-                return [success: false, error: "The hub did not save the network backup settings: ${(r instanceof Map) ? (r.message ?: 'no reason given') : r}", note: "Nothing was changed."]
+                return [success: false, error: "The hub did not save the network backup settings: ${(r instanceof Map) ? (r.message ?: 'no reason given') : r}"]
             }
             out.settingsSaved = true
         }
@@ -906,12 +933,13 @@ private Map _applyNetworkBackup(Map spec, boolean test, Map cur) {
             if (!out.test.success) {
                 out.success = false
                 out.error = "Network share test failed: ${out.test.message ?: 'no reason given'}"
-                out.note = (spec != null) ? "The settings were saved; fix the share path or credentials and test again." : "Fix the share path or credentials and test again."
+                out.note = "Fix the share path or credentials and test again."
             }
         }
     } catch (Exception e) {
         mcpLogError("hub-admin", "network backup settings/test failed", e)
-        return [success: false, error: "Network backup request failed: ${e.message}", settingsSaved: out.settingsSaved == true]
+        return [success: false, error: "Network backup request failed: ${e.message}", settingsSaved: out.settingsSaved == true,
+                note: "Check the share path and credentials, then read the settings with hub_list_backups(scope='hub_local')."]
     }
     out.networkBackup = [enabled: merged.enabled, networkPath: merged.networkPath ?: null, username: merged.username ?: null, passwordSet: merged.password ? true : false]
     if (out.test) out.networkBackup.test = out.test
@@ -923,16 +951,6 @@ private Map _applyNetworkBackup(Map spec, boolean test, Map cur) {
 // (/hub2/createLocalBackup?full=true is the Remote Admin form and 404s locally). Fired asynchronously
 // like /hub/backupDB, so the archive never loads into the app, and confirmed by a newer full entry.
 private Map _createFullLocalBackup(boolean scheduleUpdated, networkBackup) {
-    def info = null
-    try {
-        def raw = hubInternalGet("/hub2/backup/json")
-        info = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-    } catch (Exception e) { mcpLog("warn", "hub-admin", "full backup pre-check: /hub2/backup/json unreadable (${e.message}); requesting the backup anyway") }
-    if (info instanceof Map && info.hasFullLocalBackup == false) {
-        return [success: false, full: true, scheduleUpdated: scheduleUpdated,
-                error: "This hub does not offer full local backups (hasFullLocalBackup is false).",
-                note: "Full local backups need firmware 2.5.2 and the Full Local Backup subscription (hub_get_info(includeSubscriptions=true)). Nothing was created; hub_create_backup without full makes a database backup."]
-    }
     Long pre = _latestLocalHubBackupEpoch("full")
     long t0 = now()
     def params = [uri: hubBaseUri(), path: "/hub2/createFullLocalBackup", timeout: 600]
@@ -970,11 +988,11 @@ private Map _downloadCloudBackup(spec) {
     String ext = (part == "files") ? ".tar.gz" : ".lzf"
     String name = "cloud-backup-${part}-${new Date(now()).format('yyyyMMdd-HHmmss')}${ext}"
     // The whole copy is held in memory, so it is sized first from the cloud list's total.
-    Long total = _cloudBackupSizeBytes(spec.path.toString())
-    if (total == null || total > 16L * 1024 * 1024) {
+    def total = _cloudBackupSize(spec.path.toString())
+    if (total.size == null || total.size > 16L * 1024 * 1024) {
         return [success: false, cloudDownload: true,
-                error: (total == null) ? "The hub's cloud backup list gives no size for '${spec.path}', so it was not downloaded." :
-                                         "That cloud backup is ${(total / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
+                error: (total.size == null) ? _sizeLookupError(total.reason, spec.path.toString(), "cloud") :
+                                              "That cloud backup is ${(total.size / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
                 note: "Check the path with hub_list_backups(scope='hub_cloud'), or download it from Settings > Backup and Restore in the Hubitat web UI. Nothing was saved."]
     }
     try {
@@ -1030,31 +1048,40 @@ private _listHubBackups(boolean wantLocal, boolean wantCloud) {
     return out
 }
 
-// A local backup's size in bytes from the hub's list ("7 MB"), or null when it is not listed.
-private Long _localBackupSizeBytes(String fileName) {
+// A backup's size from the hub's own list: [size: bytes] or [reason: unreadable | notListed | sizeUnknown].
+private Map _localBackupSize(String fileName) {
+    def parsed
     try {
-        def raw = hubInternalGet("/hub2/localBackups")
-        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        def entry = (parsed instanceof List) ? parsed.find { it instanceof Map && it.name?.toString() == fileName } : null
-        return _parseSizeBytes(entry?.fileSize ?: entry?.size)
+        parsed = _parseJsonOrNull(hubInternalGet("/hub2/localBackups"))
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "_localBackupSizeBytes: local backup list unreadable (${e.message})")
-        return null
+        mcpLog("warn", "hub-admin", "local backup list unreadable (${e.message})")
     }
+    if (!(parsed instanceof List)) return [reason: "unreadable"]
+    def entry = parsed.find { it instanceof Map && it.name?.toString() == fileName }
+    if (entry == null) return [reason: "notListed"]
+    Long size = _parseSizeBytes(entry.fileSize ?: entry.size)
+    return (size != null) ? [size: size] : [reason: "sizeUnknown"]
 }
 
-// A cloud backup's total size from the hub's cloud list: an upper bound for either part.
-private Long _cloudBackupSizeBytes(String path) {
+// The cloud list gives each backup's total size: an upper bound for either part of it.
+private Map _cloudBackupSize(String path) {
+    def parsed
     try {
-        def raw = hubInternalGet("/hub2/cloudBackups", [force: false])
-        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        def list = (parsed instanceof Map && parsed.backups instanceof List) ? parsed.backups : []
-        def entry = list.find { it instanceof Map && it.path?.toString() == path }
-        return _parseSizeBytes(entry?.fileSize)
+        parsed = _parseJsonOrNull(hubInternalGet("/hub2/cloudBackups", [force: false]))
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "_cloudBackupSizeBytes: cloud backup list unreadable (${e.message})")
-        return null
+        mcpLog("warn", "hub-admin", "cloud backup list unreadable (${e.message})")
     }
+    if (!(parsed instanceof Map) || !(parsed.backups instanceof List)) return [reason: "unreadable"]
+    def entry = parsed.backups.find { it instanceof Map && it.path?.toString() == path }
+    if (entry == null) return [reason: "notListed"]
+    Long size = _parseSizeBytes(entry.fileSize)
+    return (size != null) ? [size: size] : [reason: "sizeUnknown"]
+}
+
+private String _sizeLookupError(String reason, String name, String where) {
+    if (reason == "notListed") return "No backup '${name}' is in the hub's ${where} backup list.".toString()
+    if (reason == "unreadable") return "The hub's ${where} backup list could not be read, so the size of '${name}' is unknown and it was not downloaded.".toString()
+    return "The hub's ${where} backup list gives no size for '${name}', so it was not downloaded.".toString()
 }
 
 // "7 MB" / "512 KB" / a bare byte count -> bytes; null when it is not one of those.
@@ -1117,62 +1144,74 @@ private Map _restoreFullFromBytes(String location, byte[] bytes, String fileName
                 error: "Upload of the full backup failed: ${(up instanceof Map) ? (up.message ?: up.error ?: 'hub rejected the upload') : 'unexpected response'}",
                 note: "Nothing was restored."]
     }
+    def r
     try {
         def q = [suppressZWaveFirmwareMismatchHubNewer: opts.allowZwaveFirmwareMismatch, restoreZb: opts.restoreZigbee, restoreZw: opts.restoreZwave,
                  restoreFiles: opts.restoreFiles, deleteExistingFiles: opts.deleteExistingFiles, t: now()]
-        def raw = hubInternalGet("/hub2/restoreFullLocalBackup", q, 120)
-        def r = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        if (r instanceof Map && r.success == true) {
-            return [success: true, type: "hub-full", location: location, restored: [database: true, zigbee: opts.restoreZigbee, zwave: opts.restoreZwave, files: opts.restoreFiles],
-                    message: "Full restore accepted — the hub is rebooting now and will be unreachable for several minutes.",
-                    note: "Re-check hub reachability after the reboot."]
-        }
-        def out = [success: false, type: "hub-full", location: location, response: r]
-        if (r instanceof Map && r.zwaveFirmwareMismatchHubNewer) {
-            out.error = "The hub's Z-Wave radio firmware is newer than the backup's."
-            out.note = "Nothing was restored. Retry with fullRestore.allowZwaveFirmwareMismatch=true to restore anyway, or leave restoreZwave false."
-        } else if (r instanceof Map && r.zwaveFirmwareMismatchBackupNewer) {
-            out.error = "The backup's Z-Wave radio firmware is newer than the hub's."
-            out.note = "Nothing was restored. Update the hub's Z-Wave radio firmware first, or restore with restoreZwave false."
-        } else if (r instanceof Map && r.zwaveStackMismatch) {
-            out.error = r.zwaveStackMismatchMessage ?: "The backup was made on a different Z-Wave stack (${r.backupZWaveStack}) than the hub runs (${r.activeZWaveStack})."
-            out.note = "Nothing was restored. Switch the Z-Wave stack with hub_set_zwave(zwave_js=...) first, or restore with restoreZwave false."
-        } else {
-            out.error = (r instanceof Map) ? (r.message ?: "the hub did not report success") : "unexpected response"
-            out.note = "The backup uploaded but the restore did not confirm — verify hub state."
-        }
-        return out
+        r = _parseJsonOrNull(hubInternalGet("/hub2/restoreFullLocalBackup", q, 120))
     } catch (Exception e) {
-        mcpLogError("hub-admin", "full backup restore request got no answer", e)
-        return _restoreOutcomeUnknown("hub-full", location, e)
+        mcpLogError("hub-admin", "full backup restore request failed", e)
+        return _restoreRequestFailed("hub-full", location, e)
     }
+    if (r instanceof Map && r.success == true) {
+        return [success: true, type: "hub-full", location: location, restored: [database: true, zigbee: opts.restoreZigbee, zwave: opts.restoreZwave, files: opts.restoreFiles],
+                message: "Full restore accepted — the hub is rebooting now and will be unreachable for several minutes.",
+                note: "Re-check hub reachability after the reboot."]
+    }
+    def out = [success: false, type: "hub-full", location: location, response: r]
+    if (r instanceof Map && r.zwaveFirmwareMismatchHubNewer) {
+        out.error = "The hub's Z-Wave radio firmware is newer than the backup's."
+        out.note = "Nothing was restored. Retry with fullRestore.allowZwaveFirmwareMismatch=true to restore anyway, or leave restoreZwave false."
+    } else if (r instanceof Map && r.zwaveFirmwareMismatchBackupNewer) {
+        out.error = "The backup's Z-Wave radio firmware is newer than the hub's."
+        out.note = "Nothing was restored. Update the hub's Z-Wave radio firmware first, or restore with restoreZwave false."
+    } else if (r instanceof Map && r.zwaveStackMismatch) {
+        out.error = r.zwaveStackMismatchMessage ?: "The backup was made on a different Z-Wave stack (${r.backupZWaveStack}) than the hub runs (${r.activeZWaveStack})."
+        out.note = "Nothing was restored. Switch the Z-Wave stack with hub_set_zwave(zwave_js=...) first, or restore with restoreZwave false."
+    } else {
+        out.error = (r instanceof Map) ? (r.message ?: "the hub did not report success") : "unexpected response"
+        out.note = "The backup uploaded but the restore did not confirm — verify hub state."
+    }
+    return out
 }
 
-// A restore request sent but not answered: the hub may already be rebooting into it.
-private Map _restoreOutcomeUnknown(String type, String location, Exception e) {
+// A restore request that threw. An HTTP status means the hub answered and refused it; without one
+// (a timeout or dropped connection) the hub may already be rebooting into the restore.
+private Map _restoreRequestFailed(String type, String location, Exception e) {
+    if (_httpStatusOf(e) != null) {
+        return [success: false, type: type, location: location, error: "The hub refused the restore: ${e.message}", note: "Nothing was restored."]
+    }
     return [success: false, type: type, location: location, outcome: "unknown", error: "The restore request got no answer: ${e.message}",
             note: "The hub may be rebooting into the restore. Do not resend: wait a few minutes, then check hub_get_info (uptime) before deciding."]
 }
 
+private _parseJsonOrNull(String raw) {
+    if (!raw) return null
+    try { return new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return null }
+}
+
 // A full backup on this hub: the UI can only download and re-upload it, so do exactly that. The
-// listed size is checked first so an archive over the in-app limit is never downloaded.
+// listed size ("7 MB", whole megabytes) is checked first; the cap after the download catches rounding.
 private Map _restoreLocalFullBackup(String fileName, Map opts) {
-    Long listed = _localBackupSizeBytes(fileName)
-    if (listed == null) {
-        return [success: false, type: "hub-full", location: "hub_local", error: "The hub's backup list gives no size for '${fileName}', so it was not downloaded.",
-                note: "Nothing was restored. Retry, or restore it from Settings > Backup and Restore in the Hubitat web UI."]
+    def listed = _localBackupSize(fileName)
+    if (listed.size == null) {
+        return [success: false, type: "hub-full", location: "hub_local", error: _sizeLookupError(listed.reason, fileName, "local"),
+                note: "Nothing was restored. Check the name with hub_list_backups(scope='hub_local'), or restore it from Settings > Backup and Restore in the Hubitat web UI."]
     }
-    if (listed > 16L * 1024 * 1024) {
-        return [success: false, type: "hub-full", location: "hub_local", error: "The full backup is ${(listed / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
+    if (listed.size > 16L * 1024 * 1024) {
+        return [success: false, type: "hub-full", location: "hub_local", error: "The full backup is ${(listed.size / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
                 note: "Restore a large full backup from Settings > Backup and Restore in the Hubitat web UI (it accepts up to 150 MB). Nothing was restored."]
     }
-    byte[] bytes
+    def got
     try {
-        bytes = hubInternalBytes("GET", "/hub2/downloadLocalBackup", [fileName: fileName]).bytes
+        got = hubInternalBytes("GET", "/hub2/downloadLocalBackup", [fileName: fileName])
     } catch (Exception e) {
         return [success: false, type: "hub-full", location: "hub_local", error: "Could not read the full backup '${fileName}': ${e.message}", note: "Nothing was restored."]
     }
-    if (!bytes || bytes.length == 0) return [success: false, type: "hub-full", location: "hub_local", error: "The hub returned no data for '${fileName}'.", note: "Nothing was restored."]
+    byte[] bytes = got.bytes
+    if (!bytes || bytes.length == 0) {
+        return [success: false, type: "hub-full", location: "hub_local", error: "The hub returned no backup for '${fileName}'${got.error ? ': ' + got.error : '.'}", note: "Nothing was restored."]
+    }
     return _restoreFullFromBytes("hub_local", bytes, fileName, opts)
 }
 
@@ -1183,46 +1222,47 @@ private Map _restoreLocalFullBackup(String fileName, Map opts) {
 //   cloud: GET /hub2/restoreCloudBackup?fileName=<path>&restorePassword=<pwd>&restoreZb=&restoreZw=&restoreFiles=&deleteExistingFiles=&t=<ms>
 // Cloud restores the DATABASE only by default (radios/files NOT restored) -- the safe minimal default.
 private _restoreHubBackup(String location, Map args) {
-    try {
-        def parsed
-        if (location == "hub_local") {
-            if (!args.fileName) throw new IllegalArgumentException("scope=hub_local restore requires fileName (from hub_list_backups scope=hub_local)")
-            def fullOpts = (args.fullRestore != null) ? _fullRestoreOptions(args.fullRestore) : null
-            if (_isFullLocalHubBackup(args.fileName.toString())) {
-                // A full backup never goes to the database restore: route it through the full-restore flow.
-                return _restoreLocalFullBackup(args.fileName.toString(), fullOpts ?: _fullRestoreOptions(null))
-            }
-            if (fullOpts != null) throw new IllegalArgumentException("fullRestore applies only to a full backup (fullBackup:true in hub_list_backups); '${args.fileName}' is a database backup.")
-            def raw = hubInternalGet("/hub2/restoreLocalBackup", [fileName: args.fileName.toString()], 120)
-            parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        } else {
-            if (!args.path) throw new IllegalArgumentException("scope=hub_cloud restore requires path (the cloud backup's `path` from hub_list_backups scope=hub_cloud)")
-            if (!args.cloudBackupPassword) throw new IllegalArgumentException("scope=hub_cloud restore requires cloudBackupPassword (the encryption password set on the cloud backup)")
-            if (args.fullRestore != null) throw new IllegalArgumentException("fullRestore does not apply to scope=hub_cloud: a cloud restore brings back the database only.")
-            def q = [
-                fileName: args.path.toString(),                       // the cloud backup id is its `path`
-                restorePassword: args.cloudBackupPassword.toString(),
-                restoreZb: false, restoreZw: false, restoreFiles: false, deleteExistingFiles: false,
-                suppressZWaveFirmwareMismatchHubNewer: false,
-                t: now()
-            ]
-            def raw = hubInternalGet("/hub2/restoreCloudBackup", q, 120)
-            parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+    String path
+    Map query
+    if (location == "hub_local") {
+        if (!args.fileName) throw new IllegalArgumentException("scope=hub_local restore requires fileName (from hub_list_backups scope=hub_local)")
+        def fullOpts = (args.fullRestore != null) ? _fullRestoreOptions(args.fullRestore) : null
+        if (_isFullLocalHubBackup(args.fileName.toString())) {
+            // A full backup never goes to the database restore: route it through the full-restore flow.
+            return _restoreLocalFullBackup(args.fileName.toString(), fullOpts ?: _fullRestoreOptions(null))
         }
-        if (parsed instanceof Map && parsed.success == true) {
-            return [success: true, type: "hub-db", location: location,
-                    message: "Hub-DB restore accepted — the hub is rebooting now and will be unreachable for several minutes.",
-                    note: "Re-check hub reachability after the reboot; the database has been replaced from the backup."]
-        }
-        return [success: false, type: "hub-db", location: location,
-                error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "hub reported failure") : "unexpected response",
-                note: "Nothing was restored. Verify the backup exists with hub_list_backups."]
-    } catch (IllegalArgumentException iae) {
-        throw iae
-    } catch (Exception e) {
-        mcpLogError("hub-admin", "hub-DB restore request got no answer", e)
-        return _restoreOutcomeUnknown("hub-db", location, e)
+        if (fullOpts != null) throw new IllegalArgumentException("fullRestore applies only to a full backup (fullBackup:true in hub_list_backups); '${args.fileName}' is a database backup.")
+        path = "/hub2/restoreLocalBackup"
+        query = [fileName: args.fileName.toString()]
+    } else {
+        if (!args.path) throw new IllegalArgumentException("scope=hub_cloud restore requires path (the cloud backup's `path` from hub_list_backups scope=hub_cloud)")
+        if (!args.cloudBackupPassword) throw new IllegalArgumentException("scope=hub_cloud restore requires cloudBackupPassword (the encryption password set on the cloud backup)")
+        if (args.fullRestore != null) throw new IllegalArgumentException("fullRestore does not apply to scope=hub_cloud: a cloud restore brings back the database only.")
+        path = "/hub2/restoreCloudBackup"
+        query = [
+            fileName: args.path.toString(),                       // the cloud backup id is its `path`
+            restorePassword: args.cloudBackupPassword.toString(),
+            restoreZb: false, restoreZw: false, restoreFiles: false, deleteExistingFiles: false,
+            suppressZWaveFirmwareMismatchHubNewer: false,
+            t: now()
+        ]
     }
+    def parsed
+    try {
+        parsed = _parseJsonOrNull(hubInternalGet(path, query, 120))
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "hub-DB restore request failed", e)
+        return _restoreRequestFailed("hub-db", location, e)
+    }
+    if (parsed instanceof Map && parsed.success == true) {
+        return [success: true, type: "hub-db", location: location,
+                message: "Hub-DB restore accepted — the hub is rebooting now and will be unreachable for several minutes.",
+                note: "Re-check hub reachability after the reboot; the database has been replaced from the backup."]
+    }
+    return [success: false, type: "hub-db", location: location,
+            error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "hub reported failure") : "unexpected response",
+            note: (parsed instanceof Map) ? "Nothing was restored. Verify the backup exists with hub_list_backups." :
+                                            "The hub's answer was not readable; check hub_get_info (uptime) before retrying."]
 }
 
 def toolDeleteHubBackup(args) {
@@ -1257,151 +1297,89 @@ def toolDeleteHubBackup(args) {
     }
 }
 
-// scope=hub_uploaded: fetch an external .lzf from backupUrl, multipart-POST it to /hub2/uploadBackup,
-// then GET /hub2/restoreUploadedBackup (reboots). A .gz archive (or fullRestore) goes through the
-// full-restore flow (/hub2/uploadFullLocalBackup) instead. The use case is migrating a backup from ANOTHER hub
-// or restoring an archived off-hub file (if the backup is already on this hub, use hub_local/hub_cloud).
-// OPEN-WORLD: it reaches the internet to fetch backupUrl. Confirm-gated by the caller.
-// CAVEAT: the binary multipart is unit-tested for orchestration but NOT validated against a live hub
-// (the destructive path is deliberately excluded from e2e); very large backups may strain the sandbox.
+// scope=hub_uploaded: fetch a backup from backupUrl and restore it. The fetched bytes decide the
+// route: a gzip archive is a full backup (multipart to /hub2/uploadFullLocalBackup, then
+// restoreFullLocalBackup); an H2 database (.lzf) goes to /hub2/uploadBackup + /hub2/restoreUploadedBackup.
+// Both reboot. The use case is migrating a backup from ANOTHER hub or restoring an archived off-hub
+// file (if the backup is already on this hub, use hub_local/hub_cloud). OPEN-WORLD: it fetches
+// backupUrl. Confirm-gated by the caller. The multipart path is unit-tested, not run on a live hub.
 private _restoreUploadedBackup(Map args) {
     if (!args.backupUrl) throw new IllegalArgumentException("scope=hub_uploaded restore requires backupUrl (an http(s) URL to the .lzf database backup or the .tar.gz full backup to upload and restore)")
     def url = args.backupUrl.toString()
     if (!(url ==~ /(?i)^https?:\/\/.+/)) throw new IllegalArgumentException("backupUrl must be an http(s) URL, got: ${url}")
-    // A .gz (full backup) or an explicit fullRestore goes through the full-restore flow.
     String urlPath = url.tokenize("?")[0]
-    if (args.fullRestore != null && urlPath.toLowerCase().endsWith(".lzf")) {
+    boolean lzfUrl = urlPath.toLowerCase().endsWith(".lzf")
+    if (args.fullRestore != null && lzfUrl) {
         throw new IllegalArgumentException("fullRestore applies only to a full .tar.gz backup; backupUrl points at a .lzf database backup.")
     }
-    boolean full = args.fullRestore != null || urlPath.toLowerCase().endsWith(".gz")
-    if (full) {
-        def opts = _fullRestoreOptions(args.fullRestore)
-        Long urlSize = _urlSizeBytes(url)
-        if (urlSize != null && urlSize > 16L * 1024 * 1024) {
-            return [success: false, type: "hub-full", location: "hub_uploaded", error: "The full backup at backupUrl is ${(urlSize / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
-                    note: "Restore a large full backup from Settings > Backup and Restore in the Hubitat web UI (it accepts up to 150 MB). Nothing was fetched or restored."]
-        }
-        byte[] fullBytes
+    def opts = (args.fullRestore != null) ? _fullRestoreOptions(args.fullRestore) : null
+    // Size it first when the host says (8 MB for a .lzf, 16 MB otherwise); a host that ignores the
+    // range request sends the whole body, which is then used instead of fetching it again.
+    def probe = _probeUrl(url)
+    long probeCap = (lzfUrl ? 8L : 16L) * 1024 * 1024
+    if (probe.size != null && probe.size > probeCap) {
+        return [success: false, type: lzfUrl ? "hub-db" : "hub-full", location: "hub_uploaded",
+                error: "The backup at backupUrl is ${(probe.size / (1024 * 1024)) as long} MB, over the ${probeCap / (1024 * 1024)} MB in-app limit.",
+                note: "Restore a large backup from Settings > Backup and Restore in the Hubitat web UI. Nothing was restored."]
+    }
+    byte[] fileBytes = probe.bytes
+    if (fileBytes == null) {
         try {
-            fullBytes = _fetchBytesFromUrl(url)
+            fileBytes = _fetchBytesFromUrl(url)
         } catch (Exception e) {
-            return [success: false, type: "hub-full", location: "hub_uploaded", error: "Could not fetch the backup from backupUrl: ${e.message}", note: "Nothing was restored."]
+            return [success: false, type: "hub-uploaded", location: "hub_uploaded", error: "Could not fetch the backup from backupUrl: ${e.message}",
+                    note: "Nothing was restored. Verify the URL is reachable from the hub."]
         }
-        if (!fullBytes || fullBytes.length == 0) return [success: false, type: "hub-full", location: "hub_uploaded", error: "Fetched 0 bytes from backupUrl.", note: "Nothing was restored."]
-        String fname = urlPath.tokenize("/")?.last() ?: "full-backup.tar.gz"
-        return _restoreFullFromBytes("hub_uploaded", fullBytes, fname, opts)
-    }
-    Long dbUrlSize = _urlSizeBytes(url)
-    if (dbUrlSize != null && dbUrlSize > 8L * 1024 * 1024) {
-        return [success: false, type: "hub-db", location: "hub_uploaded", error: "The backup at backupUrl is ${(dbUrlSize / (1024 * 1024)) as long} MB, over the 8 MB in-app upload limit.",
-                note: "Restore a very large backup via the Hubitat UI (Settings -> Backup and Restore), not this tool. Nothing was fetched."]
-    }
-    byte[] fileBytes
-    try {
-        fileBytes = _fetchBytesFromUrl(url)
-    } catch (Exception e) {
-        return [success: false, type: "hub-db", location: "hub_uploaded", error: "Could not fetch the backup from backupUrl: ${e.message}",
-                note: "Verify the URL is reachable from the hub and points at a .lzf backup file."]
     }
     if (fileBytes == null || fileBytes.length == 0) {
-        return [success: false, type: "hub-db", location: "hub_uploaded", error: "Fetched 0 bytes from backupUrl.",
-                note: "The URL returned an empty body; check it points at a real .lzf backup."]
+        return [success: false, type: "hub-uploaded", location: "hub_uploaded", error: "Fetched 0 bytes from backupUrl.", note: "Nothing was restored."]
     }
-    // Cap the in-app multipart build (the whole body is held in memory) and point oversized backups
-    // at the Hubitat UI restore (the browser path itself caps at 15 MB).
+    if (_isGzip(fileBytes)) {
+        String seg = urlPath.tokenize("/") ? urlPath.tokenize("/")[-1] : null
+        return _restoreFullFromBytes("hub_uploaded", fileBytes, (seg && seg.contains(".")) ? seg : "full-backup.tar.gz", opts ?: _fullRestoreOptions(null))
+    }
+    if (opts != null) {
+        return [success: false, type: "hub-full", location: "hub_uploaded", error: "fullRestore needs a full backup archive (.tar.gz); backupUrl serves something else: ${_bytesPreview(fileBytes)}",
+                note: "Nothing was restored."]
+    }
+    if (!_isH2Database(fileBytes)) {
+        return [success: false, type: "hub-db", location: "hub_uploaded", error: "backupUrl does not serve a hub backup (.lzf database or .tar.gz full backup): ${_bytesPreview(fileBytes)}",
+                note: "Nothing was restored."]
+    }
+    // The multipart body is built in memory; the browser path itself caps database backups at 15 MB.
     int maxUploadBytes = 8 * 1024 * 1024
     if (fileBytes.length > maxUploadBytes) {
         return [success: false, type: "hub-db", location: "hub_uploaded",
                 error: "Backup is ${(fileBytes.length / (1024 * 1024)) as int} MB, over the ${maxUploadBytes / (1024 * 1024)} MB in-app upload limit.",
-                note: "Restore a very large backup via the Hubitat UI (Settings -> Backup and Restore), not this tool."]
+                note: "Restore a very large backup via the Hubitat UI (Settings -> Backup and Restore), not this tool. Nothing was restored."]
     }
+    def up
     try {
-        def up = _postMultipartBackup("/hub2/uploadBackup", "uploadFile", "uploaded.lzf", fileBytes)
-        if (!(up instanceof Map && up.success == true)) {
-            return [success: false, type: "hub-db", location: "hub_uploaded",
-                    error: "Upload to the hub failed: ${(up instanceof Map) ? (up.message ?: up.error ?: 'hub rejected the upload') : 'unexpected response'}",
-                    note: "Nothing was restored."]
-        }
-        def raw = hubInternalGet("/hub2/restoreUploadedBackup", null, 120)
-        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        if (parsed instanceof Map && parsed.success == true) {
-            return [success: true, type: "hub-db", location: "hub_uploaded",
-                    message: "Uploaded backup accepted — the hub is rebooting now to restore it.",
-                    note: "Re-check hub reachability after the reboot; the database is being replaced from the uploaded backup."]
-        }
+        up = _postMultipartBackup("/hub2/uploadBackup", "uploadFile", "uploaded.lzf", fileBytes)
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "uploaded-backup upload failed", e)
+        return [success: false, type: "hub-db", location: "hub_uploaded", error: "Upload to the hub failed: ${e.message}", note: "Nothing was restored."]
+    }
+    if (!(up instanceof Map && up.success == true)) {
         return [success: false, type: "hub-db", location: "hub_uploaded",
-                error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "restore did not report success") : "unexpected response",
-                note: "The backup uploaded but the restore did not confirm — verify hub state."]
-    } catch (Exception e) {
-        mcpLogError("hub-admin", "uploaded-backup restore request got no answer", e)
-        return _restoreOutcomeUnknown("hub-db", "hub_uploaded", e)
+                error: "Upload to the hub failed: ${(up instanceof Map) ? (up.message ?: up.error ?: 'hub rejected the upload') : 'unexpected response'}",
+                note: "Nothing was restored."]
     }
-}
-
-// A URL body's size before it is fetched: a one-byte Range request answers 206 with the total in
-// Content-Range on most hosts, and a host that ignores ranges gives Content-Length. Null when neither
-// says, and the caller then relies on its post-fetch cap. Non-private so the Spock harness can stub it.
-def _urlSizeBytes(String url) {
-    Long size = null
+    def parsed
     try {
-        httpGet([uri: url, timeout: 30, textParser: false, headers: [Range: "bytes=0-0"]]) { resp ->
-            def range = resp?.headers?.'Content-Range'?.toString() =~ /\/\s*(\d+)\s*$/
-            def length = resp?.headers?.'Content-Length'?.toString() =~ /(\d+)\s*$/
-            if (resp?.status == 206 && range.find()) size = range.group(1) as Long
-            else if (resp?.status == 200 && length.find()) size = length.group(1) as Long
-        }
+        parsed = _parseJsonOrNull(hubInternalGet("/hub2/restoreUploadedBackup", null, 120))
     } catch (Exception e) {
-        mcpLog("debug", "hub-admin", "size check for backupUrl failed: ${e.message}")
+        mcpLogError("hub-admin", "uploaded-backup restore request failed", e)
+        return _restoreRequestFailed("hub-db", "hub_uploaded", e)
     }
-    return size
-}
-
-// Fetch raw bytes from an http(s) URL (the .lzf to upload). Binary fetch via httpGet with textParser off.
-// Non-private so the Spock harness can stub it (Groovy dispatches private calls directly, bypassing metaClass).
-def _fetchBytesFromUrl(String url) {
-    byte[] out = null
-    httpGet([uri: url, timeout: 120, textParser: false]) { resp ->
-        def d = resp?.data
-        if (d instanceof byte[]) out = d
-        else if (d != null) out = d.bytes   // InputStream -> bytes
+    if (parsed instanceof Map && parsed.success == true) {
+        return [success: true, type: "hub-db", location: "hub_uploaded",
+                message: "Uploaded backup accepted — the hub is rebooting now to restore it.",
+                note: "Re-check hub reachability after the reboot; the database is being replaced from the uploaded backup."]
     }
-    return out
-}
-
-// Build a multipart/form-data body for a single binary file part and POST it. Returns the parsed
-// response Map (or a {success:<2xx>} fallback). Used only by _restoreUploadedBackup.
-// Non-private so the Spock harness can stub it (Groovy dispatches private calls directly).
-def _postMultipartBackup(String path, String field, String fileName, byte[] fileBytes) {
-    def boundary = "----mcpBackupBoundary${now()}"
-    byte[] pre = ("--${boundary}\r\nContent-Disposition: form-data; name=\"${field}\"; filename=\"${fileName}\"\r\nContent-Type: application/octet-stream\r\n\r\n").toString().getBytes("UTF-8")
-    byte[] post = ("\r\n--${boundary}--\r\n").toString().getBytes("UTF-8")
-    // Concatenate the multipart parts WITHOUT naming a java.io stream class (sandbox-blocked,
-    // SANDBOX-015): copy into one primitive byte[] (a Byte list boxes every byte).
-    byte[] body = new byte[pre.length + fileBytes.length + post.length]
-    int at = 0
-    for (byte[] chunk : [pre, fileBytes, post]) {
-        for (int i = 0; i < chunk.length; i++) body[at++] = chunk[i]
-    }
-    def params = [uri: hubBaseUri(), path: path, timeout: 300,
-                  requestContentType: "multipart/form-data; boundary=${boundary}".toString(),
-                  body: body]
-    def cookie = getHubSecurityCookie()
-    if (cookie) params.headers = [Cookie: cookie]
-    def result = [success: false]
-    httpPost(params) { resp ->
-        def d = resp?.data
-        if (d instanceof Map) { result = d }
-        else {
-            try { result = new groovy.json.JsonSlurper().parseText(d?.toString() ?: "{}") }
-            catch (Exception ig) {
-                // The caller REBOOTS the hub on success, so do NOT infer success from a 2xx alone --
-                // require the documented {success:true} body. An HTML/login/empty 2xx is a failure.
-                mcpLogError("hub-admin", "uploadBackup returned a non-JSON body (status=${resp?.status})", ig)
-                result = [success: false, message: "Upload returned an unexpected (non-JSON) response; not treated as success."]
-            }
-        }
-    }
-    return result
+    return [success: false, type: "hub-db", location: "hub_uploaded",
+            error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "restore did not report success") : "unexpected response",
+            note: "The backup uploaded but the restore did not confirm — verify hub state."]
 }
 
 def _getAllToolDefinitions_partItemBackups() {
@@ -1409,7 +1387,7 @@ def _getAllToolDefinitions_partItemBackups() {
         // ==================== Hub-DB (whole-hub) backup tools — issue #259 item #1 ====================
         [
             name: "hub_create_backup",
-            description: """Create a hub-database backup. REQUIRED before any Write master op (24h validity).[[FLAT_TRIM]] Whole-hub .lzf, or with full=true a full local backup (.tar.gz: database, File Manager files, Zigbee and Z-Wave data). Optionally set the automatic-backup schedule (`schedule`) and the network-share backup (`networkBackup`, `testNetworkBackup`); scheduleOnly=true changes those settings only. cloudDownload copies an existing cloud backup into File Manager instead. The only write tool needing no prior backup.[[/FLAT_TRIM]]
+            description: """Create a hub-database backup. Destructive tools require one within 24h.[[FLAT_TRIM]] Whole-hub .lzf, or with full=true a full local backup (.tar.gz: database, File Manager files, Zigbee and Z-Wave data). Optionally set the automatic-backup schedule (`schedule`) and the network-share backup (`networkBackup`, `testNetworkBackup`); scheduleOnly=true changes those settings only. cloudDownload copies an existing cloud backup into File Manager instead. The only write tool needing no prior backup.[[/FLAT_TRIM]]
 [[FLAT_TRIM]]
 A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
 [[/FLAT_TRIM]]
@@ -1512,8 +1490,7 @@ def _idempotentWriteToolNames_partItemBackups() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
     return [
-        // Code (apps/drivers/libraries/bundles/backups)
-        "hub_restore_backup",
+        // hub_restore_backup is not here: its hub scopes reboot the hub on every call.
         // Hub-DB: deleting a specific backup is retry-safe (a repeat is a no-op once it's gone).
         // hub_create_backup is deliberately NOT here -- each call makes a fresh backup.
         "hub_delete_backup"

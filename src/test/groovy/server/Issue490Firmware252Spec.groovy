@@ -53,6 +53,22 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L
     }
 
+    /** Carries an HTTP status the way HttpResponseException does (duck-typed e.response.status). */
+    private static class FakeHttpException extends RuntimeException {
+        final Map response
+        FakeHttpException(int status) {
+            super("status code: ${status}")
+            this.response = [status: status]
+        }
+    }
+
+    private static byte[] bigGzip() {
+        def b = new byte[16 * 1024 * 1024 + 2]
+        b[0] = (byte) 0x1f
+        b[1] = (byte) 0x8b
+        return b
+    }
+
     private TestHub hubOnFirmware(String fw) {
         def h = new TestHub()
         h.firmwareVersionString = fw
@@ -220,6 +236,31 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         hubGet.calls.find { it.path == '/hub/dismissAlert' }.params == [key: 'PLATFORM_UPDATE_AVAILABLE', version: '2.5.2.134']
     }
 
+    def "a failed dismissal says the network settings in the same call were not sent"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/dismissAlert') { p -> throw new FakeHttpException(400) }
+
+        when:
+        def r = script.toolSetSystemSettings([dismissAlert: [key: 'NOPE'], network: [ipMode: 'dhcp'], confirm: true])
+
+        then:
+        r.success == false
+        r.note.contains('network settings')
+    }
+
+    def "healthAlerts mark an unreadable 2.5.2.129 alert feed"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.2.129')
+        hubGet.register('/hub2/hubData') { p -> HUB_DATA_252 }
+
+        when:
+        def r = script.toolGetHubInfo([includeHealthAlerts: true])
+
+        then:
+        r.healthAlerts.details.feed == 'unavailable'
+    }
+
     def "dismissAlert without a key is refused before any hub call"() {
         when:
         script.toolSetSystemSettings([dismissAlert: [version: '1']])
@@ -277,6 +318,26 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         r.cloudCalls.apps*.name == ['MCP Rule Server', 'Google Home']
         r.cloudCalls.apps[1].hourly*.count == [3, 2]
         r.cloudCalls.timeZone == 'US/Eastern'
+    }
+
+    def "a cloud-calls answer of an unexpected shape is reported as such, and hourly keeps 48 hours"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/logs/json') { p -> JsonOutput.toJson([uptime: '1d', deviceStats: [], appStats: []]) }
+        int calls = 0
+        hubGet.register('/logs/cloudCalls/json') { p ->
+            calls++
+            calls == 1 ? JsonOutput.toJson([apps: [[id: 1, name: 'A', total: 1]], hours: [[appId: 1, hourStart: 'soon', count: 1]]]) :
+                         JsonOutput.toJson([apps: [[id: 1, name: 'A', total: 99]], hours: (1..60).collect { [appId: 1, hourStart: it * 3600000L, count: 1] }])
+        }
+
+        when:
+        def bad = script.toolGetPerformanceStats([includeCloudCalls: true])
+        def good = script.toolGetPerformanceStats([includeCloudCalls: true])
+
+        then:
+        bad.cloudCalls.error.contains('unexpected shape')
+        good.cloudCalls.apps[0].hourly.size() == 48
     }
 
     def "an unreadable cloud-calls endpoint is an error block, not a failed stats read"() {
@@ -401,6 +462,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     def "hub_set_zwave zwave_js switches the stack and is confirm-gated and sent alone"() {
         given:
         enableWrite()
+        hubGet.register('/hub/zwaveDetails/json') { p -> '{"zwaveJS":false}' }
         hubGet.register('/hub/zwave2/enable') { p -> '{"success":true}' }
 
         when:
@@ -408,8 +470,46 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         then:
         r.success == true
+        r.changed == true
         r.rebooting == true
-        hubGet.calls*.path == ['/hub/zwave2/enable']
+        hubGet.calls*.path == ['/hub/zwaveDetails/json', '/hub/zwave2/enable']
+    }
+
+    def "hub_set_zwave zwave_js does nothing when the hub already runs that stack"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/zwaveDetails/json') { p -> '{"zwaveJS":true}' }
+
+        when:
+        def r = script.toolSetZwave([zwave_js: true, confirm: true])
+
+        then:
+        r.success == true
+        r.changed == false
+        !hubGet.calls.any { it.path == '/hub/zwave2/enable' }
+    }
+
+    @Unroll
+    def "hub_set_zwave zwave_js reports #label"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/zwaveDetails/json') { p -> details }
+        hubGet.register('/hub/zwave2/enable') { p -> if (failure != null) throw failure; answer }
+
+        when:
+        def r = script.toolSetZwave([zwave_js: true, confirm: true])
+
+        then:
+        r.success == false
+        (r.outcome == 'unknown') == unknown
+        r.error.contains(expected)
+
+        where:
+        label                           | details             | answer                | failure                            | unknown | expected
+        'an unreadable stack'           | '<html>'            | null                  | null                               | false   | 'Could not read'
+        'a non-JSON answer as refused'  | '{"zwaveJS":false}' | 'ok'                  | null                               | false   | 'refused'
+        'an HTTP error as a refusal'    | '{"zwaveJS":false}' | null                  | new FakeHttpException(404)         | false   | 'refused'
+        'no answer as unknown'          | '{"zwaveJS":false}' | null                  | new RuntimeException('Read timed out') | true | 'no answer'
     }
 
     @Unroll
@@ -434,6 +534,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     def "hub_set_zwave reports the hub's refusal of the stack switch"() {
         given:
         enableWrite()
+        hubGet.register('/hub/zwaveDetails/json') { p -> '{"zwaveJS":true}' }
         hubGet.register('/hub/zwave2/disable') { p -> '{"success":false,"message":"not available"}' }
 
         when:
@@ -552,6 +653,63 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     }
 
     @Unroll
+    def "Z-Wave argument objects refuse unknown keys and bad numbers: #label"() {
+        given:
+        enableWrite()
+        def posts = jsonPosts()
+
+        when:
+        script.toolCallZwave([node_id: '12', confirm: true] + args)
+
+        then:
+        thrown(IllegalArgumentException)
+        posts.isEmpty()
+
+        where:
+        label                      | args
+        'camelCase link_test key'  | [action: 'link_test_start', link_test: [intervalMs: 5000]]
+        'negative endpoint'        | [action: 'cc_command', cc: [command_class: 37, method_name: 'get', endpoint: -1]]
+        'oversized command class'  | [action: 'cc_command', cc: [command_class: '99999999999', method_name: 'get']]
+        'unknown cc key'           | [action: 'cc_command', cc: [command_class: 37, method_name: 'get', cmd: 'x']]
+    }
+
+    def "local_backup_download without confirm is refused, and the hub's own error is kept"() {
+        given:
+        enableWrite()
+        script.metaClass.hubInternalBytes = { String m, String path, Map q = null, Map f = null, int t = 300 -> [status: 200, error: 'Job not complete'] }
+
+        when:
+        script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9'])
+
+        then:
+        thrown(IllegalArgumentException)
+
+        when:
+        def r = script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9', confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains('Job not complete')
+    }
+
+    def "a single-device firmware start reports the hub's refusal and defaults the target to 0"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null ->
+            posts << new JsonSlurper().parseText(body); [success: false, message: 'Node busy']
+        }
+
+        when:
+        def r = script.toolCallDestructiveOps([target: 'zwave', action: 'device_firmware_start', node_id: '12', file_name: 'fw.otz', confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains('Node busy')
+        posts[0].target == 0
+    }
+
+    @Unroll
     def "local_backup_keys refuses keys that are not network keys: #label"() {
         given:
         enableWrite()
@@ -570,6 +728,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         'short hex'      | [S0_Legacy: 'aabb']
         'unknown name'   | [S2Authenticated: 'a' * 32]
         'bad long range' | [S0_Legacy: 'a' * 32, long_range: [S0_Legacy: 'a' * 32]]
+        'long range text'| [S0_Legacy: 'a' * 32, long_range: 'b' * 32]
     }
 
     def "local_backup_download saves the finished archive to File Manager"() {
@@ -580,7 +739,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> saved.name = name; saved.size = bytes.length }
 
         when:
-        def r = script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9'])
+        def r = script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9', confirm: true])
 
         then:
         r.success == true
@@ -597,7 +756,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> saved << name }
 
         when:
-        def r = script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9'])
+        def r = script.toolCallZwave([action: 'local_backup_download', job_id: 'job-9', confirm: true])
 
         then:
         r.success == false
@@ -733,6 +892,47 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         !hubGet.calls.any { it.path == '/hub/matter/wifiCredentials' }
     }
 
+    @Unroll
+    def "pair fails when the hub returns #label"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/matter/wifiCredentials') { p -> '{}' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null -> answer }
+
+        when:
+        def r = script.toolCallMatter([action: 'pair', setup_code: '1'])
+
+        then:
+        r.success == false
+
+        where:
+        label         | answer
+        'nodeId 0'    | [nodeId: 0]
+        'no node'     | [:]
+    }
+
+    def "pair with the stored network's SSID and no password sends the placeholder"() {
+        given:
+        enableWrite()
+        def posts = jsonPosts()
+        hubGet.register('/hub/matter/wifiCredentials') { p -> JsonOutput.toJson([selectedSsid: 'Guest', storedSsid: 'Home', hasStoredPassword: true, passwordPlaceholder: '********']) }
+
+        when:
+        script.toolCallMatter([action: 'pair', setup_code: '1', wifi_ssid: 'Home'])
+
+        then:
+        posts[0].body == [setupCode: '1', ssid: 'Home', password: '********']
+    }
+
+    def "wifi_password without wifi_ssid is refused"() {
+        when:
+        script.toolCallMatter([action: 'pair', setup_code: '1', wifi_password: 'pw'])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('wifi_ssid')
+    }
+
     def "a nodeId of 0 is a failed pairing; cancel_pair calls cancelPair"() {
         given:
         enableWrite()
@@ -856,6 +1056,51 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         stateMap.lastBackupTimestamp != null
     }
 
+    def "an unconfirmed full backup does not stamp the destructive-op gate"() {
+        given:
+        backupStubs()
+        hubGet.register('/hub2/localBackups') { p -> '[{"name":"full_old.tar.gz","fullBackup":true,"createTimeOrig":"2026-10-01T07:00:00+0000"}]' }
+
+        when:
+        def r = script.toolCreateHubBackup([full: true, confirm: true])
+
+        then:
+        r.success == false
+        r.confirmed == false
+        stateMap.lastBackupTimestamp == null
+    }
+
+    def "full=true on a hub without full backups is refused before the schedule is written"() {
+        given:
+        backupStubs()
+        hubGet.register('/hub2/backup/json') { p -> '{"hasFullLocalBackup":false}' }
+        def posts = []
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null -> posts << path; [success: true] }
+
+        when:
+        def r = script.toolCreateHubBackup([full: true, confirm: true, schedule: [hour: 3]])
+
+        then:
+        r.success == false
+        r.scheduleUpdated == false
+        posts.isEmpty()
+        asyncPaths.isEmpty()
+    }
+
+    def "full=true on firmware before 2.5.2 is refused up front"() {
+        given:
+        backupStubs()
+        sharedLocation.hub = hubOnFirmware('2.5.1.181')
+
+        when:
+        def r = script.toolCreateHubBackup([full: true, confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains('2.5.2')
+        asyncPaths.isEmpty()
+    }
+
     def "full=true is refused when the hub does not offer full local backups"() {
         given:
         backupStubs()
@@ -925,6 +1170,31 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         posts.isEmpty()
     }
 
+    @Unroll
+    def "a failed network-share step says what was saved: #label"() {
+        given:
+        backupStubs()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null ->
+            path.endsWith('updateBackupSchedule') ? [success: true] :
+                path.endsWith('/settings') ? [success: saveOk, message: 'denied'] : [success: false, message: 'share unreachable']
+        }
+
+        when:
+        def r = script.toolCreateHubBackup(args)
+
+        then:
+        r.success == false
+        r.note.startsWith(saved)
+        (r.backupCreated == false) == noBackup
+        asyncPaths.isEmpty()
+
+        where:
+        label                                 | args                                                                                      | saveOk | saved                                                         | noBackup
+        'schedule saved, share refused'       | [schedule: [hour: 3], networkBackup: [networkPath: '//n/b'], scheduleOnly: true]          | false  | 'Saved: the backup schedule.'                                 | false
+        'settings saved, test failed'         | [networkBackup: [networkPath: '//n/b'], testNetworkBackup: true, scheduleOnly: true]      | true   | 'Saved: the network share settings.'                          | false
+        'backup asked for, test failed'       | [testNetworkBackup: true, confirm: true]                                                  | true   | 'Nothing was saved. No backup was created.'                   | true
+    }
+
     def "an unknown networkBackup field is refused before anything is written"() {
         given:
         backupStubs()
@@ -969,6 +1239,63 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         r.success == false
         r.error.contains('Invalid password')
         saved.isEmpty()
+    }
+
+    @Unroll
+    def "cloudDownload refuses a reply that is not a #part backup"() {
+        given:
+        hubGet.register('/hub2/cloudBackups') { p -> '{"backups":[{"path":"cloud/abc","fileSize":"7 MB"}]}' }
+        def saved = []
+        script.metaClass.hubInternalBytes = { String m, String path, Map q = null, Map form = null, int t = 300 -> [status: 200, bytes: '<html>Sign in</html>'.getBytes('UTF-8')] }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> saved << name }
+
+        when:
+        def r = script.toolCreateHubBackup([cloudDownload: [path: 'cloud/abc', cloudBackupPassword: 'pw', part: part], confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains('Sign in')
+        saved.isEmpty()
+
+        where:
+        part << ['database', 'files']
+    }
+
+    def "cloudDownload part=files saves the archive as .tar.gz"() {
+        given:
+        hubGet.register('/hub2/cloudBackups') { p -> '{"backups":[{"path":"cloud/abc","fileSize":"7 MB"}]}' }
+        def seen = [:]
+        script.metaClass.hubInternalBytes = { String m, String path, Map q = null, Map form = null, int t = 300 -> seen.path = path; [status: 200, bytes: ([0x1f, 0x8b, 8, 0] as byte[])] }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> seen.name = name }
+
+        when:
+        def r = script.toolCreateHubBackup([cloudDownload: [path: 'cloud/abc', cloudBackupPassword: 'pw', part: 'files'], confirm: true])
+
+        then:
+        r.success == true
+        seen.path == '/hub2/downloadCloudFilesBackup'
+        seen.name ==~ /cloud-backup-files-\d{8}-\d{6}\.tar\.gz/
+    }
+
+    def "cloudDownload without confirm is refused"() {
+        when:
+        script.toolCreateHubBackup([cloudDownload: [path: 'cloud/abc', cloudBackupPassword: 'pw']])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('confirm=true')
+    }
+
+    def "a missing cloud backup is named as missing, not as having no size"() {
+        given:
+        hubGet.register('/hub2/cloudBackups') { p -> '{"backups":[]}' }
+
+        when:
+        def r = script.toolCreateHubBackup([cloudDownload: [path: 'cloud/nope', cloudBackupPassword: 'pw'], confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains('No backup')
     }
 
     @Unroll
@@ -1122,6 +1449,18 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         then:
         r.files == []
         r.total == 0
+    }
+
+    def "an empty folder listing says the folder may not exist"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub/fileManager/json') { p -> JsonOutput.toJson([files: [], freeSpace: 5]) }
+
+        when:
+        def r = script.toolListFiles([folder: 'webcoer'])
+
+        then:
+        r.note.contains('does not exist')
     }
 
     def "hub_list_files refuses a folder on firmware before 2.5.2"() {
@@ -1281,6 +1620,39 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         type << ['Number', 'integer']
     }
 
+    def "the type filter maps Decimal and refuses an unknown type"() {
+        given:
+        settingsMap.enableRead = true
+        script.metaClass.getAllGlobalVars = { -> [d: [type: 'bigdecimal', value: 1.5], n: [type: 'integer', value: 1]] }
+
+        when:
+        def r = script.toolListVariables([type: 'Decimal'])
+
+        then:
+        r.hubVariables*.name == ['d']
+
+        when:
+        script.toolListVariables([type: 'Float'])
+
+        then:
+        thrown(IllegalArgumentException)
+    }
+
+    def "increment adds to a Decimal variable"() {
+        given:
+        def current = [value: 1.5]
+        script.metaClass.getGlobalVar = { String n -> [type: 'bigdecimal', value: current.value] }
+        script.metaClass.addValueToGlobalVar = { String n, Object v -> current.value = current.value + (v as BigDecimal); true }
+
+        when:
+        def r = script.toolSetVariable([name: 'temp', increment: 0.25])
+
+        then:
+        r.success == true
+        r.value == 1.75
+        !r.containsKey('note')
+    }
+
     def "an increment the hub refuses or throws on is a failed write, not a validation error"() {
         given:
         script.metaClass.getGlobalVar = { String n -> [type: 'integer', value: 1] }
@@ -1388,7 +1760,25 @@ class Issue490Firmware252Spec extends ToolSpecBase {
                 [id: 'api-hubitat-zwave-x', className: 'hubitat.zwave.X', label: 'X', section: 'protocols', topic: 'Z-Wave',
                  methods: [[kind: 'method', name: 'events', signature: 'void events()', summary: 'protocol events between frames']]]]])
 
-    def "platform_api_search ranks app and shared methods first and pages 25 at a time"() {
+    def "platform_api_search pages 25 matches at a time"() {
+        given:
+        hubGet.register('/developer-docs/index.json') { p ->
+            JsonOutput.toJson([contentRevision: '1', guides: [], pages: [[id: 'api-x', className: 'X', label: 'X', section: 'shared',
+                methods: (1..30).collect { [kind: 'method', name: "events${it}", signature: "void events${it}()", summary: 'events'] }]]])
+        }
+
+        when:
+        def first = script.toolGetToolGuide(null, null, [platform_api_search: 'events'])
+        def second = script.toolGetToolGuide(null, first.nextCursor, [platform_api_search: 'events'])
+
+        then:
+        first.total == 30
+        first.matches.size() == 25
+        second.matches.size() == 5
+        !second.containsKey('nextCursor')
+    }
+
+    def "platform_api_search finds a method on its class page"() {
         given:
         hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
 
@@ -1469,7 +1859,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         enableWrite()
         def fetched = []
-        script.metaClass._urlSizeBytes = { String url -> size }
+        script.metaClass._probeUrl = { String url -> [size: size] }
         script.metaClass._fetchBytesFromUrl = { String url -> fetched << url; ([0x1f, 0x8b, 8, 0] as byte[]) }
 
         when:
@@ -1487,14 +1877,146 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         'Z-Wave import'  | 9L * 1024 * 1024  | { s -> s.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz']) }
     }
 
-    def "_urlSizeBytes reads the total from a ranged answer"() {
+    def "_probeUrl reads the total from a ranged answer"() {
         given:
         def sent = [:]
         httpGetHook = { Map params, Closure c -> sent.range = params.headers?.Range; c([status: 206, headers: ['Content-Range': 'bytes 0-0/12345']]) }
 
         expect:
-        script._urlSizeBytes('https://h/x/full.tar.gz') == 12345L
+        script._probeUrl('https://h/x/full.tar.gz') == [size: 12345L]
         sent.range == 'bytes=0-0'
+    }
+
+    def "_probeUrl keeps the whole body from a host that ignores the range"() {
+        given:
+        httpGetHook = { Map params, Closure c -> c([status: 200, data: [1, 2, 3] as byte[]]) }
+
+        when:
+        def p = script._probeUrl('https://h/x/db.lzf')
+
+        then:
+        p.size == 3L
+        p.bytes == ([1, 2, 3] as byte[])
+    }
+
+    def "_probeUrl gives nothing when the request fails"() {
+        given:
+        httpGetHook = { Map params, Closure c -> throw new RuntimeException('connection refused') }
+
+        expect:
+        script._probeUrl('https://h/x/db.lzf') == [:]
+    }
+
+    def "a backup URL's whole body from a range-ignoring host is restored without a second fetch"() {
+        given:
+        enableWrite()
+        def fetched = []
+        script.metaClass._probeUrl = { String url -> [size: 4L, bytes: ([0x1f, 0x8b, 8, 0] as byte[])] }
+        script.metaClass._fetchBytesFromUrl = { String url -> fetched << url; null }
+        script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> [success: true] }
+        hubGet.register('/hub2/restoreFullLocalBackup') { p -> '{"success":true}' }
+
+        when:
+        def r = script.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://h/x/full.tar.gz', confirm: true])
+
+        then:
+        r.success == true
+        fetched.isEmpty()
+    }
+
+    @Unroll
+    def "hub_uploaded routes on the fetched bytes: #label"() {
+        given:
+        enableWrite()
+        def uploads = []
+        script.metaClass._fetchBytesFromUrl = { String url -> body }
+        script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> uploads << path; [success: true] }
+        hubGet.register('/hub2/restoreFullLocalBackup') { p -> '{"success":true}' }
+        hubGet.register('/hub2/restoreUploadedBackup') { p -> '{"success":true}' }
+
+        when:
+        def r = script.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: url, confirm: true] + extra)
+
+        then:
+        r.success == ok
+        uploads == expected
+
+        where:
+        label                                  | url                     | body                                     | extra                           | ok    | expected
+        'an extension-less gzip is a full one' | 'https://h/dl?id=5'     | ([0x1f, 0x8b, 8, 0] as byte[])                         | [:]                             | true  | ['/hub2/uploadFullLocalBackup']
+        'an H2 file is a database backup'      | 'https://h/dl?id=6'     | '-- H2 0.5/B -- \nDATA'.getBytes('UTF-8') | [:]                             | true  | ['/hub2/uploadBackup']
+        'anything else is refused'             | 'https://h/x/b.lzf'     | '<html>login</html>'.getBytes('UTF-8')   | [:]                             | false | []
+        'fullRestore on a database file'       | 'https://h/dl?id=7'     | '-- H2 0.5/B -- \nDATA'.getBytes('UTF-8') | [fullRestore: [restoreZwave: true]] | false | []
+    }
+
+    def "an uploaded database restore whose upload throws is a failure, not an unknown outcome"() {
+        given:
+        enableWrite()
+        script.metaClass._fetchBytesFromUrl = { String url -> '-- H2 0.5/B -- \nDATA'.getBytes('UTF-8') }
+        script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> throw new RuntimeException('Read timed out') }
+
+        when:
+        def r = script.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://h/x/b.lzf', confirm: true])
+
+        then:
+        r.success == false
+        r.outcome == null
+        r.note.contains('Nothing was restored')
+        !hubGet.calls.any { it.path == '/hub2/restoreUploadedBackup' }
+    }
+
+    def "a restore the hub answers with an HTTP error is a definite refusal"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/localBackups') { p -> '[{"name":"db.lzf","fullBackup":false}]' }
+        hubGet.register('/hub2/restoreLocalBackup') { p -> throw new FakeHttpException(500) }
+
+        when:
+        def r = script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'db.lzf', confirm: true])
+
+        then:
+        r.success == false
+        r.outcome == null
+        r.error.contains('refused')
+        r.note.contains('Nothing was restored')
+    }
+
+    @Unroll
+    def "full-restore guards after the fetch: #label"() {
+        given:
+        enableWrite()
+        def uploads = []
+        script.metaClass._fetchBytesFromUrl = { String url -> body }
+        script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> uploads << path; answer }
+
+        when:
+        def r = script.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://h/x/full.tar.gz', confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains(expected)
+        !hubGet.calls.any { it.path == '/hub2/restoreFullLocalBackup' }
+
+        where:
+        label               | body                                                              | answer                      | expected
+        'over 16 MB'        | bigGzip()                                                         | [success: true]             | '16 MB'
+        'upload rejected'   | ([0x1f, 0x8b, 8, 0] as byte[])                                                  | [success: false, message: 'disk full'] | 'disk full'
+    }
+
+    def "a Z-Wave backup import over 8 MB after the fetch is refused"() {
+        given:
+        enableWrite()
+        def ups = []
+        script.metaClass._fetchBytesFromUrl = { String url -> new byte[8 * 1024 * 1024 + 1] }
+        script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> ups << path; [success: true] }
+
+        when:
+        def r = script.toolCallZwave([action: 'local_backup_import', backup_url: 'https://h/x/net.tar.gz'])
+
+        then:
+        r.success == false
+        r.error.contains('8 MB')
+        ups.isEmpty()
     }
 
     def "a full local backup with no listed size is not downloaded"() {
@@ -1577,6 +2099,57 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         then:
         records[0].stackTrace.startsWith('java.lang.IllegalStateException: boom')
         records[0].stackTrace.contains('\n')
+    }
+
+    @Unroll
+    def "hubInternalBytes keeps only a byte body as bytes: #label"() {
+        given:
+        httpGetHook = { Map params, Closure c -> c([status: 200, data: data]) }
+
+        when:
+        def got = script.hubInternalBytes('GET', '/x')
+
+        then:
+        (got.bytes != null) == isBytes
+        (got.error != null) == !isBytes
+
+        where:
+        label         | data                                  | isBytes
+        'byte array'  | [1, 2] as byte[]                      | true
+        'JSON map'    | [message: 'Invalid password']         | false
+        'HTML text'   | '<html>Sign in</html>'                | false
+        'empty bytes' | new byte[0]                           | false
+    }
+
+    def "hubInternalBytes turns an HTTP error into its status and the hub's message"() {
+        given:
+        httpGetHook = { Map params, Closure c ->
+            def e = new FakeHttpException(403)
+            e.response.data = '{"message":"Forbidden"}'
+            throw e
+        }
+
+        when:
+        script.hubInternalBytes('GET', '/x')
+
+        then:
+        def ex = thrown(RuntimeException)
+        ex.message == 'HTTP 403: Forbidden'
+    }
+
+    @Unroll
+    def "_parseSizeBytes reads the hub's size strings: #text"() {
+        expect:
+        script._parseSizeBytes(text) == bytes
+
+        where:
+        text      | bytes
+        '7 MB'    | 7L * 1024 * 1024
+        '512 KB'  | 512L * 1024
+        '1.5 GB'  | (long) (1.5 * 1024 * 1024 * 1024)
+        '2048'    | 2048L
+        '7 MiB'   | null
+        '7,340 KB'| null
     }
 
     def "_typeName uses getObjectClassName when the platform has it"() {

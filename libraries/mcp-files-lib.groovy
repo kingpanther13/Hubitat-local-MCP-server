@@ -99,11 +99,10 @@ def toolListFiles(args = null) {
 
         fileList = fileList.sort { a, b -> (a.name <=> b.name) }
 
-        // Shape-drift diagnostic: a non-empty parsed response that yielded zero files
-        // is almost always a firmware shape change (new top-level key, files nested
-        // deeper, etc.). Surface so a "no files" report isn't silently misread.
-        // instanceof-based labelling because .class is unreliable in the sandbox.
-        if (fileList.isEmpty() && parsed) {
+        // Shape-drift diagnostic: a non-empty parsed response that yielded zero files is almost
+        // always a firmware shape change (new top-level key, files nested deeper, etc.); an
+        // answer that carries a files list, empty or not, is the known shape.
+        if (fileList.isEmpty() && parsed && !(parsed instanceof Map && parsed.containsKey("files"))) {
             def shapeHint = (parsed instanceof Map) ? "Map with keys=${parsed.keySet()?.take(10)?.toList()}" :
                             (parsed instanceof List) ? "empty List" : _typeName(parsed)
             mcpLog("warn", "file-manager", "hub_list_files: parsed response yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [endpoint: endpointUsed, shape: shapeHint]])
@@ -118,6 +117,8 @@ def toolListFiles(args = null) {
             storage: "Files are stored locally on the hub's file system. Access via http://<HUB_IP>/local/<filename> or Hubitat > Settings > File Manager."
         ]
         if (folder) res.folder = folder
+        // An empty subfolder and a missing one answer the same, so say both.
+        if (folder && fileList.isEmpty() && !filterLower) res.note = "Folder '${folder}' is empty or does not exist; the root listing shows the folders as type:'dir'."
         if (parsed instanceof Map) {
             if (parsed.freeSpace != null) res.freeSpaceBytes = parsed.freeSpace
             if (parsed.backupSelection instanceof Map && parsed.backupSelection.excludedFiles != null) res.filesExcludedFromFullBackup = parsed.backupSelection.excludedFiles

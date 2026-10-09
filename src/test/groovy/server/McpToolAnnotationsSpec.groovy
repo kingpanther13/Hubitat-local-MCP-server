@@ -328,14 +328,14 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_update_device', 'hub_delete_device',
             'hub_update_room', 'hub_delete_room',
             'hub_update_app', 'hub_update_driver', 'hub_update_library',
-            'hub_delete_item', 'hub_restore_backup', 'hub_delete_backup',
+            'hub_delete_item', 'hub_delete_backup',
             'hub_install_bundle', 'hub_delete_bundle', 'hub_export_bundle',
             'hub_write_file', 'hub_delete_file',
             'hub_set_rule_paused', 'hub_set_rule_private_boolean',
             'hub_set_app_disabled',
             'hub_export_native_app',
             'hub_delete_visual_rule',
-            'hub_set_zigbee',
+            'hub_set_zwave', 'hub_set_zigbee',
             'hub_update_package',
             'hub_update_dashboard', 'hub_delete_dashboard'
         ] as Set
@@ -345,8 +345,8 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_custom_rule', 'hub_import_custom_rule', 'hub_clone_custom_rule',
             'hub_export_custom_rule',
             'hub_create_variable',
-            // hub_set_variable(increment) adds again on a retry; hub_set_zwave(zwave_js) reboots again.
-            'hub_set_variable', 'hub_set_zwave',
+            // hub_set_variable(increment) adds again on a retry; a hub restore reboots again.
+            'hub_set_variable', 'hub_restore_backup',
             'hub_create_backup',
             'hub_reboot', 'hub_shutdown', 'hub_update_firmware', 'hub_call_gc',
             'hub_call_zwave', 'hub_call_zigbee', 'hub_call_matter', 'hub_call_destructive_ops',

@@ -197,13 +197,12 @@ def toolListVariables(args = null) {
         [name: name, value: value, source: "rule_engine"]
     } ?: []
 
-    // type filter: the hub-variable type as hub_create_variable names it, matched against the
-    // hub's stored type (integer, bigdecimal, string, boolean, datetime).
+    // type filter: the hub_create_variable names or the stored names the listing shows
+    // (integer, bigdecimal, string, boolean, datetime).
     if (args?.type != null) {
-        // Accepts the create names and the stored names the listing shows (integer, bigdecimal, ...).
         def hubType = [number: "integer", integer: "integer", decimal: "bigdecimal", bigdecimal: "bigdecimal", string: "string",
                        boolean: "boolean", datetime: "datetime"].get(args.type.toString().toLowerCase())
-        if (hubType == null) throw new IllegalArgumentException("type must be one of Number, Decimal, String, Boolean, DateTime.")
+        if (hubType == null) throw new IllegalArgumentException("type must be one of Number, Decimal, String, Boolean, DateTime (or the stored integer, bigdecimal, string, boolean, datetime).")
         hubVariables = hubVariables.findAll { it.type?.toString()?.toLowerCase() == hubType }
         ruleVariables = []
     }
@@ -1025,7 +1024,7 @@ private Map _incrementHubVariable(String name, increment) {
     }
     if (ok == false) {
         return [success: false, name: name, value: after, error: "The hub did not apply the increment.",
-                note: "A variable linked from another hub over Hub Mesh cannot be incremented here; change it on its source hub."]
+                note: "Check the value with hub_get_variable before retrying. One cause: a variable linked from another hub over Hub Mesh is changed on its source hub."]
     }
     def out = [success: true, name: name, source: "hub", type: hv.type, increment: amount, previousValue: before, value: after]
     if (!readBack) {

@@ -6242,7 +6242,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_clone_dashboard": return toolCloneDashboard(args)
 
         // Tool Guide
-        case "hub_get_tool_guide": return toolGetToolGuide(args.section, args.cursor, args)
+        case "hub_get_tool_guide": return toolGetToolGuide(args.section, args.cursor, [platform_api_search: args.platform_api_search, platform_api_page: args.platform_api_page])
 
         // Tool Search (BM25)
         case "hub_search_tools": return toolSearchTools(args)
@@ -7651,9 +7651,9 @@ def hubInternalPostJson(String path, String jsonBody, int timeout = 420, boolean
     return null
 }
 
-// Binary read of a hub admin endpoint (backup archives): the body stays raw bytes. formBody
-// switches to a form-encoded POST. A JSON or text answer is not an archive: it comes back as
-// `error` with no bytes. A non-2xx throws with the status and the hub's own message.
+// Binary read of a hub admin endpoint (backup archives): the body stays raw bytes. With method POST,
+// formBody is sent form-encoded. Anything but a non-empty byte body (a JSON, text or HTML answer)
+// comes back as `error` with no bytes. A non-2xx throws with the status and the hub's own message.
 def hubInternalBytes(String method, String path, Map query = null, Map formBody = null, int timeout = 300, boolean isRetry = false) {
     def params = [uri: hubBaseUri(), path: path, timeout: timeout, textParser: false, ignoreSSLIssues: true]
     if (query) params.query = query
@@ -7667,10 +7667,12 @@ def hubInternalBytes(String method, String path, Map query = null, Map formBody 
     def sink = { resp ->
         out.status = resp?.status
         def d = resp?.data
-        if (d instanceof byte[]) out.bytes = d
-        else if (d instanceof Map) out.error = (d.message ?: d.error ?: groovy.json.JsonOutput.toJson(d)).toString().take(300)
-        else if (d instanceof CharSequence) out.error = d.toString().take(300)
-        else if (d != null) out.bytes = d.bytes
+        if (d instanceof Map) { out.error = (d.message ?: d.error ?: groovy.json.JsonOutput.toJson(d)).toString().take(300); return }
+        if (d instanceof CharSequence) { out.error = d.toString().take(300); return }
+        def raw = null
+        try { raw = (d instanceof byte[]) ? d : d?.bytes } catch (Exception notBytes) { }
+        if (raw instanceof byte[] && raw.length > 0) out.bytes = raw
+        else out.error = "the hub sent no archive (${_typeName(d)} body)".toString()
     }
     try {
         if (method?.toUpperCase() == "POST") httpPost(params, sink) else httpGet(params, sink)
@@ -7708,6 +7710,76 @@ def _bytesPreview(byte[] b) {
     return new String(b, 0, Math.min(b.length, 120), "UTF-8").replaceAll(/\s+/, " ").trim()
 }
 
+// Size an http(s) URL before fetching it: a one-byte Range request answers 206 with the total in
+// Content-Range on most hosts ([size]). A host that ignores ranges answers 200 with the whole body,
+// which comes back as [size, bytes] so it is not fetched twice. [:] when neither happens.
+// Non-private so the Spock harness can stub it.
+def _probeUrl(String url) {
+    def out = [:]
+    try {
+        httpGet([uri: url, timeout: 120, textParser: false, headers: [Range: "bytes=0-0"]]) { resp ->
+            if (resp?.status == 206) {
+                def range = resp?.headers?.'Content-Range'?.toString() =~ /\/\s*(\d+)\s*$/
+                if (range.find()) out.size = range.group(1) as Long
+            } else if (resp?.status == 200) {
+                def d = resp?.data
+                def raw = null
+                try { raw = (d instanceof byte[]) ? d : d?.bytes } catch (Exception notBytes) { }
+                if (raw instanceof byte[]) { out.bytes = raw; out.size = (long) raw.length }
+            }
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "size check of a backup URL failed (${e.message}); its size is checked after the fetch")
+    }
+    return out
+}
+
+// Fetch raw bytes from an http(s) URL (a backup to upload). Non-private so the Spock harness can stub it.
+def _fetchBytesFromUrl(String url) {
+    byte[] out = null
+    httpGet([uri: url, timeout: 120, textParser: false]) { resp ->
+        def d = resp?.data
+        def raw = null
+        try { raw = (d instanceof byte[]) ? d : d?.bytes } catch (Exception notBytes) { }
+        if (raw instanceof byte[]) out = raw
+    }
+    return out
+}
+
+// POST one binary file as multipart/form-data to a hub endpoint and return its parsed JSON answer;
+// a non-JSON 2xx is a failure, since the backup uploads that use it lead to a reboot.
+// Non-private so the Spock harness can stub it.
+def _postMultipartBackup(String path, String field, String fileName, byte[] fileBytes) {
+    def boundary = "----mcpBackupBoundary${now()}"
+    byte[] pre = ("--${boundary}\r\nContent-Disposition: form-data; name=\"${field}\"; filename=\"${fileName}\"\r\nContent-Type: application/octet-stream\r\n\r\n").toString().getBytes("UTF-8")
+    byte[] post = ("\r\n--${boundary}--\r\n").toString().getBytes("UTF-8")
+    // Concatenate the multipart parts WITHOUT naming a java.io stream class (sandbox-blocked,
+    // SANDBOX-015): copy into one primitive byte[] (a Byte list boxes every byte).
+    byte[] body = new byte[pre.length + fileBytes.length + post.length]
+    int at = 0
+    for (byte[] chunk : [pre, fileBytes, post]) {
+        for (int i = 0; i < chunk.length; i++) body[at++] = chunk[i]
+    }
+    def params = [uri: hubBaseUri(), path: path, timeout: 300,
+                  requestContentType: "multipart/form-data; boundary=${boundary}".toString(),
+                  body: body]
+    def cookie = getHubSecurityCookie()
+    if (cookie) params.headers = [Cookie: cookie]
+    def result = [success: false]
+    httpPost(params) { resp ->
+        def d = resp?.data
+        if (d instanceof Map) { result = d }
+        else {
+            try { result = new groovy.json.JsonSlurper().parseText(d?.toString() ?: "{}") }
+            catch (Exception ig) {
+                mcpLogError("hub-admin", "${path} returned a non-JSON body (status=${resp?.status})", ig)
+                result = [success: false, message: "Upload returned an unexpected (non-JSON) response; not treated as success."]
+            }
+        }
+    }
+    return result
+}
+
 /**
  * Destructive-tier confirmation gate: confirm=true + a hub backup within 24h.
  * Orthogonal to the Read/Write masters (the Write master is enforced centrally in
@@ -7735,10 +7807,11 @@ def requireDestructiveConfirm(Boolean confirmParam) {
 
 // Newest local backup's epoch millis from the hub's own list (GET /hub2/localBackups), or null
 // when the list is unreachable, empty, or unparseable: the hub's list proves a backup exists
-// whatever this app's own stamp says. kind "database" skips full backups (fullBackup:true) and
-// "full" keeps only them, so hub_create_backup does not take a scheduled backup of the other kind
-// for its own; "any" (the destructive-confirm gate) counts both.
+// whatever this app's own stamp says. kind "database" skips full backups (fullBackup:true), "full"
+// keeps only them, and "any" counts both, so a backup of the other kind finishing meanwhile is
+// never taken for the one being confirmed.
 def _latestLocalHubBackupEpoch(String kind = "any") {
+    if (!(kind in ["any", "database", "full"])) throw new IllegalStateException("_latestLocalHubBackupEpoch kind must be any, database or full, got '${kind}'")
     try {
         def raw = hubInternalGet("/hub2/localBackups", null, 10)
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
@@ -8458,7 +8531,7 @@ def _exceptionWithLine(Throwable e) {
     return "${e.class.name}: ${e.message}".toString()
 }
 
-// The platform's getStackTrace(Throwable) keeps only this app's frames (capped at 2000 chars);
+// The platform's getStackTrace(Throwable) keeps only this app's frames (cut here at 2000 chars);
 // older firmware gets "class: message" and the first five raw JVM frames.
 def _exceptionStack(Throwable e) {
     try {
@@ -10519,9 +10592,9 @@ Dashboards or automations that reference the room may need updating.
 ### hub_call_destructive_ops — firmware-flash action reference
 
 The radio firmware-flash `action` values (the bullet above summarizes these as "a firmware flash"; an interrupted flash can brick hardware — never power-cycle during one):
-- `device_firmware_start` — Z-Wave device firmware OTA. Requires `node_id` + `file_name` (`file_name` comes from hub_get_radio_details(include_firmware=true)); optional `target_index` defaults to `node_id`.
+- `device_firmware_start` — Z-Wave device firmware OTA. Requires `node_id` + `file_name` (`file_name` comes from hub_get_radio_details(include_firmware=true)); optional `target_index` (the firmware target from `firmware.node.details`) defaults to 0, the device's main firmware.
 - `device_firmware_start_available` — flash the update the hub's firmware service offers for a node. Requires `node_id` + `update_id` (from hub_get_radio_details(include_firmware=true, node_id=N) `firmware.node.available`).
-- `device_firmware_batch_start` / `device_firmware_batch_start_available` (Z-Wave JS) — flash several matching devices in one run: `node_id` is the source node, `batch.node_ids` the nodes to update (from `firmware.node.batchCandidates`), plus `file_name` (and optional `target_index`) or `update_id`. `batch.inactivity_timeout_seconds` (default 600) gives up on a silent device. Follow the run in `status.zwaveFirmwareBatch` (include_status=true); stop it with `device_firmware_batch_abort`.
+- `device_firmware_batch_start` / `device_firmware_batch_start_available` (Z-Wave JS) — flash several matching devices in one run: `node_id` is the source node, `batch.node_ids` the nodes to update (from `firmware.node.batchCandidates`), plus `file_name` (and optional `target_index`, default 0) or `update_id`. `batch.inactivity_timeout_seconds` (default 600) gives up on a silent device. Follow the run in `status.zwaveFirmwareBatch` (include_status=true); stop it with `device_firmware_batch_abort`.
 - `device_firmware_abort` — abort an in-progress Z-Wave device flash. Requires `node_id`.
 - Firmware 2.5.2 refuses device firmware updates over Remote Admin; the hub's refusal message is returned.
 - `local_backup_restore` (target=zwave) — replaces the hub's Z-Wave network with an imported backup (`import_id` from hub_call_zwave local_backup_import, READY with every key supplied). Z-Wave devices are unavailable while Z-Wave JS restarts; poll the returned `jobId` with hub_get_radio_details(backup_job_id=...).
@@ -10530,19 +10603,19 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 (Matter supports only `reset`, no firmware flash.)
 
-### hub_call_matter (Matter radio: enable/disable, pair, open pairing window)
+### hub_call_matter (Matter radio: enable/disable, pair, cancel_pair, open pairing window)
 
 - `action=pair` (the 11- or 21-digit Matter setup code, or the MT: QR payload) uses the pairing request firmware 2.5.2 introduced, which carries Wi-Fi credentials for Wi-Fi Matter devices. Without `wifi_ssid` the hub's selected network is sent, as the web UI does; when that is the network the hub stores a password for, the hub's own password placeholder keeps the stored password. A network without a stored password needs `wifi_password` (`""` for an open network), and the call is refused when the hub's network cannot be read. Firmware before 2.5.2 pairs with the setup code alone. Thread devices ignore the credentials. Read the stored network with hub_get_radio_details(radio='matter') `wifiCredentials` (the password is never returned).
-- A started pairing returns its `nodeId`; poll it with hub_get_radio_details(radio='matter', node_id=<nodeId>) and stop it with `action=cancel_pair` (node_id). A nodeId of 0 or an `error` means the pairing did not start.
+- On firmware 2.5.2 and later a started pairing returns its `nodeId`; poll it with hub_get_radio_details(radio='matter', node_id=<nodeId>) and stop it with `action=cancel_pair` (node_id). A nodeId of 0 or an `error` means the pairing did not start. Firmware before 2.5.2 pairs with the setup code alone (any Wi-Fi arguments are ignored) and returns no nodeId.
 - Matter requires a C-8 / C-8 Pro hub on supported firmware; the failure note repeats this.
 - `action=open_pairing_window` opens a share window for a commissioned node_id; the response carries the setup code to add that device to another fabric.
 - To RESET the Matter fabric (wipes commissioning, unpairs every Matter device) use hub_call_destructive_ops(target='matter', action='reset').
 
-### hub_set_zwave (configure the Z-Wave radio: enable/disable, region, long-range channel)
+### hub_set_zwave (configure the Z-Wave radio: enable/disable, region, long-range channel, Z-Wave JS stack)
 
 - Config updates preserve the radio's other current settings: a region or long-range-channel change keeps the current `enabled` and `secureJoin` values. The hub's zwaveDetails update is a full-replacement endpoint (it takes the complete param set, not a partial patch), so the tool reads current state first and overrides only what you changed.
 - Disabling the radio strands every Z-Wave device, so it is confirm-gated (confirm=true plus a hub backup <24h).
-- `zwave_js=true` switches the hub to the Z-Wave JS stack (C-5, C-7, C-8 on firmware 2.5.2+; `zwaveJSAvailable` in hub_get_radio_details(radio='zwave') says whether it is offered) and `zwave_js=false` back to the legacy stack. The hub REBOOTS immediately, so it is confirm-gated and must be sent alone. After the reboot, `status.zwaveJs` (include_status=true) shows when the stack is ready and how many nodes still await their interview.
+- `zwave_js=true` switches the hub to the Z-Wave JS stack (C-5, C-7, C-8 on firmware 2.5.2+; `zwaveJSAvailable` in hub_get_radio_details(radio='zwave') says whether it is offered) and `zwave_js=false` back to the legacy stack. The hub REBOOTS immediately, so it is confirm-gated and must be sent alone. It reads the running stack first: a hub already on the requested stack is left alone (`changed: false`), and an unreadable stack is refused, so a repeated call never reboots twice. After the reboot, `status.zwaveJs` (include_status=true) shows when the stack is ready and how many nodes still await their interview.
 - Scope routing: for repair / inclusion (join + S2 grants) / exclusion / per-node maintenance use hub_call_zwave; for radio reset or firmware flash use hub_call_destructive_ops.
 
 ### hub_call_zigbee (non-idempotent Zigbee radio ops)
@@ -11063,7 +11136,7 @@ Also sets the hub's automatic-backup schedule. Pass a `schedule` object {hour 0-
 
 - **`full=true`** creates a full local backup (firmware 2.5.2+, Full Local Backup subscription): a `.tar.gz` with the database, File Manager files up to 100 MiB, and the Zigbee and Z-Wave radio data. It is confirmed by a new `fullBackup:true` entry in the local list and stamps the 24h gate like a database backup. A hub without the feature (`hasFullLocalBackup:false` in the schedule block) is refused before anything is sent. A large file set can take longer than the ~60s confirmation window; the result then says so and the backup may still appear (a hub refusal is logged in the MCP log). `mock=true` with `full=true` stamps the gate without any backup, like a database mock.
 - **`networkBackup={enabled, networkPath, username, password}`** sets the network-share (SMB) copy the hub makes of each full backup. Omitted fields keep their value, the password included; the password is never returned. `enabled=true` with no share path (given or stored) is refused before anything, the schedule included, is changed. **`testNetworkBackup=true`** tests the share connection (after applying `networkBackup` when both are given). With `scheduleOnly=true` the call changes these settings without creating a backup.
-- **`cloudDownload={path, cloudBackupPassword, part?}`** copies a cloud backup into File Manager without creating a backup: `part='database'` (default) is the `.lzf` database, `part='files'` the File Manager archive. Send it alone. The copy lands at `http://<HUB_IP>/local/cloud-backup-<part>-<time>`; a reply that is not a backup (an error page or message) is refused, not saved. The copy is held in memory, so a cloud backup over 16 MB (its size from the cloud list) is refused before the download.
+- **`cloudDownload={path, cloudBackupPassword, part?}`** copies a cloud backup into File Manager without creating a backup: `part='database'` (default) is the `.lzf` database, `part='files'` the File Manager archive. Send it alone, with confirm=true (it writes a file). The copy lands at `http://<HUB_IP>/local/cloud-backup-<part>-<time>.lzf` (`.tar.gz` for files); a reply that is not a backup (an error page or message) is refused, not saved. The copy is held in memory, so a cloud backup over 16 MB, or one the cloud list gives no size for, is refused before the download.
 
 ### hub_list_backups
 
@@ -11085,7 +11158,7 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 - Without a native export (or with the default `preserveRuleId: true`), a native rule snapshot replays its settings in place when the rule still exists. If the rule was deleted, the restore creates a NEW rule and replays the settings onto it. The result then carries the new `ruleId`, the `originalRuleId` and `recreated: true`, so update anything that referenced the old id. A Required Expression lives in Rule Machine's app state, which a settings replay cannot write, so the restore then makes the rule's expression match the snapshot: it rebuilds the snapshot's expression (each condition re-walked from its saved settings), or removes the live one when the snapshot had none, and confirms the rendered result before the old expression's tokens are removed. `requiredExpressionRestored: true` means it matches. A snapshot expression naming a device deleted since the backup is not rebuilt: the live expression stays (`preRestoreExpressionKept: true`) and the error names the device. Conditions are compared by their rendered text, so a device renamed since the backup reads as a mismatch: the rebuild is backed out with `requiredExpressionRestored: false`, and the expression is set with `hub_set_rule`. A failed rebuild puts back what was committed before it: `preRestoreExpressionKept` (true or false) when the rule had an expression; otherwise `requiredExpressionPartial` when part of the snapshot's expression got committed (the error says whether it is only the first condition). Conditions it could not remove are listed in `leftoverConditionIds`. `requiredExpressionRestored: false` turns the result into `success: false` + `partial: true` with the reason in `error`, and the rule's expression must be rebuilt with `hub_set_rule`. Triggers and actions also live in app state: a trigger, action or condition the live rule has beyond the snapshot is removed (`removedTriggers` / `removedActions` / `removedConditionIds`), while one the snapshot has and the rule lacks cannot be rebuilt by a replay. It is named in `missingTriggers` / `missingActions` with `structureRestored: false`, `success: false` and `partial: true`; add it back with `hub_set_rule`. Actions the backup also has are moved back into its order; an order the moves cannot restore is reported in `actionOrder` with `structureRestored: false`, and a failed closing Update Rule in `updateRuleFailed`. A device deleted since the backup is left out of the replay (listed in `settingsSkipped`, `partial: true`), because Rule Machine stops rendering a rule whose picker names a missing device. A settings replay writes back the settings the backup holds. For a Rule Machine rule, settings added after the backup go with the trigger, action or condition the restore removes. For any other app type (Basic Rules among them), every non-button setting the app gained after the backup is emptied and listed in `settingsCleared` (the hub keeps no way to delete one), and the app is finished with its own commit -- its Done where it has no Update button, since an Update click breaks a Basic Rule's page (a Done that does not commit returns `success: false`). The App Cloner restore has no such leftovers, since it builds a new app from the backup alone.
 
 - `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub. A full local backup (`fullBackup:true`) never goes to the database restore: it runs the full-restore flow the web UI uses (the archive is read off the hub, uploaded to the full-restore endpoint, then restored).
-- `scope=hub_uploaded` -- upload an external `.lzf` fetched from `backupUrl`, then restore (open-world). A `.gz` URL (or any call with `fullRestore`) runs the full-restore flow instead; `fullRestore` with a `.lzf` URL is refused. The URL's size is read first (a one-byte range request): a database backup over 8 MB or a full backup over 16 MB is refused before it is fetched. A full local backup whose size the hub's list does not give is refused rather than downloaded.
+- `scope=hub_uploaded` -- fetch a backup from `backupUrl` and restore it (open-world). The fetched file decides the route: a `.tar.gz` full backup runs the full-restore flow, a `.lzf` database backup the database restore, and anything else is refused. `fullRestore` needs a full backup and is refused with a `.lzf` URL. The URL's size is read first with a one-byte range request: where the host answers it, a backup over 16 MB (8 MB for a `.lzf` URL) is refused before it is fetched; elsewhere the same limits apply after the fetch. A full local backup whose size the hub's list does not give is refused rather than downloaded.
 - `fullRestore={restoreZigbee, restoreZwave, restoreFiles, deleteExistingFiles, allowZwaveFirmwareMismatch}` (booleans, all default false) picks what a full restore brings back besides the database, for a full `hub_local` backup or a `hub_uploaded` archive; `scope=hub_cloud` restores the database only and refuses it. `deleteExistingFiles` needs `restoreFiles`. A restore request the hub never answers returns `outcome: "unknown"`: the hub may be rebooting into the restore, so check it before retrying. A Z-Wave firmware or Z-Wave stack mismatch between hub and backup is refused with the reason; `allowZwaveFirmwareMismatch=true` restores over a hub whose Z-Wave firmware is newer. Full archives over 16 MB are refused in-app before they are downloaded (the web UI takes up to 150 MB).''',
 
         file_manager: '''## File Manager
@@ -11213,7 +11286,7 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - Reports per device/app: method call counts, % busy, state size, events, states, hub actions, and pending events.
 - The `sortBy` enum maps onto these columns: `pct` = % busy (default), `count` = method call count, `stateSize` = state size, `totalMs` = total ms, `name` = device/app name.
 - Each entry also carries `cloudCalls`, its count of calls to Hubitat cloud services (firmware 2.5.2.129+).
-- `includeCloudCalls=true` adds a top-level `cloudCalls` block: per app `{id, name, installed, total, currentHour, hourly:[{hourStart, count}]}` (newest hour first, at most 168), sorted by total, plus `countingSince` and `timeZone`. Use it to find which integration is calling the cloud most.
+- `includeCloudCalls=true` adds a top-level `cloudCalls` block: per app `{id, name, installed, total, currentHour, hourly:[{hourStart, count}]}` (newest hour first, at most 48), sorted by total, plus `countingSince` and `timeZone`. Use it to find which integration is calling the cloud most.
 
 **hub_list_captured_states (list saved device-state snapshots):**
 - Storage limit is configurable (default 20; `maxCapturedStates` setting). When the store is full, the oldest snapshot is auto-deleted to make room for a new capture.
@@ -11302,7 +11375,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 - Higher limits (50+) may slow the hub; default limit applies otherwise.
 
 - `attribute` filters by event name. For a device it is an attribute (e.g. `switch`); for location-level events it accepts one of `mode`, `hsmStatus`, `hsmAlert`, or a hub-variable name.
-- `until` (same formats as `since`) ends the window inclusively, so `since` + `until` (or `hoursBack` + `until`) returns one bounded slice, e.g. what happened between 02:00 and 02:15. The response echoes it as `untilTimestamp`. `until` alone ends the default 24-hour window.
+- `until` (same formats as `since`) ends the window inclusively, so `since` + `until` returns one bounded slice, e.g. what happened between 02:00 and 02:15. The response echoes it as `untilTimestamp`. `hoursBack` (default 24) always counts back from now, not from `until`: `until` without `since` cuts the window that starts `hoursBack` hours ago, and an `until` before that start is refused. For a slice further back, pass `since` + `until`.
 - Device event rows add `type` (e.g. `command`, `physical`, `digital`), `producedBy` (what caused the event: `{name, appId}` for an app or rule, `{name, deviceId}` for a device, or `{name}` alone such as `Unknown app`), and `triggered` (the app subscriptions the event fired: `[{name, appId, handler}]`) whenever the hub records them. Commands appear as `command-<name>` events (e.g. `attribute: 'command-on'`); their `producedBy` answers "why did this device turn on". A button's own `pushed` row lists the rule it fired in `triggered`, and the device that rule commanded carries that same `appId` in its `producedBy`. Button Controller rules are auto-named like `<button>: button 1 pushed`, so `name` is the app's label, not a description of the event.
 
 ### hub_get_compatible_devices
@@ -11559,7 +11632,7 @@ The `force` flag selects which hub admin-layer endpoint performs the delete:
 
 ### hub_list_device_dependents
 
-Referencing app types it can surface include: Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, and the Echo Skill. On firmware 2.5.2 and later the list also includes apps that only the platform's own app-usage lookup reports, such as Easy Mobile Dashboards that show every device; `count` then covers them too.
+Referencing app types it can surface include: Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, and the Echo Skill. On firmware 2.5.2 and later the list also includes apps that only the platform's own app-usage lookup reports, such as Easy Mobile Dashboards that show every device; `count` then covers them too. `platformLookup: "unavailable"` means that lookup failed, so such apps may be missing. `parentApp` is the device's parent app, by id, name and label.
 
 ### hub_clone_native_app
 
@@ -11901,7 +11974,7 @@ The returned `source` field says which one matched (the hub-variable namespace i
 
 ### hub_set_variable: increment
 
-`increment` (a number, negative to subtract) adds to a Number or Decimal hub variable in one hub operation (the platform's addValueToGlobalVar), so two clients incrementing at once cannot lose an update the way a read-then-set can. Send it alone (not with `value` or `mesh_shared`). The result carries `previousValue` and the new `value`; a Number variable rounds a fractional result. A variable linked from another hub over Hub Mesh cannot be incremented here. Because a retried increment adds again, check `value` before retrying a call whose response was lost.
+`increment` (a number, negative to subtract) adds to a Number or Decimal hub variable in one hub operation (the platform's addValueToGlobalVar), so two clients incrementing at once cannot lose an update the way a read-then-set can. Send it alone (not with `value` or `mesh_shared`). The result carries `previousValue` and the new `value`, read just before and just after the add, so another client's change in between shows in them; a Number variable rounds a fractional result. A variable linked from another hub over Hub Mesh cannot be incremented here. Because a retried increment adds again, check `value` before retrying a call whose response was lost.
 
 ### hub_list_variables: type
 

@@ -122,8 +122,8 @@ class RadioGatewaySpec extends ToolSpecBase {
         !readOnly.contains('hub_set_zwave')
         !readOnly.contains('hub_call_destructive_ops')
 
-        and: 'Zigbee config writes are idempotent; hub_set_zwave (its zwave_js switch reboots) and call_* operations are not'
-        !idempotent.contains('hub_set_zwave')
+        and: 'set_* config writes are idempotent (the zwave_js switch skips a matching stack); call_* operations are not'
+        idempotent.contains('hub_set_zwave')
         idempotent.contains('hub_set_zigbee')
         !idempotent.contains('hub_call_zwave')
         !idempotent.contains('hub_call_zigbee')
@@ -448,7 +448,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         given:
         def posted = [:]
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
-            posted.path = path; posted.body = body; [ok: true]
+            posted.path = path; posted.body = body; [success: true]
         }
 
         when:
@@ -465,7 +465,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         given:
         def posted = [:]
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
-            posted.path = path; posted.body = body; [ok: true]
+            posted.path = path; posted.body = body; [success: true]
         }
 
         when:
@@ -482,7 +482,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         enableWrite()
         def posted = [:]
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
-            posted.path = path; posted.body = body; [ok: true]
+            posted.path = path; posted.body = body; [success: true]
         }
 
         when:
@@ -500,7 +500,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         enableWrite()
         def posted = [:]
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
-            posted.path = path; posted.body = new JsonSlurper().parseText(body); [ok: true]
+            posted.path = path; posted.body = new JsonSlurper().parseText(body); [success: true]
         }
 
         when:

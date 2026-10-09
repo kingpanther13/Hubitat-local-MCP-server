@@ -2830,7 +2830,7 @@ def toolListInstalledApps(args) {
 }
 
 // getAppsUsingDevice(Long) from the app API, projected like the appsUsing rows. Null when the
-// platform lacks it (firmware before 2.5.2) or the call fails, so the caller keeps its own list.
+// platform lacks it (firmware before 2.5.2) or the call fails.
 def _platformAppsUsingDevice(String deviceId) {
     if (!(deviceId ==~ /\d+/)) return null
     try {

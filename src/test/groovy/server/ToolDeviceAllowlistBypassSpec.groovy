@@ -88,6 +88,20 @@ class ToolDeviceAllowlistBypassSpec extends ToolSpecBase {
         hubGet.register("/device/eventsJson/${UNLISTED_ID}") { params -> JsonOutput.toJson(rows) }
     }
 
+    def "until ends a device history window inclusively on the device-events path"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        registerFullJson()
+        registerEventsJson()
+
+        when:
+        def result = script.toolGetDeviceHistory([deviceId: UNLISTED_ID, since: '2026-06-27T09:00:00.000-0600', until: '2026-06-27T10:00:00.000-0600'])
+
+        then:
+        result.events*.value == ['off']
+        result.untilTimestamp != null
+    }
+
     // ---- toggle OFF: unchanged "Device not found" -------------------------------
 
     def "bypass OFF: toolGetDevice throws for an unlisted device (no fullJson fetch)"() {

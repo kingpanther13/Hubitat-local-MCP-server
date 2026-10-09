@@ -3181,10 +3181,15 @@ class TestRunner:
         assert bounded.get("untilTimestamp"), f"until was not echoed: {bounded}"
         assert all(_iso_epoch_ms(r["date"]) <= bookmark_ms for r in bounded.get("events", []) if r.get("date")), \
             f"until returned an event after the window end: {bounded}"
-        # until alone (no since/hoursBack) bounds the default window too, rather than returning the latest events.
-        alone = self.client.call_tool("hub_list_device_events", {"deviceId": dev_id, "until": bookmark_ms})
+        # until is inclusive: the bookmark event itself is in the slice.
+        assert any(_iso_epoch_ms(r["date"]) == bookmark_ms for r in bounded.get("events", []) if r.get("date")), \
+            f"until must include the event at the window end: {bounded}"
+        # until alone (no since/hoursBack) cuts the default 24h window rather than being ignored; a
+        # recent until keeps that window non-empty on a hub that sat idle.
+        until_now = int(time.time() * 1000)
+        alone = self.client.call_tool("hub_list_device_events", {"deviceId": dev_id, "until": until_now})
         assert alone.get("untilTimestamp"), f"until without a window start was ignored: {alone}"
-        assert all(_iso_epoch_ms(r["date"]) <= bookmark_ms for r in alone.get("events", []) if r.get("date")), \
+        assert all(_iso_epoch_ms(r["date"]) <= until_now for r in alone.get("events", []) if r.get("date")), \
             f"until alone returned an event after the window end: {alone}"
         self._expect_tool_refusal("hub_list_device_events", {"deviceId": dev_id, "since": bookmark_ms, "until": bookmark_ms - 1000},
                                   "until must be later")
@@ -3369,7 +3374,8 @@ class TestRunner:
         if zw_fw:
             assert details.get("zwaveVersion") not in (None, "unavailable"), f"zwaveVersion must be filled when the details carry firmware {zw_fw}: {details}"
         # The 2.5.2 Z-Wave writes refuse bad shapes before anything reaches the radio.
-        # No confirm on these: if the shape check ever regressed, the confirm gate still refuses.
+        # No confirm on the stack switch and cc_command: if their shape check regressed, the confirm
+        # gate still refuses. local_backup_keys has no confirm gate; its key check alone refuses it.
         self._expect_tool_refusal("hub_set_zwave", {"zwave_js": True, "region": "US"}, "send it on its own call")
         self._expect_tool_refusal("hub_call_zwave", {"action": "cc_command", "node_id": "abc",
                                                      "cc": {"command_class": 37, "method_name": "get"}},
@@ -15955,6 +15961,10 @@ class TestRunner:
             assert str(dependents.get("deviceId")) == unauth and isinstance(dependents.get("appsUsing"), list), (
                 f"Bypass device dependents unavailable: {dependents}"
             )
+            # The device page's parent app arrives as its identity only, never the raw app type.
+            parent = dependents.get("parentApp")
+            assert parent is None or set(parent) <= {"id", "name", "label", "parentAppId"},                 f"parentApp must carry only its identity: {parent}"
+            assert "oauthClient" not in json.dumps(dependents), "hub_list_device_dependents leaked an OAuth client field"
 
             # Reversible writes are confined to the provisioned standalone fixture.
             configuration = self.client.call_tool("hub_get_device", {

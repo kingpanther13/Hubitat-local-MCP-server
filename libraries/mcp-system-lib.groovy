@@ -22,8 +22,9 @@ def _getHub2HubData() {
 
 // platformUpdate block: the pending HUB FIRMWARE update. Distinct from the appUpdate MCP-server-app
 // version check (hub_get_info with includeAppUpdate=true). currentVersion is the hub firmware string;
-// available + availableVersion come from /hub2/hubData.alerts: the platformUpdateAvailable flag on
-// older firmware, the PLATFORM_UPDATE_AVAILABLE alert item or getLatestAvailablePlatformVersion() after.
+// available + availableVersion come from the platformUpdateAvailable flag in /hub2/hubData.alerts on
+// older firmware; from 2.5.2.129 from that block's PLATFORM_UPDATE_AVAILABLE alert item or, without
+// one, the platform's getLatestAvailablePlatformVersion().
 def _platformUpdateFromHub2(hub2) {
     def fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception e) { }
@@ -78,6 +79,7 @@ def _healthAlertsFromHub2(hub2) {
     // spammyDeviceDetails (the devices behind a too-many-events alert), maxEvents and maxStates.
     def feed = _hubAlertsJson()
     if (feed != null) alerts = [:] + feed
+    else if (!_hubFirmwareBefore("2.5.2.129")) alerts.feed = "unavailable"  // no spammyDeviceDetails this time
     alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
     def out = [safeMode: hub2.safeMode == true]
     if (alerts.alertItems instanceof List) {
@@ -501,7 +503,8 @@ def toolSetSystemSettings(args) {
             def hubSays = null
             try { hubSays = e.response?.data?.toString()?.trim()?.take(200) } catch (Exception ignored) { }
             return [success: false, error: "Failed to dismiss alert '${q.key}': ${hubSays ?: e.message}", applied: applied,
-                    note: (applied ? "Already applied: ${applied}. " : "") + "Alert dismissal needs firmware 2.5.2.129 or later and a dismissible alert."]
+                    note: (applied ? "Already applied: ${applied}. " : "") + (args.containsKey("network") ? "The network settings in this call were not sent. " : "") +
+                          "Alert dismissal needs firmware 2.5.2.129 or later and a dismissible alert."]
         }
     }
 
@@ -1502,8 +1505,8 @@ def toolUpdateFirmware(args) {
 }
 
 // Parse /hub/cloud/checkForUpdate: the cloud check's own fields {version, upgrade, status,
-// releaseNotesUrl, beta, hubCount}. accountEmails (the owner's account email) is dropped -- nothing
-// downstream needs it. Falls back to the raw text if the response is not a JSON object.
+// releaseNotesUrl, beta, hubCount}. accountEmails (the owner's account email) is dropped so the
+// owner's address never reaches a client. Falls back to the raw text if the response is not a JSON object.
 private Map _parseFirmwareCheck(rawText) {
     try {
         def p = rawText ? new groovy.json.JsonSlurper().parseText(rawText) : null
