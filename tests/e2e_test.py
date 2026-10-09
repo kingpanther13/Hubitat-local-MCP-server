@@ -12816,9 +12816,11 @@ class TestRunner:
             assert names[0] in typed_names and names[1] not in typed_names and names[2] not in typed_names, \
                 f"type=Number listing is wrong: {typed_names}"
             assert typed.get("ruleVariables") == [], "a typed listing must leave rule-engine variables out"
-            # increment adds atomically on the hub and reports both values.
-            inc = self.client.call_tool("hub_manage_variables", {
-                "tool": "hub_set_variable", "args": {"name": names[0], "increment": 5}})
+            # increment adds atomically on the hub and reports both values. Right after the bulk
+            # create the platform load limiter can refuse the call; bounce it like other writes.
+            inc, limited = self._call_with_limiter_bounce("hub_manage_variables", "hub_set_variable",
+                                                          {"name": names[0], "increment": 5}, "increment")
+            assert not limited, f"increment still refused by the load limiter: {limited}"
             assert inc.get("success") is True and inc.get("previousValue") == 1 and inc.get("value") == 6, \
                 f"increment did not add 5 to 1: {inc}"
             self._expect_tool_refusal("hub_set_variable", {"name": names[1], "increment": 1}, "Number or Decimal hub variable")
@@ -13310,8 +13312,13 @@ class TestRunner:
         assert "hasFullLocalBackup" in sched, f"schedule lacks the 2.5.2 full-backup fields: {sorted(sched)}"
         nb = listing.get("networkBackup")
         if self._hub_fw_at_least("2.5.2"):
-            assert isinstance(nb, dict) and set(nb) == {"enabled", "networkPath", "username", "passwordSet"}, \
-                f"networkBackup settings unreadable on 2.5.2+: {nb}"
+            # The hub serves the share settings only with full local backups.
+            if sched.get("hasFullLocalBackup") is True:
+                assert isinstance(nb, dict) and set(nb) == {"enabled", "networkPath", "username", "passwordSet"}, \
+                    f"networkBackup settings unreadable on a hub with full local backups: {nb}"
+            elif sched.get("hasFullLocalBackup") is False:
+                assert isinstance(nb, dict) and nb.get("available") is False, \
+                    f"a hub without full local backups must say network backups are unavailable: {nb}"
         assert not any("networkBackup" in str(e) for e in listing.get("hubBackupErrors") or []), \
             f"a network-share read must not mark the listing partial: {listing.get('hubBackupErrors')}"
         self._expect_tool_refusal("hub_create_backup", {"cloudDownload": {"path": "p", "cloudBackupPassword": "x"}, "full": True},

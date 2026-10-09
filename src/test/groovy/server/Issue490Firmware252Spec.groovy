@@ -777,6 +777,34 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         !r.partial
     }
 
+    def "a hub without full local backups lists network backups as unavailable without asking"() {
+        given:
+        backupStubs()
+        hubGet.register('/hub2/localBackups') { p -> '[]' }
+        hubGet.register('/hub2/backup/json') { p -> '{"localBackupFrequency":1,"cloudBackupFrequency":0,"databaseCleanupTimeHour":3,"databaseCleanupJobMinute":0,"hasFullLocalBackup":false}' }
+
+        when:
+        def r = script.toolListItemBackups([scope: 'hub_local'])
+
+        then:
+        r.networkBackup.available == false
+        !hubGet.calls.any { it.path == '/hub2/networkBackup/settings' }
+        !r.partial
+    }
+
+    def "an increment refused by the load limiter says so"() {
+        given:
+        script.metaClass.getGlobalVar = { String n -> [type: 'integer', value: 1] }
+        script.metaClass.addValueToGlobalVar = { String n, Object v -> throw new RuntimeException('App 38 generates excessive hub load') }
+
+        when:
+        def r = script.toolSetVariable([name: 'counter', increment: 1])
+
+        then:
+        r.success == false
+        r.note.contains('load limiter')
+    }
+
     def "an unreadable network-share block does not mark the backup listing partial"() {
         given:
         backupStubs()

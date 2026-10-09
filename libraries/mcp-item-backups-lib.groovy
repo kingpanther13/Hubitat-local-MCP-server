@@ -14,15 +14,19 @@ def toolListItemBackups(args = null) {
         if (hb.local != null) hubSections.hubLocalBackups = hb.local
         if (hb.cloud != null) hubSections.hubCloudBackups = hb.cloud
         if (hb.errors) { hubSections.hubBackupErrors = hb.errors; hubSections.partial = true }
-        // Network-share settings (firmware 2.5.2+): an unreadable block reports its own error and
-        // does not mark the listing partial, so older firmware still lists cleanly.
-        if (!_hubFirmwareBefore("2.5.2")) {
-            def netCfg = _readNetworkBackupSettings()
-            hubSections.networkBackup = netCfg.ok ? netCfg.settings : [error: netCfg.error]
-        }
         // Fold the automatic-backup schedule in alongside the hub-DB backups. A failed schedule
         // read joins the existing hubBackupErrors / partial path rather than failing the listing.
         def sched = _readHubBackupSchedule()
+        // Network-share settings (firmware 2.5.2+), which the hub serves only with full local
+        // backups (it answers 403 without them; the UI reads them only then). Never a listing failure.
+        if (!_hubFirmwareBefore("2.5.2")) {
+            if (sched.ok && sched.schedule?.hasFullLocalBackup == false) {
+                hubSections.networkBackup = [available: false, note: "Network-share backups come with the Full Local Backup subscription, which this hub does not have."]
+            } else {
+                def netCfg = _readNetworkBackupSettings()
+                hubSections.networkBackup = netCfg.ok ? netCfg.settings : [error: netCfg.error]
+            }
+        }
         if (sched.ok) {
             hubSections.schedule = sched.schedule
         } else {
@@ -561,6 +565,7 @@ def toolCreateHubBackup(args) {
         if (!netCurrent.ok) {
             def out = [success: false, error: netCurrent.error, note: "Nothing was changed."]
             if (_hubFirmwareBefore("2.5.2")) out.note = "Nothing was changed. Network-share backups need firmware 2.5.2 or later."
+            else if (_readHubBackupSchedule().schedule?.hasFullLocalBackup == false) out.note = "Nothing was changed. Network-share backups come with the Full Local Backup subscription, which this hub does not have."
             return out
         }
         if (networkPresent) {
