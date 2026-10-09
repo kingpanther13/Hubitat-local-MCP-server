@@ -23,16 +23,22 @@ class Issue490Firmware252Spec extends ToolSpecBase {
     // intercepts them, so record them through the shared mock seam instead.
     @Shared List asyncPaths = []
     @Shared Closure httpPostHook = null
+    @Shared Closure exceptionLineHook = null
+    @Shared Closure stackTraceHook = null
 
     def setupSpec() {
         appExecutor.getLocation() >> sharedLocation
         appExecutor.asynchttpGet(*_) >> { args -> asyncPaths << args[1]?.path }
         appExecutor.httpPost(*_) >> { args -> httpPostHook?.call(args[0], args[1]) }
+        appExecutor.getExceptionMessageWithLine(_) >> { args -> exceptionLineHook?.call(args[0]) }
+        appExecutor.getStackTrace(_) >> { args -> stackTraceHook?.call(args[0]) }
     }
 
     def setup() {
         asyncPaths.clear()
         httpPostHook = null
+        exceptionLineHook = null
+        stackTraceHook = null
     }
 
     def cleanup() {
@@ -1433,8 +1439,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
     def "_exceptionWithLine and _exceptionStack use the 2.5.2 platform helpers when present"() {
         given:
-        script.metaClass.getExceptionMessageWithLine = { Throwable t -> 'IllegalStateException: boom on line 42' }
-        script.metaClass.getStackTrace = { Throwable t -> 'at app.method(app:42)\n' + ('x' * 3000) }
+        exceptionLineHook = { Throwable t -> 'IllegalStateException: boom on line 42' }
+        stackTraceHook = { Throwable t -> 'at app.method(app:42)\n' + ('x' * 3000) }
 
         expect:
         script._exceptionWithLine(new IllegalStateException('boom')) == 'IllegalStateException: boom on line 42'

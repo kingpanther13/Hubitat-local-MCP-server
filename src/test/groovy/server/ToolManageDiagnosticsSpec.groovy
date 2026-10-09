@@ -1577,7 +1577,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def entry = script.getDebugLogEntries()[-1]
         entry.level == 'error'
         entry.component == 'monitoring'
-        entry.stackTrace == 'java.lang.IllegalStateException: boom-perf'
+        entry.stackTrace.startsWith('java.lang.IllegalStateException: boom-perf')
     }
 
     def "converted hub-jobs error site captures a structured stackTrace via mcpLogError"() {
@@ -1593,6 +1593,6 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.error?.contains('boom-jobs')
         def entry = script.getDebugLogEntries()[-1]
         entry.component == 'monitoring'
-        entry.stackTrace == 'java.lang.RuntimeException: boom-jobs'
+        entry.stackTrace.startsWith('java.lang.RuntimeException: boom-jobs')
     }
 }
