@@ -174,6 +174,7 @@ def checkFile = { String path ->
         return 1
     }
 
+    if (f.name == 'hubitat-mcp-server.groovy') callSitesPerMethod(cu)
     def closureFindings = collectNullParameters(cu, mapped)
     if (closureFindings) {
         System.err.println "FAIL (null closure parameters): ${path}"
@@ -285,4 +286,37 @@ def cpBreakdown(byte[] b) {
     int ac = u2(p + 2 + 2 + 2); // skip access, this, super -> interfaces count
     p += 6; int ic = u2(p); p += 2 + 2 * ic
     int fc = u2(p); println "CPDIAG fields=${fc}"
+}
+
+// Throwaway diagnostic: approximate dynamic call sites per top-level method (outside closures).
+def callSitesPerMethod(CompilationUnit cu) {
+    def rows = []
+    for (Iterator it = cu.iterator(); it.hasNext();) {
+        SourceUnit su = it.next()
+        su.AST?.classes?.findAll { !it.name.contains('$') }?.each { cn ->
+            cn.methods.each { MethodNode mn ->
+                int direct = 0, inClosures = 0, depth = 0
+                def v = new org.codehaus.groovy.ast.CodeVisitorSupport() {
+                    void bump() { if (depth == 0) direct++ else inClosures++ }
+                    void visitMethodCallExpression(org.codehaus.groovy.ast.expr.MethodCallExpression e) { bump(); super.visitMethodCallExpression(e) }
+                    void visitStaticMethodCallExpression(org.codehaus.groovy.ast.expr.StaticMethodCallExpression e) { bump(); super.visitStaticMethodCallExpression(e) }
+                    void visitPropertyExpression(org.codehaus.groovy.ast.expr.PropertyExpression e) { bump(); super.visitPropertyExpression(e) }
+                    void visitConstructorCallExpression(org.codehaus.groovy.ast.expr.ConstructorCallExpression e) { bump(); super.visitConstructorCallExpression(e) }
+                    void visitBinaryExpression(org.codehaus.groovy.ast.expr.BinaryExpression e) {
+                        def op = e.operation.text
+                        if (op in ['+', '-', '*', '/', '%', '[', '<<', '+=', '-=', '<', '>', '<=', '>=', '<=>', '=~', '==~', 'in']) bump()
+                        super.visitBinaryExpression(e)
+                    }
+                    void visitClosureExpression(ClosureExpression e) { depth++; super.visitClosureExpression(e); depth-- }
+                }
+                mn.code?.visit(v)
+                rows << [name: mn.name, direct: direct, inClosures: inClosures, line: mn.lineNumber]
+            }
+        }
+    }
+    rows.sort { -it.direct }
+    int total = rows.sum { it.direct }
+    println "CSDIAG methods=${rows.size()} directCallSitesTotal=${total}"
+    int run = 0
+    rows.take(60).each { r -> run += r.direct; println "CSDIAG ${r.direct}\t${run}\t${r.name}\t(line ${r.line}, inClosures ${r.inClosures})" }
 }
