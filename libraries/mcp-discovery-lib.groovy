@@ -388,7 +388,7 @@ private Map _platformApiSearch(String query, cursor) {
             if (!(m instanceof Map)) return
             String name = (m.name ?: "").toString()
             String lname = name.toLowerCase()
-            String text = "${name} ${m.signature} ${m.summary}".toLowerCase()
+            String text = "${name} ${m.signature} ${m.summary} ${pg.className} ${pg.label}".toLowerCase()
             if (!terms.every { text.contains(it) }) return
             // An exact method-name term ranks first, then a name holding every term.
             int score = sectionBoost

@@ -7718,9 +7718,9 @@ def _bodyBytes(d) {
 
 // Size an http(s) URL before fetching it: a one-byte Range request answers 206 with the total in
 // Content-Range on most hosts ([size]). A host that ignores ranges answers 200 with the whole body,
-// which comes back as [size, bytes] so it is not fetched twice. [:] when neither happens.
-// Non-private so the Spock harness can stub it.
-def _probeUrl(String url) {
+// which comes back as [size, bytes] so it is not fetched twice -- or as [size] alone when it is over
+// maxBytes. [:] when neither happens. Non-private so the Spock harness can stub it.
+def _probeUrl(String url, long maxBytes) {
     def out = [:]
     try {
         httpGet([uri: url, timeout: 120, textParser: false, headers: [Range: "bytes=0-0"]]) { resp ->
@@ -7728,8 +7728,16 @@ def _probeUrl(String url) {
                 def range = resp?.headers?.'Content-Range'?.toString() =~ /\/\s*(\d+)\s*$/
                 if (range.find()) out.size = range.group(1) as Long
             } else if (resp?.status == 200) {
+                def declared = resp?.headers?.'Content-Length'?.toString()
+                if (declared?.isLong() && declared.toLong() > maxBytes) {
+                    out.size = declared.toLong()
+                    return
+                }
                 byte[] raw = _bodyBytes(resp?.data)
-                if (raw != null) { out.bytes = raw; out.size = (long) raw.length }
+                if (raw != null) {
+                    out.size = (long) raw.length
+                    if (raw.length <= maxBytes) out.bytes = raw
+                }
             }
         }
     } catch (Exception e) {

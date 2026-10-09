@@ -291,7 +291,7 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         result.warning.contains('hub_get_info')
     }
 
-    def "hub_update_firmware available falls back to raw text when checkForUpdate is not JSON"() {
+    def "hub_update_firmware available reports a parse error, not raw text, when checkForUpdate is not JSON"() {
         given:
         enableWrite()
         hubGet.register('/hub/cloud/checkForUpdate') { params -> '<html>login</html>' }   // non-JSON
@@ -302,7 +302,8 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
         then:
         result.success == true                      // a malformed check never fails the apply
-        result.available.raw == '<html>login</html>'
+        result.available.parseError
+        !result.available.containsKey('raw')
     }
 
     def "hub_update_firmware requires the destructive confirm gate to apply"() {

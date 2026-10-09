@@ -297,6 +297,18 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script._parseFirmwareCheck('{"version":"2.5.2.134","accountEmails":["a@b.c"]}').version == '2.5.2.134'
     }
 
+    def "hub_update_firmware never returns an update-check answer it cannot redact"() {
+        when:
+        def r = script._parseFirmwareCheck(raw)
+
+        then:
+        r.parseError
+        !r.toString().contains('a@b.c')
+
+        where:
+        raw << ['["accountEmails","a@b.c"]', '{"accountEmails":["a@b.c"]', 'accountEmails=a@b.c']
+    }
+
     // ---------------- performance: cloud calls ----------------
 
     def "includeCloudCalls groups the hourly series per app, newest first, sorted by total"() {
@@ -1793,6 +1805,18 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         !r.containsKey('nextCursor')
     }
 
+    def "platform_api_search matches a class name and a method name together"() {
+        given:
+        hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
+
+        when:
+        def r = script.toolGetToolGuide(null, null, [platform_api_search: 'DeviceWrapper eventsBetween'])
+
+        then:
+        r.total == 1
+        r.matches[0].name == 'eventsBetween'
+    }
+
     def "a broad platform_api_search puts shared-API hits ahead of protocol pages"() {
         given:
         hubGet.register('/developer-docs/index.json') { p -> DOCS_INDEX }
@@ -1859,7 +1883,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         given:
         enableWrite()
         def fetched = []
-        script.metaClass._probeUrl = { String url -> [size: size] }
+        script.metaClass._probeUrl = { String url, long cap -> [size: size] }
         script.metaClass._fetchBytesFromUrl = { String url -> fetched << url; ([0x1f, 0x8b, 8, 0] as byte[]) }
 
         when:
@@ -1883,7 +1907,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         httpGetHook = { Map params, Closure c -> sent.range = params.headers?.Range; c([status: 206, headers: ['Content-Range': 'bytes 0-0/12345']]) }
 
         expect:
-        script._probeUrl('https://h/x/full.tar.gz') == [size: 12345L]
+        script._probeUrl('https://h/x/full.tar.gz', 16L * 1024 * 1024) == [size: 12345L]
         sent.range == 'bytes=0-0'
     }
 
@@ -1892,7 +1916,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         httpGetHook = { Map params, Closure c -> c([status: 200, data: [1, 2, 3] as byte[]]) }
 
         when:
-        def p = script._probeUrl('https://h/x/db.lzf')
+        def p = script._probeUrl('https://h/x/db.lzf', 16L * 1024 * 1024)
 
         then:
         p.size == 3L
@@ -1904,14 +1928,27 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         httpGetHook = { Map params, Closure c -> throw new RuntimeException('connection refused') }
 
         expect:
-        script._probeUrl('https://h/x/db.lzf') == [:]
+        script._probeUrl('https://h/x/db.lzf', 16L * 1024 * 1024) == [:]
+    }
+
+    def "_probeUrl keeps only the size of a range-ignoring answer over the cap"() {
+        given:
+        httpGetHook = { Map params, Closure c -> c([status: 200, headers: headers, data: [1, 2, 3, 4, 5, 6] as byte[]]) }
+
+        expect:
+        script._probeUrl('https://h/x/full.tar.gz', 4L) == [size: size]
+
+        where:
+        headers                      || size
+        ['Content-Length': '99999'] || 99999L
+        [:]                          || 6L
     }
 
     def "a backup URL's whole body from a range-ignoring host is restored without a second fetch"() {
         given:
         enableWrite()
         def fetched = []
-        script.metaClass._probeUrl = { String url -> [size: 4L, bytes: ([0x1f, 0x8b, 8, 0] as byte[])] }
+        script.metaClass._probeUrl = { String url, long cap -> [size: 4L, bytes: ([0x1f, 0x8b, 8, 0] as byte[])] }
         script.metaClass._fetchBytesFromUrl = { String url -> fetched << url; null }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes -> [success: true] }
         hubGet.register('/hub2/restoreFullLocalBackup') { p -> '{"success":true}' }

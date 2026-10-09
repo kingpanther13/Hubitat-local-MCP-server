@@ -1506,7 +1506,8 @@ def toolUpdateFirmware(args) {
 
 // Parse /hub/cloud/checkForUpdate: the cloud check's own fields {version, upgrade, status,
 // releaseNotesUrl, beta, hubCount}. accountEmails (the owner's account email) is dropped so the
-// owner's address never reaches a client. Falls back to the raw text if the response is not a JSON object.
+// owner's address never reaches a client. A reply that is not a JSON object is not returned, since
+// it cannot be redacted.
 private Map _parseFirmwareCheck(rawText) {
     try {
         def p = rawText ? new groovy.json.JsonSlurper().parseText(rawText) : null
@@ -1515,9 +1516,9 @@ private Map _parseFirmwareCheck(rawText) {
             out.remove("accountEmails")
             return out
         }
-        return [raw: rawText?.take(500)]
-    } catch (Exception e) {
-        return [parseError: e.message, raw: rawText?.take(500)]
+        return [parseError: "The update check did not answer with a JSON object."]
+    } catch (Exception ignored) {
+        return [parseError: "The update check's answer could not be parsed as JSON."]
     }
 }
 

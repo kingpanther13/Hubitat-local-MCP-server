@@ -2440,7 +2440,7 @@ private Map _zwaveBackupDownload(String jobId) {
 private Map _zwaveBackupImport(String url) {
     if (!(url ==~ /(?i)^https?:\/\/.+/)) throw new IllegalArgumentException("backup_url must be an http(s) URL, got: ${url}")
     long maxBytes = 8L * 1024 * 1024
-    def probe = _probeUrl(url)
+    def probe = _probeUrl(url, maxBytes)
     if (probe.size != null && probe.size > maxBytes) {
         return [success: false, action: "local_backup_import", error: "The backup at backup_url is ${(probe.size / (1024 * 1024)) as long} MB, over the 8 MB in-app upload limit.",
                 note: "Import it from Settings > Z-Wave Details > Z-Wave local backup in the Hubitat web UI. Nothing was imported."]

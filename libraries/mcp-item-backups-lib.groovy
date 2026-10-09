@@ -1315,8 +1315,8 @@ private _restoreUploadedBackup(Map args) {
     def opts = (args.fullRestore != null) ? _fullRestoreOptions(args.fullRestore) : null
     // Size it first when the host says (8 MB for a .lzf, 16 MB otherwise); a host that ignores the
     // range request sends the whole body, which is then used instead of fetching it again.
-    def probe = _probeUrl(url)
     long probeCap = (lzfUrl ? 8L : 16L) * 1024 * 1024
+    def probe = _probeUrl(url, probeCap)
     if (probe.size != null && probe.size > probeCap) {
         return [success: false, type: lzfUrl ? "hub-db" : "hub-full", location: "hub_uploaded",
                 error: "The backup at backupUrl is ${(probe.size / (1024 * 1024)) as long} MB, over the ${probeCap / (1024 * 1024)} MB in-app limit.",
