@@ -1447,15 +1447,13 @@ def _patch_version_sources(monkeypatch, tmp_path, files):
 
 
 def test_check_versions_all_agree_no_findings(monkeypatch, tmp_path):
-    """Four sources all reporting 0.11.0 → empty findings list."""
+    """Three sources all reporting 0.11.0 → empty findings list."""
     _patch_version_sources(monkeypatch, tmp_path, {
         "hubitat-mcp-server.groovy header": (
             "server.groovy", " * Version: 0.11.0\n"),
         "hubitat-mcp-server.groovy currentVersion()": (
             "server2.groovy",
             'def currentVersion() {\n    return "0.11.0"\n}\n'),
-        "hubitat-mcp-rule.groovy header": (
-            "rule.groovy", " * Version: 0.11.0\n"),
         "packageManifest.json version": (
             "packageManifest.json", '{"version": "0.11.0"}\n'),
     })
@@ -1471,8 +1469,6 @@ def test_check_versions_missing_source_file_flagged(monkeypatch, tmp_path):
         "hubitat-mcp-server.groovy currentVersion()": (
             "server2.groovy",
             'def currentVersion() {\n    return "0.11.0"\n}\n'),
-        "hubitat-mcp-rule.groovy header": (
-            "rule.groovy", " * Version: 0.11.0\n"),
         # Pass content=None to mean "don't create the file".
         "packageManifest.json version": (
             "packageManifest.json", None),
@@ -1521,11 +1517,9 @@ def test_check_versions_mismatch_across_files_flagged(monkeypatch, tmp_path):
         "hubitat-mcp-server.groovy currentVersion()": (
             "server2.groovy",
             'def currentVersion() {\n    return "0.11.0"\n}\n'),
-        "hubitat-mcp-rule.groovy header": (
-            # Drift! Rule is on 0.10.5 while everything else is 0.11.0.
-            "rule.groovy", " * Version: 0.10.5\n"),
         "packageManifest.json version": (
-            "packageManifest.json", '{"version": "0.11.0"}\n'),
+            # Drift! The manifest is on 0.10.5 while the server is 0.11.0.
+            "packageManifest.json", '{"version": "0.10.5"}\n'),
     })
     findings = sl.check_versions()
     mismatch = [f for f in findings if "mismatch" in f["message"]]

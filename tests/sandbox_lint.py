@@ -63,10 +63,6 @@ VERSION_SOURCES = {
         "pattern": r'def\s+currentVersion\s*\(\)\s*\{\s*\n\s*return\s+"(\d+\.\d+\.\d+)"',
         "multiline": True,
     },
-    "hubitat-mcp-rule.groovy header": {
-        "file": REPO_ROOT / "hubitat-mcp-rule.groovy",
-        "pattern": r"^\s*\*\s*Version:\s*(\d+\.\d+\.\d+)",
-    },
     "packageManifest.json version": {
         "file": REPO_ROOT / "packageManifest.json",
         "pattern": r'"version"\s*:\s*"(\d+\.\d+\.\d+)"',

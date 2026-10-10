@@ -35,7 +35,7 @@ Outputs (GITHUB_OUTPUT):
 
 Files modified:
   CHANGELOG.md, packageManifest.json, README.md,
-  hubitat-mcp-server.groovy, hubitat-mcp-rule.groovy
+  hubitat-mcp-server.groovy
 """
 
 import json
@@ -51,7 +51,7 @@ MANIFEST = ROOT / "packageManifest.json"
 CHANGELOG = ROOT / "CHANGELOG.md"
 README = ROOT / "README.md"
 SERVER = ROOT / "hubitat-mcp-server.groovy"
-RULE = ROOT / "hubitat-mcp-rule.groovy"
+# hubitat-mcp-rule.groovy is not bumped: the legacy child app keeps the version it was last changed at.
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
@@ -637,7 +637,6 @@ def main() -> int:
     prepend_changelog_entry(new_version, date, bullets)
     bump_groovy_header(SERVER, new_version)
     bump_current_version_fn(SERVER, new_version)
-    bump_groovy_header(RULE, new_version)
     bump_manifest(new_version, label, new_manifest_block)
     prepend_readme_bullet(new_version, bullets)
 
