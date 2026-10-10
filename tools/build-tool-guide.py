@@ -94,8 +94,12 @@ def render(server_src: str, lib_src: str) -> str:
 
 
 def read_sources():
+    server_src = SERVER.read_text(encoding="utf-8")
     lib_src = "".join("\n" + p.read_text(encoding="utf-8") for p in sorted(LIB_DIR.glob("*.groovy")))
-    return SERVER.read_text(encoding="utf-8"), lib_src
+    # Inlined layout (no #include line): the delegated guide methods are pasted into the server file.
+    if not re.search(r"(?m)^\s*#include\s", server_src):
+        lib_src = server_src + lib_src
+    return server_src, lib_src
 
 
 def main(argv) -> int:

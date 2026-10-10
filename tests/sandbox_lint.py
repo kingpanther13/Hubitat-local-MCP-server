@@ -53,6 +53,24 @@ GROOVY_FILES = [
     *sorted((REPO_ROOT / "libraries").glob("*.groovy")),
 ]
 
+
+def _inlined_layout() -> bool:
+    """True when the server file has no `#include` line: a single-file build with every library
+    body pasted inline, so libraries/ is a second copy of code the server file already holds."""
+    server = REPO_ROOT / "hubitat-mcp-server.groovy"
+    return server.exists() and not re.search(
+        r"(?m)^\s*#include\s", server.read_text(encoding="utf-8", errors="replace"))
+
+
+def _library_files() -> list[Path]:
+    """The libraries/*.groovy the app #includes -- none in the inlined layout, so the cross-file
+    checks never count both the pasted-in copy and the libraries/ copy."""
+    lib_dir = REPO_ROOT / "libraries"
+    if _inlined_layout() or not lib_dir.is_dir():
+        return []
+    return sorted(lib_dir.glob("*.groovy"))
+
+
 VERSION_SOURCES = {
     "hubitat-mcp-server.groovy header": {
         "file": REPO_ROOT / "hubitat-mcp-server.groovy",
@@ -899,10 +917,8 @@ def _extract_canonical_counts() -> dict | None:
     # chunk methods. The app #includes every library module, so the canonical tool surface =
     # main + all library modules; concatenate them so those def chunks are parsed + counted. The
     # gateway config (getGatewayConfig) lives only in main, so the first-match carve below is unaffected.
-    _lib_dir = REPO_ROOT / "libraries"
-    if _lib_dir.is_dir():
-        for _lib in sorted(_lib_dir.glob("*.groovy")):
-            src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
+    for _lib in _library_files():
+        src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
 
     # Comment-stripping intentionally NOT done. Reasoning: this codebase's
     # tool description heredocs commonly contain both `//` (URLs like
@@ -1862,7 +1878,6 @@ def check_tool_guide_pointers(src_override: str | None = None,
     #    Tolerate both single and double quotes; whitespace around the `=`.
     pointer_re = re.compile(r"get_tool_guide\(section\s*=\s*['\"]([a-z_][a-z0-9_]*)['\"]\)")
     pointer_sources = [(str(server.relative_to(REPO_ROOT)), src)]
-    lib_dir = REPO_ROOT / "libraries"
     if lib_pointer_override is not None:
         pointer_sources.extend(lib_pointer_override)
     elif src_override is not None:
@@ -1870,8 +1885,8 @@ def check_tool_guide_pointers(src_override: str | None = None,
         # one-section corpus does not have, so scanning them here would fire on every
         # fixture. A self-test that wants library pointers passes them explicitly.
         pass
-    elif lib_dir.is_dir():
-        for lib in sorted(lib_dir.glob("*.groovy")):
+    else:
+        for lib in _library_files():
             pointer_sources.append((f"libraries/{lib.name}",
                                     lib.read_text(encoding="utf-8", errors="replace")))
     for rel, text in pointer_sources:
@@ -2008,10 +2023,8 @@ def check_discrete_event_caps_doc_parity(
         # (issue #209 native-RM extraction); the app includes every libraries/*.groovy,
         # so append them so the map is found wherever it resides. The src_override path
         # stays main-only for the synthetic self-test corpora.
-        _lib_dir = REPO_ROOT / "libraries"
-        if _lib_dir.is_dir():
-            for _lib in sorted(_lib_dir.glob("*.groovy")):
-                src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
+        for _lib in _library_files():
+            src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
 
     # 1. Extract the canonical DISCRETE_EVENT_CAPS set from production.
     #    The map literal shape is:
@@ -2287,6 +2300,12 @@ def check_trailing_updaterule_envelope_parity(
     # Vicinity window: large enough to span declaration -> catch -> return,
     # small enough to avoid bleeding into the next dispatcher's return shape.
     LOOKAHEAD_CHARS = 4500
+    # This rule never scanned libraries/; in the inlined layout a catch block whose surrounding
+    # code is verbatim from a libraries/ file is that unscanned code, so it is reported as a warning.
+    lib_text = ""
+    if src_override is None and _inlined_layout() and (REPO_ROOT / "libraries").is_dir():
+        lib_text = "\n".join(p.read_text(encoding="utf-8", errors="replace")
+                             for p in sorted((REPO_ROOT / "libraries").glob("*.groovy")))
 
     for m in catch_pattern.finditer(src):
         # Also look BEHIND a bit because some dispatchers declare the booleans
@@ -2302,10 +2321,11 @@ def check_trailing_updaterule_envelope_parity(
 
         if missing:
             line_no = src[:m.start()].count("\n") + 1
+            from_lib = bool(lib_text) and src[max(0, m.start() - 400):m.end() + 400] in lib_text
             findings.append({
                 "file": str(server.relative_to(REPO_ROOT)),
                 "line": line_no,
-                "severity": "error",
+                "severity": "warning" if from_lib else "error",
                 "rule": "trailing-updaterule-envelope-incomplete",
                 "message": (
                     f"`catch (Exception updateExc)` at L{line_no} is missing one or more "
@@ -2313,6 +2333,8 @@ def check_trailing_updaterule_envelope_parity(
                     f"Callers cannot detect the not-live state without log-grep. Pattern "
                     f"reference: addRequiredExpression / addTrigger / bulk addTriggers "
                     f"dispatchers all set the 5-slot envelope on the catch path."
+                    + (" Inlined layout: this is pasted libraries/ code, which this rule does not "
+                       "scan in the #include layout -- warning only." if from_lib else "")
                 ),
                 "source": src[m.start():m.start() + 120].replace("\n", " "),
             })
@@ -2495,10 +2517,8 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
         # every libraries/*.groovy, so append them so moved def chunks (e.g.
         # _getAllToolDefinitions_partRooms) are seen by the gateway-vs-defs reachability checks
         # below. The src_override path stays main-only for the synthetic self-test corpora.
-        _lib_dir = REPO_ROOT / "libraries"
-        if _lib_dir.is_dir():
-            for _lib in sorted(_lib_dir.glob("*.groovy")):
-                src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
+        for _lib in _library_files():
+            src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
 
     rel = str(server.relative_to(REPO_ROOT))
 
@@ -2855,9 +2875,11 @@ def _device_native_tokens(body_code: str, body_strings: str) -> list[str]:
 
 
 def _device_gate_libraries() -> list[str]:
-    """Every #include library is scanned -- no hand-kept list to fall out of date."""
-    lib_dir = REPO_ROOT / "libraries"
-    return sorted(f"libraries/{p.name}" for p in lib_dir.glob("*.groovy")) if lib_dir.is_dir() else []
+    """Every #include library is scanned -- no hand-kept list to fall out of date. In the inlined
+    layout the library tool bodies live in the server file, so that is what gets scanned."""
+    if _inlined_layout():
+        return ["hubitat-mcp-server.groovy"]
+    return [f"libraries/{p.name}" for p in _library_files()]
 
 # tool method -> why it reaches native device endpoints without the per-device gate.
 # Every entry is a documented scope decision, not a convenience.
