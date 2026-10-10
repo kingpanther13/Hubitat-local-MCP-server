@@ -3527,13 +3527,13 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "the Write master enabled, recent backup exists. Identify the raw URL of a bundle .zip the hub can reach (e.g. this repo's bundles/mcp-libraries.zip on a public GitHub raw URL). The bundle ships the McpRoomsLib and McpBundlesLib libraries.",
-  "test_prompt": "Install the bundle from that .zip URL (confirming the install), then verify the bundle's libraries now appear in the hub's library list.",
-  "teardown_prompt": "Optionally delete a library if it was newly created (note: removing McpRoomsLib or McpBundlesLib would break the server's #include on next save, so leave them in place on the live server)."
+  "setup_prompt": "the Write master enabled, recent backup exists. Identify the raw URL of a bundle .zip the hub can reach that ships one unused app (no libraries -- bundle fixtures never carry libraries).",
+  "test_prompt": "Install the bundle from that .zip URL (confirming the install), then verify the bundle's app now appears in the hub's Apps Code list.",
+  "teardown_prompt": "Delete the bundle and the app code it installed."
 }
 ```
 
-**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../bundles/mcp-libraries.zip', confirm:true})`. Result: `{success:true, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_libraries` shows `McpRoomsLib` and `McpBundlesLib` (namespace `mcp`). This mirrors how Hubitat Package Manager delivers a package's library files — bundle fetched + unpacked into Libraries Code server-side, no UI.
+**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../<bundle>.zip', confirm:true})`. Result: `{success:true, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_apps` shows the bundle's app. This mirrors how Hubitat Package Manager delivers a package's library files — bundle fetched + unpacked into Libraries Code server-side, no UI.
 
 ### T510 — hub_install_bundle refuses without confirm flag
 
@@ -3561,12 +3561,12 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "the Read master enabled. The MCP libraries bundle (mcp-libraries.zip) is installed -- it ships McpRoomsLib, McpBundlesLib, and McpVisualRulesLib.",
-  "test_prompt": "List the code bundles installed on the hub and tell me which libraries the mcp bundle contains."
+  "setup_prompt": "the Read master enabled. At least one code bundle is installed (the T509 fixture, or the unused mcp_libraries bundle a hub upgraded from 4.6.0 or earlier still carries).",
+  "test_prompt": "List the code bundles installed on the hub and tell me what each one contains."
 }
 ```
 
-**Expected**: AI calls `hub_read_apps_code(tool='hub_list_bundles')` (or the flat tool). Result includes a bundle with namespace `mcp` whose `contains.libraries` lists `McpRoomsLib` / `McpBundlesLib` / `McpVisualRulesLib`, each entry carrying an `id`. AI explains bundles are the Bundle-Manager containers HPM delivers code in — distinct from the Libraries Code entries (`hub_list_libraries`).
+**Expected**: AI calls `hub_read_apps_code(tool='hub_list_bundles')` (or the flat tool). Result lists each installed bundle with its `contains` apps/drivers/libraries, each entry carrying an `id`. AI explains bundles are the Bundle-Manager containers HPM delivers code in — distinct from the Libraries Code entries (`hub_list_libraries`).
 
 ### T513 — hub_export_bundle saves a bundle .zip to the File Manager
 
