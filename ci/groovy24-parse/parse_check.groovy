@@ -207,8 +207,12 @@ def checkFile = { String path ->
     // compiles the app with every #include inlined into one class: past the cap it refuses to
     // load the app at all ("Class too large"), which no parse-level check sees. The hub's own
     // compile adds entries on top of this count: 65,237 here loaded on a C-8, 65,439 did not.
-    def size = classSize(f.name, resolved)
-    if (size.tooLarge) {
+    // A file whose classes did not resolve (the syntax-only fallback above) cannot be compiled to
+    // bytecode either, so it is not measured.
+    def size = (findings == null) ? [skipped: true] : classSize(f.name, resolved)
+    if (size.skipped) {
+        println "NOTICE (class size not measured: unresolved class refs): ${path}"
+    } else if (size.tooLarge) {
         System.err.println "FAIL (class too large for the JVM): ${path}"
         System.err.println "  ${size.message}"
         rc = 1
