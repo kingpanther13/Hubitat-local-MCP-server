@@ -49,11 +49,7 @@ operation record is written at admission, when it comes to rest (`stopped` or
 `awaiting_verification`), and at release.
 
 - `hub_update_package`: caller-chosen `requestId`, immutable 40-character `ref`,
-  expected library `name`/`sha256` pairs, and `confirm:true`. For a built package
-  (the manifest at `ref` declares no bundle; issue #522) pass `apps` instead: the
-  `sha256` of `MCP Rule` and `MCP Rule Server` as built. V3 then fetches both from
-  `bundle-artifacts/shas/<ref>/`, refuses a hash mismatch or a parent that still
-  has `#include` lines, and skips the library step. Optional `baseUrl`
+  expected library `name`/`sha256` pairs, and `confirm:true`. Optional `baseUrl`
   selects a raw GitHub source repository; `bundleBaseUrl` selects the repository
   hosting the SHA-specific bundle. This permits fork source with a bundle
   published by the upstream workflow. Both default to the upstream repository.
@@ -72,7 +68,7 @@ operation record is written at admission, when it comes to rest (`stopped` or
     ref must be deployed over it. Abandonment never marks the deployment
     successful or asserts that MCP is healthy.
 
-The request ID binds the source repositories, commit, and expected libraries or apps.
+The request ID binds the source repositories, commit, and expected libraries.
 Matching libraries stay in place; otherwise the bundle is submitted once and
 all library sources are verified. A library the commit adds is created by the
 bundle; a library installed more than once stops the operation. Lost app-save
