@@ -8,12 +8,12 @@
  */
 
 definition(
-    name: "MCP Rule",
-    namespace: "mcp",
+    name: "ZZ MCP Probe Rule",
+    namespace: "mcpprobe",
     author: "kingpanther13",
     description: "Individual automation rule for MCP Rule Server",
     category: "Automation",
-    parent: "mcp:MCP Rule Server",
+    parent: "mcpprobe:ZZ MCP Probe Server",
     singleThreaded: true,
     iconUrl: "",
     iconX2Url: ""
@@ -4002,3 +4002,6 @@ def testRuleFromParent() {
         actions: results.actions ?: []
     ]
 }
+
+// probe build marker 0.0.3
+private String _probeBuildMarkerRule() { return "Rule-0.0.3" }
