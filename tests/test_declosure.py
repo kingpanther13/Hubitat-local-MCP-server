@@ -302,7 +302,7 @@ def test_nested_rewrites_and_idempotence():
     assert "for (Map.Entry entry in m) {" in once
     assert "int n = -1" in once
     assert once.count("continue") == 2
-    twice, rw = declosure.process("t.groovy", once)
+    rw, twice = declosure.process("t.groovy", once)
     assert twice == once
     assert not rw.done
 
