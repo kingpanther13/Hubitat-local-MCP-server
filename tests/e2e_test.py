@@ -12189,8 +12189,9 @@ class TestRunner:
     # -----------------------------------------------------------------------
     # GROUP 4f: installed_app_reads (4 tests) -- the thin app-summary mode of
     # hub_get_app_config (/installedapp/json/<id>) plus its RM disabled-action
-    # marking, its modeInputs projection, the app-type catalog fields (menu tab +
-    # built-in vs community) on hub_list_apps(types), and the per-app events mode of
+    # marking, its modeInputs projection, the appTypeId join from hub_list_apps(instances)
+    # rows to the type catalog, the app-type catalog fields (menu tab + built-in vs
+    # community) on hub_list_apps(types), and the per-app events mode of
     # hub_list_device_events (/installedapp/eventsJson/<id>).
     # -----------------------------------------------------------------------
 
@@ -12221,6 +12222,40 @@ class TestRunner:
             # The point of summary mode: no rendered config page rides along.
             assert not result.get("page") and not result.get("configPage"), \
                 f"summary:true must omit the rendered config page: {sorted(result.keys())}"
+
+            # Every scope='instances' row carries appTypeId, the app type's code-class id, so an
+            # instance resolves to its code without matching on the type NAME. Prove the join on
+            # two rows whose type is deterministic: the MCP server's own instance (its community
+            # type lists the instance under usedBy) and the rule's parent Rule Machine (a built-in
+            # type). The rule itself is a child app type (Rule-5.1), which the type catalog does
+            # not list, so for it only pin that the id is present and differs from its parent's.
+            rows: dict[str, dict] = {}
+            cursor = ""
+            while cursor is not None:
+                page = self.client.call_tool("hub_list_apps", {"scope": "instances", "cursor": cursor})
+                for row in page.get("apps") or []:
+                    assert "appTypeId" in row, f"instance row lacks the appTypeId key: {row}"
+                    rows[str(row.get("id"))] = row
+                cursor = page.get("nextCursor")
+            rule_row = rows.get(str(app_id))
+            assert rule_row and rule_row.get("appTypeId") is not None, f"fixture rule row lacks appTypeId: {rule_row}"
+            parent_row = rows.get(str(rule_row.get("parentId")))
+            assert parent_row and parent_row.get("appTypeId") is not None, f"rule parent row lacks appTypeId: {parent_row}"
+            assert str(parent_row["appTypeId"]) != str(rule_row["appTypeId"]), \
+                f"child rule and its Rule Machine parent report the same app type id: {rule_row} / {parent_row}"
+            self_row = rows.get(str(self.client.app_id))
+            assert self_row and self_row.get("appTypeId") is not None, f"MCP server row lacks appTypeId: {self_row}"
+            types = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": "types"}})
+            type_rows = types.get("apps") or []
+            own_types = [t for t in type_rows
+                         if any(str(u.get("id")) == str(self.client.app_id) for u in (t.get("usedBy") or []))]
+            assert len(own_types) == 1, f"expected exactly one app type to list the MCP server under usedBy: {own_types}"
+            assert str(own_types[0].get("id")) == str(self_row["appTypeId"]), \
+                f"MCP server appTypeId {self_row['appTypeId']} != its scope='types' id {own_types[0].get('id')}"
+            rm_types = [t for t in type_rows if t.get("system") is True and t.get("name") == "Rule Machine"]
+            assert len(rm_types) == 1, f"expected exactly one built-in 'Rule Machine' app type: {rm_types}"
+            assert str(rm_types[0].get("id")) == str(parent_row["appTypeId"]), \
+                f"Rule Machine appTypeId {parent_row['appTypeId']} != its scope='types' id {rm_types[0].get('id')}"
 
             self._set_rule(app_id, {"removeAction": {"index": 2}}, strict=True)
 
