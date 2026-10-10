@@ -1,0 +1,1750 @@
+library(name: "McpSystemLib", namespace: "mcp", author: "kingpanther13", description: "Hub system tool implementations (hub info/modes/HSM/backup/reboot/shutdown/firmware-update) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
+
+// /hub2/hubData is the data the modern hub UI computes server-side. It carries the hub's OWN
+// authoritative health alerts plus the pending-platform-update flag (what the UI "bell" reads) --
+// neither is in hub.data or any /hub/advanced/* metric. The availability check is cloud-driven
+// (cloud.hubitat.com); the hub caches the result here so it is readable locally. Defensive: returns
+// null on any fetch/parse failure so callers degrade gracefully (older firmware may not serve it).
+def _getHub2HubData() {
+    try {
+        def raw = hubInternalGet("/hub2/hubData")
+        if (!raw) return null
+        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        return (parsed instanceof Map) ? parsed : null
+    } catch (Exception e) {
+        // warn, not debug: the default log threshold is "error", so a debug line would be invisible --
+        // and a /hub2/hubData fetch/parse failure (transient 5xx, auth hiccup, or a firmware that
+        // changed the JSON shape) is exactly the cause an operator needs when platformUpdate degrades.
+        mcpLog("warn", "server", "_getHub2HubData read/parse failed: ${e.message}")
+        return null
+    }
+}
+
+// platformUpdate block: the pending HUB FIRMWARE update. Distinct from the appUpdate MCP-server-app
+// version check (hub_get_info with includeAppUpdate=true). currentVersion is the hub firmware string;
+// available + availableVersion come from the platformUpdateAvailable flag in /hub2/hubData.alerts on
+// older firmware; from 2.5.2.129 from that block's PLATFORM_UPDATE_AVAILABLE alert item or, without
+// one, the platform's getLatestAvailablePlatformVersion().
+def _platformUpdateFromHub2(hub2) {
+    def fw = null
+    try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception e) { }
+    def hubVer = (hub2 instanceof Map) ? hub2.version?.toString() : null
+    def current = fw ?: hubVer
+    // available:null is the schema's documented "unreadable" signal -- honor it for a missing
+    // /hub2/hubData and a present-but-unrecognized shape (alerts not a Map, or a non-Boolean
+    // platformUpdateAvailable), so neither can masquerade as a confident "no update available".
+    def alerts = (hub2 instanceof Map && hub2.alerts instanceof Map) ? hub2.alerts : null
+    def pa = alerts?.platformUpdateAvailable
+    if (alerts == null || (pa != null && !(pa instanceof Boolean))) {
+        return [available: null, currentVersion: current,
+                note: "Pending-firmware status unreadable (/hub2/hubData missing, or its alerts block has an unrecognized shape)."]
+    }
+    // Firmware 2.5.2.129+ drops the flag: a pending update is a PLATFORM_UPDATE_AVAILABLE alert item
+    // carrying the version. Without one (none pending, or the alert was dismissed), ask the platform:
+    // getLatestAvailablePlatformVersion() names the newest release; only a newer one is an update
+    // (a beta hub can run ahead of it).
+    if (pa == null) {
+        def item = (alerts.alertItems instanceof List) ? alerts.alertItems.find { it instanceof Map && it.key == "PLATFORM_UPDATE_AVAILABLE" } : null
+        if (item != null) return [available: true, currentVersion: current, availableVersion: item.version?.toString()]
+        def latest = null
+        try { latest = getLatestAvailablePlatformVersion()?.toString() } catch (Exception e) {
+            mcpLog("warn", "server", "getLatestAvailablePlatformVersion failed: ${e.message}")
+        }
+        Integer cmp = (latest && current) ? _compareVersions(latest, current) : null
+        if (cmp != null) {
+            def out = [available: cmp > 0, currentVersion: current]
+            if (cmp > 0) out.availableVersion = latest
+            return out
+        }
+        return [available: null, currentVersion: current,
+                note: "The hub data has no pending-update flag and the platform's latest-version check did not answer. Check Settings > Check for Updates in the Hubitat web UI."]
+    }
+    boolean avail = (pa == true)
+    def out = [available: avail, currentVersion: current]
+    if (avail) out.availableVersion = alerts.platformUpdateVersion?.toString()
+    return out
+}
+
+// healthAlerts block: the hub's own active health determinations -- complementary to, NOT
+// duplicating, the locally-derived memory/temp/DB warnings. `active` lists the currently-firing
+// alerts; `details` is the full alert map. Firmware 2.5.2.129+ reports alerts as alertItems
+// [{key, message, dismissible, version}] and drops the per-alert boolean flags older firmware sends,
+// so `active` comes from the item keys when present. On that firmware this also reads the hub's own
+// alert feed (GET /hub/alertsJson). The platform-update flag fields are surfaced separately
+// (platformUpdate), so they are dropped here.
+def _healthAlertsFromHub2(hub2) {
+    if (!(hub2 instanceof Map)) return null
+    def alerts = (hub2.alerts instanceof Map) ? ([:] + hub2.alerts) : [:]
+    // /hub/alertsJson (2.5.2.129+) is the hub's own alert feed: the hubData alert block plus
+    // spammyDeviceDetails (the devices behind a too-many-events alert), maxEvents and maxStates.
+    if (!_hubFirmwareBefore("2.5.2.129")) {
+        def feed = _hubAlertsJson()
+        if (feed != null) alerts = [:] + feed
+        else alerts.feed = "unavailable"  // no spammyDeviceDetails this time
+    }
+    alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
+    def out = [safeMode: hub2.safeMode == true]
+    if (alerts.alertItems instanceof List) {
+        def items = (alerts.alertItems as List).findAll { it instanceof Map && it.key }
+        out.active = items.collect { it.key.toString() }.unique().sort()
+        // The handle hub_set_system_settings(dismissAlert) takes.
+        out.items = items.collect { [key: it.key, message: it.message, version: it.version, dismissible: it.dismissible == true] }
+    } else {
+        out.active = alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
+    }
+    out.details = alerts
+    return out
+}
+
+private Map _hubAlertsJson() {
+    try {
+        def raw = hubInternalGet("/hub/alertsJson", null, 10)
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        return (parsed instanceof Map && parsed.alertItems instanceof List) ? parsed : null
+    } catch (Exception e) {
+        mcpLog("debug", "server", "/hub/alertsJson unavailable (${e.message}); using the hub data alert block")
+        return null
+    }
+}
+
+// Hubitat subscriptions from GET /hub/subscriptions/json (firmware 2.5.2+): Hub Protect, Remote
+// Admin, Cloud Backup and Full Local Backup, each with whether it is active and when it ends.
+private Map _hubSubscriptions() {
+    def raw
+    try {
+        def txt = hubInternalGet("/hub/subscriptions/json", [t: now()])
+        raw = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "subscription status read failed", e)
+        def out = [error: "Could not read /hub/subscriptions/json: ${e.message}"]
+        if (_hubFirmwareBefore("2.5.2")) out.note = "Subscription status needs firmware 2.5.2 or later."
+        return out
+    }
+    if (!(raw instanceof Map)) return [error: "/hub/subscriptions/json returned an unexpected shape."]
+    def out = [:]
+    ["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"].each { k ->
+        def v = raw[k]
+        if (v instanceof Map) out[k] = [active: v.isActive == true, pendingCancellation: v.pendingCancellation == true, endsAt: v.end_ts, trialAvailable: v.trialAvailable == true]
+    }
+    out.fullLocalBackupSupported = raw.fullLocalBackupSupported
+    out.hasAvailableTrial = raw.hasAvailableTrial
+    out.loaded = raw.loaded
+    out.updatedAt = raw.updatedAt instanceof Number ? formatTimestamp(raw.updatedAt as Long) : raw.updatedAt
+    return out
+}
+
+def _hubHardwareModel() {
+    // The hardware model the Hub Details page shows ("C-7", "C-8 Pro"): /hub/details/json's hardwareVersion.
+    // Null (never a placeholder) when unreadable. warn, not debug: the default log threshold is "error",
+    // and a firmware that renames or drops the field would otherwise degrade model to null silently.
+    try {
+        def raw = hubInternalGet("/hub/details/json")
+        def details = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        def hw = (details instanceof Map) ? details.hardwareVersion : null
+        if (hw instanceof String && hw.trim()) return hw.trim()
+        mcpLog("warn", "server", "_hubHardwareModel: /hub/details/json has no usable hardwareVersion")
+    } catch (Exception e) {
+        mcpLog("warn", "server", "_hubHardwareModel: /hub/details/json read/parse failed: ${e.message}")
+    }
+    return null
+}
+
+def toolGetHubInfo(args = null) {
+    def logHistory = getDebugLogReadResult(args ?: [:])
+    if (logHistory.status == "in_progress") return logHistory + [tool: "hub_get_info"]
+    def hub = location.hub
+    def info = [
+        temperatureScale: location.temperatureScale
+    ]
+
+    // Hub hardware and radio info (always available)
+    // hub.hardwareID is an internal platform id ("000D" on both a C-7 and a C-8 Pro), so it is
+    // surfaced separately as platformHardwareId and NEVER used as the model.
+    try { info.platformHardwareId = hub?.hardwareID } catch (Exception e) { info.platformHardwareId = null }
+    info.model = _hubHardwareModel()
+    try { info.firmwareVersion = hub?.firmwareVersionString } catch (Exception e) { info.firmwareVersion = "unavailable" }
+    // Firmware 2.5.2's Hub object has neither radio property (reading one throws). Its data map carries
+    // the channel as "0x19 (25)"; the decimal is reported, as hub_get_radio_details does. zwaveVersion
+    // is included only where the Hub object provides it.
+    def zbChannel = null
+    try { zbChannel = hub?.zigbeeChannel } catch (Exception e) { zbChannel = null }
+    if (zbChannel == null) {
+        def dataChannel = null
+        try { dataChannel = hub?.data?.zigbeeChannel } catch (Exception e) { dataChannel = null }
+        def decimal = (dataChannel?.toString() =~ /\((\d+)\)/)
+        zbChannel = decimal.find() ? (decimal.group(1) as Integer) : dataChannel
+    }
+    info.zigbeeChannel = zbChannel ?: "unavailable"
+    try { def zv = hub?.zwaveVersion; if (zv != null) info.zwaveVersion = zv } catch (Exception e) { }
+    try { info.zigbeeId = hub?.zigbeeId } catch (Exception e) { info.zigbeeId = "unavailable" }
+    try { info.type = hub?.type } catch (Exception e) { info.type = "unavailable" }
+
+    // Uptime (always available)
+    try {
+        def uptimeSec = hub?.uptime
+        if (uptimeSec && uptimeSec instanceof Number) {
+            def days = (uptimeSec / 86400).toInteger()
+            def hours = ((uptimeSec % 86400) / 3600).toInteger()
+            def mins = ((uptimeSec % 3600) / 60).toInteger()
+            info.uptimeSeconds = uptimeSec
+            info.uptimeFormatted = "${days}d ${hours}h ${mins}m"
+        }
+    } catch (Exception e) { info.uptimeSeconds = "unavailable" }
+
+    // Health data (always available — uses internal API)
+    try {
+        def freeMemory = hubInternalGet("/hub/advanced/freeOSMemory")
+        if (freeMemory) {
+            info.freeMemoryKB = freeMemory.trim()
+            try {
+                def memKB = freeMemory.trim() as Integer
+                if (memKB < 50000) {
+                    info.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
+                } else if (memKB < 100000) {
+                    info.memoryNote = "Memory is moderate: ${memKB}KB free."
+                }
+            } catch (NumberFormatException nfe) { /* non-numeric */ }
+        }
+    } catch (Exception e) { info.freeMemoryKB = "unavailable" }
+
+    try {
+        def tempC = hubInternalGet("/hub/advanced/internalTempCelsius")
+        if (tempC) {
+            info.internalTempCelsius = tempC.trim()
+            try {
+                def temp = tempC.trim() as Double
+                if (temp > 70) {
+                    info.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
+                } else if (temp > 60) {
+                    info.temperatureNote = "Temperature is warm: ${temp}°C."
+                }
+            } catch (NumberFormatException nfe) { /* non-numeric */ }
+        }
+    } catch (Exception e) { info.internalTempCelsius = "unavailable" }
+
+    try {
+        def dbSize = hubInternalGet("/hub/advanced/databaseSize")
+        if (dbSize) {
+            info.databaseSizeKB = dbSize.trim()
+            try {
+                def dbKB = dbSize.trim() as Integer
+                if (dbKB > 500000) {
+                    info.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
+                }
+            } catch (NumberFormatException nfe) { /* non-numeric */ }
+        }
+    } catch (Exception e) { info.databaseSizeKB = "unavailable" }
+
+    // Native log history can be temporarily unavailable independently of these stats.
+    info.mcpServerVersion = currentVersion()
+    info.setupCurrent = SETUP_CURRENT
+    info.setupVersion = state.setupVersion
+    info.mcpClient = mcpClientIdentity()
+    info.mcpDeviceCount = settings.selectedDevices?.size() ?: 0
+    info.mcpRuleCount = getChildApps()?.size() ?: 0
+    info.mcpLogEntries = logHistory.entries == null ? null : logHistory.entries.size()
+    if (logHistory.error) {
+        info.mcpLogReadError = logHistory.error
+        info.mcpLogReadRetryable = logHistory.retryable
+    }
+    info.mcpCapturedStates = countCapturedStates()
+    // Last hub_create_backup epoch (millis): lets a client decide whether a fresh backup is
+    // actually needed (the destructive-confirm gate's 24h window reads this same state key) --
+    // e2e uses it to skip per-run backups, a hub-heavy op the platform's load limiter punishes.
+    info.lastBackupEpoch = state.lastBackupTimestamp ?: null
+
+    // Settings visibility (always available)
+    info.hubSecurityConfigured = settings.hubSecurityEnabled ?: false
+    // Distinguishes a hub whose credentials were shed from one that never configured any --
+    // hubSecurityConfigured reads false for both, and the shed's log line can be filtered out.
+    info.hubSecurityRetired = (state.hubSecurityRetired == true)
+    info.readEnabled = settings.enableRead != false
+    info.writeEnabled = settings.enableWrite != false
+    info.customRuleEngineEnabled = settings.enableCustomRuleEngine == true
+    info.developerModeEnabled = settings.enableDeveloperMode ?: false
+    info.localAccessEnabled = settings.enableLocalAccess != false
+    info.cloudAccessEnabled = settings.enableCloudAccess != false
+
+    // Last self-deploy outcome (issue #237): hub_update_app on the MCP server's own app can't return
+    // its result on the call (success reloads the app; a big-file compile failure 504s), so it records
+    // the hub's verbatim outcome here for a follow-up read to recover -- e.g. CI surfacing the real
+    // compile error after a failed self-deploy. Null until the first self-update.
+    //
+    // STALENESS (important for any consumer, e.g. the e2e recover step): this record lives in
+    // atomicState and PERSISTS across app code reloads/restores -- it is NOT cleared on an app update.
+    // So a read can return a record left by an EARLIER deploy (even a prior session) and be mistaken
+    // for the latest outcome. Two freshness aids: `ageMs` (now - at) is added here so age is visible at
+    // a glance, and a consumer comparing across its own deploy should baseline `at` first and require it
+    // to advance (see .github/scripts/test_self_deploy_recovery.sh recover_self_deploy_error).
+    if (atomicState.lastSelfDeploy != null) {
+        def lsd = [:] + atomicState.lastSelfDeploy
+        if (lsd.at instanceof Number) lsd.ageMs = now() - (lsd.at as long)
+        info.lastSelfDeploy = lsd
+    }
+
+    // Transport header readability (see _noteHeadersReadable). Null until the first MCP request has
+    // been served. When false, TWO things are off and neither is visible anywhere else: Origin
+    // validation cannot run, and modern-era (2026-07-28 or later) requests are served as legacy.
+    if (state.headersReadable != null) {
+        def hv = [requestHeadersReadable: (state.headersReadable == true),
+                  originValidation: (state.headersReadable != true) ? "INACTIVE (headers unreadable)"
+                                    : ((settings.enforceOriginValidation == true) ? "enforcing (403 on mismatch)" : "log-only (default)"),
+                  modernEraDetection: (state.headersReadable == true) ? "active" : "INACTIVE (all requests served as legacy)"]
+        if (state.originLocalIpReadable == false) {
+            hv.originAllowlist = "NARROWED -- location.hub.localIP unreadable, so a LAN browser origin naming this hub by address is rejected"
+        }
+        info.headerValidation = hv
+    }
+
+    // PII/location data requires the Read master (default ON)
+    if (settings.enableRead != false) {
+        info.name = hub?.name
+        info.localIP = hub?.localIP
+        info.timeZone = location.timeZone?.ID
+        info.latitude = location.latitude
+        info.longitude = location.longitude
+        info.zipCode = location.zipCode
+        try { info.hubData = hub?.data } catch (Exception e) { info.hubData = null }
+    } else {
+        info.readDisabledNote = "The Read master is OFF. The following personally identifiable data is excluded: hub name, local IP, time zone, latitude, longitude, zip code, and hub data. Enable 'Read Tools' in MCP Rule Server app settings to include this data."
+    }
+
+    if (args?.identifyHub == true) {
+        try {
+            hubInternalGet("/hub/advanced/blinkLED")
+            info.identifyHubTriggered = true
+        } catch (Exception e) {
+            def msg = e.message ?: e.toString()
+            info.identifyHubTriggered = false
+            info.identifyHubError = msg
+            mcpLog("warn", "server", "identifyHub blinkLED request failed [${e.class.simpleName}]: ${msg}")
+        }
+    }
+
+    // Pending hub firmware update + hub health alerts from /hub2/hubData (one fetch; not PII-gated --
+    // these are hub-health, not location data). platformUpdate + safeMode always; the full alerts
+    // block only when asked (it is the diagnostics surface, lives in full on hub_get_metrics too).
+    def hub2 = _getHub2HubData()
+    info.platformUpdate = _platformUpdateFromHub2(hub2)
+    if (hub2 instanceof Map) info.safeMode = (hub2.safeMode == true)
+    if (args?.includeHealthAlerts == true) {
+        def ha = _healthAlertsFromHub2(hub2)
+        if (ha != null) info.healthAlerts = ha
+    }
+    // Opt-in MCP Rule Server APP version check on GitHub (distinct from platformUpdate, the hub's
+    // own firmware). Off by default: it is asynchronous (the first call may return latestVersion
+    // 'unknown (check in progress)' -- call again in a few seconds) AND reaches the open internet,
+    // so it must not run on a basic info read.
+    if (args?.includeAppUpdate == true) {
+        try {
+            // Kick the async refresh off first so checkInProgress reflects whether it actually
+            // started (asynchttpGet can throw before scheduling). It's async -- handleUpdateCheckResponse
+            // writes state LATER -- so the snapshot below still reflects the PRIOR check.
+            def refreshStarted = doUpdateCheck()
+            def uc = state.updateCheck ?: [:]
+            def installed = currentVersion()
+            info.appUpdate = [
+                installedVersion: installed,
+                latestVersion: uc.latestVersion ?: "unknown (check in progress)",
+                updateAvailable: appUpdateAvailable(),
+                lastChecked: uc.checkedAt ? formatTimestamp(uc.checkedAt) : "never",
+                checkInProgress: refreshStarted
+            ]
+            // When the last completed check FAILED, checkedAt/lastError advanced but latestVersion did
+            // not -- surface the error so lastChecked doesn't imply the version is fresher than it is.
+            if (uc.lastError) info.appUpdate.lastCheckError = uc.lastError
+        } catch (Exception e) {
+            info.appUpdate = [error: "App-version check failed: ${e.message}", installedVersion: currentVersion()]
+        }
+    }
+
+    // Opt-in hub network configuration (the read counterpart of hub_set_system_settings(network:...)).
+    // Off by default: it adds a /hub2/networkConfiguration round-trip. The block omits the current LAN
+    // address -- hub_get_info already reports it as localIP (PII-gated), so this block does not duplicate it.
+    if (args?.includeNetwork == true) {
+        info.network = _readHubNetworkSettings()
+    }
+
+    if (args?.includeSubscriptions == true) info.subscriptions = _hubSubscriptions()
+
+    // A client that saw only a generic error for a write can learn here whether it ran.
+    info.recentWrites = _mrtrRecentOperations()
+    return info
+}
+
+// hub_set_system_settings: write the hub-GLOBAL location/identity settings + the admin-UI dark mode +
+// the hub network configuration. All params optional; pass only what changes. Wire format verified live
+// (read /hub/details/json + the Settings page's POST):
+//   READ current state:  GET /hub/details/json -> {hubName,timeZone,latitude,longitude,zipCode,
+//                         tempScale,dateFormat,timeFormat,ttsCurrent,mdnsName,...}
+//   WRITE (wholesale):    POST /location/update with the FULL payload {name,timeZone,latitude,longitude,
+//                         clock,dateFormat,zipCode,temperatureScale,voice,mdnsName}. The endpoint blanks
+//                         omitted fields, so we READ-MERGE: build the payload from the current values and
+//                         override only the provided args (clock/dateFormat/voice/mdnsName -- not settable
+//                         here -- are always carried through). hubName is the payload's `name` field, so
+//                         every location setting goes through this ONE atomic POST.
+//   DARK MODE (separate): GET /hub/applyDarkMode/<true|false> -- HTTP 200 empty body, setter-only with NO
+//                         server read-back (/hub/details/json has no dark/theme key), like
+//                         /device/setShowOnHome. Applied on its own leg, never via /location/update; a
+//                         darkMode-only call makes no /location/update POST.
+//   NETWORK (separate):   the Settings -> Network page's GET endpoints (param names RE'd from
+//                         resources/hub2-source/vue-hub2.min.js, confirmed live on fw 2.5.0.159):
+//                         DHCP    GET /hub/advanced/switchToDhcp?nameserver=<>&useDNSFallover=<true|false>
+//                         STATIC  GET /hub/advanced/switchToStaticIp?address=<>&netmask=<>&gateway=<>&nameserver=<>
+//                         ETH     GET /hub/advanced/network/ethernetMode/<true|false>  (autoneg on/off)
+//                         WIFI    GET /hub/advanced/setWiFiNetworkInfo?ssid=<>&psk=<>
+//                         Each network leg can DISCONNECT the hub, so the whole network object is
+//                         confirm-gated. Legs apply in order (ip mode -> ethernet autoneg -> wifi); each
+//                         that succeeds is appended to `applied`. A sub-op failure returns the structured
+//                         error with `applied` listing what already succeeded -- partial-apply is possible
+//                         (these are independent GETs, not one atomic POST).
+// A timeZone change REBOOTS the hub, and any network change can disconnect it, so both are confirm-gated
+// (requireDestructiveConfirm). Arg validation throws (-> isError validation result); hub-call failures return the structured
+// runtime-error envelope -- never thrown.
+def toolSetSystemSettings(args) {
+    args = args ?: [:]
+    // locationFields go through the wholesale /location/update read-merge POST below; darkMode is an
+    // INDEPENDENT setter (GET /hub/applyDarkMode/<bool>, HTTP 200 empty, no read-back -- same shape as
+    // /device/setShowOnHome) so it is excluded from that POST and applied on its own leg.
+    def locationFields = ["hubName", "timeZone", "latitude", "longitude", "zipCode", "temperatureScale"]
+    def settable = locationFields + ["darkMode", "network", "dismissAlert"]
+    if (!settable.any { args.containsKey(it) }) {
+        throw new IllegalArgumentException("Provide at least one field to change: ${settable.join(', ')}. All are optional; pass only what changes.")
+    }
+    if (args.containsKey("temperatureScale") && !(args.temperatureScale?.toString() in ["F", "C"])) {
+        throw new IllegalArgumentException("temperatureScale must be 'F' or 'C' (uppercase), got: ${args.temperatureScale}")
+    }
+    _validateCoordinate("latitude", args, -90, 90)
+    _validateCoordinate("longitude", args, -180, 180)
+
+    // Validate the network object's shape up front (-> isError validation result) so a malformed request never reaches the hub.
+    if (args.containsKey("network")) _validateNetworkArgs(args.network)
+    if (args.containsKey("dismissAlert") && !(args.dismissAlert instanceof Map && args.dismissAlert.key)) {
+        throw new IllegalArgumentException("dismissAlert must be {key, version?}: an alert key from hub_get_info(includeHealthAlerts=true) healthAlerts.items (only items with dismissible:true), plus its version when it has one.")
+    }
+
+    // A timeZone change reboots the hub, and any network change can disconnect it -- confirm-gate both.
+    if (args.containsKey("timeZone") || args.containsKey("network")) {
+        requireDestructiveConfirm(args.confirm)
+    }
+
+    def applied = []
+
+    // The wholesale /location/update leg runs ONLY when a location field was provided -- a darkMode-only
+    // call must NOT POST /location/update.
+    if (locationFields.any { args.containsKey(it) }) {
+        def cur
+        try {
+            def raw = hubInternalGet("/hub/details/json")
+            cur = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings could not read current settings", e)
+            return [success: false, error: "Could not read current hub settings (/hub/details/json): ${e.message}",
+                    applied: [], note: "Nothing was changed. Verify the hub is reachable and retry."]
+        }
+        if (!(cur instanceof Map)) {
+            return [success: false, error: "Unexpected /hub/details/json response; cannot safely merge.",
+                    applied: [], note: "Nothing was changed."]
+        }
+
+        // Read-merge the FULL wholesale payload from the current values, overriding only the provided args
+        // (the POST blanks omitted fields). clock/dateFormat/voice/mdnsName are preserved as-is.
+        def payload = [
+            name:             args.containsKey("hubName")          ? args.hubName          : cur.hubName,
+            timeZone:         args.containsKey("timeZone")         ? args.timeZone         : cur.timeZone,
+            latitude:         args.containsKey("latitude")         ? args.latitude         : cur.latitude,
+            longitude:        args.containsKey("longitude")        ? args.longitude        : cur.longitude,
+            clock:            cur.timeFormat,
+            dateFormat:       cur.dateFormat,
+            zipCode:          args.containsKey("zipCode")          ? args.zipCode          : cur.zipCode,
+            temperatureScale: args.containsKey("temperatureScale") ? args.temperatureScale : cur.tempScale,
+            voice:            cur.ttsCurrent,
+            mdnsName:         cur.mdnsName,
+        ]
+
+        def parsed
+        try {
+            parsed = hubInternalPostJson("/location/update", groovy.json.JsonOutput.toJson(payload))
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings /location/update failed", e)
+            return [success: false, error: "Failed to apply hub settings: ${e.message}",
+                    applied: [], note: "Nothing was changed (the update is one atomic POST). Read current values with hub_get_info."]
+        }
+        if (!(parsed instanceof Map && parsed.success == true)) {
+            def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
+            return [success: false, error: err ?: "/location/update did not report success", applied: [],
+                    note: "Nothing was changed. Read current values with hub_get_info."]
+        }
+        applied.addAll(locationFields.findAll { args.containsKey(it) })
+    }
+
+    // dark mode is an INDEPENDENT setter (GET /hub/applyDarkMode/<bool>, HTTP 200 empty body, no
+    // read-back of the current value -- like /device/setShowOnHome). Coerce via the string compare on
+    // purpose: Groovy treats the String "false" as truthy, so `args.darkMode ? ...` would be wrong.
+    if (args.containsKey("darkMode")) {
+        try {
+            def dmOn = "${args.darkMode}".equalsIgnoreCase("true")
+            hubInternalGet("/hub/applyDarkMode/${dmOn ? 'true' : 'false'}")
+            applied << "darkMode"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings /hub/applyDarkMode failed", e)
+            return [success: false, error: "Failed to apply dark mode: ${e.message}", applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") + "Dark mode was not changed."]
+        }
+    }
+
+    // GET /hub/dismissAlert?key=&version= (firmware 2.5.2.129+; replaces the per-alert dismiss endpoints).
+    if (args.containsKey("dismissAlert")) {
+        def q = [key: args.dismissAlert.key.toString()]
+        if (args.dismissAlert.version) q.version = args.dismissAlert.version.toString()
+        try {
+            hubInternalGet("/hub/dismissAlert", q)
+            applied << "dismissAlert"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings /hub/dismissAlert failed", e)
+            def hubSays = null
+            try { hubSays = e.response?.data?.toString()?.trim()?.take(200) } catch (Exception ignored) { }
+            return [success: false, error: "Failed to dismiss alert '${q.key}': ${hubSays ?: e.message}", applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") + (args.containsKey("network") ? "The network settings in this call were not sent. " : "") +
+                          "Alert dismissal needs firmware 2.5.2.129 or later and a dismissible alert."]
+        }
+    }
+
+    // Network config -- each present piece is its own GET (Settings -> Network page). Applied in order;
+    // a sub-op failure short-circuits and returns the structured error with `applied` carrying what
+    // already committed (these are independent GETs, NOT one atomic POST -- partial-apply is possible).
+    if (args.containsKey("network")) {
+        def netResult = _applyNetworkConfig(args.network, applied)
+        if (netResult != null) return netResult   // non-null == a sub-op failed; success path returns null
+    }
+
+    return [success: true, applied: applied,
+            note: "Read back the current values with hub_get_info." +
+                  (args.containsKey("timeZone") ? " A timeZone change reboots the hub (1-3 min downtime)." : "") +
+                  (args.containsKey("network") ? " A network change can briefly disconnect the hub." : "")]
+}
+
+// Validate the network arg shape BEFORE any hub call (-> isError validation result). Static IP requires address+netmask+
+// gateway together; ipMode is dhcp|static when present. Leaves the actual application to _applyNetworkConfig.
+private _validateNetworkArgs(network) {
+    if (!(network instanceof Map)) {
+        throw new IllegalArgumentException("network must be an object, e.g. {ipMode:'static', address, netmask, gateway, nameserver} or {ipMode:'dhcp'} or {ethernetAutoneg:true} or {wifiSsid, wifiPassword}.")
+    }
+    def known = ["ipMode", "address", "netmask", "gateway", "nameserver", "useDNSFallover", "ethernetAutoneg", "wifiSsid", "wifiPassword"]
+    def unknown = network.keySet().findAll { !(it in known) }
+    if (unknown) throw new IllegalArgumentException("Unknown network field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
+    if (network.isEmpty()) {
+        throw new IllegalArgumentException("network is empty -- provide at least one of: ${known.join(', ')}.")
+    }
+    if (network.containsKey("ipMode")) {
+        def mode = network.ipMode?.toString()
+        if (!(mode in ["dhcp", "static"])) {
+            throw new IllegalArgumentException("network.ipMode must be 'dhcp' or 'static', got: ${network.ipMode}")
+        }
+        if (mode == "static") {
+            def missing = ["address", "netmask", "gateway"].findAll { !network.get(it) }
+            if (missing) throw new IllegalArgumentException("network.ipMode='static' requires ${missing.join(', ')} (address, netmask, gateway are all required for a static IP).")
+        }
+    }
+    // Reject shapes that validate field-by-field but map to NO executable leg (would silently
+    // return success:true/applied:[]). _applyNetworkConfig only acts on ipMode, ethernetAutoneg,
+    // and wifiSsid -- every other field is consumed only by one of those legs, so at least one of
+    // the three must be present, and the dependent fields must accompany the leg that reads them.
+    if (network.containsKey("wifiPassword") && !network.wifiSsid) {
+        throw new IllegalArgumentException("network.wifiPassword requires network.wifiSsid (a password alone joins no network).")
+    }
+    if ((network.containsKey("nameserver") || network.containsKey("useDNSFallover")) && !network.containsKey("ipMode")) {
+        throw new IllegalArgumentException("network.nameserver / network.useDNSFallover require network.ipMode (they are only applied as part of an IP-mode change).")
+    }
+    if (!network.containsKey("ipMode") && !network.containsKey("ethernetAutoneg") && !network.wifiSsid) {
+        throw new IllegalArgumentException("network forms no applicable change -- provide at least one of: ipMode, ethernetAutoneg, wifiSsid (the static fields address/netmask/gateway apply only with ipMode='static').")
+    }
+}
+
+// Apply the network config legs in order (ip mode -> ethernet autoneg -> wifi), appending each that
+// succeeds to `applied`. Returns null on full success; on a sub-op failure returns the structured
+// {success:false, error, applied} envelope (applied carries what already committed). Param names RE'd
+// from resources/hub2-source/vue-hub2.min.js (ssid/psk for wifi; address/netmask/gateway/nameserver for
+// static; nameserver/useDNSFallover for dhcp).
+private _applyNetworkConfig(network, List applied) {
+    // CONTRACT: every leg here is a fire-and-return GET -- success == the GET returned 2xx. There is
+    // NO response-body inspection and NO state read-back to confirm the change actually took (the hub
+    // exposes no readable post-change value for these), matching the darkMode "200 empty body" setter.
+    // IP mode: static or dhcp.
+    if (network.containsKey("ipMode")) {
+        def mode = network.ipMode?.toString()
+        try {
+            if (mode == "static") {
+                hubInternalGet("/hub/advanced/switchToStaticIp", [
+                    address: network.address,
+                    netmask: network.netmask,
+                    gateway: network.gateway,
+                    nameserver: (network.nameserver ?: '')
+                ])
+                applied << "network.staticIp"
+            } else {   // dhcp (validated)
+                def fallover = network.containsKey("useDNSFallover") ? ("${network.useDNSFallover}".equalsIgnoreCase("true")) : false
+                hubInternalGet("/hub/advanced/switchToDhcp",
+                               [nameserver: (network.nameserver ?: ''), useDNSFallover: fallover])
+                applied << "network.dhcp"
+            }
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings switch IP mode (${mode}) failed", e)
+            return [success: false, error: "Failed to apply network IP mode '${mode}': ${e.message}", applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") + "The hub network was left partially changed; verify connectivity."]
+        }
+    }
+
+    // Ethernet autonegotiation on/off.
+    if (network.containsKey("ethernetAutoneg")) {
+        def on = "${network.ethernetAutoneg}".equalsIgnoreCase("true")
+        try {
+            hubInternalGet("/hub/advanced/network/ethernetMode/${on ? 'true' : 'false'}")
+            applied << "network.ethernetAutoneg"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings ethernetMode failed", e)
+            return [success: false, error: "Failed to set Ethernet autoneg: ${e.message}", applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") + "The hub network was left partially changed; verify connectivity."]
+        }
+    }
+
+    // WiFi join (ssid/psk -- RE'd param names).
+    if (network.wifiSsid) {
+        try {
+            hubInternalGet("/hub/advanced/setWiFiNetworkInfo",
+                           [ssid: network.wifiSsid, psk: (network.wifiPassword ?: '')])
+            applied << "network.wifi"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings setWiFiNetworkInfo failed", e)
+            return [success: false, error: "Failed to set WiFi network: ${e.message}", applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") + "The hub network was left partially changed; verify connectivity."]
+        }
+    }
+
+    return null
+}
+
+// Validate an optional lat/long arg: coerce a string to a number and bound the range (-> isError validation result on a
+// bad value), so an out-of-range coordinate is rejected before it reaches the hub.
+private _validateCoordinate(String key, Map args, Number lo, Number hi) {
+    if (!args.containsKey(key)) return
+    def v = args.get(key)
+    if (v instanceof String) {
+        try { v = v.toBigDecimal() } catch (Exception e) {
+            throw new IllegalArgumentException("${key} must be a number, got: ${args.get(key)}")
+        }
+    }
+    if (!(v instanceof Number) || v < lo || v > hi) {
+        throw new IllegalArgumentException("${key} must be a number between ${lo} and ${hi}, got: ${args.get(key)}")
+    }
+    args.put(key, v)   // write back the coerced number so the /location/update payload sends a number, not a string
+    return v
+}
+
+// ---------------------------------------------------------------------------
+// Hub Mesh (hub-to-hub device/variable sharing). Endpoints RE'd from the Vue
+// Hub Mesh page in resources/hub2-source/vue-hub2.min.js -- see that folder's
+// README endpoint inventory. NOT the Z-Wave/Zigbee radio mesh.
+// ---------------------------------------------------------------------------
+
+// Null-safe list passthrough: firmware variations omit whole sections of
+// /hub2/hubMeshJson, and a null would be indistinguishable from "none shared".
+private List _meshList(v) {
+    return (v instanceof List) ? v : []
+}
+
+// The allowed full-sync intervals the hub's own picker offers (seconds; 0 = Never).
+private List _meshRefreshIntervals() {
+    return [0, 120, 300, 3600]
+}
+
+// Structured failure envelope shared by the four hub_update_hub_mesh legs (each an independent
+// hub call, so a mid-way failure leaves the earlier legs committed). `whatFailed` is the human
+// phrase for the error line; `recoveryNote` is appended after the already-applied prefix. `detail`
+// may be a Throwable (its message is used) or a plain string (e.g. an _unparseable body message).
+private Map _meshLegFailure(List applied, String whatFailed, detail, String recoveryNote) {
+    def msg = (detail instanceof Throwable) ? detail.message : detail?.toString()
+    return [success: false,
+            error: "${whatFailed}: ${msg}",
+            applied: applied,
+            note: (applied ? "Already applied: ${applied.join(', ')}. " : "") + recoveryNote]
+}
+
+def toolGetHubMesh(args = null) {
+    args = args ?: [:]
+    // include_token must be an actual boolean -- a string "true" must not silently return no token
+    // (mirror hub_update_hub_mesh's strict boolean handling for `enabled`).
+    if (args.containsKey("include_token") && !(args.include_token instanceof Boolean)) {
+        throw new IllegalArgumentException("include_token must be a boolean (true or false), got: ${args.include_token}")
+    }
+    boolean includeToken = (args.include_token == true)
+
+    // A degraded Hub Mesh read is not a hard tool failure -- it returns the structured success:false
+    // contract below -- and it also logs WHY it degraded at warn: the codebase's level for a handled
+    // degradation, visible once the log level is set to warn or lower (the default error threshold
+    // drops it). The three failure modes get distinct diagnoses instead of one catch conflating them.
+
+    // (a) HTTP round-trip: a throw here is an unreachable endpoint or a firmware that lacks the
+    // /hub2/hubMeshJson surface entirely -- NOT a body that came back and failed to parse.
+    String raw
+    try {
+        raw = hubInternalGet("/hub2/hubMeshJson")
+    } catch (Exception e) {
+        mcpLog("warn", "server", "hub_get_hub_mesh /hub2/hubMeshJson request failed: ${e.message}")
+        return [success: false,
+                error: "Could not read Hub Mesh config (/hub2/hubMeshJson): ${e.message}",
+                note: "The hub firmware may predate Hub Mesh, or the endpoint was unreachable. " +
+                      "Verify the hub responds and that this is a Hub Mesh-capable firmware; " +
+                      "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
+    }
+
+    // (b) Empty body: the request succeeded but returned nothing -- its own branch so it is not
+    // mis-diagnosed as a firmware/parse problem.
+    if (!raw?.trim()) {
+        mcpLog("warn", "server", "hub_get_hub_mesh: /hub2/hubMeshJson returned an empty body")
+        return [success: false,
+                error: "The /hub2/hubMeshJson response was empty.",
+                note: "The endpoint returned no data -- the hub may be busy or mid-reboot; retry shortly. " +
+                      "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
+    }
+
+    // (c) Non-empty body that does not parse as JSON: a changed shape, NOT "firmware predates Hub
+    // Mesh". (This is a loopback call the hub exempts from login, so it is never an auth/login page.)
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(raw)
+    } catch (Exception e) {
+        mcpLog("warn", "server", "hub_get_hub_mesh: /hub2/hubMeshJson body did not parse as JSON: ${e.message}")
+        return [success: false,
+                error: "The /hub2/hubMeshJson response did not parse as JSON: ${e.message}",
+                note: "The hub returned a non-JSON body (unexpected -- a transient error or a changed " +
+                      "response shape); retry, and if it persists the response shape may have changed. " +
+                      "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
+    }
+    if (!(parsed instanceof Map)) {
+        mcpLog("warn", "server", "hub_get_hub_mesh: /hub2/hubMeshJson parsed to a non-object shape")
+        return [success: false,
+                error: "Unexpected /hub2/hubMeshJson response; it parsed as JSON but not as an object.",
+                note: "The endpoint returned an unrecognized shape (a JSON array or scalar). " +
+                      "Z-Wave/Zigbee radio mesh is a different feature (hub_get_radio_details)."]
+    }
+
+    def enabled = (parsed.hubMeshEnabled instanceof Boolean) ? parsed.hubMeshEnabled : null
+    def interval = (parsed.fullRefreshInterval instanceof Number) ? parsed.fullRefreshInterval : null
+    // The UI maps an absent/null modeHubId to "none" (local modes); mirror that so the value
+    // round-trips straight back into hub_update_hub_mesh(mode_hub_id).
+    String modeHubId = parsed.modeHubId ? parsed.modeHubId.toString() : "none"
+
+    def privateDevices = _meshList(parsed.privateDevices)
+    def localHubVariables = _meshList(parsed.localHubVariables)
+
+    // A list section that is PRESENT but not a List (e.g. a firmware shape change turning hubList
+    // into a Map) is silently read as [] by _meshList, which would report "meshed with nothing"
+    // where the truth is "unreadable". Track those so the note can flag them -- an ABSENT section
+    // stays silent, since absent is a legitimate "none shared". Result-facing names, mirroring the
+    // scalar `unreadable` signal below.
+    def listSections = [hubList: 'peers',
+                        sharedDevices: 'sharedDevices',
+                        localLinkedDevices: 'localLinkedDevices',
+                        availableLinkedDevices: 'availableLinkedDevices',
+                        sharedHubVariables: 'sharedHubVariables',
+                        localLinkedHubVariables: 'localLinkedHubVariables',
+                        availableLinkedHubVariables: 'availableLinkedHubVariables',
+                        privateDevices: 'privateDeviceCount',
+                        localHubVariables: 'localHubVariableCount']
+    def misShapedLists = listSections.findAll { k, v -> parsed.containsKey(k) && !(parsed.get(k) instanceof List) }.values()
+
+    def result = [
+        success: true,
+        hubMeshEnabled: enabled,
+        fullRefreshInterval: interval,
+        modeHubId: modeHubId,
+        peers: _meshList(parsed.hubList),
+        sharedDevices: _meshList(parsed.sharedDevices),
+        localLinkedDevices: _meshList(parsed.localLinkedDevices),
+        availableLinkedDevices: _meshList(parsed.availableLinkedDevices),
+        sharedHubVariables: _meshList(parsed.sharedHubVariables),
+        localLinkedHubVariables: _meshList(parsed.localLinkedHubVariables),
+        availableLinkedHubVariables: _meshList(parsed.availableLinkedHubVariables),
+        // Counts only -- privateDevices is every UNshared device on the hub (hundreds on a
+        // real hub) and localHubVariables duplicates hub_list_variables; returning either in
+        // full would blow the response budget for no information the dedicated tools lack.
+        privateDeviceCount: privateDevices.size(),
+        localHubVariableCount: localHubVariables.size()
+    ]
+    String note = "privateDeviceCount/localHubVariableCount are counts only: use hub_list_devices " +
+                  "for the full device inventory and hub_list_variables for hub variables."
+    if (enabled == false) {
+        note = "Hub Mesh is DISABLED on this hub. Enable it with hub_update_hub_mesh(enabled=true), " +
+               "then reboot the hub (hub_reboot) for the change to take effect. " + note
+    }
+    // Signal which scalars the hub reported as null/wrong-typed (mapped to null above) so a caller can
+    // tell "unreadable" from a confident value -- same intent as _platformUpdateFromHub2's null signal.
+    def unreadable = []
+    if (enabled == null) unreadable << "hubMeshEnabled"
+    if (interval == null) unreadable << "fullRefreshInterval"
+    if (unreadable) {
+        note += " Reported null by this firmware (unreadable, not confirmed): ${unreadable.join(', ')}."
+    }
+    if (misShapedLists) {
+        note += " Reported an unexpected shape (read as empty): ${misShapedLists.join(', ')}."
+    }
+
+    // The mesh token authenticates a peer hub against THIS hub -- a credential, so it is
+    // opt-in rather than part of the default read.
+    if (includeToken) {
+        result.hubMeshToken = parsed.hubMeshToken?.toString()
+        if (result.hubMeshToken == null) {
+            note += " include_token was set but the hub reported no mesh token (hubMeshToken is null)."
+        }
+    }
+
+    result.note = note
+    return result
+}
+
+def toolUpdateHubMesh(args) {
+    args = args ?: [:]
+    def settable = ["enabled", "full_refresh_interval", "mode_hub_id", "peer_hub_id", "peer_token"]
+
+    // VALIDATION FIRST -- every check below runs before ANY hub call, so a validation rejection
+    // can be corrected and retried without having half-applied something.
+    if (!settable.any { args.containsKey(it) }) {
+        throw new IllegalArgumentException(
+            "Provide at least one field to change: ${settable.join(', ')}. All are optional; pass only what changes. " +
+            "Read the current config with hub_get_hub_mesh.")
+    }
+    if (args.containsKey("enabled") && !(args.enabled instanceof Boolean)) {
+        throw new IllegalArgumentException("enabled must be a boolean (true or false), got: ${args.enabled}")
+    }
+
+    Integer interval = null
+    if (args.containsKey("full_refresh_interval")) {
+        def raw = args.full_refresh_interval
+        if (raw instanceof Number) {
+            // Reject anything that is not exactly one of the allowed values. `raw != raw.intValue()`
+            // catches BOTH a fractional value (300.7, which would otherwise truncate to 300) AND an
+            // out-of-int-range value (3000000000, whole but wraps under intValue()), so the message
+            // is framed by the value set rather than "whole number" -- correct for both cases.
+            if (raw != raw.intValue()) {
+                throw new IllegalArgumentException(
+                    "full_refresh_interval must be one of ${_meshRefreshIntervals().join(', ')} seconds " +
+                    "(0 = never full-sync), got: ${raw}")
+            }
+            interval = raw.intValue()
+        } else if (raw != null) {
+            def s = raw.toString().trim()
+            if (s.isInteger()) interval = s.toInteger()
+        }
+        if (!(interval in _meshRefreshIntervals())) {
+            throw new IllegalArgumentException(
+                "full_refresh_interval must be one of ${_meshRefreshIntervals().join(', ')} seconds " +
+                "(0 = never full-sync), got: ${args.full_refresh_interval}")
+        }
+    }
+
+    boolean hasPeerId = args.containsKey("peer_hub_id")
+    boolean hasPeerToken = args.containsKey("peer_token")
+    if (hasPeerId != hasPeerToken) {
+        throw new IllegalArgumentException(
+            "peer_hub_id and peer_token must be provided TOGETHER (they store one peer hub's mesh auth token). " +
+            "Got only ${hasPeerId ? 'peer_hub_id' : 'peer_token'}.")
+    }
+    String peerHubId = args.peer_hub_id?.toString()?.trim()
+    String peerToken = args.peer_token?.toString()?.trim()
+    if (hasPeerId && (!peerHubId || !peerToken)) {
+        throw new IllegalArgumentException(
+            "peer_hub_id and peer_token must both be non-empty. Read peer hub ids from hub_get_hub_mesh peers[].hubId.")
+    }
+
+    String modeHubId = args.mode_hub_id?.toString()?.trim()
+    if (args.containsKey("mode_hub_id") && !modeHubId) {
+        throw new IllegalArgumentException(
+            "mode_hub_id must be a peer hubId from hub_get_hub_mesh peers[].hubId, or 'none' to go back to local modes.")
+    }
+
+    def applied = []
+
+    // Each leg is its own independent hub call (NOT one atomic POST), so a failure part-way
+    // returns the structured error with `applied` carrying what already committed.
+    if (args.containsKey("enabled")) {
+        boolean on = (args.enabled == true)
+        try {
+            hubInternalGet(on ? "/hub/advanced/enableHubMesh" : "/hub/advanced/disableHubMesh")
+            applied << "enabled"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh enable/disable failed", e)
+            return _meshLegFailure(applied, "Failed to ${on ? 'enable' : 'disable'} Hub Mesh", e,
+                    "Nothing else was attempted. Read the current state with hub_get_hub_mesh.")
+        }
+    }
+
+    if (interval != null) {
+        try {
+            hubInternalGet("/device/setHubMeshFullRefreshInterval/${interval}")
+            applied << "full_refresh_interval"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh full-refresh interval failed", e)
+            return _meshLegFailure(applied, "Failed to set the Hub Mesh full-refresh interval", e,
+                    "The interval was not changed. Read the current state with hub_get_hub_mesh.")
+        }
+    }
+
+    if (args.containsKey("mode_hub_id")) {
+        try {
+            // URL-encode the segment before it reaches the /device/followModes/<x> path -- the real
+            // safety fix, so an unexpected value cannot inject extra path segments (matches repo
+            // precedent for interpolated path segments).
+            hubInternalGet("/device/followModes/${java.net.URLEncoder.encode(modeHubId, 'UTF-8')}")
+            applied << "mode_hub_id"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh followModes failed", e)
+            return _meshLegFailure(applied, "Failed to set the mode-following hub", e,
+                    "Mode following was not changed. Valid values are a peer hubId from " +
+                    "hub_get_hub_mesh peers[].hubId, or 'none'.")
+        }
+    }
+
+    if (hasPeerId) {
+        // The Vue page posts the hubId as the NUMBER it read out of hubMeshJson, so preserve that
+        // type for an all-digits id -- a quoted string is a different JSON value to the hub. isLong()
+        // (not a \d+ match) so an OVERSIZED all-digits id passes through as a string instead of
+        // throwing NumberFormatException after earlier legs have already committed. isLong() also
+        // accepts a leading sign, so peer_hub_id "-12" posts as the JSON number -12 (a strict \d+
+        // would have kept it a string) -- harmless, hub ids are non-negative and the hub ignores a
+        // non-matching id.
+        def hubIdValue = peerHubId.isLong() ? peerHubId.toLong() : peerHubId
+        def postResult
+        try {
+            postResult = hubInternalPostJson("/device/setHubMeshToken",
+                groovy.json.JsonOutput.toJson([hubId: hubIdValue, token: peerToken]))
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken failed", e)
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token", e,
+                    "The peer token was not stored. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId.")
+        }
+        // FAIL-CLOSED on anything that is not a positive commit (repo precedent: the /device/runmethod
+        // handler in mcp-devices-lib.groovy). Four non-success branches follow, and only ONE is a proven
+        // not-stored: an explicit [success:false] is a hub rejection. The other three are UNKNOWN/
+        // unconfirmed commits -- a null (empty/dropped body), an _unparseable Map (non-JSON body), and a
+        // non-null non-Map JSON. None of the four records peer_token. An empty {} / non-error Map IS this
+        // endpoint's proven success shape (it returns 200 {} on success), so success is NOT gated on
+        // success==true.
+        if (postResult == null) {
+            // Empty/dropped body: a truncated response is an UNKNOWN commit, not a proven one.
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken returned no body (dropped/unknown commit)", null)
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
+                    "the hub returned no response body (dropped connection); whether the token was stored is unknown",
+                    "The response was empty, so the store is unconfirmed. Read hub_get_hub_mesh peers[] to see whether the peer's warning cleared before retrying.")
+        }
+        if (postResult instanceof Map && postResult._unparseable == true) {
+            // Non-JSON body (e.g. an HTML error/login page): the endpoint did not answer as itself, so
+            // the write outcome is UNKNOWN -- fail-closed (do NOT record peer_token), same as the
+            // empty-body branch above, but the store is unconfirmed rather than proven-not-stored.
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken returned a non-JSON body (unconfirmed commit)", null)
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
+                    "the hub returned a non-JSON response; whether the token was stored is unknown",
+                    "The hub returned an unexpected (non-JSON) body, so the store is unconfirmed. Read hub_get_hub_mesh peers[] to see whether the peer's warning cleared before retrying, and verify peer_hub_id against peers[].hubId.")
+        }
+        if (postResult instanceof Map && postResult.success == false) {
+            // Explicit rejection: the endpoint parsed and said no (e.g. an unknown peer id).
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken was rejected by the hub (success:false)", null)
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
+                    "the hub rejected the request (success:false)",
+                    "The hub rejected the token store. Verify peer_hub_id against hub_get_hub_mesh peers[].hubId and that the token was read from that PEER via its own hub_get_hub_mesh(include_token=true).")
+        }
+        if (!(postResult instanceof Map)) {
+            // Non-null, non-Map JSON (e.g. a parsed List or scalar): not this endpoint's proven success
+            // shape (a Map). Treat the write outcome as UNKNOWN and fail-closed rather than record the token.
+            mcpLogError("hub-admin", "hub_update_hub_mesh setHubMeshToken returned an unexpected JSON shape (not a Map)", null)
+            return _meshLegFailure(applied, "Failed to store the peer hub's mesh token",
+                    "the hub returned an unexpected JSON response shape; whether the token was stored is unknown",
+                    "The response was not the expected object shape, so the store is unconfirmed. Read hub_get_hub_mesh peers[] to see whether the peer's warning cleared before retrying.")
+        }
+        applied << "peer_token"
+    }
+
+    // `applied` lists what was SENT to the hub (a 2xx), not read back as changed -- the GET legs
+    // return no post-change value to confirm against, so steer the caller to the read-back.
+    String note = "Each entry in `applied` was sent to the hub (accepted with a 2xx), not confirmed as " +
+                  "changed -- read back the current values with hub_get_hub_mesh."
+    if (args.containsKey("enabled")) {
+        note += " Enabling/disabling Hub Mesh requires a hub REBOOT to take effect " +
+                "(hub_reboot in hub_manage_destructive_ops) -- the tool itself does not reboot."
+    }
+    return [success: true, applied: applied, note: note]
+}
+
+def toolGetModes() {
+    def currentMode = location.mode
+    def modes = location.modes?.collect { [id: it.id.toString(), name: it.name] }
+    def modeManager = null
+    // Enrich with per-mode icon + Mode Manager state from the HTTP surface (the SDK exposes
+    // neither). Best-effort: fall back to the SDK list if /modes/json can't be read.
+    try {
+        def raw = hubInternalGet("/modes/json")
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        if (parsed instanceof Map) {
+            if (parsed.modes instanceof List) {
+                modes = parsed.modes.collect { [id: it?.id?.toString(), name: it?.name, icon: it?.icon] }
+            }
+            // Only surface modeManager when the payload actually carries it -- a Map that lacks the
+            // manager keys (an error envelope, or a firmware shape change) must NOT yield an all-null
+            // block that masks the read as "manager unset".
+            if (parsed.containsKey("selectedModeManager") || parsed.containsKey("modeManagerAppId")) {
+                modeManager = [selected: parsed.selectedModeManager, appId: parsed.modeManagerAppId?.toString(),
+                               easyModeManagerAppId: parsed.easyModeManagerAppId?.toString()]
+                // The Integrated/built-in Mode Manager's per-mode conditions live at a separate endpoint
+                // that's independent of which manager is selected (returns {} when none are set). Read it
+                // best-effort so callers see the current automation conditions.
+                try {
+                    def craw = hubInternalGet("/modes/easyModeManager/json")
+                    if (craw) modeManager.easyConditions = new groovy.json.JsonSlurper().parseText(craw)
+                } catch (Exception ce) {
+                    mcpLog("debug", "modes", "Integrated Mode Manager conditions unreadable (omitted from modeManager): ${ce.message}")
+                }
+            }
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "modes", "Could not read /modes/json (using SDK mode list): ${e.message}")
+    }
+    def result = [currentMode: currentMode, modes: modes]
+    if (modeManager != null) result.modeManager = modeManager
+    return result
+}
+
+// Resolve a mode id or name to its numeric SDK id; null if no match.
+private _resolveModeId(idOrName) {
+    def s = idOrName?.toString()?.trim()
+    if (!s) return null
+    def m = location.modes?.find { it?.id?.toString() == s || it?.name?.equalsIgnoreCase(s) }
+    return m ? m.id : null
+}
+
+def toolManageMode(args) {
+    def action = args?.action?.toString()?.trim()?.toLowerCase()
+    if (!action) throw new IllegalArgumentException("action is required: one of create, rename, delete, activate")
+    switch (action) {
+        case "create":
+            def name = args?.name?.toString()?.trim()
+            if (!name) throw new IllegalArgumentException("name is required to create a mode")
+            def body = args?.icon ? [name: name, icon: args.icon.toString()] : [name: name]
+            return _modeWriteResult("create", _modePost("/modes/jsonCreate", body))
+        case "rename":
+            def name = args?.name?.toString()?.trim()
+            def modeId = _resolveModeId(args?.mode)
+            if (!name) throw new IllegalArgumentException("name (the new mode name) is required to rename a mode")
+            if (modeId == null) throw new IllegalArgumentException("mode not found: '${args?.mode}'. Pass a mode id or current name (from hub_list_modes).")
+            def body = args?.icon ? [id: modeId, name: name, icon: args.icon.toString()] : [id: modeId, name: name]
+            return _modeWriteResult("rename", _modePost("/modes/jsonUpdate", body))
+        case "delete":
+            def modeId = _resolveModeId(args?.mode)
+            if (modeId == null) throw new IllegalArgumentException("mode not found: '${args?.mode}'. Pass a mode id or name (from hub_list_modes).")
+            requireDestructiveConfirm(args.confirm)
+            return _modeDelete(modeId)
+        case "activate":
+            return _modeActivate(args?.mode?.toString()?.trim())
+        default:
+            throw new IllegalArgumentException("Unknown action '${action}'. Valid: create, rename, delete, activate.")
+    }
+}
+
+private _modePost(String path, Map body) {
+    return hubInternalPostJson(path, groovy.json.JsonOutput.toJson(body))
+}
+
+private _modeWriteResult(String op, parsed) {
+    if (parsed instanceof Map && parsed.success == true) {
+        // Don't re-read the full mode list here -- that's an extra /modes/json round-trip per write
+        // and the hub's per-app load limiter punishes back-to-back calls. The caller reads via
+        // hub_list_modes when it needs the updated list.
+        return [success: true, action: op, note: "Read the updated mode list with hub_list_modes."]
+    }
+    def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
+    return [success: false, action: op, error: err ?: "/modes/${op == 'create' ? 'jsonCreate' : 'jsonUpdate'} did not report success",
+            note: "Verify the mode name/id and Hub Security credentials; read current modes with hub_list_modes. Nothing was changed."]
+}
+
+private _modeDelete(modeId) {
+    try {
+        def raw = hubInternalGet("/modes/jsonDelete/${java.net.URLEncoder.encode(modeId.toString(), 'UTF-8')}")
+        def parsed = null
+        try { parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null } catch (Exception ignore) { }
+        if (parsed instanceof Map && parsed.success == true) {
+            return [success: true, action: "delete", deletedModeId: modeId.toString(),
+                    note: "Read the updated mode list with hub_list_modes."]
+        }
+        def err = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
+        return [success: false, action: "delete", error: err ?: "/modes/jsonDelete did not report success", response: raw?.take(300),
+                note: "A mode that is current or referenced by Mode Manager/rules may be undeletable. Nothing was deleted."]
+    } catch (Exception e) {
+        mcpLogError("modes", "delete mode ${modeId} failed", e)
+        return [success: false, action: "delete", error: "Mode delete failed: ${e.message}",
+                note: "Verify the mode id and Hub Security credentials."]
+    }
+}
+
+private _modeActivate(String modeName) {
+    if (!modeName) throw new IllegalArgumentException("mode (the mode name to activate) is required")
+    def mode = location.modes?.find { it.name.equalsIgnoreCase(modeName) }
+    if (!mode) {
+        def available = location.modes?.collect { it.name }
+        throw new IllegalArgumentException("Mode '${modeName}' not found. Available: ${available}")
+    }
+    def previousMode = location.mode
+    location.setMode(mode.name)
+    return [success: true, action: "activate", previousMode: previousMode, newMode: mode.name,
+            note: "Verify the active mode with hub_list_modes (setMode is a fire-and-return SDK call)."]
+}
+
+def toolSetModeManager(args) {
+    def manager = args?.manager?.toString()?.trim()?.toLowerCase()
+    def conditions = args?.conditions
+    if (!manager && conditions == null) {
+        throw new IllegalArgumentException("Pass 'manager' (builtIn|legacy|app) and/or 'conditions' (Integrated Mode Manager per-mode conditions, from hub_list_modes.modeManager.easyConditions).")
+    }
+    def result = [success: true]
+    if (manager) {
+        def wireByKey = [builtin: "builtIn", legacy: "legacy", app: "app"]
+        def wire = wireByKey.get(manager)
+        if (!wire) throw new IllegalArgumentException("manager must be one of builtIn, legacy, app")
+        try {
+            def raw = hubInternalGet("/modes/setModeManager/${wire}")
+            def parsed = null
+            try { parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null } catch (Exception ignore) { }
+            result.manager = wire
+            if (!(parsed instanceof Map && parsed.success == true)) {
+                result.success = false
+                result.error = (parsed instanceof Map ? (parsed.message ?: parsed.error) : null) ?: "/modes/setModeManager did not report success"
+            }
+        } catch (Exception e) {
+            mcpLogError("modes", "setModeManager ${wire} failed", e)
+            return [success: false, error: "Set mode manager failed: ${e.message}", note: "Verify Hub Security credentials."]
+        }
+    }
+    // If a manager switch was requested and failed, don't apply conditions into whatever manager is
+    // still active -- that would be a confusing partial apply.
+    if (manager && result.success != true) {
+        result.note = "Manager selection failed; conditions were not applied. Read state with hub_list_modes."
+        return result
+    }
+    if (conditions != null) {
+        try {
+            def cres = hubInternalPostJson("/modes/easyModeManager/json", groovy.json.JsonOutput.toJson(conditions))
+            if (cres instanceof Map && cres.success == true) {
+                result.conditionsUpdated = true
+            } else {
+                result.success = false
+                result.conditionsError = (cres instanceof Map ? (cres.message ?: cres.error) : null) ?: "Integrated Mode Manager conditions update did not report success"
+            }
+        } catch (Exception e) {
+            mcpLogError("modes", "easyModeManager update failed", e)
+            result.success = false
+            result.conditionsError = "Integrated Mode Manager conditions update failed: ${e.message}"
+        }
+    }
+    result.note = "Read current manager state + conditions with hub_list_modes (modeManager block)."
+    return result
+}
+
+def toolGetHsmStatus() {
+    def hsmStatus = location.hsmStatus
+    def hsmAlerts = location.hsmAlert
+
+    return [
+        status: hsmStatus,
+        // Interpret a null/empty status so callers don't see a bare null (HSM may
+        // be disabled, or hasn't reported a status yet). Known values: disarmed,
+        // armedAway, armedHome, armedNight.
+        statusText: hsmStatus ?: "unknown — HSM may be disabled or has not reported a status yet",
+        alert: hsmAlerts,
+        // Renamed from the overloaded `modes`: these are the HSM ARM commands for
+        // hub_set_hsm, NOT hub Day/Night/Away location modes (a separate concept).
+        armCommands: ["disarm", "armAway", "armHome", "armNight"]
+    ]
+}
+
+// READ the hub's current network configuration -- the `network` block hub_get_info(includeNetwork=true)
+// folds in, and the read counterpart of hub_set_system_settings(network:...). Reads GET
+// /hub2/networkConfiguration (the JSON the Settings -> Network page loads via
+// reloadNetworkConfiguration()/processNetworkConfiguration(); field names RE'd from
+// resources/hub2-source/vue-hub2.min.js, see that folder's README endpoint inventory). SECURITY: the
+// endpoint returns the joined WiFi SSID (wifiNetwork) but NEVER the password/psk, and this helper
+// projects an explicit allowlist of fields -- a psk-like key would be dropped even if a future firmware
+// added one. The current LAN address is deliberately omitted: hub_get_info already reports it as localIP.
+// A degraded read returns the structured {success:false,error,note} block, never a throw.
+private Map _readHubNetworkSettings() {
+    // (a) HTTP round-trip: a throw here is an unreachable endpoint or a firmware lacking the
+    // /hub2/networkConfiguration surface -- NOT a body that came back and failed to parse.
+    String raw
+    try {
+        raw = hubInternalGet("/hub2/networkConfiguration")
+    } catch (Exception e) {
+        mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration request failed: ${e.message}")
+        return [success: false,
+                error: "Could not read network configuration (/hub2/networkConfiguration): ${e.message}",
+                note: "The endpoint was unreachable or the firmware predates it; verify the hub responds. " +
+                      "See hub_get_tool_guide(section='hub_admin_write_system')."]
+    }
+    if (!raw?.trim()) {
+        mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration returned an empty body")
+        return [success: false,
+                error: "The /hub2/networkConfiguration response was empty.",
+                note: "The hub may be busy or mid-reboot; retry shortly. " +
+                      "See hub_get_tool_guide(section='hub_admin_write_system')."]
+    }
+    def parsed
+    try {
+        parsed = new groovy.json.JsonSlurper().parseText(raw)
+    } catch (Exception e) {
+        mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration body did not parse as JSON: ${e.message}")
+        return [success: false,
+                error: "The /hub2/networkConfiguration response did not parse as JSON: ${e.message}",
+                note: "The hub returned a non-JSON body (transient error or a changed response shape); retry. " +
+                      "See hub_get_tool_guide(section='hub_admin_write_system')."]
+    }
+    if (!(parsed instanceof Map)) {
+        mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration parsed to a non-object shape")
+        return [success: false,
+                error: "Unexpected /hub2/networkConfiguration response; it parsed as JSON but not as an object.",
+                note: "The endpoint returned an unrecognized shape. See hub_get_tool_guide(section='hub_admin_write_system')."]
+    }
+    // An empty or error object ({} or {success:false,...}) would otherwise project to success:true with
+    // every field null and dnsList:[] -- indistinguishable from a real "no DNS". Require at least one
+    // recognized network key before trusting the shape.
+    def knownKeys = ["usingStaticIP", "lanAddr", "wlanAddr", "dnsServers", "staticIP", "staticGateway",
+                     "staticSubnetMask", "staticNameServers", "dhcpNameServers", "useDNSFallover",
+                     "lanAutoneg", "hasEthernet", "hasWiFi", "wifiNetwork", "wifiDriversInstalled",
+                     "restartBonjourOnSchedule", "hubVersion"]
+    if (!knownKeys.any { parsed.containsKey(it) }) {
+        mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration had none of the expected network keys")
+        return [success: false,
+                error: "The /hub2/networkConfiguration response carried none of the expected network fields.",
+                note: "The hub returned an empty or unexpected object (transient error or a changed response shape); retry. See hub_get_tool_guide(section='hub_admin_write_system')."]
+    }
+
+    // Normalize a DNS list the hub may send as an array OR a comma/space-joined string into a clean list.
+    def dnsList = { v ->
+        if (v instanceof List) return v.collect { it?.toString() }.findAll { it }
+        if (v instanceof String && v.trim()) return v.split(/[,\s]+/).findAll { it }.toList()
+        return []
+    }
+
+    // usingStaticIP must be a real Boolean to decide the mode. A missing/null/non-Boolean value means
+    // the hub did not report it -- report ipMode "unknown" rather than silently claiming "dhcp".
+    def rawStatic = parsed.usingStaticIP
+    String ipMode = (rawStatic instanceof Boolean) ? (rawStatic ? "static" : "dhcp") : "unknown"
+    // EXPLICIT allowlist projection -- never a passthrough. The endpoint returns the SSID (wifiNetwork)
+    // but no password; projecting a fixed field set guarantees no secret leaks even if firmware changes.
+    return [
+        success: true,
+        ipMode: ipMode,
+        currentWifiAddress: parsed.wlanAddr,
+        activeDnsServers: dnsList(parsed.dnsServers),
+        // Static-IP config (the hub reports the saved values whether or not static is the active mode).
+        staticIp: parsed.staticIP,
+        staticGateway: parsed.staticGateway,
+        staticSubnetMask: parsed.staticSubnetMask,
+        staticNameServers: dnsList(parsed.staticNameServers),
+        // DHCP config.
+        dhcpNameServers: dnsList(parsed.dhcpNameServers),
+        useDNSFallover: parsed.useDNSFallover,
+        // Ethernet / WiFi (SSID only).
+        ethernetAutoneg: parsed.lanAutoneg,
+        hasEthernet: parsed.hasEthernet,
+        hasWiFi: parsed.hasWiFi,
+        wifiSsid: parsed.wifiNetwork,
+        wifiDriversInstalled: parsed.wifiDriversInstalled,
+        restartBonjourOnSchedule: parsed.restartBonjourOnSchedule,
+        hubVersion: parsed.hubVersion,
+        note: "The Wi-Fi password is never returned (wifiSsid only). The current LAN address is reported as localIP on hub_get_info. Change these with hub_set_system_settings(network:...). " +
+              "See hub_get_tool_guide(section='hub_admin_write_system')."
+    ]
+}
+
+def toolSetHsm(armCommand) {
+    def validCommands = ["armAway", "armHome", "armNight", "disarm"]
+    if (!validCommands.contains(armCommand)) {
+        throw new IllegalArgumentException("Invalid HSM arm command: ${armCommand}. Valid commands: ${validCommands}")
+    }
+
+    // Capture current status BEFORE sending the change event
+    def previousStatus = location.hsmStatus ?: "unknown"
+    sendLocationEvent(name: "hsmSetArm", value: armCommand)
+
+    return [
+        success: true,
+        previousStatus: previousStatus,
+        newMode: armCommand
+    ]
+}
+
+// hub_create_backup (toolCreateHubBackup) + backupResponseSink moved to McpItemBackupsLib
+// (issue #259 item #1: the whole hub-DB backup domain — create/list/restore/delete/schedule/upload
+// — is consolidated there under the hub_manage_backup gateway).
+
+def toolRebootHub(args) {
+    requireDestructiveConfirm(args.confirm)
+
+    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
+
+    try {
+        def responseText = hubInternalPost("/hub/reboot")
+        return [
+            success: true,
+            message: "Hub reboot initiated. The hub will be unreachable for 1-3 minutes.",
+            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            warning: "All automations and device communications will stop during reboot. The hub will restart automatically.",
+            response: responseText?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "Hub reboot failed", e)
+        return [
+            success: false,
+            error: "Reboot failed: ${e.message}",
+            note: "The reboot command could not be sent. Check Hub Security credentials or try rebooting manually from the Hubitat web UI at Settings → Reboot Hub."
+        ]
+    }
+}
+
+def toolShutdownHub(args) {
+    requireDestructiveConfirm(args.confirm)
+
+    mcpLog("warn", "hub-admin", "Hub SHUTDOWN initiated by MCP -- hub will NOT restart automatically")
+
+    try {
+        def responseText = hubInternalPost("/hub/shutdown")
+        return [
+            success: true,
+            message: "Hub shutdown initiated. The hub will power off and will NOT restart automatically.",
+            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            warning: "The hub is powering down. To restart, you must physically unplug and replug the hub power cable. ALL smart home functionality will stop until the hub is manually restarted.",
+            response: responseText?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "Hub shutdown failed", e)
+        return [
+            success: false,
+            error: "Shutdown failed: ${e.message}",
+            note: "The shutdown command could not be sent. Check Hub Security credentials or try shutting down manually from the Hubitat web UI."
+        ]
+    }
+}
+
+def isNewerVersion(String remote, String local) {
+    // Null guard: callers may pass null when the remote manifest fetch
+    // returns no version field. Treat as "not newer" so update prompts
+    // are suppressed rather than NPE-crashing the version-check path.
+    if (remote == null || local == null) return false
+    // Strict semver only. Non-numeric or suffixed versions (e.g., "0.10.0-rc1",
+    // "v0.10.0", whitespace) would otherwise throw NumberFormatException inside
+    // the tokenize/collect below -- caught but silently returning false, which
+    // means users stop getting update prompts without knowing why.
+    def semverPattern = ~/^\d+\.\d+\.\d+$/
+    if (!(remote ==~ semverPattern)) {
+        mcpLog("warn", "server", "Remote version not strict semver: '${remote}' -- skipping comparison")
+        return false
+    }
+    if (!(local ==~ semverPattern)) {
+        mcpLog("warn", "server", "Local version not strict semver: '${local}' -- skipping comparison")
+        return false
+    }
+    try {
+        def remoteParts = remote.tokenize('.').collect { it as int }
+        def localParts = local.tokenize('.').collect { it as int }
+        def maxLen = Math.max(remoteParts.size(), localParts.size())
+        for (int i = 0; i < maxLen; i++) {
+            def r = i < remoteParts.size() ? remoteParts[i] : 0
+            def l = i < localParts.size() ? localParts[i] : 0
+            if (r > l) return true
+            if (r < l) return false
+        }
+        return false
+    } catch (Exception e) {
+        mcpLog("warn", "server", "Version comparison failed: ${e.message}")
+        return false
+    }
+}
+
+// Derived LIVE from the last-checked latestVersion vs the version installed NOW, so a stored flag
+// can't go stale after an upgrade (a boolean stays true until the next async check overwrites it, so
+// a hub already on the newest release would read "update available: <older>"). isNewerVersion
+// null-guards and rejects non-semver, so the "check in progress" sentinel compares as not-newer.
+def appUpdateAvailable() {
+    return isNewerVersion(_latestKnownVersion(), currentVersion())
+}
+
+def _latestKnownVersion() {
+    String appKey = _stateOwnerKey()
+    synchronized (LATEST_VERSION_SEEN) {
+        if (LATEST_VERSION_SEEN.containsKey(appKey)) return LATEST_VERSION_SEEN.get(appKey)
+    }
+    def latest = state.updateCheck?.latestVersion
+    // A response handled since the state read above wins over this possibly older snapshot.
+    synchronized (LATEST_VERSION_SEEN) {
+        if (!LATEST_VERSION_SEEN.containsKey(appKey)) LATEST_VERSION_SEEN.put(appKey, latest)
+        return LATEST_VERSION_SEEN.get(appKey)
+    }
+}
+
+def checkForUpdate() {
+    try {
+        // Skip if checked within last 24 hours (unless forced)
+        if (state.updateCheck?.checkedAt) {
+            def msSinceCheck = now() - state.updateCheck.checkedAt
+            if (msSinceCheck < 24 * 60 * 60 * 1000) {
+                def hoursSinceCheck = (int)(msSinceCheck / (1000 * 60 * 60))
+                mcpLog("debug", "server", "Version check skipped - last checked ${hoursSinceCheck} hours ago")
+                return
+            }
+        }
+        doUpdateCheck()
+    } catch (Exception e) {
+        mcpLog("warn", "server", "Version update check failed: ${e.message}")
+    }
+}
+
+// Returns true when the async request was scheduled, false when asynchttpGet threw before scheduling
+// it -- the boolean lets a caller surface an honest checkInProgress rather than claim a refresh that
+// isn't actually pending.
+def doUpdateCheck() {
+    try {
+        def params = [
+            uri: "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json",
+            contentType: "application/json",
+            timeout: 30
+        ]
+        asynchttpGet("handleUpdateCheckResponse", params)
+        return true
+    } catch (Exception e) {
+        mcpLog("warn", "server", "Failed to initiate version check: ${e.message}")
+        return false
+    }
+}
+
+def handleUpdateCheckResponse(resp, data) {
+    try {
+        if (resp.status != 200) {
+            mcpLog("warn", "server", "Version check HTTP error: ${resp.status}")
+            // Merge checkedAt + lastError onto the existing record (do NOT replace it)
+            // so the first-install gate in initialize() flips and the 24h guard engages
+            // even when the check never succeeds (e.g. a hub that can't reach GitHub),
+            // WITHOUT clobbering a previously-known latestVersion -- a transient failure
+            // must not silently drop an already-surfaced update banner.
+            state.updateCheck = (state.updateCheck ?: [:]) + [checkedAt: now(), lastError: "http ${resp.status}"]
+            return
+        }
+        def json = new groovy.json.JsonSlurper().parseText(resp.data)
+        def latestVersion = json.version
+        if (!latestVersion) {
+            mcpLog("warn", "server", "Version check: no version field in response")
+            state.updateCheck = (state.updateCheck ?: [:]) + [checkedAt: now(), lastError: "no version field"]
+            return
+        }
+        def installed = currentVersion()
+        // Store only the raw inputs; "is an update available" is derived live at read time
+        // (appUpdateAvailable) so a stored flag can't survive an upgrade and read as stale.
+        def updateAvailable = isNewerVersion(latestVersion, installed)
+        state.updateCheck = [
+            latestVersion: latestVersion,
+            checkedAt: now()
+        ]
+        synchronized (LATEST_VERSION_SEEN) { LATEST_VERSION_SEEN.put(_stateOwnerKey(), latestVersion) }
+        if (updateAvailable) {
+            log.info "MCP Rule Server update available: v${latestVersion} (installed: v${installed})"
+        } else {
+            mcpLog("debug", "server", "MCP Rule Server is up to date (v${installed})")
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "server", "Version check response parsing failed: ${e.message}")
+        state.updateCheck = (state.updateCheck ?: [:]) + [checkedAt: now(), lastError: e.message]
+    }
+}
+
+// hub_update_firmware: install the hub's pending platform/firmware update via the cloud-update
+// endpoints (/hub/cloud/updatePlatform downloads + installs; the hub reboots itself when the install
+// completes). statusOnly polls /hub/cloud/checkUpdateStatus without applying. The pending-update read
+// lives in hub_get_info (platformUpdate); this tool also runs the live /hub/cloud/checkForUpdate.
+def toolUpdateFirmware(args) {
+    if (args?.statusOnly == true) {
+        try {
+            def st = hubInternalGet("/hub/cloud/checkUpdateStatus", null, 30)
+            def parsed = st?.take(200)
+            try { if (st) parsed = new groovy.json.JsonSlurper().parseText(st) } catch (Exception ignore) { }
+            return [
+                success: true,
+                statusOnly: true,
+                status: parsed,
+                note: "Install progress (status is IDLE when none is running). The endpoint goes dark during the reboot; confirm the new firmwareVersion via hub_get_info afterwards."
+            ]
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "Firmware update status poll failed", e)
+            return [success: false, error: "Update status poll failed: ${e.message}", note: "Check Hub Security credentials."]
+        }
+    }
+
+    requireDestructiveConfirm(args.confirm)
+    mcpLog("warn", "hub-admin", "Hub firmware update initiated by MCP (install + self-reboot)")
+    try {
+        def check = _parseFirmwareCheck(hubInternalGet("/hub/cloud/checkForUpdate", null, 60))
+        def resp = hubInternalGet("/hub/cloud/updatePlatform", null, 60)
+        return [
+            success: true,
+            message: "Firmware update initiated. The hub downloads and installs the pending update, then reboots itself (5-10 minutes total).",
+            available: check,
+            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            warning: "All automations and device communications stop during the install and reboot. Poll progress with hub_update_firmware(statusOnly=true); confirm the new version via hub_get_info afterwards.",
+            response: resp?.take(500)
+        ]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "Hub firmware update failed", e)
+        return [
+            success: false,
+            error: "Firmware update failed: ${e.message}",
+            note: "The update command could not be sent. Check Hub Security credentials, or apply it from the hub UI (Settings -> Check for Updates)."
+        ]
+    }
+}
+
+// Parse /hub/cloud/checkForUpdate: the cloud check's own fields {version, upgrade, status,
+// releaseNotesUrl, beta, hubCount}. accountEmails (the owner's account email) is dropped so the
+// owner's address never reaches a client. A reply that is not a JSON object is not returned, since
+// it cannot be redacted.
+private Map _parseFirmwareCheck(rawText) {
+    try {
+        def p = rawText ? new groovy.json.JsonSlurper().parseText(rawText) : null
+        if (p instanceof Map) {
+            def out = [:] + p
+            out.remove("accountEmails")
+            return out
+        }
+        return [parseError: "The update check did not answer with a JSON object."]
+    } catch (Exception ignored) {
+        return [parseError: "The update check's answer could not be parsed as JSON."]
+    }
+}
+
+def _getAllToolDefinitions_partSystem() {
+    return [
+        // System Tools
+        [
+            name: "hub_get_info",
+            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, the calling MCP client, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write_system')[[FLAT_TRIM]] for the optional deep-dive flags and PII gating[[/FLAT_TRIM]].",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
+                    includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
+                    includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.[[FLAT_TRIM]] The check is async, so appUpdate reflects the prior completed check and carries checkInProgress; call again in a few seconds for the freshest result.[[/FLAT_TRIM]]", default: false],
+                    includeSubscriptions: [type: "boolean", description: "[[FLAT_TRIM]]Include Hubitat subscription status under `subscriptions`.[[/FLAT_TRIM]]", default: false],
+                    includeNetwork: [type: "boolean", description: "Include the hub's network config under `network`.[[FLAT_TRIM]] IP mode, the saved static IP/gateway/subnet (reported whether or not static is the active mode; null on DHCP-only hubs), DNS, Ethernet autoneg and Wi-Fi SSID (never the Wi-Fi password); the read counterpart of hub_set_system_settings(network:...).[[/FLAT_TRIM]]", default: false]
+                ]
+            ]
+        ],
+        [
+            name: "hub_list_modes",
+            description: "List the hub's location modes (with the active one) + Mode Manager state.[[FLAT_TRIM]] Use it to get valid mode names + ids (hub-specific, e.g. Day/Night/Away) before activating/renaming/deleting a mode.[[/FLAT_TRIM]]",
+            inputSchema: [type: "object", properties: [:]]
+        ],
+        [
+            name: "hub_manage_mode",
+            description: """⚠️ Create, rename, delete, or activate a hub location mode.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    action: [type: "string", enum: ["create", "rename", "delete", "activate"], description: "Which mode operation to perform."],
+                    name: [type: "string", description: "New mode name (create), or the new name (rename)."],
+                    mode: [type: "string", description: "Target for rename/delete/activate: id or name (from hub_list_modes)."],
+                    icon: [type: "string", description: "OPTIONAL icon for create/rename, e.g. fa-moon."],
+                    confirm: [type: "boolean", description: "REQUIRED for action=delete: true + a backup <24h (hub_create_backup). Confirms a backup <24h + that breaking mode references is intended."],
+                    args: [type: "object"]
+                ],
+                required: ["action"]
+            ]
+        ],
+        [
+            name: "hub_set_mode_manager",
+            description: """Configure the hub's Mode Manager — select which manager runs and/or set its per-mode conditions.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate."],
+                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide(section='hub_admin_write_system')."],
+                    args: [type: "object"]
+                ]
+            ]
+        ],
+        [
+            name: "hub_get_hsm_status",
+            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands.[[FLAT_TRIM]] See hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]",
+            inputSchema: [type: "object", properties: [:]]
+        ],
+        [
+            name: "hub_set_hsm",
+            description: "Set Hubitat Safety Monitor (HSM) arm state. Always verify HSM changed after.",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    armCommand: [type: "string", enum: ["armAway", "armHome", "armNight", "disarm"], description: "HSM arm command."],
+                    args: [type: "object"]
+                ],
+                required: ["armCommand"]
+            ]
+        ],
+        [
+            name: "hub_set_system_settings",
+            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, network config[[FLAT_TRIM]], and dismissing a hub alert[[/FLAT_TRIM]]. All optional — pass only what changes. See hub_get_tool_guide(section='hub_admin_write_system') for the per-field write model and reboot caveats.""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    hubName: [type: "string", description: "New hub name."],
+                    timeZone: [type: "string", description: "IANA time zone ID, e.g. America/New_York. ⚠️ Reboots the hub."],
+                    latitude: [type: "number", description: "Latitude in decimal degrees, e.g. 40.7128."],
+                    longitude: [type: "number", description: "Longitude in decimal degrees, e.g. -74.006."],
+                    zipCode: [type: "string", description: "Postal/zip code, e.g. 10001."],
+                    temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale."],
+                    darkMode: [type: "boolean", description: "Hub admin UI dark mode (true) or light (false)."],
+                    dismissAlert: [type: "object", description: "[[FLAT_TRIM]]Dismiss a hub alert: {key, version?} from healthAlerts.items.[[/FLAT_TRIM]]"],
+                    network: [type: "object", description: "⚠️ Hub network config — can DISCONNECT the hub; needs confirm=true + a backup <24h.", properties: [
+                        ipMode: [type: "string", enum: ["dhcp", "static"], description: "[[FLAT_TRIM]]IP mode.[[/FLAT_TRIM]]"],
+                        address: [type: "string", description: "[[FLAT_TRIM]]Static IP address.[[/FLAT_TRIM]]"],
+                        netmask: [type: "string", description: "[[FLAT_TRIM]]Static subnet mask.[[/FLAT_TRIM]]"],
+                        gateway: [type: "string", description: "[[FLAT_TRIM]]Static gateway.[[/FLAT_TRIM]]"],
+                        nameserver: [type: "string", description: "[[FLAT_TRIM]]DNS nameserver(s).[[/FLAT_TRIM]]"],
+                        useDNSFallover: [type: "boolean", description: "[[FLAT_TRIM]]DHCP DNS failover.[[/FLAT_TRIM]]"],
+                        ethernetAutoneg: [type: "boolean", description: "[[FLAT_TRIM]]Ethernet autonegotiation.[[/FLAT_TRIM]]"],
+                        wifiSsid: [type: "string", description: "[[FLAT_TRIM]]WiFi SSID to join.[[/FLAT_TRIM]]"],
+                        wifiPassword: [type: "string", description: "[[FLAT_TRIM]]WiFi password (psk).[[/FLAT_TRIM]]"]
+                    ]],
+                    confirm: [type: "boolean", description: "REQUIRED (true) for timeZone or network changes; both need a backup <24h (hub_create_backup)."],
+                    args: [type: "object"]
+                ]
+            ]
+        ],
+        [
+            name: "hub_get_hub_mesh",
+            description: """Read Hub Mesh config: enabled state, peer hubs, shared/linked devices + variables (hub-to-hub sharing, NOT the Z-Wave/Zigbee radio mesh).[[FLAT_TRIM]] Radio topology is hub_get_radio_details. Peers auto-discover on the LAN (no "add peer" op). Unshared devices and local hub variables come back as counts only (privateDeviceCount / localHubVariableCount — hub_list_devices / hub_list_variables carry the full lists); modeHubId 'none' = local modes. Full field reference: hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    include_token: [type: "boolean", description: "Also return this hub's mesh token (a credential; off by default).[[FLAT_TRIM]] A peer hub needs it to reach THIS hub when THIS hub has UI login security.[[/FLAT_TRIM]]"]
+                ]
+            ]
+        ],
+        [
+            name: "hub_update_hub_mesh",
+            description: """Change Hub Mesh settings (hub-to-hub sharing, NOT the Z-Wave/Zigbee radios). All optional — pass only what changes. ⚠️ An `enabled` change needs a hub REBOOT (hub_reboot) to take effect.[[FLAT_TRIM]] The tool never reboots on its own. Applied fields are echoed in `applied`. Peers auto-discover on the LAN (no "add peer" write); per-DEVICE sharing is hub_update_device (meshEnabled; meshFullSync there is a LINKED-device sync flag, not a share). Read current config + valid peer hubIds via hub_get_hub_mesh; full write model in hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    enabled: [type: "boolean", description: "Hub Mesh on/off. ⚠️ Needs a hub reboot to take effect."],
+                    full_refresh_interval: [type: "integer", enum: _meshRefreshIntervals(), description: "Full-sync interval in seconds; 0 = never."],
+                    mode_hub_id: [type: "string", description: "Peer hubId whose modes to follow, or 'none' for local modes.[[FLAT_TRIM]] From hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
+                    peer_hub_id: [type: "string", description: "Peer hubId whose mesh token is stored here; send with peer_token.[[FLAT_TRIM]] A UUID (or legacy numeric id) from hub_get_hub_mesh peers[].hubId.[[/FLAT_TRIM]]"],
+                    peer_token: [type: "string", description: "That peer's mesh token; send with peer_hub_id.[[FLAT_TRIM]] Read it on the peer via hub_get_hub_mesh(include_token=true); needed when the peer has UI login security.[[/FLAT_TRIM]]"]
+                ]
+            ]
+        ],
+        [
+            name: "hub_reboot",
+            description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]
+
+PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
+                ],
+                required: ["confirm"]
+            ]
+        ],
+        [
+            name: "hub_shutdown",
+            description: """⚠️ EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]
+
+PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automatically 3) Get explicit confirmation 4) Set confirm=true[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the shutdown."]
+                ],
+                required: ["confirm"]
+            ]
+        ],
+        [
+            name: "hub_update_firmware",
+            description: """⚠️ DESTRUCTIVE: Install the hub's pending platform/firmware update. The hub downloads + installs it and then REBOOTS ITSELF (5-10 min of full downtime; all automations and device communications stop).[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]
+
+PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually pending 3) Tell user about the downtime 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]""",
+            inputSchema: [
+                type: "object",
+                properties: [
+                    statusOnly: [type: "boolean", description: "Poll the hub's update status only and return without applying anything. No confirm/backup needed. Default false."],
+                    confirm: [type: "boolean", description: "REQUIRED to apply (omit for statusOnly): must be true. Confirms a backup <24h exists and the user approved the install + reboot."],
+                    args: [type: "object"]
+                ]
+            ]
+        ],
+    ]
+}
+
+def _readOnlyToolNames_partSystem() {
+    // Read-only classification membership for this library's tools, contributed to the
+    // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
+    // the tool). A tool absent from every part list is write+destructive by default.
+    return [
+        // Hub state reads (hub_get_info folds in the network-config read via includeNetwork)
+        "hub_get_info", "hub_list_modes", "hub_get_hsm_status", "hub_get_hub_mesh"
+    ]
+}
+
+def _idempotentWriteToolNames_partSystem() {
+    // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
+    // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
+    return [
+        // Hub state
+        "hub_set_hsm", "hub_set_mode_manager",
+        // hub_update_hub_mesh: every leg assigns a value or flips a persistent flag
+        // (enable/disable, sync interval, mode-following hub, a peer's stored token), so an
+        // identical retry converges on the same state with no additional effect. The tool
+        // itself never reboots -- the reboot an `enabled` change needs is the caller's own
+        // separate hub_reboot -- so retrying it cannot re-trigger one.
+        "hub_update_hub_mesh"
+        // hub_set_system_settings is deliberately OMITTED here (non-idempotent): its timeZone leg
+        // reboots the hub, so a retry with the same args re-triggers the reboot -- not "no additional
+        // effect" -- which is the conservative, accurate idempotentHint for this tool.
+    ]
+}
+
+def _openWorldToolNames_partSystem() {
+    // Tools in this library that reach BEYOND the hub to the open internet (MCP
+    // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
+    return [
+        // hub_get_info reaches GitHub for the app-version check when includeAppUpdate=true;
+        // hub_update_firmware drives the hub's cloud download/install of the platform update.
+        "hub_get_info", "hub_update_firmware"
+    ]
+}
+
+def _toolDisplayMeta_partSystem() {
+    // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
+    // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
+    return [
+        // Hub state + modes
+        hub_get_info: [title: "Get Hub Info", summary: "Comprehensive hub info: hardware, health, firmware/platform-update status, network, and MCP stats."],
+        hub_list_modes: [title: "List Modes", summary: "List the hub's location modes, the active one, and Mode Manager state."],
+        hub_manage_mode: [title: "Manage Modes", summary: "Create, rename, delete, or activate a hub location mode."],
+        hub_set_mode_manager: [title: "Set Mode Manager", summary: "Pick the Mode Manager and update its per-mode conditions."],
+        hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
+        hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
+        hub_set_system_settings: [title: "Set System Settings", summary: "Set hub name, time zone, location, zip, temperature scale, dark mode, network config, or dismiss a hub alert."],
+        // Hub Mesh (hub-to-hub sharing; NOT the Z-Wave/Zigbee radio mesh)
+        hub_get_hub_mesh: [title: "Get Hub Mesh", summary: "Read Hub Mesh config: enabled state, peer hubs, shared and linked devices/variables, sync interval."],
+        hub_update_hub_mesh: [title: "Update Hub Mesh", summary: "Enable/disable Hub Mesh, set the sync interval, follow a peer's modes, or store a peer's mesh token."],
+        // Hub utilities
+        hub_update_firmware: [title: "Update Hub Firmware", summary: "Install the hub's pending platform/firmware update (downloads, installs, and reboots the hub)."],
+        // Destructive hub ops
+        hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime)."],
+        hub_shutdown: [title: "Shut Down Hub", summary: "Power the hub off; a physical restart is required afterwards."]
+    ]
+}
