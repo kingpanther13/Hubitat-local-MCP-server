@@ -12,7 +12,7 @@
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
             "name": "MCP Rule Server",
             "namespace": "mcp",
-            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-server.groovy",
+            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/hubitat-mcp-server.groovy",
             "required": true,
             "oauth": true,
             "primary": true
@@ -21,20 +21,12 @@
             "id": "b2c3d4e5-f6a7-8901-bcde-f23456789012",
             "name": "MCP Rule",
             "namespace": "mcp",
-            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-rule.groovy",
+            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/hubitat-mcp-rule.groovy",
             "required": true,
             "oauth": false,
             "primary": false
         }
     ],
     "drivers": [],
-    "bundles": [
-        {
-            "id": "7e3c1a8f-2b94-4d6e-9a51-2095099012ab",
-            "name": "MCP Rule Server Libraries",
-            "namespace": "mcp",
-            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/mcp-libraries.zip",
-            "required": true
-        }
-    ]
+    "bundles": []
 }
