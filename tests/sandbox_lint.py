@@ -5182,20 +5182,24 @@ def check_sandbox_map_subscripts(
             bounded = []
             # A literal list is a finite key set, but only if its actual values
             # exclude measured collisions. Never exempt a whole helper by name.
+            # `for (key in [...]) {` binds the same finite set as `[...].each { key ->`.
             literal_each = re.compile(
                 rf"\[(?P<values>[^\[\]\n]*)\]\.each\s*\{{\s*(?P<key>{ident})\s*->"
+                rf"|\bfor\s*\(\s*(?P<forkey>{ident})\s+in\s+\[(?P<forvalues>[^\[\]\n]*)\]\s*\)\s*\{{"
             )
             for loop in literal_each.finditer(raw_body):
-                values = loop.group("values")
+                is_for = loop.group("forkey") is not None
+                key = loop.group("forkey" if is_for else "key")
+                values = loop.group("forvalues" if is_for else "values")
                 literals = re.findall(r"(['\"])([^'\"$\\]*)\1", values)
                 remainder = re.sub(r"(['\"])([^'\"$\\]*)\1", "", values)
                 if (literals and re.fullmatch(r"[\s,]*", remainder)
                         and not any(value in collisions for _, value in literals)
-                        and body[loop.start():].startswith("[")):
+                        and body[loop.start():].startswith("for" if is_for else "[")):
                     brace = loop.end() - 1
                     stop = close_brace(body, brace)
-                    if key_binding_unchanged(loop.group("key"), body[loop.end():stop]):
-                        bounded.append((loop.group("key"), brace, stop))
+                    if key_binding_unchanged(key, body[loop.end():stop]):
+                        bounded.append((key, brace, stop))
             for branch in bounded_if_re.finditer(raw_body):
                 if branch.group("literal") in collisions:
                     continue

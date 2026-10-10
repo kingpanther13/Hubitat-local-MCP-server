@@ -591,6 +591,21 @@ private def copyStatus(Map source, String key) {
 
 
 
+def test_sandbox_map_guard_bounds_keys_of_a_for_loop_over_a_literal_list():
+    source = """
+private def copyStatus(Map source) {
+    def output = [:]
+    for (field in ['status', 'success']) { output[field] = source.get(field) }
+    for (field in ['status', 'fields']) { output[field] = true }
+    return output
+}
+"""
+    findings = sandbox_map_findings(source)
+    assert len(findings) == 1
+    assert "write candidate output[field]" in findings[0]["message"]
+    assert findings[0]["line"] == 5
+
+
 @pytest.mark.parametrize("key", ["fields", "class", "metaClass"])
 @pytest.mark.parametrize("access", ["return copy['KEY']", "copy['KEY'] = false"])
 def test_measured_untyped_literal_collisions_block_reads_and_writes(key, access):
