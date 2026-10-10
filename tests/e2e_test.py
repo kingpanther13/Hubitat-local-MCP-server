@@ -14032,39 +14032,30 @@ class TestRunner:
         libs = result if isinstance(result, list) else result.get("libraries", [])
         assert isinstance(libs, list), "hub_list_libraries did not return a list"
         source = result.get("source") if isinstance(result, dict) else None
-        # The library-PRESENCE assertions below require the hub's library API to return its
-        # populated JSON-array shape (source == "hub_api"). The degraded shapes
-        # (hub_api_raw / unavailable) return an empty list, so requiring hub_api here turns a
-        # genuinely-unreadable library API into a clear failure instead of a misleading
-        # "McpRoomsLib not found (got [])". level99's hub returns the array today.
+        # The assertions below require the hub's library API to return its populated JSON-array
+        # shape (source == "hub_api"). The degraded shapes (hub_api_raw / unavailable) return an
+        # empty list, so requiring hub_api here turns a genuinely-unreadable library API into a
+        # clear failure. level99's hub returns the array today.
         assert source == "hub_api", (
-            f"hub_list_libraries did not return the populated hub API shape (source={source!r}); "
-            "cannot validate bundle-delivered libraries"
+            f"hub_list_libraries did not return the populated hub API shape (source={source!r})"
         )
         for lib in libs:
             assert "id" in lib and "name" in lib, "library summary missing id/name"
             assert "source" not in lib, "hub_list_libraries should omit source (read it via hub_get_source)"
-        # issue #209: the watchdog PR-install step delivers the package's libraries (mcp
-        # namespace) into Libraries Code via the bundle .zip (the #include's library leg), so they must
-        # be present here. Proves the libraries were actually added to Libraries Code on the hub (not
-        # just that the app compiled).
-        lib_names = [lib.get("name") for lib in libs]
-        # McpRoomsLib is the first REAL extracted module (hub_*_room impls) -- permanent.
-        rooms_lib = next((lib for lib in libs
-                          if lib.get("name") == "McpRoomsLib" and lib.get("namespace") == "mcp"), None)
-        assert rooms_lib, f"McpRoomsLib not found in hub libraries (got {lib_names})"
-        expected = (Path(__file__).resolve().parent.parent / "libraries" / "mcp-rooms-lib.groovy").read_text(
-            encoding="utf-8")
-        # Stay below the source reader's automatic File Manager save threshold.
-        assert len(expected) <= 64000, "Choose a smaller installed library for the read-only source check"
+        # The package ships no libraries since issue #522 (the parent is installed with them
+        # inlined): a fresh hub lists none of ours, a hub upgraded from 4.6.0 still carries the old
+        # `mcp` ones. Validate the list against the source reader on whichever library the hub has.
+        if not libs:
+            print("    [INFO] hub has no Libraries Code entries; list shape validated, source cross-check skipped")
+            return
+        lib = libs[0]
         readback = self.client.call_tool("hub_get_source", {
-            "type": "library", "id": str(rooms_lib["id"]), "length": len(expected),
+            "type": "library", "id": str(lib["id"]), "length": 4000,
         })
         assert readback.get("success") is True, f"installed library source read failed: {readback}"
-        assert readback.get("source", "").replace("\r\n", "\n") == expected, \
-            "installed McpRoomsLib source does not match the deployed branch"
-        assert readback.get("version") is not None and readback.get("version") == rooms_lib.get("version"), \
-            f"library source/list versions differ: source={readback.get('version')}, list={rooms_lib.get('version')}"
+        assert readback.get("source"), f"library {lib['id']} read back empty"
+        assert readback.get("version") is not None and readback.get("version") == lib.get("version"), \
+            f"library source/list versions differ: source={readback.get('version')}, list={lib.get('version')}"
 
     def _hub_fw_at_least(self, version: str) -> bool:
         """Whether the hub's firmware is at least `version` (dotted numbers), from one cached hub_get_info."""
