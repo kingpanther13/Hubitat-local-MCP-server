@@ -4232,8 +4232,8 @@ def _toolDisplayMeta_partVisualRules() {
     ]
 }
 
-// probe build marker 0.0.3
-private String _probeBuildMarkerMcpVisualRulesLib() { return "McpVisualRulesLib-0.0.3" }
+// probe build marker 0.0.4
+private String _probeBuildMarkerMcpVisualRulesLib() { return "McpVisualRulesLib-0.0.4" }
 
 
 // File Manager tools (issue #209 modularization). Gateway entries and dispatch
@@ -4687,8 +4687,8 @@ def _toolDisplayMeta_partFiles() {
     ]
 }
 
-// probe build marker 0.0.3
-private String _probeBuildMarkerMcpFilesLib() { return "McpFilesLib-0.0.3" }
+// probe build marker 0.0.4
+private String _probeBuildMarkerMcpFilesLib() { return "McpFilesLib-0.0.4" }
 
 
 // Item-backup tools (issue #209 modularization). The shared backupItemSource
@@ -12093,8 +12093,8 @@ def _toolDisplayMeta_partSystem() {
     ]
 }
 
-// probe build marker 0.0.3
-private String _probeBuildMarkerMcpSystemLib() { return "McpSystemLib-0.0.3" }
+// probe build marker 0.0.4
+private String _probeBuildMarkerMcpSystemLib() { return "McpSystemLib-0.0.4" }
 
 
 // Device tools (issue #209 modularization): reads, commands, history, update,
@@ -17956,8 +17956,8 @@ def _toolDisplayMeta_partDevices() {
     ]
 }
 
-// probe build marker 0.0.3
-private String _probeBuildMarkerMcpDevicesLib() { return "McpDevicesLib-0.0.3" }
+// probe build marker 0.0.4
+private String _probeBuildMarkerMcpDevicesLib() { return "McpDevicesLib-0.0.4" }
 
 
 // Virtual-device tools (issue #209 modularization). hub_list_devices'
@@ -20973,8 +20973,8 @@ def _toolDisplayMeta_partCustomRules() {
     ]
 }
 
-// probe build marker 0.0.3
-private String _probeBuildMarkerMcpCustomRulesLib() { return "McpCustomRulesLib-0.0.3" }
+// probe build marker 0.0.4
+private String _probeBuildMarkerMcpCustomRulesLib() { return "McpCustomRulesLib-0.0.4" }
 
 
 // Code-management tools (issue #209 modularization): apps, drivers, libraries
@@ -27578,8 +27578,8 @@ private Map _mrtrAppClonerStageSlice(Map cp, String operationLabel) {
     return result
 }
 
-// probe build marker 0.0.3
-private String _probeBuildMarkerMcpAppClonerLib() { return "McpAppClonerLib-0.0.3" }
+// probe build marker 0.0.4
+private String _probeBuildMarkerMcpAppClonerLib() { return "McpAppClonerLib-0.0.4" }
 
 
 // Discovery tools (issue #209 modularization): BM25 tool search + the tool-guide
@@ -44963,8 +44963,8 @@ def _toolDisplayMeta_partNativeRM() {
     ]
 }
 
-// probe build marker 0.0.3
-private String _probeBuildMarkerMcpNativeRulesLib() { return "McpNativeRulesLib-0.0.3" }
+// probe build marker 0.0.4
+private String _probeBuildMarkerMcpNativeRulesLib() { return "McpNativeRulesLib-0.0.4" }
 
 
 preferences {
@@ -57156,5 +57156,5 @@ def guideSubSectionLookup(subKey) {
     return [parent: parentKey, content: mine.join("\n")]
 }
 
-// probe build marker 0.0.3
-private String _probeBuildMarkerServer() { return "Server-0.0.3" }
+// probe build marker 0.0.4
+private String _probeBuildMarkerServer() { return "Server-0.0.4" }
