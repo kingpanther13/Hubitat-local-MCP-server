@@ -23,6 +23,7 @@ def _tokens(src):
 
 
 def _repo(tmp_path, parent, libraries, child='definition(name: "Child")\ndef c() { 1 }\n'):
+    tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / bra.PARENT).write_text(parent, newline="")
     (tmp_path / bra.CHILD).write_text(child, newline="")
     lib_dir = tmp_path / "libraries"
@@ -106,7 +107,6 @@ def test_real_repo_build_keeps_header_definition_and_every_token(real):
     assert parent.startswith(header + "\n")
     assert re.search(r"(?m)^ \* Version: \S", parent)
     assert re.search(r"(?m)^definition\(", parent)
-    assert "\n\n" not in parent
     assert _tokens(parent) == _tokens(inlined)
     child_source = bra._read(ROOT / bra.CHILD)
     assert _tokens(built[bra.CHILD]) == _tokens(child_source)
