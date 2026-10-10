@@ -993,6 +993,8 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 
 **Expected**: Discovers the top-level `hub_update_package` and calls it with `dryRun=true` (no `confirm` needed). Reports `success=true`, `dryRun=true`, no planned bundles (the package ships none since 4.7: the parent is installed with its libraries inlined) and planned apps (parent + child, the parent flagged as the self app, deployed last). No bundle or app write occurs.
 
+**Last live run**: 2026-10-10, C-8 2.5.2.129 running the build of 5d56054c, `dryRun=true` at that ref: pass -- `plannedBundles: []`, both apps planned from `bundle-artifacts/shas/<sha>/` with their byte counts, `MCP Rule Server` last with `isSelf: true`, no writes.
+
 ### T45 — Discover hub_list_backups (hub_read_apps_code)
 
 ```json
@@ -3533,7 +3535,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 }
 ```
 
-**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../<bundle>.zip', confirm:true})`. Result: `{success:true, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_apps` shows the bundle's app. This mirrors how Hubitat Package Manager delivers a package's library files — bundle fetched + unpacked into Libraries Code server-side, no UI.
+**Expected**: AI calls `hub_manage_code(tool='hub_install_bundle', args={importUrl:'https://.../<bundle>.zip', confirm:true})`. Result: `{success:true, endpoint:'/bundle2/uploadZipFromUrl', message:'Bundle installed...'}` on firmware >= 2.3.8.108 (older firmware uses `/bundle/uploadZipFromUrl`). A follow-up `hub_list_apps` shows the bundle's app. This exercises the hub's bundle fetch + unpack for app code (the fixture carries no libraries), the same server-side path Hubitat Package Manager uses for a bundle, no UI.
 
 ### T510 — hub_install_bundle refuses without confirm flag
 
@@ -3561,7 +3563,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "the Read master enabled. At least one code bundle is installed: on a fresh hub run T509 first and defer its teardown until this scenario completes; a hub upgraded from 4.6.0 or earlier still carries the unused mcp_libraries bundle, which also qualifies.",
+  "setup_prompt": "the Read master enabled. At least one code bundle is installed: on a fresh hub run T509 first and defer its teardown until T514 completes (T512, T513 and T514 reuse that fixture); a hub upgraded from 4.6.0 or earlier still carries the unused mcp_libraries bundle, which also qualifies here.",
   "test_prompt": "List the code bundles installed on the hub and tell me what each one contains."
 }
 ```
@@ -3572,7 +3574,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "the Write master enabled. Identify an installed bundle's id with hub_list_bundles (e.g. the mcp libraries bundle).",
+  "setup_prompt": "the Write master enabled. Identify an installed bundle's id with hub_list_bundles (the T509 fixture, kept installed through T514).",
   "test_prompt": "Export that bundle's zip to the File Manager, confirm the file actually landed, and tell me where to download it.",
   "teardown_prompt": "Optionally delete the exported .zip from the File Manager with hub_delete_file."
 }
@@ -3584,7 +3586,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "the Write master enabled, recent backup exists. Identify a DISPOSABLE bundle's id with hub_list_bundles -- do NOT target the required mcp libraries bundle.",
+  "setup_prompt": "the Write master enabled, recent backup exists. Identify the DISPOSABLE T509 fixture bundle's id with hub_list_bundles -- never a bundle another package installed.",
   "test_prompt": "Delete that disposable bundle by id and confirm it's gone."
 }
 ```

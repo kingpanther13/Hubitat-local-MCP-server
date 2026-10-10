@@ -206,26 +206,27 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
     // -------- importUrl integration: hub_update_app --------
 
-    def "hub_update_app with importUrl fetches via httpGet and POSTs the fetched source"() {
+    def "hub_update_app with importUrl fetches via httpGet and POSTs the fetched source; the self app takes no backup"() {
         given:
         enableWrite()
+        settingsMap.enableDeveloperMode = true   // self-update guard
         stubHttpGet(200, 'fetched-source-here')
         // The app's list row carries the current version without its source (issue #522: no full
-        // ajax/code fetch and no pre-update backup in importUrl mode, so the request holds one copy
-        // of the source while the hub compiles).
-        hubGet.register('/app/list/single/data/42') { params -> '[{"id": 42, "version": 7}]' }
+        // ajax/code fetch, and no pre-update backup for the package's own app -- its previous build
+        // is published -- so the request holds one copy of the source while the hub compiles).
+        hubGet.register('/app/list/single/data/178') { params -> '[{"id": 178, "version": 7}]' }
         def captured = [:]
         script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.path = path
             captured.body = body
-            [success: true, id: 42]
+            [success: true, id: 178]
         }
         int backups = 0
         script.metaClass.backupItemSource = { String type, String itemId -> backups++; [version: 7, fileName: 'b.json'] }
 
         when:
         def result = script.toolUpdateAppCode([
-            appId: '42',
+            appId: '178',
             importUrl: 'https://raw.example.com/app.groovy',
             confirm: true
         ])
@@ -235,28 +236,48 @@ class ToolImportUrlSpec extends ToolSpecBase {
         result.sourceMode == 'importUrl'
         result.sourceLength == 'fetched-source-here'.length()
         result.note?.contains('hub-side fetch')  // pins the "no agent transcript" semantic, not just the substring
-        result.note?.contains('No pre-update source backup')
+        result.sourceBackup?.startsWith('skipped')
         captured.path == '/app/saveOrUpdateJson'
         new groovy.json.JsonSlurper().parseText(captured.body).source == 'fetched-source-here'
         backups == 0
         !hubGet.calls.any { it.path == '/app/ajax/code' }
     }
 
-    def "hub_update_app with importUrl falls back to the full code fetch when the list row is unreadable"() {
+    def "hub_update_app with importUrl on any other app still backs up its current source first"() {
         given:
         enableWrite()
         stubHttpGet(200, 'fetched-source-here')
-        hubGet.register('/app/list/single/data/42') { params -> '<html>login</html>' }
+        hubGet.register('/app/list/single/data/42') { params -> '[{"id": 42, "version": 7}]' }
+        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true, id: 42] }
+        int backups = 0
+        script.metaClass.backupItemSource = { String type, String itemId -> backups++; [version: 7, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', importUrl: 'https://raw.example.com/app.groovy', confirm: true])
+
+        then:
+        result.success == true
+        result.sourceBackup == null
+        backups == 1
+        !hubGet.calls.any { it.path == '/app/ajax/code' }
+    }
+
+    def "hub_update_app with importUrl falls back to the full code fetch when the list row is unreadable"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        stubHttpGet(200, 'fetched-source-here')
+        hubGet.register('/app/list/single/data/178') { params -> '<html>login</html>' }
         hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "source": "old-source", "version": 9}' }
         def captured = [:]
         script.metaClass.hubInternalPostJson = { String path, String body ->
             captured.body = body
-            [success: true, id: 42]
+            [success: true, id: 178]
         }
-        script.metaClass.backupItemSource = { String type, String itemId -> throw new AssertionError('backup must not run in importUrl mode') }
+        script.metaClass.backupItemSource = { String type, String itemId -> throw new AssertionError('backup must not run for the self app in importUrl mode') }
 
         when:
-        def result = script.toolUpdateAppCode([appId: '42', importUrl: 'https://raw.example.com/app.groovy', confirm: true])
+        def result = script.toolUpdateAppCode([appId: '178', importUrl: 'https://raw.example.com/app.groovy', confirm: true])
 
         then:
         result.success == true

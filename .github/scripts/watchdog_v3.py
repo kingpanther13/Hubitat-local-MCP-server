@@ -582,9 +582,10 @@ def main(argv=None):
         args.run(args)
     except (HubError, ToolError, Unreadable) as error:
         raise SystemExit(f"::error::{error}") from None
-    except (OSError, ValueError, KeyError):
-        # Never print the exception: it can carry an endpoint URL and its token.
-        raise SystemExit("::error::An endpoint or input was unavailable; no write was retried") from None
+    except (OSError, ValueError, KeyError) as error:
+        # Never print the exception's text: it can carry an endpoint URL and its token. Its class
+        # name carries neither and tells a connection failure from a missing input.
+        raise SystemExit(f"::error::An endpoint or input was unavailable ({type(error).__name__}); no write was retried") from None
 
 
 if __name__ == "__main__":

@@ -1658,15 +1658,16 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
         sourceCode = args.source
     }
 
-    // Back up the current source unless the new one is published (importUrl, or the package
-    // deploy's verified download): its previous version lives at that URL's history, and the
-    // backup would add one more full copy of the old item to this request's heap while the hub
-    // compiles (issue #522). The 1h cache inside backupItemSource means parallel-agent conflicts
-    // cost nothing on the second call.
-    // hub_update_package passes sourceOrigin "published" with the built source it already holds.
-    def published = (sourceMode == "importUrl") || (args.sourceOrigin == "published")
+    // Back up the current source unless its previous version is known to be retained elsewhere:
+    // this package's own apps (every build is published under its ref; hub_update_package passes
+    // sourceOrigin "published" with the built source it already holds, and an importUrl update of
+    // the self app fetches such a build). The backup would add one more full copy of the old item
+    // to this request's heap while the hub compiles (issue #522). Arbitrary importUrl updates keep
+    // it: that URL may hold only the new source. The 1h cache inside backupItemSource means
+    // parallel-agent conflicts cost nothing on the second call.
+    def published = (args.sourceOrigin == "published") || (sourceMode == "importUrl" && isSelfUpdate)
     def itemBackup = published ? null : backupItemSource(type, itemId.toString())
-    if (published) mcpLog("info", "hub-admin", "Pre-update source backup skipped for ${type} ID ${itemId}: source is published (${sourceMode})")
+    if (published) mcpLog("info", "hub-admin", "Pre-update source backup skipped for ${type} ID ${itemId}: the package's previous build is published (${sourceMode})")
 
     // Fresh version for optimistic locking (resave mode already fetched it). The item's list row
     // carries the version without the source; the full ajax/code fetch is only the fallback.
@@ -1809,7 +1810,8 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
             ]
             if (sourceMode == "resave") successResult.note = "Source was fetched and re-saved entirely on-hub — no cloud round-trip."
             if (sourceMode == "sourceFile") successResult.note = "Source was read from File Manager file '${args.sourceFile}' — no cloud size limits."
-            if (sourceMode == "importUrl") successResult.note = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript). No pre-update source backup was taken: the previous source is at that URL's history."
+            if (sourceMode == "importUrl") successResult.note = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript)."
+            if (published) successResult.sourceBackup = "skipped: the package's previous build is published under its own ref"
 
             // Optional triggerUpdated: fire updated() on the named running instance so
             // subscriptions/schedules/atomicState re-initialize against the new code.

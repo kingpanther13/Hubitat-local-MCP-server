@@ -15497,12 +15497,17 @@ class TestRunner:
         result = self.client.call_tool("hub_update_package", {"ref": "main", "dryRun": True})
         assert result.get("success") is True, f"dry-run did not succeed: {result}"
         assert result.get("dryRun") is True, f"dryRun flag not echoed: {result}"
-        # The library bundle is planned, re-anchored to the deploy ref.
         bundles = result.get("plannedBundles") or []
-        assert any((b.get("url") or "").endswith(".zip") and "/main/" in (b.get("url") or "")
-                   for b in bundles), f"expected a planned library bundle re-anchored to 'main': {bundles}"
-        # Both apps are planned; exactly one self app (the parent), and it is listed LAST.
         apps = result.get("plannedApps") or []
+        if bundles:
+            # A manifest that still declares the library bundle plans it, re-anchored to the deploy ref.
+            assert any((b.get("url") or "").endswith(".zip") and "/main/" in (b.get("url") or "")
+                       for b in bundles), f"expected a planned library bundle re-anchored to 'main': {bundles}"
+        else:
+            # Since issue #522 the package ships no bundle: both apps come from the published build.
+            assert apps and all("/bundle-artifacts/" in (a.get("url") or "") and a.get("expectedBytes")
+                                for a in apps), f"expected both apps planned from the published build: {apps}"
+        # Both apps are planned; exactly one self app (the parent), and it is listed LAST.
         names = [a.get("name") for a in apps]
         assert "MCP Rule Server" in names, f"parent app missing from the plan: {apps}"
         self_apps = [a for a in apps if a.get("isSelf")]

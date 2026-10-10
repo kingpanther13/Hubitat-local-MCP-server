@@ -225,7 +225,7 @@ PR #202 (merged 2026-05-19) established the readOnlyHint/destructiveHint baselin
 
 ## The custom MCP rule engine is legacy
 
-`hubitat-mcp-rule.groovy` (the MCP child app, surfaced through the `custom_*` tools) is **legacy**. It still ships and still gets bug fixes, but it is **closed to new feature work** — Hubitat's native Rule Machine is the supported path now and exposes equivalent functionality through `hub_set_rule` (in the `hub_manage_rule_machine` gateway) plus `hub_set_native_app` / `hub_delete_native_app` and the rest of the `hub_manage_native_rules_and_apps` group. New rule-related capabilities should land on the parent app's native-RM tools, not on the child app. The release bot does not bump the child's ` * Version:` header (it stays at the version of its last change), so the shipped child file only changes when its code does. If a feature request lands on the child app, propose it for the native side instead.
+`hubitat-mcp-rule.groovy` (the MCP child app, surfaced through the `custom_*` tools) is **legacy**. It still ships and still gets bug fixes, but it is **closed to new feature work** — Hubitat's native Rule Machine is the supported path now and exposes equivalent functionality through `hub_set_rule` (in the `hub_manage_rule_machine` gateway) plus `hub_set_native_app` / `hub_delete_native_app` and the rest of the `hub_manage_native_rules_and_apps` group. New rule-related capabilities should land on the parent app's native-RM tools, not on the child app. The release bot does not bump the child's version header (it stays at the version of its last change), so the shipped child file only changes when its code does. If a feature request lands on the child app, propose it for the native side instead.
 
 **Legacy E2E/BAT coverage is frozen. Do not add new tests or expand existing E2E or BAT scenarios for the legacy custom rule engine**, including capture/restore and parent-app helpers that exist only to support it. Preserve the existing legacy E2E and BAT coverage; that is the complete intended coverage for this engine. The general requirement to add E2E/BAT coverage for changes does not override this restriction. Validate necessary maintenance with unit tests; new rule-related E2E/BAT scenarios belong to native Rule Machine.
 
@@ -335,7 +335,7 @@ When in doubt, treat the problem as in-scope, name it, and surface the trade-off
 ## Boundaries
 
 **🚫 Never edit** — `pr_guard.py` (CI: `.github/workflows/pr-guard.yml`) flags any of these on every PR:
-- Version strings in tracked locations (server header comment, `currentVersion()`, rule header, manifest `version`)
+- Version strings in tracked locations (server header comment, `currentVersion()`, manifest `version`; the child app's header is not part of the release bump)
 - `packageManifest.json` `releaseNotes` or `dateReleased`
 - `README.md` `## Version History` section
 - `CHANGELOG.md`
