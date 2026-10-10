@@ -379,7 +379,7 @@ def plan_from_apps(ref, sources):
     if set(sources) != set(APP_FILES):
         raise ValueError("Both built apps are required")
     for name, source in sources.items():
-        if re.search(rb"(?m)^[ 	]*#include[ 	]", source):
+        if re.search(rb"(?m)^[ \t]*#include[ \t]", source):
             raise HubError(f"The built {name} still has #include directives; nothing would deliver them")
     return {"ref": ref, "libraries": [],
             "apps": [{"name": name, "sha256": hashlib.sha256(sources[name]).hexdigest()} for name in PACKAGE_APPS]}
