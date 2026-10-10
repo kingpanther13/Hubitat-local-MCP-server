@@ -527,7 +527,8 @@ class Rewriter:
             return False
         if n.text != ";" and not n2.nl:
             return False
-        if n2.kind == "op" and n2.text not in ("++", "--"):
+        # a new line starting with `(` or `[` is a new statement in Groovy; `.` continues the chain
+        if n2.kind == "op" and n2.text not in ("(", "[", "!", "-", "~", "++", "--"):
             return False
         return True
 
@@ -727,8 +728,14 @@ class Rewriter:
         return None
 
     def _fresh(self, candidates, i):
+        # generated names are loop-scoped, so only loops this run already wrapped around i can clash
+        taken = set()
+        b = self.st.encl[i]
+        while b >= 0:
+            taken |= self.rewritten.get(b, set())
+            b = self.st.encl[b]
         for c in candidates:
-            if not self.name_used_anywhere(c, i):
+            if c not in taken and not self.name_used_anywhere(c, i):
                 return c
         return None
 

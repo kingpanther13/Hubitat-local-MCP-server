@@ -123,6 +123,18 @@ def test_entry_name_avoids_names_used_in_method():
     assert "for (Map.Entry e in m) {" in out
 
 
+def test_nested_entry_loops_get_distinct_names():
+    out, _ = run("""
+        void f(Map m) {
+            m.each { k, inner ->
+                inner.each { a, b -> g(k, a, b) }
+            }
+        }
+    """)
+    assert "for (Map.Entry entry in m) {" in out
+    assert "for (Map.Entry e in inner) { def a = e.key; def b = e.value; g(k, a, b) }" in out
+
+
 def test_each_with_index_counts_from_minus_one():
     out, rw = run("""
         void f(List xs) {
