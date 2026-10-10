@@ -353,16 +353,30 @@ def adminUpdatePackage(Map args) {
     String ref = args.ref?.toString()
     if (!(requestId ==~ /[A-Za-z0-9_-]{1,100}/) || !(ref ==~ /[0-9a-f]{40}/))
         throw new IllegalArgumentException("requestId and an immutable 40-character commit SHA in ref are required")
-    if (!(args.libraries instanceof List) || args.libraries.isEmpty() || args.libraries.size() > 100 ||
-        args.libraries.any { !(it instanceof Map) || !(it.name ==~ /[A-Za-z0-9_]+/) || !(it.sha256 ==~ /[0-9a-f]{64}/) })
-        throw new IllegalArgumentException("libraries must contain the expected name and SHA-256 for every package library")
-    def libraries = args.libraries.collect { [name: it.name.toString(), sha256: it.sha256.toString()] }.sort { it.name }
-    if (libraries*.name.unique().size() != libraries.size())
-        throw new IllegalArgumentException("Duplicate library names are not allowed")
+    // A built package (issue #522) ships its libraries inlined into the parent: the caller pins
+    // both built apps by hash instead of naming libraries.
+    def builtApps = null
+    def libraries = []
+    if (args.apps != null) {
+        if (!(args.apps instanceof List) || args.apps.size() != 2 || args.apps.any { !(it instanceof Map) ||
+            !(it.name in ["MCP Rule", "MCP Rule Server"]) || !(it.sha256 ==~ /[0-9a-f]{64}/) } || args.apps*.name.unique().size() != 2)
+            throw new IllegalArgumentException("apps must contain the expected SHA-256 of both built apps, MCP Rule and MCP Rule Server")
+        if (args.libraries)
+            throw new IllegalArgumentException("A built package inlines its libraries; pass libraries empty or omit it")
+        builtApps = args.apps.collect { [name: it.name.toString(), sha256: it.sha256.toString()] }.sort { it.name }
+    } else {
+        if (!(args.libraries instanceof List) || args.libraries.isEmpty() || args.libraries.size() > 100 ||
+            args.libraries.any { !(it instanceof Map) || !(it.name ==~ /[A-Za-z0-9_]+/) || !(it.sha256 ==~ /[0-9a-f]{64}/) })
+            throw new IllegalArgumentException("libraries must contain the expected name and SHA-256 for every package library")
+        libraries = args.libraries.collect { [name: it.name.toString(), sha256: it.sha256.toString()] }.sort { it.name }
+        if (libraries*.name.unique().size() != libraries.size())
+            throw new IllegalArgumentException("Duplicate library names are not allowed")
+    }
     String baseUrl = packageRepository(args.baseUrl)
     String bundleBaseUrl = packageRepository(args.bundleBaseUrl)
-    String binding = packageSourceHash(groovy.json.JsonOutput.toJson([ref: ref, libraries: libraries,
-        baseUrl: baseUrl, bundleBaseUrl: bundleBaseUrl]))
+    Map bound = [ref: ref, libraries: libraries, baseUrl: baseUrl, bundleBaseUrl: bundleBaseUrl]
+    if (builtApps != null) bound.apps = builtApps
+    String binding = packageSourceHash(groovy.json.JsonOutput.toJson(bound))
     def prior = atomicState.packageDeployment
     if (prior?.requestId == requestId) {
         if (prior.binding != binding) return [success: false, error: "requestId is already bound to different inputs"]
@@ -379,6 +393,7 @@ def adminUpdatePackage(Map args) {
         if (current?.hold == true) return packageHeldRefusal(current, "nothing was scheduled")
         job = [requestId: requestId, ref: ref, binding: binding, baseUrl: baseUrl, bundleBaseUrl: bundleBaseUrl,
                libraries: libraries, hold: true, phase: "queued", startedAt: now()]
+        if (builtApps != null) job.builtApps = builtApps
         atomicState.packageDeployment = job
         def back = atomicState.packageDeployment
         if (back?.requestId != requestId || back.hold != true)
@@ -622,10 +637,15 @@ def prepareWatchdogPackage(Map job) {
     def expectedPaths = ["MCP Rule": "hubitat-mcp-rule.groovy", "MCP Rule Server": "hubitat-mcp-server.groovy"]
     if (!(manifest instanceof Map) || !(manifest.apps instanceof List) || manifest.apps.size() != 2 ||
         manifest.apps.any { it.namespace != "mcp" || !expectedPaths.containsKey(it.name) } ||
-        manifest.apps*.name.unique().size() != 2 || manifest.drivers || manifest.files ||
-        !(manifest.bundles instanceof List) || manifest.bundles.size() != 1 ||
-        !manifest.bundles[0].location?.toString()?.endsWith("/mcp-libraries.zip"))
-        throw new IllegalStateException("Only the existing MCP parent, child, and libraries bundle are supported")
+        manifest.apps*.name.unique().size() != 2 || manifest.drivers || manifest.files)
+        throw new IllegalStateException("Only the existing MCP parent and child apps are supported")
+    // Built packages ship no bundle and their apps live on bundle-artifacts; the rest ship one libraries bundle.
+    boolean built = job.builtApps instanceof List
+    if (built ? (manifest.bundles || manifest.apps.any { !it.location?.toString()?.contains("/bundle-artifacts/") })
+              : (!(manifest.bundles instanceof List) || manifest.bundles.size() != 1 ||
+                 !manifest.bundles[0].location?.toString()?.endsWith("/mcp-libraries.zip")))
+        throw new IllegalStateException(built ? "The manifest at this ref is not a built package; deploy it with library hashes"
+                                              : "The manifest at this ref is not the libraries bundle package; deploy it with built app hashes")
     def types = _parseJsonBody(hubGet("/hub2/userAppTypes", [:]))
     if (!(types instanceof List)) throw new IllegalStateException("Cannot read existing Apps Code identities")
     job.apps = []
@@ -635,17 +655,24 @@ def prepareWatchdogPackage(Map job) {
         def matches = types.findAll { it.namespace == "mcp" && it.name == name }
         if (matches.size() != 1 || !matches[0].id?.toString()?.isInteger())
             throw new IllegalStateException("Expected exactly one existing ${name} code class")
-        String url = "${base}/${job.ref}/${path}".toString()
+        String url = built ? "${packageRepository(job.bundleBaseUrl)}/bundle-artifacts/shas/${job.ref}/${path}".toString()
+                           : "${base}/${job.ref}/${path}".toString()
         packageStage(job, "preflight", "Downloading ${name}")
         String source = fetchExternal(url)
-        job.apps << [id: matches[0].id.toString(), name: name, url: url, sha256: packageSourceHash(source)]
+        String sha256 = packageSourceHash(source)
+        if (built && sha256 != job.builtApps.find { it.name == name }.sha256)
+            throw new IllegalStateException("The published ${name} does not match the expected build")
+        job.apps << [id: matches[0].id.toString(), name: name, url: url, sha256: sha256]
         if (name == "MCP Rule Server") {
             def includes = (source =~ /(?m)^\s*#include\s+mcp\.([A-Za-z0-9_]+)/).collect { it[1] }.unique()
-            if (!includes || !job.libraries*.name.containsAll(includes))
+            if (built && includes)
+                throw new IllegalStateException("The built parent still has #include directives and no bundle delivers them")
+            if (!built && (!includes || !job.libraries*.name.containsAll(includes)))
                 throw new IllegalStateException("Expected library hashes do not cover every parent include")
         }
     }
     if (job.apps*.id.unique().size() != 2) throw new IllegalStateException("Parent and child code IDs must differ")
+    if (built) return
     def installed = _parseJsonBody(hubGet("/hub2/userLibraries", [:]))
     if (!(installed instanceof List)) throw new IllegalStateException("Cannot read installed libraries")
     job.libraries = job.libraries.collect { expected ->
@@ -660,6 +687,8 @@ def prepareWatchdogPackage(Map job) {
 // readable:false means the install could not be inspected; matches:false means it was inspected
 // and differs. reason names the first library responsible for either.
 Map packageLibrarySnapshot(Map job) {
+    // A built package carries no library expectations.
+    if (!job.libraries) return [readable: true, matches: true, reason: null]
     try {
         def installed = _parseJsonBody(hubGet("/hub2/userLibraries", [:]))
         if (!(installed instanceof List)) return [readable: false, matches: false, reason: "Could not read the installed library list"]
@@ -768,12 +797,13 @@ String packageSourceHash(String source) {
 def getPackageToolDefinitions() {
     return [
         [name: "hub_update_package", annotations: [title: "Deploy MCP Package", readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true],
-         description: "Start one background repair of the existing MCP package at an immutable commit. Reserve the E2E hub and verify the original MCP and v3 endpoints first. Holds further deployments and competing manual writes until hub_set_package_deployment releases the hold. Deploy a known-good ref to request restoration. A library the commit adds is created by its bundle; existing libraries must each be installed exactly once. Never updates the watchdog or OAuth. Submit once, then poll hub_get_package_deployment with the same requestId; confirm:true required.",
+         description: "Start one background repair of the existing MCP package at an immutable commit. Reserve the E2E hub and verify the original MCP and v3 endpoints first. Holds further deployments and competing manual writes until hub_set_package_deployment releases the hold. Deploy a known-good ref to request restoration. A bundle package names its libraries: one the commit adds is created by its bundle, and existing ones must each be installed exactly once. A built package (no bundle in the manifest) pins both apps by hash in apps instead and installs them from bundle-artifacts/shas/<ref>/. Never updates the watchdog or OAuth. Submit once, then poll hub_get_package_deployment with the same requestId; confirm:true required.",
          inputSchema: [type: "object", properties: [requestId: [type: "string"], ref: [type: "string", description: "Full 40-character commit SHA."],
              baseUrl: [type: "string", description: "Raw GitHub source repository URL; defaults to upstream."],
-             bundleBaseUrl: [type: "string", description: "Raw GitHub repository hosting bundle-artifacts/shas/<ref>/mcp-libraries.zip; defaults to upstream."],
-             libraries: [type: "array", items: [type: "object", properties: [name: [type: "string"], sha256: [type: "string"]], required: ["name", "sha256"]]],
-             confirm: [type: "boolean"]], required: ["requestId", "ref", "libraries", "confirm"]]],
+             bundleBaseUrl: [type: "string", description: "Raw GitHub repository hosting bundle-artifacts/shas/<ref>/ (the libraries bundle or the built apps); defaults to upstream."],
+             libraries: [type: "array", description: "Bundle package: every library's name and SHA-256.", items: [type: "object", properties: [name: [type: "string"], sha256: [type: "string"]], required: ["name", "sha256"]]],
+             apps: [type: "array", description: "Built package: the SHA-256 of MCP Rule and MCP Rule Server as built.", items: [type: "object", properties: [name: [type: "string"], sha256: [type: "string"]], required: ["name", "sha256"]]],
+             confirm: [type: "boolean"]], required: ["requestId", "ref", "confirm"]]],
         [name: "hub_get_package_deployment", annotations: [title: "Get Package Deployment", readOnlyHint: true, idempotentHint: true, openWorldHint: false],
          description: "Read package deployment stages, elapsed time, errors, and safety hold without contacting hub HTTP. detail carries the latest verification finding while a stage waits. Only the hold is persisted; progress is kept in memory, so phase interrupted means the watchdog restarted mid-deployment and nothing is running, and workerStale:true means a worker has been silent for 15 minutes and is presumed dead. A stopped, interrupted or missing operation never authorizes replaying the install.",
          inputSchema: [type: "object", properties: [requestId: [type: "string"]], required: ["requestId"]]],

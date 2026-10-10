@@ -612,6 +612,9 @@ class WatchdogV31PackageDeploySpec extends WatchdogV31Harness {
         'duplicate library names'     | [libraries: [[name: 'Example', sha256: 'a' * 64], [name: 'Example', sha256: 'b' * 64]]]
         'a missing confirm'           | [confirm: false]
         'a non-repository bundle URL' | [bundleBaseUrl: 'https://example.com/owner/repo']
+        'one built app'               | [libraries: null, apps: [[name: 'MCP Rule', sha256: 'a' * 64]]]
+        'an unknown built app'        | [libraries: null, apps: [[name: 'MCP Rule', sha256: 'a' * 64], [name: 'Other', sha256: 'b' * 64]]]
+        'built apps plus libraries'   | [apps: [[name: 'MCP Rule', sha256: 'a' * 64], [name: 'MCP Rule Server', sha256: 'b' * 64]]]
     }
 
     def 'explicit bundle rejection stops before app saves'() {
@@ -645,6 +648,108 @@ class WatchdogV31PackageDeploySpec extends WatchdogV31Harness {
         then:
         job().phase == 'awaiting_verification'
         writes.size() == 3
+    }
+
+    // Built package (issue #522): the manifest ships no bundle and both apps come from
+    // bundle-artifacts/shas/<ref>/, the parent with its libraries already inlined.
+    String builtParent = 'definition(name: "MCP Rule Server", namespace: "mcp")\ndef example() { "caf\u00e9" }\n'
+    List fetched = []
+
+    void serveBuilt(Map overrides = [:]) {
+        script.metaClass.fetchExternal = { String url ->
+            fetched << url
+            if (url.endsWith('packageManifest.json')) return JsonOutput.toJson(overrides.manifest ?: [
+                apps: [[name: 'MCP Rule Server', namespace: 'mcp', location: 'https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/hubitat-mcp-server.groovy'],
+                       [name: 'MCP Rule', namespace: 'mcp', location: 'https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/hubitat-mcp-rule.groovy']],
+                bundles: []])
+            if (url.endsWith('hubitat-mcp-server.groovy')) return overrides.parent ?: builtParent
+            if (url.endsWith('hubitat-mcp-rule.groovy')) return child
+            throw new IllegalStateException('unexpected download')
+        }
+    }
+
+    Map builtRequest(String parentSource = builtParent) {
+        [requestId: 'test-operation', ref: sha, confirm: true, libraries: [],
+         apps: [[name: 'MCP Rule Server', sha256: digest(parentSource)], [name: 'MCP Rule', sha256: digest(child)]]]
+    }
+
+    def 'a built package saves child then parent from bundle-artifacts with no library step'() {
+        given:
+        serveBuilt()
+        script.adminUpdatePackage(builtRequest())
+        when:
+        tick()
+        then:
+        job().phase == 'awaiting_verification'
+        writes*.phase == ['updating_app', 'updating_app']
+        writes*.body*.id == ['179', '178']
+        sources['178'] == builtParent
+        sources['179'] == child
+        fetched.findAll { it.endsWith('.groovy') }.every {
+            it.startsWith("https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/shas/${sha}/") }
+        when:
+        def released = script.adminSetPackageDeployment([requestId: 'test-operation', confirm: true, endpointVerified: true])
+        then: 'the release recheck needs no library list'
+        released.phase == 'complete'
+    }
+
+    def 'a built package refuses a published app that differs from the expected build'() {
+        given:
+        serveBuilt(parent: builtParent + '// tampered\n')
+        script.adminUpdatePackage(builtRequest())
+        when:
+        tick()
+        then:
+        job().phase == 'stopped'
+        job().error.contains('does not match the expected build')
+        writes.empty
+    }
+
+    def 'a built package refuses a parent that still has #include directives'() {
+        given:
+        serveBuilt(parent: parent)
+        script.adminUpdatePackage(builtRequest(parent))
+        when:
+        tick()
+        then:
+        job().phase == 'stopped'
+        job().error.contains('#include')
+        writes.empty
+    }
+
+    def 'a built request against a bundle manifest is refused before any write'() {
+        given: 'the harness default manifest declares the libraries bundle'
+        script.adminUpdatePackage(builtRequest())
+        when:
+        tick()
+        then:
+        job().phase == 'stopped'
+        job().error.contains('not a built package')
+        writes.empty
+    }
+
+    def 'a library request against a built manifest is refused before any write'() {
+        given:
+        serveBuilt()
+        script.adminUpdatePackage(request())
+        when:
+        tick()
+        then:
+        job().phase == 'stopped'
+        job().error.contains('not the libraries bundle package')
+        writes.empty
+    }
+
+    def 'built app hashes are bound to the operation'() {
+        given:
+        serveBuilt()
+        script.adminUpdatePackage(builtRequest())
+        when:
+        def rebound = script.adminUpdatePackage(builtRequest(builtParent + '\n'))
+        then:
+        rebound.success == false
+        rebound.error.contains('already bound')
+        scheduled.size() == 1
     }
 
 }

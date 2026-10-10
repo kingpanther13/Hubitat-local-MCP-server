@@ -26,6 +26,16 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
             (MANUAL_TOOLS.keySet() + ['hub_update_package', 'hub_get_package_deployment', 'hub_set_package_deployment']) as Set
     }
 
+    def 'v3.1 names itself apart from v3 and protects the code of both watchdogs'() {
+        expect:
+        script.processJsonRpcMessage([jsonrpc: '2.0', id: 1, method: 'initialize', params: [:]]).result.serverInfo ==
+            [name: 'e2e-deadman-watchdog-v3-1', version: '3.1']
+        script.isWatchdogSource('definition(\n    name: "E2E Dead-Man Watchdog v3.1",\n    namespace: "mcp")\n')
+        script.isWatchdogSource('definition(\n    name: "E2E Dead-Man Watchdog v3",\n    namespace: "mcp")\n')
+        !script.isWatchdogSource('definition(\n    name: "E2E Dead-Man Watchdog v2",\n    namespace: "mcp")\n')
+        !script.isWatchdogSource('definition(name: "E2E Dead-Man Watchdog v3.10")')
+    }
+
     @Unroll
     def 'manual tool #tool reaches its handler through the MCP envelope'() {
         given:
