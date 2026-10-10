@@ -975,7 +975,8 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 
 - **hub_list_apps (scope='instances')** — enumerate ALL running app instances on the hub (built-in + user) with parent/child tree
   - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
-  - Each entry: id, name, type, disabled, user, hidden, parentId, hasChildren, childCount
+  - Each entry: id, name, type, appTypeId, disabled, user, hidden, deprecated, parentId, hasChildren, childCount
+  - appTypeId is the app type's code-class id -- the same id as the type's row in scope='types', hub_get_source(type='app', id=appTypeId) for community code, and the hub's /app/editor/<id> page -- so an instance resolves to its code without matching on the type name (ambiguous for duplicate or versioned names). null when the hub omits it. Child app types (e.g. Rule-5.1) have their own id, which the scope='types' catalog does not list; join those through the parent instance.
   - Built-in apps have user=false (Rule Machine, Room Lighting, Groups and Scenes, Mode Manager, HSM, Dashboards, Maker API, etc.)
   - User apps have user=true (Awair, Ecobee, HPM, etc.)
   - Parent/child tree is flattened with parentId pointers. Hidden parents are excluded from output but their children are promoted to the nearest visible ancestor.

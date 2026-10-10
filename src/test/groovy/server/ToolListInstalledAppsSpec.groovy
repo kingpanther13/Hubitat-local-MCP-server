@@ -8,7 +8,8 @@ import support.ToolSpecBase
  * Tool: hub_list_apps with scope:"instances" (the merged-in former hub_list_installed_apps).
  * Gateway: hub_read_apps_code -> hub_list_apps.
  *
- * Covers: gate-throw, golden path flattening with parentId wiring, the
+ * Covers: gate-throw, golden path flattening with parentId wiring and the
+ * appTypeId pass-through (null when the hub omits it), the
  * includeHidden promotion logic, each filter value, invalid filter rejection,
  * empty and non-JSON response bodies.
  *
@@ -65,9 +66,10 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         def treeJson = JsonOutput.toJson([
             apps: [
                 [
-                    data: [id: 10, name: 'Rule Machine', type: 'Rule Machine', user: false, disabled: false, hidden: false],
+                    data: [id: 10, name: 'Rule Machine', type: 'Rule Machine', appTypeId: 18, user: false, disabled: false, hidden: false],
                     children: [
-                        [data: [id: 11, name: 'My Rule', type: 'Rule-5.1', user: false, disabled: false, hidden: false], children: []],
+                        [data: [id: 11, name: 'My Rule', type: 'Rule-5.1', appTypeId: 76, user: false, disabled: false, hidden: false], children: []],
+                        // No appTypeId on this node: the row must still carry the key, as null.
                         [data: [id: 12, name: 'Another Rule', type: 'Rule-5.1', user: false, disabled: false, hidden: false], children: []]
                     ]
                 ]
@@ -96,6 +98,12 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
 
         def child12 = result.apps.find { it.id == 12 }
         child12.parentId == 10
+
+        and: 'each row carries the app type\'s code-class id (null when the hub omits it), untouched so it joins on scope=types ids'
+        parent.appTypeId == 18
+        child11.appTypeId == 76
+        child12.containsKey('appTypeId')
+        child12.appTypeId == null
     }
 
     @spock.lang.Unroll
@@ -105,9 +113,10 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         def treeJson = JsonOutput.toJson([
             apps: [
                 [
-                    data: [id: 10, name: 'Rule Machine', type: 'Rule Machine', user: false, disabled: false, hidden: false],
+                    data: [id: 10, name: 'Rule Machine', type: 'Rule Machine', appTypeId: 18, user: false, disabled: false, hidden: false],
                     children: [
-                        [data: [id: 11, name: 'My Rule', type: 'Rule-5.1', user: false, disabled: false, hidden: false], children: []],
+                        [data: [id: 11, name: 'My Rule', type: 'Rule-5.1', appTypeId: 76, user: false, disabled: false, hidden: false], children: []],
+                        // No appTypeId on this node: the row must still carry the key, as null.
                         [data: [id: 12, name: 'Another Rule', type: 'Rule-5.1', user: false, disabled: false, hidden: false], children: []]
                     ]
                 ]
@@ -131,6 +140,10 @@ class ToolListInstalledAppsSpec extends ToolSpecBase {
         parent.childCount == 2
         inner.apps.find { it.id == 11 }.parentId == 10
         inner.apps.find { it.id == 12 }.parentId == 10
+        parent.appTypeId == 18
+        inner.apps.find { it.id == 11 }.appTypeId == 76
+        inner.apps.find { it.id == 12 }.containsKey('appTypeId')
+        inner.apps.find { it.id == 12 }.appTypeId == null
 
         where:
         useGateways << [true, false]
