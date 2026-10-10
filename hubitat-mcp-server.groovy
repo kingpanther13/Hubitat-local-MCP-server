@@ -10939,6 +10939,8 @@ The `createLinked` GET returns 200 with an empty body even when nothing links, s
 
 Deploys every declared library bundle + app from the manifest at `ref`, saving the running self app LAST (its recompile can drop the response). Does NOT touch app instances, undeclared drivers, or anything outside this package's manifest.
 
+**Built-app manifests:** when the manifest at `ref` declares no bundle and its apps live on the `bundle-artifacts` branch, each app is installed from that ref's build (`shas/<sha>/` for a full commit SHA, `branches/<ref>/` otherwise) after its byte count is checked against the `.size` marker, before any write. Only `ref=main` may fall back to the manifest's own location; any other ref without a build is refused.
+
 **Brick-safe:** if ANYTHING before the self app save fails (app/manifest fetch, an unresolved app class, a bundle install, a non-self app), it aborts BEFORE touching the self app -- the running server is left exactly as-is and still updatable via hub_update_app, the always-available escape hatch. Self-modification is gated by this tool's own enableDeveloperMode check (it saves the Apps Code class itself rather than calling hub_update_app, so that tool's self-update guard does not apply here).
 
 **Why an unmerged PR installs:** plain Hubitat Package Manager Repair reads only the PUBLISHED manifest, so it can't reach an unmerged PR's artifacts. This tool instead anchors to `packageManifest.json` AT `ref`.
