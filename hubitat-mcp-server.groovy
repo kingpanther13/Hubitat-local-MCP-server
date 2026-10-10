@@ -2365,7 +2365,7 @@ def _budgetAwareTools() {
             "hub_import_native_app", "hub_call_device_command",
             "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
-            "hub_get_device", "hub_list_devices", "hub_get_device_health"] as Set
+            "hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_libraries"] as Set
 }
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
@@ -2386,7 +2386,7 @@ def _mrtrWriteTools() {
 def _mrtrReadTools() {
     return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices",
-            "hub_get_device_health"] as Set
+            "hub_get_device_health", "hub_list_libraries"] as Set
 }
 
 private Set _mrtrDeviceReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health"] as Set }
@@ -2548,7 +2548,8 @@ private boolean _packageMarkerHasTerminalEvidenceLocked(marker) {
     if (!(marker instanceof Map) || marker.requestId == null) return false
     def last = atomicState.lastSelfDeploy
     return last instanceof Map && last.requestId != null &&
-        last.requestId.toString() == marker.requestId.toString()
+        last.requestId.toString() == marker.requestId.toString() &&
+        last.status != "saving"   // the self save is accepted but still compiling
 }
 
 // Caller holds WRITE_RESERVATION_LOCK. A queued or running marker may be
@@ -10685,6 +10686,7 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 ### hub_update_app (modify existing app code, and/or enable/configure OAuth)
 
 - **Self-update guard rationale:** the tool refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on because a bad self-update bricks the MCP loop — the server app's own OAuth backs the live `/mcp` token.
+- **A self-update does not wait for the compile.** The save POST is given 20 s; the hub finishes the compile on its own (a 2.6 MB parent takes minutes, past the platform's 300 s request cap). The result then carries `status: "saving"` with `assumed: true`, and `hub_get_info.lastSelfDeploy` settles it: `status` disappears and `confirmedVersion` appears once the App Code version passes `startedVersion`; a record still saving after 20 minutes becomes `success: false`. Do not resend the update while it is saving.
 - **`triggerUpdated`:** OPTIONAL post-save lifecycle refresh. Set it to the running instance appId to fire `updated()` so subscriptions/schedules re-initialize. UI Save does NOT fire `updated()`, so this is opt-in only.
 - **`oauth` param shape:** `{enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}`. Omit `client_id`/`client_secret` to preserve current values; if they are unreadable the tool refuses (`success:false`) rather than blanking them. Resulting credentials return under `result.oauth`.
 - **OAuth leg:** works alone (no source mode needed) or together with a source update. If the source saved but the OAuth leg failed, the result is `success:false, partial:true`. The app's source must declare OAuth (an `oauth` block in `definition` plus `mappings`) before OAuth can be enabled.

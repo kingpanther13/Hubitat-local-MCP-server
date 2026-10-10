@@ -1556,6 +1556,67 @@ private _itemRowVersion(String type, itemId) {
     }
 }
 
+// Self-save tuning (issue #522). The POST wait is short on purpose: the hub finishes the save on its
+// own, and the App Code row's version is the confirmation. A direct call answers its client quickly;
+// the detached package worker has nobody waiting and polls until the compile is done.
+def _selfSaveRequestTimeoutSec() { 20 }
+def _selfSaveWaitMs() { 20000L }
+def _packageSelfSaveWaitMs() { 900000L }
+def _selfSavePollMs() { 5000L }
+
+// Poll the item's row until its version passes startedVersion. [version: n] when it did, null when
+// the budget ran out first (the save may still land; hub_get_info settles the record later).
+private Map _awaitSelfSave(String type, itemId, startedVersion, long waitMs) {
+    Integer started = null
+    try { started = startedVersion as Integer } catch (Exception ignored) { return null }
+    long deadline = now() + waitMs
+    while (true) {
+        Integer cur = null
+        try { cur = _itemRowVersion(type, itemId) as Integer } catch (Exception ignored) { cur = null }
+        if (cur != null && cur > started) return [version: cur]
+        long left = deadline - now()
+        if (left <= 0L) return null
+        pauseExecution(Math.min(_selfSavePollMs(), left))
+    }
+}
+
+// Mark the pending self-deploy record landed at the given App Code version.
+private void _settleSelfDeploy(confirmedVersion) {
+    try {
+        def done = [:] + (atomicState.lastSelfDeploy ?: [:])
+        done.remove("assumed"); done.remove("status")
+        done.confirmedVersion = confirmedVersion
+        atomicState.lastSelfDeploy = done
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "lastSelfDeploy settle write failed: ${e}")
+    }
+}
+
+// A self-deploy record still "saving" is settled by the App Code row: the version passing
+// startedVersion is the hub's own confirmation; nothing advancing within 20 minutes is a failure.
+// Called by hub_get_info, so a save whose request thread the recompile killed still resolves.
+Map _resolveSavingSelfDeploy(Map lsd) {
+    if (lsd?.status != "saving" || lsd.appId == null) return lsd
+    Integer cur = null
+    Integer started = null
+    try { cur = _itemRowVersion("app", lsd.appId) as Integer } catch (Exception ignored) { cur = null }
+    try { started = lsd.startedVersion as Integer } catch (Exception ignored) { started = null }
+    def done = null
+    if (cur != null && started != null && cur > started) {
+        done = [:] + lsd
+        done.remove("assumed"); done.remove("status")
+        done.confirmedVersion = cur
+    } else if (lsd.at instanceof Number && now() - (lsd.at as long) > 20L * 60L * 1000L) {
+        done = [:] + lsd
+        done.remove("assumed"); done.remove("status")
+        done.success = false
+        done.error = "Self save did not land: the App Code version is still ${cur != null ? cur : 'unreadable'} twenty minutes after the save was accepted at version ${started}"
+    }
+    if (done == null) return lsd
+    try { atomicState.lastSelfDeploy = done } catch (Exception e) { mcpLog("error", "hub-admin", "lastSelfDeploy settle write failed: ${e}") }
+    return done
+}
+
 // Caller must have already invoked requireDestructiveConfirm -- gate fires once per call, not per bulk item.
 // packageWorkerContext is supplied only by the scheduled package worker; public tool args never reach it.
 private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packageWorkerContext = null) {
@@ -1734,16 +1795,31 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
         mcpLog("warn", "hub-admin", "hub_update_app: large app-source update to id ${itemId} but the self app-class lookup returned null -- if this IS the MCP server, #237 self-deploy error capture is disabled for this deploy.")
     }
     mcpLog("info", "hub-admin", "Updating ${type} ID: ${itemId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
+    int sourceLen = sourceCode.length()
     try {
         // Update rides POST /app|driver/saveOrUpdateJson (JSON); a non-null id means in-place
         // update of the existing code class. Response is {success, id, message[, version]}; a
         // compile failure rides verbatim in `message`. (The old form /app|driver/ajax/update
         // returns a different envelope entirely: {status, errorMessage}.)
-        def parsed = hubInternalPostJson(savePath, groovy.json.JsonOutput.toJson([
-            id: itemIdInt,
-            source: sourceCode,
-            version: currentVersion
-        ]))
+        def saveBody = groovy.json.JsonOutput.toJson([id: itemIdInt, source: sourceCode, version: currentVersion])
+        def parsed = null
+        if (isSelfUpdate) {
+            // The hub keeps compiling after the caller stops waiting (HPM's timeout and this app's
+            // own showed it), and a 2.6 MB self save outruns the platform's 300 s request cap
+            // (issue #522). So wait only briefly for the POST, treat a timeout as the dropped
+            // response a self save produces anyway, and confirm the save by the App Code row's
+            // version instead of holding the request for the whole compile.
+            try {
+                parsed = hubInternalPostJson(savePath, saveBody, _selfSaveRequestTimeoutSec())
+            } catch (Exception postErr) {
+                if (!(postErr.toString() =~ /(?i)time.?out/)) throw postErr
+                mcpLog("info", "hub-admin", "Self save POST for ${type} ID ${itemId} gave no answer within ${_selfSaveRequestTimeoutSec()}s; the hub keeps compiling -- confirming by version")
+            }
+            saveBody = null
+            sourceCode = null
+        } else {
+            parsed = hubInternalPostJson(savePath, saveBody)
+        }
 
         def success = false
         def errorMsg = null
@@ -1778,7 +1854,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                     error: success ? null : (errorMsg ?: "Update failed -- the hub returned an error"),
                     sourceMode: sourceMode,
                     importUrl: (args.importUrl ?: null),
-                    sourceLength: sourceCode.length(),
+                    sourceLength: sourceLen,
                     at: now()
                 ]
                 def packageCorrelation = _validatedPackageWorkerContext(packageWorkerContext)
@@ -1787,14 +1863,26 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                     stash.packageRef = packageCorrelation.packageRef
                 }
                 // A dropped (empty) response is the expected self-update signature, but the success
-                // is inferred, not hub-confirmed -- mark it so consumers can choose to re-verify.
-                if (success && parsed == null) stash.assumed = true
+                // is inferred, not hub-confirmed -- mark it so consumers can choose to re-verify, and
+                // record what the App Code row must pass for the save to count as landed.
+                if (success && parsed == null) {
+                    stash.assumed = true
+                    stash.status = "saving"
+                    stash.startedVersion = currentVersion
+                    stash.appId = itemId.toString()
+                }
                 atomicState.lastSelfDeploy = stash
             } catch (Exception stashErr) {
                 // Never break the deploy over bookkeeping, but a lost stash means the self-deploy
                 // outcome is unrecoverable -- say so instead of failing silently.
                 mcpLog("error", "hub-admin", "lastSelfDeploy stash write failed -- self-deploy outcome record lost: ${stashErr}")
             }
+        }
+        Map landed = null
+        if (success && isSelfUpdate && parsed == null) {
+            landed = _awaitSelfSave(type, itemId, currentVersion,
+                packageWorkerContext != null ? _packageSelfSaveWaitMs() : _selfSaveWaitMs())
+            if (landed != null) _settleSelfDeploy(landed.version)
         }
 
         if (success) {
@@ -1805,9 +1893,19 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                 (idParam): itemId,
                 previousVersion: currentVersion,
                 sourceMode: sourceMode,
-                sourceLength: sourceCode.length(),
+                sourceLength: sourceLen,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
             ]
+            if (isSelfUpdate && parsed == null) {
+                if (landed != null) {
+                    successResult.version = landed.version
+                    successResult.verified = true
+                } else {
+                    successResult.assumed = true
+                    successResult.status = "saving"
+                    successResult.note = "The hub accepted the save and is still compiling it. Poll hub_get_info.lastSelfDeploy: status disappears and confirmedVersion appears once the App Code version passes ${currentVersion}; a record still saving after 20 minutes turns into a failure."
+                }
+            }
             if (sourceMode == "resave") successResult.note = "Source was fetched and re-saved entirely on-hub — no cloud round-trip."
             if (sourceMode == "sourceFile") successResult.note = "Source was read from File Manager file '${args.sourceFile}' — no cloud size limits."
             if (sourceMode == "importUrl") successResult.note = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript)."
@@ -1904,7 +2002,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                     error: "${type.capitalize()} update failed: ${e.message}",
                     sourceMode: sourceMode,
                     importUrl: (args.importUrl ?: null),
-                    sourceLength: (sourceCode != null ? sourceCode.length() : 0),
+                    sourceLength: sourceLen,
                     at: now()
                 ]
                 def packageCorrelation = _validatedPackageWorkerContext(packageWorkerContext)

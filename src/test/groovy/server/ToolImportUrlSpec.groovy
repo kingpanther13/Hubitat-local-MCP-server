@@ -210,13 +210,14 @@ class ToolImportUrlSpec extends ToolSpecBase {
         given:
         enableWrite()
         settingsMap.enableDeveloperMode = true   // self-update guard
+        script.metaClass._selfSaveWaitMs = { -> 0L }
         stubHttpGet(200, 'fetched-source-here')
         // The app's list row carries the current version without its source (issue #522: no full
         // ajax/code fetch, and no pre-update backup for the package's own app -- its previous build
         // is published -- so the request holds one copy of the source while the hub compiles).
         hubGet.register('/app/list/single/data/178') { params -> '[{"id": 178, "version": 7}]' }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             captured.body = body
             [success: true, id: 178]
@@ -248,7 +249,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
         stubHttpGet(200, 'fetched-source-here')
         hubGet.register('/app/list/single/data/42') { params -> '[{"id": 42, "version": 7}]' }
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true, id: 42] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, id: 42] }
         int backups = 0
         script.metaClass.backupItemSource = { String type, String itemId -> backups++; [version: 7, fileName: 'b.json'] }
 
@@ -268,9 +269,10 @@ class ToolImportUrlSpec extends ToolSpecBase {
         settingsMap.enableDeveloperMode = true
         stubHttpGet(200, 'fetched-source-here')
         hubGet.register('/app/list/single/data/178') { params -> '<html>login</html>' }
+        script.metaClass._selfSaveWaitMs = { -> 0L }
         hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "source": "old-source", "version": 9}' }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.body = body
             [success: true, id: 178]
         }
@@ -288,7 +290,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         given:
         enableWrite()
         hubGet.register('/app/list/single/data/42') { params -> '[{"id": 42, "version": 7}]' }
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true, id: 42] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, id: 42] }
         int backups = 0
         script.metaClass.backupItemSource = { String type, String itemId -> backups++; [version: 7, fileName: 'b.json'] }
 
@@ -307,7 +309,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
         stubHttpGet(200, 'definition(name: "FromUrl")')
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             captured.body = body
             [success: true, id: 7777, version: 1]
@@ -340,7 +342,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
         stubHttpGet(200, 'library(name: "Lib")')
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             captured.body = body
             [success: true, id: 555, version: 1]
@@ -699,7 +701,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
         stubStatusJson(194, [[name: 'refreshProbe', value: true, type: 'bool']])
         def doneBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true] }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             doneBody = body
             [status: 200, location: null, data: '']
@@ -730,7 +732,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
         stubStatusJson(194, statusEntries)
         def doneBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true] }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             doneBody = body
             [status: 200, location: null, data: '']
@@ -768,7 +770,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
         stubStatusJson(194, [[name: 'refreshProbe', value: stored, type: 'bool']])
         def doneBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true] }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             doneBody = body
             [status: 200, location: null, data: '']
@@ -799,7 +801,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
             throw new RuntimeException('statusJson read failed (transient)')
         }
         boolean donePosted = false
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true] }
         script.metaClass.hubInternalPostForm = { String path, Map body -> donePosted = true; [status: 200] }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
 
@@ -837,7 +839,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubStatusJson(194, [[name: 'picks', value: null, type: 'capability.switch',
                               multiple: true, deviceIdsForDeviceList: ['8', '9']]])
         def doneBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true] }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             doneBody = body
             [status: 200, location: null, data: '']
@@ -864,7 +866,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         // The code save rides hubInternalPostJson; the lifecycle fire rides hubInternalPostForm.
         // Both append to one list so the save-then-fire ordering stays pinned.
         def posts = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             posts << [helper: 'json', path: path]
             [success: true]
         }
@@ -913,7 +915,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/194') { instanceConfigJson(194) }
         stubStatusJson(194, [])
         def writes = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             writes << path
             [success: true]
         }
@@ -952,7 +954,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/194') { params -> instanceConfigJson(194) }
         stubStatusJson(194, [])
         def savePostCount = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             savePostCount++
             [success: true]
         }
@@ -997,7 +999,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/194') { params -> instanceConfigJson(194) }
         stubStatusJson(194, [])
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true] }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             [status: 405, location: null, data: 'Method Not Allowed']
         }
@@ -1025,7 +1027,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
             '{"status": "ok", "source": "old", "version": 5}'
         }
         def savePaths = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             savePaths << path
             [success: true]
         }
@@ -1061,7 +1063,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/194') { params -> instanceConfigJson(194) }
         stubStatusJson(194, [])
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true] }
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             throw new RuntimeException('hub rejected lifecycle POST')
         }
@@ -1148,7 +1150,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         settingsMap.enableDeveloperMode = true
         stubHttpGet(200, 'fetched-self-source')
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true]
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
@@ -1171,7 +1173,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubHttpGet(200, 'broken-self-source')
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
         // Hub rejects the save with its real validation message (the exact thing CI must recover).
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'name cannot be empty in definition section']
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
@@ -1196,7 +1198,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         // app.id is 1; the self CLASS id resolves to 178. appId 42 matches neither -> not a self-update.
         hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true]
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
@@ -1220,7 +1222,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubHttpGet(200, 'class-id-self-source')
         hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'name cannot be empty in definition section']
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
@@ -1247,7 +1249,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         atomicStateMap.lastSelfDeploy = null
         stubHttpGet(200, 'self-source-that-504s')
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
-        script.metaClass.hubInternalPostJson = { String path, String body -> throw new RuntimeException('cloud 504') }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> throw new RuntimeException('cloud 504') }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 5, fileName: 'b.json'] }
 
         when:
@@ -1304,7 +1306,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         given:
         enableWrite()
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":5}' }
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true] }
         def lifecyclePostCount = 0
         script.metaClass.hubInternalPostForm = { String path, Map body ->
             lifecyclePostCount++
@@ -1337,7 +1339,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
         stubHttpGet(200, 'metadata { definition (name: "FromUrl") {} }')
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path; captured.body = body
             [success: true, id: 8888, version: 1]
         }
@@ -1358,7 +1360,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubHttpGet(200, 'updated-driver-source')
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"old","version":3}' }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path; captured.body = body
             [success: true, id: 55]
         }
@@ -1382,7 +1384,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         // Stub File Manager so library backup doesn't blow up trying to write.
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path; captured.body = body
             [success: true, id: 22, version: 5]
         }
@@ -1404,7 +1406,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
         stubHttpGet(200, 'driver-from-url')
         def postPaths = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postPaths << path
             [success: true, id: 9001, version: 1]
         }
@@ -1431,7 +1433,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         stubHttpGet(200, 'updated-bulk-driver')
         hubGet.register('/driver/ajax/code') { params -> '{"status":"ok","source":"old","version":2}' }
         def postPaths = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postPaths << path
             [success: true]
         }
@@ -1507,7 +1509,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
         stubHttpGet(200, 'dispatch-fetched-source')
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","source":"old","version":9}' }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true]
         }
         script.metaClass.backupItemSource = { String type, String itemId -> [version: 9, fileName: 'b.json'] }

@@ -45,7 +45,7 @@ Once HPM is installed:
 
 That's it! HPM will install the parent app and the child app, and notify you when updates are available.
 
-> **Upgrading from 4.6.0 or earlier**: older versions shipped their code as `mcp` libraries in an `mcp_libraries` bundle. The app no longer uses them, but HPM does not remove a bundle, so they stay under **Libraries Code** and **Bundles** as unused code. You can delete them by hand later; the app works either way. On 4.6.0 or earlier the Developer-Mode `hub_update_package` tool cannot install 4.7 or later (it expects a bundle); update through HPM once, after which the tool deploys any ref again.
+> **Upgrading from 4.6.0 or earlier**: older versions shipped their code as `mcp` libraries in an `mcp_libraries` bundle. The app no longer uses them, but HPM does not remove a bundle, so they stay under **Libraries Code** and **Bundles** as unused code. Delete them when convenient (Libraries Code > each `mcp` library, then Bundles > `mcp_libraries`): the hub's Libraries Code page and `hub_list_libraries` scan every app's source once per installed library, so with the larger inlined app each leftover library adds roughly half a second to that page on a C-8 (19 of them: about 10 s). The app works either way. On 4.6.0 or earlier the Developer-Mode `hub_update_package` tool cannot install 4.7 or later (it expects a bundle); update through HPM once, after which the tool deploys any ref again.
 
 > **Alternate HPM method**: You can also use HPM > **Install** > **From a URL** and paste:
 > ```

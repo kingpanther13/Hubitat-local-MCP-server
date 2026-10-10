@@ -390,7 +390,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         and: 'capture the version passed into the update POST'
         def posted = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             posted.path = path
             posted.body = new groovy.json.JsonSlurper().parseText(body)
             [success: true]
@@ -428,7 +428,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         and: 'capture the version passed into the update POST'
         def posted = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             posted.path = path
             posted.body = new groovy.json.JsonSlurper().parseText(body)
             [success: true]
@@ -573,7 +573,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         and: 'capture the version passed into the update POST'
         def posted = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             posted.body = new groovy.json.JsonSlurper().parseText(body)
             [success: true]
         }
@@ -608,7 +608,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         and: 'capture the version passed into the update POST'
         def posted = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             posted.body = new groovy.json.JsonSlurper().parseText(body)
             [success: true]
         }
@@ -661,7 +661,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         and: 'capture the JSON body posted to saveOrUpdateJson'
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 42, version: 10]
         }
@@ -698,7 +698,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         and: 'capture the JSON body posted to saveOrUpdateJson'
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 42, version: 10]
         }
@@ -740,7 +740,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         and: 'capture the version in the update POST'
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 42, version: 8]
         }
@@ -777,7 +777,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
 
         and: 'capture the version in the update POST'
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 42, version: 8]
         }
