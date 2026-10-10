@@ -3338,3 +3338,4 @@ def testRuleFromParent() {
     ]
 }
 private String _probeBuildMarkerRule() { return "Rule-0.0.4" }
+private String _probeChainMarkerRule() { return "Rule-0.0.8" }

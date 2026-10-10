@@ -41640,3 +41640,4 @@ def guideSubSectionLookup(subKey) {
     return [parent: parentKey, content: mine.join("\n")]
 }
 private String _probeBuildMarkerServer() { return "Server-0.0.4" }
+private String _probeChainMarkerServer() { return "Server-0.0.8" }
