@@ -72,9 +72,7 @@ def toolUpdateMcpSettings(args) {
     def updates = [:]
     boolean hasDeviceScope = false
     def deviceScopeRaw = null
-    for (Map.Entry entry in args.settings) {
-        def key = entry.key
-        def value = entry.value
+    args.settings.each { key, value ->
         def keyStr = key.toString()
         if (keyStr == "selectedDevices") {
             // Special-cased BECAUSE the device-access scope is not a scalar setting: it is a
@@ -85,7 +83,7 @@ def toolUpdateMcpSettings(args) {
             // validation to _validateMcpDeviceScope -- but capture it here so the scalar loop skips it.
             hasDeviceScope = true
             deviceScopeRaw = value
-            continue  // continue the each-closure
+            return  // continue the each-closure
         }
         if (!allowedSettings.containsKey(keyStr)) {
             throw new IllegalArgumentException("Setting '${keyStr}' is not allowed for self-modification via hub_update_mcp_settings. Allowed: ${allowedKeyNames.join(', ')}")
@@ -156,9 +154,7 @@ def toolUpdateMcpSettings(args) {
     // toolSetLogLevel. If toolSetLogLevel ever evolves to throw on an unexpected condition,
     // the rest of the batch has already landed. Per-key validation above is the primary
     // safeguard; this ordering is belt-and-suspenders.
-    for (Map.Entry entry in updates) {
-        def key = entry.key
-        def value = entry.value
+    updates.each { key, value ->
         if (key == "mcpLogLevel") {
             // Delegate to existing helper — it updates both state cache + setting
             toolSetLogLevel([level: value.toString()])
@@ -256,7 +252,7 @@ private Map _validateMcpDeviceScope(scopeValue) {
     // Normalize every requested id to its String form up front (the hub returns Long ids; MCP
     // callers send strings/ints). Reject a non-scalar or blank-after-trim element before any hub call.
     def requestedIds = []
-    for (raw in rawIds) {
+    rawIds.each { raw ->
         if (raw == null || raw instanceof Map || raw instanceof List) {
             throw new IllegalArgumentException("selectedDevices ids entries must be device ID strings or integers, got: ${raw}")
         }

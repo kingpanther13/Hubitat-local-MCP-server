@@ -968,7 +968,7 @@ def toolGetHubLogs(args) {
     // entry can't push the page past the cap on its own.
     def estimatedJsonSize = paged.page.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
     if (estimatedJsonSize > hubResponseCapBytes() - 11072) {  // =120000; matches handleToolsCall responseSizeLimit
-        for (it in paged.page) { it.message = it.message?.take(200) }
+        paged.page.each { it.message = it.message?.take(200) }
         result.truncated = true
         result.note = "Log messages truncated to fit response size limit"
     }
@@ -1349,8 +1349,8 @@ private Map _cloudCallsSummary() {
 
 private Map _shapeCloudCalls(Map raw) {
     def hoursByApp = [:]
-    for (h in (raw.hours instanceof List ? raw.hours : [])) {
-        if (!(h instanceof Map) || h.appId == null || h.hourStart == null) continue
+    (raw.hours instanceof List ? raw.hours : []).each { h ->
+        if (!(h instanceof Map) || h.appId == null || h.hourStart == null) return
         def key = h.appId.toString()
         if (!hoursByApp.get(key)) hoursByApp.put(key, [])
         hoursByApp.get(key) << [epoch: h.hourStart as Long, count: h.count]
@@ -1677,7 +1677,7 @@ private Map _deviceHealthInventory() {
     def records = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
     if (!(records instanceof List)) throw new IllegalStateException("Native device tree is unavailable or malformed")
     def byId = [:]
-    for (record in records) {
+    records.each { record ->
         String id = record.id.toString()
         if (bypass || allowedIds.contains(id)) {
             byId.put(id, [id: id, label: record.label, lastActivity: record.lastActivity,
@@ -1685,7 +1685,7 @@ private Map _deviceHealthInventory() {
         }
     }
     // A missing selected/owned device is an unknown result, not proof that it is healthy or absent.
-    for (id in allowedIds) {
+    allowedIds.each { id ->
         if (!byId.containsKey(id)) byId.put(id, [id: id, metadataUnavailable: true])
     }
     return [devices: byId.values() as List]
@@ -1800,7 +1800,7 @@ def toolDeviceHealthCheck(args) {
     def stale = []
     def unknown = []
 
-    for (device in devices) {
+    devices.each { device ->
         try {
             def deviceLabel = device.label ?: device.name ?: "Device ${device.id}"
             def entry = [
@@ -1812,7 +1812,7 @@ def toolDeviceHealthCheck(args) {
                 entry.hoursAgo = null
                 entry.metadataUnavailable = true
                 unknown << entry
-                continue
+                return
             }
 
             def lastActivity = device.lastActivity != null ? _parseSinceArg(device.lastActivity) : null
@@ -1822,7 +1822,7 @@ def toolDeviceHealthCheck(args) {
                 entry.hoursAgo = null
                 entry.metadataUnavailable = true
                 unknown << entry
-                continue
+                return
             }
 
             if (lastActivity) {
@@ -1915,16 +1915,16 @@ def toolDeviceHealthCheck(args) {
 
 def runPingChecks(List rawHosts, Integer count) {
     def results = []
-    for (rawHost in rawHosts) {
+    rawHosts.each { rawHost ->
         if (rawHost == null || !(rawHost instanceof CharSequence)) {
             results << [ipAddress: rawHost, reachable: false, error: "missing or non-string host"]
-            continue
+            return
         }
         def host = rawHost.toString().trim()
         // Range-validated IPv4 dotted-quad. Hostnames are not supported by NetworkUtils.ping.
         if (!(host ==~ /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/)) {
             results << [ipAddress: host, reachable: false, error: "not a dotted-quad IPv4 literal (hostnames not supported, pass an IP)"]
-            continue
+            return
         }
         try {
             def pd = hubitat.helper.NetworkUtils.ping(host, count)
@@ -2391,9 +2391,7 @@ private Map _zwArgObject(v, String name, List known) {
 private void _zwValidateNetworkKeys(Map keys, List known, String label) {
     def unknown = keys.keySet().findAll { !(it in known) }
     if (unknown) throw new IllegalArgumentException("Unknown ${label} key(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
-    for (Map.Entry entry in keys) {
-        def k = entry.key
-        def v = entry.value
+    keys.each { k, v ->
         if (!(v?.toString()?.trim() ==~ /(?i)(0x)?[0-9a-f]{32}/)) throw new IllegalArgumentException("${label}.${k} must be a 32-hex-digit network key.")
     }
 }
@@ -2794,9 +2792,7 @@ private Map _captureEntriesLocked(Map store) {
         if (state.capturedDeviceStates instanceof Map) legacy.putAll(state.capturedDeviceStates)
         if (atomicState.capturedDeviceStates instanceof Map) legacy.putAll(atomicState.capturedDeviceStates)
         Map entries = [:]
-        for (Map.Entry entry in legacy) {
-            def id = entry.key
-            def raw = entry.value
+        legacy.each { id, raw ->
             def devices = raw instanceof Map && raw.containsKey("devices") ? raw.devices : raw
             if (!(devices instanceof Map) && !(devices instanceof List)) {
                 throw new IllegalStateException("Legacy capture has an invalid device payload")

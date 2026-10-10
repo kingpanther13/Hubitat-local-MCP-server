@@ -7,7 +7,7 @@ private Map _parseBundleContent(String content) {
     if (!content) return null
     def out = [apps: [], drivers: [], libraries: []]
     boolean matched = false
-    for (key in ["apps", "drivers", "libraries"]) {
+    ["apps", "drivers", "libraries"].each { key ->
         def token = "${key} ["
         int s = content.indexOf(token)
         if (s >= 0) {

@@ -43,9 +43,9 @@ def toolGetRoom(String roomIdentifier) {
     def allDevices = (settings.selectedDevices ?: []).toList()
     def childDevs = getChildDevices() ?: []
     def selectedIds = allDevices.collect { it.id.toString() } as Set
-    for (cd in childDevs) { if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } }
+    childDevs.each { cd -> if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } }
 
-    for (devId in room.deviceIds) {
+    room.deviceIds?.each { devId ->
         def device = allDevices?.find { it?.id?.toString() == devId.toString() }
         if (device) {
             def devInfo = [
@@ -56,7 +56,7 @@ def toolGetRoom(String roomIdentifier) {
             // Add common current states
             def states = [:]
             try {
-                for (st in device.currentStates) {
+                device.currentStates?.each { st ->
                     states.put(st.name, st.value)
                 }
             } catch (Exception e) {

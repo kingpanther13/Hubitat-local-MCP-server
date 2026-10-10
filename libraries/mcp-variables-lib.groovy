@@ -11,12 +11,12 @@ private boolean _refreshHubVarInUseRegistrations() {
     }
     if (hubVarNames) {
         try {
-            for (child in getChildApps()) {
+            getChildApps()?.each { child ->
                 def ruleData = null
                 try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
                 if (ruleData) {
                     def serialized = groovy.json.JsonOutput.toJson(ruleData)
-                    for (varName in hubVarNames) {
+                    hubVarNames.each { varName ->
                         // Match a whole JSON value so temp cannot match temperature.
                         def needle = "\"${varName}\""
                         if (serialized?.contains(needle)) currentVars << varName
@@ -34,7 +34,7 @@ private boolean _refreshHubVarInUseRegistrations() {
     def toAdd = currentVars - previous
     def toRemove = previous - currentVars
     boolean complete = true
-    for (name in toAdd) {
+    toAdd.each { name ->
         try {
             addInUseGlobalVar(name)
             registered << name
@@ -43,7 +43,7 @@ private boolean _refreshHubVarInUseRegistrations() {
             mcpLogError("hub-vars", "addInUseGlobalVar('${name}') failed -- in-use safety warning will not surface for this var", e)
         }
     }
-    for (name in toRemove) {
+    toRemove.each { name ->
         try {
             removeInUseGlobalVar(name)
             registered.remove(name)
@@ -69,7 +69,7 @@ private boolean _subscribeToAllHubVariables() {
     }
     if (location == null) return false
     boolean complete = true
-    for (varName in vars?.keySet()) {
+    vars?.keySet()?.each { varName ->
         try {
             subscribe(location, "variable:${varName}", "handleHubVariableEvent")
         } catch (Throwable e) {
@@ -384,7 +384,7 @@ def _findHubVariablesAppId() {
                 }
                 node?.children?.each { c -> recurse(c) }
             }
-            for (a in (parsed?.apps ?: [])) { recurse(a) }
+            (parsed?.apps ?: []).each { a -> recurse(a) }
             if (found?.id != null) {
                 def id = found.id.toString().toInteger()
                 // The feed's type label is the only evidence on this path, so
@@ -649,9 +649,7 @@ private Map _createVariablesBulk(variables) {
     int createdCount = 0
     int failedCount = 0
 
-    int idx = -1
-    for (item in variables) {
-        idx++
+    variables.eachWithIndex { item, idx ->
         // A malformed (non-Map) item fails only itself, never the whole batch --
         // same per-item isolation as a bad name/type/value below.
         def itemName = (item instanceof Map) ? item.name?.toString()?.trim() : null
@@ -1212,7 +1210,7 @@ def toolDeleteHubVariable(args) {
         // Word-boundary match: the JSON-quoted name or a %name% substitution, so a
         // var named `temp` doesn't match rules referencing `temperature` etc.
         def needles = ["\"${varName}\"".toString(), "%${varName}%".toString()]
-        for (child in getChildApps()) {
+        getChildApps()?.each { child ->
             def ruleData = null
             try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
             if (ruleData) {

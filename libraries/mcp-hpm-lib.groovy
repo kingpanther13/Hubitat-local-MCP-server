@@ -33,7 +33,7 @@ private String _hpmDiscoverAppId() {
             if (d.id == null) throw new IllegalArgumentException("HPM entry found but has no id field -- cannot determine hpmAppId; pass hpmAppId explicitly")
             hpmMatches << d.id.toString()
         }
-        for (it in (node?.children ?: [])) { workQueue << it }
+        (node?.children ?: []).each { workQueue << it }
     }
     if (hpmMatches.isEmpty()) {
         throw new IllegalArgumentException("HPM not found in installed apps -- Hubitat Package Manager does not appear to be installed")
@@ -61,7 +61,7 @@ private void _hpmAssertAppIsHpm(String explicitAppId) {
         if (d.id?.toString() == explicitAppId) {
             foundEntry = d
         } else {
-            for (it in (node?.children ?: [])) { workQueue << it }
+            (node?.children ?: []).each { workQueue << it }
         }
     }
     if (foundEntry == null) {
@@ -326,7 +326,7 @@ def toolGetHpmDrift(args) {
                 orphanDetection = [enabled: false, reason: "Unexpected /hub2/userAppTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-app signals were not evaluated this call"]
                 mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userAppTypes returned non-List shape (${actualTypeName}) -- orphan detection disabled")
             } else {
-                for (t in userAppTypesParsed) {
+                userAppTypesParsed.each { t ->
                     def typeId = t?.id?.toString()
                     if (typeId) installedAppCodeIds << typeId
                 }
@@ -358,7 +358,7 @@ def toolGetHpmDrift(args) {
                 orphanDriverDetection = [enabled: false, reason: "Unexpected /hub2/userDeviceTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-driver signals were not evaluated this call"]
                 mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userDeviceTypes returned non-List shape (${actualTypeName}) -- orphan driver detection disabled")
             } else {
-                for (t in userDeviceTypesParsed) {
+                userDeviceTypesParsed.each { t ->
                     def typeId = t?.id?.toString()
                     if (typeId) installedDriverCodeIds << typeId
                 }
@@ -379,13 +379,11 @@ def toolGetHpmDrift(args) {
     def driftDataQualityWarnings = []
     int totalSignals = 0
 
-    for (Map.Entry kv in filteredManifests) {
-        def manifestUrl = kv.key
-        def manifest = kv.value
+    filteredManifests.each { manifestUrl, manifest ->
         if (!(manifest instanceof Map)) {
             mcpLog("warn", "hpm", "get_hpm_drift: skipping malformed manifest entry for URL ${manifestUrl} -- value is not a Map")
             driftSkippedMalformed << manifestUrl?.toString()
-            continue
+            return
         }
         def signals = []
         // Data-quality warnings are collected separately and do NOT roll up into totalDriftSignals.
@@ -398,7 +396,7 @@ def toolGetHpmDrift(args) {
         // missing-required: required=true AND heID is null/absent
         // orphan-app: heID present but not in Apps Code registry (/hub2/userAppTypes endpoint)
         // Both checks share the per-component heID resolution loop below.
-        for (a in (manifest.apps ?: [])) {
+        (manifest.apps ?: []).each { a ->
             if (!(a instanceof Map)) {
                 skippedAppCount++
                 dataQualityWarnings << [
@@ -407,7 +405,7 @@ def toolGetHpmDrift(args) {
                     _warning     : "app component entry is not a Map -- skipped"
                 ]
                 mcpLog("warn", "hpm", "get_hpm_drift: non-Map app component in '${manifest.packageName}' (value: ${a?.toString()?.take(60) ?: 'null'}) -- skipped")
-                continue
+                return
             }
             def heId = a.heID
             // Normalize empty/whitespace-only String heID to null and surface as data-quality warning
@@ -452,7 +450,7 @@ def toolGetHpmDrift(args) {
                     componentId  : a.id?.toString(),
                     _warning     : "non-scalar heID (not Number or String) -- component skipped"
                 ]
-                continue
+                return
             }
             def heIdNull = heId == null
             // signals[] field-shape convention: orphan-* entries carry `heID` (the orphaned id);
@@ -484,7 +482,7 @@ def toolGetHpmDrift(args) {
         // missing-required: required=true AND heID is null/absent (drivers)
         // orphan-driver: heID present but not in Drivers Code registry (/hub2/userDeviceTypes endpoint)
         // signals[] field-shape convention identical to apps loop above: orphan-* carries heID, missing-required omits it.
-        for (d in (manifest.drivers ?: [])) {
+        (manifest.drivers ?: []).each { d ->
             if (!(d instanceof Map)) {
                 skippedDriverCount++
                 dataQualityWarnings << [
@@ -493,7 +491,7 @@ def toolGetHpmDrift(args) {
                     _warning     : "driver component entry is not a Map -- skipped"
                 ]
                 mcpLog("warn", "hpm", "get_hpm_drift: non-Map driver component in '${manifest.packageName}' (value: ${d?.toString()?.take(60) ?: 'null'}) -- skipped")
-                continue
+                return
             }
             def heId = d.heID
             // Normalize empty/whitespace-only String heID to null and surface as data-quality warning.
@@ -534,7 +532,7 @@ def toolGetHpmDrift(args) {
                     componentId  : d.id?.toString(),
                     _warning     : "non-scalar heID (not Number or String) -- component skipped"
                 ]
-                continue
+                return
             }
             def heIdNull = heId == null
             if (d.required == true && heIdNull) {

@@ -35,10 +35,10 @@ def toolListHubApps(args) {
                     def types = []
                     // Community (user-installed) code definitions: system/isBuiltIn=false,
                     // menu looked up from the appsList catalog (null when undeclared/unlisted).
-                    for (t in parsed) { if (t instanceof Map) types << _projectAppType(t, false, enrich) }
+                    parsed.each { t -> if (t instanceof Map) types << _projectAppType(t, false, enrich) }
                     // Built-in types never appear in the code registry; append them so a caller
                     // can answer "community vs built-in" over ALL app types in one call.
-                    for (t in enrich.builtIn) { if (t instanceof Map) types << _projectAppType(t, true, enrich) }
+                    enrich.builtIn.each { t -> if (t instanceof Map) types << _projectAppType(t, true, enrich) }
                     result.apps = types
                     result.count = types.size()
                     result.source = "hub_api"
@@ -101,7 +101,7 @@ def _appTypeEnrichment() {
             if (parsed.systemAppTypes instanceof List) catalog += parsed.systemAppTypes
             else notes << "built-in (system) app types are omitted this call"
             if (notes) out.note = "/hub2/appsList did not return a usable list this call; " + notes.join("; ") + "."
-            for (e in catalog) {
+            catalog.each { e ->
                 if (e instanceof Map) {
                     if (e.id != null) out.menuById[e.id.toString()] = e.menu
                     if (e.namespace != null && e.name != null) {
@@ -163,8 +163,8 @@ def toolListHubDrivers(args) {
             def parsed = responseText ? new groovy.json.JsonSlurper().parseText(responseText) : null
             if (parsed?.drivers instanceof List) {
                 def projected = []
-                for (d in parsed.drivers) {
-                    if (d?.type == "dep" || d?.category == "Hidden") continue
+                parsed.drivers.each { d ->
+                    if (d?.type == "dep" || d?.category == "Hidden") return
                     def nm = d?.name?.toString() ?: ""
                     def bucket = (d?.type == "usr") ? "user" : (nm.startsWith("Virtual") ? "virtual" : "system")
                     projected << [id: d?.id?.toString(), name: nm, namespace: d?.namespace, bucket: bucket]
@@ -393,7 +393,7 @@ private stripOptionsHtml(options) {
         for (entry in options) {
             if (entry instanceof Map) {
                 def cleaned = [:]
-                for (Map.Entry e in entry) { def k = e.key; def v = e.value; cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) }
+                entry.each { k, v -> cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) }
                 out << cleaned
             } else {
                 out << entry
@@ -403,7 +403,7 @@ private stripOptionsHtml(options) {
     }
     if (options instanceof Map) {
         def cleaned = [:]
-        for (Map.Entry e in options) { def k = e.key; def v = e.value; cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) }
+        options.each { k, v -> cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) }
         return cleaned
     }
     return options
@@ -928,7 +928,7 @@ def toolListAppPages(args) {
     // onDevicesPage/onMeansPage/offMeansPage, where a static "single page" note used to be.
     def knownNames = pages.collect { it.name } as Set
     def linked = _rmPageHrefs(parsed.configPage as Map).findAll { !(it.page in knownNames) }.unique { it.page }
-    for (it in linked) { pages << [name: it.page, title: it.title, role: "sub-page"] }
+    linked.each { pages << [name: it.page, title: it.title, role: "sub-page"] }
     if (linked) {
         note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Drive them with hub_set_native_app walkStep (navigate, write, done); for Rule Machine rules use hub_set_rule's structured shortcuts."
     } else if (!curatedHpm) {
@@ -1114,9 +1114,7 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
     def cfgSettings = (cfg?.settings instanceof Map) ? cfg.settings : [:]
     def settingsMap = [:]
     int shapeRejections = 0
-    for (Map.Entry entry in schema) {
-        def name = entry.key
-        def meta = entry.value
+    schema.each { name, meta ->
         // Each tier is consulted only for a value the previous one does not have, and only when
         // its SHAPE round-trips through _rmBuildSettingsBody (see _isSimpleSettingValue) -- an
         // unencodable value would be POSTed back as junk.
@@ -1162,9 +1160,7 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
     body._action_update = "Done"
     body.pageBreadcrumbs = _rmPageBreadcrumbs(instanceId, page, "[]")
     // Per-type sidecars the form-encoded UI emits (matches _rmSubmitMainPageDone).
-    for (Map.Entry entry in schema) {
-        def name = entry.key
-        def meta = entry.value
+    schema.each { name, meta ->
         def t = meta?.type?.toString()
         if (meta?.multiple != true) {
             body["${name}.multiple".toString()] = "false"
@@ -2784,7 +2780,7 @@ def toolListInstalledApps(args) {
             def childParentId = included ? d.id : parentId
             node?.children?.each { c -> recurse(c, childParentId) }
         }
-        for (a in apps) { recurse(a, null) }
+        apps.each { a -> recurse(a, null) }
 
         def filtered = flat.findAll { entry ->
             switch (filter) {

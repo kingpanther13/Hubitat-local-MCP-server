@@ -80,19 +80,19 @@ private List _listDashboardsViaChildApps() {
             def d = node?.data ?: [:]
             def t = d.type?.toString() ?: ""
             if (t == "Easy Dashboard Parent") {
-                for (c in (node?.children ?: [])) {
+                (node?.children ?: []).each { c ->
                     def cd = c?.data ?: [:]
                     if (cd.id != null) out << [id: cd.id?.toString(), name: cd.name, type: "easy"]
                 }
             } else if (_isLegacyDashboardParentType(t)) {
-                for (c in (node?.children ?: [])) {
+                (node?.children ?: []).each { c ->
                     def cd = c?.data ?: [:]
                     if (cd.id != null && cd.type?.toString() == "Dashboard") out << [id: cd.id?.toString(), name: cd.name, type: "legacy"]
                 }
             }
             (node?.children ?: []).each { walk(it) }
         }
-        for (it in apps) { walk(it) }
+        apps.each { walk(it) }
         return out
     } catch (Exception e) {
         mcpLogError("dashboard", "enumerate dashboards via child apps failed", e)
@@ -184,7 +184,7 @@ private Map _legacyDashboardProbe(String id) {
     // dashboard", distinct from the read-failure null above.
     if (!(ia instanceof Map) || ia.name?.toString() != "Dashboard" || ia.systemAppType != true) return [legacy: false]
     def out = [legacy: true, label: ia.label]
-    for (s in (parsed.appState ?: [])) {
+    (parsed.appState ?: []).each { s ->
         if (s?.name?.toString() == "accessToken") out.accessToken = s.value?.toString()
     }
     def devices = (parsed.appSettings ?: []).find { it?.name?.toString() == "devicesPicked" }
@@ -347,7 +347,7 @@ private void _requireUnprotectedEasyDashboardParent() {
         }
         (node.children ?: []).each { walk(it) }
     }
-    for (it in parsed.apps) { walk(it) }
+    parsed.apps.each { walk(it) }
 }
 
 // type arg: easy (default) | legacy. Rejects anything else so a typo can't silently create the wrong kind.
@@ -412,7 +412,7 @@ private Map _findLegacyDashboardParentNode() {
             }
             (node?.children ?: []).each { walk(it) }
         }
-        for (it in (parsed?.apps ?: [])) { walk(it) }
+        (parsed?.apps ?: []).each { walk(it) }
         return found
     } catch (Exception e) {
         mcpLogError("dashboard", "legacy dashboard parent lookup failed", e)
@@ -665,7 +665,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
         def rawIds = (args.removeTileIds instanceof Collection) ? args.removeTileIds : [args.removeTileIds]
         def ids = rawIds.collect { _requireTileId(it, "removeTileIds") }
         // Delete semantics are retry-safe: an id that is already gone is skipped with a warning, not an error.
-        for (tid in ids) {
+        ids.each { tid ->
             if (!tiles.any { _tileIdOf(it) == tid }) warnings << "removeTileIds: no tile with id ${tid} (already removed?); skipped."
         }
         tiles.removeAll { _tileIdOf(it) in ids }
@@ -674,7 +674,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
         if (!(args.updateTiles instanceof Collection)) {
             throw new IllegalArgumentException("updateTiles must be an array of {id, ...fields-to-change} objects.")
         }
-        for (spec in args.updateTiles) {
+        args.updateTiles.each { spec ->
             if (!(spec instanceof Map) || spec.id == null) {
                 throw new IllegalArgumentException("Each updateTiles entry needs an id plus the fields to change (e.g. [id: 3, col: 2, colSpan: 2]).")
             }
@@ -683,7 +683,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
             if (tile == null) {
                 throw new IllegalArgumentException("updateTiles: no tile with id ${tid}. Existing tile ids: ${tiles.collect { it.id }}.")
             }
-            for (Map.Entry entry in spec) { def k = entry.key; def v = entry.value; if (k?.toString() != "id") tile.put(k, v) }
+            spec.each { k, v -> if (k?.toString() != "id") tile.put(k, v) }
             _warnUnauthorizedTileDevice(tile, probe, warnings)
         }
     }
@@ -695,7 +695,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
         // hand the next add id 0 again -- two tiles sharing an id makes later id-addressed ops ambiguous.
         def existingIds = tiles.collect { _tileIdOf(it) }.findAll { it != null }
         int nextId = (existingIds.isEmpty() ? -1 : existingIds.max()) + 1
-        for (spec in args.addTiles) {
+        args.addTiles.each { spec ->
             if (!(spec instanceof Map)) throw new IllegalArgumentException("Each addTiles entry must be a tile object.")
             def missing = ["template", "col", "row"].findAll { spec.get(it) == null }
             if (missing) {
@@ -710,7 +710,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
             }
             if (dup != null) {
                 warnings << "addTiles: an identical tile already exists (id ${dup.id}); skipped (retry-safe)."
-                continue
+                return
             }
             def tile = new LinkedHashMap(spec as Map)
             tile.id = nextId++
@@ -724,9 +724,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
         if (!(args.setOptions instanceof Map)) {
             throw new IllegalArgumentException("setOptions must be an object of top-level layout fields (e.g. cols, rows, bgColor, iconSize, fontSize, gridGap, roundedCorners).")
         }
-        for (Map.Entry entry in args.setOptions) {
-            def k = entry.key
-            def v = entry.value
+        args.setOptions.each { k, v ->
             def key = k?.toString()
             if (key == "tiles") throw new IllegalArgumentException("setOptions cannot replace tiles; use addTiles / updateTiles / removeTileIds (or a wholesale layout).")
             if (key == "name") throw new IllegalArgumentException("The dashboard name is its app label; pass the top-level name arg, not setOptions.name.")
@@ -949,7 +947,7 @@ private String _dashboardDeviceCsv(deviceIds, boolean required) {
         tokens = [deviceIds]
     }
     def ids = tokens.collect { it?.toString()?.trim() }.findAll { it }
-    for (it in ids) {
+    ids.each {
         if (!(it ==~ /\d+/)) {
             throw new IllegalArgumentException("deviceIds must be numeric device ids; got '${it}'. Use hub_list_devices to find device ids.")
         }

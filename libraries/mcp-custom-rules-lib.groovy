@@ -68,17 +68,17 @@ def toolCreateRule(args) {
     args.triggers = args.triggers.collect { trigger -> normalizeTrigger(trigger) }
 
     // Validate triggers
-    for (trigger in args.triggers) {
+    args.triggers.each { trigger ->
         validateTrigger(trigger)
     }
 
     // Validate conditions
-    for (condition in args.conditions) {
+    args.conditions?.each { condition ->
         validateCondition(condition)
     }
 
     // Validate actions
-    for (action in args.actions) {
+    args.actions.each { action ->
         validateAction(action)
     }
 
@@ -171,17 +171,17 @@ def toolUpdateRule(ruleId, args, String customEngineMode = "full") {
     // Normalize and validate any provided triggers
     if (args.triggers != null) {
         args.triggers = args.triggers.collect { trigger -> normalizeTrigger(trigger) }
-        for (it in args.triggers) { validateTrigger(it) }
+        args.triggers.each { validateTrigger(it) }
     }
 
     // Validate any provided conditions
     if (args.conditions != null) {
-        for (it in args.conditions) { validateCondition(it) }
+        args.conditions.each { validateCondition(it) }
     }
 
     // Validate any provided actions
     if (args.actions != null) {
-        for (it in args.actions) { validateAction(it) }
+        args.actions.each { validateAction(it) }
     }
 
     // Normalize operators (convert "==" to "equals", "!=" to "not_equals")
@@ -569,25 +569,23 @@ def buildDeviceManifest(ruleData) {
     def deviceUsage = [:]  // deviceId -> [sections]
 
     // Scan triggers
-    for (trigger in ruleData.triggers) {
+    ruleData.triggers?.each { trigger ->
         collectDeviceIds(trigger, "triggers", deviceUsage)
     }
 
     // Scan conditions
-    for (condition in ruleData.conditions) {
+    ruleData.conditions?.each { condition ->
         collectDeviceIds(condition, "conditions", deviceUsage)
     }
 
     // Scan actions
-    for (action in ruleData.actions) {
+    ruleData.actions?.each { action ->
         collectDeviceIds(action, "actions", deviceUsage)
     }
 
     // Build manifest entries with device info
     def manifest = []
-    for (Map.Entry e in deviceUsage) {
-        def deviceId = e.key
-        def sections = e.value
+    deviceUsage.each { deviceId, sections ->
         def entry = [
             deviceId: deviceId.toString(),
             usedIn: sections.toList().sort()
@@ -623,7 +621,7 @@ private void collectDeviceIds(component, String section, Map deviceUsage) {
 
     // Check for deviceIds field (plural — multi-device triggers, capture_state, etc.)
     if (component.deviceIds) {
-        for (did in component.deviceIds) {
+        component.deviceIds.each { did ->
             def id = did.toString()
             if (!deviceUsage.containsKey(id)) {
                 deviceUsage.put(id, new LinkedHashSet())
@@ -635,22 +633,22 @@ private void collectDeviceIds(component, String section, Map deviceUsage) {
     // Check nested structures in if_then_else actions
     if (component.type == "if_then_else") {
         // Scan conditions inside if_then_else
-        for (cond in component.conditions) {
+        component.conditions?.each { cond ->
             collectDeviceIds(cond, section, deviceUsage)
         }
         // Scan then actions
-        for (action in component.thenActions) {
+        component.thenActions?.each { action ->
             collectDeviceIds(action, section, deviceUsage)
         }
         // Scan else actions
-        for (action in component.elseActions) {
+        component.elseActions?.each { action ->
             collectDeviceIds(action, section, deviceUsage)
         }
     }
 
     // Check nested actions in repeat blocks
     if (component.type == "repeat") {
-        for (action in component.actions) {
+        component.actions?.each { action ->
             collectDeviceIds(action, section, deviceUsage)
         }
     }
@@ -665,9 +663,7 @@ def applyDeviceMapping(data, Map mapping) {
 
     if (data instanceof Map) {
         def result = [:]
-        for (Map.Entry entry in data) {
-            def key = entry.key
-            def value = entry.value
+        data.each { key, value ->
             if (key == "deviceId" && value != null) {
                 def mappedId = mapping.get(value.toString())
                 result.put(key, mappedId != null ? mappedId.toString() : value)
