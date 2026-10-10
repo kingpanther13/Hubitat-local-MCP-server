@@ -10945,6 +10945,8 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 
 **Why an unmerged PR installs:** plain Hubitat Package Manager Repair reads only the PUBLISHED manifest, so it can't reach an unmerged PR's artifacts. This tool instead anchors to `packageManifest.json` AT `ref`.
 
+**Upgrading from 4.6.0 or earlier:** that version's tool refuses any ref whose manifest declares no bundle (`bundle_required_but_undeclared`), which is every ref from 4.7 on. Update through HPM once; this tool deploys any ref from then on.
+
 **Developer Mode visibility:** when Developer Mode is off the tool is hidden from `tools/list` entirely (catalog-hidden, not merely runtime-refused).
 
 **`baseUrl`:** per-call source URLs are built as `<baseUrl>/<ref>/<path>` (`baseUrl` carries no trailing slash, no ref/path). It exists to point at forks / CI branches on a different remote.
