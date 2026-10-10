@@ -4,19 +4,19 @@
  * Callers must hold the exclusive hub lease before deploying.
  */
 definition(
-    name: "E2E Dead-Man Watchdog v3",
+    name: "E2E Dead-Man Watchdog v3.1",
     namespace: "mcp",
     author: "kingpanther13",
     description: "Manual hub administration and MCP package deployment with live progress. E2E test hub only.",
     category: "Utility",
     iconUrl: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
     iconX2Url: "https://raw.githubusercontent.com/hubitat/HubitatPublic/master/app-dev/icon.png",
-    oauth: [displayName: "E2E Dead-Man Watchdog v3", displayLink: ""],
+    oauth: [displayName: "E2E Dead-Man Watchdog v3.1", displayLink: ""],
     singleInstance: true
 )
 
 preferences {
-    page(name: "mainPage", title: "E2E Dead-Man Watchdog v3", install: true, uninstall: true) {
+    page(name: "mainPage", title: "E2E Dead-Man Watchdog v3.1", install: true, uninstall: true) {
         section("Watchdog") {
             input "debugLogging", "bool", title: "Debug logging", defaultValue: false, required: false
             input "autoRebootOnWedge", "bool", title: "Auto-reboot when the hub's loopback HTTP stays dead for 4+ minutes (the web stack is wedged)", defaultValue: true, required: false
@@ -97,13 +97,13 @@ private boolean maybeAutoRebootWedgedHub() {
     Long downUntil = null
     try { downUntil = atomicState.expectedDownUntil as Long } catch (Exception ignore) { downUntil = null }
     if (downUntil != null && now() < downUntil) {
-        log.warn "E2E Dead-Man Watchdog v3: loopback is down but a deliberate reboot/platform update is in progress for another ${((downUntil - now()) / 1000) as long}s -- not rebooting into it."
+        log.warn "E2E Dead-Man Watchdog v3.1: loopback is down but a deliberate reboot/platform update is in progress for another ${((downUntil - now()) / 1000) as long}s -- not rebooting into it."
         return false
     }
     // Never act on accumulated counters alone: a live probe must also fail right now. Outside the
     // monitor on purpose -- a 10s probe under it would hold every queued tick.
     if (probeLoopbackAlive()) {
-        log.warn "E2E Dead-Man Watchdog v3: the wedge counters were stale -- a live probe answered, so the hub is healthy. NOT rebooting."
+        log.warn "E2E Dead-Man Watchdog v3.1: the wedge counters were stale -- a live probe answered, so the hub is healthy. NOT rebooting."
         return false
     }
     long nowMs = now()
@@ -111,18 +111,18 @@ private boolean maybeAutoRebootWedgedHub() {
         Long lastReboot = null
         try { lastReboot = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { lastReboot = null }
         if (lastReboot != null && (nowMs - lastReboot) < 1800000L) {
-            log.warn "E2E Dead-Man Watchdog v3: hub still looks wedged but an auto-reboot fired ${((nowMs - lastReboot) / 1000) as long}s ago -- not rebooting again within 30 minutes. The hub may need a physical power cycle."
+            log.warn "E2E Dead-Man Watchdog v3.1: hub still looks wedged but an auto-reboot fired ${((nowMs - lastReboot) / 1000) as long}s ago -- not rebooting again within 30 minutes. The hub may need a physical power cycle."
             return false
         }
         // Re-validate under the lock: another tick's probe may have answered, or an operator may
         // have started a reboot or platform update, since the checks above.
         if (!hubLooksWedged()) {
-            log.warn "E2E Dead-Man Watchdog v3: the hub recovered while the reboot slot was being claimed -- NOT rebooting."
+            log.warn "E2E Dead-Man Watchdog v3.1: the hub recovered while the reboot slot was being claimed -- NOT rebooting."
             return false
         }
         try { downUntil = atomicState.expectedDownUntil as Long } catch (Exception ignore) { downUntil = null }
         if (downUntil != null && nowMs < downUntil) {
-            log.warn "E2E Dead-Man Watchdog v3: a deliberate reboot/platform update began while the reboot slot was being claimed -- not rebooting into it."
+            log.warn "E2E Dead-Man Watchdog v3.1: a deliberate reboot/platform update began while the reboot slot was being claimed -- not rebooting into it."
             return false
         }
         // Claim under the lock so an overlapping tick cannot also reach the POST; the POST itself
@@ -131,19 +131,19 @@ private boolean maybeAutoRebootWedgedHub() {
         Long stampBack = null
         try { stampBack = atomicState.lastAutoRebootAt as Long } catch (Exception ignore) { stampBack = null }
         if (stampBack != nowMs) {
-            log.error "E2E Dead-Man Watchdog v3: the auto-reboot rate-limit stamp did NOT persist (state holds ${stampBack}); rebooting anyway, but a following tick could fire a second reboot."
+            log.error "E2E Dead-Man Watchdog v3.1: the auto-reboot rate-limit stamp did NOT persist (state holds ${stampBack}); rebooting anyway, but a following tick could fire a second reboot."
         }
     }
     // A loopback call already in flight can answer in the gap; never reboot a hub that just came back.
     if (!hubLooksWedged()) {
-        log.warn "E2E Dead-Man Watchdog v3: the hub answered while the reboot was being prepared -- NOT rebooting, and the rate-limit slot is given back."
+        log.warn "E2E Dead-Man Watchdog v3.1: the hub answered while the reboot was being prepared -- NOT rebooting, and the rate-limit slot is given back."
         try { atomicState.lastAutoRebootAt = null } catch (Exception ignore) { }
         return false
     }
-    log.error "E2E Dead-Man Watchdog v3: hub loopback HTTP has been dead for at least ${loopbackState().failStreak} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
+    log.error "E2E Dead-Man Watchdog v3.1: hub loopback HTTP has been dead for at least ${loopbackState().failStreak} consecutive calls with no success in over 4 minutes -- the web stack is wedged and nothing in-process recovers from that. AUTO-REBOOTING."
     def r = adminRebootHub([confirm: true])
     if (!r?.success) {
-        log.error "E2E Dead-Man Watchdog v3: auto-reboot POST did not confirm (${r?.error})."
+        log.error "E2E Dead-Man Watchdog v3.1: auto-reboot POST did not confirm (${r?.error})."
         // An ambiguous POST may have landed, so its stamp keeps the 30-minute limit; an answered
         // rejection proves nothing rebooted, so the slot is freed for a real retry.
         if (r?.ambiguous != true) {
@@ -240,7 +240,7 @@ def handleInitialize(msg) {
     return jsonRpcResult(msg.id, [
         protocolVersion: negotiated,
         capabilities: [tools: [:]],
-        serverInfo: [name: "e2e-deadman-watchdog-v3", version: "3"],
+        serverInfo: [name: "e2e-deadman-watchdog-v3-1", version: "3.1"],
         instructions: "Manual administration and package deployment with live progress. Reserve the E2E hub before changes. Restoration requires an explicit request; the only automatic action is a reboot when the hub's web stack has been wedged for 4+ minutes."
     ])
 }
@@ -827,8 +827,9 @@ boolean isOwnInstance(id) {
     try { return id != null && id.toString() == app?.id?.toString() } catch (Exception ignore) { return false }
 }
 
+// v3 still runs beside v3.1 until v3 is retired, so both watchdogs' code is protected.
 boolean isWatchdogSource(source) {
-    return source instanceof String && (source =~ /definition\s*\(\s*name:\s*"E2E Dead-Man Watchdog v3"/).find()
+    return source instanceof String && (source =~ /definition\s*\(\s*name:\s*"E2E Dead-Man Watchdog v3(\.1)?"/).find()
 }
 
 // Whether the MCP server could repair this watchdog right now: installed once, enabled, and its
@@ -1564,7 +1565,7 @@ private boolean renewPurgeClaim(String claim) {
             // would carry on deleting alongside it believing it still owns the lease.
             Long back = atomicState.purgeInFlightAt as Long
             if (back != stamp) {
-                log.error "E2E Dead-Man Watchdog v3: the purge lease renewal did not persist (state holds ${back}) -- stopping this sweep rather than racing a successor."
+                log.error "E2E Dead-Man Watchdog v3.1: the purge lease renewal did not persist (state holds ${back}) -- stopping this sweep rather than racing a successor."
                 return false
             }
             return true
@@ -2266,7 +2267,7 @@ def adminGetInfo(args) {
         if (freeMemory) info.freeMemoryKB = freeMemory.trim()
     } catch (Exception e) { info.freeMemoryKB = "unavailable" }
     info.watchdogEndpoint = true
-    info.watchdogVersion = 3
+    info.watchdogVersion = "3.1"
     info.automaticRecovery = false
     info.autoRebootOnWedge = settings?.autoRebootOnWedge != false
     if (args?.peer == true) info.peerEndpoint = peerEndpointStatus()
@@ -2770,7 +2771,7 @@ private boolean markExpectedDowntime(long ms, String reason) {
                 atomicState.expectedDownUntil = priorUntil
                 atomicState.expectedDownReason = priorReason
             } catch (Exception ignore) { }
-            log.error "E2E Dead-Man Watchdog v3: the expected-downtime window (${reason}) did not persist -- state holds ${readBack}/${reasonBack}. Later reboot requests cannot rely on this window."
+            log.error "E2E Dead-Man Watchdog v3.1: the expected-downtime window (${reason}) did not persist -- state holds ${readBack}/${reasonBack}. Later reboot requests cannot rely on this window."
             return false
         }
         mcpAdminLog "Expecting the hub to be unreachable for up to ${(ms / 60000) as long} min (${reason}); manual reboot requests respect this window."
@@ -2780,7 +2781,7 @@ private boolean markExpectedDowntime(long ms, String reason) {
             atomicState.expectedDownUntil = priorUntil
             atomicState.expectedDownReason = priorReason
         } catch (Exception ignore) { }
-        log.error "E2E Dead-Man Watchdog v3: could not persist the expected-downtime window (${reason}): ${e.message}"
+        log.error "E2E Dead-Man Watchdog v3.1: could not persist the expected-downtime window (${reason}): ${e.message}"
         return false
     }
 }
@@ -2804,7 +2805,7 @@ private boolean releaseExpectedDowntime(Long ourStamp, Long priorWindow, String 
         }
         return true      // someone else's window: correctly left alone
     } catch (Exception e) {
-        log.error "E2E Dead-Man Watchdog v3: could not release the expected-downtime window: ${e.message}"
+        log.error "E2E Dead-Man Watchdog v3.1: could not release the expected-downtime window: ${e.message}"
         return false
     }
     }
@@ -2984,5 +2985,5 @@ String secCookie() {
 
 // ---- helpers ----
 void mcpAdminLog(String m) { logInfo "[mcp-admin] ${m}" }
-void logInfo(String m)  { log.info  "[watchdog-v3] ${m}" }
-void logDebug(String m) { if (settings?.debugLogging != false) log.debug "[watchdog-v3] ${m}" }
+void logInfo(String m)  { log.info  "[watchdog-v3.1] ${m}" }
+void logDebug(String m) { if (settings?.debugLogging != false) log.debug "[watchdog-v3.1] ${m}" }
