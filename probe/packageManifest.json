@@ -1,12 +1,12 @@
 {
     "packageName": "ZZ MCP Probe (compile test)",
     "author": "kingpanther13",
-    "version": "0.0.1",
+    "version": "0.0.7",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-10-10",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/522",
     "communityLink": "",
-    "releaseNotes": "Throwaway compile-time probe for issue 522. Do not instantiate.",
+    "releaseNotes": "Acceptance chain step 2: optimized shape (inline, no bundle, comments stripped) = gated ci/522-probe-gate@7959a5c2. Do not instantiate.",
     "apps": [
         {
             "id": "5d2e0c1a-7f1b-4b7a-9c3e-522000000001",
@@ -28,13 +28,5 @@
         }
     ],
     "drivers": [],
-    "bundles": [
-        {
-            "id": "5d2e0c1a-7f1b-4b7a-9c3e-522000000003",
-            "name": "ZZ MCP Probe Libraries",
-            "namespace": "mcpprobe",
-            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/ci/522-synth/probe/mcpprobe-libraries.zip",
-            "required": true
-        }
-    ]
+    "bundles": []
 }
