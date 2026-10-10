@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Install THIS PR's package on the test hub through watchdog v3 (`watchdog_v3.py deploy-pr`), then
-# bounce the server app and check it serves. Libraries are delivered ONLY by the bundle, which is
-# built here from the checkout and must equal the published bundle-artifacts entry for this SHA.
+# bounce the server app and check it serves. The libraries ship inlined into the parent: both apps
+# are built here from the checkout and must equal the published bundle-artifacts entry for this SHA.
 #
 # Usage: mcp_watchdog_deploy.sh [path/to/hubitat-mcp-server.groovy]
 # Env:   MCP_URL               -- the MCP server under test
@@ -23,29 +23,17 @@ if [ ! -f "$APP_FILE" ]; then
   exit 1
 fi
 
-# Whether the manifest declares a bundle at all; the guard below needs it.
-MANIFEST_FILE="$(dirname "$APP_FILE")/packageManifest.json"
-BUNDLE_BASENAMES=""
-if [ -f "$MANIFEST_FILE" ]; then
-  BUNDLE_BASENAMES=$(jq -r '.bundles[]?.location // empty' "$MANIFEST_FILE" | sed -E 's#.*/##')
-fi
-
 # ---------------------------------------------------------------------------
 # Shared watchdog JSON-RPC helpers (mcp_call / call_tool / ok_of / err_of), used by the
 # throttle bounce below.
 source "$(dirname "$0")/mcp_watchdog_lib.sh"
 
-# The bundle is the only library delivery path, so a manifest that #includes libraries without
-# declaring a bundle cannot be installed.
+# The build inlines every #include; watchdog_v3.py refuses a built app that still has one.
 mapfile -t INCLUDES < <(
   grep -hoE '^[[:space:]]*#include[[:space:]]+[A-Za-z0-9_]+\.[A-Za-z0-9_]+' "$APP_FILE" \
     | sed -E 's/^[[:space:]]*#include[[:space:]]+//' | sort -u || true
 )
-if [ "${#INCLUDES[@]}" -gt 0 ] && [ -z "$BUNDLE_BASENAMES" ]; then
-  echo "::error::App #includes ${#INCLUDES[@]} library(ies) (${INCLUDES[*]}) but packageManifest.json declares NO bundle to deliver them. A bundle-only install would leave the #include directives unresolved and the app would not compile. Add the libraries' bundle to the manifest."
-  exit 1
-fi
-echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- delivered via the package bundle, the HPM way (no redundant per-library install)."
+echo "App #includes ${#INCLUDES[@]} library(ies): ${INCLUDES[*]:-<none>} -- inlined into the built parent."
 
 
 # ---------------------------------------------------------------------------
@@ -71,21 +59,22 @@ mcp_probe() {
 
 
 # ===========================================================================
-# INSTALL -- build the PR's bundle from the checkout, then hand the whole package to v3.
+# INSTALL -- build both apps from the checkout, then hand the whole package to v3.
 # ===========================================================================
 REPO_DIR="$(dirname "$APP_FILE")"
-if [ ! -f "$REPO_DIR/tools/build-bundle.py" ]; then
-  echo "::error::tools/build-bundle.py not found in the checkout -- cannot build the PR's bundle zip."
+if [ ! -f "$REPO_DIR/tools/build-release-app.py" ]; then
+  echo "::error::tools/build-release-app.py not found in the checkout -- cannot build the PR's apps."
   exit 1
 fi
-echo "Building the PR's bundle zip from the checkout's libraries/ ..."
-( cd "$REPO_DIR" && python3 tools/build-bundle.py )
-BUNDLE_PATH="$REPO_DIR/bundles/mcp-libraries.zip"
-if [ ! -f "$BUNDLE_PATH" ]; then
-  echo "::error::The builder did not produce bundles/mcp-libraries.zip -- the only bundle v3 installs (/bundle-artifacts/shas/<sha>/mcp-libraries.zip)."
-  exit 1
-fi
-python3 "$(dirname "$0")/watchdog_v3.py" deploy-pr --bundle "$BUNDLE_PATH"
+echo "Building the PR's apps from the checkout (libraries inlined into the parent) ..."
+( cd "$REPO_DIR" && python3 tools/build-release-app.py )
+for BUILT in hubitat-mcp-server.groovy hubitat-mcp-rule.groovy; do
+  if [ ! -f "$REPO_DIR/dist/$BUILT" ]; then
+    echo "::error::The builder did not produce dist/$BUILT -- v3 installs it from /bundle-artifacts/shas/<sha>/$BUILT."
+    exit 1
+  fi
+done
+python3 "$(dirname "$0")/watchdog_v3.py" deploy-pr --dist "$REPO_DIR/dist"
 
 # The checks below drive manual watchdog tools, which v3 serves on its own endpoint.
 V3_OUT="$(python3 "$(dirname "$0")/watchdog_v3.py" endpoint)"
@@ -168,9 +157,9 @@ else
   fi
 fi
 
-# Post-deploy BIND-CHECK (fail-fast). V3 verified each #include'd library's source hash on the hub;
-# that does NOT prove the app INLINED it. A library can land yet fail to
-# bind, leaving its part-methods (_readOnlyToolNames_part<X>, _getAllToolDefinitions_part<X>, ...)
+# Post-deploy BIND-CHECK (fail-fast). V3 verified the built parent's source hash on the hub; that
+# does NOT prove every library made it into the build. A library left out of it leaves its
+# part-methods (_readOnlyToolNames_part<X>, _getAllToolDefinitions_part<X>, ...)
 # undefined on the compiled app class -- then getToolDefinitions() throws MissingMethodException from one
 # of the catalog aggregators (getReadOnlyToolNames/getAllToolDefinitions/...) and EVERY tool is dead.
 # initialize does NOT exercise that path (the readiness check above can't catch it); tools/list does.
@@ -204,7 +193,7 @@ if [ -n "${HUBITAT_HUB_URL:-}" ] && [ -n "${HUBITAT_ACCESS_TOKEN:-}" ] && [ -n "
   done
   if [ "$BIND_STATE" = "unbound" ]; then
     BIND_ERR=$(printf '%s' "$TL_RESP" | jq -r '.error.message? // (.error|strings) // (.error|tojson) // empty' 2>/dev/null || true)
-    echo "::error::Post-deploy BIND-CHECK FAILED -- a bundled library LANDED but did NOT inline into the app (${BAD_LIB}() is undefined), so its part-methods are uncallable and EVERY tool is dead. Failing the deploy now instead of running the whole suite against a broken app. tools/list error: ${BIND_ERR:-<none>}"
+    echo "::error::Post-deploy BIND-CHECK FAILED -- a library is missing from the built app (${BAD_LIB}() is undefined), so its part-methods are uncallable and EVERY tool is dead. Failing the deploy now instead of running the whole suite against a broken app. tools/list error: ${BIND_ERR:-<none>}"
     exit 1
   elif [ "$BIND_STATE" != "ok" ]; then
     echo "::error::Post-deploy BIND-CHECK could not get a usable tools/list after 6 attempts, with NO library-inline-failure signature -- so not a proven bind failure; each attempt's line above records what came back. Last attempt: ${PROBE_DIAG}"
@@ -214,5 +203,5 @@ else
   echo "::warning::HUBITAT_HUB_URL / HUBITAT_ACCESS_TOKEN / SERVER_APP_ID not all set -- skipping the post-deploy bind-check (the test runner's own setup still gates)."
 fi
 
-echo "Package installed through watchdog v3: parent, child and their library bundle are live on the hub."
+echo "Package installed through watchdog v3: the built parent (libraries inlined) and child are live on the hub."
 echo "WATCHDOG_DEPLOY_OK libraries=${#INCLUDES[@]}"
