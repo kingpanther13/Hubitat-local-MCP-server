@@ -3315,7 +3315,6 @@ def _toolDisplayMeta_partVisualRules() {
         hub_delete_visual_rule: [title: "Delete Visual Rule", summary: "Delete a Visual Rules Builder rule, returning its definition for recovery."]
     ]
 }
-private String _probeBuildMarkerMcpVisualRulesLib() { return "McpVisualRulesLib-0.0.4" }
 private String _filesFoldCase(value) {
     return value?.toString()?.tr('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
 }
@@ -3688,7 +3687,6 @@ def _toolDisplayMeta_partFiles() {
         hub_delete_file: [title: "Delete File", summary: "Delete a File Manager file (auto-backs up first)."]
     ]
 }
-private String _probeBuildMarkerMcpFilesLib() { return "McpFilesLib-0.0.4" }
 def toolListItemBackups(args = null) {
     args = args ?: [:]
     def scope = (args.scope ?: "source").toString()
@@ -9640,7 +9638,6 @@ def _toolDisplayMeta_partSystem() {
         hub_shutdown: [title: "Shut Down Hub", summary: "Power the hub off; a physical restart is required afterwards."]
     ]
 }
-private String _probeBuildMarkerMcpSystemLib() { return "McpSystemLib-0.0.4" }
 private List _capabilityNames(def caps) {
     (caps instanceof List ? caps : []).collect { c ->
         (c instanceof CharSequence) ? c.toString() : (c?.name?.toString() ?: c?.toString())
@@ -14281,7 +14278,6 @@ def _toolDisplayMeta_partDevices() {
         hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."]
     ]
 }
-private String _probeBuildMarkerMcpDevicesLib() { return "McpDevicesLib-0.0.4" }
 def toolManageVirtualDevice(args) {
     def action = args.action
     if (!action) {
@@ -16615,7 +16611,6 @@ def _toolDisplayMeta_partCustomRules() {
         hub_clone_custom_rule: [title: "Clone Custom Rule", summary: "Clone an existing custom-engine rule (the copy starts disabled)."]
     ]
 }
-private String _probeBuildMarkerMcpCustomRulesLib() { return "McpCustomRulesLib-0.0.4" }
 def toolListHubApps(args) {
     def cursor = args?.cursor
     def result = [:]
@@ -20062,14 +20057,18 @@ def _bundleArtifactUrlForRef(location, String base, String ref) {
     def keyPath = (ref ==~ /[0-9a-f]{40}/) ? "shas/${ref}" : "branches/${ref}"
     return "${base}/bundle-artifacts/${keyPath}/${baseName}".toString()
 }
-def _bundleArtifactExists(String artifactUrl) {
+def _artifactSizeMarker(String artifactUrl) {
     try {
         def r = _httpFetchUrl("${artifactUrl}.size")
-        return ((r?.status as Integer) == 200) && (r?.body?.toString()?.trim() ==~ /\d+/)
+        def body = r?.body?.toString()?.trim()
+        return ((r?.status as Integer) == 200 && body ==~ /\d+/) ? (body as Long) : null
     } catch (Exception e) {
-        mcpLog("warn", "developer-mode", "_bundleArtifactExists: probe of ${artifactUrl}.size failed (${e.toString()}) -- treating as no artifact; the bundle leg falls back to the committed zip")
-        return false
+        mcpLog("warn", "developer-mode", "_artifactSizeMarker: probe of ${artifactUrl}.size failed (${e.toString()}) -- treating as no artifact")
+        return null
     }
+}
+def _bundleArtifactExists(String artifactUrl) {
+    return _artifactSizeMarker(artifactUrl) != null
 }
 def _parseIncludeDirectives(String source) {
     def tokens = []
@@ -20220,16 +20219,6 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
         ? args.baseUrl.trim().replaceAll('/+$', '')
         : getPackageSourceBase()
     def appUrl = "${base}/${ref}/hubitat-mcp-server.groovy".toString()
-    def appSource
-    try {
-        appSource = _fetchSourceFromUrl(appUrl)
-    } catch (Exception e) {
-        return [
-            success: false, aborted: true, abortReason: "app_source_fetch_failed", ref: ref, appUrl: appUrl,
-            error: "Failed to fetch app source at ref '${ref}' (${appUrl}): ${e.message ?: e.toString()}. Nothing was changed."
-        ]
-    }
-    def includeTokens = _parseIncludeDirectives(appSource)
     def manifestUrl = "${base}/${ref}/packageManifest.json".toString()
     def manifestText
     try {
@@ -20253,43 +20242,17 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
         ]
     }
     def manifestBundles = (manifest.bundles instanceof List) ? manifest.bundles : []
-    def plannedBundles = []
-    for (b in manifestBundles) {
-        def loc = (b?.location instanceof String) ? b.location.trim() : null
-        def entry
-        if (loc && loc.contains("/bundle-artifacts/")) {
-            entry = [name: (b?.name ?: b?.id), url: loc, source: "manifest-current"]
-        } else {
-            def url = _reanchorToRef(loc, base, ref)
-            if (!url) {
-                return [
-                    success: false, aborted: true, abortReason: "bundle_location_unusable", ref: ref,
-                    error: "Bundle '${b?.name ?: b?.id ?: '?'}' in packageManifest.json has an unusable location '${b?.location}' (expected a scheme://host/owner/repo/ref/<path> raw URL or a bundle-artifacts URL). Nothing was changed."
-                ]
-            }
-            entry = [name: (b?.name ?: b?.id), url: url, source: "committed-at-ref"]
-        }
-        def artifactUrl = _bundleArtifactUrlForRef(loc, base, ref)
-        if (artifactUrl && _bundleArtifactExists(artifactUrl)) {
-            entry.url = artifactUrl
-            entry.source = "bundle-artifacts"
-        }
-        if (entry.source == "manifest-current" && ref != null && (ref.toString().trim() ==~ /(?i)^[0-9a-f]{7,40}$/)) {
-            return [
-                success: false, aborted: true, abortReason: "no_bundle_artifact_for_ref", ref: ref,
-                bundle: (b?.name ?: b?.id), artifactUrlProbed: artifactUrl,
-                error: "No per-ref bundle artifact exists for ref '${ref}' (probed ${artifactUrl ?: 'n/a'}); the manifest's bundle points at branches/main, so installing it would deliver MAIN's libraries, not this ref's. Pass the FULL 40-char commit SHA of a PUSHED commit (not an abbreviation), or push the branch so its bundle artifact is built. Nothing was changed."
-            ]
-        }
-        plannedBundles << entry
-    }
-    if (!includeTokens.isEmpty() && plannedBundles.isEmpty()) {
-        return [
-            success: false, aborted: true, abortReason: "bundle_required_but_undeclared", ref: ref, includes: includeTokens,
-            error: "App source #includes ${includeTokens.size()} library(ies) (${includeTokens.join(', ')}) but packageManifest.json at ref '${ref}' declares no bundle to deliver them. A bundle-less deploy would leave the #includes unresolved and the app would not compile. Nothing was changed."
-        ]
-    }
     def manifestApps = (manifest.apps instanceof List) ? manifest.apps : []
+    boolean inlined = manifestBundles.isEmpty() && !manifestApps.isEmpty() &&
+        manifestApps.every { it?.location instanceof String && it.location.contains("/bundle-artifacts/") }
+    def includeTokens = []
+    def plannedBundles = []
+    if (!inlined) {
+        def bundlePlan = _planPackageBundles(manifestBundles, base, ref, appUrl)
+        if (bundlePlan.abort) return bundlePlan.abort
+        includeTokens = bundlePlan.includes
+        plannedBundles = bundlePlan.bundles
+    }
     def appTypes
     try {
         def typesText = hubInternalGet("/hub2/userAppTypes")
@@ -20307,17 +20270,25 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
     for (a in manifestApps) {
         def match = appTypes.find { it?.namespace == a?.namespace && it?.name == a?.name }
         def classId = match?.id?.toString()
-        def url = _reanchorToRef(a?.location, base, ref)
+        def url = inlined ? _bundleArtifactUrlForRef(a?.location, base, ref) : _reanchorToRef(a?.location, base, ref)
         if (!classId || !url) {
             return [
                 success: false, aborted: true, abortReason: "app_class_unresolved", ref: ref,
                 error: "Could not resolve app '${a?.namespace}:${a?.name}' (class id: ${classId ?: 'unresolved'}, url: ${url ?: 'unusable location'}). Nothing was changed; the app remains updatable via hub_update_app."
             ]
         }
-        plannedApps << [
+        def entry = [
             name: a?.name, namespace: a?.namespace, classId: classId, url: url,
             isSelf: (a?.namespace == "mcp" && a?.name == "MCP Rule Server")
         ]
+        if (inlined) {
+            def artifact = _planAppArtifact(a.name?.toString(), a.location.trim(), url, ref)
+            if (artifact.abort) return artifact.abort
+            entry.url = artifact.url
+            entry.source = artifact.source
+            entry.expectedBytes = artifact.expectedBytes
+        }
+        plannedApps << entry
     }
     def orderedApps = plannedApps.findAll { !it.isSelf } + plannedApps.findAll { it.isSelf }
     if (dryRun) {
@@ -20326,6 +20297,35 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
             plannedBundles: plannedBundles, plannedApps: orderedApps,
             message: "Dry run: would install ${plannedBundles.size()} bundle(s) then deploy ${orderedApps.size()} app(s) (self app last) to ref ${ref}. No changes made."
         ]
+    }
+    def verifiedSources = [:]
+    if (inlined) {
+        for (a in orderedApps) {
+            def src
+            try {
+                src = _fetchSourceFromUrl(a.url)
+            } catch (Exception e) {
+                return [
+                    success: false, aborted: true, abortReason: "app_artifact_fetch_failed", ref: ref, app: a.name, url: a.url,
+                    error: "Failed to fetch ${a.name} from ${a.url}: ${e.message ?: e.toString()}. Nothing was changed."
+                ]
+            }
+            long actualBytes = src.getBytes("UTF-8").length
+            if (actualBytes != (a.expectedBytes as Long)) {
+                return [
+                    success: false, aborted: true, abortReason: "app_artifact_size_mismatch", ref: ref, app: a.name, url: a.url,
+                    expectedBytes: a.expectedBytes, actualBytes: actualBytes,
+                    error: "${a.name} from ${a.url} is ${actualBytes} bytes but its .size marker records ${a.expectedBytes} (truncated download or a publish in progress). Nothing was changed; retry in a minute."
+                ]
+            }
+            if (!_parseIncludeDirectives(src).isEmpty()) {
+                return [
+                    success: false, aborted: true, abortReason: "app_artifact_not_inlined", ref: ref, app: a.name, url: a.url,
+                    error: "${a.name} from ${a.url} still has #include directives, and the manifest declares no bundle to deliver them, so it would not compile. Nothing was changed."
+                ]
+            }
+            verifiedSources.put(a.classId, src)
+        }
     }
     def bundleResults = []
     for (b in plannedBundles) {
@@ -20352,7 +20352,8 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
     for (a in orderedApps) {
         def r
         try {
-            def updateArgs = [appId: a.classId, importUrl: a.url, confirm: true]
+            def updateArgs = inlined ? [appId: a.classId, source: verifiedSources.get(a.classId), confirm: true]
+                                     : [appId: a.classId, importUrl: a.url, confirm: true]
             r = _toolUpdateAppCode(updateArgs, a.isSelf ? packageWorkerContext : null)
         } catch (Exception e) {
             if (a.isSelf) {
@@ -20371,7 +20372,7 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
             ]
         }
         def ok = (r?.success == true)
-        appResults << [name: a.name, namespace: a.namespace, classId: a.classId, isSelf: a.isSelf, success: ok, app: r]
+        appResults << [name: a.name, namespace: a.namespace, classId: a.classId, url: a.url, isSelf: a.isSelf, success: ok, app: r]
         if (!ok) {
             if (a.isSelf) {
                 mcpLog("warn", "developer-mode", "hub_update_package: ref=${ref} self app update reported failure")
@@ -20404,7 +20405,72 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
         result.bundleFreshnessWarning = "Ref '${ref}' (legacy manifest): no bundle-artifacts zip was found for this ref, so the bundle leg installed the zip COMMITTED at the ref. That is only stale if this ref CHANGED library code without rebuilding the zip."
         mcpLog("warn", "developer-mode", "hub_update_package: legacy ref '${ref}' fell back to the committed bundle zip -- stale if the ref changed library code")
     }
+    if (orderedApps.any { it.source == "manifest-current" }) {
+        result.artifactFreshnessWarning = "No app artifact was found under ${base} for ref=main, so the apps were installed from the manifest's own branches/main build -- the same files HPM users install."
+        mcpLog("warn", "developer-mode", "hub_update_package: ref=main app artifact probe missed under ${base}; installed the manifest's branches/main build")
+    }
     return result
+}
+private Map _planPackageBundles(List manifestBundles, String base, String ref, String appUrl) {
+    def appSource
+    try {
+        appSource = _fetchSourceFromUrl(appUrl)
+    } catch (Exception e) {
+        return [abort: [
+            success: false, aborted: true, abortReason: "app_source_fetch_failed", ref: ref, appUrl: appUrl,
+            error: "Failed to fetch app source at ref '${ref}' (${appUrl}): ${e.message ?: e.toString()}. Nothing was changed."
+        ]]
+    }
+    def includeTokens = _parseIncludeDirectives(appSource)
+    def plannedBundles = []
+    for (b in manifestBundles) {
+        def loc = (b?.location instanceof String) ? b.location.trim() : null
+        def entry
+        if (loc && loc.contains("/bundle-artifacts/")) {
+            entry = [name: (b?.name ?: b?.id), url: loc, source: "manifest-current"]
+        } else {
+            def url = _reanchorToRef(loc, base, ref)
+            if (!url) {
+                return [abort: [
+                    success: false, aborted: true, abortReason: "bundle_location_unusable", ref: ref,
+                    error: "Bundle '${b?.name ?: b?.id ?: '?'}' in packageManifest.json has an unusable location '${b?.location}' (expected a scheme://host/owner/repo/ref/<path> raw URL or a bundle-artifacts URL). Nothing was changed."
+                ]]
+            }
+            entry = [name: (b?.name ?: b?.id), url: url, source: "committed-at-ref"]
+        }
+        def artifactUrl = _bundleArtifactUrlForRef(loc, base, ref)
+        if (artifactUrl && _bundleArtifactExists(artifactUrl)) {
+            entry.url = artifactUrl
+            entry.source = "bundle-artifacts"
+        }
+        if (entry.source == "manifest-current" && ref != null && (ref.toString().trim() ==~ /(?i)^[0-9a-f]{7,40}$/)) {
+            return [abort: [
+                success: false, aborted: true, abortReason: "no_bundle_artifact_for_ref", ref: ref,
+                bundle: (b?.name ?: b?.id), artifactUrlProbed: artifactUrl,
+                error: "No per-ref bundle artifact exists for ref '${ref}' (probed ${artifactUrl ?: 'n/a'}); the manifest's bundle points at branches/main, so installing it would deliver MAIN's libraries, not this ref's. Pass the FULL 40-char commit SHA of a PUSHED commit (not an abbreviation), or push the branch so its bundle artifact is built. Nothing was changed."
+            ]]
+        }
+        plannedBundles << entry
+    }
+    if (!includeTokens.isEmpty() && plannedBundles.isEmpty()) {
+        return [abort: [
+            success: false, aborted: true, abortReason: "bundle_required_but_undeclared", ref: ref, includes: includeTokens,
+            error: "App source #includes ${includeTokens.size()} library(ies) (${includeTokens.join(', ')}) but packageManifest.json at ref '${ref}' declares no bundle to deliver them. A bundle-less deploy would leave the #includes unresolved and the app would not compile. Nothing was changed."
+        ]]
+    }
+    return [includes: includeTokens, bundles: plannedBundles]
+}
+private Map _planAppArtifact(String name, String location, String artifactUrl, String ref) {
+    def bytes = _artifactSizeMarker(artifactUrl)
+    if (bytes != null) return [url: artifactUrl, source: "bundle-artifacts", expectedBytes: bytes]
+    if (ref == "main" && location != artifactUrl) {
+        bytes = _artifactSizeMarker(location)
+        if (bytes != null) return [url: location, source: "manifest-current", expectedBytes: bytes]
+    }
+    return [abort: [
+        success: false, aborted: true, abortReason: "no_app_artifact_for_ref", ref: ref, app: name, artifactUrlProbed: artifactUrl,
+        error: "No built artifact exists for app '${name}' at ref '${ref}' (probed ${artifactUrl}.size). Pass the FULL 40-char SHA of a pushed commit, or a branch pushed to this repo -- the publish workflow builds both on every push. Nothing was changed."
+    ]]
 }
 def _getAllToolDefinitions_partSelfAdmin() {
     return [
@@ -21794,7 +21860,6 @@ private Map _mrtrAppClonerStageSlice(Map cp, String operationLabel) {
     _appClonerCleanup(cp.clonerAppId as Integer)
     return result
 }
-private String _probeBuildMarkerMcpAppClonerLib() { return "McpAppClonerLib-0.0.4" }
 def toolSearchTools(args) {
     def query = args.query
     if (!query?.trim()) return [error: "query is required"]
@@ -32627,7 +32692,6 @@ def _toolDisplayMeta_partNativeRM() {
         hub_set_app_disabled: [title: "Enable or Disable App", summary: "Enable or disable any installed app without deleting it (reversible)."]
     ]
 }
-private String _probeBuildMarkerMcpNativeRulesLib() { return "McpNativeRulesLib-0.0.4" }
 preferences {
     page(name: "mainPage")
     page(name: "confirmDeletePage")
@@ -40221,6 +40285,8 @@ The `createLinked` GET returns 200 with an empty body even when nothing links, s
 
 Deploys every declared library bundle + app from the manifest at `ref`, saving the running self app LAST (its recompile can drop the response). Does NOT touch app instances, undeclared drivers, or anything outside this package's manifest.
 
+**Built-app manifests:** when the manifest at `ref` declares no bundle and its apps live on the `bundle-artifacts` branch, each app is installed from that ref's build (`shas/<sha>/` for a full commit SHA, `branches/<ref>/` otherwise) after its byte count is checked against the `.size` marker, before any write. Only `ref=main` may fall back to the manifest's own location; any other ref without a build is refused.
+
 **Brick-safe:** if ANYTHING before the self app save fails (app/manifest fetch, an unresolved app class, a bundle install, a non-self app), it aborts BEFORE touching the self app -- the running server is left exactly as-is and still updatable via hub_update_app, the always-available escape hatch. Self-modification is gated by this tool's own enableDeveloperMode check (it saves the Apps Code class itself rather than calling hub_update_app, so that tool's self-update guard does not apply here).
 
 **Why an unmerged PR installs:** plain Hubitat Package Manager Repair reads only the PUBLISHED manifest, so it can't reach an unmerged PR's artifacts. This tool instead anchors to `packageManifest.json` AT `ref`.
@@ -41639,5 +41705,3 @@ def guideSubSectionLookup(subKey) {
     if (!mine) return null
     return [parent: parentKey, content: mine.join("\n")]
 }
-private String _probeBuildMarkerServer() { return "Server-0.0.4" }
-private String _probeChainMarkerServer() { return "Server-0.0.8" }

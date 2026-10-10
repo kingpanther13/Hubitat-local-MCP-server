@@ -1,12 +1,12 @@
 {
     "packageName": "ZZ MCP Probe (compile test)",
     "author": "kingpanther13",
-    "version": "0.0.8",
+    "version": "0.0.9",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-10-10",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/522",
     "communityLink": "",
-    "releaseNotes": "Acceptance chain step 3: steady-state update of the optimized shape (parent+child changed). Do not instantiate.",
+    "releaseNotes": "Probe v0.0.9 = the PR branch's own release build (tools/build-release-app.py @ f6a4d504) with the probe renames. Do not instantiate.",
     "apps": [
         {
             "id": "5d2e0c1a-7f1b-4b7a-9c3e-522000000001",
