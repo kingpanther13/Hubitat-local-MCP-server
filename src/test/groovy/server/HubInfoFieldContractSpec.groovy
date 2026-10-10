@@ -123,7 +123,7 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
     def "getHubInfo settles a self-deploy still saving once the App Code row's version has passed the starting one"() {
         given:
         atomicStateMap.lastSelfDeploy = [success: true, assumed: true, status: 'saving', startedVersion: 5,
-                                         appId: '228', sourceMode: 'importUrl', at: System.currentTimeMillis() - 60000L]
+                                         appId: '228', sourceMode: 'importUrl', at: 1234567890000L - 60000L]
         hubGet.register('/app/list/single/data/228') { params -> '[{"id": 228, "version": 6}]' }
 
         when:
@@ -141,7 +141,7 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         given:
         hubGet.register('/app/list/single/data/228') { params -> '[{"id": 228, "version": 5}]' }
         atomicStateMap.lastSelfDeploy = [success: true, assumed: true, status: 'saving', startedVersion: 5,
-                                         appId: '228', at: System.currentTimeMillis() - 60000L]
+                                         appId: '228', at: 1234567890000L - 60000L]
 
         when:
         def young = script.toolGetHubInfo()
@@ -152,7 +152,7 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
 
         when:
         atomicStateMap.lastSelfDeploy = [success: true, assumed: true, status: 'saving', startedVersion: 5,
-                                         appId: '228', at: System.currentTimeMillis() - 21L * 60L * 1000L]
+                                         appId: '228', at: 1234567890000L - 21L * 60L * 1000L]
         def old = script.toolGetHubInfo()
 
         then:
