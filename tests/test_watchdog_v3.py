@@ -68,7 +68,7 @@ class Hub:
                 return self.release_replies.pop(0)
             return {"success": True, "requestId": args["requestId"], "phase": "complete", "hold": False}
         if name == "hub_get_info":
-            return {"watchdogVersion": 3, "packageDeployment": self.held, **self.info}
+            return {"watchdogVersion": "3.1", "packageDeployment": self.held, **self.info}
         if name == "hub_list_apps":
             return {"apps": [{"id": 178, "namespace": "mcp", "name": "MCP Rule Server"},
                              {"id": 179, "namespace": "mcp", "name": "MCP Rule"}]}
@@ -320,7 +320,7 @@ class Discovery:
     def call(self, url, name, args):
         self.calls.append((url, name))
         if name == "hub_get_info":
-            return {"watchdogVersion": 3 if url == V3_URL else self.version}
+            return {"watchdogVersion": "3.1" if url == V3_URL else self.version}
         if name == "hub_list_app_instances":
             return {"apps": self.instances}
         if name == "hub_read_apps_code":
@@ -331,17 +331,19 @@ class Discovery:
 
 V3_URL = "https://cloud.hubitat.com/api/0f0f0f0f-aaaa-bbbb-cccc-121212121212/apps/48028/mcp?access_token=abc-123"
 V3_PAGE = {"page": {"sections": [{"paragraphs": [f"Cloud /mcp endpoint (token-in-query):{V3_URL}"]}]}}
-V3_INSTANCE = [{"id": 48028, "type": "E2E Dead-Man Watchdog v3"}, {"id": 38, "type": "MCP Rule Server"}]
+# v3 keeps running beside v3.1 until it is retired; only the v3.1 instance may be picked.
+V3_INSTANCE = [{"id": 48028, "type": "E2E Dead-Man Watchdog v3.1"}, {"id": 7, "type": "E2E Dead-Man Watchdog v3"},
+               {"id": 38, "type": "MCP Rule Server"}]
 
 
-def test_a_secret_already_pointing_at_v3_is_used_as_is(module):
-    hub = Discovery(3, [], {})
+def test_a_secret_already_pointing_at_v3_1_is_used_as_is(module):
+    hub = Discovery("3.1", [], {})
     assert module.resolve_v3_url(hub, "main", "configured") == "configured"
     assert hub.calls == [("configured", "hub_get_info")]
 
 
-def test_v3_is_discovered_from_its_app_page_while_the_secret_points_at_v2(module, tmp_path):
-    hub = Discovery(2, V3_INSTANCE, V3_PAGE)
+def test_v3_1_is_discovered_from_its_app_page_while_the_secret_points_at_v3(module, tmp_path):
+    hub = Discovery(3, V3_INSTANCE, V3_PAGE)
     cache = tmp_path / "endpoint"
     assert module.resolve_v3_url(hub, "main", "configured", cache) == V3_URL
     assert cache.read_text() == V3_URL
@@ -352,12 +354,12 @@ def test_v3_is_discovered_from_its_app_page_while_the_secret_points_at_v2(module
 
 @pytest.mark.parametrize("instances,page,message", [
     ([], V3_PAGE, "found 0"),
-    ([*V3_INSTANCE, {"id": 5, "type": "E2E Dead-Man Watchdog v3"}], V3_PAGE, "found 2"),
+    ([*V3_INSTANCE, {"id": 5, "type": "E2E Dead-Man Watchdog v3.1"}], V3_PAGE, "found 2"),
     (V3_INSTANCE, {"page": {}}, "exactly one endpoint"),
 ], ids=["not-installed", "duplicated", "no-endpoint-shown"])
 def test_discovery_refuses_an_ambiguous_v3(module, instances, page, message):
     with pytest.raises(module.HubError, match=message):
-        module.resolve_v3_url(Discovery(2, instances, page), "main", "configured")
+        module.resolve_v3_url(Discovery(3, instances, page), "main", "configured")
 
 
 BUILT = {"MCP Rule": b'definition(name: "MCP Rule")\n',

@@ -5,14 +5,14 @@
 #
 # Usage: mcp_watchdog_deploy.sh [path/to/hubitat-mcp-server.groovy]
 # Env:   MCP_URL               -- the MCP server under test
-#        WATCHDOG_URL          -- the watchdog endpoint (secret WATCHDOG_MCP_URL)
+#        WATCHDOG_URL          -- the watchdog endpoint (secret WATCHDOG31_MCP_URL)
 #        PR_RAW_BASE           -- https://raw.githubusercontent.com/<owner>/<repo>
 #        PR_HEAD_SHA_RESOLVED  -- 40-hex PR head SHA
 #        RUNNER_TEMP           -- GHA temp dir; falls back to /tmp
 set -euo pipefail
 
 : "${MCP_URL:?MCP_URL env var required (the MCP server under test)}"
-: "${WATCHDOG_URL:?WATCHDOG_URL env var required (full watchdog MCP endpoint URL with access_token; from secret WATCHDOG_MCP_URL)}"
+: "${WATCHDOG_URL:?WATCHDOG_URL env var required (full watchdog MCP endpoint URL with access_token; from secret WATCHDOG31_MCP_URL)}"
 : "${PR_RAW_BASE:?PR_RAW_BASE env var required (https://raw.githubusercontent.com/<owner>/<repo>)}"
 : "${PR_HEAD_SHA_RESOLVED:?PR_HEAD_SHA_RESOLVED env var required (40-hex PR head SHA)}"
 

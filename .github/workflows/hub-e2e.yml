@@ -351,7 +351,7 @@ jobs:
       cancel-in-progress: false
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
-      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+      WATCHDOG_URL: ${{ secrets.WATCHDOG31_MCP_URL }}
       GH_TOKEN: ${{ github.token }}
       LEASE_WAIT_TIMEOUT_S: '0'
       BACKUP_ARTIFACT: watchdog-before-maintenance-${{ github.run_attempt }}
@@ -413,7 +413,7 @@ jobs:
       cancel-in-progress: false
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
-      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+      WATCHDOG_URL: ${{ secrets.WATCHDOG31_MCP_URL }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
@@ -453,7 +453,7 @@ jobs:
       cancel-in-progress: false
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
-      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+      WATCHDOG_URL: ${{ secrets.WATCHDOG31_MCP_URL }}
     steps:
       - uses: actions/checkout@v7
       - name: Mask access tokens
@@ -560,11 +560,11 @@ jobs:
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
       # The standing watchdog is a SEPARATE on-hub app with its own cloud MCP endpoint (secret
-      # WATCHDOG_MCP_URL). It drives the PR install and the fixture purge over THIS url,
+      # WATCHDOG31_MCP_URL). It drives the PR install and the fixture purge over THIS url,
       # independent of the MCP server under test
       # ($MCP_URL) -- so a deploy that bricks the server under test can still be replaced
       # through the watchdog's own live endpoint.
-      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+      WATCHDOG_URL: ${{ secrets.WATCHDOG31_MCP_URL }}
 
     steps:
       - uses: actions/checkout@v7
@@ -608,8 +608,8 @@ jobs:
             exit 0
           fi
           if [ -z "$WATCHDOG_URL" ]; then
-            echo "::notice::WATCHDOG_MCP_URL secret not available — skipping E2E (the watchdog endpoint is not provisioned yet; expected until @level99 sets WATCHDOG_MCP_URL)"
-            echo "E2E NOT RUN — watchdog secret (WATCHDOG_MCP_URL) not configured." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::WATCHDOG31_MCP_URL secret not available — skipping E2E (the watchdog endpoint is not provisioned yet; expected until @level99 sets WATCHDOG31_MCP_URL)"
+            echo "E2E NOT RUN — watchdog secret (WATCHDOG31_MCP_URL) not configured." >> "$GITHUB_STEP_SUMMARY"
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -692,7 +692,7 @@ jobs:
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             case "$f" in
-              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog-v3.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk_conformance_helpers.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|.github/scripts/watchdog_v3.py|.github/scripts/e2e_scope.py|packageManifest.json|tools/build-release-app.py|tools/strip_source.py|libraries/*)
+              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog-v3.groovy|e2e-deadman-watchdog-v3-1.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk_conformance_helpers.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|.github/scripts/watchdog_v3.py|.github/scripts/e2e_scope.py|packageManifest.json|tools/build-release-app.py|tools/strip_source.py|libraries/*)
                 relevant=true ;;
             esac
           done <<< "$files"
@@ -862,7 +862,7 @@ jobs:
 
       # The watchdog is NOT deployed by e2e: e2e never writes to the watchdog app, it only drives the
       # standing watchdog's endpoint. A PR that changes the watchdog source
-      # (e2e-deadman-watchdog-v3.groovy) is validated by its specs plus an explicit maintenance run.
+      # (e2e-deadman-watchdog-v3-1.groovy) is validated by its specs plus an explicit maintenance run.
 
       # Watchdog v3 never restores on its own, so there is nothing to arm. This step confirms v3
       # answers and releases any deployment hold an earlier run left behind (a cancelled or crashed

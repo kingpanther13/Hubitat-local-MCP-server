@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Drive the E2E hub through watchdog v3: prepare a run, install a commit, purge its fixtures.
+"""Drive the E2E hub through watchdog v3.1: prepare a run, install a commit, purge its fixtures.
 
-V3 never restores anything by itself, so every step here is explicit. A hub write is
-submitted once; a lost response is followed by reading status, never by a resubmission.
+V3.1 replaces v3 (issue #522: it installs the built, libraries-inlined apps). Like v3 it never
+restores anything by itself, so every step here is explicit. A hub write is submitted once; a
+lost response is followed by reading status, never by a resubmission.
 """
 
 import argparse
@@ -18,7 +19,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-V3_APP_NAME = "E2E Dead-Man Watchdog v3"
+V3_APP_NAME = "E2E Dead-Man Watchdog v3.1"
+V3_VERSION = "3.1"  # hub_get_info.watchdogVersion; v3 answers 3
 ENDPOINT_RE = re.compile(r"https://cloud\.hubitat\.com/api/[0-9a-f-]+/apps/[0-9]+/mcp\?access_token=[A-Za-z0-9-]+")
 PACKAGE_APPS = ("MCP Rule", "MCP Rule Server")
 # The built (libraries inlined) apps published under bundle-artifacts/shas/<sha>/.
@@ -107,14 +109,14 @@ def mask(url):
 
 
 def resolve_v3_url(transport, mcp_url, watchdog_url, cache=None):
-    """Return v3's endpoint. Until WATCHDOG_MCP_URL points at v3, read it from the v3 app page."""
+    """Return v3.1's endpoint. Until WATCHDOG31_MCP_URL points at v3.1, read it from the v3.1 app page."""
     if cache is not None and cache.exists():
         return cache.read_text().strip()
     try:
         configured = transport.call(watchdog_url, "hub_get_info", {})
     except OSError:
         raise HubError("The configured watchdog endpoint does not answer") from None
-    if configured.get("watchdogVersion") == 3:
+    if configured.get("watchdogVersion") == V3_VERSION:
         url = watchdog_url
     else:
         instances = transport.call(watchdog_url, "hub_list_app_instances", {}).get("apps") or []
@@ -129,8 +131,8 @@ def resolve_v3_url(transport, mcp_url, watchdog_url, cache=None):
             raise HubError("The v3 app page does not show exactly one endpoint")
         url = urls.pop()
         mask(url)
-        if transport.call(url, "hub_get_info", {}).get("watchdogVersion") != 3:
-            raise HubError("The discovered endpoint is not watchdog v3")
+        if transport.call(url, "hub_get_info", {}).get("watchdogVersion") != V3_VERSION:
+            raise HubError("The discovered endpoint is not watchdog v3.1")
     if cache is not None:
         cache.write_text(url)
         cache.chmod(0o600)
@@ -419,7 +421,7 @@ def fetch_published(url, *, attempts=30, interval=10):
 
 
 def endpoints():
-    cache = Path(os.environ["RUNNER_TEMP"], "watchdog-v3-endpoint") if os.environ.get("RUNNER_TEMP") else None
+    cache = Path(os.environ["RUNNER_TEMP"], "watchdog-v3-1-endpoint") if os.environ.get("RUNNER_TEMP") else None
     transport = Transport()
     mcp = os.environ["MCP_URL"]
     return transport, resolve_v3_url(transport, mcp, os.environ["WATCHDOG_URL"], cache), mcp
