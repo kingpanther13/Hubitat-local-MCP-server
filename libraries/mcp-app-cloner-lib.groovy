@@ -39,7 +39,7 @@ private Map _appClonerInit(Integer sourceAppId) {
     def justPath = parts[0]
     def query = [:]
     if (parts.length > 1) {
-        parts[1].split('&').each { kv ->
+        for (kv in parts[1].split('&')) {
             def eq = kv.indexOf('=')
             if (eq > 0) query[kv.substring(0, eq)] = kv.substring(eq + 1)
         }
@@ -126,7 +126,9 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
         }
         if (navCfg?.configPage instanceof Map) {
             def navValues = (navCfg.settings instanceof Map) ? new LinkedHashMap(navCfg.settings as Map) : [:]
-            extras.each { k, v ->
+            for (Map.Entry entry in extras) {
+                def k = entry.key
+                def v = entry.value
                 def m = (k.toString() =~ /^settings\[(.+)\]$/)
                 if (m.find()) navValues.put(m[0][1], v)
             }
@@ -149,7 +151,9 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
     // escaping on the wire and the cloner silently rejects the upload.
     StringBuilder sb = new StringBuilder()
     boolean first = true
-    body.each { k, v ->
+    for (Map.Entry entry in body) {
+        def k = entry.key
+        def v = entry.value
         if (!first) sb.append('&')
         first = false
         sb.append(URLEncoder.encode(k.toString(), "UTF-8"))
@@ -719,7 +723,7 @@ private Map _appClonerStagePlan(Integer newAppId) {
             targets << tid
             try {
                 def cfg = _rmFetchConfigJson(tid)
-                ((cfg?.childApps ?: []) as List).each { c ->
+                for (c in ((cfg?.childApps ?: []) as List)) {
                     def cid = c?.id?.toString()
                     if (cid?.isInteger()) queue << cid.toInteger()
                 }
@@ -997,7 +1001,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
 // broken); otherwise why not. Unreadable counts as a mismatch, since the old rule goes next.
 String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
     def snap = [:]
-    (snapshot?.statusJson?.appState ?: []).each { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
+    for (it in (snapshot?.statusJson?.appState ?: [])) { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
     def copy = _rmReadRuleState(copyId)
     if (!copy) return "app ${copyId}'s state could not be read".toString()
     if (copy.broken == true) return "app ${copyId} reads as broken".toString()
@@ -1118,7 +1122,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     // declared it. Page-derived entries take precedence (they include
     // `required` and other UI-only metadata) so this is additive only.
     def savedSchema = _rmCollectInputSchema(snapshot?.configJson?.configPage) ?: [:]
-    snapshot?.statusJson?.appSettings?.each { s ->
+    for (s in snapshot?.statusJson?.appSettings) {
         def n = s?.name?.toString()
         if (n && !savedSchema.containsKey(n)) {
             savedSchema.put(n, [
@@ -1145,7 +1149,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     // An EMPTY id list is not authoritative (every sibling reader falls back on empty or absent):
     // trusting it would post an empty picker and report the key applied.
     def liveDeviceIds = [:]
-    snapshot?.statusJson?.appSettings?.each { st ->
+    for (st in snapshot?.statusJson?.appSettings) {
         def n = st?.name?.toString()
         if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds.put(n, st.deviceIdsForDeviceList)
     }
@@ -1321,7 +1325,7 @@ List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings) {
     }
     if (!extra) return []
     def body = [id: appId.toString()]
-    extra.each { rec ->
+    for (rec in extra) {
         def n = rec.name.toString()
         body["settings[${n}]".toString()] = ""
         if (rec.type) body["${n}.type".toString()] = rec.type.toString()

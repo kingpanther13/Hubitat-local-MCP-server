@@ -56,8 +56,10 @@ def toolSearchTools(args) {
     // iterate with eachWithIndex and push both lists together.
     def visibleCorpus = []
     def docTokens = []
-    corpus.eachWithIndex { entry, i ->
-        if (searchHideByName.contains(entry.name)) return
+    int i = -1
+    for (entry in corpus) {
+        i++
+        if (searchHideByName.contains(entry.name)) continue
         visibleCorpus << entry
         docTokens << docTokensAll[i]
     }
@@ -72,7 +74,9 @@ def toolSearchTools(args) {
 
     // Rank and return top results
     def ranked = []
-    scores.eachWithIndex { score, idx ->
+    int idx = -1
+    for (score in scores) {
+        idx++
         if (score > 0) ranked << [index: idx, score: score]
     }
     ranked.sort { -it.score }
@@ -148,16 +152,18 @@ def toolSearchTools(args) {
 def toolSearchCorpusFingerprint(List defs = null) {
     long h = 17L
     def displayMeta = getToolDisplayMeta()
-    applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false).each { toolDef ->
+    for (toolDef in applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false)) {
         h = _fpField(h, toolDef.name as String)
         h = _fpField(h, displayMeta[toolDef.name]?.title)
         h = _fpField(h, toolDef.description)
         h = _fpField(h, toolDef.inputSchema?.properties?.keySet()?.join(','))
     }
-    getGatewayConfig().each { gwName, config ->
+    for (Map.Entry entry in getGatewayConfig()) {
+        def gwName = entry.key
+        def config = entry.value
         h = _fpField(h, gwName as String)
         h = _fpField(h, config.description)
-        config.tools.each { toolName ->
+        for (toolName in config.tools) {
             h = _fpField(h, toolName as String)
             h = _fpField(h, config.summaries?."${toolName}")
             h = _fpField(h, config.searchHints?."${toolName}")
@@ -211,7 +217,7 @@ private buildToolSearchCorpus(List defs = null) {
     def corpus = []
 
     // Core tools (not behind a gateway)
-    allDefs.each { toolDef ->
+    for (toolDef in allDefs) {
         if (!proxiedNames.contains(toolDef.name)) {
             def params = toolDef.inputSchema?.properties?.keySet()?.join(" ") ?: ""
             corpus << [name: toolDef.name, title: displayMeta[toolDef.name]?.title, description: toolDef.description?.replaceAll(/\n+/, ' ')?.trim(), params: params, gateway: null]
@@ -219,8 +225,10 @@ private buildToolSearchCorpus(List defs = null) {
     }
 
     // Gateway sub-tools (with search hints for synonym matching)
-    gatewayConfig.each { gwName, config ->
-        config.tools.each { toolName ->
+    for (Map.Entry entry in gatewayConfig) {
+        def gwName = entry.key
+        def config = entry.value
+        for (toolName in config.tools) {
             def summary = config.summaries[toolName] ?: ""
             def hints = config.searchHints?."${toolName}" ?: ""
             def fullDef = allDefsMap[toolName]
@@ -260,8 +268,8 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     // Document frequency: how many docs contain each token. Preserve the token
     // namespace while using Map methods to avoid sandbox property resolution.
     def df = [:]
-    docTokens.each { tokens ->
-        tokens.toSet().each { token ->
+    for (tokens in docTokens) {
+        for (token in tokens.toSet()) {
             def k = _bm25Key(token)
             df.put(k, (df.get(k) ?: 0) + 1)
         }
@@ -269,15 +277,17 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
 
     // Score each document
     def scores = new double[n]
-    docTokens.eachWithIndex { tokens, docIdx ->
+    int docIdx = -1
+    for (tokens in docTokens) {
+        docIdx++
         // Term frequency for this doc
         def tf = [:]
-        tokens.each { t -> def k = _bm25Key(t); tf.put(k, (tf.get(k) ?: 0) + 1) }
+        for (t in tokens) { def k = _bm25Key(t); tf.put(k, (tf.get(k) ?: 0) + 1) }
 
         def dl = docLengths[docIdx]
         double score = 0.0
 
-        queryTokens.each { rawQt ->
+        for (rawQt in queryTokens) {
             def qt = _bm25Key(rawQt)
             def termFreq = tf.get(qt) ?: 0
             if (termFreq > 0) {
@@ -375,8 +385,8 @@ private Map _platformApiSearch(String query, cursor) {
         return [success: false, error: "The hub's API documentation index has an unexpected shape."]
     }
     def hits = []
-    index.pages.each { pg ->
-        if (!(pg instanceof Map)) return
+    for (pg in index.pages) {
+        if (!(pg instanceof Map)) continue
         // Apps, drivers and shared APIs outrank the many protocol (Z-Wave/Zigbee/Matter) pages.
         int sectionBoost = (pg.section == "protocols") ? 0 : 3
         String pageText = "${pg.id} ${pg.label} ${pg.className} ${pg.topic}".toLowerCase()
@@ -384,12 +394,12 @@ private Map _platformApiSearch(String query, cursor) {
             hits << [score: 3 + sectionBoost, pageId: pg.id, className: pg.className, label: pg.label, section: pg.section, kind: "page", usage: pg.usage]
         }
         def pgMethods = pg.get("methods")
-        (pgMethods instanceof List ? pgMethods : []).each { m ->
-            if (!(m instanceof Map)) return
+        for (m in (pgMethods instanceof List ? pgMethods : [])) {
+            if (!(m instanceof Map)) continue
             String name = (m.name ?: "").toString()
             String lname = name.toLowerCase()
             String text = "${name} ${m.signature} ${m.summary} ${pg.className} ${pg.label}".toLowerCase()
-            if (!terms.every { text.contains(it) }) return
+            if (!terms.every { text.contains(it) }) continue
             // An exact method-name term ranks first, then a name holding every term.
             int score = sectionBoost
             if (terms.any { it == lname }) score += 4
@@ -398,7 +408,7 @@ private Map _platformApiSearch(String query, cursor) {
                      name: name, signature: m.signature, summary: m.summary?.toString()?.take(400)]
         }
     }
-    (index.guides instanceof List ? index.guides : []).each { g ->
+    for (g in (index.guides instanceof List ? index.guides : [])) {
         if (g instanceof Map && terms.every { "${g.title} ${g.summary}".toLowerCase().contains(it) }) {
             hits << [score: 1, kind: "guide", label: g.title, summary: g.summary, url: g.url]
         }

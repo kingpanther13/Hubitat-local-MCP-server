@@ -149,7 +149,7 @@ def toolCreateVirtualDevice(args) {
     def dataChanges = []
     def dataErrors = []
     _applyNativeDeviceDataValues(deviceId, [mcpDriverNamespace: namespace], dataChanges, dataErrors)
-    dataErrors.each { failure ->
+    for (failure in dataErrors) {
         def warning = "mcpDriverNamespace: ${failure.error}".toString()
         warnings << warning
         mcpLog("warn", "device", "Device ${deviceId} was created, but ${warning}")
@@ -253,7 +253,7 @@ def toolListVirtualDevices(args) {
                 driverNamespace: namespace, driverType: typeName, typeName: typeName,
                 capabilities: summary.capabilities, commands: summary.commands.collect { it.name },
                 currentStates: [:]]
-            summary.attributes.each { attr ->
+            for (attr in summary.attributes) {
                 if (attr.value != null) info.currentStates[attr.name] = attr.value
             }
             if (!namespace || !typeName) {

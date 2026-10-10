@@ -132,7 +132,7 @@ void _retainReportError(Map entry) {
                         component: scrub(entry.component, 80), message: scrub(entry.message, 500)]
         if (entry.ruleId) retained.ruleId = scrub(entry.ruleId, 80)
         def details = [:]
-        ["tool", "appId"].each { key ->
+        for (key in ["tool", "appId"]) {
             if (entry.details?.get(key)) details[key] = scrub(entry.details[key], 120)
         }
         if (details) retained.details = details
@@ -317,9 +317,9 @@ private Map _bugReportScopedLogs(args, List entries, Map anchor, long windowMs) 
     }
     def relevant = []
     def other = []
-    entries.each { entry ->
+    for (entry in entries) {
         def ts = safeTs(entry)
-        if (ts == null) return
+        if (ts == null) continue
         if (ts >= windowStart && ts <= windowEnd && matchesContext(entry)) {
             relevant << entry
         } else {
@@ -555,13 +555,13 @@ private Map _bugReportNativeRmStatus() {
     def v5Error = null
     try {
         def v4 = hubitat.helper.RMUtils.getRuleList() ?: []
-        v4.each { r -> if (r?.id != null) ids << r.id.toString() }
+        for (r in v4) { if (r?.id != null) ids << r.id.toString() }
     } catch (Throwable e) {
         v4Error = e.toString()
     }
     try {
         def v5 = hubitat.helper.RMUtils.getRuleList("5.0") ?: []
-        v5.each { r -> if (r?.id != null) ids << r.id.toString() }
+        for (r in v5) { if (r?.id != null) ids << r.id.toString() }
     } catch (Throwable e) {
         v5Error = e.toString()
     }

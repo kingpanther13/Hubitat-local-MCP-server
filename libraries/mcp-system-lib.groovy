@@ -122,7 +122,7 @@ private Map _hubSubscriptions() {
     }
     if (!(raw instanceof Map)) return [error: "/hub/subscriptions/json returned an unexpected shape."]
     def out = [:]
-    ["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"].each { k ->
+    for (k in ["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"]) {
         def v = raw[k]
         if (v instanceof Map) out[k] = [active: v.isActive == true, pendingCancellation: v.pendingCancellation == true, endsAt: v.end_ts, trialAvailable: v.trialAvailable == true]
     }

@@ -218,19 +218,19 @@ private List _listDashboardsViaChildApps() {
             def d = node?.data ?: [:]
             def t = d.type?.toString() ?: ""
             if (t == "Easy Dashboard Parent") {
-                (node?.children ?: []).each { c ->
+                for (c in (node?.children ?: [])) {
                     def cd = c?.data ?: [:]
                     if (cd.id != null) out << [id: cd.id?.toString(), name: cd.name, type: "easy"]
                 }
             } else if (_isLegacyDashboardParentType(t)) {
-                (node?.children ?: []).each { c ->
+                for (c in (node?.children ?: [])) {
                     def cd = c?.data ?: [:]
                     if (cd.id != null && cd.type?.toString() == "Dashboard") out << [id: cd.id?.toString(), name: cd.name, type: "legacy"]
                 }
             }
             (node?.children ?: []).each { walk(it) }
         }
-        apps.each { walk(it) }
+        for (it in apps) { walk(it) }
         return out
     } catch (Exception e) {
         mcpLogError("dashboard", "enumerate dashboards via child apps failed", e)
@@ -322,7 +322,7 @@ private Map _legacyDashboardProbe(String id) {
     // dashboard", distinct from the read-failure null above.
     if (!(ia instanceof Map) || ia.name?.toString() != "Dashboard" || ia.systemAppType != true) return [legacy: false]
     def out = [legacy: true, label: ia.label]
-    (parsed.appState ?: []).each { s ->
+    for (s in (parsed.appState ?: [])) {
         if (s?.name?.toString() == "accessToken") out.accessToken = s.value?.toString()
     }
     def devices = (parsed.appSettings ?: []).find { it?.name?.toString() == "devicesPicked" }
@@ -485,7 +485,7 @@ private void _requireUnprotectedEasyDashboardParent() {
         }
         (node.children ?: []).each { walk(it) }
     }
-    parsed.apps.each { walk(it) }
+    for (it in parsed.apps) { walk(it) }
 }
 
 // type arg: easy (default) | legacy. Rejects anything else so a typo can't silently create the wrong kind.
@@ -550,7 +550,7 @@ private Map _findLegacyDashboardParentNode() {
             }
             (node?.children ?: []).each { walk(it) }
         }
-        (parsed?.apps ?: []).each { walk(it) }
+        for (it in (parsed?.apps ?: [])) { walk(it) }
         return found
     } catch (Exception e) {
         mcpLogError("dashboard", "legacy dashboard parent lookup failed", e)
@@ -803,7 +803,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
         def rawIds = (args.removeTileIds instanceof Collection) ? args.removeTileIds : [args.removeTileIds]
         def ids = rawIds.collect { _requireTileId(it, "removeTileIds") }
         // Delete semantics are retry-safe: an id that is already gone is skipped with a warning, not an error.
-        ids.each { tid ->
+        for (tid in ids) {
             if (!tiles.any { _tileIdOf(it) == tid }) warnings << "removeTileIds: no tile with id ${tid} (already removed?); skipped."
         }
         tiles.removeAll { _tileIdOf(it) in ids }
@@ -812,7 +812,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
         if (!(args.updateTiles instanceof Collection)) {
             throw new IllegalArgumentException("updateTiles must be an array of {id, ...fields-to-change} objects.")
         }
-        args.updateTiles.each { spec ->
+        for (spec in args.updateTiles) {
             if (!(spec instanceof Map) || spec.id == null) {
                 throw new IllegalArgumentException("Each updateTiles entry needs an id plus the fields to change (e.g. [id: 3, col: 2, colSpan: 2]).")
             }
@@ -821,7 +821,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
             if (tile == null) {
                 throw new IllegalArgumentException("updateTiles: no tile with id ${tid}. Existing tile ids: ${tiles.collect { it.id }}.")
             }
-            spec.each { k, v -> if (k?.toString() != "id") tile.put(k, v) }
+            for (Map.Entry entry in spec) { def k = entry.key; def v = entry.value; if (k?.toString() != "id") tile.put(k, v) }
             _warnUnauthorizedTileDevice(tile, probe, warnings)
         }
     }
@@ -833,7 +833,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
         // hand the next add id 0 again -- two tiles sharing an id makes later id-addressed ops ambiguous.
         def existingIds = tiles.collect { _tileIdOf(it) }.findAll { it != null }
         int nextId = (existingIds.isEmpty() ? -1 : existingIds.max()) + 1
-        args.addTiles.each { spec ->
+        for (spec in args.addTiles) {
             if (!(spec instanceof Map)) throw new IllegalArgumentException("Each addTiles entry must be a tile object.")
             def missing = ["template", "col", "row"].findAll { spec.get(it) == null }
             if (missing) {
@@ -848,7 +848,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
             }
             if (dup != null) {
                 warnings << "addTiles: an identical tile already exists (id ${dup.id}); skipped (retry-safe)."
-                return
+                continue
             }
             def tile = new LinkedHashMap(spec as Map)
             tile.id = nextId++
@@ -862,7 +862,9 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
         if (!(args.setOptions instanceof Map)) {
             throw new IllegalArgumentException("setOptions must be an object of top-level layout fields (e.g. cols, rows, bgColor, iconSize, fontSize, gridGap, roundedCorners).")
         }
-        args.setOptions.each { k, v ->
+        for (Map.Entry entry in args.setOptions) {
+            def k = entry.key
+            def v = entry.value
             def key = k?.toString()
             if (key == "tiles") throw new IllegalArgumentException("setOptions cannot replace tiles; use addTiles / updateTiles / removeTileIds (or a wholesale layout).")
             if (key == "name") throw new IllegalArgumentException("The dashboard name is its app label; pass the top-level name arg, not setOptions.name.")
@@ -1085,7 +1087,7 @@ private String _dashboardDeviceCsv(deviceIds, boolean required) {
         tokens = [deviceIds]
     }
     def ids = tokens.collect { it?.toString()?.trim() }.findAll { it }
-    ids.each {
+    for (it in ids) {
         if (!(it ==~ /\d+/)) {
             throw new IllegalArgumentException("deviceIds must be numeric device ids; got '${it}'. Use hub_list_devices to find device ids.")
         }
@@ -1364,9 +1366,9 @@ def toolGetRoom(String roomIdentifier) {
     def allDevices = (settings.selectedDevices ?: []).toList()
     def childDevs = getChildDevices() ?: []
     def selectedIds = allDevices.collect { it.id.toString() } as Set
-    childDevs.each { cd -> if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } }
+    for (cd in childDevs) { if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } }
 
-    room.deviceIds?.each { devId ->
+    for (devId in room.deviceIds) {
         def device = allDevices?.find { it?.id?.toString() == devId.toString() }
         if (device) {
             def devInfo = [
@@ -1377,7 +1379,7 @@ def toolGetRoom(String roomIdentifier) {
             // Add common current states
             def states = [:]
             try {
-                device.currentStates?.each { st ->
+                for (st in device.currentStates) {
                     states.put(st.name, st.value)
                 }
             } catch (Exception e) {
@@ -1701,7 +1703,7 @@ private Map _parseBundleContent(String content) {
     if (!content) return null
     def out = [apps: [], drivers: [], libraries: []]
     boolean matched = false
-    ["apps", "drivers", "libraries"].each { key ->
+    for (key in ["apps", "drivers", "libraries"]) {
         def token = "${key} ["
         int s = content.indexOf(token)
         if (s >= 0) {
@@ -2618,10 +2620,12 @@ private Map _vrb2NodeFromDialog(Map node, String typeKey) {
     // description/deviceIds/predefinedColor; the classic serialization adds index/type/result,
     // which are list bookkeeping rather than rule data.
     def config = [:]
-    node.each { k, v ->
+    for (Map.Entry entry in node) {
+        def k = entry.key
+        def v = entry.value
         def key = k?.toString()
-        if (key == null) return
-        if (key in [typeKey, "id", "kind", "config", "description", "deviceIds", "predefinedColor", "index", "type", "result"]) return
+        if (key == null) continue
+        if (key in [typeKey, "id", "kind", "config", "description", "deviceIds", "predefinedColor", "index", "type", "result"]) continue
         config.put(key, v)
     }
     def out = [type: node.get(typeKey), config: config]
@@ -2661,7 +2665,8 @@ private List _vrb2EditorList(def raw, String typeKey, String label) {
     if (raw == null) return []
     if (!(raw instanceof List)) throw new IllegalArgumentException("${label} must be an array.")
     def out = []
-    raw.eachWithIndex { item, i -> out << _vrb2EditorItem(item, typeKey, "${label}[${i}]") }
+    int i = -1
+    for (item in raw) { i++; out << _vrb2EditorItem(item, typeKey, "${label}[${i}]") }
     return out
 }
 
@@ -2676,7 +2681,9 @@ private String _vrb2UniqueId(String base, Set used) {
 }
 
 private void _vrb2AssignIds(List items, String prefix, Set used) {
-    items.eachWithIndex { item, i ->
+    int i = -1
+    for (item in items) {
+        i++
         if (item.id == null || !item.id.toString().trim()) {
             item.id = _vrb2UniqueId("${prefix}-${i + 1}".toString(), used)
         }
@@ -2690,7 +2697,9 @@ private void _vrb2ChainEdges(List edges, String from, String port, List chain, S
     // still gets its own edge so the decision port is not left dangling.
     if (!chain.isEmpty()) {
         edges << [from: from, to: chain[0].id, port: port]
-        chain.eachWithIndex { item, i ->
+        int i = -1
+        for (item in chain) {
+            i++
             def to = (i + 1 < chain.size()) ? chain[i + 1].id : terminal
             if (to != null) edges << [from: item.id, to: to, port: "next"]
         }
@@ -2729,8 +2738,8 @@ private Map _vrb2Compose(Map editor) {
     // Register every caller-supplied id BEFORE generating any, so a generated id can never
     // collide with an explicit one that appears later in the document.
     def used = [] as Set
-    [triggers, conditions, thenActions, elseActions, commonActions].each { list ->
-        list.each { if (it.id != null) used << it.id.toString() }
+    for (list in [triggers, conditions, thenActions, elseActions, commonActions]) {
+        for (it in list) { if (it.id != null) used << it.id.toString() }
     }
     _vrb2AssignIds(triggers, "trigger", used)
     _vrb2AssignIds(conditions, "condition", used)
@@ -2754,21 +2763,21 @@ private Map _vrb2Compose(Map editor) {
     }
 
     def nodes = []
-    triggers.each { nodes << [id: it.id, kind: "trigger", type: it.type, config: it.config] }
+    for (it in triggers) { nodes << [id: it.id, kind: "trigger", type: it.type, config: it.config] }
     nodes << [id: triggerMergeId, kind: "merge", type: "triggerMerge", config: [:]]
     nodes << [id: decisionId, kind: "decision", type: decisionType,
               config: [conditions: conditions.collect { [id: it.id, type: it.type, config: it.config] }]]
-    thenActions.each { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
-    elseActions.each { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
+    for (it in thenActions) { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
+    for (it in elseActions) { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
 
     def edges = []
-    triggers.each { edges << [from: it.id, to: triggerMergeId, port: "next"] }
+    for (it in triggers) { edges << [from: it.id, to: triggerMergeId, port: "next"] }
     edges << [from: triggerMergeId, to: decisionId, port: "next"]
     _vrb2ChainEdges(edges, decisionId, "true", thenActions, branchMergeId)
     _vrb2ChainEdges(edges, decisionId, "false", elseActions, branchMergeId)
     if (branchMergeId != null) {
         nodes << [id: branchMergeId, kind: "merge", type: "branchMerge", config: [:]]
-        commonActions.each { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
+        for (it in commonActions) { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
         _vrb2ChainEdges(edges, branchMergeId, "next", commonActions, null)
     }
     return [version: 1, nodes: nodes, edges: edges]
@@ -2805,7 +2814,7 @@ private Map _vrb2Decompose(Map graph) {
         throw new IllegalArgumentException("The rule is not a Visual Rule Builder 2.0 schema version 1 document.")
     }
     def byId = [:]
-    graph.nodes.each { if (it instanceof Map && it.id != null) byId.put(it.id.toString(), it) }
+    for (it in graph.nodes) { if (it instanceof Map && it.id != null) byId.put(it.id.toString(), it) }
     def triggerMerge = graph.nodes.find { it instanceof Map && it.kind == "merge" && it.type == "triggerMerge" }
     def decision = graph.nodes.find { it instanceof Map && it.kind == "decision" && (it.type == null || it.type in ["all", "any"]) }
     def branchMerge = graph.nodes.find { it instanceof Map && it.kind == "merge" && it.type == "branchMerge" }
@@ -2817,7 +2826,7 @@ private Map _vrb2Decompose(Map graph) {
         throw new IllegalArgumentException("An OR decision must contain at least one condition.")
     }
     def nextMap = [:]
-    graph.edges.each {
+    for (it in graph.edges) {
         if (it instanceof Map && it.from != null && it.port != null) {
             nextMap["${it.from}:${it.port}".toString()] = it.to?.toString()
         }
@@ -2999,7 +3008,7 @@ private List _vrb2Validate(Map graph) {
     if (triggerMergeIds.size() == 1 && decisionIds.size() == 1) {
         def triggerMergeId = triggerMergeIds[0]
         def decisionId = decisionIds[0]
-        triggerIds.each { tid ->
+        for (tid in triggerIds) {
             if (nextMap["${tid}:next".toString()] != triggerMergeId) {
                 errors << "Trigger node '${tid}' must connect to the triggerMerge node '${triggerMergeId}'."
             }
@@ -3023,7 +3032,7 @@ private List _vrb2Validate(Map graph) {
         // leaves its downstream nodes unvisited, and reporting those as disconnected would send
         // the author adding edges instead of fixing the one real problem.
         if (chainErrors.isEmpty() && branchMergeIds.size() <= 1) {
-            idList.findAll { !visited.contains(it) }.each { errors << "Node '${it}' is not connected to the rule's flow." }
+            for (it in idList.findAll { !visited.contains(it) }) { errors << "Node '${it}' is not connected to the rule's flow." }
         }
     }
     return errors.collect { it.toString() }.unique()
@@ -3043,8 +3052,8 @@ private List _vrb2UnknownTypes(Map graph) {
     // [where, id, type] for every trigger/action/condition whose type is outside this build's catalogs.
     def out = []
     if (!(graph?.nodes instanceof List)) return out
-    graph.nodes.each { node ->
-        if (!(node instanceof Map)) return
+    for (node in graph.nodes) {
+        if (!(node instanceof Map)) continue
         def type = node.type?.toString()
         if (node.kind == "trigger" && !(type in _vrb2TriggerTypes())) out << [where: _vrb2Where("trigger"), id: node.id?.toString(), type: type]
         else if (node.kind == "action" && !(type in _vrb2ActionTypes())) out << [where: _vrb2Where("action"), id: node.id?.toString(), type: type]
@@ -3063,11 +3072,11 @@ private Set _vrb2TypeNames(def graph) {
     // not vouch for the same name used as a TRIGGER.
     def names = [] as Set
     if (!(graph instanceof Map) || !(graph.nodes instanceof List)) return names
-    graph.nodes.each { node ->
-        if (!(node instanceof Map)) return
+    for (node in graph.nodes) {
+        if (!(node instanceof Map)) continue
         if (node.kind in ["trigger", "action"] && node.type != null) names << _vrb2TypeKey(_vrb2Where(node.kind.toString()), node.type.toString())
         if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
-            node.config.conditions.each { if (it instanceof Map && it.type != null) names << _vrb2TypeKey(_vrb2Where("condition"), it.type.toString()) }
+            for (it in node.config.conditions) { if (it instanceof Map && it.type != null) names << _vrb2TypeKey(_vrb2Where("condition"), it.type.toString()) }
         }
     }
     return names
@@ -3130,10 +3139,12 @@ private void _vrbValidateClassicShape(Map definition) {
     def readEnvelope = ["promptHistory", "name", "rawName", "rulePaused", "success", "appId", "format"]
     def unknownKeys = definition.keySet().collect { it.toString() }.findAll { !(it in ["whenNodes", "thenNodes", "elseNodes"] + readEnvelope) }
     if (unknownKeys) throw new IllegalArgumentException("Unknown classic key(s): ${unknownKeys.join(', ')}. A classic definition takes only whenNodes, thenNodes, elseNodes (the keys a hub_get_visual_rule read adds around them are ignored).")
-    ["whenNodes", "thenNodes", "elseNodes"].each { key ->
-        if (definition[key] == null) return
+    for (key in ["whenNodes", "thenNodes", "elseNodes"]) {
+        if (definition[key] == null) continue
         if (!(definition[key] instanceof List)) throw new IllegalArgumentException("definition.${key} must be an array of node objects.")
-        definition[key].eachWithIndex { node, i ->
+        int i = -1
+        for (node in definition[key]) {
+            i++
             if (!(node instanceof Map)) throw new IllegalArgumentException("definition.${key}[${i}] must be a node object.")
         }
     }
@@ -3621,7 +3632,7 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
             // containsKey is enough: _vrbSaveGraphMeta sets these only when the hub sent a
             // non-null value. (Unlike the read-back merge below, where a present EMPTY list is
             // itself the answer and must not be collapsed by a truthiness test.)
-            ["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"].each { k ->
+            for (k in ["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"]) {
                 if (saved.containsKey(k)) failed[k] = saved[k]
             }
             return failed
@@ -6334,7 +6345,7 @@ void _retainReportError(Map entry) {
                         component: scrub(entry.component, 80), message: scrub(entry.message, 500)]
         if (entry.ruleId) retained.ruleId = scrub(entry.ruleId, 80)
         def details = [:]
-        ["tool", "appId"].each { key ->
+        for (key in ["tool", "appId"]) {
             if (entry.details?.get(key)) details[key] = scrub(entry.details[key], 120)
         }
         if (details) retained.details = details
@@ -6519,9 +6530,9 @@ private Map _bugReportScopedLogs(args, List entries, Map anchor, long windowMs) 
     }
     def relevant = []
     def other = []
-    entries.each { entry ->
+    for (entry in entries) {
         def ts = safeTs(entry)
-        if (ts == null) return
+        if (ts == null) continue
         if (ts >= windowStart && ts <= windowEnd && matchesContext(entry)) {
             relevant << entry
         } else {
@@ -6757,13 +6768,13 @@ private Map _bugReportNativeRmStatus() {
     def v5Error = null
     try {
         def v4 = hubitat.helper.RMUtils.getRuleList() ?: []
-        v4.each { r -> if (r?.id != null) ids << r.id.toString() }
+        for (r in v4) { if (r?.id != null) ids << r.id.toString() }
     } catch (Throwable e) {
         v4Error = e.toString()
     }
     try {
         def v5 = hubitat.helper.RMUtils.getRuleList("5.0") ?: []
-        v5.each { r -> if (r?.id != null) ids << r.id.toString() }
+        for (r in v5) { if (r?.id != null) ids << r.id.toString() }
     } catch (Throwable e) {
         v5Error = e.toString()
     }
@@ -8089,7 +8100,7 @@ def toolGetHubLogs(args) {
     // entry can't push the page past the cap on its own.
     def estimatedJsonSize = paged.page.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
     if (estimatedJsonSize > hubResponseCapBytes() - 11072) {  // =120000; matches handleToolsCall responseSizeLimit
-        paged.page.each { it.message = it.message?.take(200) }
+        for (it in paged.page) { it.message = it.message?.take(200) }
         result.truncated = true
         result.note = "Log messages truncated to fit response size limit"
     }
@@ -8470,8 +8481,8 @@ private Map _cloudCallsSummary() {
 
 private Map _shapeCloudCalls(Map raw) {
     def hoursByApp = [:]
-    (raw.hours instanceof List ? raw.hours : []).each { h ->
-        if (!(h instanceof Map) || h.appId == null || h.hourStart == null) return
+    for (h in (raw.hours instanceof List ? raw.hours : [])) {
+        if (!(h instanceof Map) || h.appId == null || h.hourStart == null) continue
         def key = h.appId.toString()
         if (!hoursByApp.get(key)) hoursByApp.put(key, [])
         hoursByApp.get(key) << [epoch: h.hourStart as Long, count: h.count]
@@ -8798,7 +8809,7 @@ private Map _deviceHealthInventory() {
     def records = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
     if (!(records instanceof List)) throw new IllegalStateException("Native device tree is unavailable or malformed")
     def byId = [:]
-    records.each { record ->
+    for (record in records) {
         String id = record.id.toString()
         if (bypass || allowedIds.contains(id)) {
             byId.put(id, [id: id, label: record.label, lastActivity: record.lastActivity,
@@ -8806,7 +8817,7 @@ private Map _deviceHealthInventory() {
         }
     }
     // A missing selected/owned device is an unknown result, not proof that it is healthy or absent.
-    allowedIds.each { id ->
+    for (id in allowedIds) {
         if (!byId.containsKey(id)) byId.put(id, [id: id, metadataUnavailable: true])
     }
     return [devices: byId.values() as List]
@@ -8921,7 +8932,7 @@ def toolDeviceHealthCheck(args) {
     def stale = []
     def unknown = []
 
-    devices.each { device ->
+    for (device in devices) {
         try {
             def deviceLabel = device.label ?: device.name ?: "Device ${device.id}"
             def entry = [
@@ -8933,7 +8944,7 @@ def toolDeviceHealthCheck(args) {
                 entry.hoursAgo = null
                 entry.metadataUnavailable = true
                 unknown << entry
-                return
+                continue
             }
 
             def lastActivity = device.lastActivity != null ? _parseSinceArg(device.lastActivity) : null
@@ -8943,7 +8954,7 @@ def toolDeviceHealthCheck(args) {
                 entry.hoursAgo = null
                 entry.metadataUnavailable = true
                 unknown << entry
-                return
+                continue
             }
 
             if (lastActivity) {
@@ -9036,16 +9047,16 @@ def toolDeviceHealthCheck(args) {
 
 def runPingChecks(List rawHosts, Integer count) {
     def results = []
-    rawHosts.each { rawHost ->
+    for (rawHost in rawHosts) {
         if (rawHost == null || !(rawHost instanceof CharSequence)) {
             results << [ipAddress: rawHost, reachable: false, error: "missing or non-string host"]
-            return
+            continue
         }
         def host = rawHost.toString().trim()
         // Range-validated IPv4 dotted-quad. Hostnames are not supported by NetworkUtils.ping.
         if (!(host ==~ /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/)) {
             results << [ipAddress: host, reachable: false, error: "not a dotted-quad IPv4 literal (hostnames not supported, pass an IP)"]
-            return
+            continue
         }
         try {
             def pd = hubitat.helper.NetworkUtils.ping(host, count)
@@ -9512,7 +9523,9 @@ private Map _zwArgObject(v, String name, List known) {
 private void _zwValidateNetworkKeys(Map keys, List known, String label) {
     def unknown = keys.keySet().findAll { !(it in known) }
     if (unknown) throw new IllegalArgumentException("Unknown ${label} key(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
-    keys.each { k, v ->
+    for (Map.Entry entry in keys) {
+        def k = entry.key
+        def v = entry.value
         if (!(v?.toString()?.trim() ==~ /(?i)(0x)?[0-9a-f]{32}/)) throw new IllegalArgumentException("${label}.${k} must be a 32-hex-digit network key.")
     }
 }
@@ -9913,7 +9926,9 @@ private Map _captureEntriesLocked(Map store) {
         if (state.capturedDeviceStates instanceof Map) legacy.putAll(state.capturedDeviceStates)
         if (atomicState.capturedDeviceStates instanceof Map) legacy.putAll(atomicState.capturedDeviceStates)
         Map entries = [:]
-        legacy.each { id, raw ->
+        for (Map.Entry entry in legacy) {
+            def id = entry.key
+            def raw = entry.value
             def devices = raw instanceof Map && raw.containsKey("devices") ? raw.devices : raw
             if (!(devices instanceof Map) && !(devices instanceof List)) {
                 throw new IllegalStateException("Legacy capture has an invalid device payload")
@@ -10466,7 +10481,7 @@ private Map _hubSubscriptions() {
     }
     if (!(raw instanceof Map)) return [error: "/hub/subscriptions/json returned an unexpected shape."]
     def out = [:]
-    ["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"].each { k ->
+    for (k in ["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"]) {
         def v = raw[k]
         if (v instanceof Map) out[k] = [active: v.isActive == true, pendingCancellation: v.pendingCancellation == true, endsAt: v.end_ts, trialAvailable: v.trialAvailable == true]
     }
@@ -12550,7 +12565,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             // Summary mode: populate currentStates only when requested (or when no projection active)
             if (fieldSet == null || fieldSet.contains("currentStates")) {
                 info.currentStates = [:]
-                ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"].each { attr ->
+                for (attr in ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"]) {
                     def val = device.currentStates?.find { it.name == attr }?.value
                     if (val != null) info.currentStates[attr] = val
                 }
@@ -12682,7 +12697,7 @@ private String _contextDeviceLine(device, List attrNames) {
     def states = [:]
     boolean stateReadFailed = device._nativeReadError == true || device._nativeUnavailableCollections?.contains('currentStates') == true
     try {
-        device.currentStates?.each { st ->
+        for (st in device.currentStates) {
             if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
         }
     } catch (Exception e) {
@@ -12693,7 +12708,7 @@ private String _contextDeviceLine(device, List attrNames) {
         mcpLog("warn", "device", "context snapshot: currentStates read failed for device ${device?.id}: ${e.message}")
     }
     def attrParts = []
-    attrNames.each { an ->
+    for (an in attrNames) {
         def st = states.get(an)
         if (st != null) {
             def unit = null
@@ -12743,25 +12758,25 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
         // Lets the caller seed from this same read instead of fetching the inventory again.
         if (meta != null) meta.inventory = inventory
         def byId = [:]
-        inventory.records.each { d -> byId.put(d.id.toString(), [id: d.id.toString(), _nativeFilterLabel: d.label]) }
+        for (d in inventory.records) { byId.put(d.id.toString(), [id: d.id.toString(), _nativeFilterLabel: d.label]) }
         return byId.values() as List
     }
     def byId = [:]
-    ((selectedDevices ?: []) + ((childDevs != null ? childDevs : getChildDevices()) ?: [])).each { d ->
+    for (d in ((selectedDevices ?: []) + ((childDevs != null ? childDevs : getChildDevices()) ?: []))) {
         if (d?.id != null) byId.put(d.id.toString(), [id: d.id.toString()])
     }
     return byId.values() as List
 }
 
 private void _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false) {
-    records.each { record ->
+    for (record in records) {
         if (record._nativeLoaded != true) {
             def fj = _fetchDeviceFullJson(record.id)
             if (!(fj?.device instanceof Map)) {
                 if (!allowPartial) throw new IllegalStateException("Native device metadata is unavailable for device ${record.id}; no SDK fallback was used.")
                 record.putAll([_nativeLoaded: true, _nativeReadError: true,
                     _nativeUnavailableCollections: ['currentStates', 'capabilities', 'commands']])
-                return
+                continue
             }
             def d = fj.device
             def states = d.currentStates instanceof Map ? [] : null
@@ -12801,21 +12816,21 @@ private boolean _seedNativeInventoryFromTree(List records, Map inventory = null)
     if (inventory == null) inventory = _fetchAllHubDeviceRecords("device", "native bulk device read")
     if (inventory?.failure || !(inventory?.records instanceof List)) return false
     def byId = [:]
-    inventory.records.each { r -> if (r instanceof Map && r.id != null) byId.put(r.id.toString(), r) }
-    records.each { record ->
-        if (record._nativeLoaded == true || record._nativeSeeded == true) return
+    for (r in inventory.records) { if (r instanceof Map && r.id != null) byId.put(r.id.toString(), r) }
+    for (record in records) {
+        if (record._nativeLoaded == true || record._nativeSeeded == true) continue
         def r = byId.get(record.id?.toString())
-        if (!(r instanceof Map)) return
+        if (!(r instanceof Map)) continue
         if (r.label instanceof String && r.label) record._nativeFilterLabel = r.label
         // Identity and room ride along whenever the source carries them (a fullJson fallback
         // keeps a tree-supplied room when it omits the key). A record counts as SEEDED only
         // when the tree also carried its states -- older firmware lists no currentStates, and
         // there a consumer that needs state still falls back to a per-device read.
-        ['label', 'roomName', 'disabled', 'lastActivity'].each { key ->
+        for (key in ['label', 'roomName', 'disabled', 'lastActivity']) {
             if (r.containsKey(key)) record.put(key == 'lastActivity' ? 'lastActivityTime' : key, r.get(key))
         }
         record.remove('_nativeActivityParsed')
-        if (!r.containsKey('currentStates')) return
+        if (!r.containsKey('currentStates')) continue
         def states = r.currentStates instanceof List ? r.currentStates.findAll { it instanceof Map && it.key != null }
             .collect { [name: it.key.toString(), value: it.value, unit: null] } : null
         def unavailable = []
@@ -12858,8 +12873,8 @@ private int _loadContextResourcePopulation(List records, Map inventory = null) {
     _seedNativeInventoryFromTree(records, inventory)
     int fetched = 0
     int unread = 0
-    records.each { record ->
-        if (record._nativeSeeded == true || record._nativeLoaded == true) return
+    for (record in records) {
+        if (record._nativeSeeded == true || record._nativeLoaded == true) continue
         if (fetched < _contextResourcePerDeviceFetchCap()) {
             fetched++
             _hydrateNativeInventory([record], [], true)
@@ -12944,11 +12959,11 @@ def _buildContextJson() {
     // One bulk read seeds room membership AND state for the whole population, so the rooms
     // index and the per-device room come from the same record and cannot disagree.
     _loadContextResourcePopulation(allDevices, meta.inventory as Map)
-    allDevices.each { d -> if (d._nativeReadError) d._nativeRoomUnavailable = true }
+    for (d in allDevices) { if (d._nativeReadError) d._nativeRoomUnavailable = true }
     def contextAttrs = _contextAttributeNames() as Set
     int roomUnavailableCount = allDevices.count { it._nativeRoomUnavailable == true }
     def roomIndex = [:]
-    allDevices.each { d ->
+    for (d in allDevices) {
         // A null key keeps unknown membership distinct even from a room named "Room unavailable".
         def r = d._nativeRoomUnavailable ? null : (d.roomName?.toString() ?: "No room")
         if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
@@ -12981,7 +12996,7 @@ def _buildContextJson() {
         def attrs = [:]
         boolean stateReadFailed = d._nativeReadError == true || d._nativeUnavailableCollections?.contains('currentStates') == true
         try {
-            d.currentStates?.each { st ->
+            for (st in d.currentStates) {
                 if (st?.name != null && st.value != null && contextAttrs.contains(st.name.toString())) {
                     attrs.put(st.name.toString(), st.value.toString())
                 }
@@ -13108,8 +13123,8 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
         def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
         if (txt && parsed instanceof List && !parsed.isEmpty()) {
             feed = [:]
-            parsed.each { entry ->
-                if (!(entry instanceof Map) || entry.id == null) return
+            for (entry in parsed) {
+                if (!(entry instanceof Map) || entry.id == null) continue
                 def rec = [id: entry.id, label: entry.label]
                 // An EMPTY list is not an answer: the feed lists devices it cannot see into with
                 // `capabilities: []`, and an authorized device would then hide from capabilityFilter
@@ -13253,7 +13268,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     def sourceEndpoint = inventory.source
     def capabilitiesComplete = inventory.capabilities && raw.every { it.capabilities instanceof List }
     def authorizedIds = ((selectedDevices ?: []).collect { it.id?.toString() }.findAll { it != null } as Set)
-    (getChildDevices() ?: []).each { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) }
+    for (it in (getChildDevices() ?: [])) { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) }
     // // Capability lookup for the capability-less source, built once from the authorization-scoped model.
     // def capsById = [:]
     // if (!capabilitiesComplete) {
@@ -13607,7 +13622,7 @@ private Map _readDevicePreferenceModel(Map fullJson) {
         model.status = 'partial'
         model.reason = 'Native inputValues is not a recognized array; stored values may be incomplete.'
     } else {
-        (rawInputs ?: []).each { row ->
+        for (row in (rawInputs ?: [])) {
             if (!(row instanceof Map) || row.name == null) {
                 model.writeSafe = false
                 model.status = 'partial'
@@ -13620,12 +13635,12 @@ private Map _readDevicePreferenceModel(Map fullJson) {
         }
     }
     def names = []
-    definitions.each { row ->
+    for (row in definitions) {
         if (!(row instanceof Map) || row.name == null || row.type == null) {
             model.writeSafe = false
             model.status = 'partial'
             model.reason = 'Native settings contains an unnamed or malformed declaration.'
-            return
+            continue
         }
         String name = row.name.toString()
         String type = row.type.toString()
@@ -13634,10 +13649,10 @@ private Map _readDevicePreferenceModel(Map fullJson) {
             model.status = 'partial'
             model.reason = 'Native settings contains duplicate preference names.'
             model.entries.removeAll { it.name == name }
-            return
+            continue
         }
         names << name
-        if (type in ['paragraph', 'hidden', 'button', 'image']) return
+        if (type in ['paragraph', 'hidden', 'button', 'image']) continue
         def input = inputs.get(name)
         // Cleared native settings lose their storage identity; inputValues can still prefill the UI default.
         boolean nativeUnset = row.containsKey('id') && row.get('id') == null &&
@@ -13654,7 +13669,7 @@ private Map _readDevicePreferenceModel(Map fullJson) {
             entry.multipleStatus = 'unavailable'
             entry.multipleReason = 'Native unset enum metadata does not identify single or multiple selection. Check driverSource or previously read metadata and pass an explicit multiple boolean when setting it.'
         }
-        ['title', 'description', 'options', 'range', 'required'].each { key ->
+        for (key in ['title', 'description', 'options', 'range', 'required']) {
             if (row.containsKey(key)) entry.put(key, row.get(key))
         }
         if (row.containsKey('defaultValue')) {
@@ -13697,7 +13712,7 @@ private _deviceConfigurationPublicValue(value, key = '') {
     if (_deviceConfigurationSecretKey(key)) return '***redacted (password)***'
     if (value instanceof Map) {
         def copy = [:]
-        value.each { k, v -> copy.put(k, _deviceConfigurationPublicValue(v, k)) }
+        for (Map.Entry entry in value) { def k = entry.key; def v = entry.value; copy.put(k, _deviceConfigurationPublicValue(v, k)) }
         return copy
     }
     if (value instanceof List) return value.collect { _deviceConfigurationPublicValue(it) }
@@ -13753,7 +13768,9 @@ private _withResolvedManufacturer(value) {
     String name = _zwaveManufacturerName(value.get('manufacturer'))
     if (name == null) return value
     def copy = [:]
-    value.each { k, v ->
+    for (Map.Entry entry in value) {
+        def k = entry.key
+        def v = entry.value
         copy.put(k, v)
         if (k == 'manufacturer') copy.put('manufacturerName', name)
     }
@@ -13762,7 +13779,9 @@ private _withResolvedManufacturer(value) {
 
 private Map _publicDevicePreference(Map entry) {
     def copy = [:]
-    entry.each { key, value ->
+    for (Map.Entry e in entry) {
+        def key = e.key
+        def value = e.value
         if (!(key in ['rawValue', 'declared'])) copy.put(key, _deviceConfigurationPublicValue(value))
     }
     if (_devicePreferenceIsSecret(entry)) {
@@ -13776,7 +13795,7 @@ private Map _publicDevicePreference(Map entry) {
 
 private Map _deviceConfigurationProjection(Map source, List keys) {
     def result = [:]
-    keys.each { key ->
+    for (key in keys) {
         if (source?.containsKey(key)) result.put(key, _deviceConfigurationPublicValue(source.get(key), key))
     }
     return result
@@ -13821,7 +13840,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
         values.tags = _normalizedDeviceTags(d.tags)
     }
     if (fj?.dashboards instanceof List) values.dashboardIds = fj.dashboards.findAll { it.selected == true }.collect { it.id }
-    ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'].each { key ->
+    for (key in ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled']) {
         if (fj?.containsKey(key)) values.put(key, fj.get(key))
     }
     def applicable = [
@@ -13840,7 +13859,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
         googleHomeEnabled: _deviceFlag(fj?.googleHomeInstalled) && _deviceFlag(fj?.googleHomeSupported)
     ]
     def fields = _deviceConfigurationFieldDefinitions()
-    fields.each { field ->
+    for (field in fields) {
         String name = field.name
         field.source = name in ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled', 'dashboardIds'] ? 'fullJson' : 'fullJson.device'
         field.valuePresent = values.containsKey(name)
@@ -13870,7 +13889,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
                 def text = hubInternalGet('/device/accessibleLinkedDevices')
                 def available = text ? new groovy.json.JsonSlurper().parseText(text) : null
                 if (!(available?.devices instanceof List)) throw new IllegalStateException('Unrecognized linked-device choices')
-                available.devices.each { row ->
+                for (row in available.devices) {
                     if (row instanceof Map && row.hubId != null && row.deviceId != null) {
                         field.options << [value: "${row.hubId}-${row.deviceId}".toString(),
                             label: row.label ?: row.name ?: row.deviceId.toString(), disabled: _deviceFlag(row.linkedLocally)]
@@ -13991,7 +14010,9 @@ private List _nativeReportedDeviceAttributes(Map d) {
     def attributes = []
     def cs = d?.currentStates
     if (cs instanceof Map) {
-        cs.each { name, st ->
+        for (Map.Entry entry in cs) {
+            def name = entry.key
+            def st = entry.value
             if (name != null) {
                 def dataType = (st instanceof Map) ? st.dataType?.toString() : null
                 def value = _nativeDeviceStateValue(st)
@@ -14011,7 +14032,7 @@ private Map _getDeviceFromFullJson(deviceId, Map fj) {
     def d = fj.device
     def commands = []
     if (fj.commands instanceof List) {
-        fj.commands.each { c ->
+        for (c in fj.commands) {
             if (c?.name != null) commands << [name: c.name, arguments: _fullJsonCommandArgs(c)]
         }
     }
@@ -14096,9 +14117,13 @@ private Map _deviceDetailReadStatus(String section, Map fj, Map d, value, device
             spammyThreshold: 'scalar', defaultIcon: 'scalar', showOnHome: 'scalar']]
     ]
     def problems = []
-    contracts.get(section)?.each { scope, definitions ->
+    for (Map.Entry entry in contracts.get(section)) {
+        def scope = entry.key
+        def definitions = entry.value
         Map source = scope == 'device' ? d : fj
-        definitions.each { key, shape ->
+        for (Map.Entry e in definitions) {
+            def key = e.key
+            def shape = e.value
             def nativeValue = source.get(key)
             boolean valid = nativeValue == null || (shape == 'map' ? nativeValue instanceof Map :
                 shape == 'list' ? nativeValue instanceof List : shape == 'stringOrList' ? nativeValue instanceof String || nativeValue instanceof List :
@@ -14119,7 +14144,8 @@ private List _deviceDetailFieldNames(String section, value) {
     }
     if (value instanceof List) {
         def names = []
-        value.eachWithIndex { row, index -> names << index.toString() }
+        int index = -1
+        for (row in value) { index++; names << index.toString() }
         return names
     }
     return []
@@ -14142,7 +14168,8 @@ private _deviceDetailSelectedFields(String section, value, List fields) {
     }
     if (value instanceof List) {
         def selected = []
-        value.eachWithIndex { row, index -> if (fields.contains(index.toString())) selected << row }
+        int index = -1
+        for (row in value) { index++; if (fields.contains(index.toString())) selected << row }
         return selected
     }
     return value
@@ -14159,7 +14186,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
                                        args: [deviceId: deviceId.toString(), limit: 50]],
                                dependents: [gateway: 'hub_read_apps_code', tool: 'hub_list_device_dependents',
                                             args: [deviceId: deviceId.toString()]]]]
-    selected.each { section ->
+    for (section in selected) {
         def value
         def keys = []
         switch (section) {
@@ -14665,7 +14692,9 @@ private Map _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) {
         if (!(waitFor.expectedValues instanceof List) || waitFor.expectedValues.isEmpty()) {
             throw new IllegalArgumentException("waitFor.expectedValues must be a non-empty list of strings")
         }
-        waitFor.expectedValues.eachWithIndex { v, i ->
+        int i = -1
+        for (v in waitFor.expectedValues) {
+            i++
             if (!(v instanceof String)) {
                 throw new IllegalArgumentException("waitFor.expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
             }
@@ -14825,7 +14854,9 @@ private List _buildRunMethodArgs(command, List params, Map fullJson) {
     def cmdDef = (fullJson?.commands instanceof List) ? fullJson.commands.find { it?.name == command } : null
     def declaredTypes = _commandParamTypes(cmdDef)
     def out = []
-    params.eachWithIndex { v, i ->
+    int i = -1
+    for (v in params) {
+        i++
         def t = (i < declaredTypes.size() && declaredTypes[i]) ? declaredTypes[i] : _inferRunMethodArgType(v)
         out << [type: t, value: v]
     }
@@ -14865,7 +14896,9 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
             return null
         }
         def snapshot = [:]
-        cs.each { name, st ->
+        for (Map.Entry entry in cs) {
+            def name = entry.key
+            def st = entry.value
             if (name != null) {
                 def val = _nativeDeviceStateValue(st)
                 def rawDate = (st instanceof Map) ? st.date : null
@@ -15106,7 +15139,7 @@ def toolPollUntilAttribute(args) {
         throw new IllegalArgumentException("attribute is required and must be a non-empty string")
     }
 
-    deviceIdList.each { did -> _requireDeviceToolAccess(did) }
+    for (did in deviceIdList) { _requireDeviceToolAccess(did) }
 
     // 2b. Validate mode (any/all over deviceIds). Only meaningful with deviceIds; default "all"
     //     (converge when EVERY device matches). "any" converges on the first device to match.
@@ -15920,7 +15953,7 @@ private Map _devicePreferencePanePayload(deviceId, Map overrides = [:], List pre
         defaultCurrentState: d.get("defaultCurrentState") == null ? "" : d.get("defaultCurrentState").toString(),
         commandRetry: retryEnabled.value, showOnHome: showOnHome.value,
         preferences: preferenceRows]
-    overrides.each { key, value -> payload.put(key, value) }
+    for (Map.Entry entry in overrides) { def key = entry.key; def value = entry.value; payload.put(key, value) }
     return payload
 }
 
@@ -15956,7 +15989,7 @@ private _normalizedDevicePreferenceValue(Map entry, value) {
             def bounds = range.split("\\.\\.", -1)
             if (bounds.size() != 2) throw new IllegalArgumentException("Preference '${entry.name}' has an unsupported numeric range; inspect its configuration")
             def limits = []
-            bounds.each { bound ->
+            for (bound in bounds) {
                 def token = bound.trim()
                 if (!token || token == '*') limits << null
                 else {
@@ -15998,14 +16031,16 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
     def allowed = ["deviceId", "bestPracticeKey", "label", "name", "deviceNetworkId", "room", "enabled", "dataValues", "preferences", "showOnHome", "defaultCurrentState", "tags", "confirm"] + _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()
     if (args.keySet().any { !allowed.contains(it.toString()) }) throw new IllegalArgumentException("Unknown device update property; read hub_get_device(mode='configuration') for supported fields")
     def stringFields = ["label", "name", "deviceNetworkId", "room", "defaultCurrentState", "zigbeeId", "notes", "defaultIcon"]
-    stringFields.each { field ->
+    for (field in stringFields) {
         if (args.containsKey(field) && !(args.get(field) instanceof String)) throw new IllegalArgumentException("${field} must be a string")
     }
     def booleanFields = ["enabled", "showOnHome", "meshEnabled", "retryEnabled", "meshFullSync", "confirm"] + _deviceAssistantProperties().keySet().toList()
-    booleanFields.each { field ->
+    for (field in booleanFields) {
         if (args.containsKey(field) && !(args.get(field) instanceof Boolean)) throw new IllegalArgumentException("${field} must be a boolean")
     }
-    [maxEvents: [1, 2000], maxStates: [1, 2000], spammyThreshold: [100, 2000], deviceTypeId: [1, 2147483647]].each { field, bounds ->
+    for (Map.Entry e in [maxEvents: [1, 2000], maxStates: [1, 2000], spammyThreshold: [100, 2000], deviceTypeId: [1, 2147483647]]) {
+        def field = e.key
+        def bounds = e.value
         if (args.containsKey(field)) {
             def value = args.get(field)
             if (!(value instanceof Number) || value < bounds[0] || value > bounds[1] || new BigDecimal(value.toString()).stripTrailingZeros().scale() > 0) {
@@ -16060,7 +16095,9 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
         def assistantAvailable = [homeKitEnabled: _deviceFlag(full.homeKitSelectionEnabled),
             amazonAlexaEnabled: _deviceFlag(full.amazonAlexaInstalled) && _deviceFlag(full.amazonAlexaSupported),
             googleHomeEnabled: _deviceFlag(full.googleHomeInstalled) && _deviceFlag(full.googleHomeSupported)]
-        _deviceAssistantProperties().each { property, integration ->
+        for (Map.Entry e in _deviceAssistantProperties()) {
+            def property = e.key
+            def integration = e.value
             if (args.containsKey(property) && !assistantAvailable.get(property)) throw new IllegalArgumentException("${property} is unavailable: install/enable the native ${integration} integration and verify this device is supported")
         }
         if (_deviceAssistantProperties().keySet().any { args.containsKey(it) } && !_deviceAssistantProperties().keySet().every { full.containsKey(it) && full.get(it) instanceof Boolean }) {
@@ -16090,7 +16127,9 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
         def model = _readDevicePreferenceModel(full)
         if (model.writeSafe != true) throw new IllegalArgumentException("Unable to read complete preference definitions/storage before updating; inspect hub_get_device(mode='configuration')")
         def normalized = [:]
-        args.preferences.each { key, setting ->
+        for (Map.Entry e in args.preferences) {
+            def key = e.key
+            def setting = e.value
             def name = key.toString()
             def entry = _lookupDevicePreference(model, name)
             if (!entry) throw new IllegalArgumentException("Unknown preference '${name}'; read hub_get_device(mode='configuration') for declared names")
@@ -16132,13 +16171,17 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
 private void _verifyDevicePreferenceWrites(deviceId, Map preferences, List changes, List errors) {
     def full = _fetchDeviceFullJson(deviceId)
     if (!(full?.device instanceof Map)) {
-        preferences.each { name, setting ->
+        for (Map.Entry entry in preferences) {
+            def name = entry.key
+            def setting = entry.value
             errors << [property: "preference.${name}", stage: "verify", status: "unavailable", error: "Update accepted but could not confirm the preference -- the read-back fetch failed."]
         }
         return
     }
     def model = _readDevicePreferenceModel(full)
-    preferences.each { name, setting ->
+    for (Map.Entry entry in preferences) {
+        def name = entry.key
+        def setting = entry.value
         _verifyDevicePreferenceWrite(deviceId, name.toString(), setting, changes, errors, model)
     }
 }
@@ -16165,7 +16208,9 @@ private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, Li
 }
 
 private void _applyNativeDeviceDataValues(deviceId, Map values, List changes, List errors) {
-    values.each { key, value ->
+    for (Map.Entry entry in values) {
+        def key = entry.key
+        def value = entry.value
         String stage = 'write'
         try {
             def payload = [id: _prefSaveDeviceId(deviceId), method: 'updateDataValue',
@@ -16173,7 +16218,7 @@ private void _applyNativeDeviceDataValues(deviceId, Map values, List changes, Li
             def result = hubInternalPostJson('/device/runmethod', groovy.json.JsonOutput.toJson(payload))
             if (!(result instanceof Map) || result.success != true) {
                 errors << [property: "dataValue.${key}", stage: stage, error: 'Native data-value update was not accepted; inspect device data before retrying.']
-                return
+                continue
             }
             stage = 'verify'
             def readback = _fetchDeviceFullJson(deviceId)
@@ -16206,7 +16251,9 @@ private void _applyDevicePreferencePatch(deviceId, Map preferences, List changes
             stage = 'write'
             def response = hubInternalPostJson('/device/preference/save', groovy.json.JsonOutput.toJson(payload))
             if (response instanceof Map && (response.success == false || response._unparseable == true)) {
-                nativeSettings.each { name, setting ->
+                for (Map.Entry entry in nativeSettings) {
+                    def name = entry.key
+                    def setting = entry.value
                     errors << [property: "preference.${name}", stage: 'write',
                         status: response._unparseable == true ? 'unavailable' : 'failed',
                         error: response._unparseable == true ?
@@ -16217,7 +16264,9 @@ private void _applyDevicePreferencePatch(deviceId, Map preferences, List changes
                 saveAccepted = true
             }
         } catch (Exception ignored) {
-            nativeSettings.each { name, setting ->
+            for (Map.Entry entry in nativeSettings) {
+                def name = entry.key
+                def setting = entry.value
                 errors << [property: "preference.${name}", stage: stage, status: stage == 'write' ? 'failed' : 'unavailable',
                     error: 'Preference update or verification failed; inspect the device configuration before retrying.']
             }
@@ -16227,7 +16276,9 @@ private void _applyDevicePreferencePatch(deviceId, Map preferences, List changes
         try {
             _verifyDevicePreferenceWrites(deviceId, nativeSettings, changes, errors)
         } catch (Exception ignored) {
-            nativeSettings.each { name, setting ->
+            for (Map.Entry entry in nativeSettings) {
+                def name = entry.key
+                def setting = entry.value
                 errors << [property: "preference.${name}", stage: 'verify', status: 'unavailable',
                     error: 'Preference update or verification failed; inspect the device configuration before retrying.']
             }
@@ -16261,14 +16312,16 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List chang
     def linkedIdentity = args.containsKey("deviceNetworkId") && _deviceFlag(full?.device?.linkedDevice)
     if (formProperties || args.containsKey("tags") || linkedIdentity) {
         def overrides = [:]
-        (formProperties + ["label", "name", "deviceNetworkId", "tags"]).unique().each { property ->
+        for (property in (formProperties + ["label", "name", "deviceNetworkId", "tags"]).unique()) {
             if (args.containsKey(property)) overrides.put(property, property == "tags" ? args.tags.collect { it.trim() }.findAll { it }.join(",") : args.get(property))
         }
         def targets = new LinkedHashMap(overrides)
-        overrides.keySet().each { args.remove(it) }
+        for (it in overrides.keySet()) { args.remove(it) }
         try {
             def updated = _postDeviceConfigurationForm(deviceId, overrides, errors)
-            targets.each { property, wanted ->
+            for (Map.Entry entry in targets) {
+                def property = entry.key
+                def wanted = entry.value
                 def present = updated?.device instanceof Map && updated.device.containsKey(property)
                 def actual = present ? updated.device.get(property) : null
                 if (property == "dashboardIds") {
@@ -16283,23 +16336,25 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List chang
                 else errors << [property: property, error: present ? "POST accepted but ${property} read back as a different value; inspect configuration before retrying." : "POST accepted but could not confirm ${property}; native read-back is unavailable."]
             }
         } catch (Exception e) {
-            targets.each { property, wanted -> errors << [property: property, error: e.message ?: e.toString()] }
+            for (Map.Entry entry in targets) { def property = entry.key; def wanted = entry.value; errors << [property: property, error: e.message ?: e.toString()] }
         }
     }
     def assistants = _deviceAssistantProperties()
     def assistantRequests = assistants.keySet().findAll { args.containsKey(it) }
     if (assistantRequests) {
         def targets = [:]
-        assistantRequests.each { targets.put(it, args.remove(it)) }
+        for (it in assistantRequests) { targets.put(it, args.remove(it)) }
         try {
             def fresh = _fetchDeviceFullJson(deviceId)
             if (!(fresh?.device instanceof Map) || !assistants.keySet().every { fresh.containsKey(it) && fresh.get(it) instanceof Boolean }) throw new RuntimeException("Unable to read all current assistant assignments before saving; no assistant update sent")
             def payload = [deviceId: _prefSaveDeviceId(deviceId)]
-            assistants.each { property, integration -> payload.put(property, fresh.get(property)) }
+            for (Map.Entry entry in assistants) { def property = entry.key; def integration = entry.value; payload.put(property, fresh.get(property)) }
             payload.putAll(targets)
             def response = hubInternalPostJson("/device/updateAssistants", groovy.json.JsonOutput.toJson(payload))
             def readback = _fetchDeviceFullJson(deviceId)
-            targets.each { property, wanted ->
+            for (Map.Entry entry in targets) {
+                def property = entry.key
+                def wanted = entry.value
                 def nativeResult = response?.assistants?.get(assistants.get(property))
                 if (nativeResult?.success == false) errors << [property: property, error: "Native assistant update failed: ${nativeResult.reason ?: 'unspecified integration error'}"]
                 else if (response?.success == false && nativeResult?.success != true) errors << [property: property, error: "Native assistant update was rejected without a per-integration success result; inspect the native integration settings."]
@@ -16307,10 +16362,10 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List chang
                 else errors << [property: property, error: "POST accepted but could not confirm ${property}; inspect the native integration settings."]
             }
         } catch (Exception e) {
-            targets.each { property, wanted -> errors << [property: property, error: e.message ?: e.toString()] }
+            for (Map.Entry entry in targets) { def property = entry.key; def wanted = entry.value; errors << [property: property, error: e.message ?: e.toString()] }
         }
     }
-    ["showOnHome", "defaultCurrentState"].each { property ->
+    for (property in ["showOnHome", "defaultCurrentState"]) {
         if (args.containsKey(property)) {
             def wanted = args.remove(property)
             try {
@@ -16330,7 +16385,7 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List chang
                 }
                 if (!accepted) {
                     errors << [property: property, error: "Hub did not accept defaultCurrentState; use an attribute name from the device's current states."]
-                    return
+                    continue
                 }
                 def readback = _fetchDeviceFullJson(deviceId)?.device
                 def actual = readback?.get(property)
@@ -16620,7 +16675,7 @@ private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides
     if (fieldOverrides) model.putAll(fieldOverrides)
     // Native readback verifies omission preserves null for these fields; blanks change stored values.
     // Apply overrides first so explicit empty-string clears and roomId=0 remain in the form.
-    ["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"].each { key ->
+    for (key in ["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"]) {
         if (model.get(key) == null) model.remove(key)
     }
     def enc = { v ->
@@ -16643,7 +16698,7 @@ private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides, List erro
     def updated = _fetchDeviceFullJson(deviceId)
     if (!(updated?.device instanceof Map)) return updated
     def restore = [:]
-    ["label", "name", "deviceNetworkId"].each { property ->
+    for (property in ["label", "name", "deviceNetworkId"]) {
         def original = fj.device.get(property)
         boolean intentionalClear = fieldOverrides.containsKey(property) && !fieldOverrides.get(property)
         if (original && !intentionalClear && updated.device.containsKey(property) && !updated.device.get(property)) {
@@ -16662,7 +16717,9 @@ private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides, List erro
         }
         def recovered = _fetchDeviceFullJson(deviceId)
         if (recovered?.device instanceof Map) updated = recovered
-        restore.each { property, original ->
+        for (Map.Entry entry in restore) {
+            def property = entry.key
+            def original = entry.value
             if (!(recovered?.device instanceof Map) || recovered.device.get(property)?.toString() != original.toString()) {
                 recoveryErrors << [property: property, stage: 'restore',
                     error: "Device-edit form blanked ${property}; native restoration could not be confirmed. Verify and re-set ${property} before retrying."]
@@ -17226,7 +17283,7 @@ def toolDeleteDevice(args) {
             if (obj instanceof Collection) return obj.any { containsDeviceRef(it) }
             return obj.toString() == deviceId
         }
-        childApps?.each { childApp ->
+        for (childApp in childApps) {
             try {
                 def ruleData = childApp.getRuleData()
                 if (ruleData && containsDeviceRef(ruleData)) {
@@ -17609,11 +17666,11 @@ private List _deviceSwapEnumOptions(Map input) {
     def out = []
     def opts = input?.options
     if (opts instanceof Map) {
-        opts.each { k, v -> out << [id: k?.toString(), label: v?.toString()] }
+        for (Map.Entry entry in opts) { def k = entry.key; def v = entry.value; out << [id: k?.toString(), label: v?.toString()] }
     } else if (opts instanceof List) {
         for (opt in opts) {
             if (opt instanceof Map) {
-                opt.each { k, v -> out << [id: k?.toString(), label: v?.toString()] }
+                for (Map.Entry entry in opt) { def k = entry.key; def v = entry.value; out << [id: k?.toString(), label: v?.toString()] }
             }
         }
     }
@@ -18112,7 +18169,7 @@ def toolCreateVirtualDevice(args) {
     def dataChanges = []
     def dataErrors = []
     _applyNativeDeviceDataValues(deviceId, [mcpDriverNamespace: namespace], dataChanges, dataErrors)
-    dataErrors.each { failure ->
+    for (failure in dataErrors) {
         def warning = "mcpDriverNamespace: ${failure.error}".toString()
         warnings << warning
         mcpLog("warn", "device", "Device ${deviceId} was created, but ${warning}")
@@ -18216,7 +18273,7 @@ def toolListVirtualDevices(args) {
                 driverNamespace: namespace, driverType: typeName, typeName: typeName,
                 capabilities: summary.capabilities, commands: summary.commands.collect { it.name },
                 currentStates: [:]]
-            summary.attributes.each { attr ->
+            for (attr in summary.attributes) {
                 if (attr.value != null) info.currentStates[attr.name] = attr.value
             }
             if (!namespace || !typeName) {
@@ -18399,12 +18456,12 @@ private boolean _refreshHubVarInUseRegistrations() {
     }
     if (hubVarNames) {
         try {
-            getChildApps()?.each { child ->
+            for (child in getChildApps()) {
                 def ruleData = null
                 try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
                 if (ruleData) {
                     def serialized = groovy.json.JsonOutput.toJson(ruleData)
-                    hubVarNames.each { varName ->
+                    for (varName in hubVarNames) {
                         // Match a whole JSON value so temp cannot match temperature.
                         def needle = "\"${varName}\""
                         if (serialized?.contains(needle)) currentVars << varName
@@ -18422,7 +18479,7 @@ private boolean _refreshHubVarInUseRegistrations() {
     def toAdd = currentVars - previous
     def toRemove = previous - currentVars
     boolean complete = true
-    toAdd.each { name ->
+    for (name in toAdd) {
         try {
             addInUseGlobalVar(name)
             registered << name
@@ -18431,7 +18488,7 @@ private boolean _refreshHubVarInUseRegistrations() {
             mcpLogError("hub-vars", "addInUseGlobalVar('${name}') failed -- in-use safety warning will not surface for this var", e)
         }
     }
-    toRemove.each { name ->
+    for (name in toRemove) {
         try {
             removeInUseGlobalVar(name)
             registered.remove(name)
@@ -18457,7 +18514,7 @@ private boolean _subscribeToAllHubVariables() {
     }
     if (location == null) return false
     boolean complete = true
-    vars?.keySet()?.each { varName ->
+    for (varName in vars?.keySet()) {
         try {
             subscribe(location, "variable:${varName}", "handleHubVariableEvent")
         } catch (Throwable e) {
@@ -18772,7 +18829,7 @@ def _findHubVariablesAppId() {
                 }
                 node?.children?.each { c -> recurse(c) }
             }
-            (parsed?.apps ?: []).each { a -> recurse(a) }
+            for (a in (parsed?.apps ?: [])) { recurse(a) }
             if (found?.id != null) {
                 def id = found.id.toString().toInteger()
                 // The feed's type label is the only evidence on this path, so
@@ -19037,7 +19094,9 @@ private Map _createVariablesBulk(variables) {
     int createdCount = 0
     int failedCount = 0
 
-    variables.eachWithIndex { item, idx ->
+    int idx = -1
+    for (item in variables) {
+        idx++
         // A malformed (non-Map) item fails only itself, never the whole batch --
         // same per-item isolation as a bad name/type/value below.
         def itemName = (item instanceof Map) ? item.name?.toString()?.trim() : null
@@ -19598,7 +19657,7 @@ def toolDeleteHubVariable(args) {
         // Word-boundary match: the JSON-quoted name or a %name% substitution, so a
         // var named `temp` doesn't match rules referencing `temperature` etc.
         def needles = ["\"${varName}\"".toString(), "%${varName}%".toString()]
-        getChildApps()?.each { child ->
+        for (child in getChildApps()) {
             def ruleData = null
             try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
             if (ruleData) {
@@ -20141,17 +20200,17 @@ def toolCreateRule(args) {
     args.triggers = args.triggers.collect { trigger -> normalizeTrigger(trigger) }
 
     // Validate triggers
-    args.triggers.each { trigger ->
+    for (trigger in args.triggers) {
         validateTrigger(trigger)
     }
 
     // Validate conditions
-    args.conditions?.each { condition ->
+    for (condition in args.conditions) {
         validateCondition(condition)
     }
 
     // Validate actions
-    args.actions.each { action ->
+    for (action in args.actions) {
         validateAction(action)
     }
 
@@ -20244,17 +20303,17 @@ def toolUpdateRule(ruleId, args, String customEngineMode = "full") {
     // Normalize and validate any provided triggers
     if (args.triggers != null) {
         args.triggers = args.triggers.collect { trigger -> normalizeTrigger(trigger) }
-        args.triggers.each { validateTrigger(it) }
+        for (it in args.triggers) { validateTrigger(it) }
     }
 
     // Validate any provided conditions
     if (args.conditions != null) {
-        args.conditions.each { validateCondition(it) }
+        for (it in args.conditions) { validateCondition(it) }
     }
 
     // Validate any provided actions
     if (args.actions != null) {
-        args.actions.each { validateAction(it) }
+        for (it in args.actions) { validateAction(it) }
     }
 
     // Normalize operators (convert "==" to "equals", "!=" to "not_equals")
@@ -20642,23 +20701,25 @@ def buildDeviceManifest(ruleData) {
     def deviceUsage = [:]  // deviceId -> [sections]
 
     // Scan triggers
-    ruleData.triggers?.each { trigger ->
+    for (trigger in ruleData.triggers) {
         collectDeviceIds(trigger, "triggers", deviceUsage)
     }
 
     // Scan conditions
-    ruleData.conditions?.each { condition ->
+    for (condition in ruleData.conditions) {
         collectDeviceIds(condition, "conditions", deviceUsage)
     }
 
     // Scan actions
-    ruleData.actions?.each { action ->
+    for (action in ruleData.actions) {
         collectDeviceIds(action, "actions", deviceUsage)
     }
 
     // Build manifest entries with device info
     def manifest = []
-    deviceUsage.each { deviceId, sections ->
+    for (Map.Entry e in deviceUsage) {
+        def deviceId = e.key
+        def sections = e.value
         def entry = [
             deviceId: deviceId.toString(),
             usedIn: sections.toList().sort()
@@ -20694,7 +20755,7 @@ private void collectDeviceIds(component, String section, Map deviceUsage) {
 
     // Check for deviceIds field (plural — multi-device triggers, capture_state, etc.)
     if (component.deviceIds) {
-        component.deviceIds.each { did ->
+        for (did in component.deviceIds) {
             def id = did.toString()
             if (!deviceUsage.containsKey(id)) {
                 deviceUsage.put(id, new LinkedHashSet())
@@ -20706,22 +20767,22 @@ private void collectDeviceIds(component, String section, Map deviceUsage) {
     // Check nested structures in if_then_else actions
     if (component.type == "if_then_else") {
         // Scan conditions inside if_then_else
-        component.conditions?.each { cond ->
+        for (cond in component.conditions) {
             collectDeviceIds(cond, section, deviceUsage)
         }
         // Scan then actions
-        component.thenActions?.each { action ->
+        for (action in component.thenActions) {
             collectDeviceIds(action, section, deviceUsage)
         }
         // Scan else actions
-        component.elseActions?.each { action ->
+        for (action in component.elseActions) {
             collectDeviceIds(action, section, deviceUsage)
         }
     }
 
     // Check nested actions in repeat blocks
     if (component.type == "repeat") {
-        component.actions?.each { action ->
+        for (action in component.actions) {
             collectDeviceIds(action, section, deviceUsage)
         }
     }
@@ -20736,7 +20797,9 @@ def applyDeviceMapping(data, Map mapping) {
 
     if (data instanceof Map) {
         def result = [:]
-        data.each { key, value ->
+        for (Map.Entry entry in data) {
+            def key = entry.key
+            def value = entry.value
             if (key == "deviceId" && value != null) {
                 def mappedId = mapping.get(value.toString())
                 result.put(key, mappedId != null ? mappedId.toString() : value)
@@ -21016,10 +21079,10 @@ def toolListHubApps(args) {
                     def types = []
                     // Community (user-installed) code definitions: system/isBuiltIn=false,
                     // menu looked up from the appsList catalog (null when undeclared/unlisted).
-                    parsed.each { t -> if (t instanceof Map) types << _projectAppType(t, false, enrich) }
+                    for (t in parsed) { if (t instanceof Map) types << _projectAppType(t, false, enrich) }
                     // Built-in types never appear in the code registry; append them so a caller
                     // can answer "community vs built-in" over ALL app types in one call.
-                    enrich.builtIn.each { t -> if (t instanceof Map) types << _projectAppType(t, true, enrich) }
+                    for (t in enrich.builtIn) { if (t instanceof Map) types << _projectAppType(t, true, enrich) }
                     result.apps = types
                     result.count = types.size()
                     result.source = "hub_api"
@@ -21082,7 +21145,7 @@ def _appTypeEnrichment() {
             if (parsed.systemAppTypes instanceof List) catalog += parsed.systemAppTypes
             else notes << "built-in (system) app types are omitted this call"
             if (notes) out.note = "/hub2/appsList did not return a usable list this call; " + notes.join("; ") + "."
-            catalog.each { e ->
+            for (e in catalog) {
                 if (e instanceof Map) {
                     if (e.id != null) out.menuById[e.id.toString()] = e.menu
                     if (e.namespace != null && e.name != null) {
@@ -21144,8 +21207,8 @@ def toolListHubDrivers(args) {
             def parsed = responseText ? new groovy.json.JsonSlurper().parseText(responseText) : null
             if (parsed?.drivers instanceof List) {
                 def projected = []
-                parsed.drivers.each { d ->
-                    if (d?.type == "dep" || d?.category == "Hidden") return
+                for (d in parsed.drivers) {
+                    if (d?.type == "dep" || d?.category == "Hidden") continue
                     def nm = d?.name?.toString() ?: ""
                     def bucket = (d?.type == "usr") ? "user" : (nm.startsWith("Virtual") ? "virtual" : "system")
                     projected << [id: d?.id?.toString(), name: nm, namespace: d?.namespace, bucket: bucket]
@@ -21374,7 +21437,7 @@ private stripOptionsHtml(options) {
         for (entry in options) {
             if (entry instanceof Map) {
                 def cleaned = [:]
-                entry.each { k, v -> cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) }
+                for (Map.Entry e in entry) { def k = e.key; def v = e.value; cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) }
                 out << cleaned
             } else {
                 out << entry
@@ -21384,7 +21447,7 @@ private stripOptionsHtml(options) {
     }
     if (options instanceof Map) {
         def cleaned = [:]
-        options.each { k, v -> cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) }
+        for (Map.Entry e in options) { def k = e.key; def v = e.value; cleaned.put(k, (v instanceof String) ? stripAppConfigHtml(v) : v) }
         return cleaned
     }
     return options
@@ -21909,7 +21972,7 @@ def toolListAppPages(args) {
     // onDevicesPage/onMeansPage/offMeansPage, where a static "single page" note used to be.
     def knownNames = pages.collect { it.name } as Set
     def linked = _rmPageHrefs(parsed.configPage as Map).findAll { !(it.page in knownNames) }.unique { it.page }
-    linked.each { pages << [name: it.page, title: it.title, role: "sub-page"] }
+    for (it in linked) { pages << [name: it.page, title: it.title, role: "sub-page"] }
     if (linked) {
         note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Drive them with hub_set_native_app walkStep (navigate, write, done); for Rule Machine rules use hub_set_rule's structured shortcuts."
     } else if (!curatedHpm) {
@@ -22095,7 +22158,9 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
     def cfgSettings = (cfg?.settings instanceof Map) ? cfg.settings : [:]
     def settingsMap = [:]
     int shapeRejections = 0
-    schema.each { name, meta ->
+    for (Map.Entry entry in schema) {
+        def name = entry.key
+        def meta = entry.value
         // Each tier is consulted only for a value the previous one does not have, and only when
         // its SHAPE round-trips through _rmBuildSettingsBody (see _isSimpleSettingValue) -- an
         // unencodable value would be POSTed back as junk.
@@ -22141,7 +22206,9 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
     body._action_update = "Done"
     body.pageBreadcrumbs = _rmPageBreadcrumbs(instanceId, page, "[]")
     // Per-type sidecars the form-encoded UI emits (matches _rmSubmitMainPageDone).
-    schema.each { name, meta ->
+    for (Map.Entry entry in schema) {
+        def name = entry.key
+        def meta = entry.value
         def t = meta?.type?.toString()
         if (meta?.multiple != true) {
             body["${name}.multiple".toString()] = "false"
@@ -23761,7 +23828,7 @@ def toolListInstalledApps(args) {
             def childParentId = included ? d.id : parentId
             node?.children?.each { c -> recurse(c, childParentId) }
         }
-        apps.each { a -> recurse(a, null) }
+        for (a in apps) { recurse(a, null) }
 
         def filtered = flat.findAll { entry ->
             switch (filter) {
@@ -24320,7 +24387,7 @@ private String _hpmDiscoverAppId() {
             if (d.id == null) throw new IllegalArgumentException("HPM entry found but has no id field -- cannot determine hpmAppId; pass hpmAppId explicitly")
             hpmMatches << d.id.toString()
         }
-        (node?.children ?: []).each { workQueue << it }
+        for (it in (node?.children ?: [])) { workQueue << it }
     }
     if (hpmMatches.isEmpty()) {
         throw new IllegalArgumentException("HPM not found in installed apps -- Hubitat Package Manager does not appear to be installed")
@@ -24348,7 +24415,7 @@ private void _hpmAssertAppIsHpm(String explicitAppId) {
         if (d.id?.toString() == explicitAppId) {
             foundEntry = d
         } else {
-            (node?.children ?: []).each { workQueue << it }
+            for (it in (node?.children ?: [])) { workQueue << it }
         }
     }
     if (foundEntry == null) {
@@ -24613,7 +24680,7 @@ def toolGetHpmDrift(args) {
                 orphanDetection = [enabled: false, reason: "Unexpected /hub2/userAppTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-app signals were not evaluated this call"]
                 mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userAppTypes returned non-List shape (${actualTypeName}) -- orphan detection disabled")
             } else {
-                userAppTypesParsed.each { t ->
+                for (t in userAppTypesParsed) {
                     def typeId = t?.id?.toString()
                     if (typeId) installedAppCodeIds << typeId
                 }
@@ -24645,7 +24712,7 @@ def toolGetHpmDrift(args) {
                 orphanDriverDetection = [enabled: false, reason: "Unexpected /hub2/userDeviceTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-driver signals were not evaluated this call"]
                 mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userDeviceTypes returned non-List shape (${actualTypeName}) -- orphan driver detection disabled")
             } else {
-                userDeviceTypesParsed.each { t ->
+                for (t in userDeviceTypesParsed) {
                     def typeId = t?.id?.toString()
                     if (typeId) installedDriverCodeIds << typeId
                 }
@@ -24666,11 +24733,13 @@ def toolGetHpmDrift(args) {
     def driftDataQualityWarnings = []
     int totalSignals = 0
 
-    filteredManifests.each { manifestUrl, manifest ->
+    for (Map.Entry kv in filteredManifests) {
+        def manifestUrl = kv.key
+        def manifest = kv.value
         if (!(manifest instanceof Map)) {
             mcpLog("warn", "hpm", "get_hpm_drift: skipping malformed manifest entry for URL ${manifestUrl} -- value is not a Map")
             driftSkippedMalformed << manifestUrl?.toString()
-            return
+            continue
         }
         def signals = []
         // Data-quality warnings are collected separately and do NOT roll up into totalDriftSignals.
@@ -24683,7 +24752,7 @@ def toolGetHpmDrift(args) {
         // missing-required: required=true AND heID is null/absent
         // orphan-app: heID present but not in Apps Code registry (/hub2/userAppTypes endpoint)
         // Both checks share the per-component heID resolution loop below.
-        (manifest.apps ?: []).each { a ->
+        for (a in (manifest.apps ?: [])) {
             if (!(a instanceof Map)) {
                 skippedAppCount++
                 dataQualityWarnings << [
@@ -24692,7 +24761,7 @@ def toolGetHpmDrift(args) {
                     _warning     : "app component entry is not a Map -- skipped"
                 ]
                 mcpLog("warn", "hpm", "get_hpm_drift: non-Map app component in '${manifest.packageName}' (value: ${a?.toString()?.take(60) ?: 'null'}) -- skipped")
-                return
+                continue
             }
             def heId = a.heID
             // Normalize empty/whitespace-only String heID to null and surface as data-quality warning
@@ -24737,7 +24806,7 @@ def toolGetHpmDrift(args) {
                     componentId  : a.id?.toString(),
                     _warning     : "non-scalar heID (not Number or String) -- component skipped"
                 ]
-                return
+                continue
             }
             def heIdNull = heId == null
             // signals[] field-shape convention: orphan-* entries carry `heID` (the orphaned id);
@@ -24769,7 +24838,7 @@ def toolGetHpmDrift(args) {
         // missing-required: required=true AND heID is null/absent (drivers)
         // orphan-driver: heID present but not in Drivers Code registry (/hub2/userDeviceTypes endpoint)
         // signals[] field-shape convention identical to apps loop above: orphan-* carries heID, missing-required omits it.
-        (manifest.drivers ?: []).each { d ->
+        for (d in (manifest.drivers ?: [])) {
             if (!(d instanceof Map)) {
                 skippedDriverCount++
                 dataQualityWarnings << [
@@ -24778,7 +24847,7 @@ def toolGetHpmDrift(args) {
                     _warning     : "driver component entry is not a Map -- skipped"
                 ]
                 mcpLog("warn", "hpm", "get_hpm_drift: non-Map driver component in '${manifest.packageName}' (value: ${d?.toString()?.take(60) ?: 'null'}) -- skipped")
-                return
+                continue
             }
             def heId = d.heID
             // Normalize empty/whitespace-only String heID to null and surface as data-quality warning.
@@ -24819,7 +24888,7 @@ def toolGetHpmDrift(args) {
                     componentId  : d.id?.toString(),
                     _warning     : "non-scalar heID (not Number or String) -- component skipped"
                 ]
-                return
+                continue
             }
             def heIdNull = heId == null
             if (d.required == true && heIdNull) {
@@ -25032,7 +25101,9 @@ def toolUpdateMcpSettings(args) {
     def updates = [:]
     boolean hasDeviceScope = false
     def deviceScopeRaw = null
-    args.settings.each { key, value ->
+    for (Map.Entry entry in args.settings) {
+        def key = entry.key
+        def value = entry.value
         def keyStr = key.toString()
         if (keyStr == "selectedDevices") {
             // Special-cased BECAUSE the device-access scope is not a scalar setting: it is a
@@ -25043,7 +25114,7 @@ def toolUpdateMcpSettings(args) {
             // validation to _validateMcpDeviceScope -- but capture it here so the scalar loop skips it.
             hasDeviceScope = true
             deviceScopeRaw = value
-            return  // continue the each-closure
+            continue  // continue the each-closure
         }
         if (!allowedSettings.containsKey(keyStr)) {
             throw new IllegalArgumentException("Setting '${keyStr}' is not allowed for self-modification via hub_update_mcp_settings. Allowed: ${allowedKeyNames.join(', ')}")
@@ -25114,7 +25185,9 @@ def toolUpdateMcpSettings(args) {
     // toolSetLogLevel. If toolSetLogLevel ever evolves to throw on an unexpected condition,
     // the rest of the batch has already landed. Per-key validation above is the primary
     // safeguard; this ordering is belt-and-suspenders.
-    updates.each { key, value ->
+    for (Map.Entry entry in updates) {
+        def key = entry.key
+        def value = entry.value
         if (key == "mcpLogLevel") {
             // Delegate to existing helper — it updates both state cache + setting
             toolSetLogLevel([level: value.toString()])
@@ -25212,7 +25285,7 @@ private Map _validateMcpDeviceScope(scopeValue) {
     // Normalize every requested id to its String form up front (the hub returns Long ids; MCP
     // callers send strings/ints). Reject a non-scalar or blank-after-trim element before any hub call.
     def requestedIds = []
-    rawIds.each { raw ->
+    for (raw in rawIds) {
         if (raw == null || raw instanceof Map || raw instanceof List) {
             throw new IllegalArgumentException("selectedDevices ids entries must be device ID strings or integers, got: ${raw}")
         }
@@ -25968,7 +26041,7 @@ private Map _appClonerInit(Integer sourceAppId) {
     def justPath = parts[0]
     def query = [:]
     if (parts.length > 1) {
-        parts[1].split('&').each { kv ->
+        for (kv in parts[1].split('&')) {
             def eq = kv.indexOf('=')
             if (eq > 0) query[kv.substring(0, eq)] = kv.substring(eq + 1)
         }
@@ -26055,7 +26128,9 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
         }
         if (navCfg?.configPage instanceof Map) {
             def navValues = (navCfg.settings instanceof Map) ? new LinkedHashMap(navCfg.settings as Map) : [:]
-            extras.each { k, v ->
+            for (Map.Entry entry in extras) {
+                def k = entry.key
+                def v = entry.value
                 def m = (k.toString() =~ /^settings\[(.+)\]$/)
                 if (m.find()) navValues.put(m[0][1], v)
             }
@@ -26078,7 +26153,9 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
     // escaping on the wire and the cloner silently rejects the upload.
     StringBuilder sb = new StringBuilder()
     boolean first = true
-    body.each { k, v ->
+    for (Map.Entry entry in body) {
+        def k = entry.key
+        def v = entry.value
         if (!first) sb.append('&')
         first = false
         sb.append(URLEncoder.encode(k.toString(), "UTF-8"))
@@ -26648,7 +26725,7 @@ private Map _appClonerStagePlan(Integer newAppId) {
             targets << tid
             try {
                 def cfg = _rmFetchConfigJson(tid)
-                ((cfg?.childApps ?: []) as List).each { c ->
+                for (c in ((cfg?.childApps ?: []) as List)) {
                     def cid = c?.id?.toString()
                     if (cid?.isInteger()) queue << cid.toInteger()
                 }
@@ -26926,7 +27003,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
 // broken); otherwise why not. Unreadable counts as a mismatch, since the old rule goes next.
 String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
     def snap = [:]
-    (snapshot?.statusJson?.appState ?: []).each { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
+    for (it in (snapshot?.statusJson?.appState ?: [])) { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
     def copy = _rmReadRuleState(copyId)
     if (!copy) return "app ${copyId}'s state could not be read".toString()
     if (copy.broken == true) return "app ${copyId} reads as broken".toString()
@@ -27047,7 +27124,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     // declared it. Page-derived entries take precedence (they include
     // `required` and other UI-only metadata) so this is additive only.
     def savedSchema = _rmCollectInputSchema(snapshot?.configJson?.configPage) ?: [:]
-    snapshot?.statusJson?.appSettings?.each { s ->
+    for (s in snapshot?.statusJson?.appSettings) {
         def n = s?.name?.toString()
         if (n && !savedSchema.containsKey(n)) {
             savedSchema.put(n, [
@@ -27074,7 +27151,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     // An EMPTY id list is not authoritative (every sibling reader falls back on empty or absent):
     // trusting it would post an empty picker and report the key applied.
     def liveDeviceIds = [:]
-    snapshot?.statusJson?.appSettings?.each { st ->
+    for (st in snapshot?.statusJson?.appSettings) {
         def n = st?.name?.toString()
         if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds.put(n, st.deviceIdsForDeviceList)
     }
@@ -27250,7 +27327,7 @@ List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings) {
     }
     if (!extra) return []
     def body = [id: appId.toString()]
-    extra.each { rec ->
+    for (rec in extra) {
         def n = rec.name.toString()
         body["settings[${n}]".toString()] = ""
         if (rec.type) body["${n}.type".toString()] = rec.type.toString()
@@ -27643,8 +27720,10 @@ def toolSearchTools(args) {
     // iterate with eachWithIndex and push both lists together.
     def visibleCorpus = []
     def docTokens = []
-    corpus.eachWithIndex { entry, i ->
-        if (searchHideByName.contains(entry.name)) return
+    int i = -1
+    for (entry in corpus) {
+        i++
+        if (searchHideByName.contains(entry.name)) continue
         visibleCorpus << entry
         docTokens << docTokensAll[i]
     }
@@ -27659,7 +27738,9 @@ def toolSearchTools(args) {
 
     // Rank and return top results
     def ranked = []
-    scores.eachWithIndex { score, idx ->
+    int idx = -1
+    for (score in scores) {
+        idx++
         if (score > 0) ranked << [index: idx, score: score]
     }
     ranked.sort { -it.score }
@@ -27735,16 +27816,18 @@ def toolSearchTools(args) {
 def toolSearchCorpusFingerprint(List defs = null) {
     long h = 17L
     def displayMeta = getToolDisplayMeta()
-    applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false).each { toolDef ->
+    for (toolDef in applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false)) {
         h = _fpField(h, toolDef.name as String)
         h = _fpField(h, displayMeta[toolDef.name]?.title)
         h = _fpField(h, toolDef.description)
         h = _fpField(h, toolDef.inputSchema?.properties?.keySet()?.join(','))
     }
-    getGatewayConfig().each { gwName, config ->
+    for (Map.Entry entry in getGatewayConfig()) {
+        def gwName = entry.key
+        def config = entry.value
         h = _fpField(h, gwName as String)
         h = _fpField(h, config.description)
-        config.tools.each { toolName ->
+        for (toolName in config.tools) {
             h = _fpField(h, toolName as String)
             h = _fpField(h, config.summaries?."${toolName}")
             h = _fpField(h, config.searchHints?."${toolName}")
@@ -27798,7 +27881,7 @@ private buildToolSearchCorpus(List defs = null) {
     def corpus = []
 
     // Core tools (not behind a gateway)
-    allDefs.each { toolDef ->
+    for (toolDef in allDefs) {
         if (!proxiedNames.contains(toolDef.name)) {
             def params = toolDef.inputSchema?.properties?.keySet()?.join(" ") ?: ""
             corpus << [name: toolDef.name, title: displayMeta[toolDef.name]?.title, description: toolDef.description?.replaceAll(/\n+/, ' ')?.trim(), params: params, gateway: null]
@@ -27806,8 +27889,10 @@ private buildToolSearchCorpus(List defs = null) {
     }
 
     // Gateway sub-tools (with search hints for synonym matching)
-    gatewayConfig.each { gwName, config ->
-        config.tools.each { toolName ->
+    for (Map.Entry entry in gatewayConfig) {
+        def gwName = entry.key
+        def config = entry.value
+        for (toolName in config.tools) {
             def summary = config.summaries[toolName] ?: ""
             def hints = config.searchHints?."${toolName}" ?: ""
             def fullDef = allDefsMap[toolName]
@@ -27847,8 +27932,8 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
     // Document frequency: how many docs contain each token. Preserve the token
     // namespace while using Map methods to avoid sandbox property resolution.
     def df = [:]
-    docTokens.each { tokens ->
-        tokens.toSet().each { token ->
+    for (tokens in docTokens) {
+        for (token in tokens.toSet()) {
             def k = _bm25Key(token)
             df.put(k, (df.get(k) ?: 0) + 1)
         }
@@ -27856,15 +27941,17 @@ private bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
 
     // Score each document
     def scores = new double[n]
-    docTokens.eachWithIndex { tokens, docIdx ->
+    int docIdx = -1
+    for (tokens in docTokens) {
+        docIdx++
         // Term frequency for this doc
         def tf = [:]
-        tokens.each { t -> def k = _bm25Key(t); tf.put(k, (tf.get(k) ?: 0) + 1) }
+        for (t in tokens) { def k = _bm25Key(t); tf.put(k, (tf.get(k) ?: 0) + 1) }
 
         def dl = docLengths[docIdx]
         double score = 0.0
 
-        queryTokens.each { rawQt ->
+        for (rawQt in queryTokens) {
             def qt = _bm25Key(rawQt)
             def termFreq = tf.get(qt) ?: 0
             if (termFreq > 0) {
@@ -27962,8 +28049,8 @@ private Map _platformApiSearch(String query, cursor) {
         return [success: false, error: "The hub's API documentation index has an unexpected shape."]
     }
     def hits = []
-    index.pages.each { pg ->
-        if (!(pg instanceof Map)) return
+    for (pg in index.pages) {
+        if (!(pg instanceof Map)) continue
         // Apps, drivers and shared APIs outrank the many protocol (Z-Wave/Zigbee/Matter) pages.
         int sectionBoost = (pg.section == "protocols") ? 0 : 3
         String pageText = "${pg.id} ${pg.label} ${pg.className} ${pg.topic}".toLowerCase()
@@ -27971,12 +28058,12 @@ private Map _platformApiSearch(String query, cursor) {
             hits << [score: 3 + sectionBoost, pageId: pg.id, className: pg.className, label: pg.label, section: pg.section, kind: "page", usage: pg.usage]
         }
         def pgMethods = pg.get("methods")
-        (pgMethods instanceof List ? pgMethods : []).each { m ->
-            if (!(m instanceof Map)) return
+        for (m in (pgMethods instanceof List ? pgMethods : [])) {
+            if (!(m instanceof Map)) continue
             String name = (m.name ?: "").toString()
             String lname = name.toLowerCase()
             String text = "${name} ${m.signature} ${m.summary} ${pg.className} ${pg.label}".toLowerCase()
-            if (!terms.every { text.contains(it) }) return
+            if (!terms.every { text.contains(it) }) continue
             // An exact method-name term ranks first, then a name holding every term.
             int score = sectionBoost
             if (terms.any { it == lname }) score += 4
@@ -27985,7 +28072,7 @@ private Map _platformApiSearch(String query, cursor) {
                      name: name, signature: m.signature, summary: m.summary?.toString()?.take(400)]
         }
     }
-    (index.guides instanceof List ? index.guides : []).each { g ->
+    for (g in (index.guides instanceof List ? index.guides : [])) {
         if (g instanceof Map && terms.every { "${g.title} ${g.summary}".toLowerCase().contains(it) }) {
             hits << [score: 1, kind: "guide", label: g.title, summary: g.summary, url: g.url]
         }
@@ -28442,14 +28529,14 @@ private Map _rmCollectFilteredRmRules() {
 
     try {
         def rules4 = hubitat.helper.RMUtils.getRuleList() ?: []
-        rules4.each { r -> registerRmRule(combined, r, "4.x") }
+        for (r in rules4) { registerRmRule(combined, r, "4.x") }
     } catch (Throwable e) {
         v4Error = e.toString()
     }
 
     try {
         def rules5 = hubitat.helper.RMUtils.getRuleList("5.0") ?: []
-        rules5.each { r -> registerRmRule(combined, r, "5.x") }
+        for (r in rules5) { registerRmRule(combined, r, "5.x") }
     } catch (Throwable e) {
         v5Error = e.toString()
     }
@@ -28473,7 +28560,9 @@ private Map _rmCollectFilteredRmRules() {
         if (liveApps != null) {
             treeReadable = true
             def filtered = [:]
-            combined.each { id, entry ->
+            for (Map.Entry kv in combined) {
+                def id = kv.key
+                def entry = kv.value
                 def idInt
                 try { idInt = (id instanceof Number) ? id.intValue() : id.toString().toInteger() }
                 catch (Exception ignored) { idInt = null }
@@ -28510,7 +28599,9 @@ private Set _rmValidRuleIds() {
     // App tree unreadable: membership is unverifiable (combined is unfiltered).
     if (!collected.treeReadable) return null
     def ids = [] as Set
-    collected.combined.each { id, entry ->
+    for (Map.Entry e in collected.combined) {
+        def id = e.key
+        def entry = e.value
         def idInt
         try { idInt = (id instanceof Number) ? id.intValue() : id.toString().toInteger() }
         catch (Exception ignored) { idInt = null }
@@ -28535,7 +28626,7 @@ def toolListRmRules(args) {
     // Enrich each rule with its live enabled/paused/stopped/disabled status from the
     // /hub2/appsList tree (issue #359). When the tree was unreadable the rules are
     // returned unfiltered and carry no node data, so status is "unknown".
-    combined.values().each { entry -> _rmAnnotateRuleStatus(entry, treeReadable, liveApps) }
+    for (entry in combined.values()) { _rmAnnotateRuleStatus(entry, treeReadable, liveApps) }
 
     // combined.values() returns a Collection view in some Groovy versions; materialize
     // as a concrete List via toList() so subList in _paginateList is safe.
@@ -28760,7 +28851,7 @@ private Map _rmRuleIdListArg(Object raw) {
     def rawList = (raw instanceof List) ? raw : [raw]
     if (rawList.isEmpty()) throw new IllegalArgumentException("ruleId array must not be empty")
     List<Integer> ids = []
-    rawList.each { id ->
+    for (id in rawList) {
         // _rmCoerceRuleId, not normalizeRuleId: a JSON-number 400.7 would silently
         // TRUNCATE to rule 400 via toInteger() -- and then PASS the existence
         // check below, pausing the wrong rule with full confidence.
@@ -28804,7 +28895,7 @@ def toolRunRmRule(args) {
     if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
     def idArg = _rmRuleIdListArg(args.ruleId)
     List<Integer> ruleIds = idArg.ids
-    ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
+    for (it in ruleIds) { _requireUnprotectedAppMutation(it, "change rule runtime") }
     def action = args?.action ?: "rule"
 
     // start/stop route through the stopRule button click (a toggle on
@@ -28970,7 +29061,7 @@ def toolSetRulePaused(args) {
     else throw new IllegalArgumentException("paused must be boolean true/false (got: ${args.paused})")
     def idArg = _rmRuleIdListArg(args.ruleId)
     List<Integer> ruleIds = idArg.ids
-    ruleIds.each { _requireUnprotectedAppMutation(it, "change rule runtime") }
+    for (it in ruleIds) { _requireUnprotectedAppMutation(it, "change rule runtime") }
     def result = paused ? sendRmAction(ruleIds, "pauseRule", "hub_set_rule_paused")
                         : sendRmAction(ruleIds, "resumeRule", "hub_set_rule_paused")
     // idsVerified: true = every id existence-checked before dispatch; false = the
@@ -29011,7 +29102,7 @@ def toolSetRmRuleBoolean(args) {
     }
     def rmAction = resolved ? "setRuleBooleanTrue" : "setRuleBooleanFalse"
     def idArg = _rmRuleIdListArg(args.ruleId)
-    idArg.ids.each { _requireUnprotectedAppMutation(it, "set rule private boolean") }
+    for (it in idArg.ids) { _requireUnprotectedAppMutation(it, "set rule private boolean") }
     def result = sendRmAction(idArg.ids as List, rmAction, "hub_set_rule_private_boolean value=${resolved}")
     if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
     return result
@@ -29326,7 +29417,7 @@ private Map _collectLiveApps() {
         }
         (node?.children ?: []).each { walk(it) }
     }
-    parsed.apps.each { walk(it) }
+    for (it in parsed.apps) { walk(it) }
     if (!complete) mcpLog("warn", "rm-interop", "_collectLiveApps: /hub2/appsList contains malformed app nodes; absence cannot be established")
     return complete ? apps : null
 }
@@ -29545,11 +29636,11 @@ private void _rmReclassifyDeviceListSkips(Integer appId, List skipped) {
     try {
         def byName = (status?.appSettings ?: []).findAll { it instanceof Map && it.name != null }
             .collectEntries { [(it.name.toString()): it] }
-        candidates.each { sk ->
+        for (sk in candidates) {
             def entry = byName[(sk.key?.toString())]
-            if (!_rmStatusEntryIsDeviceList(entry)) return
+            if (!_rmStatusEntryIsDeviceList(entry)) continue
             def requested = ((sk.value as List).collect { it?.toString() }.findAll { it }) as Set
-            if (requested.isEmpty()) return
+            if (requested.isEmpty()) continue
             def committed = _rmStatusEntryDeviceIds(entry)
             if (committed.containsAll(requested)) {
                 sk.reason = "device_list_committed_schema_unchanged"
@@ -29571,9 +29662,9 @@ private void _rmReclassifyDeviceListSkips(Integer appId, List skipped) {
 // "addTrigger.deviceIds[2]"). Idempotent for List<null>/empty.
 private void _rmValidateDeviceIdsExist(String label, Object ids) {
     if (!(ids instanceof List)) return
-    ids.each { id ->
+    for (id in ids) {
         def idStr = id?.toString()
-        if (!idStr) return
+        if (!idStr) continue
         def exists
         try {
             def resp = hubInternalGet("/device/fullJson/${idStr}")
@@ -29712,7 +29803,7 @@ private void _rmValidateRuleTargetExists(String label, Object ids, Set validRule
     def idList = (ids instanceof List) ? ids : (ids != null ? [ids] : [])
     if (!idList) return
     // Shape checks need no rule list, so they run before the cannot-verify skip below.
-    idList.each { id ->
+    for (id in idList) {
         if (_rmIsThisRuleTarget(id)) {
             if (!_rmTargetAllowsThisRule(label)) throw new IllegalArgumentException(_rmThisRuleUnsupportedMessage(label))
         } else if (_rmCoerceRuleId(id) == null) {
@@ -29728,8 +29819,8 @@ private void _rmValidateRuleTargetExists(String label, Object ids, Set validRule
         mcpLog("warn", "rm-native", "_rmValidateRuleTargetExists: ${label} rule-target existence check skipped -- the RM rule list was unverifiable (RMUtils lookup or /hub2/appsList read failed); a bogus rule id could bake a broken reference")
         return
     }
-    idList.each { id ->
-        if (_rmIsThisRuleTarget(id)) return
+    for (id in idList) {
+        if (_rmIsThisRuleTarget(id)) continue
         def idInt = _rmCoerceRuleId(id)
         if (!liveIds.contains(idInt)) {
             throw new IllegalArgumentException("${label} target rule id '${id}' does not exist on the hub. Use hub_list_rules to find valid rule ids. RM is not touched.")
@@ -30229,7 +30320,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // and addTrigger using existing+1=1 errored with "tCapab1 not
         // present" until the schema-aware fix landed.
         def candidateIdxs = []
-        allCapInputs.each { inp ->
+        for (inp in allCapInputs) {
             def n = inp?.name?.toString()
             if (n) {
                 def m = (n =~ /^tCapab(\d+)$/)
@@ -30529,7 +30620,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             }
             def allModes = location.modes ?: []
             def validModeNames = allModes.collect { it?.name?.toString() }.findAll { it }
-            modeNames.each { mn ->
+            for (mn in modeNames) {
                 def matched = allModes.find { it?.name?.toString()?.equalsIgnoreCase(mn?.toString()) }
                 if (!matched) {
                     def commaHint = _rmCommaJoinedModeHint(mn, validModeNames, "addTrigger Mode")
@@ -30615,7 +30706,9 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // rawSettings expansion (verified live 2026-05-17): users pass
     // `xVar@N` and the helper writes `xVar1` (or whatever idx landed on).
     if (triggerSpec.rawSettings instanceof Map) {
-        triggerSpec.rawSettings.each { k, v ->
+        for (Map.Entry entry in triggerSpec.rawSettings) {
+            def k = entry.key
+            def v = entry.value
             def fieldName = k.toString().replace("@N", idx.toString())
             writeIfPresent(fieldName, v)
         }
@@ -30900,7 +30993,9 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         }
         // Caller escape hatch for periodic-page fields not yet mapped above.
         if (per.rawSettings instanceof Map) {
-            (per.rawSettings as Map).each { rk, rv ->
+            for (Map.Entry entry in (per.rawSettings as Map)) {
+                def rk = entry.key
+                def rv = entry.value
                 writePeriodic(rk.toString(), rv)
             }
         }
@@ -31098,7 +31193,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the trigger paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
         }
         def notRepresentable = genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_not_representable_for_enum_attribute" }
-        notRepresentable.each { sk ->
+        for (sk in notRepresentable) {
             repairHints << _rmNotRepresentableEnumComparatorHint(
                 (sk instanceof Map ? sk.attribute : null), (sk instanceof Map ? sk.value : null))
         }
@@ -32081,7 +32176,7 @@ private Map _rmActionSchemaForDiscover() {
 private List _rmCollectTriggerIndices(Integer appId) {
     def status = _rmFetchStatusJson(appId)
     def out = []
-    (status?.appSettings ?: []).each { s ->
+    for (s in (status?.appSettings ?: [])) {
         def n = s?.name?.toString()
         if (n) {
             def m = (n =~ /^tCapab(\d+)$/)
@@ -32101,7 +32196,7 @@ private List _rmCollectTriggerIndices(Integer appId) {
 private Map _rmCollectTriggerCapabilities(Integer appId) {
     def status = _rmFetchStatusJson(appId)
     def out = [:]
-    (status?.appSettings ?: []).each { s ->
+    for (s in (status?.appSettings ?: [])) {
         def n = s?.name?.toString()
         if (n) {
             def m = (n =~ /^tCapab(\d+)$/)
@@ -32126,7 +32221,7 @@ private Map _rmCollectTriggerCapabilities(Integer appId) {
 private List _rmActionIndicesFromSettings(Map status) {
     def out = []
     def seen = [] as Set
-    (status?.appSettings ?: []).each { s ->
+    for (s in (status?.appSettings ?: [])) {
         def n = s?.name?.toString()
         if (n) {
             def m = (n =~ /^act(?:Type|SubType)\.(\d+)$/)
@@ -32145,11 +32240,11 @@ private List _rmActionIndicesFromSettings(Map status) {
 // actionList never listed still occupies its index, and ignoring it leaves a permanent orphan.
 private List _rmLiveActionIndicesFromSettings(Map status) {
     def live = [:]
-    (status?.appSettings ?: []).each { s ->
+    for (s in (status?.appSettings ?: [])) {
         def n = s?.name?.toString()
-        if (!n) return
+        if (!n) continue
         def m = (n =~ /^act(?:Type|SubType)\.(\d+)$/)
-        if (!m.matches()) return
+        if (!m.matches()) continue
         def idx = (m[0][1] as Integer)
         if (s?.value?.toString()?.trim()) live.put(idx, true)
     }
@@ -32814,8 +32909,10 @@ private List _rmPatchOpKeys() {
 // Refuse the whole batch, before any op runs, when an item carries more than one operation.
 private void _rmRejectMultiOpPatchItems(List patchesList) {
     def opKeys = _rmPatchOpKeys()
-    patchesList.eachWithIndex { p, i ->
-        if (!(p instanceof Map)) return
+    int i = -1
+    for (p in patchesList) {
+        i++
+        if (!(p instanceof Map)) continue
         def ops = opKeys.findAll { (p as Map).containsKey(it) }
         if (ops.size() > 1) {
             throw new IllegalArgumentException("patches[${i}] carries ${ops.size()} operations (${ops.join(', ')}); each patches item takes exactly one -- split them into separate items, in the order they should run. RM is not touched.")
@@ -33268,7 +33365,9 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
     def status = _rmFetchStatusJson(appId)
     def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
-    schema.each { name, meta ->
+    for (Map.Entry entry in schema) {
+        def name = entry.key
+        def meta = entry.value
         def v = _uiValueOrDefault(liveSettings.get(name), meta)
         if (v == null) v = ""
         settingsMap.put(name, v)
@@ -33292,7 +33391,9 @@ private void _rmSubmitSubPageDone(Integer appId, String page, String parentPage,
     //   - bool: checkbox[X] = "on" (HTML checkbox marker, always sent)
     //   - time: hours[X], minutes[X], amPm[X] (empty defaults; the time
     //     value rides in settings[X] as "HH:mm")
-    schema.each { name, meta ->
+    for (Map.Entry entry in schema) {
+        def name = entry.key
+        def meta = entry.value
         def t = meta?.type?.toString()
         if (meta?.multiple != true) {
             body["${name}.multiple".toString()] = "false"
@@ -33389,7 +33490,9 @@ Map _rmSubmitMainPageDone(Integer appId) {
     }
     def liveSettings = _rmLiveSettingsFromStatus(status)
     def settingsMap = [:]
-    schema.each { name, meta ->
+    for (Map.Entry entry in schema) {
+        def name = entry.key
+        def meta = entry.value
         def v = _uiValueOrDefault(liveSettings.get(name), meta)
         if (v == null) v = ""
         settingsMap.put(name, v)
@@ -33405,7 +33508,9 @@ Map _rmSubmitMainPageDone(Integer appId) {
     body.currentPage = commitPage
     body._action_update = "Done"
     body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, commitPage, "[]")
-    schema.each { name, meta ->
+    for (Map.Entry entry in schema) {
+        def name = entry.key
+        def meta = entry.value
         def t = meta?.type?.toString()
         if (meta?.multiple != true) {
             body["${name}.multiple".toString()] = "false"
@@ -33613,14 +33718,14 @@ private String _rmCommaJoinedModeHint(Object rawName, Collection validNames, Str
 private List _rmResolveModeIds(Collection keys) {
     def hubModes = location?.modes ?: []
     def nameToId = [:]
-    hubModes.each { m -> if (m?.name && m?.id != null) nameToId.put(m.name.toString(), m.id.toString()) }
+    for (m in hubModes) { if (m?.name && m?.id != null) nameToId.put(m.name.toString(), m.id.toString()) }
     def out = []
-    keys.each { k ->
+    for (k in keys) {
         def s = k?.toString()
-        if (!s) return
-        if (s.isInteger()) { out << s; return }
+        if (!s) continue
+        if (s.isInteger()) { out << s; continue }
         def mapped = nameToId.get(s)
-        if (mapped) { out << mapped; return }
+        if (mapped) { out << mapped; continue }
         def commaHint = _rmCommaJoinedModeHint(s, nameToId.keySet(), "Mode")
         if (commaHint) throw new IllegalArgumentException(commaHint)
         throw new IllegalArgumentException("Unknown mode '${s}' -- must be an integer mode ID or one of: ${nameToId.keySet().sort().join(', ')}")
@@ -33638,7 +33743,7 @@ private Map _rmBadModeIds(List resolvedIds, Object pickerOptions) {
     if (pickerOptions instanceof Map) {
         pickerIds = (pickerOptions as Map).keySet().collect { it?.toString() }
     } else if (pickerOptions instanceof List) {
-        (pickerOptions as List).each { o ->
+        for (o in (pickerOptions as List)) {
             if (o instanceof Map) { if (o.id != null) pickerIds << o.id.toString() }
             else if (o != null) pickerIds << o.toString()
         }
@@ -33659,18 +33764,18 @@ private List _rmResolveModeNames(Collection keys) {
     def hubModes = location?.modes ?: []
     def idToName = [:]
     def nameSet = [] as Set
-    hubModes.each { m ->
+    for (m in hubModes) {
         if (m?.id != null && m?.name) {
             idToName.put(m.id.toString(), m.name.toString())
             nameSet << m.name.toString()
         }
     }
     def out = []
-    keys.each { k ->
+    for (k in keys) {
         def s = k?.toString()
-        if (!s) return
-        if (s.isInteger() && idToName.get(s)) { out << idToName.get(s); return }
-        if (nameSet.contains(s)) { out << s; return }
+        if (!s) continue
+        if (s.isInteger() && idToName.get(s)) { out << idToName.get(s); continue }
+        if (nameSet.contains(s)) { out << s; continue }
         def commaHint = _rmCommaJoinedModeHint(s, nameSet, "Mode")
         if (commaHint) throw new IllegalArgumentException(commaHint)
         throw new IllegalArgumentException("Unknown mode '${s}' -- must be an integer mode ID or one of: ${nameSet.sort().join(', ')}")
@@ -33857,7 +33962,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 }
                 def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
                 fields = ["switchM.@N": deviceIds, "switchModes.@N": modeIds]
-                modeIds.each { mid ->
+                for (mid in modeIds) {
                     def val = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
                     if (val != null) fields["switch${mid}.@N"] = val.toString()
                 }
@@ -33874,7 +33979,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 }
                 def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
                 fields = ["chooseModes.@N": modeIds]
-                modeIds.each { mid ->
+                for (mid in modeIds) {
                     def cfg = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
                     if (cfg instanceof Map) {
                         if (cfg.on != null) fields["chooseSwOn${mid}.@N"] = cfg.on
@@ -33960,7 +34065,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 }
                 def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
                 fields = ["dimM.@N": deviceIds, "dimmerModes.@N": modeIds]
-                modeIds.each { mid ->
+                for (mid in modeIds) {
                     def val = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
                     if (val != null) fields["level${mid}.@N"] = val
                 }
@@ -34007,7 +34112,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 }
                 def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
                 fields = ["bulbsM.@N": deviceIds, "colorModes.@N": modeIds]
-                modeIds.each { mid ->
+                for (mid in modeIds) {
                     def cfg = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
                     if (cfg instanceof Map) {
                         if (cfg.color != null) fields["color${mid}.@N"] = cfg.color
@@ -34067,7 +34172,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 }
                 def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
                 fields = ["ctM.@N": deviceIds, "ctModes.@N": modeIds]
-                modeIds.each { mid ->
+                for (mid in modeIds) {
                     def cfg = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
                     if (cfg instanceof Map) {
                         if (cfg.kelvin != null) fields["ctMode${mid}.@N"] = cfg.kelvin
@@ -34292,7 +34397,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             // Each operand is either a number (becomes a constant) or a String (a hub variable
             // name). Reject any other type (e.g. Boolean, Map, List) up-front with a precise
             // message rather than coercing it to a string and blaming a nonexistent variable.
-            [[role: "left", operand: mathLeft], [role: "right", operand: mathRight]].each { o ->
+            for (o in [[role: "left", operand: mathLeft], [role: "right", operand: mathRight]]) {
                 if (o.operand != null && !(o.operand instanceof Number) && !(o.operand instanceof CharSequence)) {
                     throw new IllegalArgumentException("${capLabel} math: ${o.role} operand must be a number or a hub variable name; got '${o.operand}'")
                 }
@@ -34333,7 +34438,9 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             if (localsRead?.ok) {
                 // statusJson answered (an empty map means the rule simply has no locals).
                 allVars = [:]
-                localsRead.vars.each { lvName, lvMeta ->
+                for (Map.Entry entry in localsRead.vars) {
+                    def lvName = entry.key
+                    def lvMeta = entry.value
                     allVars.put(lvName?.toString(), [type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null)])
                 }
             } else {
@@ -34417,7 +34524,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             // Math operands that are variable names (non-Number operands) must also exist.
             // A Number operand becomes a (constant) and needs no variable-list check.
             if (!isLocalVar && actionSpec.math != null) {
-                [[role: "left", operand: mathLeft], [role: "right", operand: mathRight]].each { o ->
+                for (o in [[role: "left", operand: mathLeft], [role: "right", operand: mathRight]]) {
                     if (o.operand != null && !(o.operand instanceof Number)) {
                         def opVar = o.operand.toString()
                         if (!allVarNames.any { it?.toString() == opVar }) {
@@ -34524,8 +34631,10 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             // Legacy scalar entries (bare String/Number) are passed through unchanged.
             // The actual per-parameter write is driven by the moreParams/P-discovery sequence
             // in the __runCommandExtraParams block after all base fields are written.
-            actionSpec.parameters.eachWithIndex { p, paramIdx ->
-                if (!(p instanceof Map)) return  // scalar (legacy) entries skip Map-level guards
+            int paramIdx = -1
+            for (p in actionSpec.parameters) {
+                paramIdx++
+                if (!(p instanceof Map)) continue  // scalar (legacy) entries skip Map-level guards
                 def pType = p.type
                 def pValue = p.value
                 def pVariable = p.variable
@@ -34622,7 +34731,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 }
                 def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
                 fields = ["pushMBtn.@N": deviceIds, "buttonModes.@N": modeIds]
-                modeIds.each { mid ->
+                for (mid in modeIds) {
                     def n = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
                     if (n != null) fields["button${mid}.@N"] = n
                 }
@@ -34639,7 +34748,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 if (actionSpec.buttonNumber == null) throw new IllegalArgumentException("button.choosePerMode requires 'buttonNumber'")
                 def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
                 fields = ["chooseButtonModes.@N": modeIds, "chooseButtonNum.@N": actionSpec.buttonNumber]
-                modeIds.each { mid ->
+                for (mid in modeIds) {
                     def devs = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
                     if (devs != null) fields["chooseButton${mid}.@N"] = devs
                 }
@@ -34789,7 +34898,9 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
         def modeNames = _rmResolveModeNames(actionSpec.perMode.keySet())
         fields = ["delayModes.@N": modeIds]
-        modeNames.eachWithIndex { mname, i ->
+        int i = -1
+        for (mname in modeNames) {
+            i++
             def cfg = actionSpec.perMode.find { _rmModeIdMatches(it.key, modeIds[i]) }?.value
             if (cfg instanceof Map) {
                 if (cfg.hours != null)   fields["delayHour${mname}.@N"]   = cfg.hours
@@ -34929,7 +35040,9 @@ private void _rmValidateActionExpressionShape(String cap, Map exprSpec) {
     if (conditions.size() > 1 && !exprSpec.operator?.toString() && !(exprSpec.operators instanceof List)) {
         throw new IllegalArgumentException("${cap}.expression with ${conditions.size()} conditions requires operator (AND/OR/XOR) or operators list")
     }
-    conditions.eachWithIndex { c, i ->
+    int i = -1
+    for (c in conditions) {
+        i++
         if (!(c instanceof Map)) throw new IllegalArgumentException("${cap}.expression.conditions[${i}] is not a Map")
         // A nested subExpression is refused by _rmPrevalidateActionSpec with its own steer.
         if ((c as Map).subExpression == null && !(c as Map).capability?.toString()?.trim()) {
@@ -34987,7 +35100,9 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
         _rmValidateRuleTargetExists(cap, actionSpec.ruleIds ?: actionSpec.deviceIds, validRuleIds)
     }
     if (actionSpec.events instanceof List) {
-        (actionSpec.events as List).eachWithIndex { ev, evIdx ->
+        int evIdx = -1
+        for (ev in (actionSpec.events as List)) {
+            evIdx++
             if (ev instanceof Map) {
                 _rmValidateDeviceIdsExist("addAction.events[${evIdx}].deviceIds", (ev as Map).deviceIds)
             }
@@ -35004,7 +35119,9 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
             // stays untouched. _rmAddRequiredExpression
             // supports nested subExpression today; _rmAddAction's doActPage walker
             // is flat-only.
-            exprConds.eachWithIndex { entry, idx ->
+            int idx = -1
+            for (entry in exprConds) {
+                idx++
                 if (entry instanceof Map && (entry as Map).subExpression != null) {
                     throw new IllegalArgumentException("addAction.expression.conditions[${idx}]: nested subExpression is not yet supported on this action type. Either flatten the condition list, or move the nested expression into a Required Expression (addRequiredExpression supports nesting).")
                 }
@@ -35015,14 +35132,16 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
             // and would silently skip a singular deviceId.
             // Flat-only normalization; subExpression is rejected at the pre-pass above --
             // if that gate is ever relaxed, restore a recursive walk-in here.
-            exprConds.each { entry ->
-                if (!(entry instanceof Map)) return
+            for (entry in exprConds) {
+                if (!(entry instanceof Map)) continue
                 def em = entry as Map
                 if (em.deviceIds == null && em.deviceId != null) {
                     em.deviceIds = [em.deviceId]
                 }
             }
-            exprConds.eachWithIndex { c, cIdx ->
+            int cIdx = -1
+            for (c in exprConds) {
+                cIdx++
                 if (c instanceof Map) {
                     _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].deviceIds", (c as Map).deviceIds)
                     // compareToDevice reference device: existence-validated up front, before
@@ -35040,12 +35159,14 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
 // The argument checks _rmAddTrigger runs before it opens the trigger editor, applied to a whole
 // list so a create can refuse a bad trigger before the rule exists. Device ids are read-only lookups.
 private void _rmPrevalidateTriggerSpecList(List specs, String label) {
-    specs.eachWithIndex { spec, i ->
+    int i = -1
+    for (spec in specs) {
+        i++
         if (!(spec instanceof Map)) {
             throw new IllegalArgumentException("${label}[${i}] must be a trigger spec object, got '${spec}'. RM is not touched.")
         }
         def sm = spec as Map
-        if (sm.discover == true) return
+        if (sm.discover == true) continue
         try {
             _rmValidateRoundZeroTriggerSpec(sm)
             if (!sm.capability?.toString()?.trim()) {
@@ -35068,12 +35189,14 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
 // Structural balance is checked separately; checks that need the rule's own state (one waitEvents
 // action per rule, a fileDelete/fileAppend file list, the disabled-app gate) stay in the add.
 private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null) {
-    specs.eachWithIndex { spec, i ->
+    int i = -1
+    for (spec in specs) {
+        i++
         if (!(spec instanceof Map)) {
             throw new IllegalArgumentException("${label}[${i}] must be an action spec object, got '${spec}'. RM is not touched.")
         }
         def sm = spec as Map
-        if (sm.discover == true) return
+        if (sm.discover == true) continue
         def cap = sm.capability?.toString()?.trim()
         if (!cap) throw new IllegalArgumentException("${label}[${i}].capability is required. RM is not touched.")
         try {
@@ -35336,7 +35459,9 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         }
         // Type-specific fields. The @N placeholder in keys is substituted with
         // the action index here.
-        fields.each { rawKey, value ->
+        for (Map.Entry entry in fields) {
+            def rawKey = entry.key
+            def value = entry.value
             if (value != null) {
                 def fieldName = rawKey.toString().replace("@N", idx.toString())
                 _rmWriteSettingOnPage(appId, "doActPage", fieldName, value, applied, null, skipped)
@@ -35597,7 +35722,9 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         _rmWriteSetVariableSourceModes(appId, idx, actionSpec, applied, skipped)
         // Caller escape hatch.
         if (actionSpec.rawSettings instanceof Map) {
-            actionSpec.rawSettings.each { k, v ->
+            for (Map.Entry entry in actionSpec.rawSettings) {
+                def k = entry.key
+                def v = entry.value
                 if (v != null) {
                     def fieldName = k.toString().replace("@N", idx.toString())
                     _rmWriteSettingOnPage(appId, "doActPage", fieldName, v, applied, null, skipped)
@@ -35759,7 +35886,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
             repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the action paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
         }
-        genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_not_representable_for_enum_attribute" }.each { sk ->
+        for (sk in genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_not_representable_for_enum_attribute" }) {
             repairHints << _rmNotRepresentableEnumComparatorHint(
                 (sk instanceof Map ? sk.attribute : null), (sk instanceof Map ? sk.value : null))
         }
@@ -35775,7 +35902,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // work needed" -- avoiding the false success=false when the row exists but
     // is incomplete.
     def uniqueApplied = []
-    applied.each { key -> if (!uniqueApplied.contains(key)) uniqueApplied << key }
+    for (key in applied) { if (!uniqueApplied.contains(key)) uniqueApplied << key }
     return [
         success: !err && !applied.isEmpty(),
         partial: partial,
@@ -35912,7 +36039,7 @@ private void _rmRejectUnwalkableExpressionConditions(Map actionSpec) {
     if (!(actionSpec?.expression instanceof Map)) return
     def conds = (actionSpec.expression as Map).conditions
     if (!(conds instanceof List)) return
-    (conds as List).each { c ->
+    for (c in (conds as List)) {
         if (c instanceof Map) _rmRejectUnwalkableConditionCapability((c as Map).capability?.toString()?.trim())
     }
 }
@@ -36113,7 +36240,9 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
     // replaced with the condition index. Mirrors trigger-side @N
     // expansion so {xVar_@N: 'foo'} writes xVar_<idx>=foo.
     if (condSpec.rawSettings instanceof Map) {
-        condSpec.rawSettings.each { k, v ->
+        for (Map.Entry entry in condSpec.rawSettings) {
+            def k = entry.key
+            def v = entry.value
             if (v != null) {
                 def fieldName = k.toString().replace("@N", idx.toString())
                 _rmWriteSettingOnPage(appId, "selectTriggers", fieldName, v, applied, null, skipped)
@@ -36252,8 +36381,10 @@ private void _rmForceWriteEnumField(Integer appId, String pageName, String key, 
 // before any clearActions click.
 private List _rmStructuralSequenceFromSpecList(List specList) {
     def out = []
-    specList.eachWithIndex { spec, i ->
-        if (!(spec instanceof Map)) return
+    int i = -1
+    for (spec in specList) {
+        i++
+        if (!(spec instanceof Map)) continue
         def pair = _rmStructuralPairForCapability(((spec as Map).capability)?.toString())
         if (pair) out << [idx: (i + 1), actType: pair[0], actSubType: pair[1]]
     }
@@ -36399,7 +36530,7 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
                 // Enum options can be list of strings or list of single-key maps.
                 // Surface as a flat list of {value, label} pairs for clarity.
                 def opts = []
-                (i.options as List).each { o ->
+                for (o in (i.options as List)) {
                     if (o instanceof Map && !o.isEmpty()) {
                         def k = o.keySet().iterator().next()
                         opts << [value: k.toString(), label: o.get(k)?.toString()]
@@ -36645,7 +36776,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
             body.formAction = "update"
             body.currentPage = page
             body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, page, '["mainPage"]')
-            hrefContextMarkers.each { k, v -> body.put(k, v) }
+            for (Map.Entry entry in hrefContextMarkers) { def k = entry.key; def v = entry.value; body.put(k, v) }
             try {
                 def cfg = _rmFetchConfigJson(appId, hrefContext.fromPage?.toString() ?: page)
                 if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
@@ -37046,7 +37177,9 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
     // never after steps 1..N-1 have already mutated the rule. (Runtime errors that surface
     // only on execution are handled per-step inside the loop, where the partial trace of
     // the steps that already committed is preserved.)
-    steps.eachWithIndex { rawStep, i ->
+    int i = -1
+    for (rawStep in steps) {
+        i++
         if (!(rawStep instanceof Map)) {
             throw new IllegalArgumentException("walkStep.drive step ${i + 1} must be an object {operation, ...}")
         }
@@ -37256,7 +37389,9 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
     // enumerated from the page schema; each takes its value from currentSettings.
     def fullMap = [:]
     def blankedInputs = []
-    schema?.each { name, meta ->
+    for (Map.Entry entry in schema) {
+        def name = entry.key
+        def meta = entry.value
         if (currentSettings?.containsKey(name)) {
             fullMap.put(name, currentSettings.get(name))
         } else if (meta?.type == 'button') {
@@ -37279,7 +37414,7 @@ private Map _rmSubmitFullPageForm(Integer appId, String pageName, Map cfg, Map s
             fullMap.put(name, "")
         }
     }
-    extraSettings?.each { k, v -> fullMap.put(k, v) }
+    for (Map.Entry entry in extraSettings) { def k = entry.key; def v = entry.value; fullMap.put(k, v) }
 
     def body = _rmBuildSettingsBody(appId, fullMap, schema)
 
@@ -37493,7 +37628,7 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
     // The hub's appType record carries the app type's OAuth client credentials and passwords
     // (populated for Rule-5.1); restore never reads them, so they stay out of File Manager.
     if (config?.app?.appType instanceof Map) {
-        ["oauthClientId", "oauthClientSecret", "encryptedPassword", "sourcePassword"].each { config.app.appType.remove(it) }
+        for (it in ["oauthClientId", "oauthClientSecret", "encryptedPassword", "sourcePassword"]) { config.app.appType.remove(it) }
     }
 
     def snapshot = [
@@ -37797,7 +37932,7 @@ Map _setRuleFromEnvelope(Map env) {
             throw new IllegalArgumentException("hub_set_rule operation='create' accepts only ${allowed.join(', ')} in args; ${extraneous.sort().join(', ')} require an existing rule -- create first, then call that operation with the returned appId.")
         }
         def legacyCreate = [confirm: true]
-        allowed.each { k -> if ((payload as Map).containsKey(k)) legacyCreate.put(k, payload.get(k)) }
+        for (k in allowed) { if ((payload as Map).containsKey(k)) legacyCreate.put(k, payload.get(k)) }
         return [args: legacyCreate]
     }
     def legacy = [:]
@@ -37841,7 +37976,7 @@ Map _setRuleOperationSchema(String op) {
     def argsSchema
     if (op == 'create') {
         argsSchema = [:]
-        (['name'] + _setRuleCreateHonored()).each { k -> if (props.get(k) != null) argsSchema.put(k, props.get(k)) }
+        for (k in (['name'] + _setRuleCreateHonored())) { if (props.get(k) != null) argsSchema.put(k, props.get(k)) }
     } else {
         argsSchema = props.get(op)   // the bare value/shape args must match
     }
@@ -37911,12 +38046,12 @@ def toolSetRule(args) {
         // and silently creates an empty shell -- the exact silent-success this gate
         // prevents, just for the wrong type.
         if (args instanceof Map) {
-            ['addTrigger', 'addAction', 'addRequiredExpression'].each { k ->
+            for (k in ['addTrigger', 'addAction', 'addRequiredExpression']) {
                 if (args.containsKey(k) && args[k] != null && !(args[k] instanceof Map)) {
                     throw new IllegalArgumentException("hub_set_rule create: '${k}' must be an object (a single spec, e.g. {capability: ...}); it was a non-object that would be silently dropped. Use the plural '${k}s' for a list of specs.")
                 }
             }
-            ['addTriggers', 'addActions'].each { k ->
+            for (k in ['addTriggers', 'addActions']) {
                 if (args.containsKey(k) && args[k] != null && !(args[k] instanceof List)) {
                     throw new IllegalArgumentException("hub_set_rule create: '${k}' must be an array of spec objects; it was a non-array that would be silently dropped. Use the singular '${k.replaceAll(/s$/, '')}' for a single spec.")
                 }
@@ -38476,7 +38611,7 @@ private Map _rmReadLocalVarsMap(Integer appId) {
     def raw = (appState ?: []).find { it?.name?.toString() == "allLocalVars" }?.value
     // A running rule updates lv_<name>; allLocalVars only catches up when the rule's page renders.
     def live = [:]
-    (appState ?: []).each { e ->
+    for (e in (appState ?: [])) {
         def n = e?.name?.toString()
         // Local names can be sandbox property names such as fields; use Map.put for arbitrary keys.
         if (n?.startsWith("lv_") && e.value instanceof Map) live.put(n.substring(3), e.value)
@@ -39191,7 +39326,9 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
         if (baseN == null) {
             throw new IllegalStateException("waitEvents: no tCapab-<N> event-capability slot appeared in doActPage schema after the getWaitEvents subtype write for app ${appId} action ${idx}; the wizard did not expose the first event-capability field.")
         }
-        events.eachWithIndex { evRaw, evIdx ->
+        int evIdx = -1
+        for (evRaw in events) {
+            evIdx++
             if (!(evRaw instanceof Map)) {
                 throw new IllegalArgumentException("waitEvents.events[${evIdx}] is not a Map")
             }
@@ -39297,7 +39434,7 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
                 if (modeOptions instanceof Map) {
                     pickerIds = (modeOptions as Map).keySet().collect { it?.toString() }
                 } else if (modeOptions instanceof List) {
-                    (modeOptions as List).each { o ->
+                    for (o in (modeOptions as List)) {
                         if (o instanceof Map) { if (o.id != null) pickerIds << o.id.toString() }
                         else if (o != null) pickerIds << o.toString()
                     }
@@ -39425,7 +39562,9 @@ private void _rmWriteRunCommandParams(Integer appId, Integer idx, Map actionSpec
     //   Persisted result for a variable param: cpType<P>.N=type, uVar<P>.N="true",
     //   xVar<P>.N=varName -- renders "setLevel(<varName>) on <device>".
     if (actionSpec.__runCommandExtraParams instanceof List && !actionSpec.__runCommandExtraParams.isEmpty()) {
-        actionSpec.__runCommandExtraParams.eachWithIndex { p, paramIdx ->
+        int paramIdx = -1
+        for (p in actionSpec.__runCommandExtraParams) {
+            paramIdx++
             def pType, pValue, pVariable
             if (p instanceof Map) {
                 pType = p.type
@@ -39455,7 +39594,7 @@ private void _rmWriteRunCommandParams(Integer appId, Integer idx, Map actionSpec
                 mcpLog("warn", "rm-native", "runCommand[${actionSpec.command}]: moreParams click did not reveal a new cpType<P> field for action ${idx} param ${paramIdx + 1}; param skipped")
                 // Add a sentinel so skipped is non-empty, which drives partial=true at result assembly.
                 skipped << [key: "param${paramIdx + 1}", reason: "moreParams_no_reveal"]
-                return
+                continue
             }
             // Extract the cpType<P> base name (e.g. "cpType2" from "cpType2.1").
             def cpTypeBase = newCpTypeField.toString().replaceAll("\\.\\d+\$", "")
@@ -39988,7 +40127,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             // A comma-joined single string is a common mistake -- steer to the list shape with
             // this surface's own context before the shared resolver throws its generic form.
             def hubModeNames = (location?.modes ?: []).collect { it?.name }.findAll { it }
-            names.each { nm ->
+            for (nm in names) {
                 def commaHint = _rmCommaJoinedModeHint(nm, hubModeNames, "conditions[${condIdx}]")
                 if (commaHint) { cancelInFlightCond(); throw new IllegalArgumentException(commaHint) }
             }
@@ -40023,7 +40162,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             writeST(hrefParams, "not${cIdx}".toString(), true)
         }
         if (cond.rawSettings instanceof Map) {
-            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+            for (Map.Entry entry in (cond.rawSettings as Map)) { def rk = entry.key; def rv = entry.value; writeST(hrefParams, rk.toString(), rv) }
         }
         _rmClickAppButton(appId, "hasAll", null, page, cache)
         return
@@ -40168,7 +40307,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             writeST(hrefParams, "not${cIdx}".toString(), true)
         }
         if (cond.rawSettings instanceof Map) {
-            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+            for (Map.Entry entry in (cond.rawSettings as Map)) { def rk = entry.key; def rv = entry.value; writeST(hrefParams, rk.toString(), rv) }
         }
         _rmClickAppButton(appId, "hasAll", null, page, cache)
         return
@@ -40293,7 +40432,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                 writeST(hrefParams, "not${cIdx}".toString(), true)
             }
             if (cond.rawSettings instanceof Map) {
-                (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+                for (Map.Entry entry in (cond.rawSettings as Map)) { def rk = entry.key; def rv = entry.value; writeST(hrefParams, rk.toString(), rv) }
             }
             _rmClickAppButton(appId, "hasAll", null, page, cache)
             return
@@ -40357,7 +40496,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                 writeST(hrefParams, "not${cIdx}".toString(), true)
             }
             if (cond.rawSettings instanceof Map) {
-                (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+                for (Map.Entry entry in (cond.rawSettings as Map)) { def rk = entry.key; def rv = entry.value; writeST(hrefParams, rk.toString(), rv) }
             }
             _rmClickAppButton(appId, "hasAll", null, page, cache)
             return
@@ -40395,7 +40534,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             writeST(hrefParams, "not${cIdx}".toString(), true)
         }
         if (cond.rawSettings instanceof Map) {
-            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+            for (Map.Entry entry in (cond.rawSettings as Map)) { def rk = entry.key; def rv = entry.value; writeST(hrefParams, rk.toString(), rv) }
         }
         _rmClickAppButton(appId, "hasAll", null, page, cache)
         return
@@ -40479,7 +40618,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                     writeST(hrefParams, "not${cIdx}".toString(), true)
                 }
                 if (cond.rawSettings instanceof Map) {
-                    (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+                    for (Map.Entry entry in (cond.rawSettings as Map)) { def rk = entry.key; def rv = entry.value; writeST(hrefParams, rk.toString(), rv) }
                 }
                 _rmClickAppButton(appId, "hasAll", null, page, cache)
                 return
@@ -40562,7 +40701,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             writeST(hrefParams, "not${cIdx}".toString(), true)
         }
         if (cond.rawSettings instanceof Map) {
-            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+            for (Map.Entry entry in (cond.rawSettings as Map)) { def rk = entry.key; def rv = entry.value; writeST(hrefParams, rk.toString(), rv) }
         }
         _rmClickAppButton(appId, "hasAll", null, page, cache)
         return
@@ -40745,7 +40884,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             writeST(hrefParams, "not${cIdx}".toString(), true)
         }
         if (cond.rawSettings instanceof Map) {
-            (cond.rawSettings as Map).each { rk, rv -> writeST(hrefParams, rk.toString(), rv) }
+            for (Map.Entry entry in (cond.rawSettings as Map)) { def rk = entry.key; def rv = entry.value; writeST(hrefParams, rk.toString(), rv) }
         }
         _rmClickAppButton(appId, "hasAll", null, page, cache)
         return
@@ -40902,7 +41041,9 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         writeST(hrefParams, "not${cIdx}".toString(), true)
     }
     if (cond.rawSettings instanceof Map) {
-        (cond.rawSettings as Map).each { rk, rv ->
+        for (Map.Entry entry in (cond.rawSettings as Map)) {
+            def rk = entry.key
+            def rv = entry.value
             writeST(hrefParams, rk.toString(), rv)
         }
     }
@@ -41616,7 +41757,7 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec) {
             def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
             reRepairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the expression paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
         }
-        degEntries.findAll { it.reason == "comparator_not_representable_for_enum_attribute" }.each { sk ->
+        for (sk in degEntries.findAll { it.reason == "comparator_not_representable_for_enum_attribute" }) {
             reRepairHints << _rmNotRepresentableEnumComparatorHint(
                 (sk instanceof Map ? sk.attribute : null), (sk instanceof Map ? sk.value : null))
         }
@@ -41671,7 +41812,9 @@ private List _rmHealthRegressionNewIssues(Map baselineHealth, Map nowHealth) {
     def newIssues = ((nowIssues - baselineIssues) + (nowStructural - baselineStructural)).collect { it.toString() }
     def baselineMarkerCounts = (baselineHealth?.brokenMarkerCounts instanceof Map) ? (baselineHealth.brokenMarkerCounts as Map) : [:]
     def nowMarkerCounts = (nowHealth?.brokenMarkerCounts instanceof Map) ? (nowHealth.brokenMarkerCounts as Map) : [:]
-    nowMarkerCounts.each { marker, cnt ->
+    for (Map.Entry entry in nowMarkerCounts) {
+        def marker = entry.key
+        def cnt = entry.value
         def baseCnt = (baselineMarkerCounts.get(marker) ?: 0) as Integer
         if ((cnt as Integer) > baseCnt) newIssues << "${marker} (${cnt} vs ${baseCnt})".toString()
     }
@@ -41946,7 +42089,7 @@ List _rmDeleteExpressionConditions(Integer appId, Collection ids) {
     } catch (Exception navExc) {
         mcpLog("warn", "rm-native", "Required Expression edit: opening Manage Conditions on app ${appId} failed (${navExc.message})")
     }
-    ids.each { id ->
+    for (id in ids) {
         try {
             _rmClickAppButton(appId, id.toString(), "deleteCon", "selectConditions", null)
             _rmFetchConfigJson(appId, "selectConditions")
@@ -41981,7 +42124,8 @@ private Map _rmTokSetExpression(Integer appId, List target) {
         }
         // The target goes in front first and only the tokens after it are deleted, so the expression
         // is never empty if a click fails part way.
-        target.eachWithIndex { tok, i -> _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) }
+        int i = -1
+        for (tok in target) { i++; _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) }
         for (int guard = 0; guard < 60; guard++) {
             def live = _rmReadExpressionTokens(appId)
             if (live == null) throw new IllegalStateException("the rule's expression state could not be read")
@@ -42044,7 +42188,7 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
     def appState = snapshot?.statusJson?.appState
     if (!(appState instanceof List)) return [:]
     def snap = [:]
-    appState.each { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
+    for (it in appState) { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
     if (!["capabstrue", "capabsfalse", "actionList"].any { snap.containsKey(it) }) return [:]
     def trigs = { Map st -> (st?.capabstrue instanceof Map) ? (st.capabstrue as Map).keySet().collect { it.toString() } : [] }
     def conds = { Map st -> (st?.capabsfalse instanceof Map) ? (st.capabsfalse as Map).keySet().collect { it.toString() } : [] }
@@ -42054,7 +42198,7 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
 
     def removed = [triggers: [], actions: [], conditions: []]
     def failures = []
-    (trigs(live) - trigs(snap)).each { idx ->
+    for (idx in (trigs(live) - trigs(snap))) {
         try { _rmRemoveTrigger(appId, idx as Integer); removed.triggers << idx }
         catch (Exception e) { failures << "trigger ${idx} (${e.message})".toString() }
     }
@@ -42079,7 +42223,7 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
         }
     }
     boolean actionDeleteFailed = false
-    extraActs.reverse().each { idx ->
+    for (idx in extraActs.reverse()) {
         try { _rmDeleteAction(appId, idx as Integer, setBalanced); removed.actions << idx }
         catch (Exception e) { failures << "action ${idx} (${e.message})".toString(); actionDeleteFailed = true }
     }
@@ -42277,7 +42421,7 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
     def appState = snapshot?.statusJson?.appState
     if (!(appState instanceof List)) return [:]
     def snapState = [:]
-    appState.each { if (it instanceof Map && it.name != null) snapState.put(it.name.toString(), it.value) }
+    for (it in appState) { if (it instanceof Map && it.name != null) snapState.put(it.name.toString(), it.value) }
     def snapSettings = (snapshot?.configJson?.settings ?: [:]) as Map
     if (!snapState.containsKey("eval") && !snapSettings.containsKey("useST")) return [:]
     def snapTokens = (snapState.eval instanceof Map && (snapState.eval as Map)["0"] instanceof List) ? new ArrayList((snapState.eval as Map)["0"] as List) : []
@@ -42357,9 +42501,10 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
             // append. With an old expression present, everything appends after it.
             def prefix = liveCommitted ? [] : (firstCond > 0 ? snapTokens[0..<firstCond] : [])
             def rest = liveCommitted ? snapTokens : snapTokens.subList(firstCond + 1, snapTokens.size())
-            prefix.eachWithIndex { tok, i -> _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) }
+            int i = -1
+            for (tok in prefix) { i++; _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) }
             int position = oldCount + builtCount + prefix.size()
-            rest.each { tok ->
+            for (tok in rest) {
                 def v = _rmTokenValue(tok)
                 if (v?.isInteger()) {
                     _rmTokInsert(appId, position, "*", writeST, hrefParams, cache)
@@ -42378,7 +42523,7 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
             if (appendedRendered != snapRendered) {
                 throw new IllegalStateException("the rebuilt expression reads '${appendedRendered.join(' ')}', not the snapshot's '${snapRendered.join(' ')}'")
             }
-            oldCount.times { _rmTokClick(appId, "0", "deleteToken", cache) }
+            for (int j = 0; j < oldCount; j++) { _rmTokClick(appId, "0", "deleteToken", cache) }
             _rmTokLeaveEditor(appId, cache)
             _rmClickAppButton(appId, "updateRule")
         }
@@ -42453,7 +42598,9 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
 // for each condition and [tok: String] for every operator and paren. Validates sub-expression operators.
 private List _rmRequiredExpressionTokenPlan(List conditions, String operator, List opsList, String path = "conditions") {
     def plan = []
-    conditions.eachWithIndex { c, i ->
+    int i = -1
+    for (c in conditions) {
+        i++
         if (i > 0) plan << [tok: (opsList ? opsList[i - 1] : operator)?.toString()]
         def cond = c as Map
         if (cond.subExpression instanceof Map) {
@@ -42493,7 +42640,7 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Map backup
     // Validate the whole spec and derive the token plan before any click.
     def validated = _rmValidateRequiredExpressionSpec(exprSpec, "replaceRequiredExpression")
     def plan = _rmRequiredExpressionTokenPlan(exprSpec.conditions as List, validated.operator as String, validated.opsList as List)
-    plan.each { item ->
+    for (item in plan) {
         if (item.cond != null) {
             def cap = (item.cond as Map).capability?.toString()?.trim()
             if (!cap) throw new IllegalArgumentException("replaceRequiredExpression: every condition needs a capability")
@@ -42614,12 +42761,12 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Map backup
     def newTokens = []
     int position = origTokens.size()
     try {
-        plan.each { item ->
+        for (item in plan) {
             if (item.tok != null) {
                 _rmTokInsert(appId, position, item.tok as String, writeST, hrefParams, rmCache)
                 newTokens << item.tok
                 position++
-                return
+                continue
             }
             _rmTokInsert(appId, position, "*", writeST, hrefParams, rmCache)
             // Read the opened condition form from a fresh render, not the write's echo.
@@ -43035,7 +43182,9 @@ def _applyNativeAppEdit(args) {
 
     if (settingsMap) {
         def devKeyPattern = ~/^([tr]Dev[_-]?\d+|switch[A-Z]\w*|onOffSwitch\.\d+|lockLockUnlock\.\d+|shadeOpenClose\.\d+|fanRL\.\d+|tDev-\d+|deviceList|dimmerLevel\.\d+|ButtontDev_?\d+|pushButton\d+)$/
-        settingsMap.each { k, v ->
+        for (Map.Entry entry in settingsMap) {
+            def k = entry.key
+            def v = entry.value
             if (v instanceof List && k?.toString()?.matches(devKeyPattern)) {
                 _rmValidateDeviceIdsExist("settings.${k}", v)
             } else if (v instanceof Map && k?.toString()?.matches(devKeyPattern)) {
@@ -43408,9 +43557,11 @@ def _applyNativeAppEdit(args) {
                 }
             }
             if (replaceActionsList != null) {
-                replaceActionsList.eachWithIndex { spec, i ->
+                int i = -1
+                for (spec in replaceActionsList) {
+                    i++
                     // Fail closed: the first failed or partial item stops every later add and finalisation.
-                    if (replaceStopAfter) { addedResults << _rmBulkNotAttempted(replaceStopAfter); return }
+                    if (replaceStopAfter) { addedResults << _rmBulkNotAttempted(replaceStopAfter); continue }
                     try { addedResults << _rmAddAction(appId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, replaceValidRuleIds) }
                     catch (Exception ae) {
                         addedResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
@@ -44236,10 +44387,10 @@ def _applyNativeAppEdit(args) {
             // over-restore, and updateRuleFailed still covers the real deferred risk.
             def soleOpBatch = (deferredReReplaces.size() == 1 && patchResults.size() == 1)
             def anyRestored = false
-            deferredReReplaces.each { ctx ->
+            for (ctx in deferredReReplaces) {
                 def healthRegressed = soleOpBatch &&
                     _rmHealthRegressedVsBaseline(ctx.baselineHealth instanceof Map ? (ctx.baselineHealth as Map) : null, health)
-                if (!(updateRuleFailed || healthRegressed)) return
+                if (!(updateRuleFailed || healthRegressed)) continue
                 def why = updateRuleFailed ?
                     "the batch-end updateRule click was rejected, so the replaced Required Expression is not live" :
                     "the replacement introduced new rule-health problems that were not present before"
@@ -44575,7 +44726,9 @@ def _applyNativeAppEdit(args) {
             // the unknown set loudly so the caller sees what was skipped.
             def knownSettings = [:]
             def unknownSettings = []
-            settingsMap.each { k, v ->
+            for (Map.Entry entry in settingsMap) {
+                def k = entry.key
+                def v = entry.value
                 if (schema?.containsKey(k.toString())) {
                     knownSettings.put(k, v)
                 } else {
@@ -44588,7 +44741,9 @@ def _applyNativeAppEdit(args) {
             if (knownSettings && isSubPageWrite) {
                 // Write sub-page keys one at a time with page context and verify each landed, including
                 // the sticky multiple flag; settingsApplied lists only confirmed keys.
-                knownSettings.each { k, v ->
+                for (Map.Entry entry in knownSettings) {
+                    def k = entry.key
+                    def v = entry.value
                     _rmWriteSettingOnPage(appId, pageName, k.toString(), v, subPageApplied, null, subPageSkipped)
                     _rmVerifySubPageMultipleFlags(appId, pageName, [(k.toString()): v], schema)
                 }
@@ -44912,7 +45067,9 @@ def toolListRuleLocalVariables(args) {
         throw new IllegalStateException("hub_list_rule_local_variables: could not read rule ${appId} status (${lvRead.error}).")
     }
     def localVariables = []
-    lvRead.vars.each { lvName, lvMeta ->
+    for (Map.Entry entry in lvRead.vars) {
+        def lvName = entry.key
+        def lvMeta = entry.value
         def live = lvRead.live?.get(lvName?.toString())
         localVariables << [
             name: lvName?.toString(),
@@ -45083,7 +45240,7 @@ def mainPage() {
             paragraph "<b>${ruleCount}</b> rules total, <b>${enabledCount}</b> enabled"
 
             if (childApps && childApps.size() > 0) {
-                childApps.each { childApp ->
+                for (childApp in childApps) {
                     def ruleName = childApp.getSetting("ruleName") ?: "Unnamed Rule"
                     def isEnabled = childApp.getSetting("ruleEnabled") ?: false
                     def statusIcon = isEnabled ? "✓" : "○"
@@ -45479,7 +45636,7 @@ def uninstalled() {
     // anymore. Diff against our tracked set (NOT removeAllInUseGlobalVar) so we
     // only clear registrations this app made. Idempotent, mirrors the
     // _refreshHubVarInUseRegistrations try/catch pattern.
-    ((atomicState.inUseHubVars ?: []) as List).each { name ->
+    for (name in ((atomicState.inUseHubVars ?: []) as List)) {
         try { removeInUseGlobalVar(name) } catch (Exception e) { /* idempotent */ }
     }
     atomicState.remove('inUseHubVars')
@@ -45537,7 +45694,9 @@ private Map _protectedAppChoices() {
     def selected = _protectedAppIds()
     def options = [:]
     def apps = _collectLiveApps()
-    (apps ?: [:]).each { id, details ->
+    for (Map.Entry entry in (apps ?: [:])) {
+        def id = entry.key
+        def details = entry.value
         String key = _protectedAppId(id)
         if (key) {
             String label = stripAppConfigHtml(details.name) ?: 'Installed app'
@@ -45546,7 +45705,7 @@ private Map _protectedAppChoices() {
     }
     String selfId = _protectedAppId(app?.id)
     if (selfId && !options.containsKey(selfId)) options.put(selfId, "${app?.label ?: 'MCP Rule Server'} (ID ${selfId})".toString())
-    selected.each { id ->
+    for (id in selected) {
         if (!options.containsKey(id)) options.put(id, "Unavailable app (ID ${id})".toString())
     }
     return [options: options.sort { a, b -> a.value.toString().compareToIgnoreCase(b.value.toString()) },
@@ -45600,7 +45759,7 @@ private boolean _requireUnprotectedAppDeletion(Integer appId, boolean allowMissi
         if (affected && id != null) _requireUnprotectedAppMutation(id, "delete through parent app ${appId}", protectedIds)
         (node.children ?: []).each { walk(it, affected) }
     }
-    parsed.apps.each { walk(it, false) }
+    for (it in parsed.apps) { walk(it, false) }
     if (!complete) {
         throw new IllegalArgumentException("Cannot verify protected-app protection before deleting app ${appId}: the app tree is incomplete. Retry after the full app inventory is available. No app was deleted.")
     }
@@ -46535,7 +46694,9 @@ private Map _externalizeToolEntry(Map tool) {
     if (subEnum instanceof List) {
         Map renamed = (subEnum as List).collectEntries { [(it): _externalToolName(it as String)] }
         String description = tool.description as String
-        renamed.each { internalName, externalName ->
+        for (Map.Entry entry in renamed) {
+            def internalName = entry.key
+            def externalName = entry.value
             description = description.replace("- ${internalName}:".toString(), "- ${externalName}:".toString())
         }
         result.description = description
@@ -46642,7 +46803,9 @@ def _resourceCatalog() {
         ]
     }
     if (!hidden.contains("hub_get_tool_guide")) {
-        getToolGuideSections().each { section, text ->
+        for (Map.Entry entry in getToolGuideSections()) {
+            def section = entry.key
+            def text = entry.value
             entries << [
                 uri: "${_guideResourceUriPrefix()}${section}".toString(),
                 name: "guide-${section}".toString(),
@@ -47343,7 +47506,7 @@ private void _writeSweepRequestsLocked() {
         if (exp > at) return false
         return !(_writeExecutionLiveLocked(k) && at < exp + graceMs)
     }.collect { it.key }
-    expired.each { k ->
+    for (k in expired) {
         WRITE_REQUEST_LEASES.remove(k)
         LIVE_WRITE_EXECUTIONS.remove(k?.toString())
     }
@@ -47353,7 +47516,7 @@ private List _activeWritesLocked() {
     _packageSweepMarkerLocked()
     long at = now()
     def active = []
-    _writeStateMapLocked("mrtrRequests").values().each { rec ->
+    for (rec in _writeStateMapLocked("mrtrRequests").values()) {
         if (rec instanceof Map && rec.status == "active" &&
                 !_mrtrReadTools().contains(rec.leafTool?.toString()) &&
                 (_writeExecutionLiveLocked(rec.claimId) ||
@@ -47361,7 +47524,9 @@ private List _activeWritesLocked() {
             active << [tool: rec.leafTool, startedAt: rec.startedAt, transport: "mrtr"]
         }
     }
-    WRITE_REQUEST_LEASES.each { leaseId, rec ->
+    for (Map.Entry entry in WRITE_REQUEST_LEASES) {
+        def leaseId = entry.key
+        def rec = entry.value
         if (rec instanceof Map && (_writeExecutionLiveLocked(leaseId) ||
                 (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
             active << [tool: rec.tool, startedAt: rec.startedAt, transport: rec.transport]
@@ -47403,7 +47568,7 @@ def _activeWrites() {
         _writeSweepRequestsLocked()
         active = _activeWritesLocked()
     }
-    cleanup.each { _mrtrCleanupRecord(it as Map) }
+    for (it in cleanup) { _mrtrCleanupRecord(it as Map) }
     return active
 }
 
@@ -47429,7 +47594,7 @@ def _writeReserveRequest(toolName, String transport) {
             outcome = [accepted: true, leaseId: leaseId]
         }
     }
-    cleanup.each { _mrtrCleanupRecord(it as Map) }
+    for (it in cleanup) { _mrtrCleanupRecord(it as Map) }
     return outcome
 }
 
@@ -47468,10 +47633,10 @@ private def _mrtrLeafArguments(String outerTool, String leafTool, Map outerArgs)
 // budget clock and minus the import payload, at both the gateway and the leaf level.
 private Map _mrtrCheckpointArguments(Map executionArgs) {
     Map next = _mrtrCopyMap(executionArgs ?: [:])
-    ["__reqT0", "jsonContent"].each { next.remove(it) }
+    for (it in ["__reqT0", "jsonContent"]) { next.remove(it) }
     if (next.args instanceof Map) {
         Map leaf = _mrtrCopyMap(next.args as Map)
-        ["__reqT0", "jsonContent"].each { leaf.remove(it) }
+        for (it in ["__reqT0", "jsonContent"]) { leaf.remove(it) }
         next.args = leaf
     }
     return next
@@ -47540,7 +47705,7 @@ private String _mrtrSha256(String value) {
 private def _mrtrCanonicalArgs(value) {
     if (value instanceof Map) {
         def canonical = [:]
-        value.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() }.each { entry ->
+        for (entry in value.entrySet().toList().sort { a, b -> a.key.toString() <=> b.key.toString() }) {
             String key = entry.key.toString()
             canonical.put(key, _mrtrCanonicalArgs(entry.value))
         }
@@ -47673,11 +47838,13 @@ private void _mrtrScheduleNextCleanupLocked() {
     }
     long at = now()
     long earliest = Long.MAX_VALUE
-    records.each { id, rec ->
+    for (Map.Entry entry in records) {
+        def id = entry.key
+        def rec = entry.value
         long expiry = rec instanceof Map ? ((rec.expiresAt ?: at) as Long) : at
         if (expiry <= at && rec instanceof Map && rec.status == "active" && _writeExecutionLiveLocked(rec.claimId)) {
             hint.waitingOnLive = true
-            return
+            continue
         }
         earliest = Math.min(earliest, expiry)
     }
@@ -47805,7 +47972,7 @@ private void _mrtrSweepTerminalEvidenceLocked() {
         av <=> bv
     }
     int removeCount = MRTR_TERMINAL_EVIDENCE.size() - _mrtrMaxRecords()
-    removable.take(Math.min(removeCount, removable.size())).each {
+    for (it in removable.take(Math.min(removeCount, removable.size()))) {
         MRTR_TERMINAL_EVIDENCE.remove(it.key)
     }
 }
@@ -47834,7 +48001,7 @@ private void _mrtrSweepWorkItemsLocked() {
         // call arguments for the whole window on every superseded claim.
         return rec.claimId?.toString() != k?.toString()
     }.collect { it.key }
-    dead.each { MRTR_WORK_ITEMS.remove(it) }
+    for (it in dead) { MRTR_WORK_ITEMS.remove(it) }
 }
 
 // Returns expired active records whose external helper resources must be
@@ -47849,7 +48016,9 @@ private List _mrtrSweepLocked() {
     // worker. Expiring it would lose its terminal result and admit an overlapping write.
     def kept = [:]
     def cleanup = []
-    stored.each { k, v ->
+    for (Map.Entry entry in stored) {
+        def k = entry.key
+        def v = entry.value
         def recovered = _mrtrRecoverTerminalEvidenceLocked(k?.toString(),
             v instanceof Map ? v as Map : null)
         if (recovered instanceof Map) v = recovered
@@ -47883,7 +48052,9 @@ private List _mrtrSweepLocked() {
     Map hint = _mrtrCleanupScheduleLocked()
     if (((hint.compactRetryAt ?: 0L) as Long) <= at) {
         Map compacted = null
-        kept.each { k, v ->
+        for (Map.Entry entry in kept) {
+            def k = entry.key
+            def v = entry.value
             if (v.status == "terminal" && v.containsKey("terminalResult") && v.containsKey("aggregate")) {
                 if (compacted == null) compacted = [:] + kept
                 Map terminal = [:] + (v as Map)
@@ -47944,7 +48115,7 @@ private boolean _mrtrMakeRoomLocked(boolean readLeaf = false) {
     def kept = [:]
     kept.putAll(stored)
     int removeCount = Math.max(1, sameClass.size() - cap + 1)
-    removable.take(Math.min(removeCount, removable.size())).each { kept.remove(it.key) }
+    for (it in removable.take(Math.min(removeCount, removable.size()))) { kept.remove(it.key) }
     _mrtrSetLocked(kept)
     return kept.count { k, v -> readSet.contains(v?.leafTool?.toString()) == readLeaf } < cap
 }
@@ -47993,7 +48164,7 @@ def _mrtrReserve(outerTool, leafTool, Map binding, String readSnapshotId = null)
             }
         }
     }
-    cleanup.each { _mrtrCleanupRecord(it as Map) }
+    for (it in cleanup) { _mrtrCleanupRecord(it as Map) }
     return outcome
 }
 
@@ -48041,7 +48212,7 @@ def _mrtrClaim(String stateId, outerTool, leafTool, Map binding) {
             }
         }
     }
-    cleanup.each { _mrtrCleanupRecord(it as Map) }
+    for (it in cleanup) { _mrtrCleanupRecord(it as Map) }
     if (validationError != null) throw new IllegalArgumentException(validationError)
     if (outcome == null) throw new IllegalArgumentException("Invalid or expired requestState")
     return outcome
@@ -48518,9 +48689,9 @@ private String _mrtrShiftIndex(String text, String token, int offset) {
 private void _mrtrRewriteStopRefs(node, Closure fix) {
     if (node instanceof Map) {
         Map m = node as Map
-        ["bulkStoppedAfter", "error", "note"].each { k -> if (m[k] instanceof CharSequence) m[k] = fix(m[k].toString()) }
+        for (k in ["bulkStoppedAfter", "error", "note"]) { if (m[k] instanceof CharSequence) m[k] = fix(m[k].toString()) }
         if (m.repairHints instanceof List) m.repairHints = (m.repairHints as List).collect { it instanceof CharSequence ? fix(it.toString()) : it }
-        ["triggers", "actions", "patches", "patchResults", "results", "addedResults"].each { k ->
+        for (k in ["triggers", "actions", "patches", "patchResults", "results", "addedResults"]) {
             if (m[k] instanceof List) (m[k] as List).each { _mrtrRewriteStopRefs(it, fix) }
         }
     }
@@ -48707,11 +48878,13 @@ def _mrtrRecentOperations(int limit = 10) {
     synchronized (WRITE_RESERVATION_LOCK) { stored = [:] + _writeStateMapLocked("mrtrRequests") }
     Set writes = _mrtrWriteTools()
     List rows = []
-    stored.each { k, v ->
-        if (!(v instanceof Map)) return
+    for (Map.Entry entry in stored) {
+        def k = entry.key
+        def v = entry.value
+        if (!(v instanceof Map)) continue
         Map rec = v as Map
         String leaf = rec.leafTool?.toString()
-        if (!writes.contains(leaf)) return
+        if (!writes.contains(leaf)) continue
         String status = rec.status?.toString()
         String phase
         if (status == "terminal") {
@@ -48725,7 +48898,7 @@ def _mrtrRecentOperations(int limit = 10) {
                    updatedAt: rec.updatedAt ?: rec.startedAt, slices: (rec.rounds ?: 0)]
         if (status == "terminal" && rec.terminalResult instanceof Map) {
             Map result = rec.terminalResult as Map
-            ["success", "appId", "ruleId", "newAppId", "deviceId", "driverId", "error"].each {
+            for (it in ["success", "appId", "ruleId", "newAppId", "deviceId", "driverId", "error"]) {
                 if (result.containsKey(it)) row.put(it, result.get(it))
             }
             if (result.device instanceof Map && result.device.id != null) row.deviceId = result.device.id
@@ -48942,7 +49115,9 @@ private List _mrtrWalkSteps(Map aggregate, Map result) {
     def rows = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
         ((result.steps instanceof List) ? result.steps : [])
     def numbered = []
-    rows.eachWithIndex { row, index ->
+    int index = -1
+    for (row in rows) {
+        index++
         numbered << (row instanceof Map ? (row + [step: index + 1]) : row)
     }
     return numbered
@@ -49028,7 +49203,7 @@ private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
 private List _mrtrCollapseRuleResults(List entries) {
     def lastByRule = [:]
     def unkeyed = []
-    (entries ?: []).each { entry ->
+    for (entry in (entries ?: [])) {
         def rid = (entry instanceof Map) ? entry.ruleId : null
         if (rid == null) {
             unkeyed << entry
@@ -49058,8 +49233,10 @@ private void _mrtrCleanupRecord(Map rec) {
 private def _publicToolResultValue(value, boolean backupMetadata = false) {
     if (value instanceof Map) {
         def copy = new LinkedHashMap()
-        (value as Map).each { key, child ->
-            if (backupMetadata && key?.toString() == "brokenBefore") return
+        for (Map.Entry entry in (value as Map)) {
+            def key = entry.key
+            def child = entry.value
+            if (backupMetadata && key?.toString() == "brokenBefore") continue
             copy.put(key, _publicToolResultValue(child, key?.toString() == "backup"))
         }
         return copy
@@ -49930,10 +50107,10 @@ def getCustomEngineMode() {
 // disabled gateway (so shared tools disabled via a gateway are gone everywhere).
 def getEffectiveDisabledTools() {
     def out = [] as Set
-    (settings.disabled_tools ?: []).each { out << (it as String) }
+    for (it in (settings.disabled_tools ?: [])) { out << (it as String) }
     def gwConfig = getGatewayConfig()
-    (settings.disabled_gateways ?: []).each { gw ->
-        gwConfig[gw]?.tools?.each { out << (it as String) }
+    for (gw in (settings.disabled_gateways ?: [])) {
+        for (it in gwConfig[gw]?.tools) { out << (it as String) }
     }
     return out
 }
@@ -49948,14 +50125,14 @@ def getHiddenToolNames() {
     // Masters default ON: only an explicit `== false` hides a class.
     if (settings.enableRead == false) hide.addAll(readOnly)
     if (settings.enableWrite == false) {
-        _toolCatalogIndexes().names.each { if (!readOnly.contains(it)) hide << it }
+        for (it in _toolCatalogIndexes().names) { if (!readOnly.contains(it)) hide << it }
     }
     // Legacy custom-rule engine visibility.
     def mode = getCustomEngineMode()
     if (mode == "off") {
-        ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each { hide << it }
+        for (it in ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"]) { hide << it }
     } else if (mode == "readonly") {
-        ["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each { hide << it }
+        for (it in ["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"]) { hide << it }
     }
     // Developer-Mode-only tools: catalog-hidden ENTIRELY when Developer Mode is off
     // (stricter than the runtime-refusal the older dev tools use), so a low-context
@@ -50431,7 +50608,7 @@ def stripFlatTrim(String text, boolean dropContent) {
 
 // guideFirst=false only for the search corpus, so the shared sentence does not skew BM25 ranking.
 def applyDescriptionTransform(List tools, boolean dropContent, boolean guideFirst = true) {
-    tools.each { tool ->
+    for (tool in tools) {
         // CharSequence, not String: gateway entries build their description as a GString.
         if (tool?.description instanceof CharSequence) {
             String description = stripFlatTrim(tool.description.toString(), dropContent)
@@ -50472,7 +50649,7 @@ String _withGuideFirst(String name, String description, visibleSubTools = null) 
 // schema shape, so the recursion is cheap and runs once per catalog build.
 private void _stripFlatTrimDeep(Object node, boolean dropContent) {
     if (node instanceof List) {
-        node.each { _stripFlatTrimDeep(it, dropContent) }
+        for (it in node) { _stripFlatTrimDeep(it, dropContent) }
         return
     }
     if (!(node instanceof Map)) return
@@ -50480,7 +50657,9 @@ private void _stripFlatTrimDeep(Object node, boolean dropContent) {
     if (m.description instanceof String) {
         m.description = stripFlatTrim(m.description as String, dropContent)
     }
-    m.each { k, v ->
+    for (Map.Entry entry in m) {
+        def k = entry.key
+        def v = entry.value
         if (k != 'description' && (v instanceof Map || v instanceof List)) {
             _stripFlatTrimDeep(v, dropContent)
         }
@@ -50639,7 +50818,7 @@ private Map _toolCatalogIndexes() {
     if (cached != null) return cached as Map
     def required = [:]
     def names = [] as Set
-    getAllToolDefinitions().each { tool ->
+    for (tool in getAllToolDefinitions()) {
         String name = tool.name as String
         names << name
         def req = tool?.inputSchema?.required
@@ -51156,10 +51335,10 @@ def normalizeTrigger(trigger) {
 }
 
 def normalizeRuleOperators(args) {
-    args.triggers?.each { trigger ->
+    for (trigger in args.triggers) {
         if (trigger.operator) trigger.operator = normalizeOperator(trigger.operator)
     }
-    args.conditions?.each { condition ->
+    for (condition in args.conditions) {
         if (condition.operator) condition.operator = normalizeOperator(condition.operator)
     }
     args.actions?.each { action ->
@@ -51171,7 +51350,7 @@ def normalizeRuleOperators(args) {
 def normalizeActionOperators(action) {
     if (action.type == "if_then_else") {
         if (action.condition?.operator) action.condition.operator = normalizeOperator(action.condition.operator)
-        action.thenActions?.each { normalizeActionOperators(it) }
+        for (it in action.thenActions) { normalizeActionOperators(it) }
         action.elseActions?.each { normalizeActionOperators(it) }
     } else if (action.type == "repeat") {
         action.actions?.each { normalizeActionOperators(it) }
@@ -51251,7 +51430,7 @@ def validateTrigger(trigger) {
                 if (!(trigger.deviceIds instanceof List) || trigger.deviceIds.size() == 0) {
                     throw new IllegalArgumentException("device_event trigger deviceIds must be a non-empty list")
                 }
-                trigger.deviceIds.each { devId ->
+                for (devId in trigger.deviceIds) {
                     if (!findDevice(devId)) throw new IllegalArgumentException("Device not found: ${devId}")
                 }
                 // Validate matchMode if present
@@ -51398,7 +51577,7 @@ def validateCondition(condition) {
             if (!condition.days) throw new IllegalArgumentException("days_of_week condition requires days array")
             // Validate day names
             def validDays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
-            condition.days.each { day ->
+            for (day in condition.days) {
                 if (!validDays.contains(day)) {
                     throw new IllegalArgumentException("days_of_week condition: Invalid day '${day}'. Valid days: ${validDays.join(', ')}")
                 }
@@ -51506,8 +51685,8 @@ def validateAction(action) {
             if (!action.condition) throw new IllegalArgumentException("if_then_else action requires condition")
             if (!action.thenActions) throw new IllegalArgumentException("if_then_else action requires thenActions")
             validateCondition(action.condition)
-            action.thenActions.each { validateAction(it) }
-            action.elseActions?.each { validateAction(it) }
+            for (it in action.thenActions) { validateAction(it) }
+            for (it in action.elseActions) { validateAction(it) }
             break
         case "cancel_delayed":
             break
@@ -51516,7 +51695,7 @@ def validateAction(action) {
             if (repeatTimes == null) throw new IllegalArgumentException("repeat action requires times (or count)")
             if (repeatTimes < 1) throw new IllegalArgumentException("repeat action: times must be at least 1")
             if (!action.actions) throw new IllegalArgumentException("repeat action requires actions")
-            action.actions.each { validateAction(it) }
+            for (it in action.actions) { validateAction(it) }
             break
         case "stop":
             break
@@ -51703,15 +51882,15 @@ private List _flattenHub2DeviceTree(nodes, List acc = null) {
     // devices", devices:[null] would read as an empty hub. Fail the whole read instead; the caller
     // reports "shape" and callers of THAT keep their existing behaviour for an unreadable source.
     boolean malformed = false
-    nodes.each { node ->
-        if (!(node instanceof Map)) { malformed = true; return }
+    for (node in nodes) {
+        if (!(node instanceof Map)) { malformed = true; continue }
         def data = node.data
         // A node without a data.id is the same drift as a non-map node: skipping it would return
         // a SHORTER list that still reads as authoritative (the live tree carries an id on every
         // node, container or leaf).
-        if (!(data instanceof Map) || data.id == null) { malformed = true; return }
+        if (!(data instanceof Map) || data.id == null) { malformed = true; continue }
         def record = [id: data.id, label: data.name]
-        ['lastActivity', 'roomId', 'roomName', 'disabled', 'currentStates'].each { key -> if (data.containsKey(key)) record.put(key, data.get(key)) }
+        for (key in ['lastActivity', 'roomId', 'roomName', 'disabled', 'currentStates']) { if (data.containsKey(key)) record.put(key, data.get(key)) }
         acc << record
         // Propagate the child frame's verdict: it returns null when IT saw a malformed node, and
         // discarding that let a bad node nested under a valid parent produce a short list that
@@ -52618,10 +52797,10 @@ def _latestLocalHubBackupEpoch(String kind = "any") {
             return null
         }
         Long newest = null
-        parsed.each { entry ->
-            if (kind != "any" && entry instanceof Map && ((entry.fullBackup == true) != (kind == "full"))) return
+        for (entry in parsed) {
+            if (kind != "any" && entry instanceof Map && ((entry.fullBackup == true) != (kind == "full"))) continue
             def ts = (entry instanceof Map) ? entry.createTimeOrig?.toString() : null
-            if (!ts) return
+            if (!ts) continue
             Long epoch = null
             // createTimeOrig carries an explicit numeric offset ("2026-04-23T07:01:24+0000");
             // the offset-less shape is tolerated as UTC in case a firmware drops the suffix.
@@ -52808,11 +52987,11 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
         manifest.put(key, entry)
         // An unrecovered pending-deletion marker cannot authorize reuse; publication
         // purges the leftovers; their files are removed best-effort below.
-        manifest.keySet().findAll { it != key && it != protectedKey && manifest[it]?.deletePending }.each { manifest.remove(it) }
+        for (it in manifest.keySet().findAll { it != key && it != protectedKey && manifest[it]?.deletePending }) { manifest.remove(it) }
         def victims = manifest.keySet().findAll { it != key && it != protectedKey }
             .sort { a, b -> (manifest[a]?.timestamp ?: 0L) <=> (manifest[b]?.timestamp ?: 0L) }
             .take(manifest.size() - ITEM_BACKUP_RETENTION)
-        victims.each { manifest.remove(it) }
+        for (it in victims) { manifest.remove(it) }
         _commitItemBackupManifest(manifest)
         Set retainedFiles = manifest.values().collect { it?.fileName?.toString() } as Set
         // Unlink durably first; an optional file-delete failure leaves an orphan,
@@ -52832,7 +53011,7 @@ List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
         List removed = manifest.findAll { key, entry ->
             (exactKey == null || key?.toString() == exactKey) && entry?.fileName?.toString() == fileName
         }.keySet().toList()
-        removed.each { manifest.remove(it) }
+        for (it in removed) { manifest.remove(it) }
         if (removed) _commitItemBackupManifest(manifest)
         return removed.collect { it.toString() }
     }
@@ -52846,7 +53025,7 @@ private Map _deleteHubFileAndUnlinkBackups(String fileName) {
         List keys = previous.findAll { key, entry -> entry?.fileName?.toString() == fileName }.keySet().toList()
         if (keys) {
             Map pending = new LinkedHashMap(previous)
-            keys.each { key -> pending.put(key, previous.get(key) + [deletePending: true]) }
+            for (key in keys) { pending.put(key, previous.get(key) + [deletePending: true]) }
             _commitItemBackupManifest(pending)
         }
         try { deleteHubFile(fileName) }
@@ -52922,7 +53101,7 @@ void _rmReconcilePredClearPending(def inventory, Map observed) {
         ids.add(node.data.id.toString())
         (node.children ?: []).each { visit(it) }
     }
-    inventory.apps.each { visit(it) }
+    for (it in inventory.apps) { visit(it) }
     if (!complete) {
         mcpLog("warn", "rm-native", "App inventory tree was structurally unreadable (missing data.id or non-list children); retaining all ${observed.size()} pending recovery record(s). If this repeats, hub firmware may have changed the /hub2/appsList shape")
         return
@@ -52936,7 +53115,7 @@ void _rmReconcilePredClearPending(def inventory, Map observed) {
         Map current = _rmPendingPredClearSnapshot()
         def removed = current.keySet().findAll { !ids.contains(it.toString()) && observed[it] == current[it] }
         if (!removed) return
-        removed.each { current.remove(it) }
+        for (it in removed) { current.remove(it) }
         _rmCommitPredClearPending(current)
     }
 }
@@ -53141,9 +53320,9 @@ private List _fetchDebugLogHistory(Map buffer, String generation, String fetchId
     def rows = text ? new groovy.json.JsonSlurper().parseText(text) : null
     if (!(rows instanceof List)) throw new IllegalStateException("Unexpected native log history response")
     def recovered = [:]
-    rows.each { row ->
+    for (row in rows) {
         def parsed = _parseHubLogLine(row?.toString())
-        if (parsed?.sourceId != null && (parsed.type != "app" || parsed.sourceId != buffer.appId)) return
+        if (parsed?.sourceId != null && (parsed.type != "app" || parsed.sourceId != buffer.appId)) continue
         String message = parsed?.message ?: ""
         int marker = message.indexOf("[MCP1] ")
         if (marker >= 0) {
@@ -53163,9 +53342,9 @@ private List _fetchDebugLogHistory(Map buffer, String generation, String fetchId
     synchronized (buffer) {
         // A clear during the HTTP read establishes a new generation; old rows stay excluded.
         if (buffer.generation == generation && (fetchId == null || buffer.fetchId == fetchId)) {
-            buffer.entries.each { recovered.put(it.id, it) }
+            for (it in buffer.entries) { recovered.put(it.id, it) }
             buffer.entries = []
-            recovered.values().each { _appendDebugLogRecord(buffer, it) }
+            for (it in recovered.values()) { _appendDebugLogRecord(buffer, it) }
             buffer.hydrated = true
             buffer.remove("fetchError")
         }
@@ -53259,7 +53438,7 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     def buffer = initDebugLogs()
     if (!shouldLog(level)) return
     def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
-    ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
+    for (key in ["duration", "ruleName", "details", "stackTrace"]) { if (extraData?.get(key)) raw[key] = extraData[key] }
     def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
     synchronized (buffer) {
         if (level == "error" && settings?.retainReportErrors == true) _retainReportError(raw)
@@ -53524,7 +53703,7 @@ private Integer _discoverParentAppId(String appType) {
             if (d?.type == parentTypeName && d?.hidden != true) { found = d; return }
             node?.children?.each { c -> recurse(c) }
         }
-        (parsed?.apps ?: []).each { a -> recurse(a) }
+        for (a in (parsed?.apps ?: [])) { recurse(a) }
         return found
     }
 
@@ -54174,13 +54353,13 @@ private Map _ruleCompiledState(Integer appId) {
 private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
     def issues = []
     def stack = []
-    sequence.each { entry ->
+    for (entry in sequence) {
         def idx = entry?.idx
         def aType = entry?.actType?.toString()
         def sType = entry?.actSubType?.toString()
         if (entry?.partial == true || (aType in ["condActs", "repeatActs"] && (sType == null || sType == ""))) {
             issues << ("action ${idx} is in a partial-commit state (actType set, actSubType missing) — likely from an interrupted wizard write where the actType landed but the actSubType did not. The walker treats this as an opaque block boundary; restore from a recent backup or finish the wizard via hub_set_rule(walkStep=...).".toString())
-            return
+            continue
         }
         if (aType == "condActs") {
             if (sType == "getIfThen") {
@@ -54216,7 +54395,7 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
             }
         }
     }
-    stack.each { open ->
+    for (open in stack) {
         def label = open.kind == "if" ? "IF" : "Repeat"
         def closer = open.kind == "if" ? "END-IF" : "End-Repeat"
         issues << ("action ${open.openIdx} (${label}) opened a block that was never closed — rule is missing an ${closer}".toString())
@@ -54266,12 +54445,12 @@ private List _rmCoerceActionIndices(List raw) {
     if (raw == null) return null
     def out = []
     boolean uncoercible = false
-    raw.each { entry ->
+    for (entry in raw) {
         // A null entry is as unreadable as a non-numeric one, and MUST NOT be skipped: skipping
         // turns actionList:[null] into [], which every caller reads as "this rule genuinely has no
         // actions" -- the structural pre-flight would then walk an empty list, see no imbalance,
         // and allow deleting the closer of an IF block that is still in settings.
-        if (entry == null) { uncoercible = true; return }
+        if (entry == null) { uncoercible = true; continue }
         try { out << (entry.toString() as Integer) } catch (NumberFormatException ignored) { uncoercible = true }
     }
     // A list this code cannot read is "unreadable", never "no actions": dropping the entries that
@@ -54293,7 +54472,7 @@ List _rmOrderedActionIndices(Integer appId) {
  */
 private TreeSet _rmScannedActionIndices(Map settingsByName) {
     def scanned = [] as TreeSet
-    settingsByName?.keySet()?.each { name ->
+    for (name in settingsByName?.keySet()) {
         def m = name?.toString() =~ /^act(?:Type|SubType)\.(\d+)$/
         if (m.matches()) scanned << ((m[0] as List)[1] as Integer)
     }
@@ -54313,8 +54492,8 @@ private TreeSet _rmScannedActionIndices(Map settingsByName) {
 private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set), List orderedIndices = null) {
     def indices = (orderedIndices != null) ? orderedIndices : (_rmScannedActionIndices(settingsByName) as List)
     def sequence = []
-    indices.each { idx ->
-        if (excludeIndices.contains(idx)) return
+    for (idx in indices) {
+        if (excludeIndices.contains(idx)) continue
         def aType = _rmActionSettingText(settingsByName, "actType", idx)
         def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
         // RM's UI writes no actType on ELSE / ELSE-IF / END-IF -- infer it or the walker sees a leaf.
@@ -54340,11 +54519,11 @@ private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
     def inRule = orderedIndices as Set
     def scanned = _rmScannedActionIndices(settingsByName)
     def out = []
-    scanned.each { idx ->
-        if (inRule.contains(idx)) return
+    for (idx in scanned) {
+        if (inRule.contains(idx)) continue
         def aType = _rmActionSettingText(settingsByName, "actType", idx)
         def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
-        if (aType == null && sType == null) return
+        if (aType == null && sType == null) continue
         out << ("action ${idx} (actType=${aType ?: 'none'}, actSubType=${sType ?: 'none'}) is present in settings but is NOT one of the rule's actions \u2014 leftover state from an interrupted write or a removed action. It does not run and does not affect block structure; the next add may REUSE index ${idx} (RM reopens a never-closed action editor pre-filled with these leftover fields) rather than allocate above it \u2014 remove the row first if a clean slot matters.".toString())
     }
     out
@@ -54557,8 +54736,8 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
                 def fromParagraphs = (sect?.paragraphs ?: []).collect { it?.toString() ?: "" }
                 fromBody + fromParagraphs
             }
-            paragraphTexts.each { text ->
-                ["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"].each { marker ->
+            for (text in paragraphTexts) {
+                for (marker in ["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"]) {
                     if (text.contains(marker)) brokenMarkers << marker
                 }
             }
@@ -54570,7 +54749,9 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             // says is multi.
             def settingsByName = _rmFetchSettingsByName(appId)
             def schema = _rmCollectInputSchema(cfg?.configPage)
-            schema.each { name, meta ->
+            for (Map.Entry entry in schema) {
+                def name = entry.key
+                def meta = entry.value
                 if (meta?.multiple == true) {
                     def rec = settingsByName.get(name)
                     if (rec != null && rec.multiple != true) {
@@ -54639,7 +54820,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // instance would slip through a string-set delta. Callers comparing two health verdicts
     // (the replace restore gate) use this count map to detect a NEW broken instance.
     def brokenMarkerCounts = [:]
-    brokenMarkers.each { m -> brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
+    for (m in brokenMarkers) { brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
 
     // Stable report shape (backward-compatible with the pre-#254 contract): the RM detection
     // arrays are always present so existing consumers can read them unconditionally. The new
@@ -54739,16 +54920,18 @@ private List _rmPageHrefs(Map configPage) {
 // Returns [[name, title, problem], ...]; empty when the UI would submit.
 private List _uiNavigationViolations(Map schema, Map values) {
     def problems = []
-    schema?.each { rawName, meta ->
+    for (Map.Entry entry in schema) {
+        def rawName = entry.key
+        def meta = entry.value
         def name = rawName.toString()
-        if (meta?.disabled == true || meta?.type == "button") return
+        if (meta?.disabled == true || meta?.type == "button") continue
         // The page pre-fills an unset input with its defaultValue, so navigation and Done see it alike.
         def v = _uiValueOrDefault(values?.get(name), meta as Map)
         def empty = _uiValueIsEmpty(v, meta as Map)
         def title = _uiPlainTitle(meta?.title) ?: name
         if (empty) {
             if (meta?.required == true) problems << [name: name, title: title, problem: "required but empty"]
-            return
+            continue
         }
         def t = meta?.type?.toString()
         if (t in ["number", "decimal"]) {
@@ -54756,7 +54939,7 @@ private List _uiNavigationViolations(Map schema, Map values) {
             try { n = new BigDecimal(v.toString().trim()) }
             catch (Exception notNumber) {
                 problems << [name: name, title: title, problem: "'${v}' is not a number".toString()]
-                return
+                continue
             }
             def bounds = _uiRangeBounds(meta?.range)
             def min = bounds != null ? bounds.min : (t == "number" ? BigDecimal.ZERO : null)
@@ -54883,7 +55066,9 @@ private void _requireUiNavigationValid(Integer appId, String action, Map schema,
  */
 private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
     def body = [id: appId.toString()]
-    settingsMap.each { rawKey, rawVal ->
+    for (Map.Entry entry in settingsMap) {
+        def rawKey = entry.key
+        def rawVal = entry.value
         def key = rawKey.toString()
         def meta = schema?."${key}"
         def typeHint = meta?.type
@@ -54987,7 +55172,7 @@ private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touc
         [(s?.name?.toString()): s]
     }
     def poisoned = []
-    touchedNames.each { name ->
+    for (name in touchedNames) {
         def declared = schema?."${name}"
         if (declared?.multiple == true) {
             def rec = live?."${name}"
@@ -55128,7 +55313,7 @@ Set _bpsGatedSections() {
     if (cached != null) return cached as Set
     def readOnly = getReadOnlyToolNames()
     Set gated = ['best_practice_reference'] as Set
-    _toolCatalogIndexes().names.each { name ->
+    for (name in _toolCatalogIndexes().names) {
         def section = readOnly.contains(name) ? null : _guideSectionForTool(name)
         if (section) gated << section
     }
@@ -55146,7 +55331,7 @@ String _guideSectionServed(String key, String body) {
     if (parent && gated.contains(parent)) lines << "Acknowledgment key (${parent}): ${hubBpsGuideKey(parent as String)}".toString()
     def subs = registry[key]
     if (subs instanceof Map) {
-        subs.keySet().each { sub ->
+        for (sub in subs.keySet()) {
             if (gated.contains(sub)) lines << "Acknowledgment key (${sub}): ${hubBpsGuideKey(sub as String)}".toString()
         }
     }
@@ -57083,7 +57268,7 @@ def getToolGuideSubSections() {
 def guideSectionBlocks(text) {
     def blocks = []
     def cur = []
-    (text ?: '').toString().split("\n", -1).each { line ->
+    for (line in (text ?: '').toString().split("\n", -1)) {
         if (line.startsWith("### ")) {
             blocks << cur.join("\n")
             cur = []
@@ -57144,10 +57329,12 @@ def guideSubSectionLookup(subKey) {
     def prefixes = registry[parentKey][subKey]
     def blocks = guideSectionBlocks(getToolGuideSections()[parentKey])
     def mine = []
-    blocks.eachWithIndex { block, idx ->
+    int idx = -1
+    for (block in blocks) {
+        idx++
         if (idx == 0) {
             if (!prefixes) mine << block
-            return
+            continue
         }
         def heading = block.split("\n", -1)[0].substring(4)
         if (prefixes.any { heading.startsWith(it) }) mine << block

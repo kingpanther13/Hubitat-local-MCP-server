@@ -450,7 +450,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             // Summary mode: populate currentStates only when requested (or when no projection active)
             if (fieldSet == null || fieldSet.contains("currentStates")) {
                 info.currentStates = [:]
-                ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"].each { attr ->
+                for (attr in ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"]) {
                     def val = device.currentStates?.find { it.name == attr }?.value
                     if (val != null) info.currentStates[attr] = val
                 }
@@ -582,7 +582,7 @@ private String _contextDeviceLine(device, List attrNames) {
     def states = [:]
     boolean stateReadFailed = device._nativeReadError == true || device._nativeUnavailableCollections?.contains('currentStates') == true
     try {
-        device.currentStates?.each { st ->
+        for (st in device.currentStates) {
             if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
         }
     } catch (Exception e) {
@@ -593,7 +593,7 @@ private String _contextDeviceLine(device, List attrNames) {
         mcpLog("warn", "device", "context snapshot: currentStates read failed for device ${device?.id}: ${e.message}")
     }
     def attrParts = []
-    attrNames.each { an ->
+    for (an in attrNames) {
         def st = states.get(an)
         if (st != null) {
             def unit = null
@@ -643,25 +643,25 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
         // Lets the caller seed from this same read instead of fetching the inventory again.
         if (meta != null) meta.inventory = inventory
         def byId = [:]
-        inventory.records.each { d -> byId.put(d.id.toString(), [id: d.id.toString(), _nativeFilterLabel: d.label]) }
+        for (d in inventory.records) { byId.put(d.id.toString(), [id: d.id.toString(), _nativeFilterLabel: d.label]) }
         return byId.values() as List
     }
     def byId = [:]
-    ((selectedDevices ?: []) + ((childDevs != null ? childDevs : getChildDevices()) ?: [])).each { d ->
+    for (d in ((selectedDevices ?: []) + ((childDevs != null ? childDevs : getChildDevices()) ?: []))) {
         if (d?.id != null) byId.put(d.id.toString(), [id: d.id.toString()])
     }
     return byId.values() as List
 }
 
 private void _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false) {
-    records.each { record ->
+    for (record in records) {
         if (record._nativeLoaded != true) {
             def fj = _fetchDeviceFullJson(record.id)
             if (!(fj?.device instanceof Map)) {
                 if (!allowPartial) throw new IllegalStateException("Native device metadata is unavailable for device ${record.id}; no SDK fallback was used.")
                 record.putAll([_nativeLoaded: true, _nativeReadError: true,
                     _nativeUnavailableCollections: ['currentStates', 'capabilities', 'commands']])
-                return
+                continue
             }
             def d = fj.device
             def states = d.currentStates instanceof Map ? [] : null
@@ -701,21 +701,21 @@ private boolean _seedNativeInventoryFromTree(List records, Map inventory = null)
     if (inventory == null) inventory = _fetchAllHubDeviceRecords("device", "native bulk device read")
     if (inventory?.failure || !(inventory?.records instanceof List)) return false
     def byId = [:]
-    inventory.records.each { r -> if (r instanceof Map && r.id != null) byId.put(r.id.toString(), r) }
-    records.each { record ->
-        if (record._nativeLoaded == true || record._nativeSeeded == true) return
+    for (r in inventory.records) { if (r instanceof Map && r.id != null) byId.put(r.id.toString(), r) }
+    for (record in records) {
+        if (record._nativeLoaded == true || record._nativeSeeded == true) continue
         def r = byId.get(record.id?.toString())
-        if (!(r instanceof Map)) return
+        if (!(r instanceof Map)) continue
         if (r.label instanceof String && r.label) record._nativeFilterLabel = r.label
         // Identity and room ride along whenever the source carries them (a fullJson fallback
         // keeps a tree-supplied room when it omits the key). A record counts as SEEDED only
         // when the tree also carried its states -- older firmware lists no currentStates, and
         // there a consumer that needs state still falls back to a per-device read.
-        ['label', 'roomName', 'disabled', 'lastActivity'].each { key ->
+        for (key in ['label', 'roomName', 'disabled', 'lastActivity']) {
             if (r.containsKey(key)) record.put(key == 'lastActivity' ? 'lastActivityTime' : key, r.get(key))
         }
         record.remove('_nativeActivityParsed')
-        if (!r.containsKey('currentStates')) return
+        if (!r.containsKey('currentStates')) continue
         def states = r.currentStates instanceof List ? r.currentStates.findAll { it instanceof Map && it.key != null }
             .collect { [name: it.key.toString(), value: it.value, unit: null] } : null
         def unavailable = []
@@ -758,8 +758,8 @@ private int _loadContextResourcePopulation(List records, Map inventory = null) {
     _seedNativeInventoryFromTree(records, inventory)
     int fetched = 0
     int unread = 0
-    records.each { record ->
-        if (record._nativeSeeded == true || record._nativeLoaded == true) return
+    for (record in records) {
+        if (record._nativeSeeded == true || record._nativeLoaded == true) continue
         if (fetched < _contextResourcePerDeviceFetchCap()) {
             fetched++
             _hydrateNativeInventory([record], [], true)
@@ -844,11 +844,11 @@ def _buildContextJson() {
     // One bulk read seeds room membership AND state for the whole population, so the rooms
     // index and the per-device room come from the same record and cannot disagree.
     _loadContextResourcePopulation(allDevices, meta.inventory as Map)
-    allDevices.each { d -> if (d._nativeReadError) d._nativeRoomUnavailable = true }
+    for (d in allDevices) { if (d._nativeReadError) d._nativeRoomUnavailable = true }
     def contextAttrs = _contextAttributeNames() as Set
     int roomUnavailableCount = allDevices.count { it._nativeRoomUnavailable == true }
     def roomIndex = [:]
-    allDevices.each { d ->
+    for (d in allDevices) {
         // A null key keeps unknown membership distinct even from a room named "Room unavailable".
         def r = d._nativeRoomUnavailable ? null : (d.roomName?.toString() ?: "No room")
         if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
@@ -881,7 +881,7 @@ def _buildContextJson() {
         def attrs = [:]
         boolean stateReadFailed = d._nativeReadError == true || d._nativeUnavailableCollections?.contains('currentStates') == true
         try {
-            d.currentStates?.each { st ->
+            for (st in d.currentStates) {
                 if (st?.name != null && st.value != null && contextAttrs.contains(st.name.toString())) {
                     attrs.put(st.name.toString(), st.value.toString())
                 }
@@ -1008,8 +1008,8 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
         def parsed = new groovy.json.JsonSlurper().parseText(txt ?: "[]")
         if (txt && parsed instanceof List && !parsed.isEmpty()) {
             feed = [:]
-            parsed.each { entry ->
-                if (!(entry instanceof Map) || entry.id == null) return
+            for (entry in parsed) {
+                if (!(entry instanceof Map) || entry.id == null) continue
                 def rec = [id: entry.id, label: entry.label]
                 // An EMPTY list is not an answer: the feed lists devices it cannot see into with
                 // `capabilities: []`, and an authorized device would then hide from capabilityFilter
@@ -1153,7 +1153,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
     def sourceEndpoint = inventory.source
     def capabilitiesComplete = inventory.capabilities && raw.every { it.capabilities instanceof List }
     def authorizedIds = ((selectedDevices ?: []).collect { it.id?.toString() }.findAll { it != null } as Set)
-    (getChildDevices() ?: []).each { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) }
+    for (it in (getChildDevices() ?: [])) { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) }
     // // Capability lookup for the capability-less source, built once from the authorization-scoped model.
     // def capsById = [:]
     // if (!capabilitiesComplete) {
@@ -1507,7 +1507,7 @@ private Map _readDevicePreferenceModel(Map fullJson) {
         model.status = 'partial'
         model.reason = 'Native inputValues is not a recognized array; stored values may be incomplete.'
     } else {
-        (rawInputs ?: []).each { row ->
+        for (row in (rawInputs ?: [])) {
             if (!(row instanceof Map) || row.name == null) {
                 model.writeSafe = false
                 model.status = 'partial'
@@ -1520,12 +1520,12 @@ private Map _readDevicePreferenceModel(Map fullJson) {
         }
     }
     def names = []
-    definitions.each { row ->
+    for (row in definitions) {
         if (!(row instanceof Map) || row.name == null || row.type == null) {
             model.writeSafe = false
             model.status = 'partial'
             model.reason = 'Native settings contains an unnamed or malformed declaration.'
-            return
+            continue
         }
         String name = row.name.toString()
         String type = row.type.toString()
@@ -1534,10 +1534,10 @@ private Map _readDevicePreferenceModel(Map fullJson) {
             model.status = 'partial'
             model.reason = 'Native settings contains duplicate preference names.'
             model.entries.removeAll { it.name == name }
-            return
+            continue
         }
         names << name
-        if (type in ['paragraph', 'hidden', 'button', 'image']) return
+        if (type in ['paragraph', 'hidden', 'button', 'image']) continue
         def input = inputs.get(name)
         // Cleared native settings lose their storage identity; inputValues can still prefill the UI default.
         boolean nativeUnset = row.containsKey('id') && row.get('id') == null &&
@@ -1554,7 +1554,7 @@ private Map _readDevicePreferenceModel(Map fullJson) {
             entry.multipleStatus = 'unavailable'
             entry.multipleReason = 'Native unset enum metadata does not identify single or multiple selection. Check driverSource or previously read metadata and pass an explicit multiple boolean when setting it.'
         }
-        ['title', 'description', 'options', 'range', 'required'].each { key ->
+        for (key in ['title', 'description', 'options', 'range', 'required']) {
             if (row.containsKey(key)) entry.put(key, row.get(key))
         }
         if (row.containsKey('defaultValue')) {
@@ -1597,7 +1597,7 @@ private _deviceConfigurationPublicValue(value, key = '') {
     if (_deviceConfigurationSecretKey(key)) return '***redacted (password)***'
     if (value instanceof Map) {
         def copy = [:]
-        value.each { k, v -> copy.put(k, _deviceConfigurationPublicValue(v, k)) }
+        for (Map.Entry entry in value) { def k = entry.key; def v = entry.value; copy.put(k, _deviceConfigurationPublicValue(v, k)) }
         return copy
     }
     if (value instanceof List) return value.collect { _deviceConfigurationPublicValue(it) }
@@ -1653,7 +1653,9 @@ private _withResolvedManufacturer(value) {
     String name = _zwaveManufacturerName(value.get('manufacturer'))
     if (name == null) return value
     def copy = [:]
-    value.each { k, v ->
+    for (Map.Entry entry in value) {
+        def k = entry.key
+        def v = entry.value
         copy.put(k, v)
         if (k == 'manufacturer') copy.put('manufacturerName', name)
     }
@@ -1662,7 +1664,9 @@ private _withResolvedManufacturer(value) {
 
 private Map _publicDevicePreference(Map entry) {
     def copy = [:]
-    entry.each { key, value ->
+    for (Map.Entry e in entry) {
+        def key = e.key
+        def value = e.value
         if (!(key in ['rawValue', 'declared'])) copy.put(key, _deviceConfigurationPublicValue(value))
     }
     if (_devicePreferenceIsSecret(entry)) {
@@ -1676,7 +1680,7 @@ private Map _publicDevicePreference(Map entry) {
 
 private Map _deviceConfigurationProjection(Map source, List keys) {
     def result = [:]
-    keys.each { key ->
+    for (key in keys) {
         if (source?.containsKey(key)) result.put(key, _deviceConfigurationPublicValue(source.get(key), key))
     }
     return result
@@ -1721,7 +1725,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
         values.tags = _normalizedDeviceTags(d.tags)
     }
     if (fj?.dashboards instanceof List) values.dashboardIds = fj.dashboards.findAll { it.selected == true }.collect { it.id }
-    ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'].each { key ->
+    for (key in ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled']) {
         if (fj?.containsKey(key)) values.put(key, fj.get(key))
     }
     def applicable = [
@@ -1740,7 +1744,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
         googleHomeEnabled: _deviceFlag(fj?.googleHomeInstalled) && _deviceFlag(fj?.googleHomeSupported)
     ]
     def fields = _deviceConfigurationFieldDefinitions()
-    fields.each { field ->
+    for (field in fields) {
         String name = field.name
         field.source = name in ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled', 'dashboardIds'] ? 'fullJson' : 'fullJson.device'
         field.valuePresent = values.containsKey(name)
@@ -1770,7 +1774,7 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
                 def text = hubInternalGet('/device/accessibleLinkedDevices')
                 def available = text ? new groovy.json.JsonSlurper().parseText(text) : null
                 if (!(available?.devices instanceof List)) throw new IllegalStateException('Unrecognized linked-device choices')
-                available.devices.each { row ->
+                for (row in available.devices) {
                     if (row instanceof Map && row.hubId != null && row.deviceId != null) {
                         field.options << [value: "${row.hubId}-${row.deviceId}".toString(),
                             label: row.label ?: row.name ?: row.deviceId.toString(), disabled: _deviceFlag(row.linkedLocally)]
@@ -1891,7 +1895,9 @@ private List _nativeReportedDeviceAttributes(Map d) {
     def attributes = []
     def cs = d?.currentStates
     if (cs instanceof Map) {
-        cs.each { name, st ->
+        for (Map.Entry entry in cs) {
+            def name = entry.key
+            def st = entry.value
             if (name != null) {
                 def dataType = (st instanceof Map) ? st.dataType?.toString() : null
                 def value = _nativeDeviceStateValue(st)
@@ -1911,7 +1917,7 @@ private Map _getDeviceFromFullJson(deviceId, Map fj) {
     def d = fj.device
     def commands = []
     if (fj.commands instanceof List) {
-        fj.commands.each { c ->
+        for (c in fj.commands) {
             if (c?.name != null) commands << [name: c.name, arguments: _fullJsonCommandArgs(c)]
         }
     }
@@ -1996,9 +2002,13 @@ private Map _deviceDetailReadStatus(String section, Map fj, Map d, value, device
             spammyThreshold: 'scalar', defaultIcon: 'scalar', showOnHome: 'scalar']]
     ]
     def problems = []
-    contracts.get(section)?.each { scope, definitions ->
+    for (Map.Entry entry in contracts.get(section)) {
+        def scope = entry.key
+        def definitions = entry.value
         Map source = scope == 'device' ? d : fj
-        definitions.each { key, shape ->
+        for (Map.Entry e in definitions) {
+            def key = e.key
+            def shape = e.value
             def nativeValue = source.get(key)
             boolean valid = nativeValue == null || (shape == 'map' ? nativeValue instanceof Map :
                 shape == 'list' ? nativeValue instanceof List : shape == 'stringOrList' ? nativeValue instanceof String || nativeValue instanceof List :
@@ -2019,7 +2029,8 @@ private List _deviceDetailFieldNames(String section, value) {
     }
     if (value instanceof List) {
         def names = []
-        value.eachWithIndex { row, index -> names << index.toString() }
+        int index = -1
+        for (row in value) { index++; names << index.toString() }
         return names
     }
     return []
@@ -2042,7 +2053,8 @@ private _deviceDetailSelectedFields(String section, value, List fields) {
     }
     if (value instanceof List) {
         def selected = []
-        value.eachWithIndex { row, index -> if (fields.contains(index.toString())) selected << row }
+        int index = -1
+        for (row in value) { index++; if (fields.contains(index.toString())) selected << row }
         return selected
     }
     return value
@@ -2059,7 +2071,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
                                        args: [deviceId: deviceId.toString(), limit: 50]],
                                dependents: [gateway: 'hub_read_apps_code', tool: 'hub_list_device_dependents',
                                             args: [deviceId: deviceId.toString()]]]]
-    selected.each { section ->
+    for (section in selected) {
         def value
         def keys = []
         switch (section) {
@@ -2565,7 +2577,9 @@ private Map _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) {
         if (!(waitFor.expectedValues instanceof List) || waitFor.expectedValues.isEmpty()) {
             throw new IllegalArgumentException("waitFor.expectedValues must be a non-empty list of strings")
         }
-        waitFor.expectedValues.eachWithIndex { v, i ->
+        int i = -1
+        for (v in waitFor.expectedValues) {
+            i++
             if (!(v instanceof String)) {
                 throw new IllegalArgumentException("waitFor.expectedValues[${i}] must be a string, got: ${_describeValueForError(v)}")
             }
@@ -2725,7 +2739,9 @@ private List _buildRunMethodArgs(command, List params, Map fullJson) {
     def cmdDef = (fullJson?.commands instanceof List) ? fullJson.commands.find { it?.name == command } : null
     def declaredTypes = _commandParamTypes(cmdDef)
     def out = []
-    params.eachWithIndex { v, i ->
+    int i = -1
+    for (v in params) {
+        i++
         def t = (i < declaredTypes.size() && declaredTypes[i]) ? declaredTypes[i] : _inferRunMethodArgType(v)
         out << [type: t, value: v]
     }
@@ -2765,7 +2781,9 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
             return null
         }
         def snapshot = [:]
-        cs.each { name, st ->
+        for (Map.Entry entry in cs) {
+            def name = entry.key
+            def st = entry.value
             if (name != null) {
                 def val = _nativeDeviceStateValue(st)
                 def rawDate = (st instanceof Map) ? st.date : null
@@ -3006,7 +3024,7 @@ def toolPollUntilAttribute(args) {
         throw new IllegalArgumentException("attribute is required and must be a non-empty string")
     }
 
-    deviceIdList.each { did -> _requireDeviceToolAccess(did) }
+    for (did in deviceIdList) { _requireDeviceToolAccess(did) }
 
     // 2b. Validate mode (any/all over deviceIds). Only meaningful with deviceIds; default "all"
     //     (converge when EVERY device matches). "any" converges on the first device to match.
@@ -3820,7 +3838,7 @@ private Map _devicePreferencePanePayload(deviceId, Map overrides = [:], List pre
         defaultCurrentState: d.get("defaultCurrentState") == null ? "" : d.get("defaultCurrentState").toString(),
         commandRetry: retryEnabled.value, showOnHome: showOnHome.value,
         preferences: preferenceRows]
-    overrides.each { key, value -> payload.put(key, value) }
+    for (Map.Entry entry in overrides) { def key = entry.key; def value = entry.value; payload.put(key, value) }
     return payload
 }
 
@@ -3856,7 +3874,7 @@ private _normalizedDevicePreferenceValue(Map entry, value) {
             def bounds = range.split("\\.\\.", -1)
             if (bounds.size() != 2) throw new IllegalArgumentException("Preference '${entry.name}' has an unsupported numeric range; inspect its configuration")
             def limits = []
-            bounds.each { bound ->
+            for (bound in bounds) {
                 def token = bound.trim()
                 if (!token || token == '*') limits << null
                 else {
@@ -3898,14 +3916,16 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
     def allowed = ["deviceId", "bestPracticeKey", "label", "name", "deviceNetworkId", "room", "enabled", "dataValues", "preferences", "showOnHome", "defaultCurrentState", "tags", "confirm"] + _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()
     if (args.keySet().any { !allowed.contains(it.toString()) }) throw new IllegalArgumentException("Unknown device update property; read hub_get_device(mode='configuration') for supported fields")
     def stringFields = ["label", "name", "deviceNetworkId", "room", "defaultCurrentState", "zigbeeId", "notes", "defaultIcon"]
-    stringFields.each { field ->
+    for (field in stringFields) {
         if (args.containsKey(field) && !(args.get(field) instanceof String)) throw new IllegalArgumentException("${field} must be a string")
     }
     def booleanFields = ["enabled", "showOnHome", "meshEnabled", "retryEnabled", "meshFullSync", "confirm"] + _deviceAssistantProperties().keySet().toList()
-    booleanFields.each { field ->
+    for (field in booleanFields) {
         if (args.containsKey(field) && !(args.get(field) instanceof Boolean)) throw new IllegalArgumentException("${field} must be a boolean")
     }
-    [maxEvents: [1, 2000], maxStates: [1, 2000], spammyThreshold: [100, 2000], deviceTypeId: [1, 2147483647]].each { field, bounds ->
+    for (Map.Entry e in [maxEvents: [1, 2000], maxStates: [1, 2000], spammyThreshold: [100, 2000], deviceTypeId: [1, 2147483647]]) {
+        def field = e.key
+        def bounds = e.value
         if (args.containsKey(field)) {
             def value = args.get(field)
             if (!(value instanceof Number) || value < bounds[0] || value > bounds[1] || new BigDecimal(value.toString()).stripTrailingZeros().scale() > 0) {
@@ -3960,7 +3980,9 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
         def assistantAvailable = [homeKitEnabled: _deviceFlag(full.homeKitSelectionEnabled),
             amazonAlexaEnabled: _deviceFlag(full.amazonAlexaInstalled) && _deviceFlag(full.amazonAlexaSupported),
             googleHomeEnabled: _deviceFlag(full.googleHomeInstalled) && _deviceFlag(full.googleHomeSupported)]
-        _deviceAssistantProperties().each { property, integration ->
+        for (Map.Entry e in _deviceAssistantProperties()) {
+            def property = e.key
+            def integration = e.value
             if (args.containsKey(property) && !assistantAvailable.get(property)) throw new IllegalArgumentException("${property} is unavailable: install/enable the native ${integration} integration and verify this device is supported")
         }
         if (_deviceAssistantProperties().keySet().any { args.containsKey(it) } && !_deviceAssistantProperties().keySet().every { full.containsKey(it) && full.get(it) instanceof Boolean }) {
@@ -3990,7 +4012,9 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
         def model = _readDevicePreferenceModel(full)
         if (model.writeSafe != true) throw new IllegalArgumentException("Unable to read complete preference definitions/storage before updating; inspect hub_get_device(mode='configuration')")
         def normalized = [:]
-        args.preferences.each { key, setting ->
+        for (Map.Entry e in args.preferences) {
+            def key = e.key
+            def setting = e.value
             def name = key.toString()
             def entry = _lookupDevicePreference(model, name)
             if (!entry) throw new IllegalArgumentException("Unknown preference '${name}'; read hub_get_device(mode='configuration') for declared names")
@@ -4032,13 +4056,17 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
 private void _verifyDevicePreferenceWrites(deviceId, Map preferences, List changes, List errors) {
     def full = _fetchDeviceFullJson(deviceId)
     if (!(full?.device instanceof Map)) {
-        preferences.each { name, setting ->
+        for (Map.Entry entry in preferences) {
+            def name = entry.key
+            def setting = entry.value
             errors << [property: "preference.${name}", stage: "verify", status: "unavailable", error: "Update accepted but could not confirm the preference -- the read-back fetch failed."]
         }
         return
     }
     def model = _readDevicePreferenceModel(full)
-    preferences.each { name, setting ->
+    for (Map.Entry entry in preferences) {
+        def name = entry.key
+        def setting = entry.value
         _verifyDevicePreferenceWrite(deviceId, name.toString(), setting, changes, errors, model)
     }
 }
@@ -4065,7 +4093,9 @@ private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, Li
 }
 
 private void _applyNativeDeviceDataValues(deviceId, Map values, List changes, List errors) {
-    values.each { key, value ->
+    for (Map.Entry entry in values) {
+        def key = entry.key
+        def value = entry.value
         String stage = 'write'
         try {
             def payload = [id: _prefSaveDeviceId(deviceId), method: 'updateDataValue',
@@ -4073,7 +4103,7 @@ private void _applyNativeDeviceDataValues(deviceId, Map values, List changes, Li
             def result = hubInternalPostJson('/device/runmethod', groovy.json.JsonOutput.toJson(payload))
             if (!(result instanceof Map) || result.success != true) {
                 errors << [property: "dataValue.${key}", stage: stage, error: 'Native data-value update was not accepted; inspect device data before retrying.']
-                return
+                continue
             }
             stage = 'verify'
             def readback = _fetchDeviceFullJson(deviceId)
@@ -4106,7 +4136,9 @@ private void _applyDevicePreferencePatch(deviceId, Map preferences, List changes
             stage = 'write'
             def response = hubInternalPostJson('/device/preference/save', groovy.json.JsonOutput.toJson(payload))
             if (response instanceof Map && (response.success == false || response._unparseable == true)) {
-                nativeSettings.each { name, setting ->
+                for (Map.Entry entry in nativeSettings) {
+                    def name = entry.key
+                    def setting = entry.value
                     errors << [property: "preference.${name}", stage: 'write',
                         status: response._unparseable == true ? 'unavailable' : 'failed',
                         error: response._unparseable == true ?
@@ -4117,7 +4149,9 @@ private void _applyDevicePreferencePatch(deviceId, Map preferences, List changes
                 saveAccepted = true
             }
         } catch (Exception ignored) {
-            nativeSettings.each { name, setting ->
+            for (Map.Entry entry in nativeSettings) {
+                def name = entry.key
+                def setting = entry.value
                 errors << [property: "preference.${name}", stage: stage, status: stage == 'write' ? 'failed' : 'unavailable',
                     error: 'Preference update or verification failed; inspect the device configuration before retrying.']
             }
@@ -4127,7 +4161,9 @@ private void _applyDevicePreferencePatch(deviceId, Map preferences, List changes
         try {
             _verifyDevicePreferenceWrites(deviceId, nativeSettings, changes, errors)
         } catch (Exception ignored) {
-            nativeSettings.each { name, setting ->
+            for (Map.Entry entry in nativeSettings) {
+                def name = entry.key
+                def setting = entry.value
                 errors << [property: "preference.${name}", stage: 'verify', status: 'unavailable',
                     error: 'Preference update or verification failed; inspect the device configuration before retrying.']
             }
@@ -4161,14 +4197,16 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List chang
     def linkedIdentity = args.containsKey("deviceNetworkId") && _deviceFlag(full?.device?.linkedDevice)
     if (formProperties || args.containsKey("tags") || linkedIdentity) {
         def overrides = [:]
-        (formProperties + ["label", "name", "deviceNetworkId", "tags"]).unique().each { property ->
+        for (property in (formProperties + ["label", "name", "deviceNetworkId", "tags"]).unique()) {
             if (args.containsKey(property)) overrides.put(property, property == "tags" ? args.tags.collect { it.trim() }.findAll { it }.join(",") : args.get(property))
         }
         def targets = new LinkedHashMap(overrides)
-        overrides.keySet().each { args.remove(it) }
+        for (it in overrides.keySet()) { args.remove(it) }
         try {
             def updated = _postDeviceConfigurationForm(deviceId, overrides, errors)
-            targets.each { property, wanted ->
+            for (Map.Entry entry in targets) {
+                def property = entry.key
+                def wanted = entry.value
                 def present = updated?.device instanceof Map && updated.device.containsKey(property)
                 def actual = present ? updated.device.get(property) : null
                 if (property == "dashboardIds") {
@@ -4183,23 +4221,25 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List chang
                 else errors << [property: property, error: present ? "POST accepted but ${property} read back as a different value; inspect configuration before retrying." : "POST accepted but could not confirm ${property}; native read-back is unavailable."]
             }
         } catch (Exception e) {
-            targets.each { property, wanted -> errors << [property: property, error: e.message ?: e.toString()] }
+            for (Map.Entry entry in targets) { def property = entry.key; def wanted = entry.value; errors << [property: property, error: e.message ?: e.toString()] }
         }
     }
     def assistants = _deviceAssistantProperties()
     def assistantRequests = assistants.keySet().findAll { args.containsKey(it) }
     if (assistantRequests) {
         def targets = [:]
-        assistantRequests.each { targets.put(it, args.remove(it)) }
+        for (it in assistantRequests) { targets.put(it, args.remove(it)) }
         try {
             def fresh = _fetchDeviceFullJson(deviceId)
             if (!(fresh?.device instanceof Map) || !assistants.keySet().every { fresh.containsKey(it) && fresh.get(it) instanceof Boolean }) throw new RuntimeException("Unable to read all current assistant assignments before saving; no assistant update sent")
             def payload = [deviceId: _prefSaveDeviceId(deviceId)]
-            assistants.each { property, integration -> payload.put(property, fresh.get(property)) }
+            for (Map.Entry entry in assistants) { def property = entry.key; def integration = entry.value; payload.put(property, fresh.get(property)) }
             payload.putAll(targets)
             def response = hubInternalPostJson("/device/updateAssistants", groovy.json.JsonOutput.toJson(payload))
             def readback = _fetchDeviceFullJson(deviceId)
-            targets.each { property, wanted ->
+            for (Map.Entry entry in targets) {
+                def property = entry.key
+                def wanted = entry.value
                 def nativeResult = response?.assistants?.get(assistants.get(property))
                 if (nativeResult?.success == false) errors << [property: property, error: "Native assistant update failed: ${nativeResult.reason ?: 'unspecified integration error'}"]
                 else if (response?.success == false && nativeResult?.success != true) errors << [property: property, error: "Native assistant update was rejected without a per-integration success result; inspect the native integration settings."]
@@ -4207,10 +4247,10 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List chang
                 else errors << [property: property, error: "POST accepted but could not confirm ${property}; inspect the native integration settings."]
             }
         } catch (Exception e) {
-            targets.each { property, wanted -> errors << [property: property, error: e.message ?: e.toString()] }
+            for (Map.Entry entry in targets) { def property = entry.key; def wanted = entry.value; errors << [property: property, error: e.message ?: e.toString()] }
         }
     }
-    ["showOnHome", "defaultCurrentState"].each { property ->
+    for (property in ["showOnHome", "defaultCurrentState"]) {
         if (args.containsKey(property)) {
             def wanted = args.remove(property)
             try {
@@ -4230,7 +4270,7 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List chang
                 }
                 if (!accepted) {
                     errors << [property: property, error: "Hub did not accept defaultCurrentState; use an attribute name from the device's current states."]
-                    return
+                    continue
                 }
                 def readback = _fetchDeviceFullJson(deviceId)?.device
                 def actual = readback?.get(property)
@@ -4520,7 +4560,7 @@ private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides
     if (fieldOverrides) model.putAll(fieldOverrides)
     // Native readback verifies omission preserves null for these fields; blanks change stored values.
     // Apply overrides first so explicit empty-string clears and roomId=0 remain in the form.
-    ["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"].each { key ->
+    for (key in ["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"]) {
         if (model.get(key) == null) model.remove(key)
     }
     def enc = { v ->
@@ -4543,7 +4583,7 @@ private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides, List erro
     def updated = _fetchDeviceFullJson(deviceId)
     if (!(updated?.device instanceof Map)) return updated
     def restore = [:]
-    ["label", "name", "deviceNetworkId"].each { property ->
+    for (property in ["label", "name", "deviceNetworkId"]) {
         def original = fj.device.get(property)
         boolean intentionalClear = fieldOverrides.containsKey(property) && !fieldOverrides.get(property)
         if (original && !intentionalClear && updated.device.containsKey(property) && !updated.device.get(property)) {
@@ -4562,7 +4602,9 @@ private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides, List erro
         }
         def recovered = _fetchDeviceFullJson(deviceId)
         if (recovered?.device instanceof Map) updated = recovered
-        restore.each { property, original ->
+        for (Map.Entry entry in restore) {
+            def property = entry.key
+            def original = entry.value
             if (!(recovered?.device instanceof Map) || recovered.device.get(property)?.toString() != original.toString()) {
                 recoveryErrors << [property: property, stage: 'restore',
                     error: "Device-edit form blanked ${property}; native restoration could not be confirmed. Verify and re-set ${property} before retrying."]
@@ -5126,7 +5168,7 @@ def toolDeleteDevice(args) {
             if (obj instanceof Collection) return obj.any { containsDeviceRef(it) }
             return obj.toString() == deviceId
         }
-        childApps?.each { childApp ->
+        for (childApp in childApps) {
             try {
                 def ruleData = childApp.getRuleData()
                 if (ruleData && containsDeviceRef(ruleData)) {
@@ -5509,11 +5551,11 @@ private List _deviceSwapEnumOptions(Map input) {
     def out = []
     def opts = input?.options
     if (opts instanceof Map) {
-        opts.each { k, v -> out << [id: k?.toString(), label: v?.toString()] }
+        for (Map.Entry entry in opts) { def k = entry.key; def v = entry.value; out << [id: k?.toString(), label: v?.toString()] }
     } else if (opts instanceof List) {
         for (opt in opts) {
             if (opt instanceof Map) {
-                opt.each { k, v -> out << [id: k?.toString(), label: v?.toString()] }
+                for (Map.Entry entry in opt) { def k = entry.key; def v = entry.value; out << [id: k?.toString(), label: v?.toString()] }
             }
         }
     }

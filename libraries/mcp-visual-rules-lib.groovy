@@ -466,10 +466,12 @@ private Map _vrb2NodeFromDialog(Map node, String typeKey) {
     // description/deviceIds/predefinedColor; the classic serialization adds index/type/result,
     // which are list bookkeeping rather than rule data.
     def config = [:]
-    node.each { k, v ->
+    for (Map.Entry entry in node) {
+        def k = entry.key
+        def v = entry.value
         def key = k?.toString()
-        if (key == null) return
-        if (key in [typeKey, "id", "kind", "config", "description", "deviceIds", "predefinedColor", "index", "type", "result"]) return
+        if (key == null) continue
+        if (key in [typeKey, "id", "kind", "config", "description", "deviceIds", "predefinedColor", "index", "type", "result"]) continue
         config.put(key, v)
     }
     def out = [type: node.get(typeKey), config: config]
@@ -509,7 +511,8 @@ private List _vrb2EditorList(def raw, String typeKey, String label) {
     if (raw == null) return []
     if (!(raw instanceof List)) throw new IllegalArgumentException("${label} must be an array.")
     def out = []
-    raw.eachWithIndex { item, i -> out << _vrb2EditorItem(item, typeKey, "${label}[${i}]") }
+    int i = -1
+    for (item in raw) { i++; out << _vrb2EditorItem(item, typeKey, "${label}[${i}]") }
     return out
 }
 
@@ -524,7 +527,9 @@ private String _vrb2UniqueId(String base, Set used) {
 }
 
 private void _vrb2AssignIds(List items, String prefix, Set used) {
-    items.eachWithIndex { item, i ->
+    int i = -1
+    for (item in items) {
+        i++
         if (item.id == null || !item.id.toString().trim()) {
             item.id = _vrb2UniqueId("${prefix}-${i + 1}".toString(), used)
         }
@@ -538,7 +543,9 @@ private void _vrb2ChainEdges(List edges, String from, String port, List chain, S
     // still gets its own edge so the decision port is not left dangling.
     if (!chain.isEmpty()) {
         edges << [from: from, to: chain[0].id, port: port]
-        chain.eachWithIndex { item, i ->
+        int i = -1
+        for (item in chain) {
+            i++
             def to = (i + 1 < chain.size()) ? chain[i + 1].id : terminal
             if (to != null) edges << [from: item.id, to: to, port: "next"]
         }
@@ -577,8 +584,8 @@ private Map _vrb2Compose(Map editor) {
     // Register every caller-supplied id BEFORE generating any, so a generated id can never
     // collide with an explicit one that appears later in the document.
     def used = [] as Set
-    [triggers, conditions, thenActions, elseActions, commonActions].each { list ->
-        list.each { if (it.id != null) used << it.id.toString() }
+    for (list in [triggers, conditions, thenActions, elseActions, commonActions]) {
+        for (it in list) { if (it.id != null) used << it.id.toString() }
     }
     _vrb2AssignIds(triggers, "trigger", used)
     _vrb2AssignIds(conditions, "condition", used)
@@ -602,21 +609,21 @@ private Map _vrb2Compose(Map editor) {
     }
 
     def nodes = []
-    triggers.each { nodes << [id: it.id, kind: "trigger", type: it.type, config: it.config] }
+    for (it in triggers) { nodes << [id: it.id, kind: "trigger", type: it.type, config: it.config] }
     nodes << [id: triggerMergeId, kind: "merge", type: "triggerMerge", config: [:]]
     nodes << [id: decisionId, kind: "decision", type: decisionType,
               config: [conditions: conditions.collect { [id: it.id, type: it.type, config: it.config] }]]
-    thenActions.each { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
-    elseActions.each { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
+    for (it in thenActions) { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
+    for (it in elseActions) { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
 
     def edges = []
-    triggers.each { edges << [from: it.id, to: triggerMergeId, port: "next"] }
+    for (it in triggers) { edges << [from: it.id, to: triggerMergeId, port: "next"] }
     edges << [from: triggerMergeId, to: decisionId, port: "next"]
     _vrb2ChainEdges(edges, decisionId, "true", thenActions, branchMergeId)
     _vrb2ChainEdges(edges, decisionId, "false", elseActions, branchMergeId)
     if (branchMergeId != null) {
         nodes << [id: branchMergeId, kind: "merge", type: "branchMerge", config: [:]]
-        commonActions.each { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
+        for (it in commonActions) { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
         _vrb2ChainEdges(edges, branchMergeId, "next", commonActions, null)
     }
     return [version: 1, nodes: nodes, edges: edges]
@@ -653,7 +660,7 @@ private Map _vrb2Decompose(Map graph) {
         throw new IllegalArgumentException("The rule is not a Visual Rule Builder 2.0 schema version 1 document.")
     }
     def byId = [:]
-    graph.nodes.each { if (it instanceof Map && it.id != null) byId.put(it.id.toString(), it) }
+    for (it in graph.nodes) { if (it instanceof Map && it.id != null) byId.put(it.id.toString(), it) }
     def triggerMerge = graph.nodes.find { it instanceof Map && it.kind == "merge" && it.type == "triggerMerge" }
     def decision = graph.nodes.find { it instanceof Map && it.kind == "decision" && (it.type == null || it.type in ["all", "any"]) }
     def branchMerge = graph.nodes.find { it instanceof Map && it.kind == "merge" && it.type == "branchMerge" }
@@ -665,7 +672,7 @@ private Map _vrb2Decompose(Map graph) {
         throw new IllegalArgumentException("An OR decision must contain at least one condition.")
     }
     def nextMap = [:]
-    graph.edges.each {
+    for (it in graph.edges) {
         if (it instanceof Map && it.from != null && it.port != null) {
             nextMap["${it.from}:${it.port}".toString()] = it.to?.toString()
         }
@@ -847,7 +854,7 @@ private List _vrb2Validate(Map graph) {
     if (triggerMergeIds.size() == 1 && decisionIds.size() == 1) {
         def triggerMergeId = triggerMergeIds[0]
         def decisionId = decisionIds[0]
-        triggerIds.each { tid ->
+        for (tid in triggerIds) {
             if (nextMap["${tid}:next".toString()] != triggerMergeId) {
                 errors << "Trigger node '${tid}' must connect to the triggerMerge node '${triggerMergeId}'."
             }
@@ -871,7 +878,7 @@ private List _vrb2Validate(Map graph) {
         // leaves its downstream nodes unvisited, and reporting those as disconnected would send
         // the author adding edges instead of fixing the one real problem.
         if (chainErrors.isEmpty() && branchMergeIds.size() <= 1) {
-            idList.findAll { !visited.contains(it) }.each { errors << "Node '${it}' is not connected to the rule's flow." }
+            for (it in idList.findAll { !visited.contains(it) }) { errors << "Node '${it}' is not connected to the rule's flow." }
         }
     }
     return errors.collect { it.toString() }.unique()
@@ -891,8 +898,8 @@ private List _vrb2UnknownTypes(Map graph) {
     // [where, id, type] for every trigger/action/condition whose type is outside this build's catalogs.
     def out = []
     if (!(graph?.nodes instanceof List)) return out
-    graph.nodes.each { node ->
-        if (!(node instanceof Map)) return
+    for (node in graph.nodes) {
+        if (!(node instanceof Map)) continue
         def type = node.type?.toString()
         if (node.kind == "trigger" && !(type in _vrb2TriggerTypes())) out << [where: _vrb2Where("trigger"), id: node.id?.toString(), type: type]
         else if (node.kind == "action" && !(type in _vrb2ActionTypes())) out << [where: _vrb2Where("action"), id: node.id?.toString(), type: type]
@@ -911,11 +918,11 @@ private Set _vrb2TypeNames(def graph) {
     // not vouch for the same name used as a TRIGGER.
     def names = [] as Set
     if (!(graph instanceof Map) || !(graph.nodes instanceof List)) return names
-    graph.nodes.each { node ->
-        if (!(node instanceof Map)) return
+    for (node in graph.nodes) {
+        if (!(node instanceof Map)) continue
         if (node.kind in ["trigger", "action"] && node.type != null) names << _vrb2TypeKey(_vrb2Where(node.kind.toString()), node.type.toString())
         if (node.kind == "decision" && node.config instanceof Map && node.config.conditions instanceof List) {
-            node.config.conditions.each { if (it instanceof Map && it.type != null) names << _vrb2TypeKey(_vrb2Where("condition"), it.type.toString()) }
+            for (it in node.config.conditions) { if (it instanceof Map && it.type != null) names << _vrb2TypeKey(_vrb2Where("condition"), it.type.toString()) }
         }
     }
     return names
@@ -978,10 +985,12 @@ private void _vrbValidateClassicShape(Map definition) {
     def readEnvelope = ["promptHistory", "name", "rawName", "rulePaused", "success", "appId", "format"]
     def unknownKeys = definition.keySet().collect { it.toString() }.findAll { !(it in ["whenNodes", "thenNodes", "elseNodes"] + readEnvelope) }
     if (unknownKeys) throw new IllegalArgumentException("Unknown classic key(s): ${unknownKeys.join(', ')}. A classic definition takes only whenNodes, thenNodes, elseNodes (the keys a hub_get_visual_rule read adds around them are ignored).")
-    ["whenNodes", "thenNodes", "elseNodes"].each { key ->
-        if (definition[key] == null) return
+    for (key in ["whenNodes", "thenNodes", "elseNodes"]) {
+        if (definition[key] == null) continue
         if (!(definition[key] instanceof List)) throw new IllegalArgumentException("definition.${key} must be an array of node objects.")
-        definition[key].eachWithIndex { node, i ->
+        int i = -1
+        for (node in definition[key]) {
+            i++
             if (!(node instanceof Map)) throw new IllegalArgumentException("definition.${key}[${i}] must be a node object.")
         }
     }
@@ -1469,7 +1478,7 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
             // containsKey is enough: _vrbSaveGraphMeta sets these only when the hub sent a
             // non-null value. (Unlike the read-back merge below, where a present EMPTY list is
             // itself the answer and must not be collapsed by a truthiness test.)
-            ["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"].each { k ->
+            for (k in ["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"]) {
                 if (saved.containsKey(k)) failed[k] = saved[k]
             }
             return failed
