@@ -11,8 +11,8 @@ name: Hub E2E (test hub)
 # only way to auto-run e2e on a contributor's fork. The workflow file itself always
 # comes from the base branch under pull_request_target, so a PR cannot alter the CI
 # logic; it can only change the app source / tests that get deployed and run, which
-# is gated for untrusted authors by the `approve` job below. After approval, a fork PR's library
-# bundle is published by the `fork-bundle` job, so a single approval click runs the whole install.
+# is gated for untrusted authors by the `approve` job below. After approval, a fork PR's built apps
+# are published by the `fork-bundle` job, so a single approval click runs the whole install.
 #
 # Who runs automatically vs. who waits for approval is decided by the `approve` job's
 # environment selection. When the hub secret genuinely isn't configured (someone
@@ -290,9 +290,10 @@ jobs:
         run: echo "e2e approved to run against the shared test hub"
 
   # Fork PRs have no bundle-artifacts entry (publish-bundle-artifact.yml only runs on pushes to THIS
-  # repo), so once `approve` clears, build the PR's library bundle and publish it here under
+  # repo), so once `approve` clears, build the PR's apps (libraries inlined) and publish them here under
   # shas/<head-sha>/ -- see publish_fork_bundle.sh for the trust model. Checkout is the BASE ref, so the
-  # script and builder are main's; only the PR's libraries/ is read, as data. Same-repo PRs skip it.
+  # script and builder are main's; only the PR's app sources and libraries/ are read, as data.
+  # Same-repo PRs skip it.
   fork-bundle:
     needs: [lane-gate, approve]
     if: >-
@@ -311,7 +312,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
-      - name: Publish fork PR bundle artifact
+      - name: Publish fork PR release artifact
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_REPO: ${{ github.repository }}
@@ -323,14 +324,14 @@ jobs:
       # A failure here skips e2e, whose own gate post then never runs -- so the required status would
       # never be reported at all (reads as "still going", not "broke"). The reachable triggers are
       # ordinary: the CDN poll timing out on a fresh push, an API/fetch blip, or a deleted head repo.
-      - name: Post e2e gate status (bundle publish failed)
+      - name: Post e2e gate status (artifact publish failed)
         if: failure() && github.event_name == 'pull_request_target'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           GATE_SHA: ${{ github.event.pull_request.head.sha }}
           STATE: failure
-          DESC: 'fork bundle publish failed; e2e did not run -- re-run this workflow'
+          DESC: 'fork artifact publish failed; e2e did not run -- re-run this workflow'
         run: bash .github/scripts/post_e2e_gate.sh
 
   # Explicit maintenance only. Normal E2E calls the standing watchdog but never edits its code.
@@ -350,7 +351,7 @@ jobs:
       cancel-in-progress: false
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
-      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+      WATCHDOG_URL: ${{ secrets.WATCHDOG31_MCP_URL }}
       GH_TOKEN: ${{ github.token }}
       LEASE_WAIT_TIMEOUT_S: '0'
       BACKUP_ARTIFACT: watchdog-before-maintenance-${{ github.run_attempt }}
@@ -412,7 +413,7 @@ jobs:
       cancel-in-progress: false
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
-      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+      WATCHDOG_URL: ${{ secrets.WATCHDOG31_MCP_URL }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v7
@@ -452,7 +453,7 @@ jobs:
       cancel-in-progress: false
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
-      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+      WATCHDOG_URL: ${{ secrets.WATCHDOG31_MCP_URL }}
     steps:
       - uses: actions/checkout@v7
       - name: Mask access tokens
@@ -559,11 +560,11 @@ jobs:
     env:
       MCP_URL: ${{ secrets.LEVEL99_TEST_HUB_MCP_URL }}
       # The standing watchdog is a SEPARATE on-hub app with its own cloud MCP endpoint (secret
-      # WATCHDOG_MCP_URL). It drives the PR install and the fixture purge over THIS url,
+      # WATCHDOG31_MCP_URL). It drives the PR install and the fixture purge over THIS url,
       # independent of the MCP server under test
       # ($MCP_URL) -- so a deploy that bricks the server under test can still be replaced
       # through the watchdog's own live endpoint.
-      WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+      WATCHDOG_URL: ${{ secrets.WATCHDOG31_MCP_URL }}
 
     steps:
       - uses: actions/checkout@v7
@@ -607,8 +608,8 @@ jobs:
             exit 0
           fi
           if [ -z "$WATCHDOG_URL" ]; then
-            echo "::notice::WATCHDOG_MCP_URL secret not available — skipping E2E (the watchdog endpoint is not provisioned yet; expected until @level99 sets WATCHDOG_MCP_URL)"
-            echo "E2E NOT RUN — watchdog secret (WATCHDOG_MCP_URL) not configured." >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::WATCHDOG31_MCP_URL secret not available — skipping E2E (the watchdog endpoint is not provisioned yet; expected until @level99 sets WATCHDOG31_MCP_URL)"
+            echo "E2E NOT RUN — watchdog secret (WATCHDOG31_MCP_URL) not configured." >> "$GITHUB_STEP_SUMMARY"
             echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -691,7 +692,7 @@ jobs:
           while IFS= read -r f; do
             [ -z "$f" ] && continue
             case "$f" in
-              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog-v3.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk_conformance_helpers.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|.github/scripts/watchdog_v3.py|.github/scripts/e2e_scope.py|libraries/*|bundles/*)
+              hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|e2e-deadman-watchdog-v3.groovy|e2e-deadman-watchdog-v3-1.groovy|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk_conformance_helpers.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e.yml|.github/scripts/lease_acquire.sh|.github/scripts/lease_release.sh|.github/scripts/mcp_setup_env.sh|.github/scripts/mcp_validate_package_tool.sh|.github/scripts/mcp_watchdog_lib.sh|.github/scripts/mcp_watchdog_deploy.sh|.github/scripts/mcp_arm_watchdog.sh|.github/scripts/mcp_disarm_watchdog.sh|.github/scripts/watchdog_v3.py|.github/scripts/e2e_scope.py|packageManifest.json|tools/build-release-app.py|tools/strip_source.py|libraries/*)
                 relevant=true ;;
             esac
           done <<< "$files"
@@ -849,7 +850,7 @@ jobs:
           fi
           # Every raw fetch goes through THIS repo, fork PRs included: raw.githubusercontent.com serves
           # any fork-network commit from the base repo, and the fork-bundle job published a fork PR's
-          # bundle under this repo's bundle-artifacts (the fork's own copy of that branch never gets one).
+          # built apps under this repo's bundle-artifacts (the fork's own copy of that branch never gets one).
           echo "::notice::PR head repo: $REPO"
           URL="https://raw.githubusercontent.com/$DEFAULT_REPO/$SHA/hubitat-mcp-server.groovy"
           echo "PR_SOURCE_URL=$URL" >> "$GITHUB_ENV"
@@ -861,7 +862,7 @@ jobs:
 
       # The watchdog is NOT deployed by e2e: e2e never writes to the watchdog app, it only drives the
       # standing watchdog's endpoint. A PR that changes the watchdog source
-      # (e2e-deadman-watchdog-v3.groovy) is validated by its specs plus an explicit maintenance run.
+      # (e2e-deadman-watchdog-v3-1.groovy) is validated by its specs plus an explicit maintenance run.
 
       # Watchdog v3 never restores on its own, so there is nothing to arm. This step confirms v3
       # answers and releases any deployment hold an earlier run left behind (a cancelled or crashed
@@ -870,8 +871,8 @@ jobs:
         if: steps.gate.outputs.available == 'true' && inputs.skip_install != 'true'
         run: bash .github/scripts/mcp_arm_watchdog.sh
 
-      # Install THIS PR's package through watchdog v3: one background operation installs the
-      # libraries bundle, then the child and parent apps, and reports each stage. The script follows
+      # Install THIS PR's package through watchdog v3: one background operation saves the built child
+      # and then the built parent (libraries inlined, one compile), and reports each stage. The script follows
       # the status, verifies both endpoints, and releases the hold. Blocking: a failed PR install
       # means the tests would run against stale/broken hub code.
       - name: Watchdog - install PR

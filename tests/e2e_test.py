@@ -1249,8 +1249,8 @@ class TestRunner:
         self._hub_info_optin: dict | None = None
         # the hub_read_rooms gateway-catalog disclosure (deterministic static enumeration).
         self._rooms_catalog: dict | None = None
-        # the resolved mcp-libraries bundle id (immutable) -- reused by test_export_bundle.
-        self._mcp_bundle_id: str | None = None
+        # an installed bundle's id (immutable) from test_list_bundles -- reused by test_export_bundle.
+        self._bundle_id: str | None = None
 
         # Cleanup tracking
         self.created_device_dnis: list[str] = []
@@ -14630,33 +14630,68 @@ class TestRunner:
 
     # -----------------------------------------------------------------------
     # Bundle tools (issue #209): McpBundlesLib-backed hub_list_bundles /
-    # hub_export_bundle / hub_delete_bundle. These prove that, after the
-    # modularization, the libraries actually load as a bundle on the real hub
-    # and the new tools work end-to-end. They ride on the watchdog PR-install step
-    # (the "Watchdog - install PR" job in hub-e2e.yml) that delivers the
-    # mcp-libraries bundle before tests run.
+    # hub_export_bundle / hub_delete_bundle, end-to-end on the real hub. The package
+    # itself ships no bundle (issue #522: the parent is installed with its libraries
+    # inlined), so these work on whatever bundle the hub has, and install the
+    # throwaway fixture (unused app code, never libraries) when it has none.
     # -----------------------------------------------------------------------
+
+    def _install_throwaway_bundle(self) -> str | None:
+        """Install tests/fixtures/mcp-e2e-throwaway-bundle.zip (unused app code in namespace
+        mcptest) at the PR head and return its bundle id, or None on a local run without the
+        PR raw URL env. The caller deletes it."""
+        raw_base = os.environ.get("PR_RAW_BASE")
+        sha = os.environ.get("PR_HEAD_SHA_RESOLVED")
+        if not (raw_base and sha):
+            return None
+        url = f"{raw_base}/{sha}/tests/fixtures/mcp-e2e-throwaway-bundle.zip"
+        # The hub fetches the zip from GitHub inside this call. If its response is lost,
+        # adopt the uniquely namespaced installed bundle by readback rather than re-running.
+        try:
+            installed = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_install_bundle", "args": {"importUrl": url, "confirm": True},
+            })
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            print("    [RECOVER-504] throwaway bundle install response lost; verifying by namespace")
+            time.sleep(3.0)
+            installed = {"success": True, "responseLost": True}
+        assert installed.get("success") is True, f"throwaway bundle install failed: {installed}"
+        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+        bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+        tw = next((b for b in bundles if b.get("namespace") == "mcptest"), None)
+        assert tw and tw.get("id"), \
+            f"throwaway bundle not listed after install: {[b.get('name') for b in bundles]}"
+        return str(tw["id"])
+
+    def _delete_bundle_quietly(self, bid: str, label: str) -> None:
+        try:
+            self._write_once("hub_manage_code", "hub_delete_bundle", {"bundleId": bid, "confirm": True}, label)
+        except Exception as exc:
+            print(f"  [WARN] {label}: delete {bid} failed: {exc}")
+
+    @staticmethod
+    def _first_bundle_id(listed) -> str | None:
+        bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+        ids = sorted(str(b["id"]) for b in bundles if isinstance(b, dict) and b.get("id"))
+        return ids[0] if ids else None
 
     @test("system_tools")
     def test_list_bundles(self) -> None:
-        """hub_list_bundles lists installed bundles, and the package's libraries bundle (delivered
-        by the watchdog PR-install step) is present with its libraries -- proof the split libraries
-        load as a bundle on the real hub."""
+        """hub_list_bundles reads the hub's installed bundles through the hub API, each with an id
+        and a name."""
         result = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
         assert result.get("source") == "hub_api", \
             f"hub_list_bundles did not return the populated hub API shape (source={result.get('source')!r})"
-        bundles = result.get("bundles", []) if isinstance(result, dict) else []
-        mcp_bundle = next(
-            (b for b in bundles if b.get("namespace") == "mcp"
-             and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
-            None,
-        )
-        assert mcp_bundle and mcp_bundle.get("id"), \
-            f"the mcp libraries bundle (containing McpRoomsLib) was not found: {[b.get('name') for b in bundles]}"
-        # Stash the resolved (immutable) bundle id so test_export_bundle can skip the identical
-        # list+filter round-trip; it falls back to a fresh hub_list_bundles when this is unset (isolation).
-        self._mcp_bundle_id = str(mcp_bundle["id"])
-        print(f"    BUNDLES_LIST ok -- '{mcp_bundle.get('name')}' contains {(mcp_bundle.get('contains') or {}).get('libraries')}")
+        bundles = result.get("bundles")
+        assert isinstance(bundles, list), f"hub_list_bundles returned no bundle list: {sorted(result)}"
+        malformed = [b for b in bundles if not (isinstance(b, dict) and b.get("id") and b.get("name"))]
+        assert not malformed, f"hub_list_bundles entries lack an id or name: {malformed[:3]}"
+        # Stash an (immutable) bundle id so test_export_bundle can skip the identical list
+        # round-trip; it lists again when this is unset (isolation run, or a hub with no bundles).
+        self._bundle_id = self._first_bundle_id(result)
+        print(f"    BUNDLES_LIST ok -- {len(bundles)} bundle(s): {[b.get('name') for b in bundles]}")
 
     def _list_all_file_names(self, name_filter: str | None = None) -> tuple[list, bool]:
         """Enumerate File Manager names via cursor pagination -> (names, authoritative).
@@ -14705,20 +14740,16 @@ class TestRunner:
         assert "freeSpaceBytes" in listing, f"hub_list_files did not report free space: {sorted(listing)}"
         assert all("type" in f for f in listing.get("files") or []), f"listing entries lack a type: {(listing.get('files') or [])[:3]}"
         self._expect_tool_refusal("hub_list_files", {"folder": "../etc"}, "relative File Manager folder")
-        # Reuse the immutable bundle id test_list_bundles already resolved; fall back to a fresh
-        # hub_list_bundles + identical filter when the stash is unset (isolation run).
-        if self._mcp_bundle_id:
-            bid = self._mcp_bundle_id
-        else:
-            listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
-            bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
-            target = next(
-                (b for b in bundles if b.get("namespace") == "mcp"
-                 and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
-                None,
-            )
-            assert target and target.get("id"), "no mcp libraries bundle available to export"
-            bid = str(target["id"])
+        # Reuse the bundle id test_list_bundles already resolved; list again when the stash is
+        # unset, and install the throwaway fixture (deleted in the finally) when the hub has none.
+        bid = self._bundle_id or self._first_bundle_id(
+            self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"}))
+        fixture_bid = None
+        if not bid:
+            fixture_bid = bid = self._install_throwaway_bundle()
+            if not bid:
+                print("    SKIP test_export_bundle: no bundle on the hub and PR_RAW_BASE/PR_HEAD_SHA_RESOLVED not set (local run)")
+                return
         fname = f"{PREFIX}bundle_export_{bid}.zip"
 
         def _list_files_once() -> tuple[list, bool]:
@@ -14837,6 +14868,8 @@ class TestRunner:
                         "bundle export backup cleanup")
             except Exception as exc:
                 print(f"  [WARN] bundle export backup sweep failed: {exc}")
+            if fixture_bid:
+                self._delete_bundle_quietly(fixture_bid, "export fixture bundle cleanup")
 
     @test("system_tools")
     def test_delete_bundle(self) -> None:
@@ -14845,33 +14878,12 @@ class TestRunner:
         The fixture creates no running app instance or library. Skipped on local runs
         where the PR raw URL env isn't set.
         """
-        raw_base = os.environ.get("PR_RAW_BASE")
-        sha = os.environ.get("PR_HEAD_SHA_RESOLVED")
-        if not (raw_base and sha):
-            print("    SKIP test_delete_bundle: PR_RAW_BASE/PR_HEAD_SHA_RESOLVED not set (local run)")
-            return
-        url = f"{raw_base}/{sha}/tests/fixtures/mcp-e2e-throwaway-bundle.zip"
         bid = None
         try:
-            # The hub fetches the zip from GitHub inside this call. If its response is lost,
-            # adopt the uniquely namespaced installed bundle by readback rather than re-running.
-            try:
-                installed = self.client.call_tool("hub_manage_code", {
-                    "tool": "hub_install_bundle", "args": {"importUrl": url, "confirm": True},
-                })
-            except (McpError, McpToolError, requests.HTTPError) as exc:
-                if "504" not in str(exc):
-                    raise
-                print("    [RECOVER-504] throwaway bundle install response lost; verifying by namespace")
-                time.sleep(3.0)
-                installed = {"success": True, "responseLost": True}
-            assert installed.get("success") is True, f"throwaway bundle install failed: {installed}"
-            listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
-            bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
-            tw = next((b for b in bundles if b.get("namespace") == "mcptest"), None)
-            assert tw and tw.get("id"), \
-                f"throwaway bundle not listed after install: {[b.get('name') for b in bundles]}"
-            bid = str(tw["id"])
+            bid = self._install_throwaway_bundle()
+            if not bid:
+                print("    SKIP test_delete_bundle: PR_RAW_BASE/PR_HEAD_SHA_RESOLVED not set (local run)")
+                return
             deleted = self._write_once(
                 "hub_manage_code", "hub_delete_bundle",
                 {"bundleId": bid, "confirm": True},
@@ -14886,13 +14898,7 @@ class TestRunner:
             print("    BUNDLE_DELETE ok -- throwaway installed, listed, deleted, verified gone")
         finally:
             if bid:
-                try:
-                    self._write_once(
-                        "hub_manage_code", "hub_delete_bundle",
-                        {"bundleId": bid, "confirm": True},
-                        "throwaway bundle cleanup")
-                except Exception as exc:
-                    print(f"  [WARN] throwaway bundle cleanup: delete {bid} failed: {exc}")
+                self._delete_bundle_quietly(bid, "throwaway bundle cleanup")
             # Bundle deletion leaves its unused app code behind. The run-end Layer 5
             # sweep removes its mcptest/Deadman Test Target code alongside the other app fixtures.
 

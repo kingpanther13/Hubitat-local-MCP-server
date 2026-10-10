@@ -440,21 +440,26 @@ def _bundleArtifactUrlForRef(location, String base, String ref) {
     return "${base}/bundle-artifacts/${keyPath}/${baseName}".toString()
 }
 
-// Probe the artifact's tiny .size marker (written atomically alongside the zip by the
-// publish workflow) instead of downloading the ~1MB zip just to check existence. An
-// integer body means the zip is there; a 404 (throws), an HTML error page, or any
-// non-integer body means no artifact -- the caller falls back to the committed zip.
-def _bundleArtifactExists(String artifactUrl) {
+// Probe the artifact's tiny .size marker (written atomically alongside the file by the
+// publish workflow) instead of downloading the artifact just to check existence. Returns
+// the byte count it records, or null when there is no artifact: a 404 (throws), an HTML
+// error page, or any non-integer body.
+def _artifactSizeMarker(String artifactUrl) {
     try {
         def r = _httpFetchUrl("${artifactUrl}.size")
-        return ((r?.status as Integer) == 200) && (r?.body?.toString()?.trim() ==~ /\d+/)
+        def body = r?.body?.toString()?.trim()
+        return ((r?.status as Integer) == 200 && body ==~ /\d+/) ? (body as Long) : null
     } catch (Exception e) {
         // A legitimate miss (404) and a transient probe failure (rate limit, network blip) both
         // land here; log so a fallback caused by a TRANSIENT failure is at least diagnosable
         // instead of silently indistinguishable from "no artifact published for this ref".
-        mcpLog("warn", "developer-mode", "_bundleArtifactExists: probe of ${artifactUrl}.size failed (${e.toString()}) -- treating as no artifact; the bundle leg falls back to the committed zip")
-        return false
+        mcpLog("warn", "developer-mode", "_artifactSizeMarker: probe of ${artifactUrl}.size failed (${e.toString()}) -- treating as no artifact")
+        return null
     }
+}
+
+def _bundleArtifactExists(String artifactUrl) {
+    return _artifactSizeMarker(artifactUrl) != null
 }
 
 // Parse "#include namespace.Name" directives from Groovy source. Returns an ordered,
@@ -633,19 +638,6 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
     // reject a GString importUrl (instanceof String is false for GStringImpl).
     def appUrl = "${base}/${ref}/hubitat-mcp-server.groovy".toString()
 
-    // Fetch the SELF app source at ref first, ONLY to read its #include directives for the
-    // bundle-coverage guard below. A fetch failure is a clean abort -- nothing written.
-    def appSource
-    try {
-        appSource = _fetchSourceFromUrl(appUrl)
-    } catch (Exception e) {
-        return [
-            success: false, aborted: true, abortReason: "app_source_fetch_failed", ref: ref, appUrl: appUrl,
-            error: "Failed to fetch app source at ref '${ref}' (${appUrl}): ${e.message ?: e.toString()}. Nothing was changed."
-        ]
-    }
-    def includeTokens = _parseIncludeDirectives(appSource)
-
     // Fetch packageManifest.json AT THE REF -- the authoritative list of what to deploy
     // (HPM's manifest, but at the PR ref so an unmerged PR installs). Fail closed on a
     // fetch or parse error: deploying without the manifest could miss a bundle or app.
@@ -671,71 +663,27 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
             error: "packageManifest.json at ref '${ref}' was not a JSON object. Nothing was changed."
         ]
     }
-
-    // Plan the bundle leg: prefer the bot-published per-ref artifact (fresh for any
-    // same-repo ref -- see _bundleArtifactUrlForRef). The fallback depends on the
-    // MANIFEST SHAPE AT THE REF, which is what keeps old refs working unchanged:
-    //   * unified-delivery manifests (location on the bundle-artifacts branch) fall
-    //     back to that location AS-IS -- the branches/main zip, exactly what HPM users
-    //     currently install; correct whenever the ref's libraries match current main,
-    //     surfaced via bundleFreshnessWarning otherwise.
-    //   * legacy manifests (in-tree location) fall back to the zip COMMITTED at the
-    //     ref via _reanchorToRef -- correct whenever the ref did not change libraries/
-    //     relative to its base.
     def manifestBundles = (manifest.bundles instanceof List) ? manifest.bundles : []
-    def plannedBundles = []
-    for (b in manifestBundles) {
-        def loc = (b?.location instanceof String) ? b.location.trim() : null
-        def entry
-        if (loc && loc.contains("/bundle-artifacts/")) {
-            entry = [name: (b?.name ?: b?.id), url: loc, source: "manifest-current"]
-        } else {
-            def url = _reanchorToRef(loc, base, ref)
-            if (!url) {
-                return [
-                    success: false, aborted: true, abortReason: "bundle_location_unusable", ref: ref,
-                    error: "Bundle '${b?.name ?: b?.id ?: '?'}' in packageManifest.json has an unusable location '${b?.location}' (expected a scheme://host/owner/repo/ref/<path> raw URL or a bundle-artifacts URL). Nothing was changed."
-                ]
-            }
-            entry = [name: (b?.name ?: b?.id), url: url, source: "committed-at-ref"]
-        }
-        def artifactUrl = _bundleArtifactUrlForRef(loc, base, ref)
-        if (artifactUrl && _bundleArtifactExists(artifactUrl)) {
-            entry.url = artifactUrl
-            entry.source = "bundle-artifacts"
-        }
-        // SHA guard: a SHA-shaped ref (hex) with NO per-ref artifact would fall back to the manifest's
-        // branches/main zip -- i.e. deliver MAIN's libraries, not this commit's (silently wrong, and
-        // exactly how an abbreviated/typo'd SHA loads the wrong bundle). A pushed commit ALWAYS has a
-        // per-SHA artifact (publish-bundle-artifact builds one per push, keyed by FULL sha), so a
-        // SHA-shaped ref with none is abbreviated, unpushed, or typo'd -- fail loudly instead of
-        // installing the wrong bundle. (Branch/tag refs legitimately fall back to branches/main with a
-        // freshness warning; only commit-SHA refs are guarded, since that's where a hallucinated value bites.)
-        if (entry.source == "manifest-current" && ref != null && (ref.toString().trim() ==~ /(?i)^[0-9a-f]{7,40}$/)) {
-            return [
-                success: false, aborted: true, abortReason: "no_bundle_artifact_for_ref", ref: ref,
-                bundle: (b?.name ?: b?.id), artifactUrlProbed: artifactUrl,
-                error: "No per-ref bundle artifact exists for ref '${ref}' (probed ${artifactUrl ?: 'n/a'}); the manifest's bundle points at branches/main, so installing it would deliver MAIN's libraries, not this ref's. Pass the FULL 40-char commit SHA of a PUSHED commit (not an abbreviation), or push the branch so its bundle artifact is built. Nothing was changed."
-            ]
-        }
-        plannedBundles << entry
-    }
+    def manifestApps = (manifest.apps instanceof List) ? manifest.apps : []
 
-    // Coverage guard (mirrors mcp_watchdog_deploy.sh): if the app #includes libraries but
-    // the manifest declares NO bundle to deliver them, a deploy would leave the #includes
-    // unresolved and the app would not compile. Refuse before any write.
-    if (!includeTokens.isEmpty() && plannedBundles.isEmpty()) {
-        return [
-            success: false, aborted: true, abortReason: "bundle_required_but_undeclared", ref: ref, includes: includeTokens,
-            error: "App source #includes ${includeTokens.size()} library(ies) (${includeTokens.join(', ')}) but packageManifest.json at ref '${ref}' declares no bundle to deliver them. A bundle-less deploy would leave the #includes unresolved and the app would not compile. Nothing was changed."
-        ]
+    // Inlined layout (issue #522): no bundle, and every app ships as a built artifact on the
+    // bundle-artifacts branch (the parent with its libraries inlined). Older refs keep the
+    // bundle path unchanged.
+    boolean inlined = manifestBundles.isEmpty() && !manifestApps.isEmpty() &&
+        manifestApps.every { it?.location instanceof String && it.location.contains("/bundle-artifacts/") }
+    def includeTokens = []
+    def plannedBundles = []
+    if (!inlined) {
+        def bundlePlan = _planPackageBundles(manifestBundles, base, ref, appUrl)
+        if (bundlePlan.abort) return bundlePlan.abort
+        includeTokens = bundlePlan.includes
+        plannedBundles = bundlePlan.bundles
     }
 
     // Plan the app leg: resolve every manifest app's Apps Code CLASS id by namespace+name
     // (one /hub2/userAppTypes fetch). The SELF app (mcp / "MCP Rule Server", the running
     // parent) is flagged so it can be deployed LAST -- its recompile drops the in-flight
     // response (#237), so it must be the final act with the rest already in place.
-    def manifestApps = (manifest.apps instanceof List) ? manifest.apps : []
     def appTypes
     try {
         def typesText = hubInternalGet("/hub2/userAppTypes")
@@ -753,17 +701,25 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
     for (a in manifestApps) {
         def match = appTypes.find { it?.namespace == a?.namespace && it?.name == a?.name }
         def classId = match?.id?.toString()
-        def url = _reanchorToRef(a?.location, base, ref)
+        def url = inlined ? _bundleArtifactUrlForRef(a?.location, base, ref) : _reanchorToRef(a?.location, base, ref)
         if (!classId || !url) {
             return [
                 success: false, aborted: true, abortReason: "app_class_unresolved", ref: ref,
                 error: "Could not resolve app '${a?.namespace}:${a?.name}' (class id: ${classId ?: 'unresolved'}, url: ${url ?: 'unusable location'}). Nothing was changed; the app remains updatable via hub_update_app."
             ]
         }
-        plannedApps << [
+        def entry = [
             name: a?.name, namespace: a?.namespace, classId: classId, url: url,
             isSelf: (a?.namespace == "mcp" && a?.name == "MCP Rule Server")
         ]
+        if (inlined) {
+            def artifact = _planAppArtifact(a.name?.toString(), a.location.trim(), url, ref)
+            if (artifact.abort) return artifact.abort
+            entry.url = artifact.url
+            entry.source = artifact.source
+            entry.expectedBytes = artifact.expectedBytes
+        }
+        plannedApps << entry
     }
     // Non-self apps first, the self app last (so the self recompile is the final act).
     def orderedApps = plannedApps.findAll { !it.isSelf } + plannedApps.findAll { it.isSelf }
@@ -774,6 +730,38 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
             plannedBundles: plannedBundles, plannedApps: orderedApps,
             message: "Dry run: would install ${plannedBundles.size()} bundle(s) then deploy ${orderedApps.size()} app(s) (self app last) to ref ${ref}. No changes made."
         ]
+    }
+
+    // Inlined layout: download and verify every app BEFORE the first write, so a truncated,
+    // mid-publish or un-inlined artifact never leaves a half-updated package.
+    def verifiedSources = [:]
+    if (inlined) {
+        for (a in orderedApps) {
+            def src
+            try {
+                src = _fetchSourceFromUrl(a.url)
+            } catch (Exception e) {
+                return [
+                    success: false, aborted: true, abortReason: "app_artifact_fetch_failed", ref: ref, app: a.name, url: a.url,
+                    error: "Failed to fetch ${a.name} from ${a.url}: ${e.message ?: e.toString()}. Nothing was changed."
+                ]
+            }
+            long actualBytes = src.getBytes("UTF-8").length
+            if (actualBytes != (a.expectedBytes as Long)) {
+                return [
+                    success: false, aborted: true, abortReason: "app_artifact_size_mismatch", ref: ref, app: a.name, url: a.url,
+                    expectedBytes: a.expectedBytes, actualBytes: actualBytes,
+                    error: "${a.name} from ${a.url} is ${actualBytes} bytes but its .size marker records ${a.expectedBytes} (truncated download or a publish in progress). Nothing was changed; retry in a minute."
+                ]
+            }
+            if (!_parseIncludeDirectives(src).isEmpty()) {
+                return [
+                    success: false, aborted: true, abortReason: "app_artifact_not_inlined", ref: ref, app: a.name, url: a.url,
+                    error: "${a.name} from ${a.url} still has #include directives, and the manifest declares no bundle to deliver them, so it would not compile. Nothing was changed."
+                ]
+            }
+            verifiedSources.put(a.classId, src)
+        }
     }
 
     // BUNDLES FIRST (override). HPM repair installs every manifest bundle via the hub's
@@ -809,12 +797,14 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
     // APPS LAST, the self app last of all. Each non-self app must succeed before the self
     // app is touched (fail-closed: a child-app failure never advances to the self deploy,
     // so the running server is left as-is and updatable). Reuse hub_update_app's exact
-    // update path (auto-backup + post-save verify + #237 compile-error capture).
+    // update path (auto-backup + post-save verify + #237 compile-error capture). An
+    // inlined-layout app saves the source verified above, never a second download.
     def appResults = []
     for (a in orderedApps) {
         def r
         try {
-            def updateArgs = [appId: a.classId, importUrl: a.url, confirm: true]
+            def updateArgs = inlined ? [appId: a.classId, source: verifiedSources.get(a.classId), confirm: true]
+                                     : [appId: a.classId, importUrl: a.url, confirm: true]
             r = _toolUpdateAppCode(updateArgs, a.isSelf ? packageWorkerContext : null)
         } catch (Exception e) {
             if (a.isSelf) {
@@ -836,7 +826,7 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
             ]
         }
         def ok = (r?.success == true)
-        appResults << [name: a.name, namespace: a.namespace, classId: a.classId, isSelf: a.isSelf, success: ok, app: r]
+        appResults << [name: a.name, namespace: a.namespace, classId: a.classId, url: a.url, isSelf: a.isSelf, success: ok, app: r]
         if (!ok) {
             if (a.isSelf) {
                 // Self app is last; a clean failure return (not a throw) is surfaced as-is. Same
@@ -878,7 +868,105 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
         result.bundleFreshnessWarning = "Ref '${ref}' (legacy manifest): no bundle-artifacts zip was found for this ref, so the bundle leg installed the zip COMMITTED at the ref. That is only stale if this ref CHANGED library code without rebuilding the zip."
         mcpLog("warn", "developer-mode", "hub_update_package: legacy ref '${ref}' fell back to the committed bundle zip -- stale if the ref changed library code")
     }
+    // Only ref=main can reach an app fallback (_planAppArtifact refuses every other ref).
+    if (orderedApps.any { it.source == "manifest-current" }) {
+        result.artifactFreshnessWarning = "No app artifact was found under ${base} for ref=main, so the apps were installed from the manifest's own branches/main build -- the same files HPM users install."
+        mcpLog("warn", "developer-mode", "hub_update_package: ref=main app artifact probe missed under ${base}; installed the manifest's branches/main build")
+    }
     return result
+}
+
+// Legacy (bundle) layout: read the self app's #includes at the ref and plan the bundle leg.
+// Returns [includes, bundles], or [abort: <result>] to return as-is with nothing written.
+private Map _planPackageBundles(List manifestBundles, String base, String ref, String appUrl) {
+    // Fetch the SELF app source at ref, ONLY to read its #include directives for the
+    // bundle-coverage guard below. A fetch failure is a clean abort -- nothing written.
+    def appSource
+    try {
+        appSource = _fetchSourceFromUrl(appUrl)
+    } catch (Exception e) {
+        return [abort: [
+            success: false, aborted: true, abortReason: "app_source_fetch_failed", ref: ref, appUrl: appUrl,
+            error: "Failed to fetch app source at ref '${ref}' (${appUrl}): ${e.message ?: e.toString()}. Nothing was changed."
+        ]]
+    }
+    def includeTokens = _parseIncludeDirectives(appSource)
+
+    // Plan the bundle leg: prefer the bot-published per-ref artifact (fresh for any
+    // same-repo ref -- see _bundleArtifactUrlForRef). The fallback depends on the
+    // MANIFEST SHAPE AT THE REF, which is what keeps old refs working unchanged:
+    //   * unified-delivery manifests (location on the bundle-artifacts branch) fall
+    //     back to that location AS-IS -- the branches/main zip, exactly what HPM users
+    //     currently install; correct whenever the ref's libraries match current main,
+    //     surfaced via bundleFreshnessWarning otherwise.
+    //   * legacy manifests (in-tree location) fall back to the zip COMMITTED at the
+    //     ref via _reanchorToRef -- correct whenever the ref did not change libraries/
+    //     relative to its base.
+    def plannedBundles = []
+    for (b in manifestBundles) {
+        def loc = (b?.location instanceof String) ? b.location.trim() : null
+        def entry
+        if (loc && loc.contains("/bundle-artifacts/")) {
+            entry = [name: (b?.name ?: b?.id), url: loc, source: "manifest-current"]
+        } else {
+            def url = _reanchorToRef(loc, base, ref)
+            if (!url) {
+                return [abort: [
+                    success: false, aborted: true, abortReason: "bundle_location_unusable", ref: ref,
+                    error: "Bundle '${b?.name ?: b?.id ?: '?'}' in packageManifest.json has an unusable location '${b?.location}' (expected a scheme://host/owner/repo/ref/<path> raw URL or a bundle-artifacts URL). Nothing was changed."
+                ]]
+            }
+            entry = [name: (b?.name ?: b?.id), url: url, source: "committed-at-ref"]
+        }
+        def artifactUrl = _bundleArtifactUrlForRef(loc, base, ref)
+        if (artifactUrl && _bundleArtifactExists(artifactUrl)) {
+            entry.url = artifactUrl
+            entry.source = "bundle-artifacts"
+        }
+        // SHA guard: a SHA-shaped ref (hex) with NO per-ref artifact would fall back to the manifest's
+        // branches/main zip -- i.e. deliver MAIN's libraries, not this commit's (silently wrong, and
+        // exactly how an abbreviated/typo'd SHA loads the wrong bundle). A pushed commit ALWAYS has a
+        // per-SHA artifact (publish-bundle-artifact builds one per push, keyed by FULL sha), so a
+        // SHA-shaped ref with none is abbreviated, unpushed, or typo'd -- fail loudly instead of
+        // installing the wrong bundle. (Branch/tag refs legitimately fall back to branches/main with a
+        // freshness warning; only commit-SHA refs are guarded, since that's where a hallucinated value bites.)
+        if (entry.source == "manifest-current" && ref != null && (ref.toString().trim() ==~ /(?i)^[0-9a-f]{7,40}$/)) {
+            return [abort: [
+                success: false, aborted: true, abortReason: "no_bundle_artifact_for_ref", ref: ref,
+                bundle: (b?.name ?: b?.id), artifactUrlProbed: artifactUrl,
+                error: "No per-ref bundle artifact exists for ref '${ref}' (probed ${artifactUrl ?: 'n/a'}); the manifest's bundle points at branches/main, so installing it would deliver MAIN's libraries, not this ref's. Pass the FULL 40-char commit SHA of a PUSHED commit (not an abbreviation), or push the branch so its bundle artifact is built. Nothing was changed."
+            ]]
+        }
+        plannedBundles << entry
+    }
+
+    // Coverage guard (mirrors mcp_watchdog_deploy.sh): if the app #includes libraries but
+    // the manifest declares NO bundle to deliver them, a deploy would leave the #includes
+    // unresolved and the app would not compile. Refuse before any write.
+    if (!includeTokens.isEmpty() && plannedBundles.isEmpty()) {
+        return [abort: [
+            success: false, aborted: true, abortReason: "bundle_required_but_undeclared", ref: ref, includes: includeTokens,
+            error: "App source #includes ${includeTokens.size()} library(ies) (${includeTokens.join(', ')}) but packageManifest.json at ref '${ref}' declares no bundle to deliver them. A bundle-less deploy would leave the #includes unresolved and the app would not compile. Nothing was changed."
+        ]]
+    }
+    return [includes: includeTokens, bundles: plannedBundles]
+}
+
+// Inlined layout: the built artifact for this ref, with the byte count its .size marker
+// records. Only ref=main may fall back to the manifest's literal location (the same
+// branches/main build HPM serves); any other ref without its own artifact would install
+// main's code, so it is refused.
+private Map _planAppArtifact(String name, String location, String artifactUrl, String ref) {
+    def bytes = _artifactSizeMarker(artifactUrl)
+    if (bytes != null) return [url: artifactUrl, source: "bundle-artifacts", expectedBytes: bytes]
+    if (ref == "main" && location != artifactUrl) {
+        bytes = _artifactSizeMarker(location)
+        if (bytes != null) return [url: location, source: "manifest-current", expectedBytes: bytes]
+    }
+    return [abort: [
+        success: false, aborted: true, abortReason: "no_app_artifact_for_ref", ref: ref, app: name, artifactUrlProbed: artifactUrl,
+        error: "No built artifact exists for app '${name}' at ref '${ref}' (probed ${artifactUrl}.size). Pass the FULL 40-char SHA of a pushed commit, or a branch pushed to this repo -- the publish workflow builds both on every push. Nothing was changed."
+    ]]
 }
 
 def _getAllToolDefinitions_partSelfAdmin() {
