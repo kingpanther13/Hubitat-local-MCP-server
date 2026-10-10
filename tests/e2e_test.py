@@ -14645,6 +14645,16 @@ class TestRunner:
         if not (raw_base and sha):
             return None
         url = f"{raw_base}/{sha}/tests/fixtures/mcp-e2e-throwaway-bundle.zip"
+
+        def _mcptest_bundles() -> dict[str, dict]:
+            listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+            return {str(b["id"]): b for b in bundles
+                    if isinstance(b, dict) and b.get("id") and b.get("namespace") == "mcptest"}
+
+        # Snapshot first: an earlier run's leftover mcptest bundle must not be mistaken for
+        # this install's, or the delete test removes the old one and finds the new one still there.
+        before = set(_mcptest_bundles())
         # The hub fetches the zip from GitHub inside this call. If its response is lost,
         # adopt the uniquely namespaced installed bundle by readback rather than re-running.
         try:
@@ -14658,12 +14668,25 @@ class TestRunner:
             time.sleep(3.0)
             installed = {"success": True, "responseLost": True}
         assert installed.get("success") is True, f"throwaway bundle install failed: {installed}"
-        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
-        bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
-        tw = next((b for b in bundles if b.get("namespace") == "mcptest"), None)
-        assert tw and tw.get("id"), \
-            f"throwaway bundle not listed after install: {[b.get('name') for b in bundles]}"
-        return str(tw["id"])
+        # The bundle is on the hub from here on; a listing that fails or cannot name it would
+        # leave it to the run-end purge (which deletes mcptest bundles), so read back with retries.
+        after: dict[str, dict] = {}
+        for attempt in range(3):
+            try:
+                after = _mcptest_bundles()
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                print(f"    [RETRY] bundle readback {attempt + 1}/3 failed: {exc}")
+                after = {}
+            new_ids = sorted(set(after) - before)
+            if new_ids:
+                return new_ids[0]
+            time.sleep(3.0)
+        # Same namespace and name re-installed over a leftover keeps the leftover's id: that is
+        # still the bundle this install produced.
+        if len(after) == 1 and before == set(after):
+            return next(iter(after))
+        raise AssertionError(
+            f"throwaway bundle not identifiable after install: before={sorted(before)} after={sorted(after)}")
 
     def _delete_bundle_quietly(self, bid: str, label: str) -> None:
         try:
@@ -14892,8 +14915,8 @@ class TestRunner:
             assert deleted.get("verified") is True, f"hub_delete_bundle did not verify the id gone: {deleted}"
             relisted = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
             rb = relisted.get("bundles", []) if isinstance(relisted, dict) else []
-            assert not any(b.get("namespace") == "mcptest" for b in rb), \
-                "throwaway bundle still present after hub_delete_bundle"
+            assert not any(str(b.get("id")) == bid for b in rb), \
+                f"throwaway bundle {bid} still present after hub_delete_bundle"
             bid = None
             print("    BUNDLE_DELETE ok -- throwaway installed, listed, deleted, verified gone")
         finally:

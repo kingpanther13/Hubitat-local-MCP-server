@@ -24,12 +24,12 @@ def _tokens(src):
 
 def _repo(tmp_path, parent, libraries, child='definition(name: "Child")\ndef c() { 1 }\n'):
     tmp_path.mkdir(parents=True, exist_ok=True)
-    (tmp_path / bra.PARENT).write_text(parent, newline="")
-    (tmp_path / bra.CHILD).write_text(child, newline="")
+    (tmp_path / bra.PARENT).write_text(parent, encoding="utf-8", newline="")
+    (tmp_path / bra.CHILD).write_text(child, encoding="utf-8", newline="")
     lib_dir = tmp_path / "libraries"
     lib_dir.mkdir()
     for filename, text in libraries.items():
-        (lib_dir / filename).write_text(text, newline="")
+        (lib_dir / filename).write_text(text, encoding="utf-8", newline="")
     return tmp_path
 
 
@@ -67,9 +67,9 @@ def test_lockstep_violations_fail_the_build(tmp_path, parent, libraries, error):
 def test_main_writes_both_files_and_reports_errors(tmp_path, capsys):
     root = _repo(tmp_path, HEADER + "#include mcp.A\n", {"a.groovy": _lib("A", "def a() {}\n")})
     assert bra.main(["--root", str(root)]) == 0
-    assert (root / "dist" / bra.PARENT).read_text() == HEADER + "def a() {}\n"
-    assert (root / "dist" / bra.CHILD).read_text() == 'definition(name: "Child")\ndef c() { 1 }\n'
-    (root / "libraries" / "b.groovy").write_text(_lib("B", ""))
+    assert (root / "dist" / bra.PARENT).read_text(encoding="utf-8") == HEADER + "def a() {}\n"
+    assert (root / "dist" / bra.CHILD).read_text(encoding="utf-8") == 'definition(name: "Child")\ndef c() { 1 }\n'
+    (root / "libraries" / "b.groovy").write_text(_lib("B", ""), encoding="utf-8")
     assert bra.main(["--root", str(root)]) == 1
     assert "no app #includes" in capsys.readouterr().err
 

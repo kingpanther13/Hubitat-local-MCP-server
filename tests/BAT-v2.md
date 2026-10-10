@@ -991,7 +991,7 @@ On v0.7.7 these tools are directly available — this section tests whether v0.8
 }
 ```
 
-**Expected**: Discovers the top-level `hub_update_package` and calls it with `dryRun=true` (no `confirm` needed). Reports `success=true`, `dryRun=true`, the planned bundles (the library bundle) and planned apps (parent + child, the parent flagged as the self app, deployed last). No bundle or app write occurs.
+**Expected**: Discovers the top-level `hub_update_package` and calls it with `dryRun=true` (no `confirm` needed). Reports `success=true`, `dryRun=true`, no planned bundles (the package ships none since 4.7: the parent is installed with its libraries inlined) and planned apps (parent + child, the parent flagged as the self app, deployed last). No bundle or app write occurs.
 
 ### T45 — Discover hub_list_backups (hub_read_apps_code)
 
@@ -3527,7 +3527,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "the Write master enabled, recent backup exists. Identify the raw URL of a bundle .zip the hub can reach that ships one unused app (no libraries -- bundle fixtures never carry libraries).",
+  "setup_prompt": "the Write master enabled, recent backup exists. Use the repository's reviewed app-only fixture tests/fixtures/mcp-e2e-throwaway-bundle.zip (one unused app in namespace mcptest, no libraries) at the revision under test, by its raw GitHub URL for that commit SHA.",
   "test_prompt": "Install the bundle from that .zip URL (confirming the install), then verify the bundle's app now appears in the hub's Apps Code list.",
   "teardown_prompt": "Delete the bundle and the app code it installed."
 }
@@ -3561,7 +3561,7 @@ Write tools (`hub_create_library`, `hub_update_library`, `hub_delete_item` with 
 
 ```json
 {
-  "setup_prompt": "the Read master enabled. At least one code bundle is installed (the T509 fixture, or the unused mcp_libraries bundle a hub upgraded from 4.6.0 or earlier still carries).",
+  "setup_prompt": "the Read master enabled. At least one code bundle is installed: on a fresh hub run T509 first and defer its teardown until this scenario completes; a hub upgraded from 4.6.0 or earlier still carries the unused mcp_libraries bundle, which also qualifies.",
   "test_prompt": "List the code bundles installed on the hub and tell me what each one contains."
 }
 ```
