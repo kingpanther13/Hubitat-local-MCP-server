@@ -1327,7 +1327,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         calls == ['app:230', 'app:228']
         appArgs.get('228').source == PARENT_BUILT
         appArgs.get('230').source == CHILD_BUILT
-        appArgs.values().every { it.importUrl == null && it.confirm == true }
+        appArgs.values().every { it.importUrl == null && it.confirm == true && it.sourceOrigin == 'published' }
 
         and:
         result.success == true

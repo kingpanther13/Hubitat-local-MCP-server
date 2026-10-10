@@ -10708,7 +10708,7 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 `expectedVersion` aborts the write with `conflict:true` on a version mismatch. Stringified integers are coerced; an explicit null is rejected. In bulk driver updates, put `expectedVersion` inside each `updates[]` entry.
 
-Use it when a read-modify-write spans turns, or when another agent may edit the same code. A conflict result echoes `expectedVersion` and `currentVersion`: re-read the source, then retry with the new version. The source backup is still taken on a conflict.
+Use it when a read-modify-write spans turns, or when another agent may edit the same code. A conflict result echoes `expectedVersion` and `currentVersion`: re-read the source, then retry with the new version. The source backup is still taken on a conflict (importUrl mode takes none: the previous source is at the URL's history).
 
 hub_update_driver bulk mode: `updates=[{driverId, sourceFile|source|importUrl|resave, expectedVersion?}, ...]`. It cannot be combined with the single-driver fields, including a top-level `expectedVersion`. Items run in order and continue past failures. A lock mismatch on one item gives `conflict:true` with both versions, and a thrown error gives `error` plus `errorClass`. The top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `updatesRemaining`; send only those again, in the same order.
 

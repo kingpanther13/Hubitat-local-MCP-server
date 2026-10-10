@@ -1542,6 +1542,20 @@ def toolUpdateItemCode(String type, String idParam, args) {
     return toolUpdateItemCodeInner(type, idParam, args)
 }
 
+// Version of an app/driver from its list row (/<type>/list/single/data/<id>: small JSON, no
+// source). Null when the row is unreadable, so the caller falls back to the full code fetch.
+private _itemRowVersion(String type, itemId) {
+    try {
+        def txt = hubInternalGet("/${type}/list/single/data/${java.net.URLEncoder.encode(itemId.toString(), 'UTF-8')}", null, 30)
+        def d = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+        def row = (d instanceof List && d) ? d[0] : (d instanceof Map ? d : null)
+        return (row instanceof Map) ? row.version : null
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} row version: ${e.message}")
+        return null
+    }
+}
+
 // Caller must have already invoked requireDestructiveConfirm -- gate fires once per call, not per bulk item.
 // packageWorkerContext is supplied only by the scheduled package worker; public tool args never reach it.
 private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packageWorkerContext = null) {
@@ -1644,14 +1658,20 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
         sourceCode = args.source
     }
 
-    // Back up current source for safety. The 1h cache inside backupItemSource means parallel-agent
-    // conflicts cost nothing on the second call. `currentVersion` below is always re-fetched -- the
-    // backup cache's `entry.version` can be stale.
-    def itemBackup = backupItemSource(type, itemId.toString())
+    // Back up the current source unless the new one is published (importUrl, or the package
+    // deploy's verified download): its previous version lives at that URL's history, and the
+    // backup would add one more full copy of the old item to this request's heap while the hub
+    // compiles (issue #522). The 1h cache inside backupItemSource means parallel-agent conflicts
+    // cost nothing on the second call.
+    // hub_update_package passes sourceOrigin "published" with the built source it already holds.
+    def published = (sourceMode == "importUrl") || (args.sourceOrigin == "published")
+    def itemBackup = published ? null : backupItemSource(type, itemId.toString())
+    if (published) mcpLog("info", "hub-admin", "Pre-update source backup skipped for ${type} ID ${itemId}: source is published (${sourceMode})")
 
-    // For optimistic locking, use fresh version if available (resave mode already fetched it).
-    // Otherwise fetch current version fresh from hub — backup cache may have stale version.
+    // Fresh version for optimistic locking (resave mode already fetched it). The item's list row
+    // carries the version without the source; the full ajax/code fetch is only the fallback.
     def currentVersion = freshVersion
+    if (currentVersion == null) currentVersion = _itemRowVersion(type, itemId)
     if (currentVersion == null) {
         try {
             def versionResponse = hubInternalGet(ajaxPath, [id: itemId])
@@ -1663,7 +1683,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
             mcpLog("warn", "hub-admin", "Could not fetch fresh version for ${type} ID ${itemId}, falling back to backup version: ${vErr.message}")
         }
         // Fall back to backup version if fresh fetch failed
-        if (currentVersion == null) currentVersion = itemBackup.version
+        if (currentVersion == null) currentVersion = itemBackup?.version
     }
 
     if (currentVersion == null) {
@@ -1789,7 +1809,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
             ]
             if (sourceMode == "resave") successResult.note = "Source was fetched and re-saved entirely on-hub — no cloud round-trip."
             if (sourceMode == "sourceFile") successResult.note = "Source was read from File Manager file '${args.sourceFile}' — no cloud size limits."
-            if (sourceMode == "importUrl") successResult.note = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript)."
+            if (sourceMode == "importUrl") successResult.note = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript). No pre-update source backup was taken: the previous source is at that URL's history."
 
             // Optional triggerUpdated: fire updated() on the named running instance so
             // subscriptions/schedules/atomicState re-initialize against the new code.

@@ -797,13 +797,15 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
     // APPS LAST, the self app last of all. Each non-self app must succeed before the self
     // app is touched (fail-closed: a child-app failure never advances to the self deploy,
     // so the running server is left as-is and updatable). Reuse hub_update_app's exact
-    // update path (auto-backup + post-save verify + #237 compile-error capture). An
-    // inlined-layout app saves the source verified above, never a second download.
+    // update path (post-save verify + #237 compile-error capture). No pre-update source
+    // backup: the previous build is published under its own ref, and the copy would sit in
+    // this heap while the hub compiles (issue #522). An inlined-layout app saves the source
+    // verified above, never a second download, and drops that copy once it is handed over.
     def appResults = []
     for (a in orderedApps) {
         def r
         try {
-            def updateArgs = inlined ? [appId: a.classId, source: verifiedSources.get(a.classId), confirm: true]
+            def updateArgs = inlined ? [appId: a.classId, source: verifiedSources.remove(a.classId), sourceOrigin: "published", confirm: true]
                                      : [appId: a.classId, importUrl: a.url, confirm: true]
             r = _toolUpdateAppCode(updateArgs, a.isSelf ? packageWorkerContext : null)
         } catch (Exception e) {
