@@ -2579,7 +2579,7 @@ def subscribeToTriggers() {
                 case "device_event":
                     // Support multi-device triggers (deviceIds) and single device (deviceId)
                     def deviceIdList = trigger.deviceIds ?: (trigger.deviceId ? [trigger.deviceId] : [])
-                    deviceIdList.each { devId ->
+                    for (devId in deviceIdList) {
                         def device = parent.findDevice(devId)
                         if (device) {
                             subscribe(device, trigger.attribute, "handleDeviceEvent")
@@ -2813,7 +2813,7 @@ def handleDeviceEvent(evt) {
         def timersChanged = false
         def firedChanged = false
 
-        triggersForDevice?.each { t ->
+        for (t in triggersForDevice) {
             def tDeviceKey = t.deviceId ?: (t.deviceIds?.sort()?.join("_") ?: "unknown")
             // Match the arming-side String key shape — see comment at the arming site.
             String triggerKey = "duration_${tDeviceKey}_${t.attribute}".toString()
@@ -2939,7 +2939,7 @@ def handleSunsetEvent() {
 }
 
 private void rescheduleSunTrigger(String sunType, String handlerName) {
-    atomicState.triggers?.findAll { it.type == "time" && it."${sunType}" }?.each { trigger ->
+    for (trigger in atomicState.triggers?.findAll { it.type == "time" && it."${sunType}" }) {
         try {
             // Use getSunriseAndSunset() for accurate next-day times (avoids drift from +24h)
             def tomorrow = new Date(now() + 86400000)
@@ -3253,7 +3253,9 @@ def substituteVariables(String text, evt = null) {
 
     // Local variables
     def locals = atomicState.localVariables ?: [:]
-    locals.each { name, value ->
+    for (Map.Entry entry in locals) {
+        def name = entry.key
+        def value = entry.value
         result = result.replace("%${name}%", value?.toString() ?: "")
     }
 
@@ -3539,7 +3541,7 @@ def executeAction(action, actionIndex = null, evt = null) {
             def captureDevices = action.deviceIds?.collect { parent.findDevice(it) }?.findAll { it != null }
             if (captureDevices) {
                 def capturedStates = [:]
-                captureDevices.each { dev ->
+                for (dev in captureDevices) {
                     def devState = [:]
                     if (dev.hasCapability("Switch")) devState.switch = dev.currentValue("switch")
                     if (dev.hasCapability("SwitchLevel")) devState.level = dev.currentValue("level")
@@ -3570,7 +3572,9 @@ def executeAction(action, actionIndex = null, evt = null) {
             // Get from parent app so any rule can restore states captured by any other rule
             def savedStates = parent.getCapturedState(stateKey)
             if (savedStates) {
-                savedStates.each { deviceId, devState ->
+                for (Map.Entry entry in savedStates) {
+                    def deviceId = entry.key
+                    def devState = entry.value
                     def dev = parent.findDevice(deviceId)
                     if (dev) {
                         // If restoring to "off", just turn off — don't set level/color first (causes flash)
@@ -3786,7 +3790,7 @@ def testRule() {
     ]
 
     if (atomicState.conditions && atomicState.conditions.size() > 0) {
-        atomicState.conditions.each { condition ->
+        for (condition in atomicState.conditions) {
             def result = evaluateCondition(condition)
             results.conditionResults << [
                 condition: describeCondition(condition),
@@ -3921,7 +3925,7 @@ def notifyLoopGuard(String message) {
         def notifiers = devices.findAll { dev ->
             dev.hasCommand("deviceNotification")
         }
-        notifiers.each { dev ->
+        for (dev in notifiers) {
             try {
                 dev.deviceNotification(message)
             } catch (Exception e) {
