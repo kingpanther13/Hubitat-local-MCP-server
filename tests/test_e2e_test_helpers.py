@@ -3137,7 +3137,9 @@ def test_delete_bundle_uses_logical_write_helper(monkeypatch):
     monkeypatch.setenv("PR_RAW_BASE", "https://raw.invalid/repo")
     monkeypatch.setenv("PR_HEAD_SHA_RESOLVED", "abc123")
     write_calls = []
+    # Snapshot before the install, readback after it, re-list after the delete.
     list_results = iter([
+        {"bundles": []},
         {"bundles": [{"id": "44", "namespace": "mcptest", "name": "throwaway"}]},
         {"bundles": []},
     ])
