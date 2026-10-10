@@ -22,47 +22,115 @@ def _getHub2HubData() {
 
 // platformUpdate block: the pending HUB FIRMWARE update. Distinct from the appUpdate MCP-server-app
 // version check (hub_get_info with includeAppUpdate=true). currentVersion is the hub firmware string;
-// available + availableVersion come from /hub2/hubData.alerts (platformUpdateAvailable / platformUpdateVersion).
+// available + availableVersion come from the platformUpdateAvailable flag in /hub2/hubData.alerts on
+// older firmware; from 2.5.2.129 from that block's PLATFORM_UPDATE_AVAILABLE alert item or, without
+// one, the platform's getLatestAvailablePlatformVersion().
 def _platformUpdateFromHub2(hub2) {
     def fw = null
     try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception e) { }
     def hubVer = (hub2 instanceof Map) ? hub2.version?.toString() : null
+    def current = fw ?: hubVer
     // available:null is the schema's documented "unreadable" signal -- honor it for a missing
-    // /hub2/hubData, a present-but-unrecognized shape (alerts not a Map, or a non-Boolean
-    // platformUpdateAvailable), and an alert block without the update flag, so none can masquerade
-    // as a confident "no update available".
+    // /hub2/hubData and a present-but-unrecognized shape (alerts not a Map, or a non-Boolean
+    // platformUpdateAvailable), so neither can masquerade as a confident "no update available".
     def alerts = (hub2 instanceof Map && hub2.alerts instanceof Map) ? hub2.alerts : null
     def pa = alerts?.platformUpdateAvailable
     if (alerts == null || (pa != null && !(pa instanceof Boolean))) {
-        return [available: null, currentVersion: fw ?: hubVer,
+        return [available: null, currentVersion: current,
                 note: "Pending-firmware status unreadable (/hub2/hubData missing, or its alerts block has an unrecognized shape)."]
     }
-    // A missing update flag says nothing about a pending update. Firmware 2.5.2.129+ reports alerts
-    // only as alertItems and never sends the flag.
+    // Firmware 2.5.2.129+ drops the flag: a pending update is a PLATFORM_UPDATE_AVAILABLE alert item
+    // carrying the version. Without one (none pending, or the alert was dismissed), ask the platform:
+    // getLatestAvailablePlatformVersion() names the newest release; only a newer one is an update
+    // (a beta hub can run ahead of it).
     if (pa == null) {
-        return [available: null, currentVersion: fw ?: hubVer,
-                note: "The hub data has no pending-update flag. A pending update shows as one of the hub's alerts (hub_get_info with includeHealthAlerts=true) and on Settings > Check for Updates in the Hubitat web UI."]
+        def item = (alerts.alertItems instanceof List) ? alerts.alertItems.find { it instanceof Map && it.key == "PLATFORM_UPDATE_AVAILABLE" } : null
+        if (item != null) return [available: true, currentVersion: current, availableVersion: item.version?.toString()]
+        def latest = null
+        try { latest = getLatestAvailablePlatformVersion()?.toString() } catch (Exception e) {
+            mcpLog("warn", "server", "getLatestAvailablePlatformVersion failed: ${e.message}")
+        }
+        Integer cmp = (latest && current) ? _compareVersions(latest, current) : null
+        if (cmp != null) {
+            def out = [available: cmp > 0, currentVersion: current]
+            if (cmp > 0) out.availableVersion = latest
+            return out
+        }
+        return [available: null, currentVersion: current,
+                note: "The hub data has no pending-update flag and the platform's latest-version check did not answer. Check Settings > Check for Updates in the Hubitat web UI."]
     }
     boolean avail = (pa == true)
-    def out = [available: avail, currentVersion: fw ?: hubVer]
+    def out = [available: avail, currentVersion: current]
     if (avail) out.availableVersion = alerts.platformUpdateVersion?.toString()
     return out
 }
 
-// healthAlerts block: the hub's own active health determinations from /hub2/hubData -- complementary
-// to, NOT duplicating, the locally-derived memory/temp/DB warnings. `active` lists the currently-
-// firing alerts; `details` is the full alert map. Firmware 2.5.2.129+ reports alerts as
-// alertItems [{key, message, dismissible, ...}] and drops the per-alert boolean flags older firmware
-// sends, so `active` comes from the item keys when present. The platform-update flag fields are
-// surfaced separately (platformUpdate), so they are dropped here.
+// healthAlerts block: the hub's own active health determinations -- complementary to, NOT
+// duplicating, the locally-derived memory/temp/DB warnings. `active` lists the currently-firing
+// alerts; `details` is the full alert map. Firmware 2.5.2.129+ reports alerts as alertItems
+// [{key, message, dismissible, version}] and drops the per-alert boolean flags older firmware sends,
+// so `active` comes from the item keys when present. On that firmware this also reads the hub's own
+// alert feed (GET /hub/alertsJson). The platform-update flag fields are surfaced separately
+// (platformUpdate), so they are dropped here.
 def _healthAlertsFromHub2(hub2) {
     if (!(hub2 instanceof Map)) return null
     def alerts = (hub2.alerts instanceof Map) ? ([:] + hub2.alerts) : [:]
+    // /hub/alertsJson (2.5.2.129+) is the hub's own alert feed: the hubData alert block plus
+    // spammyDeviceDetails (the devices behind a too-many-events alert), maxEvents and maxStates.
+    if (!_hubFirmwareBefore("2.5.2.129")) {
+        def feed = _hubAlertsJson()
+        if (feed != null) alerts = [:] + feed
+        else alerts.feed = "unavailable"  // no spammyDeviceDetails this time
+    }
     alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
-    def active = (alerts.alertItems instanceof List) ?
-        (alerts.alertItems as List).findAll { it instanceof Map && it.key }.collect { it.key.toString() }.unique().sort() :
-        alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
-    return [safeMode: hub2.safeMode == true, active: active, details: alerts]
+    def out = [safeMode: hub2.safeMode == true]
+    if (alerts.alertItems instanceof List) {
+        def items = (alerts.alertItems as List).findAll { it instanceof Map && it.key }
+        out.active = items.collect { it.key.toString() }.unique().sort()
+        // The handle hub_set_system_settings(dismissAlert) takes.
+        out.items = items.collect { [key: it.key, message: it.message, version: it.version, dismissible: it.dismissible == true] }
+    } else {
+        out.active = alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
+    }
+    out.details = alerts
+    return out
+}
+
+private Map _hubAlertsJson() {
+    try {
+        def raw = hubInternalGet("/hub/alertsJson", null, 10)
+        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        return (parsed instanceof Map && parsed.alertItems instanceof List) ? parsed : null
+    } catch (Exception e) {
+        mcpLog("debug", "server", "/hub/alertsJson unavailable (${e.message}); using the hub data alert block")
+        return null
+    }
+}
+
+// Hubitat subscriptions from GET /hub/subscriptions/json (firmware 2.5.2+): Hub Protect, Remote
+// Admin, Cloud Backup and Full Local Backup, each with whether it is active and when it ends.
+private Map _hubSubscriptions() {
+    def raw
+    try {
+        def txt = hubInternalGet("/hub/subscriptions/json", [t: now()])
+        raw = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "subscription status read failed", e)
+        def out = [error: "Could not read /hub/subscriptions/json: ${e.message}"]
+        if (_hubFirmwareBefore("2.5.2")) out.note = "Subscription status needs firmware 2.5.2 or later."
+        return out
+    }
+    if (!(raw instanceof Map)) return [error: "/hub/subscriptions/json returned an unexpected shape."]
+    def out = [:]
+    ["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"].each { k ->
+        def v = raw[k]
+        if (v instanceof Map) out[k] = [active: v.isActive == true, pendingCancellation: v.pendingCancellation == true, endsAt: v.end_ts, trialAvailable: v.trialAvailable == true]
+    }
+    out.fullLocalBackupSupported = raw.fullLocalBackupSupported
+    out.hasAvailableTrial = raw.hasAvailableTrial
+    out.loaded = raw.loaded
+    out.updatedAt = raw.updatedAt instanceof Number ? formatTimestamp(raw.updatedAt as Long) : raw.updatedAt
+    return out
 }
 
 def _hubHardwareModel() {
@@ -297,6 +365,8 @@ def toolGetHubInfo(args = null) {
         info.network = _readHubNetworkSettings()
     }
 
+    if (args?.includeSubscriptions == true) info.subscriptions = _hubSubscriptions()
+
     // A client that saw only a generic error for a write can learn here whether it ran.
     info.recentWrites = _mrtrRecentOperations()
     return info
@@ -337,7 +407,7 @@ def toolSetSystemSettings(args) {
     // INDEPENDENT setter (GET /hub/applyDarkMode/<bool>, HTTP 200 empty, no read-back -- same shape as
     // /device/setShowOnHome) so it is excluded from that POST and applied on its own leg.
     def locationFields = ["hubName", "timeZone", "latitude", "longitude", "zipCode", "temperatureScale"]
-    def settable = locationFields + ["darkMode", "network"]
+    def settable = locationFields + ["darkMode", "network", "dismissAlert"]
     if (!settable.any { args.containsKey(it) }) {
         throw new IllegalArgumentException("Provide at least one field to change: ${settable.join(', ')}. All are optional; pass only what changes.")
     }
@@ -349,6 +419,9 @@ def toolSetSystemSettings(args) {
 
     // Validate the network object's shape up front (-> isError validation result) so a malformed request never reaches the hub.
     if (args.containsKey("network")) _validateNetworkArgs(args.network)
+    if (args.containsKey("dismissAlert") && !(args.dismissAlert instanceof Map && args.dismissAlert.key)) {
+        throw new IllegalArgumentException("dismissAlert must be {key, version?}: an alert key from hub_get_info(includeHealthAlerts=true) healthAlerts.items (only items with dismissible:true), plus its version when it has one.")
+    }
 
     // A timeZone change reboots the hub, and any network change can disconnect it -- confirm-gate both.
     if (args.containsKey("timeZone") || args.containsKey("network")) {
@@ -417,6 +490,23 @@ def toolSetSystemSettings(args) {
             mcpLogError("hub-admin", "hub_set_system_settings /hub/applyDarkMode failed", e)
             return [success: false, error: "Failed to apply dark mode: ${e.message}", applied: applied,
                     note: (applied ? "Already applied: ${applied}. " : "") + "Dark mode was not changed."]
+        }
+    }
+
+    // GET /hub/dismissAlert?key=&version= (firmware 2.5.2.129+; replaces the per-alert dismiss endpoints).
+    if (args.containsKey("dismissAlert")) {
+        def q = [key: args.dismissAlert.key.toString()]
+        if (args.dismissAlert.version) q.version = args.dismissAlert.version.toString()
+        try {
+            hubInternalGet("/hub/dismissAlert", q)
+            applied << "dismissAlert"
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "hub_set_system_settings /hub/dismissAlert failed", e)
+            def hubSays = null
+            try { hubSays = e.response?.data?.toString()?.trim()?.take(200) } catch (Exception ignored) { }
+            return [success: false, error: "Failed to dismiss alert '${q.key}': ${hubSays ?: e.message}", applied: applied,
+                    note: (applied ? "Already applied: ${applied}. " : "") + (args.containsKey("network") ? "The network settings in this call were not sent. " : "") +
+                          "Alert dismissal needs firmware 2.5.2.129 or later and a dismissible alert."]
         }
     }
 
@@ -1416,16 +1506,21 @@ def toolUpdateFirmware(args) {
     }
 }
 
-// Parse /hub/cloud/checkForUpdate. Returns the hub's own fields verbatim so the caller sees exactly
-// what the cloud check reports -- {version, upgrade, status, releaseNotesUrl, beta, hubCount,
-// accountEmails}. accountEmails is the hub owner's own account email (returned to that same owner; not
-// redacted). Falls back to the raw text if the response is not a JSON object.
+// Parse /hub/cloud/checkForUpdate: the cloud check's own fields {version, upgrade, status,
+// releaseNotesUrl, beta, hubCount}. accountEmails (the owner's account email) is dropped so the
+// owner's address never reaches a client. A reply that is not a JSON object is not returned, since
+// it cannot be redacted.
 private Map _parseFirmwareCheck(rawText) {
     try {
         def p = rawText ? new groovy.json.JsonSlurper().parseText(rawText) : null
-        return (p instanceof Map) ? p : [raw: rawText?.take(500)]
-    } catch (Exception e) {
-        return [parseError: e.message, raw: rawText?.take(500)]
+        if (p instanceof Map) {
+            def out = [:] + p
+            out.remove("accountEmails")
+            return out
+        }
+        return [parseError: "The update check did not answer with a JSON object."]
+    } catch (Exception ignored) {
+        return [parseError: "The update check's answer could not be parsed as JSON."]
     }
 }
 
@@ -1441,6 +1536,7 @@ def _getAllToolDefinitions_partSystem() {
                     identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
                     includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
                     includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.[[FLAT_TRIM]] The check is async, so appUpdate reflects the prior completed check and carries checkInProgress; call again in a few seconds for the freshest result.[[/FLAT_TRIM]]", default: false],
+                    includeSubscriptions: [type: "boolean", description: "[[FLAT_TRIM]]Include Hubitat subscription status under `subscriptions`.[[/FLAT_TRIM]]", default: false],
                     includeNetwork: [type: "boolean", description: "Include the hub's network config under `network`.[[FLAT_TRIM]] IP mode, the saved static IP/gateway/subnet (reported whether or not static is the active mode; null on DHCP-only hubs), DNS, Ethernet autoneg and Wi-Fi SSID (never the Wi-Fi password); the read counterpart of hub_set_system_settings(network:...).[[/FLAT_TRIM]]", default: false]
                 ]
             ]
@@ -1497,7 +1593,7 @@ def _getAllToolDefinitions_partSystem() {
         ],
         [
             name: "hub_set_system_settings",
-            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, and network config. All optional — pass only what changes. See hub_get_tool_guide(section='hub_admin_write_system') for the per-field write model and reboot caveats.""",
+            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, network config[[FLAT_TRIM]], and dismissing a hub alert[[/FLAT_TRIM]]. All optional — pass only what changes. See hub_get_tool_guide(section='hub_admin_write_system') for the per-field write model and reboot caveats.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1508,16 +1604,17 @@ def _getAllToolDefinitions_partSystem() {
                     zipCode: [type: "string", description: "Postal/zip code, e.g. 10001."],
                     temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale."],
                     darkMode: [type: "boolean", description: "Hub admin UI dark mode (true) or light (false)."],
+                    dismissAlert: [type: "object", description: "[[FLAT_TRIM]]Dismiss a hub alert: {key, version?} from healthAlerts.items.[[/FLAT_TRIM]]"],
                     network: [type: "object", description: "⚠️ Hub network config — can DISCONNECT the hub; needs confirm=true + a backup <24h.", properties: [
-                        ipMode: [type: "string", enum: ["dhcp", "static"], description: "IP mode."],
-                        address: [type: "string", description: "Static IP address."],
-                        netmask: [type: "string", description: "Static subnet mask."],
-                        gateway: [type: "string", description: "Static gateway."],
-                        nameserver: [type: "string", description: "DNS nameserver(s)."],
-                        useDNSFallover: [type: "boolean", description: "DHCP DNS failover."],
-                        ethernetAutoneg: [type: "boolean", description: "Ethernet autonegotiation."],
-                        wifiSsid: [type: "string", description: "WiFi SSID to join."],
-                        wifiPassword: [type: "string", description: "WiFi password (psk)."]
+                        ipMode: [type: "string", enum: ["dhcp", "static"], description: "[[FLAT_TRIM]]IP mode.[[/FLAT_TRIM]]"],
+                        address: [type: "string", description: "[[FLAT_TRIM]]Static IP address.[[/FLAT_TRIM]]"],
+                        netmask: [type: "string", description: "[[FLAT_TRIM]]Static subnet mask.[[/FLAT_TRIM]]"],
+                        gateway: [type: "string", description: "[[FLAT_TRIM]]Static gateway.[[/FLAT_TRIM]]"],
+                        nameserver: [type: "string", description: "[[FLAT_TRIM]]DNS nameserver(s).[[/FLAT_TRIM]]"],
+                        useDNSFallover: [type: "boolean", description: "[[FLAT_TRIM]]DHCP DNS failover.[[/FLAT_TRIM]]"],
+                        ethernetAutoneg: [type: "boolean", description: "[[FLAT_TRIM]]Ethernet autonegotiation.[[/FLAT_TRIM]]"],
+                        wifiSsid: [type: "string", description: "[[FLAT_TRIM]]WiFi SSID to join.[[/FLAT_TRIM]]"],
+                        wifiPassword: [type: "string", description: "[[FLAT_TRIM]]WiFi password (psk).[[/FLAT_TRIM]]"]
                     ]],
                     confirm: [type: "boolean", description: "REQUIRED (true) for timeZone or network changes; both need a backup <24h (hub_create_backup)."],
                     args: [type: "object"]
@@ -1640,7 +1737,7 @@ def _toolDisplayMeta_partSystem() {
         hub_set_mode_manager: [title: "Set Mode Manager", summary: "Pick the Mode Manager and update its per-mode conditions."],
         hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
         hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
-        hub_set_system_settings: [title: "Set System Settings", summary: "Set hub name, time zone, location, zip, temperature scale, admin-UI dark mode, or network config."],
+        hub_set_system_settings: [title: "Set System Settings", summary: "Set hub name, time zone, location, zip, temperature scale, dark mode, network config, or dismiss a hub alert."],
         // Hub Mesh (hub-to-hub sharing; NOT the Z-Wave/Zigbee radio mesh)
         hub_get_hub_mesh: [title: "Get Hub Mesh", summary: "Read Hub Mesh config: enabled state, peer hubs, shared and linked devices/variables, sync interval."],
         hub_update_hub_mesh: [title: "Update Hub Mesh", summary: "Enable/disable Hub Mesh, set the sync interval, follow a peer's modes, or store a peer's mesh token."],

@@ -2019,6 +2019,9 @@ private void _rmValidateRoundZeroActionSpec(Map actionSpec) {
 }
 
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
+    // The body runs as a closure so its call sites live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
+    def _impl = {
     if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec. RM is not touched.")
     // Discover mode -- return static schema without touching the hub.
     // No capability field required; no Write master gate; no backup.
@@ -3036,6 +3039,8 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     ]
     if (conditionId != null) result.conditionId = conditionId
     return result
+    }
+    return _impl()
 }
 
 // Return a structured schema Map describing every supported addTrigger capability.
@@ -5688,6 +5693,9 @@ private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean co
 // derived source-mode details on the spec it is given. Every argument check lives here, so running
 // it on a copy is a complete argument pre-flight.
 private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String action) {
+    // The body runs as a closure so its call sites live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
+    def _impl = {
     def actType = null
     def actSubType = null
     def fields = [:]  // key: field name with @N placeholder, value: the value
@@ -6799,6 +6807,8 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
     }
     if (actSubType in ["getIfThen", "getElseIf", "getWhile", "getWaitRule"]) _rmValidateActionExpressionShape(cap, actionSpec.expression as Map)
     return [actType: actType, actSubType: actSubType, fields: fields, skipped: skipped]
+    }
+    return _impl()
 }
 
 // An expression-bearing action's argument checks, run with the mapping so a malformed expression is
@@ -8359,6 +8369,9 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
 // For "introspect" the call only fetches the schema — no mutation. The
 // `before` snapshot is the same as `after` and `diff` is empty.
 Map _rmWalkStep(Integer appId, Map spec) {
+    // The body runs as a closure so its call sites live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
+    def _impl = {
     // "drive" runs an ordered sequence of single-step operations in ONE call --
     // the progressive flow that replaces the manual introspect -> navigate ->
     // write each field -> done -> finalize loop the caller used to issue as N
@@ -8808,6 +8821,8 @@ Map _rmWalkStep(Integer appId, Map spec) {
         result.repairHints = (result.repairHints ?: []) + ["The operation committed, so do not re-run it. Check hub_get_rule_health(appId=${appId}) and address any reported issue before continuing or treating the rule as complete.".toString()]
     }
     return result
+    }
+    return _impl()
 }
 
 // Sub-page writes go through _rmWriteSettingOnPage for page context, which skips the sticky multiple-flag check
@@ -11661,6 +11676,9 @@ private Map _rmRevealStep(Integer appId, String page, String pattern, Closure tr
 // the cancel closure is invoked before throwing so the caller's wizard is left
 // in a clean state.
 private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cIdx) {
+    // The body runs as a closure so its call sites live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
+    def _impl = {
     def writeST               = ctx.writeST as Closure
     def cancelInFlightCond    = ctx.cancelInFlightCondition as Closure
     def condIdx               = ctx.condIdx as Integer
@@ -12784,6 +12802,8 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         }
     }
     _rmClickAppButton(appId, "hasAll", null, page, cache)
+    }
+    _impl()
 }
 
 // Validate a Required Expression spec's pure INPUT SHAPE -- the checks that
@@ -14793,6 +14813,9 @@ private void _rmRejectNonDeviceMapSettings(Integer appId, String pageName, Map s
 // triggerCondition, ifthenelseActions) — the schema is introspected from
 // that page so settings named on that page get correct marshaling.
 def _applyNativeAppEdit(args) {
+    // The body runs as a closure so its call sites live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
+    def _impl = {
     // Discover mode short-circuit: {addTrigger: {discover: true}} or
     // {addAction: {discover: true}} returns static schema with no hub
     // interaction -- bypass the in-handler requireDestructiveConfirm gate (confirm
@@ -16653,6 +16676,8 @@ def _applyNativeAppEdit(args) {
         mcpLogError("rm-native", "hub_set_rule failed for ${appId}: ${msg}", e)
         return _rmBuildUpdateErrorResponse(appId, msg, backup)
     }
+    }
+    return _impl()
 }
 
 // hub_delete_native_app — always snapshots the app first, then deletes. Default

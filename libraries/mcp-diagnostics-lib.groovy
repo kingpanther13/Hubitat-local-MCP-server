@@ -34,12 +34,32 @@ private void _attachRadioIncludes(result, args) {
     // the Z-Wave node-state read (plain text; "Done" when idle). Encode the id.
     def radio = args?.radio?.toString()?.toLowerCase()
     def nodeId = args?.node_id?.toString()?.trim()
+    def zwData = null
+    if (result.zwaveData instanceof Map) zwData = result.zwaveData
+    else if (result.zwave instanceof Map && result.zwave.zwaveData instanceof Map) zwData = result.zwave.zwaveData
+    boolean zwaveJs = zwData?.zwaveJS == true
     if (nodeId) {
         if (radio == "matter") {
             result.matterPairStatus = _radioGetSafe("/hub/matterPairDeviceStatus", [nodeId: nodeId])
         } else {
             result.nodeState = _radioGetSafe("/hub/zwave2/getNodeState", [node: nodeId])
+            // Z-Wave JS only: the interview/command-class detail and the link-reliability test status.
+            if (zwaveJs) {
+                result.nodeDetails = _radioGetSafe("/hub/zwave2/nodeDetails", [node: nodeId])
+                result.linkReliability = _radioGetSafe("/hub/zwave2/linkReliability/status", [node: nodeId])
+            } else if (radio != "zigbee") {
+                result.nodeDetailsNote = (zwData == null) ? "nodeDetails and linkReliability need the Z-Wave details, which could not be read." :
+                                                            "nodeDetails and linkReliability need the Z-Wave JS stack; this hub runs the legacy stack."
+            }
         }
+    }
+
+    if (radio == "matter") result.wifiCredentials = _radioGetSafe("/hub/matter/wifiCredentials")
+
+    if (args?.include_devices && radio != "matter" && radio != "zwave") result.zigbeeDevices = _zigbeeDeviceActivity()
+
+    if (args?.backup_job_id) {
+        result.zwaveBackupJob = _radioGetSafe("/hub/zwave/localBackup/job/${URLEncoder.encode(args.backup_job_id.toString(), 'UTF-8')}")
     }
 
     // Lifecycle status pollers -- the in-flight progress reads for the hub_call_zwave
@@ -56,7 +76,12 @@ private void _attachRadioIncludes(result, args) {
                 status: _radioGetSafe("/hub/zwave/nodeReplace/status"),
                 info: _radioGetSafe("/hub/zwave/nodeReplace/info")
             ],
-            zigbee: _radioGetSafe("/hub/zigbeeInfo/status")
+            zigbee: _radioGetSafe("/hub/zigbeeInfo/status"),
+            // Z-Wave JS stack readiness + interview progress, the Z-Wave local-backup availability
+            // ({available, entitled, firmwareVersion, zwaveJSVersion}) and a batch firmware run.
+            zwaveJs: _radioGetSafe("/hub/zwave2/updateStatus"),
+            zwaveLocalBackup: _radioGetSafe("/hub/zwave/localBackup/status"),
+            zwaveFirmwareBatch: _radioGetSafe("/hub/zwave/deviceFirmware/batchProgress")
         ]
     }
 
@@ -75,7 +100,38 @@ private void _attachRadioIncludes(result, args) {
             devices: _radioGetSafe("/hub/zwave/deviceFirmware/devices"),
             files: _radioGetSafe("/hub/zwave/deviceFirmware/files")
         ]
+        // Per node: the device's firmware targets, any update the hub's firmware service offers
+        // for it (updateId feeds device_firmware_start_available), the flash progress, and the
+        // other nodes a batch run could include (Z-Wave JS).
+        if (nodeId && radio != "matter") {
+            def q = [nodeId: nodeId]
+            result.firmware.node = [
+                details: _radioGetSafe("/hub/zwave/deviceFirmware/details", q),
+                available: _radioGetSafe("/hub/zwave/deviceFirmware/available", q),
+                progress: _radioGetSafe("/hub/zwave/deviceFirmware/progress", q),
+                batchCandidates: _radioGetSafe("/hub/zwave/deviceFirmware/batchCandidates", q)
+            ]
+        }
     }
+}
+
+// Zigbee devices with the time of each one's last radio message (GET /hub/zigbee/getDevicesJson).
+// lastMessage is epoch ms or null when the hub has heard nothing since its last start. Silent
+// devices sort first, then the longest quiet.
+private Map _zigbeeDeviceActivity() {
+    def raw = _radioGetSafe("/hub/zigbee/getDevicesJson")
+    if (!(raw instanceof Map) || !(raw.devices instanceof List)) {
+        return (raw instanceof Map && raw.error) ? raw : [error: "/hub/zigbee/getDevicesJson returned an unexpected shape."]
+    }
+    long nowMs = now()
+    def devices = raw.devices.findAll { it instanceof Map }.collect { d ->
+        Long last = (d.lastMessage instanceof Number) ? (d.lastMessage as Long) : null
+        [id: d.id, name: d.name, zigbeeId: d.zigbeeId,
+         lastMessage: last != null ? formatTimestamp(last) : null,
+         minutesSinceLastMessage: last != null ? (long) ((nowMs - last) / 60000L) : null]
+    }.sort { it.minutesSinceLastMessage == null ? Long.MIN_VALUE : -(it.minutesSinceLastMessage as long) }
+    return [devices: devices, count: devices.size(),
+            note: "lastMessage is the last Zigbee radio message the hub received from the device; null means none since the hub last started."]
 }
 
 // Shared radio GET: authenticated internal GET, parsed as JSON when the body is
@@ -1256,6 +1312,8 @@ def toolGetPerformanceStats(args) {
         result.appStats = formatStats(data.appStats)
     }
 
+    if (args.includeCloudCalls == true) result.cloudCalls = _cloudCallsSummary()
+
     // Size guard: estimate response and warn if large
     def statsCount = (result.deviceStats?.size() ?: 0) + (result.appStats?.size() ?: 0)
     if (limit == 0) {
@@ -1264,6 +1322,48 @@ def toolGetPerformanceStats(args) {
 
     mcpLog("info", "monitoring", "Retrieved performance stats: ${statsCount} entries (type=${type})")
     return result
+}
+
+// Per-app cloud-call counts from GET /logs/cloudCalls/json (firmware 2.5.2.129+): totals plus the
+// hourly series per app (newest hours first, at most 48), apps sorted by total. An unreadable
+// endpoint or an unexpected shape is an {error} block.
+private Map _cloudCallsSummary() {
+    def raw
+    try {
+        def txt = hubInternalGet("/logs/cloudCalls/json")
+        raw = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+    } catch (Exception e) {
+        mcpLogError("monitoring", "cloud-call history read failed", e)
+        def out = [error: "Could not read the cloud-call history: ${e.message}"]
+        if (_hubFirmwareBefore("2.5.2.129")) out.note = "Cloud-call history needs firmware 2.5.2.129 or later."
+        return out
+    }
+    if (!(raw instanceof Map)) return [error: "/logs/cloudCalls/json returned an unexpected shape."]
+    try {
+        return _shapeCloudCalls(raw)
+    } catch (Exception e) {
+        mcpLogError("monitoring", "cloud-call history has an unexpected shape", e)
+        return [error: "The cloud-call history has an unexpected shape: ${e.message}"]
+    }
+}
+
+private Map _shapeCloudCalls(Map raw) {
+    def hoursByApp = [:]
+    (raw.hours instanceof List ? raw.hours : []).each { h ->
+        if (!(h instanceof Map) || h.appId == null || h.hourStart == null) return
+        def key = h.appId.toString()
+        if (!hoursByApp.get(key)) hoursByApp.put(key, [])
+        hoursByApp.get(key) << [epoch: h.hourStart as Long, count: h.count]
+    }
+    def apps = (raw.apps instanceof List ? raw.apps : []).findAll { it instanceof Map }.collect { a ->
+        def series = (hoursByApp.get(a.id?.toString()) ?: []).sort { -(it.epoch as long) }
+                                                            .collect { [hourStart: formatTimestamp(it.epoch as Long), count: it.count] }
+        [id: a.id, name: a.name, installed: a.installed, total: a.total, currentHour: a.currentHour,
+         hourly: series.take(48)]
+    }.sort { -((it.total ?: 0) as long) }
+    return [apps: apps, timeZone: raw.timeZone,
+            countingSince: raw.startedAt != null ? formatTimestamp(raw.startedAt as Long) : null,
+            note: "Calls each app made to Hubitat cloud services. hourly lists the newest hours first (at most 48 per app)."]
 }
 
 def toolGetHubJobs(args) {
@@ -1863,8 +1963,47 @@ def runPingChecks(List rawHosts, Integer count) {
 def toolSetZwave(args) {
     def hasEnabled = args.containsKey("enabled")
     def hasConfig = (args.region != null || args.long_range_channel != null)
-    if (!hasEnabled && !hasConfig) {
-        throw new IllegalArgumentException("Specify enabled (true/false) and/or region + long_range_channel.")
+    def hasStack = args.zwave_js != null
+    if (!hasEnabled && !hasConfig && !hasStack) {
+        throw new IllegalArgumentException("Specify enabled (true/false), region + long_range_channel, or zwave_js (true/false).")
+    }
+    if (hasStack && (hasEnabled || hasConfig)) {
+        throw new IllegalArgumentException("zwave_js switches the Z-Wave stack and reboots the hub; send it on its own call, without enabled/region/long_range_channel.")
+    }
+
+    if (hasStack) {
+        if (!(args.zwave_js instanceof Boolean)) throw new IllegalArgumentException("zwave_js must be true (switch to Z-Wave JS) or false (switch back to the legacy stack).")
+        requireDestructiveConfirm(args.confirm)
+        boolean toJs = (args.zwave_js == true)
+        // The running stack decides: the same stack is a no-op (so a repeat never reboots twice),
+        // and an unreadable one is refused rather than guessed.
+        def details = _radioGetSafe("/hub/zwaveDetails/json")
+        if (!(details instanceof Map) || details.error || !(details.zwaveJS instanceof Boolean)) {
+            return [success: false, radio: "zwave", error: "Could not read which Z-Wave stack the hub runs${(details instanceof Map && details.error) ? ': ' + details.error : '.'}",
+                    note: "Nothing was sent. Check hub_get_radio_details(radio='zwave') and retry."]
+        }
+        if (details.zwaveJS == toJs) {
+            return [success: true, radio: "zwave", zwaveJs: toJs, changed: false, message: "The hub already runs ${toJs ? 'Z-Wave JS' : 'the legacy Z-Wave stack'}; nothing was sent."]
+        }
+        try {
+            def resp = _radioGet(toJs ? "/hub/zwave2/enable" : "/hub/zwave2/disable")
+            if (_radioRefused(resp, true)) {
+                return [success: false, radio: "zwave", error: "The hub refused the Z-Wave stack switch: ${_radioReason(resp)}",
+                        note: "Nothing changed. Z-Wave JS needs a C-5, C-7 or C-8 on firmware 2.5.2 or later; zwaveJSAvailable in hub_get_radio_details(radio='zwave') says whether this hub offers it."]
+            }
+            mcpLog("warn", "hub-admin", "Z-Wave stack switch to ${toJs ? 'Z-Wave JS' : 'legacy'} requested via MCP; hub reboots")
+            return [success: true, radio: "zwave", zwaveJs: toJs, changed: true, rebooting: true,
+                    message: "Switching the Z-Wave stack to ${toJs ? 'Z-Wave JS' : 'the legacy stack'}. The hub reboots now.",
+                    note: "After the reboot, check hub_get_radio_details(radio='zwave', include_status=true): status.zwaveJs.zwaveJSReady and interviewStatus show when the devices are re-interviewed.",
+                    response: resp]
+        } catch (Exception e) {
+            mcpLogError("hub-admin", "Z-Wave stack switch request failed", e)
+            if (_httpStatusOf(e) != null) {
+                return [success: false, radio: "zwave", error: "The hub refused the Z-Wave stack switch: ${e.message}", note: "Nothing changed."]
+            }
+            return [success: false, radio: "zwave", outcome: "unknown", error: "The Z-Wave stack switch request got no answer: ${e.message}",
+                    note: "The hub may already be rebooting into the new stack. Wait a few minutes, then read status.zwaveJs with hub_get_radio_details(radio='zwave', include_status=true); a repeated call does nothing once the stack has switched."]
+        }
     }
 
     if (hasEnabled) {
@@ -2115,6 +2254,82 @@ def toolCallZwave(args) {
             case "antenna_test_continue":
                 resp = _radioGet("/hub/zwave2/antennaTestContinue")
                 return [success: true, action: action, message: "Z-Wave antenna test continued.", response: resp]
+            case "reinterview":
+                if (!nodeId) throw new IllegalArgumentException("reinterview requires node_id.")
+                resp = _radioGet("/hub/zwave2/reinterview", [node: nodeId])
+                // The UI checks only the HTTP status here, so only an explicit refusal counts.
+                if (resp instanceof Map && (resp.success == false || resp.error)) return [success: false, action: action, nodeId: nodeId, error: "The hub did not start the re-interview: ${_radioReason(resp)}", response: resp]
+                return [success: true, action: action, nodeId: nodeId, message: "Z-Wave JS re-interview started for node ${nodeId}.",
+                        note: "Watch interviewComplete / interviewStage on the node in hub_get_radio_details(radio='zwave'). Z-Wave JS only.", response: resp]
+            case "link_test_start":
+                if (!nodeId) throw new IllegalArgumentException("link_test_start requires node_id.")
+                def lt = _zwArgObject(args.link_test, "link_test", ["rounds", "interval_ms"])
+                int rounds = (lt.rounds != null) ? _zwIntArg(lt.rounds, "link_test.rounds") : 10
+                int intervalMs = (lt.interval_ms != null) ? _zwIntArg(lt.interval_ms, "link_test.interval_ms") : 1000
+                if (rounds < 1 || intervalMs < 0) throw new IllegalArgumentException("rounds must be at least 1 and interval_ms 0 or more.")
+                Integer ltNode = _zwNodeNumber(nodeId)
+                // The test switches the device on and off, outside the device allowlist.
+                requireDestructiveConfirm(args.confirm)
+                resp = _radioPost("/hub/zwave2/linkReliability/start", groovy.json.JsonOutput.toJson([nodeId: ltNode, rounds: rounds, intervalMs: intervalMs]))
+                if (_radioRefused(resp)) {
+                    return [success: false, action: action, nodeId: nodeId, error: "The hub did not start the link test: ${(resp instanceof Map && resp.status) ? resp.status : _radioReason(resp)}", response: resp]
+                }
+                return [success: true, action: action, nodeId: nodeId, rounds: rounds, intervalMs: intervalMs,
+                        message: "Link reliability test started for node ${nodeId}.",
+                        warning: "The test switches the device on and off and may leave it in a different state.",
+                        note: "Read results with hub_get_radio_details(radio='zwave', node_id=${nodeId}) (linkReliability). Z-Wave JS only.", response: resp]
+            case "link_test_stop":
+                if (!nodeId) throw new IllegalArgumentException("link_test_stop requires node_id.")
+                resp = _radioPost("/hub/zwave2/linkReliability/abort", groovy.json.JsonOutput.toJson([nodeId: _zwNodeNumber(nodeId)]))
+                if (_radioRefused(resp)) return [success: false, action: action, nodeId: nodeId, error: "The hub did not stop the link test: ${(resp instanceof Map && resp.status) ? resp.status : _radioReason(resp)}", response: resp]
+                return [success: true, action: action, nodeId: nodeId, message: "Link reliability test stop requested.", response: resp]
+            case "cc_command":
+                if (!nodeId) throw new IllegalArgumentException("cc_command requires node_id.")
+                def cc = _zwArgObject(args.cc, "cc", ["command_class", "method_name", "endpoint", "args"])
+                if (cc.command_class == null || !cc.method_name) throw new IllegalArgumentException("cc_command requires cc={command_class (numeric id), method_name, endpoint?, args?}, from the node's commandClasses in hub_get_radio_details(radio='zwave', node_id=N).")
+                if (cc.args != null && !(cc.args instanceof List)) throw new IllegalArgumentException("cc.args must be an array of the method's arguments, in order (or a one-element array holding an object for object-style methods).")
+                def ccBody = [nodeId: _zwNodeNumber(nodeId), endpoint: (cc.endpoint != null ? _zwIntArg(cc.endpoint, "cc.endpoint") : 0),
+                              commandClass: _zwIntArg(cc.command_class, "cc.command_class"), methodName: cc.method_name.toString(), args: (cc.args ?: [])]
+                requireDestructiveConfirm(args.confirm)
+                resp = _radioPost("/hub/zwave2/ccCommand", groovy.json.JsonOutput.toJson(ccBody))
+                if (_radioRefused(resp)) {
+                    return [success: false, action: action, nodeId: nodeId, error: "Command failed: ${_radioReason(resp)}", response: resp]
+                }
+                return [success: true, action: action, nodeId: nodeId, message: "Command ${cc.method_name} sent to node ${nodeId}.", response: resp]
+            case "local_backup_create":
+                resp = _radioPost("/hub/zwave/localBackup/create")
+                if (!(resp instanceof Map) || resp.success != true) {
+                    return [success: false, action: action, error: "The hub did not start a Z-Wave backup: ${_radioReason(resp)}",
+                            note: "Z-Wave local backup needs Z-Wave JS and the Full Local Backup subscription; status.zwaveLocalBackup in hub_get_radio_details(include_status=true) shows both."]
+                }
+                return [success: true, action: action, jobId: resp.jobId, message: "Z-Wave network backup started.",
+                        note: "Poll hub_get_radio_details(backup_job_id='${resp.jobId}') until stage is DONE, then save it with action='local_backup_download'.", response: resp]
+            case "local_backup_download":
+                if (!args.job_id) throw new IllegalArgumentException("local_backup_download requires job_id (the jobId from local_backup_create).")
+                if (!args.confirm) throw new IllegalArgumentException("local_backup_download writes the network backup (with its security keys) to File Manager: pass confirm=true.")
+                return _zwaveBackupDownload(args.job_id.toString())
+            case "local_backup_import":
+                if (!args.backup_url) throw new IllegalArgumentException("local_backup_import requires backup_url: an http(s) URL to a Hubitat or Z-Wave JS UI backup, archive, or raw NVM file.")
+                if (!args.confirm) throw new IllegalArgumentException("local_backup_import fetches backup_url and uploads it to the hub: pass confirm=true.")
+                return _zwaveBackupImport(args.backup_url.toString())
+            case "local_backup_keys":
+                if (!args.import_id) throw new IllegalArgumentException("local_backup_keys requires import_id (the importId from local_backup_import).")
+                if (!(args.security_keys instanceof Map)) throw new IllegalArgumentException("local_backup_keys requires security_keys: {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl} as 32-hex-digit strings, plus optional long_range: {S2_Authenticated, S2_AccessControl}.")
+                if (args.security_keys.long_range != null && !(args.security_keys.long_range instanceof Map)) {
+                    throw new IllegalArgumentException("security_keys.long_range must be an object: {S2_Authenticated, S2_AccessControl}.")
+                }
+                def lrKeys = args.security_keys.long_range ?: [:]
+                def mainKeys = args.security_keys.findAll { k, v -> k != "long_range" }
+                _zwValidateNetworkKeys(mainKeys, ["S0_Legacy", "S2_Unauthenticated", "S2_Authenticated", "S2_AccessControl"], "security_keys")
+                _zwValidateNetworkKeys(lrKeys, ["S2_Authenticated", "S2_AccessControl"], "security_keys.long_range")
+                def keyBody = [securityKeys: _zwNormalizeKeys(mainKeys), securityKeysLongRange: _zwNormalizeKeys(lrKeys)]
+                resp = _radioPost("/hub/zwave/localBackup/securityKeys/${URLEncoder.encode(args.import_id.toString(), 'UTF-8')}", groovy.json.JsonOutput.toJson(keyBody))
+                if (!(resp instanceof Map) || resp.success != true) {
+                    return [success: false, action: action, error: "The hub did not accept the security keys: ${_radioReason(resp)}"]
+                }
+                return [success: true, action: action, importId: args.import_id.toString(), report: resp.report,
+                        message: "Security keys saved for the imported backup.",
+                        note: "Restore it with hub_call_destructive_ops(target='zwave', action='local_backup_restore', import_id=...)."]
             case "smartstart_delete":
                 if (!args.node_dsk) throw new IllegalArgumentException("smartstart_delete requires node_dsk (the DSK from hub_get_radio_details(include_smartstart=true)).")
                 resp = _radioPost("/mobileapi/zwave/smartstart/delete", groovy.json.JsonOutput.toJson([nodeDSK: args.node_dsk.toString()]))
@@ -2126,8 +2341,146 @@ def toolCallZwave(args) {
         throw iae
     } catch (Exception e) {
         mcpLogError("hub-admin", "hub_call_zwave action '${action}' failed", e)
-        return [success: false, action: action, error: "Z-Wave action '${action}' failed: ${e.message}", note: "Check Hub Security credentials and that the radio is enabled."]
+        def zwJsOnly = action in ["reinterview", "link_test_start", "link_test_stop", "cc_command", "local_backup_create", "local_backup_download", "local_backup_import", "local_backup_keys"]
+        def note = "Check Hub Security credentials and that the radio is enabled."
+        if (zwJsOnly) {
+            def details = _radioGetSafe("/hub/zwaveDetails/json")
+            if (details instanceof Map && details.zwaveJS == false) note = "This action needs the Z-Wave JS stack, and this hub runs the legacy stack (hub_set_zwave(zwave_js=true) switches it)."
+        }
+        return [success: false, action: action, error: "Z-Wave action '${action}' failed: ${e.message}", note: note]
     }
+}
+
+// Shared result for the firmware-service and batch flashes: the hub answers {success, message}.
+private Map _zwFirmwareStartResult(String action, resp, nodeId) {
+    if (_radioRefused(resp, true)) {
+        return [success: false, target: "zwave", action: action, error: "The hub did not start the firmware update: ${_radioReason(resp)}",
+                note: "Firmware 2.5.2 refuses device firmware updates over Remote Admin, and batch updates need Z-Wave JS.", response: resp]
+    }
+    return [success: true, target: "zwave", action: action, nodeId: nodeId?.toString(),
+            message: "Z-Wave device firmware update started.",
+            warning: "Do NOT power-cycle the devices or the hub during the flash; interruption can brick a device.",
+            note: "Poll hub_get_radio_details(include_firmware=true, node_id=${nodeId}) (firmware.node.progress) or include_status=true (status.zwaveFirmwareBatch) for a batch.",
+            response: resp]
+}
+
+private Integer _zwNodeNumber(String nodeId) {
+    if (!(nodeId ==~ /\d+/)) throw new IllegalArgumentException("node_id must be a decimal Z-Wave node number, got '${nodeId}'.")
+    return nodeId as Integer
+}
+
+// Whole-number argument, decimal or 0x hex (command classes are usually written in hex).
+private Integer _zwIntArg(v, String name) {
+    def s = v?.toString()?.trim()
+    try {
+        if (s ==~ /\d{1,9}/) return s as Integer
+        if (s ==~ /(?i)0x[0-9a-f]{1,7}/) return Integer.parseInt(s.substring(2), 16)
+    } catch (NumberFormatException ignored) { }
+    throw new IllegalArgumentException("${name} must be a whole number of 0 or more (decimal or 0x hex), got '${v}'.")
+}
+
+// A nested argument object with a closed set of keys; a misspelt key is refused, not ignored.
+private Map _zwArgObject(v, String name, List known) {
+    if (v == null) return [:]
+    if (!(v instanceof Map)) throw new IllegalArgumentException("${name} must be an object with ${known.join(', ')}.")
+    def unknown = v.keySet().findAll { !(it in known) }
+    if (unknown) throw new IllegalArgumentException("Unknown ${name} field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
+    return v
+}
+
+private void _zwValidateNetworkKeys(Map keys, List known, String label) {
+    def unknown = keys.keySet().findAll { !(it in known) }
+    if (unknown) throw new IllegalArgumentException("Unknown ${label} key(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
+    keys.each { k, v ->
+        if (!(v?.toString()?.trim() ==~ /(?i)(0x)?[0-9a-f]{32}/)) throw new IllegalArgumentException("${label}.${k} must be a 32-hex-digit network key.")
+    }
+}
+
+// A radio write the hub did not confirm. strict: only success:true counts (how the UI reads the
+// firmware writes). Otherwise an explicit failure, an error, or an answer that is not JSON.
+private boolean _radioRefused(resp, boolean strict = false) {
+    if (strict) return !(resp instanceof Map) || resp.success != true
+    if (resp instanceof Map) return resp.success == false || resp.error || resp._unparseable
+    return resp != null
+}
+
+// The pair answer: {nodeId, error} on 2.5.2 or a bare node id (also the only shape before 2.5.2),
+// as the UI reads it; node "0" or none means the hub did not start pairing.
+private Map _matterPairAnswer(resp, String action, String wifiSsid) {
+    def node = (resp instanceof Map) ? resp.nodeId : resp
+    String nodeId = node?.toString()?.trim()
+    def err = (resp instanceof Map) ? resp.error : null
+    if (!(nodeId ==~ /[0-9A-Za-z_-]{1,40}/) || nodeId == "0" || err) {
+        return [success: false, action: action, error: "Matter pairing did not start: ${err ?: 'the hub returned no node'}",
+                note: "Check the setup code and that the device is in pairing mode. A Wi-Fi device also needs the right wifi_ssid / wifi_password.", response: resp]
+    }
+    def out = [success: true, action: action, nodeId: nodeId, message: "Matter commissioning started (node ${nodeId}).",
+               note: "Poll hub_get_radio_details(radio='matter', node_id='${nodeId}') for progress; stop it with action='cancel_pair'.", response: resp]
+    if (wifiSsid != null) out.wifiSsid = wifiSsid
+    return out
+}
+
+private String _radioReason(resp) {
+    if (resp == null) return "the hub returned nothing"
+    if (resp instanceof Map) return (resp.message ?: resp.error ?: "no reason given").toString()
+    return resp.toString().take(200)
+}
+
+// Saves a finished Z-Wave local backup to File Manager (the UI only offers it as a browser download).
+private Map _zwaveBackupDownload(String jobId) {
+    String name = "zwave-backup-${jobId.replaceAll(/[^A-Za-z0-9_.-]/, '_')}.tar.gz"
+    try {
+        def got = hubInternalBytes("GET", "/hub/zwave/localBackup/download/${URLEncoder.encode(jobId, 'UTF-8')}")
+        byte[] bytes = got.bytes
+        if (!bytes || bytes.length == 0) {
+            return [success: false, action: "local_backup_download", error: "The hub returned no backup data for job ${jobId}${got.error ? ': ' + got.error : '.'}",
+                    note: "The job must have finished (stage DONE in hub_get_radio_details(backup_job_id=...))."]
+        }
+        if (!_isGzip(bytes)) {
+            return [success: false, action: "local_backup_download", error: "The hub did not return a backup archive for job ${jobId}: ${_bytesPreview(bytes)}",
+                    note: "Nothing was saved. The job must have finished (stage DONE in hub_get_radio_details(backup_job_id=...))."]
+        }
+        uploadHubFile(name, bytes)
+        return [success: true, action: "local_backup_download", jobId: jobId, fileName: name, sizeBytes: bytes.length,
+                message: "Z-Wave backup saved to File Manager as ${name}.",
+                note: "Download it from http://<HUB_IP>/local/${name} and keep a copy off the hub."]
+    } catch (IllegalArgumentException iae) {
+        throw iae
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "Z-Wave backup download failed", e)
+        return [success: false, action: "local_backup_download", error: "Could not save the Z-Wave backup: ${e.message}"]
+    }
+}
+
+// Uploads a Z-Wave backup from a URL for inspection; the hub answers with an importId whose job
+// reaches READY with a report (which keys it still needs) before a restore.
+private Map _zwaveBackupImport(String url) {
+    _requireBackupUrl(url, "backup_url")
+    def got = _fetchCappedBackup(url, 8L * 1024 * 1024)
+    if (got.error) {
+        return [success: false, action: "local_backup_import", error: "backup_url: ${got.error}",
+                note: "Import it from Settings > Z-Wave Details > Z-Wave local backup in the Hubitat web UI. Nothing was imported."]
+    }
+    byte[] bytes = got.bytes
+    def segs = url.replaceFirst(/(?i)^https?:\/\/[^\/]*/, "").replaceFirst(/[?#].*$/, "").tokenize("/")
+    String fileName = (segs && segs[-1].contains(".")) ? segs[-1] : "zwave-backup.tar.gz"
+    try {
+        def up = _postMultipartBackup("/hub/zwave/localBackup/upload", "uploadFile", fileName, bytes)
+        if (!(up instanceof Map) || up.success != true) {
+            return [success: false, action: "local_backup_import", error: "The hub rejected the upload: ${(up instanceof Map) ? (up.message ?: 'no reason given') : up}"]
+        }
+        return [success: true, action: "local_backup_import", importId: up.importId,
+                message: "Backup uploaded for inspection.",
+                note: "Poll hub_get_radio_details(backup_job_id='${up.importId}') until stage is READY and read its report. Supply any missing keys with action='local_backup_keys', then restore with hub_call_destructive_ops(target='zwave', action='local_backup_restore', import_id='${up.importId}')."]
+    } catch (Exception e) {
+        mcpLogError("hub-admin", "Z-Wave backup import failed", e)
+        return [success: false, action: "local_backup_import", error: "Upload failed: ${e.message}"]
+    }
+}
+
+// The UI accepts keys with a 0x prefix or stray whitespace and sends bare hex.
+private Map _zwNormalizeKeys(Map keys) {
+    return keys.collectEntries { k, v -> [(k.toString()): (v == null ? "" : v.toString().trim().replaceFirst(/(?i)^0x/, ""))] }
 }
 
 // hub_call_zigbee: non-idempotent Zigbee operations (radio reboot, network rebuild,
@@ -2162,11 +2515,12 @@ def toolCallZigbee(args) {
     }
 }
 
-// hub_call_matter: non-idempotent Matter operations (enable/disable, pair a device
-// by setup code, open a pairing/share window for a commissioned node).
+// hub_call_matter: non-idempotent Matter operations (enable/disable, pair a device by setup
+// code with the network credentials firmware 2.5.2 requires, cancel a pairing, open a
+// pairing/share window for a commissioned node).
 def toolCallMatter(args) {
     def action = args.action?.toString()
-    if (!action) throw new IllegalArgumentException("action is required: enable, disable, pair, or open_pairing_window.")
+    if (!action) throw new IllegalArgumentException("action is required: enable, disable, pair, cancel_pair, or open_pairing_window.")
     try {
         def resp
         switch (action) {
@@ -2179,11 +2533,40 @@ def toolCallMatter(args) {
                         message: "Matter ${enable ? 'enable' : 'disable'} requested.",
                         warning: "Matter enable/disable requires a HUB REBOOT to take effect. Reboot via hub_reboot when ready.", response: resp]
             case "pair":
-                if (!args.setup_code) throw new IllegalArgumentException("pair requires setup_code (the 11- or 21-digit Matter setup code / pairing code).")
-                resp = _radioGet("/hub/matter/pair", [setupCode: args.setup_code.toString()])
-                return [success: true, action: action,
-                        message: "Matter commissioning started for the given setup code.",
-                        note: "Poll hub_get_radio_details(radio='matter', include_status=true) for commissioning progress.", response: resp]
+                if (!args.setup_code) throw new IllegalArgumentException("pair requires setup_code (the 11- or 21-digit Matter setup code, or the MT: QR payload).")
+                if (args.wifi_password != null && args.wifi_ssid == null) throw new IllegalArgumentException("wifi_password needs wifi_ssid.")
+                if (_hubFirmwareBefore("2.5.2")) {
+                    // Older firmware has no network-credentials pairing: the setup code alone.
+                    resp = _radioGet("/hub/matter/pair", [setupCode: args.setup_code.toString().trim()])
+                    def legacy = _matterPairAnswer(resp, action, null)
+                    if (legacy.success && args.wifi_ssid != null) legacy.note += " Firmware before 2.5.2 pairs with the setup code alone; wifi_ssid and wifi_password were not sent."
+                    return legacy
+                }
+                // The 2.5.2 UI always sends Wi-Fi credentials; Thread devices ignore them. Like the UI,
+                // default to the hub's selected network, with the password placeholder (the hub reads
+                // it as "use the stored password") only when that network is the stored one.
+                String ssid = args.wifi_ssid?.toString()
+                String password = args.wifi_password?.toString()
+                if (password == null) {
+                    def creds = _radioGetSafe("/hub/matter/wifiCredentials")
+                    if (!(creds instanceof Map) || creds.error) {
+                        return [success: false, action: action, error: "Could not read the hub's Wi-Fi network for pairing: ${(creds instanceof Map) ? creds.error : creds}",
+                                note: "Retry, or pass wifi_ssid and wifi_password. Nothing was paired."]
+                    }
+                    if (ssid == null) ssid = (creds.selectedSsid ?: creds.storedSsid ?: "").toString()
+                    if (ssid && !(creds.hasStoredPassword == true && ssid == creds.storedSsid)) {
+                        throw new IllegalArgumentException("pair on network '${ssid}' needs wifi_password: the hub stores a password only for '${creds.storedSsid ?: 'no network'}'. Pass wifi_ssid='${ssid}' with wifi_password (\"\" for an open network).")
+                    }
+                    password = ssid ? (creds.passwordPlaceholder ?: "") : ""
+                }
+                resp = _radioPost("/hub/matter/pairWithNetworkCredentials",
+                    groovy.json.JsonOutput.toJson([setupCode: args.setup_code.toString().trim(), ssid: ssid ?: "", password: password ?: ""]))
+                return _matterPairAnswer(resp, action, ssid ?: null)
+            case "cancel_pair":
+                if (!args.node_id) throw new IllegalArgumentException("cancel_pair requires node_id (the nodeId pair returned).")
+                resp = _radioGet("/hub/matter/cancelPair", [nodeId: args.node_id.toString()])
+                if (_radioRefused(resp)) return [success: false, action: action, nodeId: args.node_id.toString(), error: "The hub did not cancel the pairing: ${_radioReason(resp)}", response: resp]
+                return [success: true, action: action, nodeId: args.node_id.toString(), message: "Matter pairing cancel requested.", response: resp]
             case "open_pairing_window":
                 if (!args.node_id) throw new IllegalArgumentException("open_pairing_window requires node_id (the commissioned Matter node to share).")
                 resp = _radioGet("/hub/matter/openPairingWindow", [node: args.node_id.toString()])
@@ -2191,7 +2574,7 @@ def toolCallMatter(args) {
                         message: "Matter pairing/share window opened.",
                         note: "The response carries the setup code for sharing this device to another fabric.", response: resp]
             default:
-                throw new IllegalArgumentException("Unknown action '${action}'. Valid: enable, disable, pair, open_pairing_window.")
+                throw new IllegalArgumentException("Unknown action '${action}'. Valid: enable, disable, pair, cancel_pair, open_pairing_window.")
         }
     } catch (IllegalArgumentException iae) {
         throw iae
@@ -2242,17 +2625,64 @@ def toolCallDestructiveOps(args) {
             case "device_firmware_start":
                 if (radio != "zwave") throw new IllegalArgumentException("device_firmware_start is Z-Wave only.")
                 if (args.node_id == null || !args.file_name) throw new IllegalArgumentException("device_firmware_start requires node_id and file_name (from hub_get_radio_details(include_firmware=true)).")
-                def startBody = [nodeId: args.node_id, target: (args.target_index != null ? args.target_index : args.node_id), fileName: args.file_name.toString()]
+                def startBody = [nodeId: args.node_id, target: (args.target_index != null ? args.target_index : 0), fileName: args.file_name.toString()]
                 resp = _radioPost("/hub/zwave/deviceFirmware/start", groovy.json.JsonOutput.toJson(startBody))
-                return [success: true, target: radio, action: action,
-                        message: "Z-Wave device firmware update started for node ${args.node_id}.",
-                        warning: "Do NOT power-cycle the device or hub during the flash; interruption can brick the device.",
-                        note: "Poll hub_get_radio_details(node_id=${args.node_id}). Abort with action='device_firmware_abort'.", response: resp]
+                return _zwFirmwareStartResult(action, resp, args.node_id)
             case "device_firmware_abort":
                 if (radio != "zwave") throw new IllegalArgumentException("device_firmware_abort is Z-Wave only.")
                 if (args.node_id == null) throw new IllegalArgumentException("device_firmware_abort requires node_id.")
                 resp = _radioPost("/hub/zwave/deviceFirmware/abort", groovy.json.JsonOutput.toJson([nodeId: args.node_id]))
                 return [success: true, target: radio, action: action, message: "Z-Wave device firmware update aborted for node ${args.node_id}.", response: resp]
+            case "device_firmware_start_available":
+                if (radio != "zwave") throw new IllegalArgumentException("device_firmware_start_available is Z-Wave only.")
+                if (args.node_id == null || args.update_id == null) throw new IllegalArgumentException("device_firmware_start_available requires node_id and update_id (from hub_get_radio_details(include_firmware=true, node_id=N) firmware.node.available).")
+                resp = _radioPost("/hub/zwave/deviceFirmware/startAvailable",
+                    groovy.json.JsonOutput.toJson([nodeId: _zwNodeNumber(args.node_id.toString()), updateId: args.update_id]))
+                return _zwFirmwareStartResult(action, resp, args.node_id)
+            case "device_firmware_batch_start":
+            case "device_firmware_batch_start_available":
+                if (radio != "zwave") throw new IllegalArgumentException("${action} is Z-Wave only.")
+                def batch = _zwArgObject(args.batch, "batch", ["node_ids", "inactivity_timeout_seconds"])
+                if (args.node_id == null || !(batch.node_ids instanceof List) || batch.node_ids.isEmpty()) {
+                    throw new IllegalArgumentException("${action} requires node_id (the source node) and batch.node_ids (the nodes to update, from firmware.node.batchCandidates in hub_get_radio_details).")
+                }
+                boolean fromService = (action == "device_firmware_batch_start_available")
+                if (fromService && args.update_id == null) throw new IllegalArgumentException("device_firmware_batch_start_available requires update_id.")
+                if (!fromService && !args.file_name) throw new IllegalArgumentException("device_firmware_batch_start requires file_name (a firmware file from hub_get_radio_details(include_firmware=true)).")
+                def batchBody = [sourceNodeId: _zwNodeNumber(args.node_id.toString()),
+                                 nodeIds: batch.node_ids.collect { _zwNodeNumber(it.toString()) },
+                                 inactivityTimeoutSeconds: (batch.inactivity_timeout_seconds != null ? _zwIntArg(batch.inactivity_timeout_seconds, "batch.inactivity_timeout_seconds") : 600)]
+                String batchPath
+                if (fromService) {
+                    batchBody.updateId = args.update_id
+                    batchPath = "/hub/zwave/deviceFirmware/startAvailableBatch"
+                } else {
+                    batchBody.target = (args.target_index != null ? args.target_index : 0)
+                    batchBody.fileName = args.file_name.toString()
+                    batchPath = "/hub/zwave/deviceFirmware/startBatch"
+                }
+                resp = _radioPost(batchPath, groovy.json.JsonOutput.toJson(batchBody))
+                return _zwFirmwareStartResult(action, resp, args.node_id)
+            case "device_firmware_batch_abort":
+                if (radio != "zwave") throw new IllegalArgumentException("device_firmware_batch_abort is Z-Wave only.")
+                resp = _radioPost("/hub/zwave/deviceFirmware/abortBatch", "{}")
+                if (_radioRefused(resp, true)) {
+                    return [success: false, target: radio, action: action, error: "Abort failed: ${_radioReason(resp)}", response: resp]
+                }
+                return [success: true, target: radio, action: action, message: "Batch Z-Wave firmware update abort requested.", response: resp]
+            case "local_backup_restore":
+                if (radio != "zwave") throw new IllegalArgumentException("local_backup_restore is Z-Wave only.")
+                if (!args.import_id) throw new IllegalArgumentException("local_backup_restore requires import_id (from hub_call_zwave(action='local_backup_import')).")
+                resp = _radioPost("/hub/zwave/localBackup/restore/${URLEncoder.encode(args.import_id.toString(), 'UTF-8')}", groovy.json.JsonOutput.toJson([confirmation: "RESTORE"]))
+                if (!(resp instanceof Map) || resp.success != true) {
+                    return [success: false, target: radio, action: action, error: "The hub did not start the restore: ${_radioReason(resp)}",
+                            note: "The import must be READY with every security key supplied (hub_get_radio_details(backup_job_id=...))."]
+                }
+                mcpLog("warn", "hub-admin", "DESTRUCTIVE: Z-Wave network restore from import ${args.import_id} via MCP")
+                return [success: true, target: radio, action: action, jobId: resp.jobId,
+                        message: "Z-Wave network restore started. It replaces the hub's Z-Wave network with the imported one.",
+                        warning: "Do not power off or reboot the hub during the restore. Z-Wave devices are unavailable while Z-Wave JS restarts.",
+                        note: "Poll hub_get_radio_details(backup_job_id='${resp.jobId}') until stage is DONE.", response: resp]
             case "zwave_chip_firmware":
                 if (radio != "zwave") throw new IllegalArgumentException("zwave_chip_firmware is Z-Wave only.")
                 resp = _radioGet("/hub/zwave/startUpdateHubFirmware")
@@ -2266,7 +2696,7 @@ def toolCallDestructiveOps(args) {
                         message: "Zigbee radio firmware update to latest started.",
                         warning: "Do NOT power-cycle the hub during the flash; interruption can brick the radio.", response: resp]
             default:
-                throw new IllegalArgumentException("Unknown action '${action}' for target '${radio}'. Valid: reset, device_firmware_start, device_firmware_abort, zwave_chip_firmware, zigbee_firmware.")
+                throw new IllegalArgumentException("Unknown action '${action}' for target '${radio}'. Valid: reset, device_firmware_start, device_firmware_start_available, device_firmware_batch_start, device_firmware_batch_start_available, device_firmware_batch_abort, device_firmware_abort, local_backup_restore, zwave_chip_firmware, zigbee_firmware.")
         }
     } catch (IllegalArgumentException iae) {
         throw iae
@@ -2516,7 +2946,8 @@ def _getAllToolDefinitions_partDiagnostics() {
                 properties: [
                     type: [type: "string", description: "Which stats to return. Default: device.", enum: ["device", "app", "both"], default: "device"],
                     sortBy: [type: "string", description: "Sort results by field. Default: pct (% busy).", enum: ["pct", "count", "stateSize", "totalMs", "name"], default: "pct"],
-                    limit: [type: "integer", description: "Max entries to return. Default: 20, 0 for all.", default: 20]
+                    limit: [type: "integer", description: "Max entries to return. Default: 20, 0 for all.", default: 20],
+                    includeCloudCalls: [type: "boolean", description: "[[FLAT_TRIM]]Also return per-app cloud-call counts under cloudCalls. Default false.[[/FLAT_TRIM]]"]
                 ]
             ]
         ],
@@ -2575,14 +3006,16 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    radio: [type: "string", enum: ["zwave", "zigbee", "matter"], description: "Which radio to query. Omit to return both Z-Wave and Zigbee; pass 'matter' for the Matter fabric and commissioned-device list."],
+                    radio: [type: "string", enum: ["zwave", "zigbee", "matter"], description: "Which radio to query. Omit for both Z-Wave and Zigbee; 'matter' for the Matter fabric.[[FLAT_TRIM]] With radio='matter' it also returns the commissioned-device list and the Wi-Fi network the hub gives Matter devices when pairing (never the password).[[/FLAT_TRIM]]"],
                     include_topology: [type: "boolean", description: "Also include the mesh route/topology map. Z-Wave/Zigbee only. Default false."],
-                    node_id: [type: "string", description: "Per-node status for this id: Z-Wave node state, or Matter commissioning status when radio='matter'."],
-                    include_status: [type: "boolean", description: "Attach lifecycle status pollers under result.status. Default false."],
-                    include_logs: [type: "boolean", description: "Attach Matter chip-tool logs ({text}, ANSI) under result.matterLogs. Default false."],
-                    include_channel_scan: [type: "boolean", description: "Attach Zigbee channel energy-scan results under result.channelScan. Default false."],
-                    include_smartstart: [type: "boolean", description: "Attach the Z-Wave SmartStart provisioning list under result.smartStart. Default false."],
-                    include_firmware: [type: "boolean", description: "Attach firmware-eligible Z-Wave devices + available files under result.firmware. Default false."]
+                    node_id: [type: "string", description: "Per-node status for this id (Z-Wave, or Matter commissioning with radio='matter').[[FLAT_TRIM]] On Z-Wave JS it adds the interview details and link-test status.[[/FLAT_TRIM]]"],
+                    include_status: [type: "boolean", description: "Attach lifecycle status pollers under result.status. Default false.[[FLAT_TRIM]] Repair, join, exclude, antenna test, node replace, Zigbee, Z-Wave JS readiness, Z-Wave local backup, batch firmware.[[/FLAT_TRIM]]"],
+                    include_logs: [type: "boolean", description: "Matter chip-tool logs under result.matterLogs.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
+                    include_channel_scan: [type: "boolean", description: "Zigbee channel-scan results under result.channelScan.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
+                    include_smartstart: [type: "boolean", description: "Z-Wave SmartStart list under result.smartStart.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
+                    include_firmware: [type: "boolean", description: "Attach firmware-eligible Z-Wave devices + files under result.firmware. Default false.[[FLAT_TRIM]] With node_id also that node's targets, offered updates (updateId), progress, and batch candidates.[[/FLAT_TRIM]]"],
+                    include_devices: [type: "boolean", description: "[[FLAT_TRIM]]Attach Zigbee devices with their last-message time under result.zigbeeDevices. Default false.[[/FLAT_TRIM]]"],
+                    backup_job_id: [type: "string", description: "[[FLAT_TRIM]]Z-Wave backup/import/restore job id to read under result.zwaveBackupJob.[[/FLAT_TRIM]]"]
                 ]
             ]
         ],
@@ -2596,14 +3029,15 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_set_zwave",
-            description: "Configure the Z-Wave radio (idempotent)[[FLAT_TRIM]]: enable/disable it, or set region and long-range channel[[/FLAT_TRIM]]. Read current values with hub_get_radio_details(radio='zwave').[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
+            description: "Configure the Z-Wave radio[[FLAT_TRIM]]: enable/disable it, set region and long-range channel, or switch between the legacy and Z-Wave JS stacks (reboots the hub)[[/FLAT_TRIM]]. Read current values with hub_get_radio_details(radio='zwave').[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     enabled: [type: "boolean", description: "Enable (true) or disable (false) the Z-Wave radio."],
                     region: [type: "string", description: "Z-Wave RF region (e.g. 'US', 'EU'). Must match a region your hub hardware supports."],
                     long_range_channel: [type: "integer", enum: [0, 1, 255], description: "Z-Wave Long Range channel: 255=Auto, 0=Channel A, 1=Channel B (US_LR hubs)."],
-                    confirm: [type: "boolean", description: "Required true to DISABLE the radio (backup <24h also enforced). Not needed for enable or config-only changes."]
+                    zwave_js: [type: "boolean", description: "true=Z-Wave JS, false=legacy stack. REBOOTS the hub.[[FLAT_TRIM]] Send alone with confirm=true.[[/FLAT_TRIM]]"],
+                    confirm: [type: "boolean", description: "Required true to DISABLE the radio or switch the stack (backup <24h also enforced)."]
                 ]
             ]
         ],
@@ -2625,16 +3059,21 @@ def _getAllToolDefinitions_partDiagnostics() {
         ],
         [
             name: "hub_call_zwave",
-            description: "Z-Wave network lifecycle operations (NOT idempotent)[[FLAT_TRIM]]: repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, and SmartStart delete[[/FLAT_TRIM]]. Pick the operation with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
+            description: "Z-Wave network lifecycle operations (NOT idempotent)[[FLAT_TRIM]]: repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, SmartStart delete; on Z-Wave JS also re-interview, link reliability test, raw command-class commands, and Z-Wave network backup/import[[/FLAT_TRIM]]. Pick the operation with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    action: [type: "string", enum: ["repair_start", "repair_cancel", "repair_node", "inclusion_start", "inclusion_stop", "grant_keys", "grant_code", "exclusion_start", "exclusion_stop", "node_refresh", "node_rediscover", "node_reinitialize", "refresh_stats", "node_replace", "node_replace_stop", "node_remove", "antenna_test_start", "antenna_test_continue", "smartstart_delete"], description: "The Z-Wave operation."],
-                    node_id: [type: "string", description: "Z-Wave node id; required for repair_node, node_refresh/rediscover/reinitialize, node_remove, node_replace, antenna_test_start."],
-                    security_keys: [type: "object", description: "grant_keys only: S2 grant booleans, e.g. {S2Authenticated:true}."],
+                    action: [type: "string", enum: ["repair_start", "repair_cancel", "repair_node", "inclusion_start", "inclusion_stop", "grant_keys", "grant_code", "exclusion_start", "exclusion_stop", "node_refresh", "node_rediscover", "node_reinitialize", "refresh_stats", "node_replace", "node_replace_stop", "node_remove", "antenna_test_start", "antenna_test_continue", "smartstart_delete", "reinterview", "link_test_start", "link_test_stop", "cc_command", "local_backup_create", "local_backup_download", "local_backup_import", "local_backup_keys"], description: "The Z-Wave operation.[[FLAT_TRIM]] reinterview, link_test_*, cc_command and local_backup_* need the Z-Wave JS stack.[[/FLAT_TRIM]]"],
+                    node_id: [type: "string", description: "Z-Wave node id for the per-node actions."],
+                    security_keys: [type: "object", description: "grant_keys: S2 grant booleans; local_backup_keys: the network keys as hex.[[FLAT_TRIM]] grant_keys e.g. {S2Authenticated:true}; local_backup_keys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, long_range: {S2_Authenticated, S2_AccessControl}}.[[/FLAT_TRIM]]"],
                     security_code: [type: "object", description: "grant_code only: S2 DSK, e.g. {accept:true, securityCode:'12345'}."],
                     node_dsk: [type: "string", description: "smartstart_delete only: the DSK from hub_get_radio_details(include_smartstart=true)."],
-                    confirm: [type: "boolean", description: "Required true for exclusion_start and node_remove (backup <24h also enforced)."]
+                    backup_url: [type: "string", description: "[[FLAT_TRIM]]local_backup_import: http(s) URL of the backup (8 MB max).[[/FLAT_TRIM]]"],
+                    link_test: [type: "object", description: "[[FLAT_TRIM]]link_test_start (confirm=true): {rounds? (10), interval_ms? (1000)}.[[/FLAT_TRIM]]"],
+                    cc: [type: "object", description: "[[FLAT_TRIM]]cc_command: {command_class (decimal or 0x hex), method_name, endpoint?, args?}.[[/FLAT_TRIM]]"],
+                    job_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_download: the jobId from local_backup_create.[[/FLAT_TRIM]]"],
+                    import_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_keys: the importId from local_backup_import.[[/FLAT_TRIM]]"],
+                    confirm: [type: "boolean", description: "Required true for exclusion_start, node_remove, link_test_start, cc_command, local_backup_download, local_backup_import.[[FLAT_TRIM]] A hub backup <24h is also enforced.[[/FLAT_TRIM]]"]
                 ],
                 required: ["action"]
             ]
@@ -2656,9 +3095,11 @@ def _getAllToolDefinitions_partDiagnostics() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    action: [type: "string", enum: ["enable", "disable", "pair", "open_pairing_window"], description: "enable/disable the Matter radio (needs a hub reboot), pair a device by setup_code, or open_pairing_window to share a commissioned node_id."],
-                    setup_code: [type: "string", description: "pair only: the 11- or 21-digit Matter setup/pairing code."],
-                    node_id: [type: "string", description: "open_pairing_window only: the commissioned Matter node id to share."],
+                    action: [type: "string", enum: ["enable", "disable", "pair", "cancel_pair", "open_pairing_window"], description: "The Matter operation.[[FLAT_TRIM]] enable/disable (needs a hub reboot), pair by setup_code, cancel_pair, open_pairing_window to share a commissioned node.[[/FLAT_TRIM]]"],
+                    setup_code: [type: "string", description: "pair only: the 11- or 21-digit Matter setup code, or the MT: QR payload."],
+                    wifi_ssid: [type: "string", description: "[[FLAT_TRIM]]pair: Wi-Fi SSID (default: the hub's selected network). Thread devices ignore it; the stored network is in hub_get_radio_details(radio='matter') wifiCredentials.[[/FLAT_TRIM]]"],
+                    wifi_password: [type: "string", description: "[[FLAT_TRIM]]pair: Wi-Fi password; omit only for the network the hub stores a password for.[[/FLAT_TRIM]]"],
+                    node_id: [type: "string", description: "Node id (open_pairing_window, cancel_pair)."],
                     confirm: [type: "boolean", description: "Required true to disable Matter (backup <24h also enforced)."]
                 ],
                 required: ["action"]
@@ -2674,10 +3115,13 @@ Requires Write master.""",
                 type: "object",
                 properties: [
                     target: [type: "string", enum: ["zwave", "zigbee", "matter", "network", "cloud"], description: "REQUIRED: what to act on."],
-                    action: [type: "string", enum: ["reset", "device_firmware_start", "device_firmware_abort", "zwave_chip_firmware", "zigbee_firmware", "disconnect_wifi", "disconnect_ethernet", "disable", "enable"], description: "REQUIRED: depends on target."],
+                    action: [type: "string", enum: ["reset", "device_firmware_start", "device_firmware_start_available", "device_firmware_batch_start", "device_firmware_batch_start_available", "device_firmware_batch_abort", "device_firmware_abort", "local_backup_restore", "zwave_chip_firmware", "zigbee_firmware", "disconnect_wifi", "disconnect_ethernet", "disable", "enable"], description: "REQUIRED: depends on target."],
                     node_id: [description: "Z-Wave node id."],
-                    file_name: [type: "string", description: "Firmware file name; required for action=device_firmware_start."],
+                    file_name: [type: "string", description: "Firmware file name (device_firmware_start, batch_start)."],
                     target_index: [description: "Optional Z-Wave firmware target index."],
+                    update_id: [description: "[[FLAT_TRIM]]*_start_available: updateId from firmware.node.available.[[/FLAT_TRIM]]"],
+                    batch: [type: "object", description: "[[FLAT_TRIM]]Batch actions: {node_ids, inactivity_timeout_seconds? (600)}.[[/FLAT_TRIM]]"],
+                    import_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_restore: importId.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true.[[FLAT_TRIM]] Confirms backup was created and the user approved this destructive op.[[/FLAT_TRIM]]"]
                 ],
                 required: ["target", "action", "confirm"]
@@ -2732,9 +3176,8 @@ def _idempotentWriteToolNames_partDiagnostics() {
     return [
         // Diagnostics
         "hub_delete_captured_state",
-        // Radio config: enable/disable/region/channel/power are state assignments --
-        // re-issuing identical args lands the radio in the same state (idempotent).
-        // The hub_call_* radio ops (repair/join/exclude/firmware/etc.) are NOT.
+        // Radio config is a state assignment: identical args land the radio in the same state. The
+        // zwave_js switch reads the running stack first and does nothing when it already matches.
         "hub_set_zwave", "hub_set_zigbee"
     ]
 }
@@ -2746,7 +3189,9 @@ def _openWorldToolNames_partDiagnostics() {
         // pingHosts sends caller-directed ICMP to ANY routable IPv4, traceroute
         // traces a route to an arbitrary IPv4, and speedtest pulls from a fixed
         // Hubitat S3 URL -- all three reach beyond the LAN to the open internet.
-        "hub_get_device_health"
+        "hub_get_device_health",
+        // local_backup_import fetches backup_url from any http(s) host.
+        "hub_call_zwave"
     ]
 }
 
@@ -2756,18 +3201,18 @@ def _toolDisplayMeta_partDiagnostics() {
     return [
         // Diagnostics + logs
         hub_get_logs: [title: "Get Logs", summary: "Hub log history, structured MCP history, or MCP logging status."],
-        hub_get_performance_stats: [title: "Get Performance Stats", summary: "Device and app performance statistics."],
+        hub_get_performance_stats: [title: "Get Performance Stats", summary: "Device and app performance statistics, optionally with per-app cloud-call counts."],
         hub_get_jobs: [title: "Get Scheduled Jobs", summary: "Scheduled jobs, running jobs, and hub actions."],
         hub_get_metrics: [title: "Get Hub Metrics", summary: "Hub metrics with CSV trend history."],
         hub_get_memory_history: [title: "Get Memory History", summary: "Free-memory and CPU-load history with summary stats."],
         hub_call_gc: [title: "Force Garbage Collection", summary: "Force JVM garbage collection and report freed memory."],
         hub_get_device_health: [title: "Get Device Health", summary: "Find stale devices, ICMP-ping LAN hosts, run traceroute/WAN speedtest, and optionally blink the hub identify LED."],
-        hub_get_radio_details: [title: "Get Radio Details", summary: "Z-Wave/Zigbee/Matter details, topology, per-node state, status, channel scan, SmartStart, firmware."],
-        hub_set_zwave: [title: "Set Z-Wave Radio", summary: "Enable/disable the Z-Wave radio or set its region and long-range channel."],
+        hub_get_radio_details: [title: "Get Radio Details", summary: "Radio details, topology, node state, status, channel scan, SmartStart, firmware, Zigbee activity, Z-Wave backup jobs."],
+        hub_set_zwave: [title: "Set Z-Wave Radio", summary: "Enable/disable the Z-Wave radio, set region and long-range channel, or switch to or from Z-Wave JS."],
         hub_set_zigbee: [title: "Set Zigbee Radio", summary: "Enable/disable the radio, set channel/power, radio settings (rebuild-on-reboot, ping-inactive), or per-device keep-alive ping."],
-        hub_call_zwave: [title: "Z-Wave Operations", summary: "Z-Wave repair, inclusion, exclusion, node maintenance, replace/remove, antenna test, SmartStart delete."],
+        hub_call_zwave: [title: "Z-Wave Operations", summary: "Z-Wave repair, inclusion, exclusion, node maintenance, link tests, CC commands, and Z-Wave network backup."],
         hub_call_zigbee: [title: "Zigbee Operations", summary: "Reboot the Zigbee radio, rebuild the network, or trigger a channel scan."],
-        hub_call_matter: [title: "Matter Operations", summary: "Enable/disable Matter, pair a device by setup code, or open a pairing window."],
+        hub_call_matter: [title: "Matter Operations", summary: "Enable/disable Matter, pair or cancel pairing a device by setup code, or open a pairing window."],
         hub_call_destructive_ops: [title: "Destructive Hub Ops", summary: "Reset a radio, flash firmware, disconnect WiFi/Ethernet, or disable the cloud controller (irreversible)."],
         hub_list_captured_states: [title: "List Captured States", summary: "List saved device state snapshots."],
         hub_delete_captured_state: [title: "Delete Captured State", summary: "Delete one or all captured device state snapshots."]

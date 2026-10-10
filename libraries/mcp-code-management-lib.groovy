@@ -2770,6 +2770,8 @@ def toolListInstalledApps(args) {
                     disabled: d.disabled == true,
                     user: d.user == true,
                     hidden: isHidden,
+                    // The hub flags an app whose type is retired (e.g. the legacy Sonos integration).
+                    deprecated: d.deprecated == true,
                     parentId: parentId,
                     hasChildren: (node?.children?.size() ?: 0) > 0,
                     childCount: node?.children?.size() ?: 0
@@ -2827,6 +2829,26 @@ def toolListInstalledApps(args) {
     }
 }
 
+// getAppsUsingDevice(Long) from the app API, projected like the appsUsing rows. Null when the
+// platform lacks it (firmware before 2.5.2) or the call fails.
+def _platformAppsUsingDevice(String deviceId) {
+    if (!(deviceId ==~ /\d+/)) return null
+    try {
+        def apps = getAppsUsingDevice(deviceId as Long)
+        if (!(apps instanceof List)) return null
+        return apps.findAll { it != null }.collect { a ->
+            def disabled = null
+            try { disabled = a.disabled } catch (Exception ignored) { }
+            def trueLabel = null
+            try { trueLabel = a.trueLabel } catch (Exception ignored) { }
+            [id: a.id, name: a.name, label: a.label, trueLabel: trueLabel, disabled: disabled == true]
+        }
+    } catch (Exception e) {
+        mcpLog(_hubFirmwareBefore("2.5.2") ? "debug" : "warn", "installed-apps", "getAppsUsingDevice(${deviceId}) unavailable: ${e.message}")
+        return null
+    }
+}
+
 def toolGetDeviceInUseBy(args) {
     if (!args?.deviceId) throw new IllegalArgumentException("deviceId is required")
     def deviceId = args.deviceId.toString().trim()
@@ -2856,12 +2878,10 @@ def toolGetDeviceInUseBy(args) {
         // Defensive shape check: if firmware drifts and appsUsing arrives as a Map
         // (or anything other than List), the collect{} below would produce all-null
         // entries silently. Surface that loud rather than letting the paginator
-        // hand the LLM a bag of nulls. instanceof-based shape labelling because the
-        // Hubitat sandbox returns null for .class on parsed-Map values.
+        // hand the LLM a bag of nulls. _typeName labels the shape (the sandbox returns
+        // null for .class on parsed-Map values).
         if (parsed?.appsUsing != null && !(parsed.appsUsing instanceof List)) {
-            String shape = (parsed.appsUsing instanceof Map) ? "Map" :
-                           (parsed.appsUsing instanceof String) ? "String" :
-                           (parsed.appsUsing instanceof Number) ? "Number" : "non-list"
+            String shape = _typeName(parsed.appsUsing)
             mcpLog("warn", "installed-apps", "hub_list_device_dependents: appsUsing is ${shape} not List for device ${deviceId} -- treating as empty")
             return [success: false, deviceId: deviceId, error: "Firmware returned unexpected appsUsing shape: ${shape}", note: "Hub firmware may have changed the /device/fullJson endpoint contract."]
         }
@@ -2886,6 +2906,16 @@ def toolGetDeviceInUseBy(args) {
                 disabled: a?.disabled == true
             ]
         }
+        // The platform's getAppsUsingDevice() (firmware 2.5.2) also reports apps the device page
+        // leaves out of appsUsing, such as Easy Mobile Dashboards; add those it alone returns.
+        boolean countMismatch = (count != appsUsingList.size())
+        def seen = appsUsingList.collect { it.id?.toString() } as Set
+        def platformApps = _platformAppsUsingDevice(deviceId)
+        def extra = (platformApps ?: []).findAll { !seen.contains(it.id?.toString()) }
+        if (extra) {
+            appsUsingList.addAll(extra)
+            count = Math.max(count as int, appsUsingList.size())
+        }
         def cursor = args?.cursor
         def paged = _paginateList(appsUsingList, cursor, 100, "hub_list_device_dependents")
         def result = [
@@ -2895,14 +2925,17 @@ def toolGetDeviceInUseBy(args) {
             // device-name string instead of silent null.
             deviceName: parsed?.extraBreadcrumb ?: parsed?.name ?: parsed?.label,
             appsUsing: paged.page,
-            count: count,
-            parentApp: parsed?.parentApp
+            count: count
         ]
+        // The device page's raw parentApp carries the app type's OAuth secret; keep its identity only.
+        def pa = parsed?.parentApp
+        if (pa instanceof Map) result.parentApp = [id: pa.id, name: pa.name, label: pa.label, parentAppId: pa.parentAppId]
+        if (platformApps == null && !_hubFirmwareBefore("2.5.2")) result.platformLookup = "unavailable"
         // Surface the count/array disparity when firmware reports an appsUsingCount that
-        // doesn't match the appsUsing array length (truncation / paging signal). Caller
-        // can then decide whether to chase the missing entries via another path.
-        if (count != appsUsingList.size()) {
-            result.countMismatch = "appsUsingCount=${count} but appsUsing array carries ${appsUsingList.size()} entries -- firmware may be truncating"
+        // doesn't match the appsUsing array length (truncation / paging signal), measured
+        // before the platform lookup above added its entries.
+        if (countMismatch) {
+            result.countMismatch = "appsUsingCount=${parsed?.appsUsingCount} but appsUsing array carries ${appsUsing.size()} entries -- firmware may be truncating"
         }
         if (cursor != null) {
             result.total = appsUsingList.size()

@@ -311,17 +311,39 @@ class ToolBackupSpec extends ToolSpecBase {
         r.message.toLowerCase().contains('reboot')
     }
 
-    def "scope=hub_local refuses a full local backup before anything is sent"() {
+    // A full local backup never reaches the database restore: it is read off the hub, uploaded to
+    // the full-restore endpoint, and restored with the fullRestore choices (issue #490).
+    private Map stubFullRestore() {
+        def seen = [:]
+        script.metaClass.hubInternalBytes = { String method, String path, Map query = null, Map form = null, int t = 300 ->
+            seen.download = [method: method, path: path, query: query]; [status: 200, bytes: ([0x1f, 0x8b, 8, 0] as byte[])]
+        }
+        script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes ->
+            seen.upload = [path: path, field: field, fileName: fileName, size: bytes.length]; [success: true]
+        }
+        hubGet.register('/hub2/restoreFullLocalBackup') { params -> seen.restoreQuery = params; '{"success":true}' }
+        return seen
+    }
+
+    def "scope=hub_local routes a full local backup through the full-restore flow"() {
         given:
         enableWrite()
-        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true}]' }
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true,"fileSize":"7 MB"}]' }
+        def seen = stubFullRestore()
 
         when:
-        script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'full_x.tar.gz', confirm: true])
+        def r = script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'full_x.tar.gz', confirm: true,
+                                              fullRestore: [restoreZigbee: true, restoreFiles: true]])
 
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('is a full local backup')
+        then: 'downloaded, uploaded to the full endpoint, restored with the choices; never the database restore'
+        r.success == true
+        r.type == 'hub-full'
+        seen.download.path == '/hub2/downloadLocalBackup'
+        seen.download.query == [fileName: 'full_x.tar.gz']
+        seen.upload.path == '/hub2/uploadFullLocalBackup'
+        seen.upload.field == 'uploadFile'
+        hubGet.calls.find { it.path == '/hub2/restoreFullLocalBackup' }.params.subMap(['restoreZb', 'restoreZw', 'restoreFiles', 'deleteExistingFiles', 'suppressZWaveFirmwareMismatchHubNewer']) ==
+            [restoreZb: true, restoreZw: false, restoreFiles: true, deleteExistingFiles: false, suppressZWaveFirmwareMismatchHubNewer: false]
         !hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' }
     }
 
@@ -333,31 +355,89 @@ class ToolBackupSpec extends ToolSpecBase {
             if (listBody == null) throw new RuntimeException("list unreadable")
             listBody
         }
+        stubFullRestore()
 
         when:
-        Exception refusal = null
-        try { script.toolRestoreItemBackup([scope: 'hub_local', fileName: fileName, confirm: true]) }
-        catch (IllegalArgumentException e) { refusal = e }
+        def r = script.toolRestoreItemBackup([scope: 'hub_local', fileName: fileName, confirm: true])
 
         then:
-        (refusal != null) == refused
-        hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' } == !refused
+        r.success == ok
+        (r.type == 'hub-full') == full
+        hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' } == !full
+        // A full backup with no listed size is refused before it is downloaded.
+        hubGet.calls.any { it.path == '/hub2/restoreFullLocalBackup' } == (full && ok)
 
         where:
-        label                                     | fileName      | listBody                                    | refused
-        'the list marks it full (any name)'       | 'odd.lzf'     | '[{"name":"odd.lzf","fullBackup":true}]'    | true
-        'the list wins over a .tar.gz name'       | 'db.tar.gz'   | '[{"name":"db.tar.gz","fullBackup":false}]' | false
-        'list unreadable, .tar.gz name'           | 'x.tar.gz'    | null                                        | true
-        'list unreadable, .lzf name'              | 'x.lzf'       | null                                        | false
-        'list readable without it, .tar.gz name'  | 'gone.tar.gz' | '[]'                                        | true
+        label                                     | fileName      | listBody                                                     | full  | ok
+        'the list marks it full (any name)'       | 'odd.lzf'     | '[{"name":"odd.lzf","fullBackup":true,"fileSize":"7 MB"}]'  | true  | true
+        'the list wins over a .tar.gz name'       | 'db.tar.gz'   | '[{"name":"db.tar.gz","fullBackup":false}]'                  | false | true
+        'list unreadable, .tar.gz name'           | 'x.tar.gz'    | null                                                         | true  | false
+        'list unreadable, .lzf name'              | 'x.lzf'       | null                                                         | false | true
+        'list readable without it, .tar.gz name'  | 'gone.tar.gz' | '[]'                                                         | true  | false
+    }
+
+    def "fullRestore on a database backup is refused before anything is sent"() {
+        given:
+        enableWrite()
+
+        when:
+        script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'local-1.lzf', confirm: true, fullRestore: [restoreFiles: true]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('fullRestore applies only to a full backup')
+        !hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' }
+    }
+
+    def "an unknown fullRestore field and deleteExistingFiles without restoreFiles are refused before anything is sent"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true,"fileSize":"7 MB"}]' }
+        def seen = stubFullRestore()
+
+        when:
+        script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'full_x.tar.gz', confirm: true, fullRestore: opts])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(msg)
+        seen.download == null
+
+        where:
+        opts                          | msg
+        [restoreRadios: true]         | 'Unknown fullRestore field'
+        [deleteExistingFiles: true]   | 'deleteExistingFiles applies only with restoreFiles'
     }
 
     @spock.lang.Unroll
-    def "the full-backup refusal reaches a client as an isError result (useGateways=#useGateways)"() {
+    def "a Z-Wave mismatch from the full restore is reported with its remedy: #flag"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true,"fileSize":"7 MB"}]' }
+        stubFullRestore()
+        hubGet.register('/hub2/restoreFullLocalBackup') { params -> body }
+
+        when:
+        def r = script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'full_x.tar.gz', confirm: true])
+
+        then:
+        r.success == false
+        r.note.contains(remedy)
+
+        where:
+        flag                                 | body                                                                                  | remedy
+        'zwaveFirmwareMismatchHubNewer'      | '{"success":false,"zwaveFirmwareMismatchHubNewer":true}'                              | 'allowZwaveFirmwareMismatch=true'
+        'zwaveFirmwareMismatchBackupNewer'   | '{"success":false,"zwaveFirmwareMismatchBackupNewer":true}'                           | 'Update the hub'
+        'zwaveStackMismatch'                 | '{"success":false,"zwaveStackMismatch":true,"backupZWaveStack":"js","activeZWaveStack":"legacy"}' | 'hub_set_zwave(zwave_js'
+    }
+
+    @spock.lang.Unroll
+    def "the full-backup route reaches a client through the gateway and flat dispatch (useGateways=#useGateways)"() {
         given:
         enableWrite()
         settingsMap.useGateways = useGateways
-        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true}]' }
+        hubGet.register('/hub2/localBackups') { params -> '[{"name":"full_x.tar.gz","fullBackup":true,"fileSize":"7 MB"}]' }
+        stubFullRestore()
 
         when:
         def r = useGateways ?
@@ -365,8 +445,8 @@ class ToolBackupSpec extends ToolSpecBase {
             script.toolRestoreItemBackup([scope: 'hub_local', fileName: 'full_x.tar.gz', confirm: true])
 
         then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('is a full local backup')
+        r.success == true
+        r.type == 'hub-full'
         !hubGet.calls.any { it.path == '/hub2/restoreLocalBackup' }
 
         where:
@@ -453,7 +533,8 @@ class ToolBackupSpec extends ToolSpecBase {
         // is unverifiable live anyway); mock them and assert the ORCHESTRATION (fetch -> upload ->
         // restoreUploaded GET -> success).
         def calls = [:]
-        script.metaClass._fetchBytesFromUrl = { String url -> calls.fetched = url; 'BACKUPBYTES'.getBytes('UTF-8') }
+        script.metaClass._probeUrl = { String url, long cap -> [size: 26L] }
+        script.metaClass._fetchBytesFromUrl = { String url, long cap -> calls.fetched = url; '-- H2 0.5/B -- BACKUPBYTES'.getBytes('UTF-8') }
         script.metaClass._postMultipartBackup = { String path, String field, String fileName, byte[] bytes ->
             calls.uploaded = path; calls.bytes = bytes.length; return [success: true]
         }
@@ -466,7 +547,7 @@ class ToolBackupSpec extends ToolSpecBase {
         r.location == 'hub_uploaded'
         calls.fetched == 'https://host/b.lzf'
         calls.uploaded == '/hub2/uploadBackup'
-        calls.bytes == 11
+        calls.bytes == 26
     }
 
     def "scope=hub_uploaded requires backupUrl"() {

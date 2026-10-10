@@ -23,14 +23,20 @@ def toolListFiles(args = null) {
     def cursor = args?.cursor
     def filterText = args?.filter?.toString()?.trim()
     def filterLower = _filesFoldCase(filterText)
-    // Try known File Manager API endpoints (varies by firmware version)
-    def endpoints = ["/hub/fileManager/json", "/hub/fileManager"]
+    def folder = args?.folder?.toString()?.trim()?.replaceAll(/^\/+|\/+$/, "")
+    if (folder && (!(folder ==~ /[A-Za-z0-9_.\/ -]+/) || folder.split("/").any { it == ".." || it == "." || it == "" })) {
+        throw new IllegalArgumentException("folder must be a relative File Manager folder path such as 'webcore' (letters, digits, space, dot, underscore, hyphen, '/' between parts; no '..').")
+    }
+    if (folder && _hubFirmwareBefore("2.5.2")) throw new IllegalArgumentException("folder needs firmware 2.5.2 or later; older File Manager has no subfolders.")
+    // Try known File Manager API endpoints (varies by firmware version). Only the JSON endpoint
+    // takes a folder (?folder=, as the File Manager page sends it).
+    def endpoints = folder ? ["/hub/fileManager/json"] : ["/hub/fileManager/json", "/hub/fileManager"]
     def responseText = null
     def endpointUsed = null
 
     for (endpoint in endpoints) {
         try {
-            responseText = hubInternalGet(endpoint)
+            responseText = hubInternalGet(endpoint, folder ? [folder: folder] : null)
             if (responseText) {
                 endpointUsed = endpoint
                 mcpLog("debug", "file-manager", "Got response from ${endpoint} (${responseText.length()} chars): ${responseText.take(300)}")
@@ -53,12 +59,13 @@ def toolListFiles(args = null) {
     try {
         def parsed = new groovy.json.JsonSlurper().parseText(responseText)
         def fileList = []
+        String prefix = folder ? "${folder}/" : ""
 
         if (parsed instanceof List) {
             // Direct list response: [{name: "file.txt", size: 123}, ...]
             fileList = parsed.collect { f ->
                 def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
-                def entry = [name: name, directDownload: "http://<HUB_IP>/local/${name}"]
+                def entry = [name: name, directDownload: "http://<HUB_IP>/local/${prefix}${name}"]
                 if (f instanceof Map) {
                     if (f.size != null) entry.size = f.size
                     if (f.date) entry.lastModified = f.date
@@ -67,14 +74,22 @@ def toolListFiles(args = null) {
             }
         } else if (parsed instanceof Map) {
             // Object response: {files: [...]} or {type: [...]}
-            def files = parsed.files ?: parsed.values()?.flatten()
+            // An empty folder answers files:[]; only a shape without the key falls back to its values.
+            def files = parsed.containsKey("files") ? parsed.get("files") : parsed.values()?.flatten()
             if (files instanceof List) {
                 fileList = files.collect { f ->
                     def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
-                    def entry = [name: name, directDownload: "http://<HUB_IP>/local/${name}"]
+                    def entry = [name: name]
                     if (f instanceof Map) {
-                        if (f.size != null) entry.size = f.size
+                        // Firmware 2.5.2 lists subfolders (type "dir") beside files and flags files a
+                        // full backup leaves out (backupIncluded:false, past its 100 MiB limit).
+                        if (f.type) entry.type = f.type
+                        if (f.type != "dir") entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
+                        if (f.size != null && f.type != "dir") entry.size = f.size
                         if (f.date) entry.lastModified = f.date
+                        if (f.backupIncluded != null) entry.backupIncluded = f.backupIncluded
+                    } else {
+                        entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
                     }
                     return entry
                 }
@@ -83,13 +98,12 @@ def toolListFiles(args = null) {
 
         fileList = fileList.sort { a, b -> (a.name <=> b.name) }
 
-        // Shape-drift diagnostic: a non-empty parsed response that yielded zero files
-        // is almost always a firmware shape change (new top-level key, files nested
-        // deeper, etc.). Surface so a "no files" report isn't silently misread.
-        // instanceof-based labelling because .class is unreliable in the sandbox.
-        if (fileList.isEmpty() && parsed) {
+        // Shape-drift diagnostic: a non-empty parsed response that yielded zero files is almost
+        // always a firmware shape change (new top-level key, files nested deeper, etc.); an
+        // answer that carries a files list, empty or not, is the known shape.
+        if (fileList.isEmpty() && parsed && !(parsed instanceof Map && parsed.containsKey("files"))) {
             def shapeHint = (parsed instanceof Map) ? "Map with keys=${parsed.keySet()?.take(10)?.toList()}" :
-                            (parsed instanceof List) ? "empty List" : "non-map non-list"
+                            (parsed instanceof List) ? "empty List" : _typeName(parsed)
             mcpLog("warn", "file-manager", "hub_list_files: parsed response yielded zero files (${shapeHint}) -- shape may not be recognized", null, [details: [endpoint: endpointUsed, shape: shapeHint]])
         }
 
@@ -101,6 +115,13 @@ def toolListFiles(args = null) {
             total: fileList.size(),
             storage: "Files are stored locally on the hub's file system. Access via http://<HUB_IP>/local/<filename> or Hubitat > Settings > File Manager."
         ]
+        if (folder) res.folder = folder
+        // An empty subfolder and a missing one answer the same, so say both.
+        if (folder && fileList.isEmpty() && !filterLower) res.note = "Folder '${folder}' is empty or does not exist; the root listing shows the folders as type:'dir'."
+        if (parsed instanceof Map) {
+            if (parsed.freeSpace != null) res.freeSpaceBytes = parsed.freeSpace
+            if (parsed.backupSelection instanceof Map && parsed.backupSelection.excludedFiles != null) res.filesExcludedFromFullBackup = parsed.backupSelection.excludedFiles
+        }
         if (cursor != null && pagedFM.nextCursor != null) res.nextCursor = pagedFM.nextCursor
         return res
     } catch (Exception jsonErr) {
@@ -345,11 +366,12 @@ def _getAllToolDefinitions_partFiles() {
         // File Manager Tools
         [
             name: "hub_list_files",
-            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL. Optionally filter by a case-insensitive substring of the file name. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only.",
+            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL[[FLAT_TRIM]], plus subfolders[[/FLAT_TRIM]]. Optionally filter by a case-insensitive substring of the file name[[FLAT_TRIM]], or list a subfolder[[/FLAT_TRIM]]. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only.",
             inputSchema: [
                 type: "object",
                 properties: [
                     filter: [type: "string", description: "Optional case-insensitive substring to match against file names, e.g. \"backup\" or \"mcp-rm-backup\"."],
+                    folder: [type: "string", description: "[[FLAT_TRIM]]Optional subfolder, e.g. \"webcore\".[[/FLAT_TRIM]]"],
                     cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
                 ]
             ]

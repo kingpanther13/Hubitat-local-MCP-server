@@ -122,7 +122,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         !readOnly.contains('hub_set_zwave')
         !readOnly.contains('hub_call_destructive_ops')
 
-        and: 'set_* config writes are idempotent; call_* operations are not'
+        and: 'set_* config writes are idempotent (the zwave_js switch skips a matching stack); call_* operations are not'
         idempotent.contains('hub_set_zwave')
         idempotent.contains('hub_set_zigbee')
         !idempotent.contains('hub_call_zwave')
@@ -131,15 +131,16 @@ class RadioGatewaySpec extends ToolSpecBase {
         !idempotent.contains('hub_call_destructive_ops')
     }
 
-    def "all radio tools are closed-world (radio is the closed system)"() {
+    def "radio tools are closed-world except hub_call_zwave, whose backup import fetches a URL"() {
         when:
         def openWorld = script.getOpenWorldToolNames()
 
         then:
-        ['hub_set_zwave', 'hub_call_zwave', 'hub_set_zigbee', 'hub_call_zigbee',
+        ['hub_set_zwave', 'hub_set_zigbee', 'hub_call_zigbee',
          'hub_call_matter', 'hub_call_destructive_ops', 'hub_get_radio_details'].each { t ->
             assert !openWorld.contains(t) : "${t} should be closed-world (openWorld=false)"
         }
+        openWorld.contains('hub_call_zwave')
     }
 
     // ---- Display meta (every tool + the new gateway need an entry) ----
@@ -367,12 +368,21 @@ class RadioGatewaySpec extends ToolSpecBase {
     def "dispatch: hub_call_matter pair routes through executeTool and commissions by setup code"() {
         given:
         settingsMap.enableWrite = true
-        hubGet.register('/hub/matter/pair?setupCode=12345678901') { p -> JsonOutput.toJson([success: true]) }
+        // Firmware 2.5.2 pairs with POST /hub/matter/pairWithNetworkCredentials (issue #490).
+        hubGet.register('/hub/matter/wifiCredentials') { p -> JsonOutput.toJson([selectedSsid: '', hasStoredPassword: false]) }
+        def posted = [:]
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false, Map q = null ->
+            posted.path = path; posted.body = new JsonSlurper().parseText(body); [nodeId: 9, error: '']
+        }
         when:
         def r = script.executeTool('hub_call_matter', [action: 'pair', setup_code: '12345678901'])
         then:
         r.success == true
         r.action == 'pair'
+        r.nodeId == '9'
+        posted.path == '/hub/matter/pairWithNetworkCredentials'
+        posted.body.setupCode == '12345678901'
+        !hubGet.calls.any { it.path == '/hub/matter/pair' }
     }
 
     // ---- Silent-failure fix: a hub fault on a write surfaces as success:false ----
@@ -438,7 +448,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         given:
         def posted = [:]
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
-            posted.path = path; posted.body = body; [ok: true]
+            posted.path = path; posted.body = body; [success: true]
         }
 
         when:
@@ -455,7 +465,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         given:
         def posted = [:]
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
-            posted.path = path; posted.body = body; [ok: true]
+            posted.path = path; posted.body = body; [success: true]
         }
 
         when:
@@ -472,7 +482,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         enableWrite()
         def posted = [:]
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
-            posted.path = path; posted.body = body; [ok: true]
+            posted.path = path; posted.body = body; [success: true]
         }
 
         when:
@@ -490,7 +500,7 @@ class RadioGatewaySpec extends ToolSpecBase {
         enableWrite()
         def posted = [:]
         script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean retry = false ->
-            posted.path = path; posted.body = new JsonSlurper().parseText(body); [ok: true]
+            posted.path = path; posted.body = new JsonSlurper().parseText(body); [success: true]
         }
 
         when:

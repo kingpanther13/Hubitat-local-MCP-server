@@ -283,16 +283,15 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
         postedPath == null                       // firmware install must NOT plain-reboot
         result.success == true
         result.message.contains('Firmware update')
-        // available is the checkForUpdate payload returned VERBATIM (transparent -- the owner's own
-        // account email is intentionally surfaced, not redacted).
+        // available is the checkForUpdate payload minus the owner's account email.
         result.available.version == '2.5.0.157'
         result.available.upgrade == true
         result.available.status == 'UPDATE_AVAILABLE'
-        result.available.accountEmails == ['secret@example.com']
+        !result.available.containsKey('accountEmails')
         result.warning.contains('hub_get_info')
     }
 
-    def "hub_update_firmware available falls back to raw text when checkForUpdate is not JSON"() {
+    def "hub_update_firmware available reports a parse error, not raw text, when checkForUpdate is not JSON"() {
         given:
         enableWrite()
         hubGet.register('/hub/cloud/checkForUpdate') { params -> '<html>login</html>' }   // non-JSON
@@ -303,7 +302,8 @@ class ToolDestructiveHubOpsSpec extends ToolSpecBase {
 
         then:
         result.success == true                      // a malformed check never fails the apply
-        result.available.raw == '<html>login</html>'
+        result.available.parseError
+        !result.available.containsKey('raw')
     }
 
     def "hub_update_firmware requires the destructive confirm gate to apply"() {

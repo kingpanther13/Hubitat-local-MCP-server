@@ -94,7 +94,7 @@ RULES = [
         # (`obj.getClass` in a GString triggers the no-arg method at runtime).
         "id": "SANDBOX-001",
         "pattern": r"\bgetClass\b",
-        "message": "getClass() blocked in Hubitat sandbox",
+        "message": "getClass() blocked in Hubitat sandbox -- for a class name use getObjectClassName(obj) (firmware 2.5.2+) or the _typeName(obj) helper",
         "severity": "error",
     },
     {
@@ -215,6 +215,15 @@ RULES = [
         "message": "Querystring embedded in a hub-request PATH. The platform client escapes the '?' into the literal path -- exact hub routes 404 and wildcard routes silently swallow it. Pass the parameters as the query map instead, e.g. hubInternalGet('/device/updateLabel', [deviceId: id, label: name]), and do NOT pre-encode the values (the query map encodes them; pre-encoding double-encodes).",
         "severity": "error",
         "raw": True,
+    },
+    {
+        # The sandbox refuses `x.methods` as a property read, even on a parsed JSON Map ("Subscript
+        # property 'methods' is not allowed from app or driver code", live, fw 2.5.2.129) -- the
+        # hubitat_ci harness does not, so only a hub catches it. Map.get("methods") is allowed.
+        "id": "SANDBOX-017",
+        "pattern": r"\.methods\b(?!\s*\()",
+        "message": "`.methods` property read is blocked by the Hubitat sandbox at runtime, even on a Map. Use map.get(\"methods\").",
+        "severity": "error",
     },
 ]
 
@@ -3388,6 +3397,16 @@ SELF_TEST_CASES = [
         "remove-based retired cache cleanup is NOT flagged",
         "atomicState.remove('toolSearchTokens')",
         [("PERSISTED_DERIVED_KEY", False)],
+    ),
+    (
+        "a .methods property read is flagged",
+        "def ms = page.methods.findAll { it }",
+        [("SANDBOX-017", True)],
+    ),
+    (
+        "Map.get('methods') is NOT flagged",
+        'def ms = page.get("methods")',
+        [("SANDBOX-017", False)],
     ),
     (
         "querystring embedded in a hubInternalGet path is flagged",
