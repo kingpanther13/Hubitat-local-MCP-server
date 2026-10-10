@@ -4002,3 +4002,6 @@ def testRuleFromParent() {
         actions: results.actions ?: []
     ]
 }
+
+// probe build marker 0.0.3
+private String _probeBuildMarkerRule() { return "Rule-0.0.3" }

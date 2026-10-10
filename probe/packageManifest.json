@@ -1,12 +1,12 @@
 {
     "packageName": "ZZ MCP Probe (compile test)",
     "author": "kingpanther13",
-    "version": "0.0.2",
+    "version": "0.0.3",
     "minimumHEVersion": "2.3.0",
     "dateReleased": "2026-10-10",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/522",
     "communityLink": "",
-    "releaseNotes": "Throwaway compile-time probe for issue 522 (v0.0.2, inline=False, bundle=full). Do not instantiate.",
+    "releaseNotes": "Throwaway compile-time probe for issue 522 (v0.0.3, inline=True, bundle=full, touch=True). Do not instantiate.",
     "apps": [
         {
             "id": "5d2e0c1a-7f1b-4b7a-9c3e-522000000001",
