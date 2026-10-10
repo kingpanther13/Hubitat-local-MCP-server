@@ -6,7 +6,7 @@
     "dateReleased": "2026-10-10",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/522",
     "communityLink": "",
-    "releaseNotes": "Throwaway compile-time probe for issue 522 (v0.0.4, inline=True, bundle=full, touch=True). Do not instantiate.",
+    "releaseNotes": "Throwaway compile-time probe for issue 522 (v0.0.4, inline=True, bundle=none, touch=True). Do not instantiate.",
     "apps": [
         {
             "id": "5d2e0c1a-7f1b-4b7a-9c3e-522000000001",
@@ -28,13 +28,5 @@
         }
     ],
     "drivers": [],
-    "bundles": [
-        {
-            "id": "5d2e0c1a-7f1b-4b7a-9c3e-522000000003",
-            "name": "ZZ MCP Probe Libraries",
-            "namespace": "mcpprobe",
-            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/ci/522-synth/probe/mcpprobe-libraries.zip",
-            "required": true
-        }
-    ]
+    "bundles": []
 }
