@@ -12227,8 +12227,9 @@ class TestRunner:
             # instance resolves to its code without matching on the type NAME. Prove the join on
             # two rows whose type is deterministic: the MCP server's own instance (its community
             # type lists the instance under usedBy) and the rule's parent Rule Machine (a built-in
-            # type). The rule itself is a child app type (Rule-5.1), which the type catalog does
-            # not list, so for it only pin that the id is present and differs from its parent's.
+            # type). The rule itself is a built-in child app type (Rule-5.1) that the type catalog
+            # does not list (community child types are listed like any other), so for it only pin
+            # that the id is present and differs from its parent's.
             rows: dict[str, dict] = {}
             cursor = ""
             while cursor is not None:
