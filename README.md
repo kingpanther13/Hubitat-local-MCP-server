@@ -174,7 +174,7 @@ Add this block, using your **local** URL (`http://YOUR_HUB_IP/apps/api/123/mcp?a
 - `--protocol auto` lets `mcp-remote` use MCP 2026-07-28 with the hub, so slow writes (rules, native apps, drivers, device changes) that need more than one request complete instead of showing a generic error.
 - To troubleshoot, add `"--debug"` to `args`; `mcp-remote` then writes a verbose log under `~/.mcp-auth/` (`%USERPROFILE%\.mcp-auth\` on Windows). That log includes your full connect URL and access token, so redact it before sharing.
 
-> **Previously used `mcp-proxy` (`uvx`)?** Replace that block with the one above. `mcp-proxy` 0.12.0 (its latest release, May 2026) crashes on startup without a `--with "mcp<2.0.0"` pin since the `mcp` Python SDK 2.0.0 release (28 July 2026), and it can't complete the hub's multi-request slow writes. See [#373](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/373).
+> **Previously used `mcp-proxy` (`uvx`)?** Replace that block with the one above. `mcp-proxy` 0.12.0 crashed on startup from the `mcp` Python SDK 2.0.0 release (28 July 2026) until `mcp-proxy` 0.13.0 (10 October 2026) capped the SDK below 2.0, so an unpinned `uvx mcp-proxy` starts again once `uvx` picks up 0.13.0 (`uvx mcp-proxy@latest` forces it). It still speaks MCP 2025-11-25 at most, so the hub's multi-request slow writes fail with a generic error. See [#373](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/373).
 
 Save the file, then fully restart Claude Desktop (Quit from the system tray / menu bar — closing the window is not enough). The Hubitat tools appear under the tools (🔨) icon.
 
@@ -937,7 +937,7 @@ Alternatively, the app's Device Access section has a **Bypass Device Allowlist**
 <details>
 <summary><b>Claude Desktop won't connect, or slow writes show a generic error</b></summary>
 
-- **An `mcp-proxy` (`uvx`) config stopped connecting** (often `ImportError: cannot import name 'request_ctx'`): switch to the `mcp-remote` setup in the *Claude Desktop* section above.
+- **An `mcp-proxy` (`uvx`) config stopped connecting** (often `ImportError: cannot import name 'request_ctx'`): `uvx` is still running `mcp-proxy` 0.12.0 against the `mcp` 2.x SDK. Switch to the `mcp-remote` setup in the *Claude Desktop* section above; if you must stay on `mcp-proxy`, `uvx mcp-proxy@latest` (0.13.0 or later) starts again but slow writes still fail.
 - **A write returns "Error occurred during tool execution" with no result:** the client didn't continue a slow write. In Claude Desktop, use `mcp-remote` with `--protocol auto`. Claude.ai connectors don't continue these writes yet. The write still finishes on the hub, so check `hub_get_info` → `recentWrites` and read the target before repeating it.
 - After editing the config, fully quit Claude Desktop (system tray / menu bar), not just the window.
 
