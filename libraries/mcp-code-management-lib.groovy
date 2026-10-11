@@ -3228,8 +3228,8 @@ A transport drop can lose the response while the hub still commits this write; v
                     source: [type: "string", description: "Inline Groovy source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes; runs entirely on-hub."],
-                    backup: [type: "boolean", description: "Default true: back up the current source to File Manager before saving. false skips it. Never taken in importUrl mode (the URL's publisher keeps the history)."],
+                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
+                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
                     expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
                     triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to refresh via updated() after saving code; re-initializes subscriptions, schedules and atomicState. Protected targets require Developer Mode. Submits mainPage's Done form, RE-SENDING EVERY input from live settings. If live settings cannot be read, refuses the submit to avoid clearing device selections. On refusal/failure, saved code remains deployed: success:true, partial:true, updatedFired:false and repairHints. Omit for the hub editor's normal Save behavior (no lifecycle refresh)."],
                     oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write_code')."],
@@ -3256,8 +3256,8 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                     source: [type: "string", description: "Inline Groovy source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
-                    backup: [type: "boolean", description: "Default true: back up the current source to File Manager before saving. false skips it. Never taken in importUrl mode (the URL's publisher keeps the history)."],
+                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
+                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
                     expectedVersion: [type: "integer", description: "Optional optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] In bulk mode, put it inside each updates[] entry.[[/FLAT_TRIM]]"],
                     updates: [
                         type: "array",
@@ -3270,7 +3270,7 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                                 source: [type: "string", description: "Inline source (stubs only)."],
                                 importUrl: [type: "string", description: "URL the hub fetches directly."],
                                 resave: [type: "boolean", description: "Re-save without changes."],
-                                backup: [type: "boolean", description: "Default true; false skips the pre-update backup."],
+                                backup: [type: "boolean"],
                                 expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard for this item only."]
                             ],
                             required: ["driverId"]
@@ -3345,8 +3345,8 @@ A transport drop can lose the response while the hub still commits this write; v
                     source: [type: "string", description: "Inline source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
-                    backup: [type: "boolean", description: "Default true: back up the current source to File Manager before saving. false skips it. Never taken in importUrl mode (the URL's publisher keeps the history)."],
+                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
+                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                 ],
                 required: ["libraryId", "confirm"]
