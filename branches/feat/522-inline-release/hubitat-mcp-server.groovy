@@ -17668,6 +17668,7 @@ private Map toolInstallItem(String type, args) {
                 if (item.sourceFile != null) singleArgs.sourceFile = item.sourceFile
                 if (item.source != null) singleArgs.source = item.source
                 if (item.importUrl != null) singleArgs.importUrl = item.importUrl
+                if (item.backup != null) singleArgs.backup = item.backup
                 def r = toolInstallItemSingle(type, singleArgs)
                 def entry = [(idField): r.get(idField), success: r.success == true]
                 if (r.success) {
@@ -17874,11 +17875,11 @@ Map _resolveSavingSelfDeploy(Map lsd) {
         done = [:] + lsd
         done.remove("assumed"); done.remove("status")
         done.confirmedVersion = cur
-    } else if (lsd.at instanceof Number && now() - (lsd.at as long) > 20L * 60L * 1000L) {
+    } else if (cur != null && started != null && lsd.at instanceof Number && now() - (lsd.at as long) > 20L * 60L * 1000L) {
         done = [:] + lsd
         done.remove("assumed"); done.remove("status")
         done.success = false
-        done.error = "Self save did not land: the App Code version is still ${cur != null ? cur : 'unreadable'} twenty minutes after the save was accepted at version ${started}"
+        done.error = "Self save did not land: the App Code version is still ${cur} twenty minutes after the save was accepted at version ${started}"
     }
     if (done == null) return lsd
     try { atomicState.lastSelfDeploy = done } catch (Exception e) { mcpLog("error", "hub-admin", "lastSelfDeploy settle write failed: ${e}") }
@@ -17960,9 +17961,12 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
         sourceMode = "source"
         sourceCode = args.source
     }
-    def published = (args.sourceOrigin == "published") || (sourceMode == "importUrl" && isSelfUpdate)
-    def itemBackup = published ? null : backupItemSource(type, itemId.toString())
-    if (published) mcpLog("info", "hub-admin", "Pre-update source backup skipped for ${type} ID ${itemId}: the package's previous build is published (${sourceMode})")
+    def noBackupReason = null
+    if (sourceMode == "importUrl") noBackupReason = "the source came from a URL, so its history lives where that URL is published"
+    else if (args.sourceOrigin == "published") noBackupReason = "the package deploy's source is the published build"
+    else if (args.backup == false) noBackupReason = "backup=false was passed"
+    def itemBackup = noBackupReason ? null : backupItemSource(type, itemId.toString())
+    if (noBackupReason) mcpLog("info", "hub-admin", "Pre-update source backup skipped for ${type} ID ${itemId}: ${noBackupReason}")
     def currentVersion = freshVersion
     if (currentVersion == null) currentVersion = _itemRowVersion(type, itemId)
     if (currentVersion == null) {
@@ -18096,10 +18100,12 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                     successResult.note = "The hub accepted the save and is still compiling it. Poll hub_get_info.lastSelfDeploy: status disappears and confirmedVersion appears once the App Code version passes ${currentVersion}; a record still saving after 20 minutes turns into a failure."
                 }
             }
-            if (sourceMode == "resave") successResult.note = "Source was fetched and re-saved entirely on-hub — no cloud round-trip."
-            if (sourceMode == "sourceFile") successResult.note = "Source was read from File Manager file '${args.sourceFile}' — no cloud size limits."
-            if (sourceMode == "importUrl") successResult.note = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript)."
-            if (published) successResult.sourceBackup = "skipped: the package's previous build is published under its own ref"
+            def modeNote = null
+            if (sourceMode == "resave") modeNote = "Source was fetched and re-saved entirely on-hub — no cloud round-trip."
+            if (sourceMode == "sourceFile") modeNote = "Source was read from File Manager file '${args.sourceFile}' — no cloud size limits."
+            if (sourceMode == "importUrl") modeNote = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript)."
+            if (modeNote) successResult.note = successResult.note ? "${successResult.note} ${modeNote}".toString() : modeNote
+            if (noBackupReason) successResult.sourceBackup = "skipped: ${noBackupReason}".toString()
             if (type == "app" && args.containsKey('triggerUpdated') && args.triggerUpdated != null) {
                 def triggerId = null
                 try { triggerId = args.triggerUpdated as Integer }
@@ -18202,6 +18208,10 @@ private Map _validatedPackageWorkerContext(packageWorkerContext) {
     return null
 }
 def toolUpdateAppCode(args) {
+    if (args instanceof Map && args.containsKey("sourceOrigin")) {
+        args = [:] + args
+        args.remove("sourceOrigin")
+    }
     return _toolUpdateAppCode(args, null)
 }
 def _toolUpdateAppCode(args, Map packageWorkerContext) {
@@ -18343,6 +18353,7 @@ def toolUpdateDriverCode(args) {
                 if (item.sourceFile != null) singleArgs.sourceFile = item.sourceFile
                 if (item.source != null) singleArgs.source = item.source
                 if (item.importUrl != null) singleArgs.importUrl = item.importUrl
+                if (item.backup != null) singleArgs.backup = item.backup
                 if (item.resave != null) singleArgs.resave = item.resave
                 if (item.containsKey('expectedVersion')) singleArgs.expectedVersion = item.expectedVersion
                 def r = toolUpdateItemCodeInner("driver", "driverId", singleArgs)
@@ -18724,13 +18735,20 @@ def toolUpdateLibraryCode(args) {
     def backupFileName = null
     def existingEntry = null
     def backupEntry = null
-    _withBackupLock("update library ${libraryId}") {
-        existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
-        if (existingEntry != null) {
-            backupFileName = existingEntry.fileName
-        } else {
-            backupEntry = backupLibrarySource(libraryId.toString())
-            backupFileName = backupEntry.fileName
+    def noBackupReason = null
+    if (sourceMode == "importUrl") noBackupReason = "the source came from a URL, so its history lives where that URL is published"
+    else if (args.backup == false) noBackupReason = "backup=false was passed"
+    if (noBackupReason) {
+        mcpLog("info", "hub-admin", "Pre-update source backup skipped for library ${libraryId}: ${noBackupReason}")
+    } else {
+        _withBackupLock("update library ${libraryId}") {
+            existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
+            if (existingEntry != null) {
+                backupFileName = existingEntry.fileName
+            } else {
+                backupEntry = backupLibrarySource(libraryId.toString())
+                backupFileName = backupEntry.fileName
+            }
         }
     }
     def skipBackup = backupEntry == null
@@ -18749,7 +18767,7 @@ def toolUpdateLibraryCode(args) {
                 versionFetchError = vErr.message ?: vErr.toString()
                 mcpLog("warn", "hub-admin", "Could not fetch fresh version for library ID ${libraryId}, falling back to backup version: ${versionFetchError}")
             }
-            if (freshVersion == null) freshVersion = existingEntry.version
+            if (freshVersion == null) freshVersion = existingEntry?.version
         }
     } else if (freshVersion == null) {
         freshVersion = backupEntry.version
@@ -18785,6 +18803,7 @@ def toolUpdateLibraryCode(args) {
         ]
         if (sourceMode == "resave") successResult.note = "Source was fetched and re-saved entirely on-hub -- no cloud round-trip."
         if (sourceMode == "sourceFile") successResult.note = "Source was read from File Manager file '${args.sourceFile}' -- no cloud size limits."
+        if (noBackupReason) successResult.sourceBackup = "skipped: ${noBackupReason}".toString()
         return successResult
     } catch (Exception e) {
         mcpLogError("hub-admin", "Library update failed", e)
@@ -19167,7 +19186,8 @@ A transport drop can lose the response while the hub still commits this write; v
                     source: [type: "string", description: "Inline Groovy source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes; runs entirely on-hub."],
+                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
+                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
                     expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
                     triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to refresh via updated() after saving code; re-initializes subscriptions, schedules and atomicState. Protected targets require Developer Mode. Submits mainPage's Done form, RE-SENDING EVERY input from live settings. If live settings cannot be read, refuses the submit to avoid clearing device selections. On refusal/failure, saved code remains deployed: success:true, partial:true, updatedFired:false and repairHints. Omit for the hub editor's normal Save behavior (no lifecycle refresh)."],
                     oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write_code')."],
@@ -19194,7 +19214,8 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                     source: [type: "string", description: "Inline Groovy source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
+                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
+                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
                     expectedVersion: [type: "integer", description: "Optional optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] In bulk mode, put it inside each updates[] entry.[[/FLAT_TRIM]]"],
                     updates: [
                         type: "array",
@@ -19207,6 +19228,7 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                                 source: [type: "string", description: "Inline source (stubs only)."],
                                 importUrl: [type: "string", description: "URL the hub fetches directly."],
                                 resave: [type: "boolean", description: "Re-save without changes."],
+                                backup: [type: "boolean"],
                                 expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard for this item only."]
                             ],
                             required: ["driverId"]
@@ -19280,7 +19302,8 @@ A transport drop can lose the response while the hub still commits this write; v
                     source: [type: "string", description: "Inline source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
+                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
+                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                 ],
                 required: ["libraryId", "confirm"]
@@ -40128,6 +40151,7 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 - **Self-update guard rationale:** the tool refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on because a bad self-update bricks the MCP loop — the server app's own OAuth backs the live `/mcp` token.
 - **A self-update does not wait for the compile.** The save POST is given 20 s; the hub finishes the compile on its own (a 2.6 MB parent takes minutes, past the platform's 300 s request cap). The result then carries `status: "saving"` with `assumed: true`, and `hub_get_info.lastSelfDeploy` settles it: `status` disappears and `confirmedVersion` appears once the App Code version passes `startedVersion`; a record still saving after 20 minutes becomes `success: false`. Do not resend the update while it is saving.
+- **`backup`** (default true): the current source is backed up to File Manager before the save (`hub_list_backups` scope=source). Pass `backup: false` to skip it. `importUrl` mode never takes one: the item's history lives where that URL is published. Same on hub_update_driver and hub_update_library.
 - **`triggerUpdated`:** OPTIONAL post-save lifecycle refresh. Set it to the running instance appId to fire `updated()` so subscriptions/schedules re-initialize. UI Save does NOT fire `updated()`, so this is opt-in only.
 - **`oauth` param shape:** `{enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}`. Omit `client_id`/`client_secret` to preserve current values; if they are unreadable the tool refuses (`success:false`) rather than blanking them. Resulting credentials return under `result.oauth`.
 - **OAuth leg:** works alone (no source mode needed) or together with a source update. If the source saved but the OAuth leg failed, the result is `success:false, partial:true`. The app's source must declare OAuth (an `oauth` block in `definition` plus `mappings`) before OAuth can be enabled.
@@ -40151,7 +40175,7 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 `expectedVersion` aborts the write with `conflict:true` on a version mismatch. Stringified integers are coerced; an explicit null is rejected. In bulk driver updates, put `expectedVersion` inside each `updates[]` entry.
 
-Use it when a read-modify-write spans turns, or when another agent may edit the same code. A conflict result echoes `expectedVersion` and `currentVersion`: re-read the source, then retry with the new version. The source backup is still taken on a conflict. It is skipped only for this package's own apps (their previous build is published under its ref); any other importUrl update keeps it.
+Use it when a read-modify-write spans turns, or when another agent may edit the same code. A conflict result echoes `expectedVersion` and `currentVersion`: re-read the source, then retry with the new version. The source backup is still taken on a conflict. It is not taken in importUrl mode (the item's history lives where that URL is published); inline source and sourceFile updates keep it.
 
 hub_update_driver bulk mode: `updates=[{driverId, sourceFile|source|importUrl|resave, expectedVersion?}, ...]`. It cannot be combined with the single-driver fields, including a top-level `expectedVersion`. Items run in order and continue past failures. A lock mismatch on one item gives `conflict:true` with both versions, and a thrown error gives `error` plus `errorClass`. The top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `updatesRemaining`; send only those again, in the same order.
 
