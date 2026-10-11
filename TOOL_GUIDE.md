@@ -207,6 +207,8 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 ### hub_update_app (modify existing app code, and/or enable/configure OAuth)
 
 - **Self-update guard rationale:** the tool refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on because a bad self-update bricks the MCP loop — the server app's own OAuth backs the live `/mcp` token.
+- **A self-update does not wait for the compile.** The save POST is given 20 s; the hub finishes the compile on its own (a 2.6 MB parent takes minutes, past the platform's 300 s request cap). The result then carries `status: "saving"` with `assumed: true`, and `hub_get_info.lastSelfDeploy` settles it: `status` disappears and `confirmedVersion` appears once the App Code version passes `startedVersion`; a record still saving after 20 minutes becomes `success: false`. Do not resend the update while it is saving.
+- **`backup`** (default true): the current source is backed up to File Manager before the save (`hub_list_backups` scope=source). Pass `backup: false` to skip it. `importUrl` mode never takes one: the item's history lives where that URL is published. Same on hub_update_driver and hub_update_library.
 - **`triggerUpdated`:** OPTIONAL post-save lifecycle refresh. Set it to the running instance appId to fire `updated()` so subscriptions/schedules re-initialize. UI Save does NOT fire `updated()`, so this is opt-in only.
 - **`oauth` param shape:** `{enabled (bool, default true), client_id?, client_secret?, refresh_secret? (bool, regenerate the secret)}`. Omit `client_id`/`client_secret` to preserve current values; if they are unreadable the tool refuses (`success:false`) rather than blanking them. Resulting credentials return under `result.oauth`.
 - **OAuth leg:** works alone (no source mode needed) or together with a source update. If the source saved but the OAuth leg failed, the result is `success:false, partial:true`. The app's source must declare OAuth (an `oauth` block in `definition` plus `mappings`) before OAuth can be enabled.
@@ -230,7 +232,7 @@ The radio firmware-flash `action` values (the bullet above summarizes these as "
 
 `expectedVersion` aborts the write with `conflict:true` on a version mismatch. Stringified integers are coerced; an explicit null is rejected. In bulk driver updates, put `expectedVersion` inside each `updates[]` entry.
 
-Use it when a read-modify-write spans turns, or when another agent may edit the same code. A conflict result echoes `expectedVersion` and `currentVersion`: re-read the source, then retry with the new version. The source backup is still taken on a conflict.
+Use it when a read-modify-write spans turns, or when another agent may edit the same code. A conflict result echoes `expectedVersion` and `currentVersion`: re-read the source, then retry with the new version. The source backup is still taken on a conflict. It is not taken in importUrl mode (the item's history lives where that URL is published); inline source and sourceFile updates keep it.
 
 hub_update_driver bulk mode: `updates=[{driverId, sourceFile|source|importUrl|resave, expectedVersion?}, ...]`. It cannot be combined with the single-driver fields, including a top-level `expectedVersion`. Items run in order and continue past failures. A lock mismatch on one item gives `conflict:true` with both versions, and a thrown error gives `error` plus `errorClass`. The top-level `success` is true only when every item succeeded. If the call stops at the time budget, it returns `status:"in_progress"` with `updatesRemaining`; send only those again, in the same order.
 
@@ -461,9 +463,13 @@ The `createLinked` GET returns 200 with an empty body even when nothing links, s
 
 Deploys every declared library bundle + app from the manifest at `ref`, saving the running self app LAST (its recompile can drop the response). Does NOT touch app instances, undeclared drivers, or anything outside this package's manifest.
 
+**Built-app manifests:** when the manifest at `ref` declares no bundle and its apps live on the `bundle-artifacts` branch, each app is installed from that ref's build (`shas/<sha>/` for a full commit SHA, `branches/<ref>/` otherwise) after its byte count is checked against the `.size` marker, before any write. Only `ref=main` may fall back to the manifest's own location; any other ref without a build is refused.
+
 **Brick-safe:** if ANYTHING before the self app save fails (app/manifest fetch, an unresolved app class, a bundle install, a non-self app), it aborts BEFORE touching the self app -- the running server is left exactly as-is and still updatable via hub_update_app, the always-available escape hatch. Self-modification is gated by this tool's own enableDeveloperMode check (it saves the Apps Code class itself rather than calling hub_update_app, so that tool's self-update guard does not apply here).
 
 **Why an unmerged PR installs:** plain Hubitat Package Manager Repair reads only the PUBLISHED manifest, so it can't reach an unmerged PR's artifacts. This tool instead anchors to `packageManifest.json` AT `ref`.
+
+**Upgrading from 4.6.0 or earlier:** that version's tool refuses any ref whose manifest declares no bundle (`bundle_required_but_undeclared`), which is every ref from 4.7 on. Update through HPM once; this tool deploys any ref from then on.
 
 **Developer Mode visibility:** when Developer Mode is off the tool is hidden from `tools/list` entirely (catalog-hidden, not merely runtime-refused).
 

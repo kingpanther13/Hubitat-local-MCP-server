@@ -1447,15 +1447,13 @@ def _patch_version_sources(monkeypatch, tmp_path, files):
 
 
 def test_check_versions_all_agree_no_findings(monkeypatch, tmp_path):
-    """Four sources all reporting 0.11.0 → empty findings list."""
+    """Three sources all reporting 0.11.0 → empty findings list."""
     _patch_version_sources(monkeypatch, tmp_path, {
         "hubitat-mcp-server.groovy header": (
             "server.groovy", " * Version: 0.11.0\n"),
         "hubitat-mcp-server.groovy currentVersion()": (
             "server2.groovy",
             'def currentVersion() {\n    return "0.11.0"\n}\n'),
-        "hubitat-mcp-rule.groovy header": (
-            "rule.groovy", " * Version: 0.11.0\n"),
         "packageManifest.json version": (
             "packageManifest.json", '{"version": "0.11.0"}\n'),
     })
@@ -1471,8 +1469,6 @@ def test_check_versions_missing_source_file_flagged(monkeypatch, tmp_path):
         "hubitat-mcp-server.groovy currentVersion()": (
             "server2.groovy",
             'def currentVersion() {\n    return "0.11.0"\n}\n'),
-        "hubitat-mcp-rule.groovy header": (
-            "rule.groovy", " * Version: 0.11.0\n"),
         # Pass content=None to mean "don't create the file".
         "packageManifest.json version": (
             "packageManifest.json", None),
@@ -1521,11 +1517,9 @@ def test_check_versions_mismatch_across_files_flagged(monkeypatch, tmp_path):
         "hubitat-mcp-server.groovy currentVersion()": (
             "server2.groovy",
             'def currentVersion() {\n    return "0.11.0"\n}\n'),
-        "hubitat-mcp-rule.groovy header": (
-            # Drift! Rule is on 0.10.5 while everything else is 0.11.0.
-            "rule.groovy", " * Version: 0.10.5\n"),
         "packageManifest.json version": (
-            "packageManifest.json", '{"version": "0.11.0"}\n'),
+            # Drift! The manifest is on 0.10.5 while the server is 0.11.0.
+            "packageManifest.json", '{"version": "0.10.5"}\n'),
     })
     findings = sl.check_versions()
     mismatch = [f for f in findings if "mismatch" in f["message"]]
@@ -1863,25 +1857,21 @@ def test_guide_builder_preserves_escaped_quotes_and_section_boundaries(delegated
 
 
 # ---------------------------------------------------------------------------
-# check_include_library_lockstep — #include <-> library file <-> build-bundle
-# LIBS lockstep (issues #209/#250)
+# check_include_library_lockstep -- #include <-> libraries/ file, one-to-one
+# (issues #209/#522)
 # ---------------------------------------------------------------------------
-# This check is the safety net that keeps the modularization shippable: every
-# `#include mcp.X` in the app must have (1) a libraries/*.groovy declaring it and
-# (2) a tools/build-bundle.py LIBS entry (so the HPM bundle delivers it -- the sole
-# delivery path, and what hub_update_package's full-repair deploy installs). A gap
-# means the app won't compile on a user's hub. These hermetic tmp_path corpora
-# exercise the clean path and each failure branch via the REAL check, so a regex
-# typo or path bug can't silently no-op in CI.
+# This check keeps the modular source buildable: tools/build-release-app.py inlines
+# each `#include ns.Name` from the libraries/*.groovy whose line 1 declares it, and
+# refuses a missing library, a repeated #include, or a library file nothing includes.
+# These hermetic tmp_path corpora exercise the clean path and each failure branch via
+# the REAL check, so a regex typo or path bug can't silently no-op in CI.
 
-def _write_lockstep_repo(tmp_path, *, includes, libraries, libs):
-    """Lay down the three lockstep sources under tmp_path and point REPO_ROOT at it.
+def _write_lockstep_repo(tmp_path, *, includes, libraries):
+    """Lay down the app + libraries under tmp_path.
 
     includes  -- list of (ns, name) -> one `#include ns.name` line in the app
     libraries -- list of (filename, ns, name) -> one libraries/<filename> with a
-                 matching library(name:.., namespace:..) declaration
-    libs      -- list of names -> one `{NAMESPACE}.<name>.groovy` LIBS dest in
-                 tools/build-bundle.py (the regex the check scans for)
+                 matching line-1 library(name:.., namespace:..) declaration
     """
     include_lines = "\n".join(f"#include {ns}.{name}" for ns, name in includes)
     (tmp_path / "hubitat-mcp-server.groovy").write_text(include_lines + "\n")
@@ -1894,25 +1884,16 @@ def _write_lockstep_repo(tmp_path, *, includes, libraries, libs):
             f'author: "x", description: "y")\n'
         )
 
-    tools_dir = tmp_path / "tools"
-    tools_dir.mkdir()
-    libs_block = "\n".join(f'        "dest": f"{{NAMESPACE}}.{name}.groovy",'
-                           for name in libs)
-    (tools_dir / "build-bundle.py").write_text(
-        'NAMESPACE = "mcp"\nLIBS = [\n' + libs_block + "\n]\n"
-    )
 
-
-# A complete, in-lockstep trio for one library.
+# One library, included once.
 _LOCKSTEP_OK = {
     "includes": [("mcp", "McpFooLib")],
     "libraries": [("mcp-foo-lib.groovy", "mcp", "McpFooLib")],
-    "libs": ["McpFooLib"],
 }
 
 
-def test_lockstep_complete_trio_clean(monkeypatch, tmp_path):
-    """All three sources agree -> zero findings."""
+def test_lockstep_include_and_library_match_clean(monkeypatch, tmp_path):
+    """Every #include resolves and every library is included once -> zero findings."""
     _write_lockstep_repo(tmp_path, **_LOCKSTEP_OK)
     monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
     assert sl.check_include_library_lockstep() == []
@@ -1920,8 +1901,7 @@ def test_lockstep_complete_trio_clean(monkeypatch, tmp_path):
 
 def test_lockstep_missing_library_file_flagged(monkeypatch, tmp_path):
     """#include with no libraries/*.groovy declaring it -> a single
-    'no matching libraries' finding, and the downstream LIBS/registry checks
-    are skipped (the `continue`) so the one root cause isn't triple-reported."""
+    'no matching libraries' finding."""
     _write_lockstep_repo(tmp_path, **{**_LOCKSTEP_OK, "libraries": []})
     monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
     findings = sl.check_include_library_lockstep()
@@ -1931,21 +1911,45 @@ def test_lockstep_missing_library_file_flagged(monkeypatch, tmp_path):
     assert "add the library file" in findings[0]["message"]
 
 
-def test_lockstep_missing_libs_entry_flagged(monkeypatch, tmp_path):
-    """Library present but absent from build-bundle.py LIBS -> the bundle won't
-    deliver it; flagged with the LIBS-specific message (and nothing else)."""
-    _write_lockstep_repo(tmp_path, **{**_LOCKSTEP_OK, "libs": []})
+def test_lockstep_unincluded_library_flagged(monkeypatch, tmp_path):
+    """A library file no #include names -> the release build refuses it; flagged once."""
+    _write_lockstep_repo(tmp_path, **{**_LOCKSTEP_OK, "libraries": [
+        ("mcp-foo-lib.groovy", "mcp", "McpFooLib"),
+        ("mcp-bar-lib.groovy", "mcp", "McpBarLib"),
+    ]})
     monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
     findings = sl.check_include_library_lockstep()
-    libs_findings = [f for f in findings if "tools/build-bundle.py LIBS" in f["message"]]
-    assert libs_findings, f"expected a LIBS finding, got: {findings}"
-    assert libs_findings[0]["rule"] == "INCLUDE_LOCKSTEP"
     assert len(findings) == 1, f"expected exactly one finding, got: {findings}"
+    assert findings[0]["file"] == "libraries/mcp-bar-lib.groovy"
+    assert "is not #included" in findings[0]["message"]
+
+
+def test_lockstep_repeated_include_flagged(monkeypatch, tmp_path):
+    """The same #include twice -> flagged at the second line only."""
+    _write_lockstep_repo(tmp_path, **{**_LOCKSTEP_OK, "includes": [("mcp", "McpFooLib")] * 2})
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    findings = sl.check_include_library_lockstep()
+    assert len(findings) == 1, f"expected exactly one finding, got: {findings}"
+    assert findings[0]["line"] == 2
+    assert "appears more than once" in findings[0]["message"]
+
+
+def test_lockstep_declaration_not_on_line_one_flagged(monkeypatch, tmp_path):
+    """A declaration below line 1 is invisible to the builder: the file is flagged and the
+    #include it would have satisfied is reported unresolved."""
+    _write_lockstep_repo(tmp_path, **{**_LOCKSTEP_OK, "libraries": []})
+    (tmp_path / "libraries" / "mcp-foo-lib.groovy").write_text(
+        '// note\nlibrary(name: "McpFooLib", namespace: "mcp", author: "x", description: "y")\n'
+    )
+    monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
+    messages = [f["message"] for f in sl.check_include_library_lockstep()]
+    assert len(messages) == 2, messages
+    assert "Line 1 is not the library(" in messages[0]
+    assert "no matching libraries" in messages[1]
 
 
 def test_lockstep_no_includes_is_clean(monkeypatch, tmp_path):
-    """An app with no #include lines -> early return, zero findings (even with
-    no libraries/ dir or build-bundle.py)."""
+    """An app with no #include lines and no libraries/ dir -> zero findings."""
     (tmp_path / "hubitat-mcp-server.groovy").write_text("def foo() { return 1 }\n")
     monkeypatch.setattr(sl, "REPO_ROOT", tmp_path)
     assert sl.check_include_library_lockstep() == []
@@ -1959,9 +1963,9 @@ def test_lockstep_missing_server_file_is_clean(monkeypatch, tmp_path):
 
 
 def test_lockstep_real_source_clean():
-    """The real shipped repo must satisfy the lockstep in both legs. Guards against
-    a future PR adding an #include without the library file / LIBS entry (the exact
-    'app won't compile on a user's hub' regression)."""
+    """The real shipped repo must satisfy the lockstep both ways. Guards against a
+    future PR adding an #include without the library file, or a library without its
+    #include (either fails the release build)."""
     findings = sl.check_include_library_lockstep()
     assert findings == [], (
         "INCLUDE_LOCKSTEP violation(s) in the shipped source:\n  "
@@ -1971,7 +1975,7 @@ def test_lockstep_real_source_clean():
 
 def test_lockstep_duplicate_library_declaration_flagged(monkeypatch, tmp_path):
     """Two library files declaring the same (namespace, name) -> a duplicate finding
-    (the hub's #include would bind ambiguously to only one copy)."""
+    (the #include would be ambiguous)."""
     _write_lockstep_repo(tmp_path, **{
         **_LOCKSTEP_OK,
         "libraries": [

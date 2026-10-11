@@ -181,7 +181,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         enableWrite()
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             captured.body = body
             [success: true, id: 4242, version: 1]
@@ -211,7 +211,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             captured.body = body
             [success: true, id: 4242, version: 1]
@@ -247,7 +247,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'my-app.groovy' ? 'definition(name: "FromFile")'.getBytes('UTF-8') : null
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 5555, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
@@ -272,7 +272,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'my-app.groovy' ? 'definition(name: "FromFile")'.getBytes('UTF-8') : null
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 5555, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
@@ -329,7 +329,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app returns success=false when the hub rejects the create (success!=true)"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'NoLoc rejected']
         }
 
@@ -348,7 +348,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'NoLoc rejected']
         }
 
@@ -371,7 +371,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app returns success=false when post-install verification shows an error state"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 9900, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
@@ -393,7 +393,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 9900, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
@@ -419,7 +419,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app reports failure when the hub POST throws"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             throw new RuntimeException('compile error: bad syntax')
         }
 
@@ -438,7 +438,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             throw new RuntimeException('compile error: bad syntax')
         }
 
@@ -461,7 +461,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 7100, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
@@ -485,7 +485,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 7100, version: 1]
         }
         hubGet.register('/app/ajax/code') { params ->
@@ -513,7 +513,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app returns success=false when verify endpoint returns an empty body"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 7200, version: 1]
         }
         hubGet.register('/app/ajax/code') { params -> '' }
@@ -534,7 +534,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 7200, version: 1]
         }
         hubGet.register('/app/ajax/code') { params -> '' }
@@ -559,7 +559,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_app returns success=false when verify endpoint returns unparseable HTML"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 7300, version: 1]
         }
         hubGet.register('/app/ajax/code') { params -> '<html><body>Login required</body></html>' }
@@ -581,7 +581,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 7300, version: 1]
         }
         hubGet.register('/app/ajax/code') { params -> '<html><body>Login required</body></html>' }
@@ -639,7 +639,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         enableWrite()
         def postedPath = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postedPath = path
             [success: true, id: 9001, version: 1]
         }
@@ -663,7 +663,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         def postedPath = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postedPath = path
             [success: true, id: 9001, version: 1]
         }
@@ -693,7 +693,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'my-driver.groovy' ? 'metadata { }'.getBytes('UTF-8') : null
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 7777, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
@@ -718,7 +718,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'my-driver.groovy' ? 'metadata { }'.getBytes('UTF-8') : null
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 7777, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
@@ -744,7 +744,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver returns success=false when post-install verification shows an error state"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 8800, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
@@ -765,7 +765,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 8800, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
@@ -790,7 +790,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver surfaces qualified success (verified:false, verifyError populated) when post-install verification fetch throws"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 6600, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
@@ -814,7 +814,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 6600, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
@@ -842,7 +842,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver returns success=false when verify endpoint returns an empty body"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 6700, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params -> '' }
@@ -862,7 +862,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 6700, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params -> '' }
@@ -886,7 +886,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver returns success=false when verify endpoint returns unparseable HTML"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 6800, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params -> '<html>not json</html>' }
@@ -906,7 +906,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 6800, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params -> '<html>not json</html>' }
@@ -1078,7 +1078,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver returns success=false when the hub rejects the create (success!=true)"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'NoLoc rejected']
         }
 
@@ -1097,7 +1097,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'NoLoc rejected']
         }
 
@@ -1120,7 +1120,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver reports failure when the hub POST throws"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             throw new RuntimeException('compile error: syntax problem')
         }
 
@@ -1139,7 +1139,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             throw new RuntimeException('compile error: syntax problem')
         }
 
@@ -1256,7 +1256,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
         def callNum = 0
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 9000 + callNum, version: 1]
         }
@@ -1290,7 +1290,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
         def callNum = 0
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 9000 + callNum, version: 1]
         }
@@ -1331,7 +1331,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             // driver-b.groovy is missing -- simulate absent file
             fileName == 'driver-b.groovy' ? null : 'metadata { }'.getBytes('UTF-8')
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 8000 + callNum, version: 1]
         }
@@ -1372,7 +1372,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName ->
             fileName == 'driver-b.groovy' ? null : 'metadata { }'.getBytes('UTF-8')
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 8000 + callNum, version: 1]
         }
@@ -1415,7 +1415,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName ->
             'metadata { }'.getBytes('UTF-8')
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 8500 + callNum, version: 1]
         }
@@ -1448,7 +1448,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
         def callNum = 0
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 8500 + callNum, version: 1]
         }
@@ -1483,7 +1483,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk mode: single-element installs array works"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 8900, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
@@ -1507,7 +1507,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 8900, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
@@ -1535,7 +1535,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver bulk mode: malformed entry (non-Map) yields per-item failure with index hint"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 9100, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
@@ -1567,7 +1567,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 9100, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
@@ -1604,7 +1604,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         enableWrite()
         def callNum = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 9300 + callNum, version: 1]
         }
@@ -1647,7 +1647,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         def callNum = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 9300 + callNum, version: 1]
         }
@@ -1691,7 +1691,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         enableWrite()
         def callNum = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 9400 + callNum, version: 1]
         }
@@ -1735,7 +1735,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         def callNum = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             callNum++
             [success: true, id: 9400 + callNum, version: 1]
         }
@@ -1845,7 +1845,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "x"}'
         }
         def postCalls = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postCalls++
             [success: true]
         }
@@ -1911,7 +1911,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         and: 'hubInternalPostJson returns a success response'
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             captured.body = body
             [success: true, id: 50]
@@ -1953,7 +1953,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"success":true,"clientId":"gen-id","clientSecret":"gen-secret"}'
         }
         def posted = null
-        script.metaClass.hubInternalPostJson = { String path, String body -> posted = path; [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> posted = path; [success: true] }
 
         when:
         def result = script.toolUpdateAppCode([appId: '42', oauth: [enabled: true], confirm: true])
@@ -2033,7 +2033,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","version":7,"source":"old"}' }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true, id: 50] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, id: 50] }
         hubGet.register('/app/updateOAuth?id=50&oauthEnabled=true&clientId=cid&clientSecret=csec&refreshSecret=false') { params ->
             '{"success":true,"clientId":"cid","clientSecret":"csec"}'
         }
@@ -2088,7 +2088,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","version":3,"source":"old"}' }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true, id: 60] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, id: 60] }
         hubGet.register('/app/updateOAuth?id=60&oauthEnabled=true&clientId=c&clientSecret=s&refreshSecret=false') { params -> '{"success":false}' }
 
         when:
@@ -2106,7 +2106,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
         hubGet.register('/app/ajax/code') { params -> '{"status":"ok","version":3,"source":"old"}' }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: false, error: 'compile boom'] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: false, error: 'compile boom'] }
         def hitOAuth = false
         hubGet.register('/app/updateOAuth?id=60&oauthEnabled=true&clientId=c&clientSecret=s&refreshSecret=false') { params -> hitOAuth = true; '{"success":true}' }
 
@@ -2194,7 +2194,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             captured.body = body
             [success: true, id: 50]
@@ -2233,7 +2233,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.json = body
             [success: true, id: 123]
         }
@@ -2261,7 +2261,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             fileName == 'my-app.groovy' ? 'source from file'.getBytes('UTF-8') : null
         }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.body = body
             [success: true, id: 60]
         }
@@ -2289,7 +2289,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             fileName == 'my-app.groovy' ? 'source from file'.getBytes('UTF-8') : null
         }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.body = body
             [success: true, id: 60]
         }
@@ -2349,7 +2349,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.body = body
             [success: true, id: 70]
         }
@@ -2376,7 +2376,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.body = body
             [success: true, id: 70]
         }
@@ -2406,7 +2406,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "old"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'Compilation failed']
         }
 
@@ -2428,7 +2428,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "old"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'Compilation failed']
         }
 
@@ -2455,7 +2455,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "old"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, (errKey): 'unable to resolve class Foo']
         }
 
@@ -2477,7 +2477,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "old"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> null }
 
         when:
         def result = script.toolUpdateAppCode([appId: '80', source: 'new', confirm: true])
@@ -2497,7 +2497,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
 
         and: 'saveOrUpdateJson is an upsert: success with a different echoed id means it saved elsewhere'
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 999]
         }
 
@@ -2518,7 +2518,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "old"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, foo: 'bar']
         }
 
@@ -2538,7 +2538,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "old"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body -> [[odd: 'list']] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [[odd: 'list']] }
 
         when:
         def result = script.toolUpdateAppCode([appId: '80', source: 'new', confirm: true])
@@ -2593,7 +2593,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             [success: true, id: 55]
         }
@@ -2618,7 +2618,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             [success: true, id: 55]
         }
@@ -2741,7 +2741,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
         def updatePaths = []
         def updateIds = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             updatePaths << path
             updateIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
             [success: true]
@@ -2781,7 +2781,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.downloadHubFile = { String fileName -> 'metadata { }'.getBytes('UTF-8') }
         def updatePaths = []
         def updateIds = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             updatePaths << path
             updateIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
             [success: true]
@@ -2827,7 +2827,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             fileName == 'driver-202.groovy' ? null : 'metadata { }'.getBytes('UTF-8')
         }
         def postedIds = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postedIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
             [success: true]
         }
@@ -2872,7 +2872,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             fileName == 'driver-202.groovy' ? null : 'metadata { }'.getBytes('UTF-8')
         }
         def postedIds = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postedIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
             [success: true]
         }
@@ -2917,7 +2917,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "metadata { name \\"existing\\" }"}'
         }
         def postedSources = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postedSources << new groovy.json.JsonSlurper().parseText(body).source
             [success: true]
         }
@@ -2959,7 +2959,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "metadata { name \\"existing\\" }"}'
         }
         def postedSources = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postedSources << new groovy.json.JsonSlurper().parseText(body).source
             [success: true]
         }
@@ -3001,7 +3001,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         // Middle item's hub POST returns success:false — reaches toolUpdateItemCodeInner's
         // failure branch (which carries note + lastBackup).
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             if (new groovy.json.JsonSlurper().parseText(body).id == 402) {
                 [success: false, message: 'version conflict']
             } else {
@@ -3043,7 +3043,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "metadata { }"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             if (new groovy.json.JsonSlurper().parseText(body).id == 402) {
                 [success: false, message: 'version conflict']
             } else {
@@ -3083,7 +3083,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_create_driver returns success=false when verify endpoint returns clean JSON with empty source field"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 4444, version: 1]
         }
         // Verify response parses cleanly but reports empty source — driver slot created but
@@ -3108,7 +3108,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 4444, version: 1]
         }
         hubGet.register('/driver/ajax/code') { params ->
@@ -3556,7 +3556,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         and: 'hubInternalPostJson captures the save call and returns success'
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             captured.body = body
             [success: true, id: 99]
@@ -3611,7 +3611,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         hubGet.register('/app/ajax/code') { params -> null }
         def writes = []
-        script.metaClass.hubInternalPostJson = { String path, String body -> writes << path; [success: true, id: 99] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> writes << path; [success: true, id: 99] }
 
         when:
         def response = mcpDriver.callTool('hub_restore_backup', [backupKey: 'app_99', confirm: true])
@@ -3647,7 +3647,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name; files.put(name, content) }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             captured.body = body
             [success: true, id: 99]
@@ -3692,7 +3692,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 3, "source": "current"}'
         }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             [success: false, message: 'bad code']
         }
@@ -3724,7 +3724,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 3, "source": "current"}'
         }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             [success: false, message: 'bad code']
         }
@@ -3757,7 +3757,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
-        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> null }
 
         when:
         def result = script.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])
@@ -3786,7 +3786,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
-        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> null }
 
         when:
         def result = script.toolRestoreItemBackup([backupKey: 'app_1', confirm: true])
@@ -3816,7 +3816,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         and: 'saveOrUpdateJson is an upsert: success with a different echoed id means it saved elsewhere'
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 777]
         }
 
@@ -3847,7 +3847,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
-        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> null }
 
         when:
         def result = script.toolRestoreItemBackup([backupKey: 'app_178', confirm: true])
@@ -3877,7 +3877,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             throw new RuntimeException('connection reset mid-restore')
         }
 
@@ -3910,7 +3910,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         and: 'the hub rejects the save with its real compile error'
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'unable to resolve class Foo']
         }
 
@@ -3938,7 +3938,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, foo: 'bar']
         }
 
@@ -3963,7 +3963,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true]   // no id key at all
         }
 
@@ -3989,7 +3989,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 3, "source": "current"}'
         }
-        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> null }
 
         when:
         def result = script.toolRestoreItemBackup([backupKey: 'driver_1', confirm: true])
@@ -4017,7 +4017,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
 
         and: 'the response survived the recompile and confirms the save (matching echoed id)'
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, id: 1]
         }
 
@@ -4064,7 +4064,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
             captured.body = body
             [success: true, id: 50]
@@ -4089,7 +4089,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         def postCount = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postCount++
             [success: true]
         }
@@ -4122,7 +4122,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def postCount = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postCount++
             [success: true]
         }
@@ -4154,7 +4154,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def postCount = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postCount++
             [success: true]
         }
@@ -4209,7 +4209,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.body = new groovy.json.JsonSlurper().parseText(body)
             [success: true]
         }
@@ -4230,7 +4230,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def postCount = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postCount++
             [success: true]
         }
@@ -4255,7 +4255,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.body = new groovy.json.JsonSlurper().parseText(body)
             [success: true]
         }
@@ -4288,7 +4288,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def postCount = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postCount++
             [success: true]
         }
@@ -4309,7 +4309,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "old"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'compile failed']
         }
 
@@ -4334,7 +4334,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def postCount = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postCount++
             [success: true]
         }
@@ -4365,7 +4365,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         and: 'every update POST that does happen returns success'
         def postedIds = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postedIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
             [success: true]
         }
@@ -4421,7 +4421,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             null
         }
         def postedIds = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postedIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
             [success: true]
         }
@@ -4453,7 +4453,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             if (id == '203') return '{"status": "ok", "version": 8, "source": "c"}'   // success
             null
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true]
         }
 
@@ -4487,7 +4487,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.body = new groovy.json.JsonSlurper().parseText(body)
             [success: true]
         }
@@ -4550,7 +4550,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
         def posts = []
         def downloads = []
-        script.metaClass.hubInternalPostJson = { String path, String body -> posts << path; [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> posts << path; [success: true] }
         script.metaClass.downloadHubFile = { String name -> downloads << name; 'self-overwrite'.getBytes('UTF-8') }
 
         when:
@@ -4578,7 +4578,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         def downloads = []
         def posts = []
         script.metaClass.downloadHubFile = { String name -> downloads << name; 'source'.getBytes('UTF-8') }
-        script.metaClass.hubInternalPostJson = { String path, String body -> posts << path; [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> posts << path; [success: true] }
 
         when:
         script.toolUpdateAppCode([appId: '178', sourceFile: 'probe.groovy', confirm: true])
@@ -4621,7 +4621,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.body = new groovy.json.JsonSlurper().parseText(body)
             [success: true]
         }
@@ -4653,16 +4653,97 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 5, "source": "self source"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> null }
+        script.metaClass._selfSaveWaitMs = { -> 0L }
 
         when:
         def result = script.toolUpdateAppCode([appId: '1', source: 'self-update v3', confirm: true])
 
         then:
         result.success == true
+        result.assumed == true
+        result.status == 'saving'
         atomicStateMap.lastSelfDeploy?.success == true
         atomicStateMap.lastSelfDeploy.error == null
         atomicStateMap.lastSelfDeploy.assumed == true
+
+        and: 'the record names what the App Code row must pass for the save to count as landed'
+        atomicStateMap.lastSelfDeploy.status == 'saving'
+        atomicStateMap.lastSelfDeploy.startedVersion == 5
+        atomicStateMap.lastSelfDeploy.appId == '1'
+    }
+
+    def "hub_update_app self-update gives the save POST 20 s and treats its timeout as the dropped response, not a failure"() {
+        // Issue #522: a 2.6 MB self save outruns the platform's 300 s request cap; the hub keeps
+        // compiling after the caller stops waiting, so a timed-out POST is accepted and the App
+        // Code row's version is what confirms it.
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "version": 5, "source": "self source"}' }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        def seenTimeout = null
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            seenTimeout = timeout
+            throw new RuntimeException('java.net.SocketTimeoutException: Read timed out')
+        }
+        script.metaClass._selfSaveWaitMs = { -> 0L }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '1', source: 'self-update v5', confirm: true])
+
+        then:
+        seenTimeout == 20
+        result.success == true
+        result.status == 'saving'
+        result.note.contains('Poll hub_get_info.lastSelfDeploy')
+        atomicStateMap.lastSelfDeploy.success == true
+        atomicStateMap.lastSelfDeploy.status == 'saving'
+        atomicStateMap.lastSelfDeploy.startedVersion == 5
+    }
+
+    def "hub_update_app self-update confirms the save when the App Code row's version passes the starting one"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "version": 5, "source": "self source"}' }
+        int rowReads = 0
+        hubGet.register('/app/list/single/data/1') { params -> rowReads++; rowReads < 2 ? '[{"id": 1, "version": 5}]' : '[{"id": 1, "version": 6}]' }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> null }
+        script.metaClass._selfSaveWaitMs = { -> 60000L }
+        script.metaClass._selfSavePollMs = { -> 1L }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '1', source: 'self-update v6', confirm: true])
+
+        then:
+        result.success == true
+        result.verified == true
+        result.version == 6
+        result.status == null
+        atomicStateMap.lastSelfDeploy.success == true
+        atomicStateMap.lastSelfDeploy.confirmedVersion == 6
+        !atomicStateMap.lastSelfDeploy.containsKey('status')
+        !atomicStateMap.lastSelfDeploy.containsKey('assumed')
+    }
+
+    def "hub_update_app self-update still fails on a non-timeout POST exception"() {
+        given:
+        enableWrite()
+        settingsMap.enableDeveloperMode = true
+        hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "version": 5, "source": "self source"}' }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> throw new RuntimeException('Connection refused') }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '1', source: 'self-update v7', confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains('Connection refused')
+        atomicStateMap.lastSelfDeploy.success == false
+        !atomicStateMap.lastSelfDeploy.containsKey('status')
     }
 
     def "hub_update_app self-update fails closed on a non-JSON (unparseable-sentinel) response and stashes the failure"() {
@@ -4675,7 +4756,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 5, "source": "self source"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [_unparseable: true, message: 'hub returned a non-JSON body from /app/saveOrUpdateJson: <html>...']
         }
 
@@ -4700,7 +4781,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 5, "source": "self source"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true] }
         def marker = [requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
                       args: [ref: 'main', confirm: true]]
         atomicStateMap.packageDeployInFlight = marker
@@ -4730,7 +4811,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 5, "source": "self source"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true] }
         def marker = [requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
                       args: [ref: 'main', confirm: true]]
         atomicStateMap.packageDeployInFlight = marker
@@ -4760,7 +4841,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 5, "source": "self source"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             throw new RuntimeException('cloud 504')
         }
         def marker = [requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
@@ -4793,7 +4874,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 5, "source": "self source"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true] }
         atomicStateMap.packageDeployInFlight = [
             requestId: 'pkg-live', ref: 'main', startedAt: 1234567880000L,
             args: [ref: 'main', confirm: true]
@@ -4872,7 +4953,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def captured = [:]
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.body = new groovy.json.JsonSlurper().parseText(body)
             [success: true]
         }
@@ -4893,7 +4974,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "other app"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true]
         }
 
@@ -4912,7 +4993,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "driver src"}'
         }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true]
         }
 
@@ -4955,7 +5036,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
             '{"status": "ok", "version": 1, "source": "drv"}'
         }
         def postedIds = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             postedIds << new groovy.json.JsonSlurper().parseText(body).id?.toString()
             [success: true]
         }

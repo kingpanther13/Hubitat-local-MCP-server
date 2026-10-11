@@ -5,7 +5,7 @@
 // Maven Central and parses the production .groovy files under the 2.4 grammar, so a
 // 3.0-green can't ship a 2.4 hub-load failure.
 //
-// Run locally:  ./gradlew -p ci/groovy24-parse parse24
+// Run locally:  ./gradlew -p ci/groovy24-parse parse24   (builds dist/ with python3; set PYTHON to override)
 plugins {
     id 'java'   // for the Java toolchain + JavaExec
 }
@@ -24,6 +24,10 @@ def repoRoot = projectDir.parentFile.parentFile
 def productionFiles = [
     new File(repoRoot, 'hubitat-mcp-server.groovy'),
     new File(repoRoot, 'hubitat-mcp-rule.groovy'),
+    // The exact files HPM installs (built by buildReleaseApp below): the parent with every library
+    // inlined and both apps comment-stripped, so the 2.4 parse and class-size budgets hold for them.
+    new File(repoRoot, 'dist/hubitat-mcp-server.groovy'),
+    new File(repoRoot, 'dist/hubitat-mcp-rule.groovy'),
     // Standalone e2e watchdog app: parse it here so a syntax / 3.0-only break (or a sandbox-blocked
     // ClassExpression) is caught in the fast lane, not only when the watchdog_update maintenance job compiles it live on the
     // e2e hub. No #include, so the resolver passes it through unchanged. The v1 and v2 watchdogs
@@ -46,8 +50,13 @@ tasks.register('parse24Fixtures', JavaExec) {
     args = [new File(projectDir, 'parse_check.groovy').absolutePath, '--self-test', repoRoot.absolutePath]
 }
 
+tasks.register('buildReleaseApp', Exec) {
+    workingDir repoRoot
+    commandLine System.getenv('PYTHON') ?: 'python3', 'tools/build-release-app.py'
+}
+
 tasks.register('parse24', JavaExec) {
-    dependsOn 'parse24Fixtures'
+    dependsOn 'parse24Fixtures', 'buildReleaseApp'
     group = 'verification'
     description = 'Check deployed Groovy for 2.4 syntax, null closure parameters, and sandbox-blocked classes.'
     javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }

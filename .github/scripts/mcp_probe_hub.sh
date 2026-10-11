@@ -16,7 +16,7 @@
 # whole picture. Every call was validated 1:1 against a live hub before this landed.
 #
 # Env:  MCP_URL       -- main server cloud OAuth URL (LEVEL99_TEST_HUB_MCP_URL secret)
-#       WATCHDOG_URL  -- watchdog cloud OAuth URL (WATCHDOG_MCP_URL secret)
+#       WATCHDOG_URL  -- watchdog cloud OAuth URL (WATCHDOG31_MCP_URL secret)
 set -uo pipefail   # deliberately NOT -e: one failed section must not hide the rest
 
 : "${MCP_URL:?MCP_URL env var required}"

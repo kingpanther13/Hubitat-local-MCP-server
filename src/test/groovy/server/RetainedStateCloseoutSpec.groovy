@@ -238,7 +238,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> files.put(name, bytes) }
         script.metaClass.deleteHubFile = { String name -> files.remove(name) }
         script.metaClass.hubInternalGet = { String path, Map params = null -> '{"source":"live source","version":2}' }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             assert !Thread.holdsLock(monitor)
             // Publication must be able to finish while the source save is in progress.
             publisherFuture.get().get(10, TimeUnit.SECONDS)
@@ -300,7 +300,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         script.metaClass.hubInternalGet = { String path, Map params = null ->
             groovy.json.JsonOutput.toJson([source: live, version: 2])
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             if (reject) {
                 if (failure == 'exception') throw new IOException('save timed out')
                 return [success: false, message: 'compile rejected']
@@ -384,7 +384,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         def peer = peerFor(backing)
         peer.metaClass.downloadHubFile = { String name -> 'baseline'.getBytes('UTF-8') }
         List writes = []
-        peer.metaClass.hubInternalPostJson = { String path, String body -> writes << path; [success: true] }
+        peer.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> writes << path; [success: true] }
 
         when:
         def fetched = peer.toolGetItemBackup([backupKey: 'app_99'])
@@ -545,7 +545,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         }
         peer.metaClass.deleteHubFile = { String name -> files.remove(name) }
         List writes = []
-        peer.metaClass.hubInternalPostJson = { String path, String body -> writes << path; '{"status":"success"}' }
+        peer.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> writes << path; '{"status":"success"}' }
 
         when:
         def result = peer.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])
@@ -574,7 +574,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
             probe == 'empty' ? new byte[0] : null
         }
         List writes = []
-        script.metaClass.hubInternalPostJson = { String path, String body -> writes << path; '{"status":"success"}' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> writes << path; '{"status":"success"}' }
 
         when:
         def fetched = script.toolGetItemBackup([backupKey: 'app_99'])
@@ -633,7 +633,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         List uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> uploads << name }
         script.metaClass.deleteHubFile = { String name -> }
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true, message: '', id: 42, version: 10] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, message: '', id: 42, version: 10] }
 
         when:
         def result = script.toolUpdateLibraryCode([libraryId: '42', source: 'new source', confirm: true])
@@ -658,7 +658,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         hubGet.register('/app/ajax/code') { params -> '{"source":"current","version":2}' }
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> files.put(name, bytes) }
         script.metaClass.deleteHubFile = { String name -> deleted << name }
-        script.metaClass.hubInternalPostJson = { String path, String body -> [success: true, id: 99] }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, id: 99] }
 
         when:
         def result = script.toolRestoreItemBackup([backupKey: 'app_99', confirm: true])

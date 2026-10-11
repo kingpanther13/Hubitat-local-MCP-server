@@ -43,7 +43,9 @@ Once HPM is installed:
 2. Search for **"MCP"**
 3. Select **MCP Rule Server** and install
 
-That's it! HPM will install the parent app, the child app, and the required Groovy **libraries** (delivered as a bundle, shown under **Libraries Code**) automatically in the same install/update, and notify you when updates are available.
+That's it! HPM will install the parent app and the child app, and notify you when updates are available.
+
+> **Upgrading from 4.6.0 or earlier**: older versions shipped their code as `mcp` libraries in an `mcp_libraries` bundle. The app no longer uses them, but HPM does not remove a bundle, so they stay under **Libraries Code** and **Bundles** as unused code. Delete them when convenient (Libraries Code > each `mcp` library, then Bundles > `mcp_libraries`): the hub's Libraries Code page and `hub_list_libraries` scan every app's source once per installed library, so with the larger inlined app each leftover library adds roughly half a second to that page on a C-8 (19 of them: about 10 s). The app works either way. On 4.6.0 or earlier the Developer-Mode `hub_update_package` tool cannot install 4.7 or later (it expects a bundle); update through HPM once, after which the tool deploys any ref again.
 
 > **Alternate HPM method**: You can also use HPM > **Install** > **From a URL** and paste:
 > ```
@@ -52,30 +54,22 @@ That's it! HPM will install the parent app, the child app, and the required Groo
 
 ### Option B: Manual Installation
 
-The parent app `#include`s Groovy **libraries**, which are all shipped together in one **bundle** (`mcp-libraries.zip`). Install that bundle **first** — otherwise the parent app fails to compile when you Save it. Install in this order: the libraries bundle, then the parent app, then the child app.
+Install the parent app first, then the child app. Use the URLs below: they serve the release build (the parent with all of its library code included), not the source files in the repo tree.
 
-**1. Install the libraries bundle:**
-
-In the Hubitat web UI go to **Bundles** > **Import**, and import the bundle from this repo:
-   ```
-   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/mcp-libraries.zip
-   ```
-   If your hub's Bundle Manager only accepts a file upload, download that `.zip` first and upload it. Importing the bundle installs **every** library the app needs in one step (they appear under **Libraries Code**) — there's no need to add libraries individually. (HPM / Option A does this automatically.)
-
-**2. Install the Parent App (MCP Rule Server):**
+**1. Install the Parent App (MCP Rule Server):**
 1. Go to Hubitat web UI > **Apps Code** > **+ New App**
 2. Click **Import** and paste this URL:
    ```
-   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-server.groovy
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/hubitat-mcp-server.groovy
    ```
 3. Click **Import** > **OK** > **Save**
 4. Click **OAuth** > **Enable OAuth in App** > **Save**
 
-**3. Install the Child App (MCP Rule):**
+**2. Install the Child App (MCP Rule):**
 1. Go to **Apps Code** > **+ New App**
 2. Click **Import** and paste this URL:
    ```
-   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-rule.groovy
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/hubitat-mcp-rule.groovy
    ```
 3. Click **Import** > **OK** > **Save**
 4. (No OAuth needed for the child app)

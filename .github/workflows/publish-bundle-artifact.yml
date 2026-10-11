@@ -1,25 +1,21 @@
 name: Publish bundle artifact
-# THE bundle delivery pipeline. Builds the production bundle zip on EVERY push and
-# stores it on the bot-only `bundle-artifacts` branch, keyed by branch name AND full
-# commit SHA:
+# THE release delivery pipeline. Builds the release app files (tools/build-release-app.py: the
+# parent with every #include library inlined, and the child, both comment-stripped) on EVERY push
+# and stores them on the bot-only `bundle-artifacts` branch, keyed by branch name AND full commit SHA:
 #
-#   branches/<branch>/mcp-libraries.zip (+ .size marker)
-#   shas/<full-sha>/mcp-libraries.zip   (+ .size marker)
+#   branches/<branch>/hubitat-mcp-server.groovy, hubitat-mcp-rule.groovy (+ .size markers)
+#   shas/<full-sha>/hubitat-mcp-server.groovy, hubitat-mcp-rule.groovy   (+ .size markers)
 #
-# packageManifest.json's bundles[].location points at branches/main/ -- HPM users
-# install from this branch. The e2e deploy installs the PR's shas/<sha>/ entry (byte-
-# verified against its own CI build), and the e2e restore installs main's shas/<sha>/
-# -- so every consumer rides the ONE mechanism e2e proves on every run; there is no
-# committed zip and no separate post-merge rebuild. No paths filter: every push (incl.
-# release-bot bookkeeping commits) gets a shas/ entry, so a restore pinned to any main
-# SHA always resolves. The zip keeps its production basename inside each keyed
-# directory: the hub appears to key the bundle entity on the zip filename, so a renamed
-# zip can import as a SECOND bundle entity (duplicate libraries) instead of updating
-# the existing one. The .size marker is the cheap existence/integrity probe (~10 bytes
-# instead of the ~1MB zip).
+# packageManifest.json's apps[].location points at branches/main/ -- HPM users install from this
+# branch. The e2e deploy installs the PR's shas/<sha>/ entry (byte-verified against its own CI
+# build), so every consumer rides the ONE mechanism e2e proves on every run. No paths filter: every
+# push (incl. release-bot bookkeeping commits) gets a shas/ entry, so an install pinned to any main
+# SHA always resolves. The .size marker is the cheap existence probe. Entries published before the
+# inlined build (mcp-libraries.zip) are left in place, so old refs keep resolving.
 #
-# Nobody rebases bundle-artifacts, so it has zero merge-conflict surface; identical
-# zips across commits dedupe to one git blob.
+# Nobody rebases bundle-artifacts, so it has zero merge-conflict surface; identical files across
+# commits dedupe to one git blob. (The workflow and branch keep their bundle-era names so existing
+# URLs and refs stay valid.)
 on:
   push:
     branches-ignore: [bundle-artifacts]
@@ -40,16 +36,14 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.x'
-      - name: Build and publish the keyed bundle zip
+      - name: Build and publish the keyed release app files
         env:
           REF_NAME: ${{ github.ref_name }}
           HEAD_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          python tools/build-bundle.py
-          ZIP=bundles/mcp-libraries.zip
-          BYTES=$(wc -c < "$ZIP" | tr -d '[:space:]')
-          BASENAME=$(basename "$ZIP")
+          python tools/build-release-app.py
+          FILES="hubitat-mcp-server.groovy hubitat-mcp-rule.groovy"
 
           git fetch origin bundle-artifacts || true
           if git show-ref --verify --quiet refs/remotes/origin/bundle-artifacts; then
@@ -63,8 +57,10 @@ jobs:
 
           for KEY in "branches/${REF_NAME}" "shas/${HEAD_SHA}"; do
             mkdir -p "../artifacts/${KEY}"
-            cp "$ZIP" "../artifacts/${KEY}/${BASENAME}"
-            printf '%s' "$BYTES" > "../artifacts/${KEY}/${BASENAME}.size"
+            for F in $FILES; do
+              cp "dist/$F" "../artifacts/${KEY}/$F"
+              wc -c < "dist/$F" | tr -d '[:space:]' > "../artifacts/${KEY}/$F.size"
+            done
           done
 
           cd ../artifacts
@@ -75,12 +71,12 @@ jobs:
             echo "Artifact already current for ${REF_NAME} @ ${HEAD_SHA} -- nothing to publish."
             exit 0
           fi
-          git commit -m "bundle artifact: ${REF_NAME} @ ${HEAD_SHA}"
+          git commit -m "release artifact: ${REF_NAME} @ ${HEAD_SHA}"
           # Default-token pushes don't retrigger workflows; the retry covers a concurrent
           # publish from another branch's push landing between our fetch and push.
           for attempt in 1 2 3; do
             if git push origin HEAD:bundle-artifacts; then
-              echo "Published bundle artifact for ${REF_NAME} @ ${HEAD_SHA} (${BYTES} bytes, attempt $attempt)."
+              echo "Published release artifact for ${REF_NAME} @ ${HEAD_SHA} (attempt $attempt)."
               exit 0
             fi
             # A failed rebase must not leave a half-finished rebase for the next attempt to
@@ -90,5 +86,5 @@ jobs:
               git rebase --abort 2>/dev/null || true
             fi
           done
-          echo "::error::Could not push the bundle artifact after 3 attempts."
+          echo "::error::Could not push the release artifact after 3 attempts."
           exit 1

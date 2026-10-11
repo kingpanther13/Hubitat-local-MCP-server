@@ -63,10 +63,6 @@ VERSION_SOURCES = {
         "pattern": r'def\s+currentVersion\s*\(\)\s*\{\s*\n\s*return\s+"(\d+\.\d+\.\d+)"',
         "multiline": True,
     },
-    "hubitat-mcp-rule.groovy header": {
-        "file": REPO_ROOT / "hubitat-mcp-rule.groovy",
-        "pattern": r"^\s*\*\s*Version:\s*(\d+\.\d+\.\d+)",
-    },
     "packageManifest.json version": {
         "file": REPO_ROOT / "packageManifest.json",
         "pattern": r'"version"\s*:\s*"(\d+\.\d+\.\d+)"',
@@ -4422,18 +4418,13 @@ def run_self_test() -> int:
 
 
 def check_include_library_lockstep() -> list[dict]:
-    """Every `#include mcp.X` in the app must stay in lockstep with its delivery (issues #209/#250):
-    (1) a libraries/*.groovy whose library() declares (namespace=X.ns, name=X.name), and
-    (2) a tools/build-bundle.py LIBS entry (else the HPM bundle -- the sole delivery path, and
-        what hub_update_package's full-repair deploy installs -- won't deliver it).
-
-    A gap means the library can't load on a user's hub, so the app's #include fails to compile.
-    Catches it cheaply here (no hub) instead of at install/recompile time.
-
-    Direction: this is #include -> delivery (every include must resolve). It does NOT flag an
-    orphan library/LIBS entry with no #include (a stale-but-harmless entry). It DOES flag two
-    library files declaring the same (namespace, name), since a duplicate makes the hub's
-    #include bind ambiguously (only one of the two copies wins).
+    """`#include` lines and libraries/*.groovy files must match one-to-one (issues #209/#522) --
+    the rules tools/build-release-app.py enforces when it inlines the libraries into the parent HPM
+    installs, so a gap fails here, in-PR, instead of at publish time:
+    (1) every `#include ns.Name` has a libraries/*.groovy whose FIRST line declares
+        library(namespace: ns, name: Name) (the builder reads only line 1);
+    (2) every library file is #included, exactly once;
+    (3) no two library files declare the same (namespace, name).
     """
     findings: list[dict] = []
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
@@ -4442,20 +4433,23 @@ def check_include_library_lockstep() -> list[dict]:
     src = server.read_text(encoding="utf-8", errors="replace")
     rel = "hubitat-mcp-server.groovy"
 
-    includes = re.findall(
-        r"(?m)^[ \t]*#include[ \t]+([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)[ \t]*$", src
-    )
-    if not includes:
-        return findings
-
-    # (1) libraries declared by (namespace, name) from each libraries/*.groovy library() call.
+    # (1) libraries declared by (namespace, name) from each libraries/*.groovy first line.
     declared: dict[tuple[str, str], str] = {}
     lib_dir = REPO_ROOT / "libraries"
     if lib_dir.is_dir():
         for lib in sorted(lib_dir.glob("*.groovy")):
-            text = lib.read_text(encoding="utf-8", errors="replace")
-            m = re.search(r"(?m)^library\s*\((.*)\)\s*$", text)
+            first = lib.read_text(encoding="utf-8", errors="replace").split("\n", 1)[0]
+            m = re.match(r"library\s*\((.*)\)\s*$", first)
             if not m:
+                findings.append({
+                    "file": f"libraries/{lib.name}", "line": 1, "severity": "error",
+                    "rule": "INCLUDE_LOCKSTEP", "source": first[:80],
+                    "message": (
+                        "Line 1 is not the library(name: ..., namespace: ...) declaration. The release "
+                        "build matches #include against line 1 only (and BP20 wants it first) -- move "
+                        "the declaration to line 1."
+                    ),
+                })
                 continue
             decl = m.group(1)
             nm = re.search(r"name:\s*['\"]([^'\"]+)['\"]", decl)
@@ -4475,23 +4469,23 @@ def check_include_library_lockstep() -> list[dict]:
                 else:
                     declared[key] = lib.name
 
-    # (2) build-bundle.py LIBS dest names ({NAMESPACE}.<Name>.groovy).
-    bb = REPO_ROOT / "tools" / "build-bundle.py"
-    bundled_names: set[str] = set()
-    if bb.exists():
-        bundled_names = set(
-            re.findall(r"\{NAMESPACE\}\.(\w+)\.groovy", bb.read_text(encoding="utf-8", errors="replace"))
-        )
-
-    include_line: dict[str, int] = {}
-    for i, line in enumerate(src.splitlines(), 1):
-        m = re.match(r"^[ \t]*#include[ \t]+([A-Za-z0-9_]+\.[A-Za-z0-9_]+)", line)
-        if m:
-            include_line.setdefault(m.group(1), i)
-
-    for ns, name in includes:
+    included: set[tuple[str, str]] = set()
+    for ln, line in enumerate(src.splitlines(), 1):
+        m = re.match(r"^[ \t]*#include[ \t]+([A-Za-z0-9_]+)\.([A-Za-z0-9_]+)[ \t]*$", line)
+        if not m:
+            continue
+        ns, name = m.groups()
         token = f"{ns}.{name}"
-        ln = include_line.get(token, 1)
+        if (ns, name) in included:
+            findings.append({
+                "file": rel, "line": ln, "severity": "error", "rule": "INCLUDE_LOCKSTEP", "source": "",
+                "message": (
+                    f"#include {token} appears more than once -- the release build inlines each "
+                    f"library exactly once. Remove the repeat."
+                ),
+            })
+            continue
+        included.add((ns, name))
         if (ns, name) not in declared:
             findings.append({
                 "file": rel, "line": ln, "severity": "error", "rule": "INCLUDE_LOCKSTEP", "source": "",
@@ -4501,14 +4495,16 @@ def check_include_library_lockstep() -> list[dict]:
                     f"add the library file."
                 ),
             })
-            continue  # downstream checks are moot without the file
-        if name not in bundled_names:
+
+    # (2) the other direction: a library file nothing #includes would be refused by the build.
+    for (ns, name), filename in declared.items():
+        if (ns, name) not in included:
             findings.append({
-                "file": rel, "line": ln, "severity": "error", "rule": "INCLUDE_LOCKSTEP", "source": "",
+                "file": f"libraries/{filename}", "line": 1, "severity": "error",
+                "rule": "INCLUDE_LOCKSTEP", "source": "",
                 "message": (
-                    f"#include {token} ({declared[(ns, name)]}) is not in tools/build-bundle.py LIBS -- "
-                    f"the HPM bundle won't deliver it, so the app fails to compile on a user's hub after "
-                    f"update. Add it to LIBS and rebuild the bundle."
+                    f"libraries/{filename} ({ns}.{name}) is not #included by {rel}, so the release "
+                    f"build refuses it. Add the #include or delete the file."
                 ),
             })
     return findings
@@ -4583,7 +4579,7 @@ def _scan_library_block_comments(name: str, text: str) -> list[dict]:
                     "File-scope /* */ or /** */ block comment in a #include library (BP20). "
                     "The hub parser can fail with 'Internal error' on save of a library that carries "
                     "a file-scope block comment under #include -- and the inlined Spock compile + "
-                    "build-bundle do NOT catch it, only the live hub does. Convert it to // line "
+                    "release build do NOT catch it, only the live hub does. Convert it to // line "
                     "comments (the pattern every other library uses)."
                 ),
             })
@@ -5615,9 +5611,8 @@ def main() -> int:
     # against the wrapper inventory derived from the source, so a new wrapper cannot hide one.
     all_findings.extend(check_native_request_wrappers())
 
-    # Issue #209/#250 lockstep: every #include'd library must have a libraries/ file + a
-    # build-bundle.py LIBS entry, so a broken/undelivered library fails CI here instead of
-    # failing the app's compile on a user's hub.
+    # Issue #209/#522 lockstep: #include lines and libraries/ files match one-to-one, so a
+    # library the release build can't inline fails CI here instead of at publish time.
     all_findings.extend(check_include_library_lockstep())
 
     # BP20: no file-scope block comments in #include libraries (hub-parser hazard).

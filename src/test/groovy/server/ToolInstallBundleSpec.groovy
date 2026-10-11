@@ -252,7 +252,7 @@ class ToolInstallBundleSpec extends ToolSpecBase {
         oldHub()
         String capturedPath = null
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedPath = path
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true]

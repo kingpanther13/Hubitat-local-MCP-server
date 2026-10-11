@@ -1359,6 +1359,7 @@ private Map toolInstallItem(String type, args) {
                 if (item.sourceFile != null) singleArgs.sourceFile = item.sourceFile
                 if (item.source != null) singleArgs.source = item.source
                 if (item.importUrl != null) singleArgs.importUrl = item.importUrl
+                if (item.backup != null) singleArgs.backup = item.backup
                 def r = toolInstallItemSingle(type, singleArgs)
                 def entry = [(idField): r.get(idField), success: r.success == true]
                 if (r.success) {
@@ -1542,6 +1543,83 @@ def toolUpdateItemCode(String type, String idParam, args) {
     return toolUpdateItemCodeInner(type, idParam, args)
 }
 
+// Version of an app/driver from its list row (/<type>/list/single/data/<id>: small JSON, no
+// source). Null when the row is unreadable, so the caller falls back to the full code fetch.
+private _itemRowVersion(String type, itemId) {
+    try {
+        def txt = hubInternalGet("/${type}/list/single/data/${java.net.URLEncoder.encode(itemId.toString(), 'UTF-8')}", null, 30)
+        def d = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+        def row = (d instanceof List && d) ? d[0] : (d instanceof Map ? d : null)
+        return (row instanceof Map) ? row.version : null
+    } catch (Exception e) {
+        mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} row version: ${e.message}")
+        return null
+    }
+}
+
+// Self-save tuning (issue #522). The POST wait is short on purpose: the hub finishes the save on its
+// own, and the App Code row's version is the confirmation. A direct call answers its client quickly;
+// the detached package worker has nobody waiting and polls until the compile is done.
+def _selfSaveRequestTimeoutSec() { 20 }
+def _selfSaveWaitMs() { 20000L }
+def _packageSelfSaveWaitMs() { 900000L }
+def _selfSavePollMs() { 5000L }
+
+// Poll the item's row until its version passes startedVersion. [version: n] when it did, null when
+// the budget ran out first (the save may still land; hub_get_info settles the record later).
+private Map _awaitSelfSave(String type, itemId, startedVersion, long waitMs) {
+    Integer started = null
+    try { started = startedVersion as Integer } catch (Exception ignored) { return null }
+    long deadline = now() + waitMs
+    while (true) {
+        Integer cur = null
+        try { cur = _itemRowVersion(type, itemId) as Integer } catch (Exception ignored) { cur = null }
+        if (cur != null && cur > started) return [version: cur]
+        long left = deadline - now()
+        if (left <= 0L) return null
+        pauseExecution(Math.min(_selfSavePollMs(), left))
+    }
+}
+
+// Mark the pending self-deploy record landed at the given App Code version.
+private void _settleSelfDeploy(confirmedVersion) {
+    try {
+        def done = [:] + (atomicState.lastSelfDeploy ?: [:])
+        done.remove("assumed"); done.remove("status")
+        done.confirmedVersion = confirmedVersion
+        atomicState.lastSelfDeploy = done
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "lastSelfDeploy settle write failed: ${e}")
+    }
+}
+
+// A self-deploy record still "saving" is settled by the App Code row: the version passing
+// startedVersion is the hub's own confirmation; nothing advancing within 20 minutes is a failure.
+// Called by hub_get_info, so a save whose request thread the recompile killed still resolves.
+Map _resolveSavingSelfDeploy(Map lsd) {
+    if (lsd?.status != "saving" || lsd.appId == null) return lsd
+    Integer cur = null
+    Integer started = null
+    try { cur = _itemRowVersion("app", lsd.appId) as Integer } catch (Exception ignored) { cur = null }
+    try { started = lsd.startedVersion as Integer } catch (Exception ignored) { started = null }
+    def done = null
+    if (cur != null && started != null && cur > started) {
+        done = [:] + lsd
+        done.remove("assumed"); done.remove("status")
+        done.confirmedVersion = cur
+    } else if (cur != null && started != null && lsd.at instanceof Number && now() - (lsd.at as long) > 20L * 60L * 1000L) {
+        // Only a readable row that has not moved proves the save did not land; an unreadable
+        // row (hub still busy, auth hiccup) leaves the record saving for the next read.
+        done = [:] + lsd
+        done.remove("assumed"); done.remove("status")
+        done.success = false
+        done.error = "Self save did not land: the App Code version is still ${cur} twenty minutes after the save was accepted at version ${started}"
+    }
+    if (done == null) return lsd
+    try { atomicState.lastSelfDeploy = done } catch (Exception e) { mcpLog("error", "hub-admin", "lastSelfDeploy settle write failed: ${e}") }
+    return done
+}
+
 // Caller must have already invoked requireDestructiveConfirm -- gate fires once per call, not per bulk item.
 // packageWorkerContext is supplied only by the scheduled package worker; public tool args never reach it.
 private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packageWorkerContext = null) {
@@ -1644,14 +1722,23 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
         sourceCode = args.source
     }
 
-    // Back up current source for safety. The 1h cache inside backupItemSource means parallel-agent
-    // conflicts cost nothing on the second call. `currentVersion` below is always re-fetched -- the
-    // backup cache's `entry.version` can be stale.
-    def itemBackup = backupItemSource(type, itemId.toString())
+    // Back up the current source unless the new one comes from a URL: whoever publishes at that
+    // URL keeps the item's history (owner's call, issue #522), and hub_update_package passes
+    // sourceOrigin "published" with the built source it already fetched. The backup would add one
+    // more full copy of the old item to this request's heap while the hub compiles. Inline source
+    // and File Manager sources keep it. The 1h cache inside backupItemSource means parallel-agent
+    // conflicts cost nothing on the second call.
+    def noBackupReason = null
+    if (sourceMode == "importUrl") noBackupReason = "the source came from a URL, so its history lives where that URL is published"
+    else if (args.sourceOrigin == "published") noBackupReason = "the package deploy's source is the published build"
+    else if (args.backup == false) noBackupReason = "backup=false was passed"
+    def itemBackup = noBackupReason ? null : backupItemSource(type, itemId.toString())
+    if (noBackupReason) mcpLog("info", "hub-admin", "Pre-update source backup skipped for ${type} ID ${itemId}: ${noBackupReason}")
 
-    // For optimistic locking, use fresh version if available (resave mode already fetched it).
-    // Otherwise fetch current version fresh from hub — backup cache may have stale version.
+    // Fresh version for optimistic locking (resave mode already fetched it). The item's list row
+    // carries the version without the source; the full ajax/code fetch is only the fallback.
     def currentVersion = freshVersion
+    if (currentVersion == null) currentVersion = _itemRowVersion(type, itemId)
     if (currentVersion == null) {
         try {
             def versionResponse = hubInternalGet(ajaxPath, [id: itemId])
@@ -1663,7 +1750,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
             mcpLog("warn", "hub-admin", "Could not fetch fresh version for ${type} ID ${itemId}, falling back to backup version: ${vErr.message}")
         }
         // Fall back to backup version if fresh fetch failed
-        if (currentVersion == null) currentVersion = itemBackup.version
+        if (currentVersion == null) currentVersion = itemBackup?.version
     }
 
     if (currentVersion == null) {
@@ -1713,16 +1800,31 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
         mcpLog("warn", "hub-admin", "hub_update_app: large app-source update to id ${itemId} but the self app-class lookup returned null -- if this IS the MCP server, #237 self-deploy error capture is disabled for this deploy.")
     }
     mcpLog("info", "hub-admin", "Updating ${type} ID: ${itemId} (version: ${currentVersion}, mode: ${sourceMode}, sourceLength: ${sourceCode.length()})")
+    int sourceLen = sourceCode.length()
     try {
         // Update rides POST /app|driver/saveOrUpdateJson (JSON); a non-null id means in-place
         // update of the existing code class. Response is {success, id, message[, version]}; a
         // compile failure rides verbatim in `message`. (The old form /app|driver/ajax/update
         // returns a different envelope entirely: {status, errorMessage}.)
-        def parsed = hubInternalPostJson(savePath, groovy.json.JsonOutput.toJson([
-            id: itemIdInt,
-            source: sourceCode,
-            version: currentVersion
-        ]))
+        def saveBody = groovy.json.JsonOutput.toJson([id: itemIdInt, source: sourceCode, version: currentVersion])
+        def parsed = null
+        if (isSelfUpdate) {
+            // The hub keeps compiling after the caller stops waiting (HPM's timeout and this app's
+            // own showed it), and a 2.6 MB self save outruns the platform's 300 s request cap
+            // (issue #522). So wait only briefly for the POST, treat a timeout as the dropped
+            // response a self save produces anyway, and confirm the save by the App Code row's
+            // version instead of holding the request for the whole compile.
+            try {
+                parsed = hubInternalPostJson(savePath, saveBody, _selfSaveRequestTimeoutSec())
+            } catch (Exception postErr) {
+                if (!(postErr.toString() =~ /(?i)time.?out/)) throw postErr
+                mcpLog("info", "hub-admin", "Self save POST for ${type} ID ${itemId} gave no answer within ${_selfSaveRequestTimeoutSec()}s; the hub keeps compiling -- confirming by version")
+            }
+            saveBody = null
+            sourceCode = null
+        } else {
+            parsed = hubInternalPostJson(savePath, saveBody)
+        }
 
         def success = false
         def errorMsg = null
@@ -1757,7 +1859,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                     error: success ? null : (errorMsg ?: "Update failed -- the hub returned an error"),
                     sourceMode: sourceMode,
                     importUrl: (args.importUrl ?: null),
-                    sourceLength: sourceCode.length(),
+                    sourceLength: sourceLen,
                     at: now()
                 ]
                 def packageCorrelation = _validatedPackageWorkerContext(packageWorkerContext)
@@ -1766,14 +1868,26 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                     stash.packageRef = packageCorrelation.packageRef
                 }
                 // A dropped (empty) response is the expected self-update signature, but the success
-                // is inferred, not hub-confirmed -- mark it so consumers can choose to re-verify.
-                if (success && parsed == null) stash.assumed = true
+                // is inferred, not hub-confirmed -- mark it so consumers can choose to re-verify, and
+                // record what the App Code row must pass for the save to count as landed.
+                if (success && parsed == null) {
+                    stash.assumed = true
+                    stash.status = "saving"
+                    stash.startedVersion = currentVersion
+                    stash.appId = itemId.toString()
+                }
                 atomicState.lastSelfDeploy = stash
             } catch (Exception stashErr) {
                 // Never break the deploy over bookkeeping, but a lost stash means the self-deploy
                 // outcome is unrecoverable -- say so instead of failing silently.
                 mcpLog("error", "hub-admin", "lastSelfDeploy stash write failed -- self-deploy outcome record lost: ${stashErr}")
             }
+        }
+        Map landed = null
+        if (success && isSelfUpdate && parsed == null) {
+            landed = _awaitSelfSave(type, itemId, currentVersion,
+                packageWorkerContext != null ? _packageSelfSaveWaitMs() : _selfSaveWaitMs())
+            if (landed != null) _settleSelfDeploy(landed.version)
         }
 
         if (success) {
@@ -1784,12 +1898,25 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                 (idParam): itemId,
                 previousVersion: currentVersion,
                 sourceMode: sourceMode,
-                sourceLength: sourceCode.length(),
+                sourceLength: sourceLen,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp)
             ]
-            if (sourceMode == "resave") successResult.note = "Source was fetched and re-saved entirely on-hub — no cloud round-trip."
-            if (sourceMode == "sourceFile") successResult.note = "Source was read from File Manager file '${args.sourceFile}' — no cloud size limits."
-            if (sourceMode == "importUrl") successResult.note = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript)."
+            if (isSelfUpdate && parsed == null) {
+                if (landed != null) {
+                    successResult.version = landed.version
+                    successResult.verified = true
+                } else {
+                    successResult.assumed = true
+                    successResult.status = "saving"
+                    successResult.note = "The hub accepted the save and is still compiling it. Poll hub_get_info.lastSelfDeploy: status disappears and confirmedVersion appears once the App Code version passes ${currentVersion}; a record still saving after 20 minutes turns into a failure."
+                }
+            }
+            def modeNote = null
+            if (sourceMode == "resave") modeNote = "Source was fetched and re-saved entirely on-hub — no cloud round-trip."
+            if (sourceMode == "sourceFile") modeNote = "Source was read from File Manager file '${args.sourceFile}' — no cloud size limits."
+            if (sourceMode == "importUrl") modeNote = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript)."
+            if (modeNote) successResult.note = successResult.note ? "${successResult.note} ${modeNote}".toString() : modeNote
+            if (noBackupReason) successResult.sourceBackup = "skipped: ${noBackupReason}".toString()
 
             // Optional triggerUpdated: fire updated() on the named running instance so
             // subscriptions/schedules/atomicState re-initialize against the new code.
@@ -1882,7 +2009,7 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                     error: "${type.capitalize()} update failed: ${e.message}",
                     sourceMode: sourceMode,
                     importUrl: (args.importUrl ?: null),
-                    sourceLength: (sourceCode != null ? sourceCode.length() : 0),
+                    sourceLength: sourceLen,
                     at: now()
                 ]
                 def packageCorrelation = _validatedPackageWorkerContext(packageWorkerContext)
@@ -1921,6 +2048,13 @@ private Map _validatedPackageWorkerContext(packageWorkerContext) {
 }
 
 def toolUpdateAppCode(args) {
+    // sourceOrigin is set only by hub_update_package's worker (the source it verified against the
+    // published build); from the public argument map it would skip the pre-update backup for
+    // arbitrary source, so it is dropped here like the package correlation fields.
+    if (args instanceof Map && args.containsKey("sourceOrigin")) {
+        args = [:] + args
+        args.remove("sourceOrigin")
+    }
     return _toolUpdateAppCode(args, null)
 }
 
@@ -2109,6 +2243,7 @@ def toolUpdateDriverCode(args) {
                 if (item.sourceFile != null) singleArgs.sourceFile = item.sourceFile
                 if (item.source != null) singleArgs.source = item.source
                 if (item.importUrl != null) singleArgs.importUrl = item.importUrl
+                if (item.backup != null) singleArgs.backup = item.backup
                 if (item.resave != null) singleArgs.resave = item.resave
                 // Use containsKey so explicit `expectedVersion: null` propagates and hits Inner's
                 // null-rejector; the resulting IAE is caught below and recorded per-item.
@@ -2554,18 +2689,27 @@ def toolUpdateLibraryCode(args) {
     def backupFileName = null
     def existingEntry = null
     def backupEntry = null
-    // The reuse decision and the backup it may take must not interleave with another
-    // backup writer. The source download before and the save after need no lock.
-    _withBackupLock("update library ${libraryId}") {
-        existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
-        if (existingEntry != null) {
-            backupFileName = existingEntry.fileName
-        } else {
-            // Backup needed. backupLibrarySource handles fetch, upload, manifest update, and pruning.
-            // Fail-closed: any throw propagates up and aborts the update -- same contract as
-            // toolUpdateItemCodeInner calling backupItemSource() without try/catch.
-            backupEntry = backupLibrarySource(libraryId.toString())
-            backupFileName = backupEntry.fileName
+    // No backup for a source that came from a URL (its history lives where that URL is published)
+    // or when the caller passes backup=false; same rule as hub_update_app.
+    def noBackupReason = null
+    if (sourceMode == "importUrl") noBackupReason = "the source came from a URL, so its history lives where that URL is published"
+    else if (args.backup == false) noBackupReason = "backup=false was passed"
+    if (noBackupReason) {
+        mcpLog("info", "hub-admin", "Pre-update source backup skipped for library ${libraryId}: ${noBackupReason}")
+    } else {
+        // The reuse decision and the backup it may take must not interleave with another
+        // backup writer. The source download before and the save after need no lock.
+        _withBackupLock("update library ${libraryId}") {
+            existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
+            if (existingEntry != null) {
+                backupFileName = existingEntry.fileName
+            } else {
+                // Backup needed. backupLibrarySource handles fetch, upload, manifest update, and pruning.
+                // Fail-closed: any throw propagates up and aborts the update -- same contract as
+                // toolUpdateItemCodeInner calling backupItemSource() without try/catch.
+                backupEntry = backupLibrarySource(libraryId.toString())
+                backupFileName = backupEntry.fileName
+            }
         }
     }
     def skipBackup = backupEntry == null
@@ -2588,7 +2732,7 @@ def toolUpdateLibraryCode(args) {
                 mcpLog("warn", "hub-admin", "Could not fetch fresh version for library ID ${libraryId}, falling back to backup version: ${versionFetchError}")
             }
             // Fall back to cached backup version (matching toolUpdateItemCodeInner fallback)
-            if (freshVersion == null) freshVersion = existingEntry.version
+            if (freshVersion == null) freshVersion = existingEntry?.version
         }
     } else if (freshVersion == null) {
         freshVersion = backupEntry.version
@@ -2631,6 +2775,7 @@ def toolUpdateLibraryCode(args) {
         ]
         if (sourceMode == "resave") successResult.note = "Source was fetched and re-saved entirely on-hub -- no cloud round-trip."
         if (sourceMode == "sourceFile") successResult.note = "Source was read from File Manager file '${args.sourceFile}' -- no cloud size limits."
+        if (noBackupReason) successResult.sourceBackup = "skipped: ${noBackupReason}".toString()
         return successResult
     } catch (Exception e) {
         mcpLogError("hub-admin", "Library update failed", e)
@@ -3083,7 +3228,8 @@ A transport drop can lose the response while the hub still commits this write; v
                     source: [type: "string", description: "Inline Groovy source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes; runs entirely on-hub."],
+                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
+                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
                     expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
                     triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to refresh via updated() after saving code; re-initializes subscriptions, schedules and atomicState. Protected targets require Developer Mode. Submits mainPage's Done form, RE-SENDING EVERY input from live settings. If live settings cannot be read, refuses the submit to avoid clearing device selections. On refusal/failure, saved code remains deployed: success:true, partial:true, updatedFired:false and repairHints. Omit for the hub editor's normal Save behavior (no lifecycle refresh)."],
                     oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write_code')."],
@@ -3110,7 +3256,8 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                     source: [type: "string", description: "Inline Groovy source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
+                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
+                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
                     expectedVersion: [type: "integer", description: "Optional optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] In bulk mode, put it inside each updates[] entry.[[/FLAT_TRIM]]"],
                     updates: [
                         type: "array",
@@ -3123,6 +3270,7 @@ MCP 2026-07-28 clients automatically continue this slow write and can replay its
                                 source: [type: "string", description: "Inline source (stubs only)."],
                                 importUrl: [type: "string", description: "URL the hub fetches directly."],
                                 resave: [type: "boolean", description: "Re-save without changes."],
+                                backup: [type: "boolean"],
                                 expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard for this item only."]
                             ],
                             required: ["driverId"]
@@ -3197,7 +3345,8 @@ A transport drop can lose the response while the hub still commits this write; v
                     source: [type: "string", description: "Inline source (stubs only)."],
                     sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
                     importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes. Runs entirely on-hub."],
+                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
+                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
                 ],
                 required: ["libraryId", "confirm"]

@@ -120,6 +120,62 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         !atomicStateMap.lastSelfDeploy.containsKey('ageMs')
     }
 
+    def "getHubInfo settles a self-deploy still saving once the App Code row's version has passed the starting one"() {
+        given:
+        atomicStateMap.lastSelfDeploy = [success: true, assumed: true, status: 'saving', startedVersion: 5,
+                                         appId: '228', sourceMode: 'importUrl', at: 1234567890000L - 60000L]
+        hubGet.register('/app/list/single/data/228') { params -> '[{"id": 228, "version": 6}]' }
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        result.lastSelfDeploy.success == true
+        result.lastSelfDeploy.confirmedVersion == 6
+        !result.lastSelfDeploy.containsKey('status')
+        !result.lastSelfDeploy.containsKey('assumed')
+        atomicStateMap.lastSelfDeploy.confirmedVersion == 6
+    }
+
+    def "getHubInfo keeps a young self-deploy record saving while the row has not advanced, and fails it after 20 minutes"() {
+        given:
+        hubGet.register('/app/list/single/data/228') { params -> '[{"id": 228, "version": 5}]' }
+        atomicStateMap.lastSelfDeploy = [success: true, assumed: true, status: 'saving', startedVersion: 5,
+                                         appId: '228', at: 1234567890000L - 60000L]
+
+        when:
+        def young = script.toolGetHubInfo()
+
+        then:
+        young.lastSelfDeploy.status == 'saving'
+        young.lastSelfDeploy.success == true
+
+        when:
+        atomicStateMap.lastSelfDeploy = [success: true, assumed: true, status: 'saving', startedVersion: 5,
+                                         appId: '228', at: 1234567890000L - 21L * 60L * 1000L]
+        def old = script.toolGetHubInfo()
+
+        then:
+        old.lastSelfDeploy.success == false
+        old.lastSelfDeploy.error.contains('did not land')
+        !old.lastSelfDeploy.containsKey('status')
+    }
+
+    def "getHubInfo never fails a saving self-deploy record while the App Code row is unreadable"() {
+        given:
+        hubGet.register('/app/list/single/data/228') { params -> '<html>busy</html>' }
+        atomicStateMap.lastSelfDeploy = [success: true, assumed: true, status: 'saving', startedVersion: 5,
+                                         appId: '228', at: 1234567890000L - 21L * 60L * 1000L]
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        result.lastSelfDeploy.status == 'saving'
+        result.lastSelfDeploy.success == true
+        atomicStateMap.lastSelfDeploy.status == 'saving'
+    }
+
     def "getHubInfo omits lastSelfDeploy when the app has never self-deployed"() {
         given:
         sharedLocation.hub = new TestHub()

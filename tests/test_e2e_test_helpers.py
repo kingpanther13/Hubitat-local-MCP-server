@@ -3012,6 +3012,60 @@ def test_list_all_file_names_transport_error_is_non_authoritative():
     assert names == ["a.txt"]
 
 
+def _bundle_export_runner(bundles_after_install, write_calls):
+    """A runner on a hub with no bundle: hub_list_bundles is empty until the fixture installs."""
+    state = {"installed": False}
+
+    class Client:
+        def call_tool(self, name, arguments=None):
+            tool = (arguments or {}).get("tool")
+            if name == "hub_read_files" and tool == "hub_list_files":
+                return {"files": [], "freeSpaceBytes": 1}
+            if name == "hub_list_files" and (arguments or {}).get("folder") == "../etc":
+                raise et.McpToolError(name, "folder must be a relative File Manager folder path such as 'webcore'")
+            if name == "hub_read_apps_code" and tool == "hub_list_bundles":
+                return {"source": "hub_api", "bundles": bundles_after_install if state["installed"] else []}
+            if name == "hub_manage_code" and tool == "hub_install_bundle":
+                state["installed"] = True
+                return {"success": True}
+            raise AssertionError(f"unexpected direct call: {name} {arguments}")
+
+    def write_once(gateway, tool, args, label):
+        write_calls.append((tool, args))
+        if tool == "hub_export_bundle":
+            return {"success": True, "bytes": 321, "fileName": args["saveAs"]}
+        return {"success": True}
+
+    runner = object.__new__(et.TestRunner)
+    runner.client = Client()
+    runner._bundle_id = None
+    runner._soft_passes = []
+    runner._current_test = "system_tools/test_export_bundle"
+    runner._write_once = write_once
+    runner._list_all_file_names = lambda name_filter=None: ([name_filter], True)
+    return runner, state
+
+
+def test_export_bundle_installs_and_removes_the_throwaway_fixture_when_the_hub_has_no_bundle(monkeypatch):
+    monkeypatch.setenv("PR_RAW_BASE", "https://raw.githubusercontent.com/owner/repo")
+    monkeypatch.setenv("PR_HEAD_SHA_RESOLVED", "c" * 40)
+    write_calls = []
+    runner, state = _bundle_export_runner([{"id": 9, "name": "throwaway", "namespace": "mcptest"}], write_calls)
+    et.TestRunner.test_export_bundle(runner)
+    assert state["installed"]
+    assert write_calls[0] == ("hub_export_bundle", {"bundleId": "9", "saveAs": f"{et.PREFIX}bundle_export_9.zip"})
+    assert write_calls[-1] == ("hub_delete_bundle", {"bundleId": "9", "confirm": True})
+
+
+def test_export_bundle_skips_without_a_bundle_or_the_pr_raw_url(monkeypatch):
+    monkeypatch.delenv("PR_RAW_BASE", raising=False)
+    monkeypatch.delenv("PR_HEAD_SHA_RESOLVED", raising=False)
+    write_calls = []
+    runner, state = _bundle_export_runner([], write_calls)
+    et.TestRunner.test_export_bundle(runner)
+    assert not state["installed"] and write_calls == []
+
+
 def test_export_bundle_uses_logical_writes_filtered_verification_and_exact_backup_cleanup():
     """The export path issues every write once, verifies through a targeted live
     listing, and deletes the exact backup returned by the first cleanup call."""
@@ -3032,7 +3086,7 @@ def test_export_bundle_uses_logical_writes_filtered_verification_and_exact_backu
 
     runner = object.__new__(et.TestRunner)
     runner.client = NoDirectWritesClient()
-    runner._mcp_bundle_id = bundle_id
+    runner._bundle_id = bundle_id
     runner._soft_passes = []
     runner._current_test = "system_tools/test_export_bundle"
 
@@ -3083,7 +3137,9 @@ def test_delete_bundle_uses_logical_write_helper(monkeypatch):
     monkeypatch.setenv("PR_RAW_BASE", "https://raw.invalid/repo")
     monkeypatch.setenv("PR_HEAD_SHA_RESOLVED", "abc123")
     write_calls = []
+    # Snapshot before the install, readback after it, re-list after the delete.
     list_results = iter([
+        {"bundles": []},
         {"bundles": [{"id": "44", "namespace": "mcptest", "name": "throwaway"}]},
         {"bundles": []},
     ])

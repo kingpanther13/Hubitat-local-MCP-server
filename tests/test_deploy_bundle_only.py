@@ -1,9 +1,9 @@
-"""pytest: the e2e install hands the whole package to watchdog v3 and delivers libraries only by bundle.
+"""pytest: the e2e install hands the whole package, built in CI, to watchdog v3.
 
-Regression guard for ``.github/scripts/mcp_watchdog_deploy.sh``. V3 installs the bundle and both
-apps as one operation and verifies them by source hash, so the shell script must not grow its own
-per-library or per-app install calls again: those would run outside v3's hold and repeat a
-recompile. It checks tool-CALL RPCs (``name:"hub_..."``), not bare mentions in comments.
+Regression guard for ``.github/scripts/mcp_watchdog_deploy.sh``. V3 installs both built apps as one
+operation and verifies them by source hash, so the shell script must not grow its own per-library or
+per-app install calls again: those would run outside v3's hold and repeat a recompile. It checks
+tool-CALL RPCs (``name:"hub_..."``), not bare mentions in comments.
 """
 
 from pathlib import Path
@@ -24,7 +24,7 @@ def test_deploy_issues_no_install_calls_of_its_own():
 
 def test_deploy_hands_the_package_to_v3():
     text = SCRIPT.read_text()
-    assert 'watchdog_v3.py" deploy-pr --bundle "$BUNDLE_PATH"' in text, (
+    assert 'watchdog_v3.py" deploy-pr --dist "$REPO_DIR/dist"' in text, (
         f"{SCRIPT.name} no longer installs through watchdog_v3.py deploy-pr."
     )
     assert "mcp_deadman_heartbeat" not in text and not (SCRIPTS / "mcp_deadman_heartbeat.sh").exists(), (
@@ -32,23 +32,25 @@ def test_deploy_hands_the_package_to_v3():
     )
 
 
-def test_deploy_guards_includes_without_a_bundle():
-    text = SCRIPT.read_text()
-    assert "declares NO bundle to deliver them" in text, (
-        f"{SCRIPT.name} dropped the bundle-coverage guard: an app that #includes libraries while the "
-        "manifest declares no bundle must fail loudly, not deploy an app whose #includes can't resolve."
+def test_v3_refuses_a_built_parent_that_still_includes_libraries():
+    client = (SCRIPTS / "watchdog_v3.py").read_text()
+    assert "still has #include directives" in client, (
+        "watchdog_v3.py dropped the guard against a built app whose #includes nothing would deliver."
     )
 
 
-def test_deploy_builds_the_bundle_in_ci_instead_of_trusting_a_committed_zip():
-    """PRs do not commit bundles/*.zip, so the expected library hashes must come from a bundle built
-    from the checkout; watchdog_v3.py then requires the published artifact to equal that build."""
+def test_deploy_builds_the_apps_in_ci_instead_of_trusting_the_published_ones():
+    """The expected app hashes must come from a build of the checkout; watchdog_v3.py then requires
+    the published shas/<sha>/ entry to equal that build."""
     text = SCRIPT.read_text()
-    assert "python3 tools/build-bundle.py" in text, (
-        f"{SCRIPT.name} no longer builds the bundle zip from the PR checkout."
+    assert "python3 tools/build-release-app.py" in text, (
+        f"{SCRIPT.name} no longer builds the apps from the PR checkout."
+    )
+    assert "tools/build-bundle.py" not in text and "mcp-libraries.zip" not in text, (
+        f"{SCRIPT.name} still builds the retired library bundle."
     )
     client = (SCRIPTS / "watchdog_v3.py").read_text()
-    assert "/bundle-artifacts/shas/" in client and "differs from the bundle built from this checkout" in client, (
+    assert "/bundle-artifacts/shas/" in client and "differs from the one built from this checkout" in client, (
         "watchdog_v3.py no longer compares the published bundle-artifacts entry with the checkout build."
     )
 

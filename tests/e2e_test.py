@@ -1249,8 +1249,8 @@ class TestRunner:
         self._hub_info_optin: dict | None = None
         # the hub_read_rooms gateway-catalog disclosure (deterministic static enumeration).
         self._rooms_catalog: dict | None = None
-        # the resolved mcp-libraries bundle id (immutable) -- reused by test_export_bundle.
-        self._mcp_bundle_id: str | None = None
+        # an installed bundle's id (immutable) from test_list_bundles -- reused by test_export_bundle.
+        self._bundle_id: str | None = None
 
         # Cleanup tracking
         self.created_device_dnis: list[str] = []
@@ -14032,39 +14032,30 @@ class TestRunner:
         libs = result if isinstance(result, list) else result.get("libraries", [])
         assert isinstance(libs, list), "hub_list_libraries did not return a list"
         source = result.get("source") if isinstance(result, dict) else None
-        # The library-PRESENCE assertions below require the hub's library API to return its
-        # populated JSON-array shape (source == "hub_api"). The degraded shapes
-        # (hub_api_raw / unavailable) return an empty list, so requiring hub_api here turns a
-        # genuinely-unreadable library API into a clear failure instead of a misleading
-        # "McpRoomsLib not found (got [])". level99's hub returns the array today.
+        # The assertions below require the hub's library API to return its populated JSON-array
+        # shape (source == "hub_api"). The degraded shapes (hub_api_raw / unavailable) return an
+        # empty list, so requiring hub_api here turns a genuinely-unreadable library API into a
+        # clear failure. level99's hub returns the array today.
         assert source == "hub_api", (
-            f"hub_list_libraries did not return the populated hub API shape (source={source!r}); "
-            "cannot validate bundle-delivered libraries"
+            f"hub_list_libraries did not return the populated hub API shape (source={source!r})"
         )
         for lib in libs:
             assert "id" in lib and "name" in lib, "library summary missing id/name"
             assert "source" not in lib, "hub_list_libraries should omit source (read it via hub_get_source)"
-        # issue #209: the watchdog PR-install step delivers the package's libraries (mcp
-        # namespace) into Libraries Code via the bundle .zip (the #include's library leg), so they must
-        # be present here. Proves the libraries were actually added to Libraries Code on the hub (not
-        # just that the app compiled).
-        lib_names = [lib.get("name") for lib in libs]
-        # McpRoomsLib is the first REAL extracted module (hub_*_room impls) -- permanent.
-        rooms_lib = next((lib for lib in libs
-                          if lib.get("name") == "McpRoomsLib" and lib.get("namespace") == "mcp"), None)
-        assert rooms_lib, f"McpRoomsLib not found in hub libraries (got {lib_names})"
-        expected = (Path(__file__).resolve().parent.parent / "libraries" / "mcp-rooms-lib.groovy").read_text(
-            encoding="utf-8")
-        # Stay below the source reader's automatic File Manager save threshold.
-        assert len(expected) <= 64000, "Choose a smaller installed library for the read-only source check"
+        # The package ships no libraries since issue #522 (the parent is installed with them
+        # inlined): a fresh hub lists none of ours, a hub upgraded from 4.6.0 still carries the old
+        # `mcp` ones. Validate the list against the source reader on whichever library the hub has.
+        if not libs:
+            print("    [INFO] hub has no Libraries Code entries; list shape validated, source cross-check skipped")
+            return
+        lib = libs[0]
         readback = self.client.call_tool("hub_get_source", {
-            "type": "library", "id": str(rooms_lib["id"]), "length": len(expected),
+            "type": "library", "id": str(lib["id"]), "length": 4000,
         })
         assert readback.get("success") is True, f"installed library source read failed: {readback}"
-        assert readback.get("source", "").replace("\r\n", "\n") == expected, \
-            "installed McpRoomsLib source does not match the deployed branch"
-        assert readback.get("version") is not None and readback.get("version") == rooms_lib.get("version"), \
-            f"library source/list versions differ: source={readback.get('version')}, list={rooms_lib.get('version')}"
+        assert readback.get("source"), f"library {lib['id']} read back empty"
+        assert readback.get("version") is not None and readback.get("version") == lib.get("version"), \
+            f"library source/list versions differ: source={readback.get('version')}, list={lib.get('version')}"
 
     def _hub_fw_at_least(self, version: str) -> bool:
         """Whether the hub's firmware is at least `version` (dotted numbers), from one cached hub_get_info."""
@@ -14630,33 +14621,91 @@ class TestRunner:
 
     # -----------------------------------------------------------------------
     # Bundle tools (issue #209): McpBundlesLib-backed hub_list_bundles /
-    # hub_export_bundle / hub_delete_bundle. These prove that, after the
-    # modularization, the libraries actually load as a bundle on the real hub
-    # and the new tools work end-to-end. They ride on the watchdog PR-install step
-    # (the "Watchdog - install PR" job in hub-e2e.yml) that delivers the
-    # mcp-libraries bundle before tests run.
+    # hub_export_bundle / hub_delete_bundle, end-to-end on the real hub. The package
+    # itself ships no bundle (issue #522: the parent is installed with its libraries
+    # inlined), so these work on whatever bundle the hub has, and install the
+    # throwaway fixture (unused app code, never libraries) when it has none.
     # -----------------------------------------------------------------------
+
+    def _install_throwaway_bundle(self) -> str | None:
+        """Install tests/fixtures/mcp-e2e-throwaway-bundle.zip (unused app code in namespace
+        mcptest) at the PR head and return its bundle id, or None on a local run without the
+        PR raw URL env. The caller deletes it."""
+        raw_base = os.environ.get("PR_RAW_BASE")
+        sha = os.environ.get("PR_HEAD_SHA_RESOLVED")
+        if not (raw_base and sha):
+            return None
+        url = f"{raw_base}/{sha}/tests/fixtures/mcp-e2e-throwaway-bundle.zip"
+
+        def _mcptest_bundles() -> dict[str, dict]:
+            listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
+            bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+            return {str(b["id"]): b for b in bundles
+                    if isinstance(b, dict) and b.get("id") and b.get("namespace") == "mcptest"}
+
+        # Snapshot first: an earlier run's leftover mcptest bundle must not be mistaken for
+        # this install's, or the delete test removes the old one and finds the new one still there.
+        before = set(_mcptest_bundles())
+        # The hub fetches the zip from GitHub inside this call. If its response is lost,
+        # adopt the uniquely namespaced installed bundle by readback rather than re-running.
+        try:
+            installed = self.client.call_tool("hub_manage_code", {
+                "tool": "hub_install_bundle", "args": {"importUrl": url, "confirm": True},
+            })
+        except (McpError, McpToolError, requests.HTTPError) as exc:
+            if "504" not in str(exc):
+                raise
+            print("    [RECOVER-504] throwaway bundle install response lost; verifying by namespace")
+            time.sleep(3.0)
+            installed = {"success": True, "responseLost": True}
+        assert installed.get("success") is True, f"throwaway bundle install failed: {installed}"
+        # The bundle is on the hub from here on; a listing that fails or cannot name it would
+        # leave it to the run-end purge (which deletes mcptest bundles), so read back with retries.
+        after: dict[str, dict] = {}
+        for attempt in range(3):
+            try:
+                after = _mcptest_bundles()
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                print(f"    [RETRY] bundle readback {attempt + 1}/3 failed: {exc}")
+                after = {}
+            new_ids = sorted(set(after) - before)
+            if new_ids:
+                return new_ids[0]
+            time.sleep(3.0)
+        # Same namespace and name re-installed over a leftover keeps the leftover's id: that is
+        # still the bundle this install produced.
+        if len(after) == 1 and before == set(after):
+            return next(iter(after))
+        raise AssertionError(
+            f"throwaway bundle not identifiable after install: before={sorted(before)} after={sorted(after)}")
+
+    def _delete_bundle_quietly(self, bid: str, label: str) -> None:
+        try:
+            self._write_once("hub_manage_code", "hub_delete_bundle", {"bundleId": bid, "confirm": True}, label)
+        except Exception as exc:
+            print(f"  [WARN] {label}: delete {bid} failed: {exc}")
+
+    @staticmethod
+    def _first_bundle_id(listed) -> str | None:
+        bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
+        ids = sorted(str(b["id"]) for b in bundles if isinstance(b, dict) and b.get("id"))
+        return ids[0] if ids else None
 
     @test("system_tools")
     def test_list_bundles(self) -> None:
-        """hub_list_bundles lists installed bundles, and the package's libraries bundle (delivered
-        by the watchdog PR-install step) is present with its libraries -- proof the split libraries
-        load as a bundle on the real hub."""
+        """hub_list_bundles reads the hub's installed bundles through the hub API, each with an id
+        and a name."""
         result = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
         assert result.get("source") == "hub_api", \
             f"hub_list_bundles did not return the populated hub API shape (source={result.get('source')!r})"
-        bundles = result.get("bundles", []) if isinstance(result, dict) else []
-        mcp_bundle = next(
-            (b for b in bundles if b.get("namespace") == "mcp"
-             and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
-            None,
-        )
-        assert mcp_bundle and mcp_bundle.get("id"), \
-            f"the mcp libraries bundle (containing McpRoomsLib) was not found: {[b.get('name') for b in bundles]}"
-        # Stash the resolved (immutable) bundle id so test_export_bundle can skip the identical
-        # list+filter round-trip; it falls back to a fresh hub_list_bundles when this is unset (isolation).
-        self._mcp_bundle_id = str(mcp_bundle["id"])
-        print(f"    BUNDLES_LIST ok -- '{mcp_bundle.get('name')}' contains {(mcp_bundle.get('contains') or {}).get('libraries')}")
+        bundles = result.get("bundles")
+        assert isinstance(bundles, list), f"hub_list_bundles returned no bundle list: {sorted(result)}"
+        malformed = [b for b in bundles if not (isinstance(b, dict) and b.get("id") and b.get("name"))]
+        assert not malformed, f"hub_list_bundles entries lack an id or name: {malformed[:3]}"
+        # Stash an (immutable) bundle id so test_export_bundle can skip the identical list
+        # round-trip; it lists again when this is unset (isolation run, or a hub with no bundles).
+        self._bundle_id = self._first_bundle_id(result)
+        print(f"    BUNDLES_LIST ok -- {len(bundles)} bundle(s): {[b.get('name') for b in bundles]}")
 
     def _list_all_file_names(self, name_filter: str | None = None) -> tuple[list, bool]:
         """Enumerate File Manager names via cursor pagination -> (names, authoritative).
@@ -14705,20 +14754,16 @@ class TestRunner:
         assert "freeSpaceBytes" in listing, f"hub_list_files did not report free space: {sorted(listing)}"
         assert all("type" in f for f in listing.get("files") or []), f"listing entries lack a type: {(listing.get('files') or [])[:3]}"
         self._expect_tool_refusal("hub_list_files", {"folder": "../etc"}, "relative File Manager folder")
-        # Reuse the immutable bundle id test_list_bundles already resolved; fall back to a fresh
-        # hub_list_bundles + identical filter when the stash is unset (isolation run).
-        if self._mcp_bundle_id:
-            bid = self._mcp_bundle_id
-        else:
-            listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
-            bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
-            target = next(
-                (b for b in bundles if b.get("namespace") == "mcp"
-                 and "McpRoomsLib" in ((b.get("contains") or {}).get("libraries") or [])),
-                None,
-            )
-            assert target and target.get("id"), "no mcp libraries bundle available to export"
-            bid = str(target["id"])
+        # Reuse the bundle id test_list_bundles already resolved; list again when the stash is
+        # unset, and install the throwaway fixture (deleted in the finally) when the hub has none.
+        bid = self._bundle_id or self._first_bundle_id(
+            self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"}))
+        fixture_bid = None
+        if not bid:
+            fixture_bid = bid = self._install_throwaway_bundle()
+            if not bid:
+                print("    SKIP test_export_bundle: no bundle on the hub and PR_RAW_BASE/PR_HEAD_SHA_RESOLVED not set (local run)")
+                return
         fname = f"{PREFIX}bundle_export_{bid}.zip"
 
         def _list_files_once() -> tuple[list, bool]:
@@ -14837,6 +14882,8 @@ class TestRunner:
                         "bundle export backup cleanup")
             except Exception as exc:
                 print(f"  [WARN] bundle export backup sweep failed: {exc}")
+            if fixture_bid:
+                self._delete_bundle_quietly(fixture_bid, "export fixture bundle cleanup")
 
     @test("system_tools")
     def test_delete_bundle(self) -> None:
@@ -14845,33 +14892,12 @@ class TestRunner:
         The fixture creates no running app instance or library. Skipped on local runs
         where the PR raw URL env isn't set.
         """
-        raw_base = os.environ.get("PR_RAW_BASE")
-        sha = os.environ.get("PR_HEAD_SHA_RESOLVED")
-        if not (raw_base and sha):
-            print("    SKIP test_delete_bundle: PR_RAW_BASE/PR_HEAD_SHA_RESOLVED not set (local run)")
-            return
-        url = f"{raw_base}/{sha}/tests/fixtures/mcp-e2e-throwaway-bundle.zip"
         bid = None
         try:
-            # The hub fetches the zip from GitHub inside this call. If its response is lost,
-            # adopt the uniquely namespaced installed bundle by readback rather than re-running.
-            try:
-                installed = self.client.call_tool("hub_manage_code", {
-                    "tool": "hub_install_bundle", "args": {"importUrl": url, "confirm": True},
-                })
-            except (McpError, McpToolError, requests.HTTPError) as exc:
-                if "504" not in str(exc):
-                    raise
-                print("    [RECOVER-504] throwaway bundle install response lost; verifying by namespace")
-                time.sleep(3.0)
-                installed = {"success": True, "responseLost": True}
-            assert installed.get("success") is True, f"throwaway bundle install failed: {installed}"
-            listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
-            bundles = listed.get("bundles", []) if isinstance(listed, dict) else []
-            tw = next((b for b in bundles if b.get("namespace") == "mcptest"), None)
-            assert tw and tw.get("id"), \
-                f"throwaway bundle not listed after install: {[b.get('name') for b in bundles]}"
-            bid = str(tw["id"])
+            bid = self._install_throwaway_bundle()
+            if not bid:
+                print("    SKIP test_delete_bundle: PR_RAW_BASE/PR_HEAD_SHA_RESOLVED not set (local run)")
+                return
             deleted = self._write_once(
                 "hub_manage_code", "hub_delete_bundle",
                 {"bundleId": bid, "confirm": True},
@@ -14880,19 +14906,13 @@ class TestRunner:
             assert deleted.get("verified") is True, f"hub_delete_bundle did not verify the id gone: {deleted}"
             relisted = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_bundles"})
             rb = relisted.get("bundles", []) if isinstance(relisted, dict) else []
-            assert not any(b.get("namespace") == "mcptest" for b in rb), \
-                "throwaway bundle still present after hub_delete_bundle"
+            assert not any(str(b.get("id")) == bid for b in rb), \
+                f"throwaway bundle {bid} still present after hub_delete_bundle"
             bid = None
             print("    BUNDLE_DELETE ok -- throwaway installed, listed, deleted, verified gone")
         finally:
             if bid:
-                try:
-                    self._write_once(
-                        "hub_manage_code", "hub_delete_bundle",
-                        {"bundleId": bid, "confirm": True},
-                        "throwaway bundle cleanup")
-                except Exception as exc:
-                    print(f"  [WARN] throwaway bundle cleanup: delete {bid} failed: {exc}")
+                self._delete_bundle_quietly(bid, "throwaway bundle cleanup")
             # Bundle deletion leaves its unused app code behind. The run-end Layer 5
             # sweep removes its mcptest/Deadman Test Target code alongside the other app fixtures.
 
@@ -15477,12 +15497,22 @@ class TestRunner:
         result = self.client.call_tool("hub_update_package", {"ref": "main", "dryRun": True})
         assert result.get("success") is True, f"dry-run did not succeed: {result}"
         assert result.get("dryRun") is True, f"dryRun flag not echoed: {result}"
-        # The library bundle is planned, re-anchored to the deploy ref.
         bundles = result.get("plannedBundles") or []
-        assert any((b.get("url") or "").endswith(".zip") and "/main/" in (b.get("url") or "")
-                   for b in bundles), f"expected a planned library bundle re-anchored to 'main': {bundles}"
-        # Both apps are planned; exactly one self app (the parent), and it is listed LAST.
         apps = result.get("plannedApps") or []
+        if bundles:
+            # A manifest that still declares the library bundle plans it, re-anchored to the deploy ref.
+            assert any((b.get("url") or "").endswith(".zip") and "/main/" in (b.get("url") or "")
+                       for b in bundles), f"expected a planned library bundle re-anchored to 'main': {bundles}"
+        else:
+            # Since issue #522 the package ships no bundle: both apps come from the published build.
+            by_name = {a.get("name"): a for a in apps}
+            assert set(by_name) == {"MCP Rule Server", "MCP Rule"}, f"expected exactly the parent and child apps in the plan: {apps}"
+            for name, file in (("MCP Rule Server", "hubitat-mcp-server.groovy"), ("MCP Rule", "hubitat-mcp-rule.groovy")):
+                url = by_name[name].get("url") or ""
+                assert "/bundle-artifacts/" in url and url.endswith("/" + file), f"{name} not planned from the published build: {url}"
+                assert isinstance(by_name[name].get("expectedBytes"), int) and by_name[name]["expectedBytes"] > 0, \
+                    f"{name} plan lacks its .size marker: {by_name[name]}"
+        # Both apps are planned; exactly one self app (the parent), and it is listed LAST.
         names = [a.get("name") for a in apps]
         assert "MCP Rule Server" in names, f"parent app missing from the plan: {apps}"
         self_apps = [a for a in apps if a.get("isSelf")]
