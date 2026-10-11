@@ -244,17 +244,16 @@ class ToolImportUrlSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path == '/app/ajax/code' }
     }
 
-    def "hub_update_app drops a public sourceOrigin, so it cannot skip the backup for arbitrary source"() {
+    def "hub_update_app drops a public sourceOrigin, so inline source cannot skip the backup"() {
         given:
         enableWrite()
-        stubHttpGet(200, 'fetched-source-here')
         hubGet.register('/app/list/single/data/42') { params -> '[{"id": 42, "version": 7}]' }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, id: 42] }
         int backups = 0
         script.metaClass.backupItemSource = { String type, String itemId -> backups++; [version: 7, fileName: 'b.json'] }
 
         when:
-        def result = script.toolUpdateAppCode([appId: '42', importUrl: 'https://raw.example.com/app.groovy', sourceOrigin: 'published', confirm: true])
+        def result = script.toolUpdateAppCode([appId: '42', source: 'definition(name: "x") {}', sourceOrigin: 'published', confirm: true])
 
         then:
         result.success == true
@@ -262,7 +261,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         backups == 1
     }
 
-    def "hub_update_app with importUrl on any other app still backs up its current source first"() {
+    def "hub_update_app with importUrl on any app takes no backup: the URL's publisher keeps the history"() {
         given:
         enableWrite()
         stubHttpGet(200, 'fetched-source-here')
@@ -276,8 +275,8 @@ class ToolImportUrlSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        result.sourceBackup == null
-        backups == 1
+        result.sourceBackup?.startsWith('skipped')
+        backups == 0
         !hubGet.calls.any { it.path == '/app/ajax/code' }
     }
 
@@ -294,7 +293,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
             captured.body = body
             [success: true, id: 178]
         }
-        script.metaClass.backupItemSource = { String type, String itemId -> throw new AssertionError('backup must not run for the self app in importUrl mode') }
+        script.metaClass.backupItemSource = { String type, String itemId -> throw new AssertionError('backup must not run in importUrl mode') }
 
         when:
         def result = script.toolUpdateAppCode([appId: '178', importUrl: 'https://raw.example.com/app.groovy', confirm: true])
