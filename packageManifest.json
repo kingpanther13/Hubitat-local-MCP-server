@@ -1,18 +1,18 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "4.6.0",
+    "version": "4.7.0",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-10-10",
+    "dateReleased": "2026-10-11",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v4.6.0 - 2026-10-10\n- feat: adopt firmware 2.5.2 hub changes (#520)\n  - Hub alerts: see each active alert and dismiss one; pending firmware updates detected again on 2.5.2.\n  - Full local backups (database plus files) can be created and restored, network-share backups configured and tested, and cloud backups copied to File Manager.\n  - Z-Wave JS: switch stacks, view node details and link reliability, reinterview nodes, run link tests, back up and restore the Z-Wave network, and run batch device firmware updates.\n  - Matter devices pair with Wi-Fi credentials on 2.5.2; a pairing can be cancelled.\n  - File Manager subfolders, bounded device event windows, a variable type filter and atomic increments.\n  - The hub's own Groovy API documentation is searchable through the tool guide.",
+    "releaseNotes": "v4.7.0 - 2026-10-11\n- docs: note mcp-proxy 0.13.0 fixes the startup crash, keep mcp-remote for Claude Desktop (#528)\n  - Claude Desktop docs: `mcp-proxy` 0.13.0 starts again without an SDK pin, but slow writes still need `mcp-remote` with `--protocol auto`.\n- feat: deliver one inlined parent app through HPM instead of a library bundle (#525)\n  - Installs and updates through Hubitat Package Manager are now a single app save instead of a bundle plus an app save, so an update no longer fails with \"Read timed out\" and then retries; on a C-8 an update takes about four minutes instead of nine.\n  - The Groovy libraries are no longer installed separately. After this update the old `mcp` libraries and the `mcp_libraries` bundle remain under Libraries Code and Bundles as unused code; they can be deleted by hand at any time.\n  - Manual (non-HPM) installs now use the release build URLs on the `bundle-artifacts` branch (see README).\n  - If you upgrade from 4.6.0 or earlier with the Developer-Mode `hub_update_package` tool, do that one upgrade through HPM instead: the 4.6.0 tool expects a library bundle and refuses the new layout. From this version on it deploys any ref again.\n  - Updating app code from a URL (`importUrl`) no longer writes a pre-update source backup to File Manager: the previous version lives wherever that URL is published. Updates from inline source or a File Manager file still back up first unless you pass `backup: false`.\n  - A Developer-Mode self-update now returns as soon as the hub has accepted the save (`status: \"saving\"`) and `hub_get_info` reports when the new version is compiled, instead of the request timing out after five minutes.\n  - Deleting the leftover `mcp` libraries after the upgrade is recommended: each one adds about half a second to the Libraries Code page and to `hub_list_libraries` on a C-8 (README explains).",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
             "name": "MCP Rule Server",
             "namespace": "mcp",
-            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-server.groovy",
+            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/hubitat-mcp-server.groovy",
             "required": true,
             "oauth": true,
             "primary": true
@@ -21,20 +21,12 @@
             "id": "b2c3d4e5-f6a7-8901-bcde-f23456789012",
             "name": "MCP Rule",
             "namespace": "mcp",
-            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-rule.groovy",
+            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/hubitat-mcp-rule.groovy",
             "required": true,
             "oauth": false,
             "primary": false
         }
     ],
     "drivers": [],
-    "bundles": [
-        {
-            "id": "7e3c1a8f-2b94-4d6e-9a51-2095099012ab",
-            "name": "MCP Rule Server Libraries",
-            "namespace": "mcp",
-            "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/mcp-libraries.zip",
-            "required": true
-        }
-    ]
+    "bundles": []
 }

@@ -27,7 +27,7 @@ class MrtrDriverBudgetSpec extends ToolSpecBase {
             JsonOutput.toJson([status: 'ok', source: 'metadata { }',
                                version: versions[params.id.toString()] ?: 1])
         }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             assert path == '/driver/saveOrUpdateJson'
             Map payload = new JsonSlurper().parseText(body) as Map
             saves << payload

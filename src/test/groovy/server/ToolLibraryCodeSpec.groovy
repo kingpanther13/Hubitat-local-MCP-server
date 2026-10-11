@@ -468,7 +468,7 @@ def helperMethod() { return "ok" }
         given:
         enableWrite()
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 100, version: 1]
         }
@@ -497,7 +497,7 @@ def helperMethod() { return "ok" }
         settingsMap.useGateways = useGateways
         enableWrite()
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 100, version: 1]
         }
@@ -533,7 +533,7 @@ def helperMethod() { return "ok" }
             fileName == 'mylib.groovy' ? SAMPLE_SOURCE.getBytes('UTF-8') : null
         }
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 101, version: 1]
         }
@@ -560,7 +560,7 @@ def helperMethod() { return "ok" }
             fileName == 'mylib.groovy' ? SAMPLE_SOURCE.getBytes('UTF-8') : null
         }
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 101, version: 1]
         }
@@ -618,7 +618,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library reports hub failure when saveOrUpdateJson returns success=false"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'Cannot parse library definition']
         }
 
@@ -637,7 +637,7 @@ def helperMethod() { return "ok" }
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'Cannot parse library definition']
         }
 
@@ -660,7 +660,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library reports failure when hub POST throws"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             throw new RuntimeException('connection refused')
         }
 
@@ -678,7 +678,7 @@ def helperMethod() { return "ok" }
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             throw new RuntimeException('connection refused')
         }
 
@@ -700,7 +700,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library fails closed when post-install verification finds the library absent from the list"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, message: '', id: 200, version: 1]
         }
         // Verification fetch returns non-empty list but does NOT include the new library
@@ -723,7 +723,7 @@ def helperMethod() { return "ok" }
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, message: '', id: 200, version: 1]
         }
         hubGet.register('/hub2/userLibraries') { params -> '[]' }
@@ -749,7 +749,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library returns success with verified=true when post-install library list includes the new library"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, message: '', id: 201, version: 1]
         }
         hubGet.register('/hub2/userLibraries') { params ->
@@ -772,7 +772,7 @@ def helperMethod() { return "ok" }
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, message: '', id: 201, version: 1]
         }
         hubGet.register('/hub2/userLibraries') { params ->
@@ -799,7 +799,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library returns success with verifyError when post-install verification fetch throws"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, message: '', id: 202, version: 1]
         }
         // Verification fetch throws (transient failure)
@@ -823,7 +823,7 @@ def helperMethod() { return "ok" }
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, message: '', id: 202, version: 1]
         }
         hubGet.register('/hub2/userLibraries') { params ->
@@ -850,7 +850,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library fails closed with anti-retry note when verify returns unparseable body"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, message: '', id: 203, version: 1]
         }
         hubGet.register('/hub2/userLibraries') { params -> '<html>login page</html>' }
@@ -870,7 +870,7 @@ def helperMethod() { return "ok" }
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, message: '', id: 203, version: 1]
         }
         hubGet.register('/hub2/userLibraries') { params -> '<html>login page</html>' }
@@ -894,7 +894,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library fails closed with anti-retry note when hub returns null/empty response"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> null }
 
         when:
         def result = script.toolInstallLibrary([source: SAMPLE_SOURCE, confirm: true])
@@ -913,7 +913,7 @@ def helperMethod() { return "ok" }
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body -> null }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> null }
 
         when:
         def response = mcpDriver.callTool('hub_create_library', [source: SAMPLE_SOURCE, confirm: true])
@@ -936,7 +936,7 @@ def helperMethod() { return "ok" }
     def "hub_create_library fails closed with anti-retry note when hub response has no id field"() {
         given:
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, message: 'persisted', version: 5]  // missing id
         }
 
@@ -957,7 +957,7 @@ def helperMethod() { return "ok" }
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: true, message: 'persisted', version: 5]
         }
 
@@ -1098,6 +1098,30 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
+    def "hub_update_library (source mode) with backup false saves without a backup"() {
+        given:
+        enableWrite()
+        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+        def capturedBody = null
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            capturedBody = new groovy.json.JsonSlurper().parseText(body)
+            [success: true, message: '', id: 42, version: 2]
+        }
+
+        when:
+        def result = script.toolUpdateLibraryCode([libraryId: '42', source: SAMPLE_SOURCE, backup: false, confirm: true])
+
+        then:
+        uploads.isEmpty()
+        capturedBody.id == 42
+        capturedBody.version == 1
+        result.success == true
+        result.sourceBackup == 'skipped: backup=false was passed'
+        !(atomicStateMap.itemBackupManifest?.containsKey('library_42'))
+    }
+
     def "hub_update_library (source mode) backs up, fetches version, POSTs to saveOrUpdateJson"() {
         given:
         enableWrite()
@@ -1110,7 +1134,7 @@ def helperMethod() { return "ok" }
             uploads << name
         }
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 42, version: 2]
         }
@@ -1148,7 +1172,7 @@ def helperMethod() { return "ok" }
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 42, version: 2]
         }
@@ -1198,7 +1222,7 @@ def helperMethod() { return "ok" }
             uploads << name
         }
         def sentVersions = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             sentVersions << new groovy.json.JsonSlurper().parseText(body).version
             [success: true, message: '', id: 42, version: 8]
         }
@@ -1240,7 +1264,7 @@ def helperMethod() { return "ok" }
         def uploads = []
         script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
         def sentVersions = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             sentVersions << new groovy.json.JsonSlurper().parseText(body).version
             [success: true, message: '', id: 42, version: 8]
         }
@@ -1275,7 +1299,7 @@ def helperMethod() { return "ok" }
             fileName == 'updated-lib.groovy' ? SAMPLE_SOURCE.getBytes('UTF-8') : null
         }
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 42, version: 2]
         }
@@ -1301,7 +1325,7 @@ def helperMethod() { return "ok" }
             fileName == 'updated-lib.groovy' ? SAMPLE_SOURCE.getBytes('UTF-8') : null
         }
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 42, version: 2]
         }
@@ -1359,7 +1383,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 42, version: 2]
         }
@@ -1382,7 +1406,7 @@ def helperMethod() { return "ok" }
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         def capturedBody = null
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             capturedBody = new groovy.json.JsonSlurper().parseText(body)
             [success: true, message: '', id: 42, version: 2]
         }
@@ -1439,7 +1463,7 @@ def helperMethod() { return "ok" }
         enableWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'Compilation error']
         }
 
@@ -1459,7 +1483,7 @@ def helperMethod() { return "ok" }
         enableWrite()
         hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             [success: false, message: 'Compilation error']
         }
 

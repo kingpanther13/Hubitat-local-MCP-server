@@ -3,7 +3,6 @@
 import hashlib
 import importlib.util
 import io
-import zipfile
 from pathlib import Path
 
 import pytest
@@ -69,7 +68,7 @@ class Hub:
                 return self.release_replies.pop(0)
             return {"success": True, "requestId": args["requestId"], "phase": "complete", "hold": False}
         if name == "hub_get_info":
-            return {"watchdogVersion": 3, "packageDeployment": self.held, **self.info}
+            return {"watchdogVersion": "3.1", "packageDeployment": self.held, **self.info}
         if name == "hub_list_apps":
             return {"apps": [{"id": 178, "namespace": "mcp", "name": "MCP Rule Server"},
                              {"id": 179, "namespace": "mcp", "name": "MCP Rule"}]}
@@ -321,7 +320,7 @@ class Discovery:
     def call(self, url, name, args):
         self.calls.append((url, name))
         if name == "hub_get_info":
-            return {"watchdogVersion": 3 if url == V3_URL else self.version}
+            return {"watchdogVersion": "3.1" if url == V3_URL else self.version}
         if name == "hub_list_app_instances":
             return {"apps": self.instances}
         if name == "hub_read_apps_code":
@@ -332,17 +331,19 @@ class Discovery:
 
 V3_URL = "https://cloud.hubitat.com/api/0f0f0f0f-aaaa-bbbb-cccc-121212121212/apps/48028/mcp?access_token=abc-123"
 V3_PAGE = {"page": {"sections": [{"paragraphs": [f"Cloud /mcp endpoint (token-in-query):{V3_URL}"]}]}}
-V3_INSTANCE = [{"id": 48028, "type": "E2E Dead-Man Watchdog v3"}, {"id": 38, "type": "MCP Rule Server"}]
+# v3 keeps running beside v3.1 until it is retired; only the v3.1 instance may be picked.
+V3_INSTANCE = [{"id": 48028, "type": "E2E Dead-Man Watchdog v3.1"}, {"id": 7, "type": "E2E Dead-Man Watchdog v3"},
+               {"id": 38, "type": "MCP Rule Server"}]
 
 
-def test_a_secret_already_pointing_at_v3_is_used_as_is(module):
-    hub = Discovery(3, [], {})
+def test_a_secret_already_pointing_at_v3_1_is_used_as_is(module):
+    hub = Discovery("3.1", [], {})
     assert module.resolve_v3_url(hub, "main", "configured") == "configured"
     assert hub.calls == [("configured", "hub_get_info")]
 
 
-def test_v3_is_discovered_from_its_app_page_while_the_secret_points_at_v2(module, tmp_path):
-    hub = Discovery(2, V3_INSTANCE, V3_PAGE)
+def test_v3_1_is_discovered_from_its_app_page_while_the_secret_points_at_v3(module, tmp_path):
+    hub = Discovery(3, V3_INSTANCE, V3_PAGE)
     cache = tmp_path / "endpoint"
     assert module.resolve_v3_url(hub, "main", "configured", cache) == V3_URL
     assert cache.read_text() == V3_URL
@@ -353,37 +354,39 @@ def test_v3_is_discovered_from_its_app_page_while_the_secret_points_at_v2(module
 
 @pytest.mark.parametrize("instances,page,message", [
     ([], V3_PAGE, "found 0"),
-    ([*V3_INSTANCE, {"id": 5, "type": "E2E Dead-Man Watchdog v3"}], V3_PAGE, "found 2"),
+    ([*V3_INSTANCE, {"id": 5, "type": "E2E Dead-Man Watchdog v3.1"}], V3_PAGE, "found 2"),
     (V3_INSTANCE, {"page": {}}, "exactly one endpoint"),
 ], ids=["not-installed", "duplicated", "no-endpoint-shown"])
 def test_discovery_refuses_an_ambiguous_v3(module, instances, page, message):
     with pytest.raises(module.HubError, match=message):
-        module.resolve_v3_url(Discovery(2, instances, page), "main", "configured")
+        module.resolve_v3_url(Discovery(3, instances, page), "main", "configured")
 
 
-def bundle_bytes(kind="library", extra=False):
-    buffer = io.BytesIO()
-    with zipfile.ZipFile(buffer, "w") as bundle:
-        manifest = f"mcp\nmcp_libraries\n{kind} mcp.Example.groovy\n"
-        bundle.writestr("install.txt", manifest)
-        bundle.writestr("update.txt", manifest)
-        bundle.writestr("mcp.Example.groovy", "library source\n")
-        if extra:
-            bundle.writestr("watchdog.groovy", "unexpected app code")
-    return buffer.getvalue()
+BUILT = {"MCP Rule": b'definition(name: "MCP Rule")\n',
+         "MCP Rule Server": 'definition(name: "MCP Rule Server")\n// café\n'.encode()}
 
 
-def test_plan_hashes_exact_library_bytes(module):
-    assert module.plan_from_bundle("a" * 40, bundle_bytes()) == {
+def test_plan_hashes_the_exact_built_app_bytes(module):
+    assert module.plan_from_apps("a" * 40, BUILT) == {
         "ref": "a" * 40,
-        "libraries": [{"name": "Example", "sha256": hashlib.sha256(b"library source\n").hexdigest()}],
+        "libraries": [],
+        "apps": [{"name": name, "sha256": hashlib.sha256(BUILT[name]).hexdigest()}
+                 for name in ("MCP Rule", "MCP Rule Server")],
     }
 
 
-@pytest.mark.parametrize("ref,kind,extra", [("main", "library", False), ("a" * 40, "app", False), ("a" * 40, "library", True)])
-def test_plan_rejects_mutable_refs_and_app_code_in_the_bundle(module, ref, kind, extra):
+@pytest.mark.parametrize("ref, sources", [
+    ("main", BUILT),
+    ("a" * 40, {"MCP Rule Server": BUILT["MCP Rule Server"]}),
+], ids=["mutable-ref", "missing-app"])
+def test_plan_rejects_mutable_refs_and_a_partial_build(module, ref, sources):
     with pytest.raises(ValueError):
-        module.plan_from_bundle(ref, bundle_bytes(kind, extra))
+        module.plan_from_apps(ref, sources)
+
+
+def test_plan_rejects_a_parent_that_was_not_inlined(module):
+    with pytest.raises(module.HubError, match="#include"):
+        module.plan_from_apps("a" * 40, {**BUILT, "MCP Rule Server": b"definition()\n#include mcp.McpRoomsLib\n"})
 
 
 def test_a_stopped_status_inside_an_error_envelope_keeps_its_details(module, monkeypatch):
@@ -429,9 +432,11 @@ def cli(module, monkeypatch, tmp_path):
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
     monkeypatch.setenv("PR_RAW_BASE", "https://raw.githubusercontent.com/owner/repo")
     monkeypatch.setenv("PR_HEAD_SHA_RESOLVED", "c" * 40)
-    bundle = tmp_path / "mcp-libraries.zip"
-    bundle.write_bytes(bundle_bytes())
-    return module, hub, seen, bundle
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    for name, data in BUILT.items():
+        (dist / module.APP_FILES[name]).write_bytes(data)
+    return module, hub, seen, dist
 
 
 def purging(hub, seen, replies):
@@ -452,7 +457,7 @@ def purging(hub, seen, replies):
 
 
 def test_teardown_releases_the_hold_purges_and_installs_nothing(cli, monkeypatch):
-    module, hub, seen, _bundle = cli
+    module, hub, seen, _dist = cli
     purging(hub, seen, [{"success": True, "deletedCount": 3}])
     module.main(["teardown"])
     assert seen["order"] == ["clear_hold", "purge"]
@@ -460,7 +465,7 @@ def test_teardown_releases_the_hold_purges_and_installs_nothing(cli, monkeypatch
 
 
 def test_teardown_waits_out_a_lost_response_and_a_running_sweep(cli, monkeypatch):
-    module, hub, seen, _bundle = cli
+    module, hub, seen, _dist = cli
     monkeypatch.setattr(module.time, "sleep", lambda s: None)
     purging(hub, seen, [OSError("relay timeout"), {"success": True, "inFlight": True},
                         {"success": True, "cached": True, "deletedCount": 4}])
@@ -469,14 +474,14 @@ def test_teardown_waits_out_a_lost_response_and_a_running_sweep(cli, monkeypatch
 
 
 def test_teardown_fails_the_job_when_the_purge_leaves_fixtures(cli, capsys):
-    module, hub, seen, _bundle = cli
+    module, hub, seen, _dist = cli
     purging(hub, seen, [{"success": False, "error": "Purge of BAT_E2E_* completed with failures: 2 app(s)"}])
     with pytest.raises(SystemExit, match="2 app"):
         module.main(["teardown"])
 
 
 def test_teardown_fails_when_the_sweep_never_reports_finished(cli, monkeypatch):
-    module, hub, seen, _bundle = cli
+    module, hub, seen, _dist = cli
     monkeypatch.setattr(module.time, "sleep", lambda s: None)
     purging(hub, seen, [{"success": True, "inFlight": True}] * 60)
     with pytest.raises(SystemExit, match="did not report a finished sweep"):
@@ -484,7 +489,7 @@ def test_teardown_fails_when_the_sweep_never_reports_finished(cli, monkeypatch):
 
 
 def test_a_cancelled_teardown_releases_its_hold_and_purges(cli):
-    module, hub, seen, _bundle = cli
+    module, hub, seen, _dist = cli
     purging(hub, seen, [{"success": True, "deletedCount": 1}])
     module.main(["teardown", "--cancelled"])
     assert seen["order"] == ["clear_hold", "purge"]
@@ -492,14 +497,14 @@ def test_a_cancelled_teardown_releases_its_hold_and_purges(cli):
 
 
 def test_a_cancelled_teardown_warns_when_the_purge_reports_failures(cli, capsys):
-    module, hub, seen, _bundle = cli
+    module, hub, seen, _dist = cli
     purging(hub, seen, [{"success": False, "error": "1 app(s)"}])
     module.main(["teardown", "--cancelled"])
     assert "left for the next run" in capsys.readouterr().out
 
 
 def test_a_run_cancelled_mid_install_leaves_the_hold_and_does_not_fail(cli, monkeypatch, capsys):
-    module, hub, _seen, _bundle = cli
+    module, hub, _seen, _dist = cli
 
     def still_running(*args, **kwargs):
         raise module.HubError("A package deployment is still running on the hub")
@@ -513,7 +518,7 @@ def test_a_run_cancelled_mid_install_leaves_the_hold_and_does_not_fail(cli, monk
 
 
 def test_a_cancelled_teardown_never_fails_when_the_watchdog_cannot_be_reached(cli, monkeypatch, capsys):
-    module, _hub, _seen, _bundle = cli
+    module, _hub, _seen, _dist = cli
 
     def unreachable(*args, **kwargs):
         raise OSError("https://cloud.hubitat.com/api/x/apps/1/mcp?access_token=secret")
@@ -545,72 +550,99 @@ def test_a_spent_time_budget_fails_calls_as_lost_responses_without_sending(modul
 
 
 def test_a_cancelled_teardown_sets_a_time_budget(cli):
-    module, hub, seen, _bundle = cli
+    module, hub, seen, _dist = cli
     purging(hub, seen, [{"success": True}])
     module.main(["teardown", "--cancelled"])
     assert hub.deadline is not None
 
 
+def serving(module, urls, overrides=None):
+    """A fetch that serves the built apps from bundle-artifacts, recording each URL it was asked for."""
+    by_file = {module.APP_FILES[name]: data for name, data in BUILT.items()}
+    overrides = overrides or {}
+
+    def fetch(url, **kwargs):
+        urls.append(url)
+        name = url.rsplit("/", 1)[-1]
+        return overrides.get(name, by_file.get(name))
+    return fetch
+
+
 def test_install_main_deploys_main_as_it_is_now_after_releasing_the_hold(cli, monkeypatch):
-    module, _hub, seen, _bundle = cli
+    module, _hub, seen, _dist = cli
+    urls = []
     monkeypatch.setattr(module, "current_main_sha", lambda repository: "d" * 40)
-    monkeypatch.setattr(module, "fetch", lambda url, **kwargs: bundle_bytes())
+    monkeypatch.setattr(module, "fetch", serving(module, urls))
     module.main(["install-main"])
     assert seen["order"] == ["clear_hold", "deploy"]
     plan, request_id = seen["deploys"][0]
     assert plan["ref"] == "d" * 40 and request_id == "e2e-77-2-main"
     assert plan["baseUrl"] == plan["bundleBaseUrl"] == "https://raw.githubusercontent.com/owner/repo"
+    assert plan["apps"] == module.plan_from_apps("d" * 40, BUILT)["apps"]
+    assert all(url.startswith("https://raw.githubusercontent.com/owner/repo/bundle-artifacts/shas/" + "d" * 40 + "/")
+               for url in urls)
 
 
-@pytest.mark.parametrize("sha, bundle, message", [
-    (None, b"x", "Could not resolve main"),
-    ("d" * 40, None, "No published bundle for main"),
-], ids=["no-sha", "no-bundle"])
-def test_install_main_refuses_without_a_published_main(cli, monkeypatch, sha, bundle, message):
-    module, _hub, seen, _bundle = cli
+@pytest.mark.parametrize("sha, missing, message", [
+    (None, None, "Could not resolve main"),
+    ("d" * 40, "hubitat-mcp-server.groovy", "No published build of main"),
+], ids=["no-sha", "no-build"])
+def test_install_main_refuses_without_a_published_main(cli, monkeypatch, sha, missing, message):
+    module, _hub, seen, _dist = cli
     monkeypatch.setattr(module, "current_main_sha", lambda repository: sha)
-    monkeypatch.setattr(module, "fetch", lambda url, **kwargs: bundle)
+    monkeypatch.setattr(module, "fetch", serving(module, [], {missing: None}))
     with pytest.raises(SystemExit, match=message):
         module.main(["install-main"])
     assert seen["deploys"] == []
 
 
-def test_pr_install_requires_the_published_bundle_to_equal_the_checkout_build(cli, monkeypatch):
-    module, _hub, seen, bundle = cli
-    monkeypatch.setattr(module, "fetch", lambda url, **kwargs: b"different bytes")
-    with pytest.raises(SystemExit, match="differs from the bundle built"):
-        module.main(["deploy-pr", "--bundle", str(bundle)])
+def test_pr_install_requires_the_published_apps_to_equal_the_checkout_build(cli, monkeypatch):
+    module, _hub, seen, dist = cli
+    monkeypatch.setattr(module, "fetch", serving(module, [], {"hubitat-mcp-server.groovy": b"different bytes"}))
+    with pytest.raises(SystemExit, match="differs from the one built"):
+        module.main(["deploy-pr", "--dist", str(dist)])
     assert seen["deploys"] == []
 
 
 def test_pr_install_deploys_the_head_sha_from_the_base_repository(cli, monkeypatch):
-    module, _hub, seen, bundle = cli
+    module, _hub, seen, dist = cli
     urls = []
-    monkeypatch.setattr(module, "fetch", lambda url, **kwargs: urls.append(url) or bundle.read_bytes())
-    module.main(["deploy-pr", "--bundle", str(bundle)])
+    monkeypatch.setattr(module, "fetch", serving(module, urls))
+    module.main(["deploy-pr", "--dist", str(dist)])
     plan, request_id = seen["deploys"][0]
-    assert urls == ["https://raw.githubusercontent.com/owner/repo/bundle-artifacts/shas/" + "c" * 40 + "/mcp-libraries.zip"]
+    base = "https://raw.githubusercontent.com/owner/repo/bundle-artifacts/shas/" + "c" * 40
+    assert urls == [f"{base}/hubitat-mcp-rule.groovy", f"{base}/hubitat-mcp-server.groovy"]
     assert plan["ref"] == "c" * 40 and request_id == "e2e-77-2-pr"
-    assert plan["libraries"][0]["name"] == "Example"
+    assert plan["libraries"] == [] and [app["name"] for app in plan["apps"]] == ["MCP Rule", "MCP Rule Server"]
 
 
-def test_pr_install_without_a_published_bundle_warns_and_lets_v3_decide(cli, monkeypatch, capsys):
-    module, _hub, seen, bundle = cli
-    monkeypatch.setattr(module, "fetch", lambda url, **kwargs: None)
-    module.main(["deploy-pr", "--bundle", str(bundle)])
+def test_pr_install_waits_for_the_publish_then_refuses_without_it(cli, monkeypatch):
+    module, _hub, seen, dist = cli
+    urls = []
+    monkeypatch.setattr(module, "fetch", serving(module, urls, {"hubitat-mcp-rule.groovy": None}))
+    with pytest.raises(SystemExit, match="No bundle-artifacts entry for MCP Rule at"):
+        module.main(["deploy-pr", "--dist", str(dist)])
+    assert len(urls) == 30 and seen["deploys"] == []
+
+
+def test_pr_install_picks_up_an_entry_published_while_it_waits(cli, monkeypatch):
+    module, _hub, seen, dist = cli
+    urls = []
+    late = serving(module, urls)
+    monkeypatch.setattr(module, "fetch", lambda url, **kwargs: late(url) if len(urls) >= 3 else urls.append(url))
+    module.main(["deploy-pr", "--dist", str(dist)])
     assert len(seen["deploys"]) == 1
-    assert "::warning::No bundle-artifacts entry" in capsys.readouterr().out
 
 
 def test_prepare_releases_a_leftover_hold_and_takes_no_backup(cli):
-    module, hub, seen, _bundle = cli
+    module, hub, seen, _dist = cli
     module.main(["prepare"])
     assert seen["order"] == ["clear_hold"]
     assert hub.count("hub_create_backup") == 0
 
 
 def test_prepare_still_releases_a_hold_when_the_mcp_endpoint_check_gets_no_answer(cli, capsys):
-    module, hub, seen, _bundle = cli
+    module, hub, seen, _dist = cli
     original = hub.call
 
     def call(url, name, args):
@@ -639,7 +671,7 @@ class AccessHub:
 
 
 def test_prepare_turns_both_mcp_endpoints_back_on_after_releasing_the_hold(cli, monkeypatch, capsys):
-    module, hub, seen, _bundle = cli
+    module, hub, seen, _dist = cli
     original = hub.call
 
     def call(url, name, args):
@@ -675,7 +707,7 @@ def test_restoring_mcp_access_needs_an_app_id(module, capsys):
 
 
 def test_an_endpoint_failure_never_prints_the_exception(cli, monkeypatch):
-    module, _hub, _seen, _bundle = cli
+    module, _hub, _seen, _dist = cli
 
     def endpoints():
         raise OSError("https://cloud.hubitat.com/api/x/apps/1/mcp?access_token=secret")
@@ -849,7 +881,7 @@ def test_a_discovered_endpoint_is_masked_before_it_is_first_used(module, monkeyp
 
 def test_the_endpoint_command_prints_the_url_as_its_last_line(cli, capsys):
     """mcp_watchdog_deploy.sh takes the last stdout line as WATCHDOG_URL."""
-    module, _hub, _seen, _bundle = cli
+    module, _hub, _seen, _dist = cli
     module.main(["endpoint"])
     assert capsys.readouterr().out.splitlines()[-1] == "watchdog"
 

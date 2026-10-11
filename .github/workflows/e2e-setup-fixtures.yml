@@ -95,7 +95,7 @@ jobs:
       # fresh hub, create that String variable (value {}) in Hub Variables first: the watchdog cannot create one.
       - name: Acquire test hub lease
         env:
-          WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+          WATCHDOG_URL: ${{ secrets.WATCHDOG31_MCP_URL }}
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/lease_acquire.sh "fixtures-${{ github.run_id }}"
 
@@ -105,5 +105,5 @@ jobs:
       - name: Release test hub lease
         if: always()
         env:
-          WATCHDOG_URL: ${{ secrets.WATCHDOG_MCP_URL }}
+          WATCHDOG_URL: ${{ secrets.WATCHDOG31_MCP_URL }}
         run: bash .github/scripts/lease_release.sh "fixtures-${{ github.run_id }}"

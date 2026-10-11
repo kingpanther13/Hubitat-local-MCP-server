@@ -12608,7 +12608,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [status: 200, location: null, data: '{"status":"success"}']
         }
         def disablePosts = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             disablePosts << [path: path, body: body]
             '{"status":"success"}'
         }
@@ -12910,7 +12910,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
         def disablePosts = []
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             disablePosts << [path: path, body: body]
             '{"status":"success"}'
         }
@@ -12951,7 +12951,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostJson = { String path, String body -> '{"status":"success"}' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> '{"status":"success"}' }
 
         when:
         def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true])
@@ -12987,7 +12987,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostJson = { String path, String body -> '{"status":"success"}' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> '{"status":"success"}' }
 
         when:
         def result = script.toolCloneNativeApp([sourceAppId: 100, stageDisabled: true, confirm: true])
@@ -13020,7 +13020,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostJson = { String path, String body -> '{"status":"success"}' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> '{"status":"success"}' }
 
         when:
         def result = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_clone_native_app',
@@ -13071,7 +13071,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
         script.metaClass.hubInternalPostFormRaw = { String path, String encodedBody, Integer t = 420 -> [status: 200, location: null, data: '{"status":"success"}'] }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             if (path == "/installedapp/disable") {
                 disabledIds << new groovy.json.JsonSlurper().parseText(body).id
             }

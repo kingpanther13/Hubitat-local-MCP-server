@@ -18,7 +18,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
         hubGet.register('/device/fullJson/10') { JsonOutput.toJson(model) }
         hubGet.register('/device/eventsJson/10') { '[]' }
         hubGet.register('/logs/past/json') { '[]' }
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             writes << [path: path, body: body]
             [success: true]
         }
@@ -209,7 +209,7 @@ class ToolNativeMetadataBoundarySpec extends ToolSpecBase {
     def 'command acknowledgement #ack reports unknown outcome and prevents unsafe replay advice'() {
         given:
         int calls = 0
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             calls++
             if (ack == 'exception') throw new IOException('response lost')
             ack

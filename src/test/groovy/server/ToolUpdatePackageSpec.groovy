@@ -65,6 +65,16 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
     ]
     private static final String MANIFEST_FULL = manifest(BUNDLE_LIBS, APPS_BOTH)
     private static final String MANIFEST_NO_BUNDLE = manifest([], APPS_BOTH)
+    // Inlined layout (issue #522): no bundle; both apps are built artifacts on bundle-artifacts.
+    private static final List APPS_INLINED = [
+        [name: 'MCP Rule Server', namespace: 'mcp', location: "${RAW}/bundle-artifacts/branches/main/hubitat-mcp-server.groovy".toString(), required: true, primary: true],
+        [name: 'MCP Rule', namespace: 'mcp', location: "${RAW}/bundle-artifacts/branches/main/hubitat-mcp-rule.groovy".toString(), required: true, primary: false]
+    ]
+    private static final String MANIFEST_INLINED = manifest([], APPS_INLINED)
+    // Non-ASCII on purpose: the .size marker counts UTF-8 bytes, not chars.
+    private static final String PARENT_BUILT = 'definition(name: "MCP Rule Server", namespace: "mcp")\ndef foo() { return "caf\u00e9 \u2014" }\n'
+    private static final String CHILD_BUILT = 'definition(name: "MCP Rule", namespace: "mcp")\ndef bar() { 2 }\n'
+    private static final String SHA = 'b' * 40
 
     @Shared int nextHttpStatus = 200
     @Shared String nextHttpBody = ''
@@ -72,6 +82,8 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
     @Shared int nextManifestStatus = 200
     @Shared String nextManifestBody = ''
     @Shared Throwable nextManifestThrow = null
+    // Exact-URL bodies, checked before the manifest/app routing (artifacts and .size markers).
+    @Shared Map<String, String> urlBodies = [:]
 
     def setupSpec() {
         // Single global httpGet stub, routed by URL: the manifest URL gets the
@@ -80,7 +92,9 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         appExecutor.httpGet(*_) >> { callArgs ->
             def uri = (callArgs[0] instanceof Map) ? callArgs[0].uri?.toString() : ''
             Closure handler = callArgs[1] as Closure
-            if (uri?.contains('packageManifest.json')) {
+            if (urlBodies.containsKey(uri)) {
+                handler.call([status: 200, data: [text: urlBodies.get(uri)], headers: [:]])
+            } else if (uri?.contains('packageManifest.json')) {
                 if (nextManifestThrow) throw nextManifestThrow
                 handler.call([status: nextManifestStatus, data: [text: nextManifestBody], headers: [:]])
             } else {
@@ -97,6 +111,7 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         nextManifestStatus = 200
         nextManifestBody = MANIFEST_FULL
         nextManifestThrow = null
+        urlBodies = [:]
         // Package orchestration now uses a worker-only overload so public args
         // cannot carry correlation identity. Preserve this spec's per-feature
         // public app-update stubs while the code-update specs exercise the real
@@ -128,6 +143,17 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
     // this spec exercises the deterministic repair body (ordering, fail-closed
     // behavior, and artifact selection); focused features below exercise the
     // scheduling boundary and worker lifecycle themselves.
+    // Publish a built artifact (file + .size marker holding its UTF-8 byte count) at a URL.
+    private void publish(String url, String body, Long sizeOverride = null) {
+        urlBodies.put(url, body)
+        urlBodies.put("${url}.size".toString(), (sizeOverride ?: body.getBytes('UTF-8').length).toString())
+    }
+
+    private void publishInlinedAt(String keyPath, String base = RAW) {
+        publish("${base}/bundle-artifacts/${keyPath}/hubitat-mcp-server.groovy".toString(), PARENT_BUILT)
+        publish("${base}/bundle-artifacts/${keyPath}/hubitat-mcp-rule.groovy".toString(), CHILD_BUILT)
+    }
+
     private Map runDeployBody(Map args) {
         String ref = args.ref.toString().trim()
         return script._updatePackageBody(args, ref, false) as Map
@@ -1251,6 +1277,176 @@ class ToolUpdatePackageSpec extends ToolSpecBase {
         result.bundles[0].source == 'manifest-current'
         result.bundleFreshnessWarning?.contains('branches/main zip directly')
         result.bundleFreshnessWarning?.contains('correct, current bundle')
+    }
+
+    // -------- inlined layout (issue #522): no bundle, apps from the built artifacts --------
+
+    def "inlined-layout dryRun plans both apps from the shas/<sha>/ artifacts, no bundle, no writes"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        nextManifestBody = MANIFEST_INLINED
+        publishInlinedAt("shas/${SHA}")
+        def calls = []
+        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
+
+        when:
+        def result = script.toolUpdatePackage([ref: SHA, dryRun: true])
+
+        then:
+        result.success == true
+        result.dryRun == true
+        result.plannedBundles == []
+        result.includes == []
+        result.plannedApps*.classId == ['230', '228']
+        result.plannedApps*.url == ["${RAW}/bundle-artifacts/shas/${SHA}/hubitat-mcp-rule.groovy".toString(),
+                                    "${RAW}/bundle-artifacts/shas/${SHA}/hubitat-mcp-server.groovy".toString()]
+        result.plannedApps.every { it.source == 'bundle-artifacts' }
+        result.plannedApps[1].expectedBytes == PARENT_BUILT.getBytes('UTF-8').length
+
+        and:
+        calls == []
+    }
+
+    def "inlined-layout deploy saves the verified artifact source, child first and self last, with no bundle step"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        nextManifestBody = MANIFEST_INLINED
+        publishInlinedAt("shas/${SHA}")
+        def calls = []
+        def appArgs = [:]
+        script.metaClass.toolInstallBundle = { a -> calls << 'bundle'; [success: true] }
+        script.metaClass.toolUpdateAppCode = { a -> calls << "app:${a.appId}".toString(); appArgs.put(a.appId, a); [success: true] }
+
+        when:
+        def result = runDeployBody([ref: SHA, confirm: true])
+
+        then:
+        calls == ['app:230', 'app:228']
+        appArgs.get('228').source == PARENT_BUILT
+        appArgs.get('230').source == CHILD_BUILT
+        appArgs.values().every { it.importUrl == null && it.confirm == true && it.sourceOrigin == 'published' }
+
+        and:
+        result.success == true
+        result.bundles == []
+        result.apps*.url == ["${RAW}/bundle-artifacts/shas/${SHA}/hubitat-mcp-rule.groovy".toString(),
+                             "${RAW}/bundle-artifacts/shas/${SHA}/hubitat-mcp-server.groovy".toString()]
+        result.artifactFreshnessWarning == null
+        result.bundleFreshnessWarning == null
+    }
+
+    def "inlined-layout branch ref resolves to its branches/<ref>/ artifact"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        nextManifestBody = MANIFEST_INLINED
+        publishInlinedAt('branches/feat/x')
+        script.metaClass.toolUpdateAppCode = { a -> [success: true] }
+
+        when:
+        def result = runDeployBody([ref: 'feat/x', confirm: true])
+
+        then:
+        result.success == true
+        result.apps.every { it.url.startsWith("${RAW}/bundle-artifacts/branches/feat/x/".toString()) }
+    }
+
+    def "inlined-layout deploy refuses before any write when an artifact does not match its .size marker"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        nextManifestBody = MANIFEST_INLINED
+        publish("${RAW}/bundle-artifacts/shas/${SHA}/hubitat-mcp-rule.groovy".toString(), CHILD_BUILT)
+        publish("${RAW}/bundle-artifacts/shas/${SHA}/hubitat-mcp-server.groovy".toString(), PARENT_BUILT,
+                PARENT_BUILT.getBytes('UTF-8').length + 1L)
+        def calls = []
+        script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
+
+        when:
+        def result = runDeployBody([ref: SHA, confirm: true])
+
+        then: 'the child is not saved either -- every app is verified before the first write'
+        result.success == false
+        result.aborted == true
+        result.abortReason == 'app_artifact_size_mismatch'
+        result.app == 'MCP Rule Server'
+        result.actualBytes == PARENT_BUILT.getBytes('UTF-8').length
+        calls == []
+    }
+
+    def "inlined-layout deploy refuses an artifact that still has #include directives"() {
+        given:
+        enableDev()
+        registerAppTypes()
+        nextManifestBody = MANIFEST_INLINED
+        publish("${RAW}/bundle-artifacts/shas/${SHA}/hubitat-mcp-rule.groovy".toString(), CHILD_BUILT)
+        publish("${RAW}/bundle-artifacts/shas/${SHA}/hubitat-mcp-server.groovy".toString(), APP_WITH_INCLUDE)
+        def calls = []
+        script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
+
+        when:
+        def result = runDeployBody([ref: SHA, confirm: true])
+
+        then:
+        result.abortReason == 'app_artifact_not_inlined'
+        calls == []
+    }
+
+    @spock.lang.Unroll
+    def "inlined-layout ref '#ref' with no artifact is refused, never served main's build"() {
+        given: 'only the branches/main build exists'
+        enableDev()
+        registerAppTypes()
+        nextManifestBody = MANIFEST_INLINED
+        publishInlinedAt('branches/main')
+        def calls = []
+        script.metaClass.toolUpdateAppCode = { a -> calls << 'app'; [success: true] }
+
+        when:
+        def result = runDeployBody([ref: ref, confirm: true])
+
+        then:
+        result.success == false
+        result.abortReason == 'no_app_artifact_for_ref'
+        result.error.contains(ref)
+        calls == []
+
+        where:
+        ref << ['feat/x', 'b' * 40, 'deadbee']
+    }
+
+    def "inlined-layout ref=main falls back to the manifest's branches/main build with a warning"() {
+        given: 'a baseUrl override that has no artifact, while the manifest location does'
+        enableDev()
+        registerAppTypes()
+        nextManifestBody = MANIFEST_INLINED
+        publishInlinedAt('branches/main')
+        def appArgs = [:]
+        script.metaClass.toolUpdateAppCode = { a -> appArgs.put(a.appId, a); [success: true] }
+
+        when:
+        def result = runDeployBody([ref: 'main', baseUrl: 'https://example.com/raw', confirm: true])
+
+        then:
+        result.success == true
+        result.apps*.url == [APPS_INLINED[1].location, APPS_INLINED[0].location]
+        appArgs.get('228').source == PARENT_BUILT
+        result.artifactFreshnessWarning?.contains('branches/main')
+    }
+
+    def "_artifactSizeMarker returns the recorded byte count, or null without a usable marker"() {
+        when:
+        nextHttpBody = ' 866882\n'
+        then:
+        script._artifactSizeMarker('https://b/bundle-artifacts/shas/x/hubitat-mcp-server.groovy') == 866882L
+
+        when:
+        nextHttpBody = '<html>nope</html>'
+        then:
+        script._artifactSizeMarker('https://b/bundle-artifacts/shas/x/hubitat-mcp-server.groovy') == null
     }
 
     // -------- dispatch happy path --------

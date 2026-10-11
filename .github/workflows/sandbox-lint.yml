@@ -10,7 +10,9 @@ on:
       - 'packageManifest.json'
       - 'tests/sandbox_lint.py'
       - 'libraries/**'
-      - 'tools/build-bundle.py'
+      - 'tools/build-release-app.py'
+      - 'tools/strip_source.py'
+      - 'tools/groovy_lex.py'
       # TOOL_GUIDE.md is generated from the served guide; a hand edit must fail the lint.
       - 'TOOL_GUIDE.md'
       - 'tools/build-tool-guide.py'
@@ -38,9 +40,9 @@ jobs:
       # because nothing ran --self-test.
       - name: Sandbox-lint self-tests
         run: python tests/sandbox_lint.py --self-test
-      # Bundle build smoke (issue #209): nothing under bundles/ is committed -- delivery is
-      # the bundle-artifacts branch, fed by publish-bundle-artifact.yml on every push. This
-      # step only proves the builder still RUNS against the PR's libraries/ (a broken LIBS
-      # entry or unreadable library fails here, in-PR).
-      - name: Bundle builder runs against the PR's libraries
-        run: python tools/build-bundle.py
+      # Release build smoke (issue #522): nothing under dist/ is committed -- delivery is the
+      # bundle-artifacts branch, fed by publish-bundle-artifact.yml on every push. This step
+      # only proves the builder still RUNS against the PR's sources (an unresolvable #include,
+      # an unincluded library or a source the stripper can't tokenize fails here, in-PR).
+      - name: Release builder runs against the PR's sources
+        run: python tools/build-release-app.py

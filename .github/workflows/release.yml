@@ -277,7 +277,7 @@ jobs:
             # Release path: stage all release-bump files. README.md may carry
             # both Version History (from release_bump.py) and FUTURE_PLANS (from
             # the sync step) edits — both land in the same chore(release) commit.
-            git add CHANGELOG.md README.md packageManifest.json hubitat-mcp-server.groovy hubitat-mcp-rule.groovy
+            git add CHANGELOG.md README.md packageManifest.json hubitat-mcp-server.groovy
             git commit \
               -m "chore(release): ${NEW_VERSION}" \
               -m "Co-authored-by: ${PR_AUTHOR} <${PR_AUTHOR_ID}+${PR_AUTHOR}@users.noreply.github.com>"

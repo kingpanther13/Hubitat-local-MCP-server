@@ -278,6 +278,7 @@ def toolGetHubInfo(args = null) {
     // to advance (see .github/scripts/test_self_deploy_recovery.sh recover_self_deploy_error).
     if (atomicState.lastSelfDeploy != null) {
         def lsd = [:] + atomicState.lastSelfDeploy
+        if (lsd.status == "saving") lsd = [:] + _resolveSavingSelfDeploy(lsd)
         if (lsd.at instanceof Number) lsd.ageMs = now() - (lsd.at as long)
         info.lastSelfDeploy = lsd
     }

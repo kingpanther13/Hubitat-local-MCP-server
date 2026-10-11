@@ -30,7 +30,7 @@ class ToolNativeVirtualDevicesSpec extends ToolSpecBase {
             }
             throw new IllegalStateException('Unexpected child lifecycle call')
         })
-        script.metaClass.hubInternalPostJson = { String path, String body ->
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             assert path == '/device/runmethod'
             def payload = new JsonSlurper().parseText(body)
             writes << payload

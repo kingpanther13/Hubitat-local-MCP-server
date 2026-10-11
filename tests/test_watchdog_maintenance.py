@@ -40,7 +40,8 @@ name = params["name"]
 arguments = params["arguments"]
 if name == "hub_list_apps":
     emit({"success": True, "apps": [
-        {"id": "42", "namespace": "mcp", "name": "E2E Dead-Man Watchdog v3"}]})
+        {"id": "41", "namespace": "mcp", "name": "E2E Dead-Man Watchdog v3"},
+        {"id": "42", "namespace": "mcp", "name": "E2E Dead-Man Watchdog v3.1"}]})
 elif name == "hub_get_source":
     offset = arguments["offset"]
     assert arguments == {"type": "app", "id": "42", "offset": offset,
@@ -55,7 +56,7 @@ elif name == "hub_get_info":
 elif name == "hub_update_app":
     assert arguments == {
         "appId": "42", "selfUpdate": True, "selfClassId": "42", "confirm": True,
-        "importUrl": "https://raw.githubusercontent.com/fixture/repo/expected/e2e-deadman-watchdog-v3.groovy",
+        "importUrl": "https://raw.githubusercontent.com/fixture/repo/expected/e2e-deadman-watchdog-v3-1.groovy",
     }
     if fixture.get("refusal"):
         emit({"success": False, "error": fixture["refusal"]})
@@ -72,7 +73,7 @@ else:
 '''
 
 
-IDLE_V3 = {"watchdogVersion": 3, "packageDeployment": None}
+IDLE_V3 = {"watchdogVersion": "3.1", "packageDeployment": None}
 
 
 def run_maintenance(tmp_path, *, info=IDLE_V3, pages=None, prepare_only=False, damage=None):
@@ -126,11 +127,12 @@ def run_maintenance(tmp_path, *, info=IDLE_V3, pages=None, prepare_only=False, d
 
 @pytest.mark.parametrize("info", [
     {"watchdogVersion": 2},
+    {"watchdogVersion": 3, "packageDeployment": None},
     {},
-    {"watchdogVersion": 3, "packageDeployment": {"requestId": "held", "phase": "stopped", "hold": True}},
-    {"watchdogVersion": 3, "packageDeployment": {"requestId": "held", "phase": "interrupted"}},
-], ids=["v2-endpoint", "unidentified-endpoint", "held-deployment", "hold-unknown"])
-def test_maintenance_refuses_a_non_v3_or_held_watchdog_before_any_deploy(tmp_path, info):
+    {"watchdogVersion": "3.1", "packageDeployment": {"requestId": "held", "phase": "stopped", "hold": True}},
+    {"watchdogVersion": "3.1", "packageDeployment": {"requestId": "held", "phase": "interrupted"}},
+], ids=["v2-endpoint", "v3-endpoint", "unidentified-endpoint", "held-deployment", "hold-unknown"])
+def test_maintenance_refuses_a_non_v3_1_or_held_watchdog_before_any_deploy(tmp_path, info):
     result, calls = run_maintenance(tmp_path, info=info)
     assert result.returncode != 0, result.stdout + result.stderr
     assert [call["params"]["name"] for call in calls] == ["hub_get_info"]
@@ -138,7 +140,7 @@ def test_maintenance_refuses_a_non_v3_or_held_watchdog_before_any_deploy(tmp_pat
 
 
 def test_maintenance_proceeds_after_a_released_deployment(tmp_path):
-    info = {"watchdogVersion": 3, "packageDeployment": {"requestId": "done", "phase": "complete", "hold": False}}
+    info = {"watchdogVersion": "3.1", "packageDeployment": {"requestId": "done", "phase": "complete", "hold": False}}
     result, _ = run_maintenance(tmp_path, info=info)
     assert result.returncode == 0, result.stdout + result.stderr
     assert (tmp_path / "deployed").exists()
@@ -202,7 +204,7 @@ def test_deploy_rechecks_the_hold_after_backup_download(tmp_path):
     def hold_a_deployment(directory):
         fixture_path = directory.parent / "fixture.json"
         fixture = json.loads(fixture_path.read_text())
-        fixture["info"] = {"watchdogVersion": 3,
+        fixture["info"] = {"watchdogVersion": "3.1",
                            "packageDeployment": {"requestId": "late", "phase": "queued", "hold": True}}
         fixture_path.write_text(json.dumps(fixture))
 

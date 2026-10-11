@@ -43,7 +43,9 @@ Once HPM is installed:
 2. Search for **"MCP"**
 3. Select **MCP Rule Server** and install
 
-That's it! HPM will install the parent app, the child app, and the required Groovy **libraries** (delivered as a bundle, shown under **Libraries Code**) automatically in the same install/update, and notify you when updates are available.
+That's it! HPM will install the parent app and the child app, and notify you when updates are available.
+
+> **Upgrading from 4.6.0 or earlier**: older versions shipped their code as `mcp` libraries in an `mcp_libraries` bundle. The app no longer uses them, but HPM does not remove a bundle, so they stay under **Libraries Code** and **Bundles** as unused code. Delete them when convenient (Libraries Code > each `mcp` library, then Bundles > `mcp_libraries`): the hub's Libraries Code page and `hub_list_libraries` scan every app's source once per installed library, so with the larger inlined app each leftover library adds roughly half a second to that page on a C-8 (19 of them: about 10 s). The app works either way. On 4.6.0 or earlier the Developer-Mode `hub_update_package` tool cannot install 4.7 or later (it expects a bundle); update through HPM once, after which the tool deploys any ref again.
 
 > **Alternate HPM method**: You can also use HPM > **Install** > **From a URL** and paste:
 > ```
@@ -52,30 +54,22 @@ That's it! HPM will install the parent app, the child app, and the required Groo
 
 ### Option B: Manual Installation
 
-The parent app `#include`s Groovy **libraries**, which are all shipped together in one **bundle** (`mcp-libraries.zip`). Install that bundle **first** — otherwise the parent app fails to compile when you Save it. Install in this order: the libraries bundle, then the parent app, then the child app.
+Install the parent app first, then the child app. Use the URLs below: they serve the release build (the parent with all of its library code included), not the source files in the repo tree.
 
-**1. Install the libraries bundle:**
-
-In the Hubitat web UI go to **Bundles** > **Import**, and import the bundle from this repo:
-   ```
-   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/mcp-libraries.zip
-   ```
-   If your hub's Bundle Manager only accepts a file upload, download that `.zip` first and upload it. Importing the bundle installs **every** library the app needs in one step (they appear under **Libraries Code**) — there's no need to add libraries individually. (HPM / Option A does this automatically.)
-
-**2. Install the Parent App (MCP Rule Server):**
+**1. Install the Parent App (MCP Rule Server):**
 1. Go to Hubitat web UI > **Apps Code** > **+ New App**
 2. Click **Import** and paste this URL:
    ```
-   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-server.groovy
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/hubitat-mcp-server.groovy
    ```
 3. Click **Import** > **OK** > **Save**
 4. Click **OAuth** > **Enable OAuth in App** > **Save**
 
-**3. Install the Child App (MCP Rule):**
+**2. Install the Child App (MCP Rule):**
 1. Go to **Apps Code** > **+ New App**
 2. Click **Import** and paste this URL:
    ```
-   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-rule.groovy
+   https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/branches/main/hubitat-mcp-rule.groovy
    ```
 3. Click **Import** > **OK** > **Save**
 4. (No OAuth needed for the child app)
@@ -174,7 +168,7 @@ Add this block, using your **local** URL (`http://YOUR_HUB_IP/apps/api/123/mcp?a
 - `--protocol auto` lets `mcp-remote` use MCP 2026-07-28 with the hub, so slow writes (rules, native apps, drivers, device changes) that need more than one request complete instead of showing a generic error.
 - To troubleshoot, add `"--debug"` to `args`; `mcp-remote` then writes a verbose log under `~/.mcp-auth/` (`%USERPROFILE%\.mcp-auth\` on Windows). That log includes your full connect URL and access token, so redact it before sharing.
 
-> **Previously used `mcp-proxy` (`uvx`)?** Replace that block with the one above. `mcp-proxy` 0.12.0 (its latest release, May 2026) crashes on startup without a `--with "mcp<2.0.0"` pin since the `mcp` Python SDK 2.0.0 release (28 July 2026), and it can't complete the hub's multi-request slow writes. See [#373](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/373).
+> **Previously used `mcp-proxy` (`uvx`)?** Replace that block with the one above. `mcp-proxy` is no longer recommended. It has multiple compatibility issues, does not support many of the servers features, and does not support MCP 2.0. See [#373](https://github.com/kingpanther13/Hubitat-local-MCP-server/issues/373).
 
 Save the file, then fully restart Claude Desktop (Quit from the system tray / menu bar — closing the window is not enough). The Hubitat tools appear under the tools (🔨) icon.
 
@@ -937,7 +931,7 @@ Alternatively, the app's Device Access section has a **Bypass Device Allowlist**
 <details>
 <summary><b>Claude Desktop won't connect, or slow writes show a generic error</b></summary>
 
-- **An `mcp-proxy` (`uvx`) config stopped connecting** (often `ImportError: cannot import name 'request_ctx'`): switch to the `mcp-remote` setup in the *Claude Desktop* section above.
+- **An `mcp-proxy` (`uvx`) config stopped connecting** (often `ImportError: cannot import name 'request_ctx'`): mcp-proxy is no longer supported. It has multiple compatibility issues and doesn't support MCP 2.0. Switch to mcp-remote as per the setup instructions above.
 - **A write returns "Error occurred during tool execution" with no result:** the client didn't continue a slow write. In Claude Desktop, use `mcp-remote` with `--protocol auto`. Claude.ai connectors don't continue these writes yet. The write still finishes on the hub, so check `hub_get_info` → `recentWrites` and read the target before repeating it.
 - After editing the config, fully quit Claude Desktop (system tray / menu bar), not just the window.
 
@@ -1670,6 +1664,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.7.0** - docs: note mcp-proxy 0.13.0 fixes the startup crash, keep mcp-remote for Claude Desktop; feat: deliver one inlined parent app through HPM instead of a library bundle. PRs: [#528](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/528), [#525](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/525)
 - **v4.6.0** - feat: adopt firmware 2.5.2 hub changes. PRs: [#520](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/520)
 - **v4.5.7** - fix: accept bestPracticeKey inside args on direct write tools. PRs: [#519](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/519)
 - **v4.5.6** - fix: Required Expression replace/restore, device swap verification, comparator rendering. PRs: [#515](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/515)

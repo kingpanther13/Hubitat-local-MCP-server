@@ -4,6 +4,9 @@
 > Rule Machine + classic-app cluster (`McpNativeRulesLib`), the last to move — are extracted into
 > `#include` libraries. The wizard mega-methods this doc predicted as "whole-only extractions (much
 > later)" have been moved. Kept as a historical record of the split's reasoning.
+> Since issue #522 the libraries no longer ship as a bundle: `tools/build-release-app.py` inlines them
+> into the released parent app (AGENTS.md § HPM delivery), so the bundle and `tools/build-bundle.py`
+> mentions below are historical too.
 
 Durable handoff doc (written 2026-06-05). Captures state, decisions, and the remaining plan so a
 fresh context can continue. Part of the issue #209 monolith-split effort.

@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""Drive the E2E hub through watchdog v3: prepare a run, install a commit, purge its fixtures.
+"""Drive the E2E hub through watchdog v3.1: prepare a run, install a commit, purge its fixtures.
 
-V3 never restores anything by itself, so every step here is explicit. A hub write is
-submitted once; a lost response is followed by reading status, never by a resubmission.
+V3.1 replaces v3 (issue #522: it installs the built, libraries-inlined apps). Like v3 it never
+restores anything by itself, so every step here is explicit. A hub write is submitted once; a
+lost response is followed by reading status, never by a resubmission.
 """
 
 import argparse
 import hashlib
 import http.client
-import io
 import json
 import os
 import re
@@ -17,12 +17,14 @@ import sys
 import time
 import urllib.error
 import urllib.request
-import zipfile
 from pathlib import Path
 
-V3_APP_NAME = "E2E Dead-Man Watchdog v3"
+V3_APP_NAME = "E2E Dead-Man Watchdog v3.1"
+V3_VERSION = "3.1"  # hub_get_info.watchdogVersion; v3 answers 3
 ENDPOINT_RE = re.compile(r"https://cloud\.hubitat\.com/api/[0-9a-f-]+/apps/[0-9]+/mcp\?access_token=[A-Za-z0-9-]+")
 PACKAGE_APPS = ("MCP Rule", "MCP Rule Server")
+# The built (libraries inlined) apps published under bundle-artifacts/shas/<sha>/.
+APP_FILES = {"MCP Rule": "hubitat-mcp-rule.groovy", "MCP Rule Server": "hubitat-mcp-server.groovy"}
 MCP_APP_ID_RE = re.compile(r"/apps/([0-9]+)/mcp\?")
 
 
@@ -107,14 +109,14 @@ def mask(url):
 
 
 def resolve_v3_url(transport, mcp_url, watchdog_url, cache=None):
-    """Return v3's endpoint. Until WATCHDOG_MCP_URL points at v3, read it from the v3 app page."""
+    """Return v3.1's endpoint. Until WATCHDOG31_MCP_URL points at v3.1, read it from the v3.1 app page."""
     if cache is not None and cache.exists():
         return cache.read_text().strip()
     try:
         configured = transport.call(watchdog_url, "hub_get_info", {})
     except OSError:
         raise HubError("The configured watchdog endpoint does not answer") from None
-    if configured.get("watchdogVersion") == 3:
+    if configured.get("watchdogVersion") == V3_VERSION:
         url = watchdog_url
     else:
         instances = transport.call(watchdog_url, "hub_list_app_instances", {}).get("apps") or []
@@ -129,8 +131,8 @@ def resolve_v3_url(transport, mcp_url, watchdog_url, cache=None):
             raise HubError("The v3 app page does not show exactly one endpoint")
         url = urls.pop()
         mask(url)
-        if transport.call(url, "hub_get_info", {}).get("watchdogVersion") != 3:
-            raise HubError("The discovered endpoint is not watchdog v3")
+        if transport.call(url, "hub_get_info", {}).get("watchdogVersion") != V3_VERSION:
+            raise HubError("The discovered endpoint is not watchdog v3.1")
     if cache is not None:
         cache.write_text(url)
         cache.chmod(0o600)
@@ -372,23 +374,17 @@ def follow(transport, v3, mcp, plan, request_id, baseline, *, interval=10, attem
     raise HubError(f"Deployment observation timed out at {where}; safety hold retained")
 
 
-def plan_from_bundle(ref, bundle_bytes):
-    """The expected library names and hashes, read from a libraries-only bundle."""
+def plan_from_apps(ref, sources):
+    """The expected hashes of the two built apps. Libraries are inlined, so there is no bundle."""
     if not re.fullmatch(r"[0-9a-f]{40}", ref):
         raise ValueError("ref must be an immutable 40-character commit SHA")
-    with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as bundle:
-        manifest = bundle.read("install.txt").decode().splitlines()
-        if manifest[:2] != ["mcp", "mcp_libraries"] or bundle.read("install.txt") != bundle.read("update.txt"):
-            raise ValueError("Unexpected package bundle identity")
-        entries = manifest[2:]
-        if not entries or any(not re.fullmatch(r"library mcp\.[A-Za-z0-9_]+\.groovy", item) for item in entries):
-            raise ValueError("The package bundle must contain libraries only")
-        names = [item.split(" ", 1)[1] for item in entries]
-        if len(set(names)) != len(names) or sorted(bundle.namelist()) != sorted([*names, "install.txt", "update.txt"]):
-            raise ValueError("Unexpected or duplicate bundle contents")
-        libraries = [{"name": name[len("mcp."):-len(".groovy")],
-                      "sha256": hashlib.sha256(bundle.read(name)).hexdigest()} for name in names]
-    return {"ref": ref, "libraries": libraries}
+    if set(sources) != set(APP_FILES):
+        raise ValueError("Both built apps are required")
+    for name, source in sources.items():
+        if re.search(rb"(?m)^[ \t]*#include[ \t]", source):
+            raise HubError(f"The built {name} still has #include directives; nothing would deliver them")
+    return {"ref": ref, "libraries": [],
+            "apps": [{"name": name, "sha256": hashlib.sha256(sources[name]).hexdigest()} for name in PACKAGE_APPS]}
 
 
 def fetch(url, *, attempts=3, interval=5):
@@ -409,12 +405,23 @@ def fetch(url, *, attempts=3, interval=5):
     raise HubError(f"Could not download {url} ({status})")
 
 
-def artifact_url(base, sha):
-    return f"{base}/bundle-artifacts/shas/{sha}/mcp-libraries.zip"
+def artifact_url(base, sha, name):
+    return f"{base}/bundle-artifacts/shas/{sha}/{APP_FILES[name]}"
+
+
+def fetch_published(url, *, attempts=30, interval=10):
+    """A push publishes its build in a workflow that runs alongside this one, so wait for it a while."""
+    for attempt in range(attempts):
+        published = fetch(url)
+        if published is not None or attempt == attempts - 1:
+            return published
+        if attempt == 0:
+            log(f"Waiting for {url} to be published")
+        time.sleep(interval)
 
 
 def endpoints():
-    cache = Path(os.environ["RUNNER_TEMP"], "watchdog-v3-endpoint") if os.environ.get("RUNNER_TEMP") else None
+    cache = Path(os.environ["RUNNER_TEMP"], "watchdog-v3-1-endpoint") if os.environ.get("RUNNER_TEMP") else None
     transport = Transport()
     mcp = os.environ["MCP_URL"]
     return transport, resolve_v3_url(transport, mcp, os.environ["WATCHDOG_URL"], cache), mcp
@@ -465,14 +472,16 @@ def command_prepare(_args):
 def command_deploy_pr(args):
     transport, v3, mcp = endpoints()
     base, sha = os.environ["PR_RAW_BASE"], os.environ["PR_HEAD_SHA_RESOLVED"]
-    built = Path(args.bundle).read_bytes()
-    plan = plan_from_bundle(sha, built)
-    published = fetch(artifact_url(base, sha))
-    if published is None:
-        log(f"::warning::No bundle-artifacts entry for {sha}. The deployment succeeds only if the hub's "
-            "libraries already match this commit.")
-    elif published != built:
-        raise HubError("The published bundle differs from the bundle built from this checkout")
+    built = {name: Path(args.dist, file).read_bytes() for name, file in APP_FILES.items()}
+    plan = plan_from_apps(sha, built)
+    # V3 installs only the published entry, so unlike the old bundle (skipped when the hub's
+    # libraries already matched) a missing one cannot work.
+    for name in PACKAGE_APPS:
+        published = fetch_published(artifact_url(base, sha, name))
+        if published is None:
+            raise HubError(f"No bundle-artifacts entry for {name} at {sha}; v3 installs the built apps only from there")
+        if published != built[name]:
+            raise HubError(f"The published {name} differs from the one built from this checkout")
     result = deploy(transport, v3, mcp, {**plan, "baseUrl": base, "bundleBaseUrl": base}, operation_id("pr"))
     log(f"Installed {sha}: {json.dumps({k: result.get(k) for k in ('requestId', 'phase', 'hold', 'elapsedMs')})}")
 
@@ -542,12 +551,12 @@ def command_install_main(_args):
     sha = current_main_sha(repository)
     if sha is None:
         raise HubError("Could not resolve main's current SHA")
-    bundle = fetch(artifact_url(base, sha))
-    if bundle is None:
-        raise HubError(f"No published bundle for main at {sha}")
+    sources = {name: fetch(artifact_url(base, sha, name)) for name in PACKAGE_APPS}
+    if None in sources.values():
+        raise HubError(f"No published build of main at {sha}")
+    plan = plan_from_apps(sha, sources)
     clear_hold(transport, v3)
-    result = deploy(transport, v3, mcp, {**plan_from_bundle(sha, bundle), "baseUrl": base, "bundleBaseUrl": base},
-                    operation_id("main"))
+    result = deploy(transport, v3, mcp, {**plan, "baseUrl": base, "bundleBaseUrl": base}, operation_id("main"))
     log(f"Installed main {sha}: {json.dumps({k: result.get(k) for k in ('requestId', 'phase', 'hold', 'elapsedMs')})}")
 
 
@@ -561,7 +570,7 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("prepare").set_defaults(run=command_prepare)
     deploy_pr = commands.add_parser("deploy-pr")
-    deploy_pr.add_argument("--bundle", required=True, help="mcp-libraries.zip built from the checkout")
+    deploy_pr.add_argument("--dist", required=True, help="directory holding the apps tools/build-release-app.py built")
     deploy_pr.set_defaults(run=command_deploy_pr)
     teardown = commands.add_parser("teardown")
     teardown.add_argument("--cancelled", action="store_true", help="the run was cancelled: best effort, never fails")
@@ -573,9 +582,10 @@ def main(argv=None):
         args.run(args)
     except (HubError, ToolError, Unreadable) as error:
         raise SystemExit(f"::error::{error}") from None
-    except (OSError, ValueError, KeyError, zipfile.BadZipFile):
-        # Never print the exception: it can carry an endpoint URL and its token.
-        raise SystemExit("::error::An endpoint or input was unavailable; no write was retried") from None
+    except (OSError, ValueError, KeyError) as error:
+        # Never print the exception's text: it can carry an endpoint URL and its token. Its class
+        # name carries neither and tells a connection failure from a missing input.
+        raise SystemExit(f"::error::An endpoint or input was unavailable ({type(error).__name__}); no write was retried") from None
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ on:
       - 'scripts/**.py'
       - 'tests/test_*.py'
       - 'tests/conftest.py'
+      - 'tools/**.py'
       - 'tests/sdk-conformance-requirements.txt'
       # Sources-under-test that aren't in tests/test_*.py — without these
       # entries, edits to sandbox_lint.py or e2e_test.py wouldn't trigger
