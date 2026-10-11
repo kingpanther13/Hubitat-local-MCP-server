@@ -303,6 +303,23 @@ class ToolImportUrlSpec extends ToolSpecBase {
         new groovy.json.JsonSlurper().parseText(captured.body).version == 9
     }
 
+    def "hub_update_app with inline source and backup false takes no backup"() {
+        given:
+        enableWrite()
+        hubGet.register('/app/list/single/data/42') { params -> '[{"id": 42, "version": 7}]' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, id: 42] }
+        int backups = 0
+        script.metaClass.backupItemSource = { String type, String itemId -> backups++; [version: 7, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', source: 'definition(name: "x") {}', backup: false, confirm: true])
+
+        then:
+        result.success == true
+        result.sourceBackup == 'skipped: backup=false was passed'
+        backups == 0
+    }
+
     def "hub_update_app with inline source still backs up the current source first"() {
         given:
         enableWrite()

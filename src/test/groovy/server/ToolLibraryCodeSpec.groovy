@@ -1098,6 +1098,30 @@ def helperMethod() { return "ok" }
         useGateways << [true, false]
     }
 
+    def "hub_update_library (source mode) with backup false saves without a backup"() {
+        given:
+        enableWrite()
+        hubGet.register('/library/list/single/data/42') { params -> SAMPLE_RESPONSE_JSON }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+        def capturedBody = null
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
+            capturedBody = new groovy.json.JsonSlurper().parseText(body)
+            [success: true, message: '', id: 42, version: 2]
+        }
+
+        when:
+        def result = script.toolUpdateLibraryCode([libraryId: '42', source: SAMPLE_SOURCE, backup: false, confirm: true])
+
+        then:
+        uploads.isEmpty()
+        capturedBody.id == 42
+        capturedBody.version == 1
+        result.success == true
+        result.sourceBackup == 'skipped: backup=false was passed'
+        !(atomicStateMap.itemBackupManifest?.containsKey('library_42'))
+    }
+
     def "hub_update_library (source mode) backs up, fetches version, POSTs to saveOrUpdateJson"() {
         given:
         enableWrite()
