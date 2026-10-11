@@ -161,6 +161,21 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         !old.lastSelfDeploy.containsKey('status')
     }
 
+    def "getHubInfo never fails a saving self-deploy record while the App Code row is unreadable"() {
+        given:
+        hubGet.register('/app/list/single/data/228') { params -> '<html>busy</html>' }
+        atomicStateMap.lastSelfDeploy = [success: true, assumed: true, status: 'saving', startedVersion: 5,
+                                         appId: '228', at: 1234567890000L - 21L * 60L * 1000L]
+
+        when:
+        def result = script.toolGetHubInfo()
+
+        then:
+        result.lastSelfDeploy.status == 'saving'
+        result.lastSelfDeploy.success == true
+        atomicStateMap.lastSelfDeploy.status == 'saving'
+    }
+
     def "getHubInfo omits lastSelfDeploy when the app has never self-deployed"() {
         given:
         sharedLocation.hub = new TestHub()

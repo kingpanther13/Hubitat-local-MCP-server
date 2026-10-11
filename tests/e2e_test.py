@@ -15505,8 +15505,13 @@ class TestRunner:
                        for b in bundles), f"expected a planned library bundle re-anchored to 'main': {bundles}"
         else:
             # Since issue #522 the package ships no bundle: both apps come from the published build.
-            assert apps and all("/bundle-artifacts/" in (a.get("url") or "") and a.get("expectedBytes")
-                                for a in apps), f"expected both apps planned from the published build: {apps}"
+            by_name = {a.get("name"): a for a in apps}
+            assert set(by_name) == {"MCP Rule Server", "MCP Rule"}, f"expected exactly the parent and child apps in the plan: {apps}"
+            for name, file in (("MCP Rule Server", "hubitat-mcp-server.groovy"), ("MCP Rule", "hubitat-mcp-rule.groovy")):
+                url = by_name[name].get("url") or ""
+                assert "/bundle-artifacts/" in url and url.endswith("/" + file), f"{name} not planned from the published build: {url}"
+                assert isinstance(by_name[name].get("expectedBytes"), int) and by_name[name]["expectedBytes"] > 0, \
+                    f"{name} plan lacks its .size marker: {by_name[name]}"
         # Both apps are planned; exactly one self app (the parent), and it is listed LAST.
         names = [a.get("name") for a in apps]
         assert "MCP Rule Server" in names, f"parent app missing from the plan: {apps}"

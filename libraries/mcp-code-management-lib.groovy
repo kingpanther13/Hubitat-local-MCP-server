@@ -1606,11 +1606,13 @@ Map _resolveSavingSelfDeploy(Map lsd) {
         done = [:] + lsd
         done.remove("assumed"); done.remove("status")
         done.confirmedVersion = cur
-    } else if (lsd.at instanceof Number && now() - (lsd.at as long) > 20L * 60L * 1000L) {
+    } else if (cur != null && started != null && lsd.at instanceof Number && now() - (lsd.at as long) > 20L * 60L * 1000L) {
+        // Only a readable row that has not moved proves the save did not land; an unreadable
+        // row (hub still busy, auth hiccup) leaves the record saving for the next read.
         done = [:] + lsd
         done.remove("assumed"); done.remove("status")
         done.success = false
-        done.error = "Self save did not land: the App Code version is still ${cur != null ? cur : 'unreadable'} twenty minutes after the save was accepted at version ${started}"
+        done.error = "Self save did not land: the App Code version is still ${cur} twenty minutes after the save was accepted at version ${started}"
     }
     if (done == null) return lsd
     try { atomicState.lastSelfDeploy = done } catch (Exception e) { mcpLog("error", "hub-admin", "lastSelfDeploy settle write failed: ${e}") }
@@ -1906,9 +1908,11 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
                     successResult.note = "The hub accepted the save and is still compiling it. Poll hub_get_info.lastSelfDeploy: status disappears and confirmedVersion appears once the App Code version passes ${currentVersion}; a record still saving after 20 minutes turns into a failure."
                 }
             }
-            if (sourceMode == "resave") successResult.note = "Source was fetched and re-saved entirely on-hub — no cloud round-trip."
-            if (sourceMode == "sourceFile") successResult.note = "Source was read from File Manager file '${args.sourceFile}' — no cloud size limits."
-            if (sourceMode == "importUrl") successResult.note = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript)."
+            def modeNote = null
+            if (sourceMode == "resave") modeNote = "Source was fetched and re-saved entirely on-hub — no cloud round-trip."
+            if (sourceMode == "sourceFile") modeNote = "Source was read from File Manager file '${args.sourceFile}' — no cloud size limits."
+            if (sourceMode == "importUrl") modeNote = "Source was fetched from importUrl '${args.importUrl}' (hub-side fetch, no agent transcript)."
+            if (modeNote) successResult.note = successResult.note ? "${successResult.note} ${modeNote}".toString() : modeNote
             if (published) successResult.sourceBackup = "skipped: the package's previous build is published under its own ref"
 
             // Optional triggerUpdated: fire updated() on the named running instance so
@@ -2041,6 +2045,13 @@ private Map _validatedPackageWorkerContext(packageWorkerContext) {
 }
 
 def toolUpdateAppCode(args) {
+    // sourceOrigin is set only by hub_update_package's worker (the source it verified against the
+    // published build); from the public argument map it would skip the pre-update backup for
+    // arbitrary source, so it is dropped here like the package correlation fields.
+    if (args instanceof Map && args.containsKey("sourceOrigin")) {
+        args = [:] + args
+        args.remove("sourceOrigin")
+    }
     return _toolUpdateAppCode(args, null)
 }
 

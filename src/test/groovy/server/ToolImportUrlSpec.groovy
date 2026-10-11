@@ -244,6 +244,24 @@ class ToolImportUrlSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path == '/app/ajax/code' }
     }
 
+    def "hub_update_app drops a public sourceOrigin, so it cannot skip the backup for arbitrary source"() {
+        given:
+        enableWrite()
+        stubHttpGet(200, 'fetched-source-here')
+        hubGet.register('/app/list/single/data/42') { params -> '[{"id": 42, "version": 7}]' }
+        script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, id: 42] }
+        int backups = 0
+        script.metaClass.backupItemSource = { String type, String itemId -> backups++; [version: 7, fileName: 'b.json'] }
+
+        when:
+        def result = script.toolUpdateAppCode([appId: '42', importUrl: 'https://raw.example.com/app.groovy', sourceOrigin: 'published', confirm: true])
+
+        then:
+        result.success == true
+        result.sourceBackup == null
+        backups == 1
+    }
+
     def "hub_update_app with importUrl on any other app still backs up its current source first"() {
         given:
         enableWrite()

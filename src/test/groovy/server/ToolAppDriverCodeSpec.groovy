@@ -4696,6 +4696,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         seenTimeout == 20
         result.success == true
         result.status == 'saving'
+        result.note.contains('Poll hub_get_info.lastSelfDeploy')
         atomicStateMap.lastSelfDeploy.success == true
         atomicStateMap.lastSelfDeploy.status == 'saving'
         atomicStateMap.lastSelfDeploy.startedVersion == 5
