@@ -39,6 +39,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          export COVERAGE_AGENT=$(python3 ci/dependency-coverage/prepare_agent.py)
           args=(--init-script "$PWD/ci/dependency-coverage/coverage.init.gradle" --no-daemon --console=plain --rerun-tasks)
           case "$LANE" in
             groovy25) args+=(-p ci/groovy2x-spock -PharnessStrictMetaClass=true) ;;
@@ -51,7 +52,7 @@ jobs:
             args+=(--tests server.McpWireSchemaConformanceSpec --tests rules.HandleDeviceEventSpec --tests server.WatchdogV31PackageDeploySpec)
           fi
           ./gradlew "${args[@]}" 2>&1 | tee coverage-run.log
-          if rg 'IllegalClassFormatException|Error while instrumenting|java.lang.instrument ASSERTION' coverage-run.log; then
+          if rg 'IllegalClassFormatException|Error while instrumenting|java.lang.instrument ASSERTION' coverage-run.log build/test-results/test ci/groovy2x-spock/build/test-results/test --glob '*.xml' --glob '*.log'; then
             echo '::error::Coverage instrumentation failed'
             exit 1
           fi

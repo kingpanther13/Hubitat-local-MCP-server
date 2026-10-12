@@ -17,9 +17,13 @@ allprojects {
             if (!data.isFile()) throw new GradleException('No application coverage collected')
             def loader = new ExecFileLoader()
             loader.load(data)
+            def snapshots = new File(output, 'iterations')
+            snapshots.eachFileMatch(~/.*\.exec/) { loader.load(it) }
             def classes = []
             def counter = { c -> [covered: c.coveredCount, missed: c.missedCount] }
             def visitor = { c ->
+                // Groovy's generated call-site adapters have no application source.
+                if (c.sourceFileName == null) return
                 def lines = [:]
                 if (c.firstLine >= 0) {
                     (c.firstLine..c.lastLine).each { nr ->
@@ -39,22 +43,30 @@ allprojects {
             new Analyzer(loader.executionDataStore, visitor).analyzeAll(new File(output, 'classes'))
             def main = classes.findAll { c -> c.methods.any { it.name == 'toolGetHubInfo' } }
             def rule = classes.findAll { c -> c.name == 'hubitat-mcp-rule' }
-            if (!main || !main.any { it.instructions.covered > 0 }) throw new GradleException('Coverage missed MCP server')
-            if (!rule || !rule.any { it.instructions.covered > 0 }) throw new GradleException('Coverage missed rule app')
             new File(output, 'coverage.json').text = JsonOutput.toJson([jacoco: '0.8.15',
                 includes: ['Script*', 'hubitat-mcp-*', 'e2e-deadman-*'],
                 classes: classes.sort { a,b -> (a.name <=> b.name) ?: (a.id <=> b.id) }])
+            if (!main || !main.any { it.instructions.covered > 0 }) throw new GradleException('Coverage missed MCP server')
+            if (!rule || !rule.any { it.instructions.covered > 0 }) throw new GradleException('Coverage missed rule app')
             println "Captured ${classes.size()} dynamic application classes; server and rule execution verified"
         }
     }
     tasks.withType(Test).configureEach {
         maxHeapSize = '2g'
+        systemProperty 'coverage.output', output.absolutePath
         jacoco {
+            enabled = false
             includes = ['Script*', 'hubitat-mcp-*', 'e2e-deadman-*']
             includeNoLocationClasses = true
             destinationFile = new File(output, 'test.exec')
             classDumpDir = new File(output, 'classes')
         }
+        jvmArgs "-javaagent:${System.getenv('COVERAGE_AGENT')}=destfile=${output}/test.exec,append=false,inclnolocationclasses=true,includes=Script*:hubitat-mcp-*:e2e-deadman-*,classdumpdir=${output}/classes"
         finalizedBy summary
+    }
+    afterEvaluate {
+        def experiment = new File(System.getenv('GITHUB_WORKSPACE'), 'ci/dependency-coverage')
+        sourceSets.test.groovy.srcDir(new File(experiment, 'groovy'))
+        sourceSets.test.resources.srcDir(new File(experiment, 'resources'))
     }
 }
