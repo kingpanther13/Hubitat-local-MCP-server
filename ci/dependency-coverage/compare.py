@@ -11,6 +11,12 @@ from pathlib import Path
 
 root = Path(sys.argv[1])
 results = []
+expected_lanes = {'primary', 'groovy25'} if len(sys.argv) > 2 and sys.argv[2] == 'smoke' else {
+    'primary', 'flat', 'strict', 'strict-flat', 'groovy25'}
+
+
+def normalize(name):
+    return re.sub(r'@[0-9a-fA-F]{4,}\b', '@OBJECT', name)
 
 
 def execution(path, application_ids):
@@ -63,11 +69,21 @@ def iterations(folder, classes):
     return records
 
 
+def unmeasured_passes(folder, tests):
+    measured = collections.Counter()
+    for path in folder.rglob('iterations/*.json'):
+        metadata = json.loads(path.read_text())
+        measured[(metadata['spec'], normalize(metadata['display']))] += 1
+    passed = collections.Counter({(spec, name): count for (spec, name, outcome), count in tests.items()
+                                  if outcome == 'passed'})
+    return list((passed - measured).items())
+
+
 def inventory(folder):
     cases = collections.Counter()
     for path in folder.rglob('TEST-*.xml'):
         for case in ET.parse(path).getroot().findall('testcase'):
-            name = re.sub(r'@[0-9a-fA-F]{4,}\b', '@OBJECT', case.get('name'))
+            name = normalize(case.get('name'))
             outcome = ('skipped' if case.find('skipped') is not None else
                        'failed' if case.find('failure') is not None or case.find('error') is not None
                        else 'passed')
@@ -101,14 +117,18 @@ for baseline_dir in sorted(root.glob('coverage-*-baseline')):
                 missing_iterations=sorted(old_iterations.keys()-new_iterations.keys()),
                 added_iterations=sorted(new_iterations.keys()-old_iterations.keys()),
                 changed_iterations=changed_iterations,
+                unmeasured_baseline_tests=unmeasured_passes(baseline_dir, old_tests),
+                unmeasured_candidate_tests=unmeasured_passes(candidate_dir, new_tests),
                 failed_cases=[k for k in old_tests.keys() | new_tests.keys() if k[2] == 'failed'])
     item['identical'] = not any(item[k] for k in ['missing_classes', 'added_classes',
         'changed_classes', 'missing_or_changed_cases', 'added_or_changed_cases',
-        'missing_iterations', 'added_iterations', 'changed_iterations', 'failed_cases'])
+        'missing_iterations', 'added_iterations', 'changed_iterations', 'failed_cases',
+        'unmeasured_baseline_tests', 'unmeasured_candidate_tests'])
     results.append(item)
     print(json.dumps({k: len(v) if isinstance(v, list) else v for k, v in item.items()}))
 if not results:
     raise SystemExit('No baseline coverage artifacts found')
 (root / 'comparison.json').write_text(json.dumps(results, indent=2))
+assert {r['lane'] for r in results} == expected_lanes, 'Missing or unexpected coverage lane'
 if not all(r['identical'] for r in results):
     raise SystemExit('Coverage or test inventory differs; inspect comparison.json')

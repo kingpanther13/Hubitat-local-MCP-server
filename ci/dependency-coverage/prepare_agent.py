@@ -7,6 +7,7 @@ Run on the CI runner, never against the hub.
 import pathlib
 import re
 import subprocess
+import os
 import urllib.request
 import zipfile
 
@@ -38,4 +39,8 @@ agent = out / 'jacocoagent.jar'
 with zipfile.ZipFile(archive) as original, zipfile.ZipFile(agent, 'w', zipfile.ZIP_DEFLATED) as patched:
     for info in original.infolist():
         patched.writestr(info, (out / name).read_bytes() if info.filename == name else original.read(info.filename))
+check = out / 'ProbeEncodingCheck.java'
+check.write_text((root / 'vendor/ProbeEncodingCheck.java').read_text().replace('SHADED_PREFIX', prefix))
+subprocess.run(['javac', '--release', '8', '-cp', str(agent), '-d', str(out), str(check)], check=True)
+subprocess.run(['java', '-cp', str(agent) + os.pathsep + str(out), 'ProbeEncodingCheck'], check=True)
 print(agent)

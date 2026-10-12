@@ -78,7 +78,9 @@ jobs:
           pattern: coverage-*
           path: coverage-artifacts
       - name: Compare bytecode identities, probes, lines, branches and tests
-        run: python3 ci/dependency-coverage/compare.py coverage-artifacts
+        env:
+          SCOPE: ${{ inputs.scope }}
+        run: python3 ci/dependency-coverage/compare.py coverage-artifacts "$SCOPE"
       - uses: actions/upload-artifact@v7
         if: always()
         with:
