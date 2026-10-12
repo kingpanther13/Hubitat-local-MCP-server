@@ -4,12 +4,18 @@ on:
     inputs:
       scope:
         type: choice
-        options: [smoke, full]
+        options: [smoke, full, analyze]
         default: smoke
+      source_run:
+        description: Existing full run to analyze without rerunning tests
+        type: string
+        default: ''
 permissions:
   contents: read
+  actions: read
 jobs:
   coverage:
+    if: inputs.scope != 'analyze'
     runs-on: ubuntu-latest
     timeout-minutes: 50
     strategy:
@@ -52,17 +58,7 @@ jobs:
             args+=(--tests server.McpWireSchemaConformanceSpec --tests rules.HandleDeviceEventSpec --tests server.WatchdogV31PackageDeploySpec)
           fi
           ./gradlew "${args[@]}" 2>&1 | tee coverage-run.log
-          reports=(coverage-run.log)
-          for directory in build/test-results/test ci/groovy2x-spock/build/test-results/test; do
-            if [[ -d "$directory" ]]; then reports+=("$directory"); fi
-          done
-          if rg 'IllegalClassFormatException|Error while instrumenting|java.lang.instrument ASSERTION' "${reports[@]}" --glob '*.xml' --glob '*.log'; then
-            echo '::error::Coverage instrumentation failed'
-            exit 1
-          else
-            status=$?
-            if [[ "$status" != 1 ]]; then exit "$status"; fi
-          fi
+          python3 ci/dependency-coverage/check_logs.py coverage-run.log build/test-results/test ci/groovy2x-spock/build/test-results/test
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -84,6 +80,8 @@ jobs:
         with:
           pattern: coverage-*
           path: coverage-artifacts
+          run-id: ${{ inputs.source_run || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Compare bytecode identities, probes, lines, branches and tests
         env:
           SCOPE: ${{ inputs.scope }}

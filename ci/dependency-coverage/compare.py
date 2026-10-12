@@ -8,6 +8,7 @@ import struct
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from check_logs import check
 
 root = Path(sys.argv[1])
 results = []
@@ -95,6 +96,8 @@ def inventory(folder):
 
 for baseline_dir in sorted(root.glob('coverage-*-baseline')):
     candidate_dir = baseline_dir.with_name(baseline_dir.name.removesuffix('-baseline') + '-candidate')
+    for folder in (baseline_dir, candidate_dir):
+        check([folder, *folder.rglob('coverage-run.log')])
     before = json.loads(next(baseline_dir.rglob('coverage.json')).read_text())
     after = json.loads(next(candidate_dir.rglob('coverage.json')).read_text())
     old = {(c['name'], c['id']): c for c in before['classes']}
