@@ -1,6 +1,7 @@
 """Hub-free regressions for focused coverage and fail-closed live label reads."""
 
 import importlib.util
+import json
 import os
 import re
 import subprocess
@@ -17,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
      "tests/sandbox_lint.py\ntests/test_sandbox_lint.py\n.github/workflows/sandbox-lint.yml", False),
     ("TOOL_GUIDE.md\nlibraries/mcp-variables-lib.groovy", True),
 ])
-def test_guide_stack_gate_uses_actual_changed_files(changed_files, expected, tmp_path):
+@pytest.mark.parametrize("pr_author", ["fixture", "renovate[bot]", "dependabot[bot]"])
+def test_guide_stack_gate_uses_actual_changed_files(changed_files, expected, pr_author, tmp_path):
     workflow = (ROOT / ".github/workflows/hub-e2e.yml").read_text()
     # Both workflows must accept the guide's base, without trusting arbitrary bases.
     for name, event in [("hub-e2e.yml", "pull_request_target"), ("pr-guard.yml", "pull_request")]:
@@ -41,13 +43,80 @@ gh() {
     result = subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=ROOT,
                             env={**os.environ, "CHANGED_FILES": changed_files,
                                  "MCP_URL": "unused", "WATCHDOG_URL": "unused",
-                                 "PR_AUTHOR": "fixture", "TESTS_INPUT": "",
+                                 "PR_AUTHOR": pr_author, "TESTS_INPUT": "",
                                  "GITHUB_OUTPUT": str(output),
                                  "GITHUB_STEP_SUMMARY": str(tmp_path / "summary")},
                             capture_output=True, text=True, check=True)
     assert f"available={str(expected).lower()}" in output.read_text(), result.stdout
     if not expected:
         assert "WITHOUT running the suite" in result.stdout
+
+
+@pytest.mark.parametrize("case, expected", [
+    ("dependencies", "dependency_skip=true"),
+    ("runtime-second-page", "run=true"),
+    ("renamed-runtime", "run=true"),
+    ("api-failure", "run=true"),
+    ("malformed", "run=true"),
+    ("truncated", "run=true"),
+    ("head-changed", "run=true"),
+])
+def test_bot_gate_cli_verifies_complete_current_diff(case, expected, tmp_path):
+    """Exercise the real CLI; only GitHub's read API is replaced with fixtures."""
+    pages = [[{"filename": "build.gradle"}], [{"filename": ".github/workflows/hub-e2e.yml"}]]
+    if case == "runtime-second-page":
+        pages[1] = [{"filename": "libraries/mcp-variables-lib.groovy"}]
+    if case == "renamed-runtime":
+        pages[0][0]["previous_filename"] = "hubitat-mcp-server.groovy"
+    event = {
+        "action": "synchronize",
+        "sender": {"login": "kingpanther13"},
+        "pull_request": {
+            "number": 42, "head": {"sha": "a" * 40}, "labels": [],
+            "user": {"login": "renovate[bot]", "type": "Bot"},
+        },
+    }
+    current = {
+        "head": {"sha": ("b" if case == "head-changed" else "a") * 40},
+        "changed_files": 3 if case == "truncated" else 2,
+    }
+    (tmp_path / "event.json").write_text(json.dumps(event))
+    (tmp_path / "pages.json").write_text("invalid" if case == "malformed" else json.dumps(pages))
+    (tmp_path / "current.json").write_text(json.dumps(current))
+    gh = tmp_path / "gh"
+    gh.write_text('''#!/usr/bin/env python3
+import os
+import sys
+from pathlib import Path
+
+root = Path(os.environ["FIXTURES"])
+if os.environ["CASE"] == "api-failure":
+    sys.exit(1)
+args = sys.argv[1:]
+if args == ["api", "--paginate", "--slurp", "repos/owner/repo/pulls/42/files?per_page=100"]:
+    print((root / "pages.json").read_text())
+elif args == ["api", "repos/owner/repo/pulls/42"]:
+    print((root / "current.json").read_text())
+else:
+    sys.exit("Unexpected API request: " + repr(args))
+''')
+    gh.chmod(0o755)
+    output = tmp_path / "output"
+    result = subprocess.run(
+        ["node", str(ROOT / ".github/scripts/lane_gate.js")],
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}",
+             "FIXTURES": str(tmp_path), "CASE": case, "GITHUB_REPOSITORY": "owner/repo",
+             "GITHUB_EVENT_PATH": str(tmp_path / "event.json"), "GITHUB_RUN_ATTEMPT": "2",
+             "GITHUB_EVENT_NAME": "pull_request_target", "GITHUB_OUTPUT": str(output)},
+        capture_output=True, text=True, check=True,
+    )
+    outputs = output.read_text().splitlines()
+    assert expected in outputs, result.stdout + result.stderr
+    if case == "dependencies":
+        assert "run=false" in outputs
+        assert "skip=false" in outputs
+    else:
+        assert "dependency_skip=false" in outputs
 
 
 @pytest.mark.parametrize("step_name, flag", [
