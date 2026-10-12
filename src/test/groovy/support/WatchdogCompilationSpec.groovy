@@ -23,9 +23,9 @@ class WatchdogCompilationSpec extends WatchdogSpec {
         assert previousClass == null || previousClass.is(first.getClass())
         previousClass = first.getClass()
         assert first.LOOPBACK == [failStreak: 0, lastOkAt: null, streakStartedAt: null]
-        assert first.MANUAL_WRITE.empty
-        assert first.PACKAGE_PROGRESS.empty
-        assert first.HEALTH_TICK.empty
+        assert first.MANUAL_WRITE.isEmpty()
+        assert first.PACKAGE_PROGRESS.isEmpty()
+        assert first.HEALTH_TICK.isEmpty()
         assert !first.metaClass.respondsTo(first, 'cacheLeakProbe')
         first.metaClass.getAdminToolDefinitions = { -> [[name: 'override']] }
 
