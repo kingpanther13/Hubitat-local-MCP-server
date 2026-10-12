@@ -12,7 +12,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[2]
 BUILD_FILES = ("build.gradle", "ci/groovy2x-spock/build.gradle", "ci/groovy24-parse/build.gradle")
 GROOVY = "org.codehaus.groovy:groovy-all"
