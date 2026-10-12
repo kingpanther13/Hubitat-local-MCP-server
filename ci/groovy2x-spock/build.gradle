@@ -49,9 +49,8 @@ dependencies {
     implementation 'org.codehaus.groovy:groovy-all:2.5.23'
     testImplementation 'org.codehaus.groovy:groovy-all:2.5.23'
     testImplementation 'org.spockframework:spock-core:2.5-groovy-2.5'
-    // joelwetzel/hubitat_ci pinned by commit SHA (the fork cuts no release tags). This is a MANUAL
-    // pin: the existing .github/workflows/hubitat-ci-version-check.yml only tracks the root build's
-    // eighty20results tag, not this SHA, so bump it by hand when adopting fork fixes.
+    // joelwetzel/hubitat_ci pinned by commit SHA (the fork cuts no release tags).
+    // Renovate watches master through git-refs and proposes immutable SHA updates.
     testImplementation 'com.github.joelwetzel:hubitat_ci:a62a351eed'
     // Spock needs a class-gen backend (byte-buddy or cglib) to Mock/Spy non-interface types
     // (TestDevice, TestChildApp); neither is transitive on the groovy-2.5 variant.

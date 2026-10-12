@@ -1,0 +1,45 @@
+name: Dependency update configuration
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/renovate.json'
+      - '.github/dependabot.yml'
+      - '.github/workflows/dependency-updates-check.yml'
+      - 'ci/dependency-updates/**'
+      - '**/*.gradle'
+      - 'gradle/wrapper/gradle-wrapper.properties'
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-updates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RENOVATE_VERSION: '44.151.5'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Install the pinned Renovate validator
+        run: npm install --prefix "$RUNNER_TEMP/renovate" --no-audit --no-fund "renovate@$RENOVATE_VERSION"
+      - name: Validate configuration
+        run: "$RUNNER_TEMP/renovate/node_modules/.bin/renovate-config-validator --strict .github/renovate.json"
+      - name: Exercise dependency discovery and update selection without writes
+        env:
+          GITHUB_COM_TOKEN: ${{ github.token }}
+          RENOVATE_BINARY: ${{ runner.temp }}/renovate/node_modules/.bin/renovate
+          EVIDENCE_DIR: ${{ runner.temp }}/dependency-update-evidence
+        run: python ci/dependency-updates/check.py
+      - name: Upload dependency lookup evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: dependency-update-evidence
+          path: ${{ runner.temp }}/dependency-update-evidence/

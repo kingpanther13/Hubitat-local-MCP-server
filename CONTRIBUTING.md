@@ -16,7 +16,7 @@ Before you push a PR:
 
 - **JDK**: 17+ locally (Gradle 9 daemon requirement). The Gradle toolchain compiles to JDK 11; CI runs JDK 17 Temurin.
 - **Build**: Gradle 9.5 via the wrapper (`./gradlew test`); no global install needed.
-- **Test framework**: Spock 2.3 on Groovy 3.0, riding [eighty20results/hubitat_ci](https://github.com/eighty20results/hubitat_ci) for the sandbox harness. The pinned tag lives in `build.gradle` and is bumped by `.github/workflows/hubitat-ci-version-check.yml`.
+- **Test framework**: Spock 2.5 on Groovy 3.0, riding [eighty20results/hubitat_ci](https://github.com/eighty20results/hubitat_ci) for the sandbox harness. The pinned tag lives in `build.gradle`; Renovate proposes release updates, and `.github/workflows/hubitat-ci-version-check.yml` provides an independent notification. See [dependency update policy](docs/dependency-updates.md) for all compatibility lanes and fork tracking.
 - **Sandbox lint**: `python tests/sandbox_lint.py` (Python 3); structural checks on Groovy sandbox patterns, CI runs the same lint on every PR.
 - **Release build — hands off**: HPM installs the parent app with every `libraries/` file inlined (plus the child app), built by `tools/build-release-app.py` and published from the bot-only `bundle-artifacts` branch — `publish-bundle-artifact.yml` builds and publishes it on every push (`branches/<branch>/` + `shas/<sha>/`). Nothing under `dist/` is committed (the build output dir is gitignored). Run `python tools/build-release-app.py` locally only to check the build (CI runs the same build smoke).
 

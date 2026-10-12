@@ -15,47 +15,5 @@ updates:
         patterns: ["*"]
     open-pull-requests-limit: 3
 
-  # Gradle dependencies in build.gradle. Monthly cadence since test-only
-  # changes don't need aggressive freshness, and the set is small.
-  #
-  # Pinned intentionally (see ignores below):
-  #   - groovy-all stays on the 3.0.x line — matches eighty20results/hubitat_ci's
-  #     compiled-against version (3.0.21) for consumer compatibility.
-  #   - spock-core uses the "-groovy-3.0" variant suffix, which Dependabot
-  #     doesn't model as a version coordinator; manual bump only.
-  #   - com.github.eighty20results:hubitat_ci is served by JitPack and pinned
-  #     by release tag (e.g. v0.28.6). eighty20results cuts git tags, but
-  #     JitPack/Dependabot interop on tag-based version discovery is flaky,
-  #     so we keep the manual bump tracked by the hubitat-ci-version-check
-  #     workflow rather than relying on Dependabot here.
-  #   - su.litvak.chromecast:api-v2 stays on 0.11.1. 0.11.3's POM declares
-  #     jackson with a Maven-style *discontinuous* version range that
-  #     Gradle's resolver can't parse (see the pin note in build.gradle).
-  #     We only carry the dep to satisfy eighty20results' bytecode ref
-  #     to `common_api.ChromeCast`; we don't consume its API, so holding
-  #     the version is risk-free.
-  #   - com.networknt:json-schema-validator is pinned against MAJORS only (the
-  #     ignore below is semver-major). 3.x targets Java 17 and this project's
-  #     test toolchain is JDK 11, so a major bump fails to compile, and 3.x
-  #     renames the API again. Minor and patch bumps inside 2.x are welcome and
-  #     WILL still be proposed. Moving to 3.x is a deliberate change that has to
-  #     raise the toolchain first.
-  - package-ecosystem: "gradle"
-    directory: "/"
-    schedule:
-      interval: "monthly"
-    ignore:
-      - dependency-name: "org.codehaus.groovy:groovy-all"
-        update-types:
-          - "version-update:semver-major"
-          - "version-update:semver-minor"
-      - dependency-name: "org.spockframework:spock-core"
-      - dependency-name: "com.github.eighty20results:hubitat_ci"
-      - dependency-name: "su.litvak.chromecast:api-v2"
-      - dependency-name: "com.networknt:json-schema-validator"
-        update-types:
-          - "version-update:semver-major"
-    groups:
-      gradle-dependencies:
-        patterns: ["*"]
-    open-pull-requests-limit: 2
+  # Gradle libraries, the wrapper, and both HubitatCI forks are managed by
+  # .github/renovate.json. Avoid overlapping version-update PRs.

@@ -1,0 +1,105 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "enabledManagers": ["gradle", "gradle-wrapper", "custom.regex"],
+  "timezone": "America/New_York",
+  "schedule": ["* 8-11 * * 1"],
+  "automerge": false,
+  "platformAutomerge": false,
+  "dependencyDashboard": true,
+  "prConcurrentLimit": 3,
+  "prHourlyLimit": 2,
+  "semanticCommits": "enabled",
+  "semanticCommitType": "chore",
+  "prBodyNotes": [
+    "## Type of change\n\n- [x] `chore` — dependency maintenance\n\n## Release Notes\n\n## Testing\n\nDependency updates require review and the applicable repository checks before merging. Groovy/JDK compatibility restrictions are documented in `docs/dependency-updates.md`."
+  ],
+  "packageRules": [
+    {
+      "description": "Keep the root harness on Groovy 3.0.",
+      "matchManagers": ["gradle"],
+      "matchFileNames": ["build.gradle"],
+      "matchPackageNames": ["org.codehaus.groovy:groovy-all"],
+      "allowedVersions": "/^3\\.0\\.[0-9]+$/"
+    },
+    {
+      "description": "Keep the additive runtime harness on Groovy 2.5.",
+      "matchManagers": ["gradle"],
+      "matchFileNames": ["ci/groovy2x-spock/build.gradle"],
+      "matchPackageNames": ["org.codehaus.groovy:groovy-all"],
+      "allowedVersions": "/^2\\.5\\.[0-9]+$/"
+    },
+    {
+      "description": "Keep the hub parser on Groovy 2.4.",
+      "matchManagers": ["gradle"],
+      "matchFileNames": ["ci/groovy24-parse/build.gradle"],
+      "matchPackageNames": ["org.codehaus.groovy:groovy-all"],
+      "allowedVersions": "/^2\\.4\\.[0-9]+$/"
+    },
+    {
+      "description": "Allow stable Spock 2 releases without changing the Groovy 3.0 variant.",
+      "matchManagers": ["gradle"],
+      "matchFileNames": ["build.gradle"],
+      "matchPackageNames": ["org.spockframework:spock-core"],
+      "allowedVersions": "/^2\\.[0-9]+(?:\\.[0-9]+)?-groovy-3\\.0$/"
+    },
+    {
+      "description": "Allow stable Spock 2 releases without changing the Groovy 2.5 variant.",
+      "matchManagers": ["gradle"],
+      "matchFileNames": ["ci/groovy2x-spock/build.gradle"],
+      "matchPackageNames": ["org.spockframework:spock-core"],
+      "allowedVersions": "/^2\\.[0-9]+(?:\\.[0-9]+)?-groovy-2\\.5$/"
+    },
+    {
+      "description": "JSON Schema Validator 3 requires Java 17; the test JVM remains Java 11.",
+      "matchPackageNames": ["com.networknt:json-schema-validator"],
+      "allowedVersions": "/^2\\.[0-9]+\\.[0-9]+$/"
+    },
+    {
+      "description": "Retain Chromecast 0.11.1; newer POM ranges are incompatible with this Gradle build.",
+      "matchPackageNames": ["su.litvak.chromecast:api-v2"],
+      "allowedVersions": "0.11.1"
+    },
+    {
+      "description": "The custom managers below track the forks at their GitHub sources instead of Maven metadata.",
+      "matchManagers": ["gradle"],
+      "matchPackageNames": ["com.github.eighty20results:hubitat_ci", "com.github.joelwetzel:hubitat_ci"],
+      "enabled": false
+    },
+    {
+      "matchManagers": ["gradle"],
+      "matchUpdateTypes": ["minor", "patch"],
+      "groupName": "Gradle test dependencies"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track published releases of the primary HubitatCI fork.",
+      "managerFilePatterns": ["/^build\\.gradle$/"],
+      "matchStrings": ["testImplementation 'com\\.github\\.eighty20results:hubitat_ci:(?<currentValue>v[0-9.]+)'"],
+      "depNameTemplate": "eighty20results/hubitat_ci",
+      "datasourceTemplate": "github-releases",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "description": "Track master commits of the untagged compatibility fork while keeping an immutable JitPack SHA.",
+      "managerFilePatterns": ["/^ci/groovy2x-spock/build\\.gradle$/"],
+      "matchStrings": ["testImplementation 'com\\.github\\.joelwetzel:hubitat_ci:(?<currentDigest>[a-f0-9]{7,40})'"],
+      "currentValueTemplate": "master",
+      "depNameTemplate": "joelwetzel/hubitat_ci",
+      "packageNameTemplate": "https://github.com/joelwetzel/hubitat_ci",
+      "datasourceTemplate": "git-refs",
+      "versioningTemplate": "git"
+    },
+    {
+      "customType": "regex",
+      "description": "Keep the configuration validator itself tracked.",
+      "managerFilePatterns": ["/^\\.github/workflows/dependency-updates-check\\.yml$/"],
+      "matchStrings": ["RENOVATE_VERSION: '(?<currentValue>[0-9.]+)'"],
+      "depNameTemplate": "renovate",
+      "datasourceTemplate": "npm"
+    }
+  ]
+}
