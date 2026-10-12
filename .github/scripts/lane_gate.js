@@ -58,26 +58,6 @@ function isDependencyPath(path) {
   );
 }
 
-function isDependencyFile(file) {
-  if (!file || !isDependencyPath(file.filename)
-      || (file.previous_filename && !isDependencyPath(file.previous_filename))) return false;
-  if (!file.filename.startsWith('.github/workflows/')) return true;
-  // Workflow commands can alter generated/shipped code. Exempt only complete pin replacements,
-  // never a missing/truncated patch, a new action, or a changed build/publish command.
-  if (typeof file.patch !== 'string') return false;
-  const lines = file.patch.split('\n').filter(line => /^[+-]/.test(line));
-  if (lines.length === 0 || lines.length !== file.changes) return false;
-  const pins = { '+': [], '-': [] };
-  for (const line of lines) {
-    const action = line.slice(1).match(/^\s*(?:-\s+)?uses:\s*(['"]?)([\w./-]+)@[\w./-]+\1(?:\s+#.*)?\s*$/);
-    const validator = file.filename === '.github/workflows/dependency-updates-check.yml'
-      && /^\s*RENOVATE_VERSION:\s*['"]?[0-9.]+['"]?\s*$/.test(line.slice(1));
-    if (!action && !validator) return false;
-    pins[line[0]].push(action ? `uses:${action[2]}` : 'RENOVATE_VERSION');
-  }
-  return JSON.stringify(pins['+'].sort()) === JSON.stringify(pins['-'].sort());
-}
-
 function decide(eventName, payload, runAttempt, changedFiles) {
   payload = payload || {};
   const action = payload.action;
@@ -95,7 +75,8 @@ function decide(eventName, payload, runAttempt, changedFiles) {
   // Use the PR author, not the actor: a maintainer's label/re-run must not request approval
   // for the same dependency-only PR. An explicit workflow_dispatch still opts into E2E.
   if (isPR && isDependencyBot(payload) && Array.isArray(changedFiles) && changedFiles.length > 0
-      && changedFiles.every(isDependencyFile)) return 'dependency-skip';
+      && changedFiles.every(file => file && isDependencyPath(file.filename)
+        && (!file.previous_filename || isDependencyPath(file.previous_filename)))) return 'dependency-skip';
   // Manual re-run override: attempt > 1 means this run was manually re-run (EVERY re-run type
   // increments the counter; any re-run that re-executes this gate is an explicit ask for e2e that
   // the frozen event payload could otherwise never grant -- see header).

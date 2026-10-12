@@ -100,8 +100,17 @@ jobs:
         env:
           LABELS_JSON: ${{ steps.pr.outputs.labels_json }}
           PR_NUMBER: ${{ steps.pr.outputs.number }}
+          PR_AUTHOR: ${{ steps.pr.outputs.author }}
         run: |
           set -euo pipefail
+          # Dependency maintenance never publishes a Hubitat app release, even if mislabeled.
+          case "$PR_AUTHOR" in
+            'dependabot[bot]'|'renovate[bot]')
+              echo "::notice::Dependency bot PR #${PR_NUMBER} — skipping app version bump and release"
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
           RELEASE_LABELS=$(echo "$LABELS_JSON" | jq -r '[.[] | select(.name | startswith("release:")) | .name]')
           COUNT=$(echo "$RELEASE_LABELS" | jq 'length')
           if [ "$COUNT" = "0" ]; then
