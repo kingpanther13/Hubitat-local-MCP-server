@@ -14,7 +14,7 @@ root = Path(sys.argv[1])
 results = []
 incomplete_pairs = []
 scope = sys.argv[2] if len(sys.argv) > 2 else 'full'
-expected_lanes = ({'primary', 'groovy25'} if scope == 'smoke' else
+expected_lanes = ({'primary', 'groovy25'} if scope in ('smoke', 'latch-check') else
                   {'primary-r1', 'primary-r2', 'groovy25-r1', 'groovy25-r2'} if scope == 'focused' else
                   {'primary', 'flat', 'strict', 'strict-flat', 'groovy25'})
 

@@ -4,7 +4,7 @@ on:
     inputs:
       scope:
         type: choice
-        options: [smoke, full, focused, analyze]
+        options: [smoke, full, focused, latch-check, analyze]
         default: smoke
       source_run:
         description: Existing full run to analyze without rerunning tests
@@ -27,7 +27,7 @@ jobs:
       fail-fast: false
       matrix:
         versions: [baseline, candidate]
-        lane: ${{ fromJSON(inputs.scope == 'focused' && '["primary-r1", "primary-r2", "groovy25-r1", "groovy25-r2"]' || inputs.scope == 'smoke' && '["primary", "groovy25"]' || '["primary", "flat", "strict", "strict-flat", "groovy25"]') }}
+        lane: ${{ fromJSON(inputs.scope == 'focused' && '["primary-r1", "primary-r2", "groovy25-r1", "groovy25-r2"]' || (inputs.scope == 'smoke' || inputs.scope == 'latch-check') && '["primary", "groovy25"]' || '["primary", "flat", "strict", "strict-flat", "groovy25"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
@@ -43,6 +43,17 @@ jobs:
           git fetch --depth=1 origin 38115a634b3853c474f093da93c5c9240aa32b1e
           git show 38115a634b3853c474f093da93c5c9240aa32b1e:build.gradle > build.gradle
           git show 38115a634b3853c474f093da93c5c9240aa32b1e:ci/groovy2x-spock/build.gradle > ci/groovy2x-spock/build.gradle
+      - name: Assert the suspected hidden latch timeout (diagnostic only)
+        if: inputs.scope == 'latch-check'
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('src/test/groovy/server/MrtrContinuationSpec.groovy')
+          source = path.read_text()
+          needle = '            ownerDone.await(5, TimeUnit.SECONDS)'
+          assert source.count(needle) == 1
+          path.write_text(source.replace(needle, '            assert ownerDone.await(5, TimeUnit.SECONDS) : "Owner completion wait timed out inside the mock callback"'))
+          PY
       - name: Run instrumented tests
         env:
           LANE: ${{ matrix.lane }}
@@ -59,11 +70,14 @@ jobs:
             flat) args+=(-Pharness.useGateways=false) ;;
           esac
           args+=(test)
-          if [[ "$SCOPE" == smoke || "$SCOPE" == focused ]]; then
+          if [[ "$SCOPE" == smoke || "$SCOPE" == focused || "$SCOPE" == latch-check ]]; then
             args+=(--tests server.McpWireSchemaConformanceSpec --tests rules.HandleDeviceEventSpec --tests server.WatchdogV31PackageDeploySpec)
           fi
           if [[ "$SCOPE" == focused ]]; then
             args+=(--tests server.MrtrContinuationSpec --tests server.ToolRmNativeCrudSpec --tests server.WatchdogV3ManualSpec)
+          fi
+          if [[ "$SCOPE" == latch-check ]]; then
+            args+=(--tests 'server.MrtrContinuationSpec.a rejoined call that observes the original finishing gets its result marked rejoined')
           fi
           ./gradlew "${args[@]}" 2>&1 | tee coverage-run.log
           python3 ci/dependency-coverage/check_logs.py coverage-run.log build/test-results/test ci/groovy2x-spock/build/test-results/test
