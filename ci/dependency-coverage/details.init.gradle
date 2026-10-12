@@ -1,0 +1,80 @@
+initscript {
+    repositories { mavenCentral() }
+    dependencies { classpath 'org.jacoco:org.jacoco.core:0.8.15' }
+}
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+import org.jacoco.core.analysis.Analyzer
+import org.jacoco.core.analysis.ICoverageVisitor
+import org.jacoco.core.tools.ExecFileLoader
+
+allprojects {
+    if (project == rootProject) tasks.register('dependencyCoverageDetails') {
+        doLast {
+            def root = new File(System.getenv('COVERAGE_ARTIFACTS'))
+            def json = new JsonSlurper()
+            def comparisons = json.parse(new File(root, 'comparison.json'))
+            def results = []
+            def count = { c -> [covered: c.coveredCount, missed: c.missedCount] }
+            comparisons.each { comparison ->
+                def indexes = [:]
+                ['baseline', 'candidate'].each { version ->
+                    def folder = new File(root, "coverage-${comparison.lane}-${version}")
+                    def tests = [:], classes = [:]
+                    folder.eachFileRecurse { f ->
+                        if (f.parentFile.name == 'iterations' && f.name.endsWith('.json')) {
+                            def m = json.parse(f)
+                            tests[JsonOutput.toJson([m.spec, m.feature, m.iteration])] = new File(f.parentFile, m.file)
+                        } else if (f.name.endsWith('.class')) {
+                            def id = f.name.split(/\./)[-2].replaceFirst(/^0+(?!$)/, '')
+                            classes[id] = f
+                        }
+                    }
+                    indexes[version] = [tests: tests, classes: classes]
+                }
+                def changed = []
+                comparison.changed_iterations.each { iteration ->
+                    def testKey = JsonOutput.toJson(iteration.test)
+                    def ids = (iteration.before.keySet() + iteration.after.keySet()).findAll {
+                        iteration.before[it] != iteration.after[it]
+                    }
+                    def details = [:]
+                    ['baseline', 'candidate'].each { version ->
+                        def index = indexes[version]
+                        def loader = new ExecFileLoader()
+                        loader.load(index.tests[testKey])
+                        def data = [:]
+                        def visitor = { c ->
+                            def lines = [:]
+                            if (c.firstLine >= 0) (c.firstLine..c.lastLine).each { n ->
+                                def line = c.getLine(n)
+                                if (line.instructionCounter.totalCount > 0) lines[n.toString()] = [
+                                    instructions: count(line.instructionCounter), branches: count(line.branchCounter)]
+                            }
+                            data[Long.toHexString(c.id)] = [name: c.name, lines: lines,
+                                methods: c.methods.collect { m -> [name: m.name, descriptor: m.desc, line: m.firstLine,
+                                    instructions: count(m.instructionCounter), branches: count(m.branchCounter)] }]
+                        } as ICoverageVisitor
+                        def analyzer = new Analyzer(loader.executionDataStore, visitor)
+                        ids.each { id -> analyzer.analyzeAll(index.classes[id]) }
+                        details[version] = data
+                    }
+                    def actual = ids.findAll { details.baseline[it] != details.candidate[it] }.collect { id ->
+                        def old = details.baseline[id], fresh = details.candidate[id]
+                        [id: id, name: old.name,
+                            changedLines: old.lines.keySet().findAll { old.lines[it] != fresh.lines[it] }.collect {
+                                [line: it, before: old.lines[it], after: fresh.lines[it]] },
+                            changedMethods: (0..<old.methods.size()).findAll { old.methods[it] != fresh.methods[it] }.collect {
+                                [before: old.methods[it], after: fresh.methods[it]] }]
+                    }
+                    changed << [test: iteration.test, applicationChanged: !actual.isEmpty(), classes: actual]
+                }
+                def result = [lane: comparison.lane, rawChangedIterations: changed.size(),
+                    applicationChangedIterations: changed.count { it.applicationChanged }, iterations: changed]
+                results << result
+                println "${result.lane}: ${result.rawChangedIterations} raw probe differences; ${result.applicationChangedIterations} affect source coverage"
+            }
+            new File(root, 'application-differences.json').text = JsonOutput.prettyPrint(JsonOutput.toJson(results))
+        }
+    }
+}

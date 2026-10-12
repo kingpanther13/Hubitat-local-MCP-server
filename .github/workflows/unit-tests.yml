@@ -83,12 +83,31 @@ jobs:
           run-id: ${{ inputs.source_run || github.run_id }}
           github-token: ${{ github.token }}
       - name: Compare bytecode identities, probes, lines, branches and tests
+        id: comparison
+        continue-on-error: true
         env:
           SCOPE: ${{ inputs.scope }}
         run: python3 ci/dependency-coverage/compare.py coverage-artifacts "$SCOPE"
+      - uses: actions/setup-java@v6
+        if: steps.comparison.outcome == 'failure'
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v6.4.0
+        if: steps.comparison.outcome == 'failure'
+      - name: Resolve changed probes to application source lines and methods
+        if: steps.comparison.outcome == 'failure'
+        run: |
+          export COVERAGE_ARTIFACTS="$PWD/coverage-artifacts"
+          ./gradlew --init-script ci/dependency-coverage/details.init.gradle --no-daemon --console=plain dependencyCoverageDetails
       - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: coverage-comparison
-          path: coverage-artifacts/comparison.json
+          path: |
+            coverage-artifacts/comparison.json
+            coverage-artifacts/application-differences.json
           retention-days: 14
+      - name: Preserve any comparison failure
+        if: steps.comparison.outcome == 'failure'
+        run: exit 1
