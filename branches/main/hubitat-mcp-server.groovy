@@ -18916,6 +18916,7 @@ def toolListInstalledApps(args) {
                     id: d.id,
                     name: stripAppConfigHtml(d.name),
                     type: d.type,
+                    appTypeId: d.appTypeId,
                     disabled: d.disabled == true,
                     user: d.user == true,
                     hidden: isHidden,
@@ -19059,7 +19060,7 @@ def _getAllToolDefinitions_partCodeManagement() {
     return [
         [
             name: "hub_list_apps",
-            description: """List apps on the hub — running instances or installed app code/types (see scope).[[FLAT_TRIM]] scope='types' returns both community and built-in app types, each tagged system/isBuiltIn and with its menu tab (Apps/Automations/Integrations). Use system=false/isBuiltIn=false to isolate community (user-installed) types, or menu to group types by the admin UI's Apps/Automations/Integrations tabs. menu is null for a type that declares none. See hub_get_tool_guide(section='builtin_app_tools_apps').[[/FLAT_TRIM]] Per-app event history: hub_list_device_events with appId.[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]""",
+            description: """List apps on the hub — running instances or installed app code/types (see scope).[[FLAT_TRIM]] scope='types' returns both community and built-in app types, each tagged system/isBuiltIn and with its menu tab (Apps/Automations/Integrations). Use system=false/isBuiltIn=false to isolate community (user-installed) types, or menu to group types by the admin UI's Apps/Automations/Integrations tabs. menu is null for a type that declares none. See hub_get_tool_guide(section='builtin_app_tools_apps').[[/FLAT_TRIM]] Per-app event history: hub_list_device_events with appId.[[FLAT_TRIM]] Each instance row carries appTypeId, the app type's code-class id shared with scope='types' and hub_get_source(type='app'), so an instance resolves to its code without matching on the type name. Requires the Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -40923,7 +40924,8 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
 
 - **hub_list_apps (scope='instances')** — enumerate ALL running app instances on the hub (built-in + user) with parent/child tree
   - filter="all" (default) | "builtin" | "user" | "disabled" | "parents" | "children"
-  - Each entry: id, name, type, disabled, user, hidden, parentId, hasChildren, childCount
+  - Each entry: id, name, type, appTypeId, disabled, user, hidden, deprecated, parentId, hasChildren, childCount
+  - appTypeId is the app type's code-class id -- the same id as the type's row in scope='types', hub_get_source(type='app', id=appTypeId) for community code, and the hub's /app/editor/<id> page -- so an instance resolves to its code without matching on the type name (ambiguous for duplicate or versioned names). null when the hub omits it. Community child app types are listed in scope='types' like any other type, so their rows resolve directly by appTypeId. Some built-in child types (e.g. Rule-5.1) are absent from scope='types'; for those, the parent instance's appTypeId identifies the parent app, not the child's source.
   - Built-in apps have user=false (Rule Machine, Room Lighting, Groups and Scenes, Mode Manager, HSM, Dashboards, Maker API, etc.)
   - User apps have user=true (Awair, Ecobee, HPM, etc.)
   - Parent/child tree is flattened with parentId pointers. Hidden parents are excluded from output but their children are promoted to the nearest visible ancestor.
