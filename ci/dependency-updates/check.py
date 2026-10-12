@@ -6,11 +6,11 @@ PRs, Gradle execution, or build-file edits in the checkout are performed.
 
 import json
 import os
-from pathlib import Path
 import re
 import shutil
 import subprocess
 import tempfile
+from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -59,7 +59,7 @@ def validate(packages, stale):
                 for update in dep.get("updates", []):
                     value = update.get("newValue", "")
                     if dep["depName"] == GROOVY:
-                        line = dict(zip(BUILD_FILES, ("3.0.", "2.5.", "2.4.")))[file["packageFile"]]
+                        line = dict(zip(BUILD_FILES, ("3.0.", "2.5.", "2.4."), strict=True))[file["packageFile"]]
                         require(value.startswith(line), f"Groovy compatibility changed: {key}: {value}")
                     if dep["depName"] == SPOCK:
                         suffix = "-groovy-3.0" if file["packageFile"] == BUILD_FILES[0] else "-groovy-2.5"
