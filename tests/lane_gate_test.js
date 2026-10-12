@@ -63,5 +63,52 @@ check('unlabeled e2e:skip -> live (focused)',   run('pull_request_target', 'unla
 check('unlabeled e2e:skip webhook-incl',        run('pull_request_target', 'unlabeled', ['e2e:skip', 'e2e:full'], 'e2e:skip'), 'run');
 check('workflow_dispatch ignores the label',    run('workflow_dispatch', '', ['e2e:skip'], null), 'run');
 
+// Bot identity alone must never exempt shipped code or an unverified file list.
+function botDecision(login, files, options = {}) {
+  return decide(options.event || 'pull_request_target', {
+    action: options.action || 'synchronize',
+    sender: { login: options.sender || 'kingpanther13' },
+    label: options.label ? { name: options.label } : null,
+    pull_request: {
+      user: { login, type: options.type || 'Bot' },
+      labels: (options.labels || []).map(name => ({ name })),
+    },
+  }, options.attempt || 1, files);
+}
+
+const dependencyFiles = [
+  { filename: 'build.gradle' },
+  { filename: 'ci/groovy2x-spock/build.gradle' },
+  { filename: 'ci/groovy24-parse/build.gradle' },
+  { filename: 'gradle/wrapper/gradle-wrapper.properties' },
+  { filename: '.github/workflows/hub-e2e.yml' },
+  { filename: '.github/workflows/dependency-updates-check.yml' },
+];
+for (const bot of ['renovate[bot]', 'dependabot[bot]']) {
+  check(`${bot} dependencies only`, botDecision(bot, dependencyFiles), 'dependency-skip');
+  check(`${bot} human rerun`, botDecision(bot, dependencyFiles, { attempt: 2 }), 'dependency-skip');
+  check(`${bot} full label`, botDecision(bot, dependencyFiles, {
+    action: 'labeled', label: 'e2e:full', labels: ['e2e:full'],
+  }), 'dependency-skip');
+  check(`${bot} explicit hold`, botDecision(bot, dependencyFiles, { labels: ['e2e:skip'] }), 'skip');
+  check(`${bot} explicit dispatch`, botDecision(bot, dependencyFiles, { event: 'workflow_dispatch' }), 'run');
+  for (const filename of [
+    'hubitat-mcp-server.groovy', 'hubitat-mcp-rule.groovy', 'libraries/mcp-code-management-lib.groovy',
+    'packageManifest.json', 'tools/build-release-app.py', 'tools/strip_source.py',
+    'tools/groovy_lex.py', 'e2e-deadman-watchdog-v3-1.groovy', 'unknown-file',
+  ]) {
+    check(`${bot} mixed ${filename}`, botDecision(bot, [...dependencyFiles, { filename }]), 'run');
+  }
+  check(`${bot} renamed shipped file`, botDecision(bot, [{
+    filename: 'build.gradle', previous_filename: 'hubitat-mcp-server.groovy',
+  }]), 'run');
+  for (const files of [undefined, null, [], [{}], [{ filename: '../build.gradle' }]]) {
+    check(`${bot} missing/invalid files`, botDecision(bot, files), 'run');
+  }
+}
+check('human dependency PR still normal', botDecision('kingpanther13', dependencyFiles, { type: 'User' }), 'run');
+check('other bot still normal', botDecision('some-other[bot]', dependencyFiles), 'run');
+check('bot login without bot type', botDecision('renovate[bot]', dependencyFiles, { type: 'User' }), 'run');
+
 console.log(fail === 0 ? '\nlane-gate decision guard: PASS' : `\nlane-gate decision guard: FAIL (${fail})`);
 process.exit(fail === 0 ? 0 : 1);
