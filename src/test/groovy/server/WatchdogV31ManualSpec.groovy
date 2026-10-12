@@ -1,24 +1,19 @@
 package server
 
 import me.biocomp.hubitat_ci.api.app_api.AppExecutor
-import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.app.HubitatAppScript
-import me.biocomp.hubitat_ci.validation.Flags
-import spock.lang.Specification
 import spock.lang.Unroll
-import support.PassThroughAppValidator
+import support.WatchdogSpec
 import support.PermissiveLog
 
-// Coverage of the manual tools v3 retains from v2.
-class WatchdogV3ManualSpec extends Specification {
+// Coverage of the manual tools in the active v3.1 watchdog.
+class WatchdogV31ManualSpec extends WatchdogSpec {
     HubitatAppScript script
     List<List<Object>> runInCalls = []     // captures (delaySeconds, handler[, opts]) of every runIn
     Map atomicStateMap = [:]               // backs the script's atomicState (the single-flight latch)
 
     def setup() {
-        File appFile = new File('e2e-deadman-watchdog-v3.groovy')
-        def sandbox = new HubitatAppSandbox(appFile.getText('UTF-8'))
-        script = sandbox.run(
+        script = loadWatchdog(
             api: Mock(AppExecutor) {
                 _ * getLog() >> new PermissiveLog()
                 _ * getSettings() >> [hubSecurityEnabled: false, debugLogging: false]
@@ -28,15 +23,9 @@ class WatchdogV3ManualSpec extends Specification {
                 _ * now() >> { System.currentTimeMillis() }
                 _ * runIn(*_) >> { args -> runInCalls << (args as List) }
             },
-            userSettingValues: [hubSecurityEnabled: false, debugLogging: false],
-            validator: new PassThroughAppValidator([
-                Flags.DontValidatePreferences,
-                Flags.DontValidateDefinition,
-                Flags.DontRestrictGroovy,
-                Flags.DontRunScript
-            ])
+            userSettingValues: [hubSecurityEnabled: false, debugLogging: false]
         )
-        // The device/room/code/file leg has its own spec (WatchdogV3PurgeFixturesSpec).
+        // The device/room/code/file leg has its own spec (WatchdogV31PurgeFixturesSpec).
         script.metaClass.purgeOtherFixturesLocked = { String prefix, String claim -> [deleted: [], failed: [], deletedCount: 0] }
         script.metaClass.throwawayCodeClasses = { String path -> [] }
     }
@@ -60,8 +49,7 @@ class WatchdogV3ManualSpec extends Specification {
     /** A second script instance whose user settings differ from the shared one built in setup(). */
     private HubitatAppScript scriptWithSettings(Map extraSettings) {
         Map settings = [hubSecurityEnabled: false, debugLogging: false] + extraSettings
-        def sandbox = new HubitatAppSandbox(new File('e2e-deadman-watchdog-v3.groovy').getText('UTF-8'))
-        return sandbox.run(
+        return loadWatchdog(
             api: Mock(AppExecutor) {
                 _ * getLog() >> new PermissiveLog()
                 _ * getSettings() >> settings
@@ -69,17 +57,11 @@ class WatchdogV3ManualSpec extends Specification {
                 _ * now() >> { System.currentTimeMillis() }
                 _ * runIn(*_) >> { args -> runInCalls << (args as List) }
             },
-            userSettingValues: settings,
-            validator: new PassThroughAppValidator([
-                Flags.DontValidatePreferences,
-                Flags.DontValidateDefinition,
-                Flags.DontRestrictGroovy,
-                Flags.DontRunScript
-            ])
+            userSettingValues: settings
         )
     }
 
-    // ---- wedge auto-reboot: the one automatic action v3 keeps -----------------------------------
+    // ---- wedge auto-reboot: the one automatic action the watchdog keeps ------------------------
 
     private void wedge(long sinceOkMs = 300_000L, int streak = 12) {
         script.LOOPBACK.failStreak = streak
@@ -328,13 +310,13 @@ class WatchdogV3ManualSpec extends Specification {
 
     // ---- self-update guard: the MCP server is the watchdog's only repair path -------------------
 
-    private static final String V3_SOURCE = 'definition(\n    name: "E2E Dead-Man Watchdog v3",\n    namespace: "mcp")\n'
+    private static final String V31_SOURCE = 'definition(\n    name: "E2E Dead-Man Watchdog v3.1",\n    namespace: "mcp")\n'
 
     @Unroll
     def "the watchdog's own code is replaced only while the MCP endpoint answers (available=#available)"() {
         given:
         def posts = []
-        script.metaClass.hubGet = { String p, Map q -> groovy.json.JsonOutput.toJson([source: V3_SOURCE, version: 4]) }
+        script.metaClass.hubGet = { String p, Map q -> groovy.json.JsonOutput.toJson([source: V31_SOURCE, version: 4]) }
         script.metaClass.hubPostForm = { String p, Map b -> posts << p; [status: 200, data: '{"status":"success"}'] }
         script.metaClass.peerEndpointStatus = { ->
             available ? [available: true, appId: '38'] : [available: false, reason: 'the MCP server endpoint did not answer tools/list']
@@ -419,7 +401,7 @@ class WatchdogV3ManualSpec extends Specification {
         given:
         def deletes = []
         script.metaClass.hubGet = { String p, Map q ->
-            if (p == '/app/ajax/code') return groovy.json.JsonOutput.toJson([source: q.id == '1925' ? V3_SOURCE : 'definition(name: "Other")', version: 4])
+            if (p == '/app/ajax/code') return groovy.json.JsonOutput.toJson([source: q.id == '1925' ? V31_SOURCE : 'definition(name: "Other")', version: 4])
             deletes << p
             '{"status":"true"}'
         }

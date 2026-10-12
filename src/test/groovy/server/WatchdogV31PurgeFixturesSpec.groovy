@@ -1,15 +1,12 @@
 package server
 
 import me.biocomp.hubitat_ci.api.app_api.AppExecutor
-import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.app.HubitatAppScript
-import me.biocomp.hubitat_ci.validation.Flags
-import spock.lang.Specification
-import support.PassThroughAppValidator
+import support.WatchdogSpec
 import support.PermissiveLog
 
 // The purge's device / room / code / file leg: everything e2e teardown used to sweep through the MCP app.
-class WatchdogV3PurgeFixturesSpec extends Specification {
+class WatchdogV31PurgeFixturesSpec extends WatchdogSpec {
     HubitatAppScript script
     Map atomicStateMap = [:]
     List<String> gets = []
@@ -18,19 +15,14 @@ class WatchdogV3PurgeFixturesSpec extends Specification {
     List rooms = []
 
     def setup() {
-        def sandbox = new HubitatAppSandbox(new File('e2e-deadman-watchdog-v3.groovy').getText('UTF-8'))
-        script = sandbox.run(
+        script = loadWatchdog(
             api: Mock(AppExecutor) {
                 _ * getLog() >> new PermissiveLog()
                 _ * getSettings() >> [hubSecurityEnabled: false, debugLogging: false]
                 _ * getAtomicState() >> { atomicStateMap }
                 _ * now() >> { System.currentTimeMillis() }
             },
-            userSettingValues: [hubSecurityEnabled: false, debugLogging: false],
-            validator: new PassThroughAppValidator([
-                Flags.DontValidatePreferences, Flags.DontValidateDefinition,
-                Flags.DontRestrictGroovy, Flags.DontRunScript
-            ])
+            userSettingValues: [hubSecurityEnabled: false, debugLogging: false]
         )
         rooms = [[id: 7, name: 'BAT_E2E_Room'], [id: 8, name: 'BAT_E2E_KEEP_Room'], [id: 9, name: 'Kitchen']]
         script.metaClass.getRooms = { -> rooms }

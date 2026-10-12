@@ -20,7 +20,7 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
         hub_create_backup: 'adminCreateBackup', hub_manage_variables: 'adminManageVariables'
     ]
 
-    def 'v3 advertises every v2 manual tool plus the three package tools'() {
+    def 'v3.1 advertises every manual tool plus the three package tools'() {
         expect:
         script.getAdminToolDefinitions()*.name as Set ==
             (MANUAL_TOOLS.keySet() + ['hub_update_package', 'hub_get_package_deployment', 'hub_set_package_deployment']) as Set

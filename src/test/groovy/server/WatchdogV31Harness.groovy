@@ -3,15 +3,12 @@ package server
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import me.biocomp.hubitat_ci.api.app_api.AppExecutor
-import me.biocomp.hubitat_ci.app.HubitatAppSandbox
 import me.biocomp.hubitat_ci.app.HubitatAppScript
-import me.biocomp.hubitat_ci.validation.Flags
-import spock.lang.Specification
-import support.PassThroughAppValidator
+import support.WatchdogSpec
 import support.PermissiveLog
 
-// Shared fake hub for the v3.1 package-deployment specs (a clone of WatchdogV3Harness).
-abstract class WatchdogV31Harness extends Specification {
+// Fake hub for the v3.1 package-deployment specs.
+abstract class WatchdogV31Harness extends WatchdogSpec {
     HubitatAppScript script
     Map persisted = new PublicationMap()
     List scheduled = []
@@ -37,7 +34,7 @@ abstract class WatchdogV31Harness extends Specification {
     boolean failCompile = false
     List inventory = [[id: 178, namespace: 'mcp', name: 'MCP Rule Server'],
                       [id: 179, namespace: 'mcp', name: 'MCP Rule'],
-                      [id: 254, namespace: 'mcp', name: 'E2E Dead-Man Watchdog v2']]
+                      [id: 254, namespace: 'mcp', name: 'E2E Dead-Man Watchdog v3.1']]
 
     static class PublicationMap extends HashMap {
         List publications = []
@@ -53,7 +50,7 @@ abstract class WatchdogV31Harness extends Specification {
     }
 
     void setup() {
-        script = new HubitatAppSandbox(new File('e2e-deadman-watchdog-v3-1.groovy').text).run(
+        script = loadWatchdog(
             api: Mock(AppExecutor) {
                 _ * getLog() >> new PermissiveLog()
                 _ * getSettings() >> [hubSecurityEnabled: false]
@@ -66,9 +63,7 @@ abstract class WatchdogV31Harness extends Specification {
                 }
                 _ * runEvery1Minute(_) >> { args -> periodic << args[0] }
                 _ * unschedule(*_) >> { args -> unscheduled << args.toList() }
-            }, userSettingValues: [hubSecurityEnabled: false],
-            validator: new PassThroughAppValidator([Flags.DontValidatePreferences,
-                Flags.DontValidateDefinition, Flags.DontRestrictGroovy, Flags.DontRunScript]))
+            }, userSettingValues: [hubSecurityEnabled: false])
         script.metaClass.fetchExternal = { String url ->
             if (url.endsWith('packageManifest.json')) return JsonOutput.toJson([
                 apps: [[name: 'MCP Rule Server', namespace: 'mcp', location: 'https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/hubitat-mcp-server.groovy'],

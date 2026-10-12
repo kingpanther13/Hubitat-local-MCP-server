@@ -64,6 +64,15 @@ HTML report at `build/reports/tests/test/index.html`. CI uploads it as the `test
 
 ## Architecture
 
+### `WatchdogSpec` — base for watchdog tests
+
+Active watchdog specs test v3.1 only. `WatchdogSpec.loadWatchdog()` reads its source once and
+uses `WatchdogAppValidator` to compile it once per test JVM. Every load still creates a fresh
+script instance, binding, HubitatCI readers and API mock wiring. Before each test, the base
+spec clears class-level metaclass overrides and restores the initial contents of the watchdog's
+static maps, including the health counters and deployment progress. These specs remain sequential,
+like the server and rule specs; threads used within a concurrency test must finish before it exits.
+
 ### `HarnessSpec` — base for server tool tests
 
 `src/test/groovy/support/HarnessSpec.groovy`. Lifecycle:

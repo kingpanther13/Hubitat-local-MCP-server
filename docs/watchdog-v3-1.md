@@ -26,11 +26,11 @@ it unchanged except what is listed here.
   v3.1 app page, as v3 once did for v2.
 - Maintenance self-updates the `E2E Dead-Man Watchdog v3.1` class from
   `e2e-deadman-watchdog-v3-1.groovy` at the dispatched ref.
-- Specs: `WatchdogV31ParitySpec` and `WatchdogV31PackageDeploySpec` (on `WatchdogV31Harness`) are
-  clones of the v3 specs plus the built-package cases.
+- Specs: `WatchdogV31ParitySpec`, `WatchdogV31PackageDeploySpec`, `WatchdogV31ManualSpec`, and
+  `WatchdogV31PurgeFixturesSpec` cover v3.1, including the behavior inherited from v3. They share
+  one compilation per test JVM through `WatchdogSpec`, with fresh state between tests.
 
 ## v3 retirement
 
-After this change merges, v3 is retired: disable its instance on the test hub and stop using
-`WATCHDOG_MCP_URL`. Until then both watchdogs run their wedge auto-reboot tick, each with its own
-rate limit. Its file and specs stay, as v2's did, until they are removed deliberately.
+V3 is retired from E2E; the workflows use `WATCHDOG31_MCP_URL`. Its source file remains for
+reference, but its unit-test coverage has been consolidated into the v3.1 suites.
