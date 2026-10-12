@@ -37,6 +37,9 @@ name: Hub E2E (test hub)
 #   - Add a release:*/e2e:full label -> the FULL lane runs -> the gate is posted success/failure.
 #     ONLY a green FULL run makes the PR mergeable.
 #   - Docs-only / no-secret PRs: the gate is posted success without running (the gate skip path).
+#   - Dependency-only Renovate/Dependabot PRs: lane-gate posts success before approval or hub access.
+#     Changes outside the dependency/CI allowlist (including shipped sources and their builder)
+#     retain normal E2E. An unreadable/incomplete diff never grants the bot exemption.
 #
 # >>> A PENDING "Full e2e (runs with label)" on a PR is NORMAL and intended -- it's the gate waiting for
 # >>> the full-run label, NOT a stuck/missing run. Add release:*/e2e:full to run the full suite.
@@ -177,10 +180,14 @@ jobs:
   # non-label event (opened/synchronize/reopened/dispatch). `approve` (and thus `e2e`) gate on this
   # output (probe is dispatch-only, where lane-gate is always true, so it is never label-gated in
   # practice). lane-gate ITSELF always runs; on a no-op every DOWNSTREAM job is skipped and posts
-  # nothing, so the prior posted gate status is untouched. The third verdict, e2e:skip on the PR,
-  # also runs no downstream job but posts the required gate PENDING right here (see E2E:SKIP at top).
+  # nothing, so the prior posted gate status is untouched. e2e:skip posts PENDING right here;
+  # verified dependency-only bot PRs post SUCCESS here without reaching an approval environment.
   lane-gate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      statuses: write
     outputs:
       run: ${{ steps.decide.outputs.run }}
     steps:
@@ -190,24 +197,34 @@ jobs:
       # It MUST stay in lockstep with the cancel-in-progress expression's first-full-label test above.
       - uses: actions/checkout@v7
       - id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: node .github/scripts/lane_gate.js
       # e2e:skip: hold the merge without booking the hub. Posted from THIS job (no approve, no e2e,
       # no hub-e2e-serialized queue wait) so the pending lands within seconds of the label add, on the
       # head SHA this event carries. Same context string as the e2e job's post; a cancelled in-flight
       # run never posts (its post step is !cancelled()), so this pending is the head's final word.
-      - name: Post e2e gate status (e2e:skip)
-        if: steps.decide.outputs.skip == 'true'
+      - name: Post e2e gate status (no hub run)
+        if: steps.decide.outputs.skip == 'true' || steps.decide.outputs.dependency_skip == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           GATE_SHA: ${{ github.event.pull_request.head.sha }}
+          DEPENDENCY_SKIP: ${{ steps.decide.outputs.dependency_skip }}
         run: |
-          echo "E2E NOT RUN -- e2e:skip label is on the PR. Gate posted PENDING; remove the label to run e2e." >> "$GITHUB_STEP_SUMMARY"
-          DESC="e2e disabled by the e2e:skip label; remove it to run"
-          echo "Posting gate status 'Full e2e (runs with label)': pending -- $DESC"
+          if [ "$DEPENDENCY_SKIP" = "true" ]; then
+            STATE=success
+            DESC="e2e not required: dependency-only bot PR; no hub deployment"
+            echo "E2E NOT RUN -- verified dependency-only Renovate/Dependabot PR. No deployment approval or hub access; non-E2E checks still apply." >> "$GITHUB_STEP_SUMMARY"
+          else
+            STATE=pending
+            DESC="e2e disabled by the e2e:skip label; remove it to run"
+            echo "E2E NOT RUN -- e2e:skip label is on the PR. Gate posted PENDING; remove the label to run e2e." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Posting gate status 'Full e2e (runs with label)': $STATE -- $DESC"
           # Same 5x retry as the e2e job's post: a transient API blip must not strand the gate.
           for attempt in 1 2 3 4 5; do
             if gh api -X POST "repos/${{ github.repository }}/statuses/$GATE_SHA" \
-                 -f state=pending -f context="Full e2e (runs with label)" -f description="$DESC" >/dev/null; then
+                 -f state="$STATE" -f context="Full e2e (runs with label)" -f description="$DESC" >/dev/null; then
               break
             fi
             if [ "$attempt" = 5 ]; then
@@ -599,7 +616,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TESTS_INPUT: ${{ inputs.tests }}
-          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           if [ -z "$MCP_URL" ]; then
             echo "::notice::LEVEL99_TEST_HUB_MCP_URL secret not available — skipping E2E (expected on repos without the test hub configured)"
@@ -628,24 +644,6 @@ jobs:
             else
               echo "lane=full" >> "$GITHUB_OUTPUT"      # dispatch with no tests = the FULL lane
             fi
-            exit 0
-          fi
-          # Dependabot PRs skip EVERY e2e lane -- report the gate green WITHOUT running. Dependabot only
-          # bumps dependency versions and NONE reach the hub: the Gradle deps are test-harness only (the hub
-          # runs the raw .groovy; packageManifest.json ships only the two top-level files) and github-actions
-          # bumps touch CI YAML only, so e2e would redeploy unchanged main code for zero signal. The real
-          # validators (Spock, unit-tests, groovy24-parse, ruff) run as usual. available=false -> the
-          # "Post e2e gate status" step posts the required "Full e2e (runs with label)" status as SUCCESS.
-          # Dependabot is deliberately NOT auto-approved (absent from the `approve` job's e2e-auto list): a
-          # human still approves each run, because a CI-machinery bump can affect the e2e flow itself (e.g.
-          # actions/checkout v7 blocks the pull_request_target fork-PR checkout this job relies on) and must
-          # not be waved through. A maintainer can still force a real run via workflow_dispatch (handled
-          # above, before this gate). PR_AUTHOR comes from env (not inline) to keep the login out of the
-          # run-command string.
-          if [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
-            echo "::notice::Dependabot PR — skipping all E2E lanes (force-green; a dependency bump reaches nothing on the hub, so e2e validates nothing here)."
-            echo "E2E NOT RUN — Dependabot PR (dependency bump; e2e validates nothing here). Skipped on purpose; the Spock / unit-tests / groovy24-parse / ruff checks cover it." >> "$GITHUB_STEP_SUMMARY"
-            echo "available=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # LIVE PR labels, fetched once: the e2e:skip backstop here, the lane pick further down. Retried

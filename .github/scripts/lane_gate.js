@@ -1,10 +1,11 @@
 'use strict';
 // Lane-gate decision: what should this event do about e2e? A pure function of (eventName, event
 // payload, run attempt), called by the `lane-gate` job in .github/workflows/hub-e2e.yml and
-// unit-tested by tests/lane_gate_test.js. It returns one of three verdicts:
+// unit-tested by tests/lane_gate_test.js. It returns one of four verdicts:
 //   'run'  -> run e2e (the gate step picks the lane from the live labels)
 //   'noop' -> do nothing; the prior run's posted gate status stands
 //   'skip' -> the PR carries e2e:skip: run NOTHING and post the required gate PENDING
+//   'dependency-skip' -> verified dependency-only bot PR: no approval/hub; gate SUCCESS (not run)
 // A wrong decision either LOSES a full run (the required "Full e2e (runs with label)" gate never
 // re-posts, blocking merge) or RE-RUNS when it shouldn't and double-books the single shared test
 // hub -- so it gets a regression guard like the other .github/scripts logic.
@@ -41,7 +42,23 @@
 const FULL = ['release:patch', 'release:minor', 'release:major', 'e2e:full'];
 const SKIP = 'e2e:skip';
 
-function decide(eventName, payload, runAttempt) {
+function isDependencyBot(payload) {
+  const author = payload.pull_request && payload.pull_request.user;
+  return author && author.type === 'Bot' && ['dependabot[bot]', 'renovate[bot]'].includes(author.login);
+}
+
+// Only these dependency/CI inputs are exempt. Shipped sources, packageManifest.json,
+// tools that generate the shipped apps, and unknown paths retain the normal E2E flow.
+function isDependencyPath(path) {
+  return typeof path === 'string' && (
+    /^(?:(?:ci\/groovy2x-spock|ci\/groovy24-parse)\/)?(?:build|settings)\.gradle$/.test(path)
+    || /^(?:gradlew(?:\.bat)?|gradle\/wrapper\/gradle-wrapper\.(?:jar|properties))$/.test(path)
+    || /^\.github\/workflows\/[^/]+\.ya?ml$/.test(path)
+    || ['.github/dependabot.yml', '.github/renovate.json', 'renovate.json'].includes(path)
+  );
+}
+
+function decide(eventName, payload, runAttempt, changedFiles) {
   payload = payload || {};
   const action = payload.action;
   const isPR = eventName === 'pull_request_target';
@@ -55,6 +72,11 @@ function decide(eventName, payload, runAttempt) {
   // override so a human re-running a skipped run cannot book the hub while the label is on (they
   // remove the label instead, which is itself the re-run). Non-PR events never carry PR labels.
   if (isPR && labels.includes(SKIP)) return 'skip';
+  // Use the PR author, not the actor: a maintainer's label/re-run must not request approval
+  // for the same dependency-only PR. An explicit workflow_dispatch still opts into E2E.
+  if (isPR && isDependencyBot(payload) && Array.isArray(changedFiles) && changedFiles.length > 0
+      && changedFiles.every(file => file && isDependencyPath(file.filename)
+        && (!file.previous_filename || isDependencyPath(file.previous_filename)))) return 'dependency-skip';
   // Manual re-run override: attempt > 1 means this run was manually re-run (EVERY re-run type
   // increments the counter; any re-run that re-executes this gate is an explicit ask for e2e that
   // the frozen event payload could otherwise never grant -- see header).
@@ -71,14 +93,36 @@ function decide(eventName, payload, runAttempt) {
 
 module.exports = { decide, FULL, SKIP };
 
-// CLI: read the triggering event, print the verdict, and emit it as the `run` / `skip` step outputs.
+// CLI: read only GitHub metadata from the trusted base checkout, never execute PR code.
 if (require.main === module) {
   const fs = require('fs');
+  const { execFileSync } = require('child_process');
   const payload = JSON.parse(fs.readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8'));
   const attempt = Number(process.env.GITHUB_RUN_ATTEMPT || '1');
-  const verdict = decide(process.env.GITHUB_EVENT_NAME, payload, attempt);
+  let changedFiles;
+  if (process.env.GITHUB_EVENT_NAME === 'pull_request_target' && isDependencyBot(payload)) {
+    try {
+      const pr = payload.pull_request;
+      const endpoint = `repos/${process.env.GITHUB_REPOSITORY}/pulls/${pr.number}`;
+      const api = args => JSON.parse(execFileSync('gh', ['api', ...args], {
+        encoding: 'utf8', timeout: 60000, maxBuffer: 32 * 1024 * 1024,
+      }));
+      const pages = api(['--paginate', '--slurp', `${endpoint}/files?per_page=100`]);
+      if (!Array.isArray(pages) || !pages.every(Array.isArray)) throw new Error('Invalid file-list response');
+      const files = pages.flat();
+      // Verify after pagination: a newer head or a truncated response cannot exempt this event's SHA.
+      const current = api([endpoint]);
+      if (!pr.head || !pr.head.sha || !current.head || current.head.sha !== pr.head.sha
+          || files.length !== current.changed_files) throw new Error('PR head changed or file list incomplete');
+      changedFiles = files;
+    } catch (error) {
+      console.warn('::warning::Could not verify dependency-only PR files; retaining normal E2E approval.');
+    }
+  }
+  const verdict = decide(process.env.GITHUB_EVENT_NAME, payload, attempt, changedFiles);
   const run = verdict === 'run' ? 'true' : 'false';
   const skip = verdict === 'skip' ? 'true' : 'false';
-  console.log(`lane-gate: event=${process.env.GITHUB_EVENT_NAME} action=${payload.action} label=${payload.label && payload.label.name} attempt=${attempt} -> ${verdict} (run=${run} skip=${skip})`);
-  fs.appendFileSync(process.env.GITHUB_OUTPUT, `run=${run}\nskip=${skip}\n`);
+  const dependencySkip = verdict === 'dependency-skip' ? 'true' : 'false';
+  console.log(`lane-gate: event=${process.env.GITHUB_EVENT_NAME} action=${payload.action} label=${payload.label && payload.label.name} attempt=${attempt} -> ${verdict} (run=${run} skip=${skip} dependency_skip=${dependencySkip})`);
+  fs.appendFileSync(process.env.GITHUB_OUTPUT, `run=${run}\nskip=${skip}\ndependency_skip=${dependencySkip}\n`);
 }

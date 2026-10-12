@@ -18,6 +18,7 @@ on:
       - 'tests/sandbox_lint.py'
       - 'tests/e2e_test.py'
       - '.github/workflows/python-tests.yml'
+      - '.github/workflows/hub-e2e.yml'
 
 permissions:
   contents: read

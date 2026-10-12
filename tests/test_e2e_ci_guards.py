@@ -119,6 +119,28 @@ else:
         assert "dependency_skip=false" in outputs
 
 
+@pytest.mark.parametrize("dependency_skip, expected_state", [("true", "success"), ("false", "pending")])
+def test_no_hub_gate_posts_explicit_status(dependency_skip, expected_state, tmp_path):
+    workflow = (ROOT / ".github/workflows/hub-e2e.yml").read_text()
+    step = workflow.split("name: Post e2e gate status (no hub run)\n", 1)[1].split("\n      - ", 1)[0]
+    command = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n  # Pre-approval", 1)[0])
+    command = command.replace("${{ github.repository }}", "owner/repo")
+    script = '''
+gh() { printf '%s\\n' "$@" > "$POSTED_ARGS"; }
+''' + command
+    summary = tmp_path / "summary"
+    posted = tmp_path / "posted"
+    subprocess.run(["bash", "-eo", "pipefail", "-c", script], check=True,
+                   env={**os.environ, "DEPENDENCY_SKIP": dependency_skip,
+                        "GATE_SHA": "a" * 40, "GITHUB_STEP_SUMMARY": str(summary),
+                        "POSTED_ARGS": str(posted)})
+    args = posted.read_text().splitlines()
+    assert f"repos/owner/repo/statuses/{'a' * 40}" in args
+    assert f"state={expected_state}" in args
+    assert "context=Full e2e (runs with label)" in args
+    assert "E2E NOT RUN" in summary.read_text()
+
+
 @pytest.mark.parametrize("step_name, flag", [
     ("id: gate", "labels_ok"),
     ("name: Post e2e gate status", "LABELS_OK"),
