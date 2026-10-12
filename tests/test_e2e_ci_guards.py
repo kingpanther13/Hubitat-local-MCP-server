@@ -65,6 +65,7 @@ def test_bot_gate_cli_verifies_complete_current_diff(case, expected, tmp_path):
     """Exercise the real CLI; only GitHub's read API is replaced with fixtures."""
     pages = [[{"filename": "build.gradle"}], [{
         "filename": ".github/workflows/hub-e2e.yml",
+        "changes": 2,
         "patch": "@@ -1 +1 @@\n-      - uses: actions/checkout@v6\n+      - uses: actions/checkout@v7",
     }]]
     if case == "runtime-second-page":

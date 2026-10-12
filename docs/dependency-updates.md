@@ -73,7 +73,8 @@ the validation workflow.
 Renovate and Dependabot PRs skip the deployment approval and live-hub jobs only
 when every changed file is in the dependency/CI allowlist in
 `.github/scripts/lane_gate.js`. The early gate posts an explicit “E2E not required”
-status; it does not claim the hub tests passed. Other CI checks still run.
+status; it does not claim the hub tests passed. Other CI checks still run. Workflow changes qualify only for complete action/version
+pin replacements; changed commands or added/replaced actions retain normal E2E.
 
 Changes to shipped app/library sources, package metadata, or app-generation tools
 retain the normal E2E flow, even on a bot-authored PR. Unknown paths, renames from
