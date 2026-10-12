@@ -50,9 +50,9 @@ jobs:
           from pathlib import Path
           path = Path('src/test/groovy/server/MrtrContinuationSpec.groovy')
           source = path.read_text()
-          needle = '            ownerDone.await(5, TimeUnit.SECONDS)'
+          needle = '\n            ownerDone.await(5, TimeUnit.SECONDS)'
           assert source.count(needle) == 1
-          path.write_text(source.replace(needle, '            assert ownerDone.await(5, TimeUnit.SECONDS) : "Owner completion wait timed out inside the mock callback"'))
+          path.write_text(source.replace(needle, '\n            assert ownerDone.await(5, TimeUnit.SECONDS) : "Owner completion wait timed out inside the mock callback"'))
           PY
       - name: Run instrumented tests
         env:
