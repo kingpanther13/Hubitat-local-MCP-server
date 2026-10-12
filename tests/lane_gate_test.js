@@ -112,6 +112,27 @@ for (const bot of ['renovate[bot]', 'dependabot[bot]']) {
     filename: '.github/workflows/publish-bundle-artifact.yml', changes: 2,
     patch: '@@ -1 +1 @@\n-      - uses: actions/checkout@v7\n+      - uses: another/action@v7',
   }]), 'run');
+  for (const [name, patch, changes] of [
+    ['comment only', '-      - uses: actions/checkout@v7 # old comment\n+      - uses: actions/checkout@v7 # new comment', 2],
+    ['indentation change', '-      - uses: actions/checkout@v6\n+        - uses: actions/checkout@v7', 2],
+    ['moved action', '-      - uses: actions/checkout@v7\n       - run: python tools/build-release-app.py\n+      - uses: actions/checkout@v7', 2],
+    ['moved and upgraded action', '-      - uses: actions/checkout@v6\n       - run: python tools/build-release-app.py\n+      - uses: actions/checkout@v7', 2],
+    ['reordered upgrades', '-      - uses: actions/checkout@v6\n-      - uses: actions/setup-python@v6\n+      - uses: actions/setup-python@v7\n+      - uses: actions/checkout@v7', 4],
+    ['unchanged pin mixed with upgrade', '-      - uses: actions/checkout@v6\n+      - uses: actions/checkout@v7\n       - name: Another step\n-        uses: actions/setup-python@v7 # old\n+        uses: actions/setup-python@v7 # new', 4],
+  ]) {
+    check(`${bot} ${name}`, botDecision(bot, [{
+      filename: '.github/workflows/publish-bundle-artifact.yml', changes,
+      patch: '@@ -1,6 +1,6 @@\n' + patch,
+    }]), 'run');
+  }
+  check(`${bot} unchanged validator`, botDecision(bot, [{
+    filename: '.github/workflows/dependency-updates-check.yml', changes: 2,
+    patch: "@@ -1 +1 @@\n-      RENOVATE_VERSION: '44.151.5'\n+      RENOVATE_VERSION:  '44.151.5'",
+  }]), 'run');
+  check(`${bot} adjacent genuine upgrades`, botDecision(bot, [{
+    filename: '.github/workflows/hub-e2e.yml', changes: 4,
+    patch: '@@ -1,2 +1,2 @@\n-      - uses: actions/checkout@v6\n-      - uses: actions/setup-python@v6\n+      - uses: actions/checkout@v7\n+      - uses: actions/setup-python@v7',
+  }]), 'dependency-skip');
   for (const files of [undefined, null, [], [{}], [{ filename: '../build.gradle' }]]) {
     check(`${bot} missing/invalid files`, botDecision(bot, files), 'run');
   }
