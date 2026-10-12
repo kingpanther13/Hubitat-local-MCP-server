@@ -52,9 +52,16 @@ jobs:
             args+=(--tests server.McpWireSchemaConformanceSpec --tests rules.HandleDeviceEventSpec --tests server.WatchdogV31PackageDeploySpec)
           fi
           ./gradlew "${args[@]}" 2>&1 | tee coverage-run.log
-          if rg 'IllegalClassFormatException|Error while instrumenting|java.lang.instrument ASSERTION' coverage-run.log build/test-results/test ci/groovy2x-spock/build/test-results/test --glob '*.xml' --glob '*.log'; then
+          reports=(coverage-run.log)
+          for directory in build/test-results/test ci/groovy2x-spock/build/test-results/test; do
+            if [[ -d "$directory" ]]; then reports+=("$directory"); fi
+          done
+          if rg 'IllegalClassFormatException|Error while instrumenting|java.lang.instrument ASSERTION' "${reports[@]}" --glob '*.xml' --glob '*.log'; then
             echo '::error::Coverage instrumentation failed'
             exit 1
+          else
+            status=$?
+            if [[ "$status" != 1 ]]; then exit "$status"; fi
           fi
       - uses: actions/upload-artifact@v7
         if: always()
