@@ -1,0 +1,60 @@
+// Experimental instrumentation shared unchanged by baseline and candidate.
+initscript {
+    repositories { mavenCentral() }
+    dependencies { classpath 'org.jacoco:org.jacoco.core:0.8.15' }
+}
+import groovy.json.JsonOutput
+import org.jacoco.core.analysis.Analyzer
+import org.jacoco.core.analysis.ICoverageVisitor
+import org.jacoco.core.tools.ExecFileLoader
+allprojects {
+    apply plugin: 'jacoco'
+    jacoco { toolVersion = '0.8.15' }
+    def output = layout.buildDirectory.dir('dependency-coverage').get().asFile
+    def summary = tasks.register('dependencyCoverageSummary') {
+        doLast {
+            def data = new File(output, 'test.exec')
+            if (!data.isFile()) throw new GradleException('No application coverage collected')
+            def loader = new ExecFileLoader()
+            loader.load(data)
+            def classes = []
+            def counter = { c -> [covered: c.coveredCount, missed: c.missedCount] }
+            def visitor = { c ->
+                def lines = [:]
+                if (c.firstLine >= 0) {
+                    (c.firstLine..c.lastLine).each { nr ->
+                        def line = c.getLine(nr)
+                        if (line.instructionCounter.totalCount > 0) {
+                            lines[nr.toString()] = [instructions: counter(line.instructionCounter), branches: counter(line.branchCounter)]
+                        }
+                    }
+                }
+                def execution = loader.executionDataStore.get(c.id)
+                classes << [id: Long.toHexString(c.id), name: c.name, source: c.sourceFileName,
+                    instructions: counter(c.instructionCounter), branches: counter(c.branchCounter), lines: lines,
+                    methods: c.methods.collect { m -> [name: m.name, descriptor: m.desc, line: m.firstLine,
+                        instructions: counter(m.instructionCounter), branches: counter(m.branchCounter)] },
+                    probes: execution == null ? null : execution.probes.collect { it ? '1' : '0' }.join('')]
+            } as ICoverageVisitor
+            new Analyzer(loader.executionDataStore, visitor).analyzeAll(new File(output, 'classes'))
+            def main = classes.findAll { c -> c.methods.any { it.name == 'toolGetHubInfo' } }
+            def rule = classes.findAll { c -> c.name == 'hubitat-mcp-rule' }
+            if (!main || !main.any { it.instructions.covered > 0 }) throw new GradleException('Coverage missed MCP server')
+            if (!rule || !rule.any { it.instructions.covered > 0 }) throw new GradleException('Coverage missed rule app')
+            new File(output, 'coverage.json').text = JsonOutput.toJson([jacoco: '0.8.15',
+                includes: ['Script*', 'hubitat-mcp-*', 'e2e-deadman-*'],
+                classes: classes.sort { a,b -> (a.name <=> b.name) ?: (a.id <=> b.id) }])
+            println "Captured ${classes.size()} dynamic application classes; server and rule execution verified"
+        }
+    }
+    tasks.withType(Test).configureEach {
+        maxHeapSize = '2g'
+        jacoco {
+            includes = ['Script*', 'hubitat-mcp-*', 'e2e-deadman-*']
+            includeNoLocationClasses = true
+            destinationFile = new File(output, 'test.exec')
+            classDumpDir = new File(output, 'classes')
+        }
+        finalizedBy summary
+    }
+}

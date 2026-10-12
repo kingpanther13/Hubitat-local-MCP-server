@@ -1,87 +1,86 @@
-name: Unit Tests
+name: Dependency coverage experiment
 on:
-  # Manual run on any ref, no PR needed -- opening a PR just to exercise a lane also
-  # books the single shared test hub for an hour of e2e.
   workflow_dispatch:
-  pull_request:
-    branches: [main]
-  push:
-    branches: [main]
-
+    inputs:
+      scope:
+        type: choice
+        options: [smoke, full]
+        default: smoke
 permissions:
   contents: read
-
 jobs:
-  matrix-test:
+  coverage:
     runs-on: ubuntu-latest
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
-        # `normal`  = default config (strict metaClass check off).
-        # `strict`  = -PharnessStrictMetaClass=true; flags any per-instance
-        #             ExpandoMetaClass entries surviving the dual wipe in
-        #             setup(). Runs in parallel with `normal` so wall-clock
-        #             is unchanged; a strict-only failure cleanly attributes
-        #             the regression to a metaClass-wipe escape rather than
-        #             tool behaviour. See HarnessSpec#checkMetaClassClean.
-        #
-        # `dispatch-mode` is a second dimension covering the gateway toggle:
-        # `gateway` = default useGateways=true behaviour.
-        # `flat`    = -Pharness.useGateways=false; HarnessSpec.setup() reads
-        #             the system property and seeds settingsMap.useGateways
-        #             before each test, so any spec that doesn't explicitly
-        #             pin useGateways in given: runs under the flat
-        #             dispatch path. Tests that do pin it still win.
-        #             A flat-only failure cleanly attributes the regression
-        #             to the gateway-toggle code path rather than tool
-        #             behaviour. See issue #187 / #121.
-        mode: [normal, strict]
-        dispatch-mode: [gateway, flat]
-    name: test (${{ matrix.mode }}, ${{ matrix.dispatch-mode }})
+        versions: [baseline, candidate]
+        lane: ${{ fromJSON(inputs.scope == 'smoke' && '["primary", "groovy25"]' || '["primary", "flat", "strict", "strict-flat", "groovy25"]') }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-java@v6
         with:
           distribution: temurin
-          # Gradle daemon runs on this JVM. Gradle 9 requires JDK 17+
-          # for the daemon itself; project targets JDK 11 via the
-          # toolchain block in build.gradle, which Gradle locates from
-          # the runner's pre-installed temurin-11.
-          java-version: '17'
+          java-version: |
+            11
+            17
       - uses: gradle/actions/setup-gradle@v6.4.0
-      - name: Run unit tests
-        run: ./gradlew test --info --warning-mode all
-          ${{ matrix.mode == 'strict' && '-PharnessStrictMetaClass=true' || '' }}
-          ${{ matrix.dispatch-mode == 'flat' && '-Pharness.useGateways=false' || '' }}
-      - name: Upload test report
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: test-report-${{ matrix.mode }}-${{ matrix.dispatch-mode }}
-          path: |
-            build/reports/tests/test/
-            build/test-results/test/
-
-  # Summary gate. The repo ruleset on main requires a status check named
-  # `test`; matrix expansion produces `test (normal, gateway)`,
-  # `test (normal, flat)`, `test (strict, gateway)`, and
-  # `test (strict, flat)`, so without this summary job the literal `test`
-  # check never reports and the ruleset blocks merge forever. This job
-  # depends on the matrix via `needs:`, runs always (so it reports even
-  # when the matrix fails), and fails iff any matrix entry failed —
-  # collapsing all four entries into one check the ruleset can gate on.
-  test:
-    name: test
-    runs-on: ubuntu-latest
-    permissions: {}
-    needs: matrix-test
-    if: always()
-    steps:
-      - name: Verify all matrix jobs passed
+      - name: Select original dependency declarations
+        if: matrix.versions == 'baseline'
         run: |
-          result="${{ needs.matrix-test.result }}"
-          if [ "$result" != "success" ]; then
-            echo "matrix-test result: $result — at least one matrix entry failed"
+          git fetch --depth=1 origin 38115a634b3853c474f093da93c5c9240aa32b1e
+          git show 38115a634b3853c474f093da93c5c9240aa32b1e:build.gradle > build.gradle
+          git show 38115a634b3853c474f093da93c5c9240aa32b1e:ci/groovy2x-spock/build.gradle > ci/groovy2x-spock/build.gradle
+      - name: Run instrumented tests
+        env:
+          LANE: ${{ matrix.lane }}
+          SCOPE: ${{ inputs.scope }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=(--init-script "$PWD/ci/dependency-coverage/coverage.init.gradle" --no-daemon --console=plain --rerun-tasks)
+          case "$LANE" in
+            groovy25) args+=(-p ci/groovy2x-spock -PharnessStrictMetaClass=true) ;;
+            strict) args+=(-PharnessStrictMetaClass=true) ;;
+            strict-flat) args+=(-PharnessStrictMetaClass=true -Pharness.useGateways=false) ;;
+            flat) args+=(-Pharness.useGateways=false) ;;
+          esac
+          args+=(test)
+          if [[ "$SCOPE" == smoke ]]; then
+            args+=(--tests server.McpWireSchemaConformanceSpec --tests rules.HandleDeviceEventSpec --tests server.WatchdogV31PackageDeploySpec)
+          fi
+          ./gradlew "${args[@]}" 2>&1 | tee coverage-run.log
+          if rg 'IllegalClassFormatException|Error while instrumenting|java.lang.instrument ASSERTION' coverage-run.log; then
+            echo '::error::Coverage instrumentation failed'
             exit 1
           fi
-          echo "All matrix entries (normal/strict x gateway/flat) passed"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-${{ matrix.lane }}-${{ matrix.versions }}
+          path: |
+            build/dependency-coverage/
+            build/test-results/test/
+            ci/groovy2x-spock/build/dependency-coverage/
+            ci/groovy2x-spock/build/test-results/test/
+            coverage-run.log
+          retention-days: 14
+  compare:
+    needs: coverage
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: coverage-*
+          path: coverage-artifacts
+      - name: Compare bytecode identities, probes, lines, branches and tests
+        run: python3 ci/dependency-coverage/compare.py coverage-artifacts
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: coverage-comparison
+          path: coverage-artifacts/comparison.json
+          retention-days: 14
