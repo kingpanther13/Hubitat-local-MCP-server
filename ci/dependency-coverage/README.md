@@ -2,7 +2,11 @@
 
 This is disposable instrumentation for `experiment/dependency-coverage-20261012`.
 The PR candidate remains `experiment/dependency-compat-20261012`, containing only
-the five dependency version changes. No application code or assertions are changed.
+the five dependency version changes. Full, smoke, and focused measurements do not
+change application code or assertions. The separate `latch-check` diagnostic adds
+one runner-local assertion to verify a suspected hidden timeout.
+
+See [RESULTS.md](RESULTS.md) for the completed measurements and their limits.
 
 - Baseline declarations: `38115a634b3853c474f093da93c5c9240aa32b1e`.
 - Candidate declarations and identical application/tests: `78115a5a59bc922adfab4ed02a690bbd874ed4bf`.
