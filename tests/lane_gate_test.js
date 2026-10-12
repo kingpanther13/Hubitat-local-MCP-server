@@ -81,8 +81,8 @@ const dependencyFiles = [
   { filename: 'ci/groovy2x-spock/build.gradle' },
   { filename: 'ci/groovy24-parse/build.gradle' },
   { filename: 'gradle/wrapper/gradle-wrapper.properties' },
-  { filename: '.github/workflows/hub-e2e.yml' },
-  { filename: '.github/workflows/dependency-updates-check.yml' },
+  { filename: '.github/workflows/hub-e2e.yml', patch: '@@ -1 +1 @@\n-      - uses: actions/checkout@v6\n+      - uses: actions/checkout@v7' },
+  { filename: '.github/workflows/dependency-updates-check.yml', patch: "@@ -1 +1 @@\n-      RENOVATE_VERSION: '44.151.5'\n+      RENOVATE_VERSION: '44.152.0'" },
 ];
 for (const bot of ['renovate[bot]', 'dependabot[bot]']) {
   check(`${bot} dependencies only`, botDecision(bot, dependencyFiles), 'dependency-skip');
@@ -102,6 +102,11 @@ for (const bot of ['renovate[bot]', 'dependabot[bot]']) {
   check(`${bot} renamed shipped file`, botDecision(bot, [{
     filename: 'build.gradle', previous_filename: 'hubitat-mcp-server.groovy',
   }]), 'run');
+  check(`${bot} workflow command change`, botDecision(bot, [{
+    filename: '.github/workflows/publish-bundle-artifact.yml',
+    patch: '@@ -1 +1 @@\n-          python tools/build-release-app.py\n+          python tools/different-builder.py',
+  }]), 'run');
+  check(`${bot} missing workflow patch`, botDecision(bot, [{ filename: '.github/workflows/hub-e2e.yml' }]), 'run');
   for (const files of [undefined, null, [], [{}], [{ filename: '../build.gradle' }]]) {
     check(`${bot} missing/invalid files`, botDecision(bot, files), 'run');
   }
