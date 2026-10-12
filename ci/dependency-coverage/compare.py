@@ -51,7 +51,7 @@ def execution(path, application_ids):
             bits = stream.read((count + 7) // 8)
             assert len(bits) == (count + 7) // 8
             if class_id in application_ids and any(bits):
-                probes[class_id] = {'count': count, 'hits': sum(v.bit_count() for v in bits),
+                probes[class_id] = {'count': count, 'hits': int.from_bytes(bits, 'little').bit_count(),
                                     'sha256': hashlib.sha256(bits).hexdigest()}
         else:
             raise ValueError(f'Unknown JaCoCo block {block!r}')
