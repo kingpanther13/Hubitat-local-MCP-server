@@ -35,7 +35,7 @@
 
 ## Testing
 
-<!-- How you verified this works. -->
+<!-- How you verified this works. This is NOT intended to be a running log of CI status, users can simply check the CI logs if they want to know if CI passed or failed. This section is intended to be for describing tests that were made in CI, and describing live testing that was done on a hub. -->
 
 ## Checklist
 
