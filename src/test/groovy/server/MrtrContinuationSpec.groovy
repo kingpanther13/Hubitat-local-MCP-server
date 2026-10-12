@@ -3206,7 +3206,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def ownerDone = new CountDownLatch(1)
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms ->
             release.countDown()
-            ownerDone.await(5, TimeUnit.SECONDS)
+            assert ownerDone.await(5, TimeUnit.SECONDS) : 'Owner completion wait timed out inside the mock callback'
         })
         def args = [ruleId: [71, 72], action: 'stop']
         def winner = new AtomicReference()
