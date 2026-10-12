@@ -10,6 +10,11 @@ on:
         description: Existing full run to analyze without rerunning tests
         type: string
         default: ''
+      source_scope:
+        description: Scope of the saved run when analyzing artifacts
+        type: choice
+        options: [full, focused]
+        default: full
 permissions:
   contents: read
   actions: read
@@ -89,7 +94,7 @@ jobs:
         id: comparison
         continue-on-error: true
         env:
-          SCOPE: ${{ inputs.scope }}
+          SCOPE: ${{ inputs.scope == 'analyze' && inputs.source_scope || inputs.scope }}
         run: python3 ci/dependency-coverage/compare.py coverage-artifacts "$SCOPE"
       - uses: actions/setup-java@v6
         if: steps.comparison.outcome == 'failure'
@@ -103,6 +108,26 @@ jobs:
         run: |
           export COVERAGE_ARTIFACTS="$PWD/coverage-artifacts"
           ./gradlew --init-script ci/dependency-coverage/details.init.gradle --no-daemon --console=plain dependencyCoverageDetails
+      - name: Compare repeated runs without changing dependencies
+        if: inputs.scope == 'focused' || (inputs.scope == 'analyze' && inputs.source_scope == 'focused')
+        shell: bash
+        run: |
+          set -euo pipefail
+          for version in baseline candidate; do
+            destination="$PWD/repeat-$version"
+            mkdir -p "$destination"
+            for lane in primary groovy25; do
+              ln -s "$PWD/coverage-artifacts/coverage-$lane-r1-$version" "$destination/coverage-$lane-baseline"
+              ln -s "$PWD/coverage-artifacts/coverage-$lane-r2-$version" "$destination/coverage-$lane-candidate"
+            done
+            if python3 ci/dependency-coverage/compare.py "$destination" smoke; then
+              echo "Identical repeated coverage for $version"
+            else
+              test -f "$destination/comparison.json"
+            fi
+            export COVERAGE_ARTIFACTS="$destination"
+            ./gradlew --init-script ci/dependency-coverage/details.init.gradle --no-daemon --console=plain dependencyCoverageDetails
+          done
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -110,6 +135,10 @@ jobs:
           path: |
             coverage-artifacts/comparison.json
             coverage-artifacts/application-differences.json
+            repeat-baseline/comparison.json
+            repeat-baseline/application-differences.json
+            repeat-candidate/comparison.json
+            repeat-candidate/application-differences.json
           retention-days: 14
       - name: Preserve any comparison failure
         if: steps.comparison.outcome == 'failure'
