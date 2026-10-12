@@ -12,6 +12,7 @@ from check_logs import check
 
 root = Path(sys.argv[1])
 results = []
+incomplete_pairs = []
 scope = sys.argv[2] if len(sys.argv) > 2 else 'full'
 expected_lanes = ({'primary', 'groovy25'} if scope == 'smoke' else
                   {'primary-r1', 'primary-r2', 'groovy25-r1', 'groovy25-r2'} if scope == 'focused' else
@@ -98,6 +99,9 @@ def inventory(folder):
 
 for baseline_dir in sorted(root.glob('coverage-*-baseline')):
     candidate_dir = baseline_dir.with_name(baseline_dir.name.removesuffix('-baseline') + '-candidate')
+    if not candidate_dir.is_dir():
+        incomplete_pairs.append(baseline_dir.name)
+        continue
     for folder in (baseline_dir, candidate_dir):
         check([folder, *folder.rglob('coverage-run.log')])
     before = json.loads(next(baseline_dir.rglob('coverage.json')).read_text())
@@ -134,6 +138,7 @@ for baseline_dir in sorted(root.glob('coverage-*-baseline')):
 if not results:
     raise SystemExit('No baseline coverage artifacts found')
 (root / 'comparison.json').write_text(json.dumps(results, indent=2))
+assert not incomplete_pairs, f'Incomplete artifact pairs: {incomplete_pairs}'
 assert {r['lane'] for r in results} == expected_lanes, 'Missing or unexpected coverage lane'
 if not all(r['identical'] for r in results):
     raise SystemExit('Coverage or test inventory differs; inspect comparison.json')
