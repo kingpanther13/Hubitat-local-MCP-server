@@ -23,14 +23,12 @@ assert source.count('mv.visitLdcInsn(Integer.valueOf(value));') == 1
 source = source.replace('mv.visitLdcInsn(Integer.valueOf(value));', '''
             // Same integer, encoded using immediate operands instead of a
             // distinct CONSTANT_Integer entry for every large probe index.
-            mv.visitIntInsn(Opcodes.SIPUSH, value >> 16);
-            mv.visitIntInsn(Opcodes.BIPUSH, 16);
+            // Share one high-part constant per 32768 probes. This also keeps
+            // the original probe inserter's maximum stack requirement (+3).
+            mv.visitLdcInsn(Integer.valueOf(value >> 15));
+            mv.visitIntInsn(Opcodes.BIPUSH, 15);
             mv.visitInsn(Opcodes.ISHL);
-            mv.visitIntInsn(Opcodes.SIPUSH, (value >>> 8) & 255);
-            mv.visitIntInsn(Opcodes.BIPUSH, 8);
-            mv.visitInsn(Opcodes.ISHL);
-            mv.visitInsn(Opcodes.IOR);
-            mv.visitIntInsn(Opcodes.SIPUSH, value & 255);
+            mv.visitIntInsn(Opcodes.SIPUSH, value & 32767);
             mv.visitInsn(Opcodes.IOR);''')
 source = source.replace('org.jacoco.core', prefix + '.core').replace('org.objectweb.asm', prefix + '.asm')
 patched_source = out / 'InstrSupport.java'
