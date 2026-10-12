@@ -48,14 +48,14 @@ dependencies {
     // (hubitat.helper.*) compile.
     implementation 'org.codehaus.groovy:groovy-all:2.5.23'
     testImplementation 'org.codehaus.groovy:groovy-all:2.5.23'
-    testImplementation 'org.spockframework:spock-core:2.3-groovy-2.5'
+    testImplementation 'org.spockframework:spock-core:2.5-groovy-2.5'
     // joelwetzel/hubitat_ci pinned by commit SHA (the fork cuts no release tags). This is a MANUAL
     // pin: the existing .github/workflows/hubitat-ci-version-check.yml only tracks the root build's
     // eighty20results tag, not this SHA, so bump it by hand when adopting fork fixes.
     testImplementation 'com.github.joelwetzel:hubitat_ci:a62a351eed'
     // Spock needs a class-gen backend (byte-buddy or cglib) to Mock/Spy non-interface types
     // (TestDevice, TestChildApp); neither is transitive on the groovy-2.5 variant.
-    testImplementation 'net.bytebuddy:byte-buddy:1.18.8'
+    testImplementation 'net.bytebuddy:byte-buddy:1.18.14'
     // hubitat_ci's public bytecode carries compile- and runtime-time references to these
     // (HttpResponseDecorator in BaseExecutor via the AppExecutor @Delegate chain; quartz +
     // chromecast reached the same way). The root build mirrors the identical set for the same
@@ -66,7 +66,7 @@ dependencies {
     // Mirrors the root build: McpWireSchemaConformanceSpec / McpSchemaValidator are part of the
     // imported spec corpus, so without this the whole lane fails to COMPILE rather than reporting
     // spec results. Held on 2.0.x for the same reason (3.x targets Java 17, this lane is JDK 11).
-    testImplementation 'com.networknt:json-schema-validator:2.0.4'
+    testImplementation 'com.networknt:json-schema-validator:2.0.8'
 
     // Security pin: commons-collections 3.2.x carries the InvokeTransformer deserialization RCE
     // (CVE-2015-7501, CVE-2015-6420). 3.2.2 is a drop-in patch on the same line. Reaches the test

@@ -69,7 +69,7 @@ dependencies {
     // top-level server/rule files), so the main-source-set Groovy dep
     // stays local to the build.
     implementation 'org.codehaus.groovy:groovy-all:3.0.25'
-    testImplementation 'org.spockframework:spock-core:2.3-groovy-3.0'
+    testImplementation 'org.spockframework:spock-core:2.5-groovy-3.0'
     // eighty20results/hubitat_ci pinned by release tag. Bumped by tracking
     // issues from .github/workflows/hubitat-ci-version-check.yml.
     testImplementation 'com.github.eighty20results:hubitat_ci:v0.28.6'
@@ -106,7 +106,7 @@ dependencies {
     // It pulls jackson-databind and slf4j-api above the Maven-style ranges
     // su.litvak.chromecast:api-v2 declares — a plain upgrade under Gradle's
     // rich-version rules, not a conflict, and nothing here consumes that jackson.
-    testImplementation 'com.networknt:json-schema-validator:2.0.7'
+    testImplementation 'com.networknt:json-schema-validator:2.0.8'
 
     // Security pin: commons-collections 3.2.x carries the InvokeTransformer
     // deserialization RCE (CVE-2015-7501, CVE-2015-6420). 3.2.2 is a drop-in
