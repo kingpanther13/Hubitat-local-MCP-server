@@ -12,8 +12,10 @@ from check_logs import check
 
 root = Path(sys.argv[1])
 results = []
-expected_lanes = {'primary', 'groovy25'} if len(sys.argv) > 2 and sys.argv[2] == 'smoke' else {
-    'primary', 'flat', 'strict', 'strict-flat', 'groovy25'}
+scope = sys.argv[2] if len(sys.argv) > 2 else 'full'
+expected_lanes = ({'primary', 'groovy25'} if scope == 'smoke' else
+                  {'primary-r1', 'primary-r2', 'groovy25-r1', 'groovy25-r2'} if scope == 'focused' else
+                  {'primary', 'flat', 'strict', 'strict-flat', 'groovy25'})
 
 
 def normalize(name):
