@@ -1284,7 +1284,7 @@ def _allowedOriginHosts() {
     } catch (Exception ignored) {
         __bat529StaticCall_java_lang_Object_1('_noteLocalIpForOrigin', false)
     }
-    return allowed + __bat529StaticCall_java_lang_Object_0('_configuredExtraOriginHosts')
+    return __bat529Repair_Plus_java_util_List(allowed, __bat529StaticCall_java_lang_Object_0('_configuredExtraOriginHosts'))
 }
 
 // The additionalAllowedOrigins setting, normalized: split on commas, run each entry through
@@ -3409,8 +3409,8 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
     if (leafTool == "hub_call_rule" && __bat529StaticProperty_java_lang_Object(result, 'remainingRuleIds') instanceof List
             && !__bat529StaticProperty_java_lang_Object(result, 'remainingRuleIds').isEmpty()) {
         java.util.List retryIds = []
-        if (__bat529StaticProperty_java_lang_Object(result, 'failedRuleIds') instanceof List) retryIds.addAll(__bat529StaticProperty_java_lang_Object(result, 'failedRuleIds'))
-        retryIds.addAll(__bat529StaticProperty_java_lang_Object(result, 'remainingRuleIds'))
+        if (__bat529StaticProperty_java_lang_Object(result, 'failedRuleIds') instanceof List) __bat529StaticReceiverCall_java_lang_Object_1(retryIds, 'addAll', __bat529StaticProperty_java_lang_Object(result, 'failedRuleIds'))
+        __bat529StaticReceiverCall_java_lang_Object_1(retryIds, 'addAll', __bat529StaticProperty_java_lang_Object(result, 'remainingRuleIds'))
         nextLeaf.ruleId = retryIds.unique()
         kind = "call_rule"
     } else if (__bat529Repair_In(leafTool, ["hub_set_rule", "hub_set_native_app"]) && __bat529StaticProperty_java_lang_Object(result, 'status') == "in_progress") {
@@ -8949,7 +8949,7 @@ private List _rmCoerceActionIndices(List raw) {
  */
 @groovy.transform.CompileStatic
 List _rmOrderedActionIndices(Integer appId) {
-    __bat529StaticCall_java_util_List_1('_rmCoerceActionIndices', __bat529StaticCall_java_util_Map_1('_ruleCompiledState', appId)?.actionList)
+    __bat529StaticCall_java_util_List_1('_rmCoerceActionIndices', __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticCall_java_util_Map_1('_ruleCompiledState', appId), 'actionList'))
 }
 
 /**
@@ -9570,7 +9570,7 @@ private Map _rmPostSettings(Integer appId, Map body, Map cache = null) {
 @groovy.transform.CompileStatic
 Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = null, Map cache = null) {
     if (schema == null) {
-        schema = __bat529StaticCall_java_util_Map_1('_rmCollectInputSchema', __bat529StaticCall_java_util_Map_1('_rmFetchConfigJson', appId)?.configPage)
+        schema = __bat529StaticCall_java_util_Map_1('_rmCollectInputSchema', __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticCall_java_util_Map_1('_rmFetchConfigJson', appId), 'configPage'))
     }
     java.util.Map body = __bat529StaticCall_java_util_Map_3('_rmBuildSettingsBody', appId, settingsMap, schema)
     java.util.Map resp = __bat529StaticCall_java_util_Map_3('_rmPostSettings', appId, body, cache)

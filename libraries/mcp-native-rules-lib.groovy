@@ -1559,7 +1559,7 @@ private boolean _rmLooksLikeStateChangeToken(Object raw) {
 private String _rmTriggerCapabilityFamily(String cap) {
     if (!cap) return null
     def wanted = cap.trim()
-    def match = __bat529StaticDgm_find_1_java_lang_Object(((__bat529StaticCall_java_util_Map_0('_rmTriggerSchemaForDiscover')?.capabilities ?: [])), ((this.&_bat529Cb_4076886b_386).curry([wanted] as Object[])))
+    def match = __bat529StaticDgm_find_1_java_lang_Object(((__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticCall_java_util_Map_0('_rmTriggerSchemaForDiscover'), 'capabilities') ?: [])), ((this.&_bat529Cb_4076886b_386).curry([wanted] as Object[])))
     return __bat529StaticProperty_Safe_java_lang_Object(match, 'family')?.toString()
 }
 
@@ -1578,7 +1578,7 @@ private String _rmSuggestTriggerCapability(String cap, Collection liveOptions = 
     def want = cap?.trim()?.toLowerCase()
     if (!want) return null
     def live = __bat529StaticDgm_findAll_1_java_lang_Object((__bat529StaticDgm_collect_1_java_util_List(((liveOptions ?: [])), (this.&_bat529Cb_4076886b_87))), (this.&_bat529Cb_4076886b_173))
-    def schemaNames = __bat529StaticReceiverCall_java_lang_Object_1(((__bat529StaticCall_java_util_Map_0('_rmTriggerSchemaForDiscover')?.capabilities ?: [])), 'collectMany', (this.&_bat529Cb_4076886b_394))
+    def schemaNames = __bat529StaticReceiverCall_java_lang_Object_1(((__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticCall_java_util_Map_0('_rmTriggerSchemaForDiscover'), 'capabilities') ?: [])), 'collectMany', (this.&_bat529Cb_4076886b_394))
     def candidates = __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticDgm_findAll_1_java_lang_Object(((live ? live : schemaNames)), (this.&_bat529Cb_4076886b_56)), 'unique')
     def exact = __bat529StaticDgm_find_1_java_lang_Object((candidates), ((this.&_bat529Cb_4076886b_77).curry([want] as Object[])))
     if (exact) return exact
@@ -4611,7 +4611,7 @@ private void _rmInitSelectActionsPage(Integer appId) {
 private boolean _rmActionCapUsesActionVerb(String capRaw) {
     def want = capRaw?.trim()?.toLowerCase()
     if (!want) return false
-    def actionEnumCaps = __bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_util_List(((__bat529StaticCall_java_util_Map_0('_rmActionSchemaForDiscover')?.capabilities ?: [])), (this.&_bat529Cb_4076886b_375))), (this.&_bat529Cb_4076886b_388))
+    def actionEnumCaps = __bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_util_List(((__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticCall_java_util_Map_0('_rmActionSchemaForDiscover'), 'capabilities') ?: [])), (this.&_bat529Cb_4076886b_375))), (this.&_bat529Cb_4076886b_388))
     // Actuator display name that names the same operation picker as the shade schema entry.
     def resolved = (want == "window shade" || want == "windowshade") ? "shade" : want
     return __bat529Repair_In(resolved, actionEnumCaps)
@@ -13480,7 +13480,7 @@ private Map _rmRoundZeroNativeEditRefusal(Map args) {
 // the hub as Groovy's map text and 500, so refuse it before any backup or write. One read-only GET.
 @groovy.transform.CompileStatic
 private void _rmRejectNonDeviceMapSettings(Integer appId, String pageName, Map settingsMap) {
-    java.util.Map schema = __bat529StaticCall_java_util_Map_1('_rmCollectInputSchema', __bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', appId, pageName)?.configPage)
+    java.util.Map schema = __bat529StaticCall_java_util_Map_1('_rmCollectInputSchema', __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', appId, pageName), 'configPage'))
     def bad = __bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_util_Map((settingsMap), ((this.&_bat529Cb_4076886b_353).curry([schema] as Object[])))), ((this.&_bat529Cb_4076886b_383).curry([schema] as Object[])))
     if (bad) {
         throw new IllegalArgumentException("settings ${bad} were given an object, which only device inputs accept (as the {id: label} map hub_get_app_config returns). Pass a scalar for text/number/bool/enum inputs and a List of options for a multi-select enum.")

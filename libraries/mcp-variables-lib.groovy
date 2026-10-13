@@ -704,7 +704,7 @@ private void _validateInitialValue(String name, String type, value) {
 @groovy.transform.CompileStatic
 java.util.Set _hubVarsFormFields(Integer appId) {
     try {
-        return (__bat529StaticCall_java_util_Map_1('_rmCollectInputSchema', __bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', appId, "hubVar")?.configPage) ?: [:]).keySet() as Set
+        return (__bat529StaticCall_java_util_Map_1('_rmCollectInputSchema', __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', appId, "hubVar"), 'configPage')) ?: [:]).keySet() as Set
     } catch (Exception e) {
         __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-vars", "_hubVarsFormFields(${appId}) could not read the form: ${e.message}")
         return null

@@ -417,8 +417,12 @@ def storeReference = { Expression expression ->
     found
 }
 def collectionKind
-collectionKind = { Expression expression, Map locals ->
-    if (expression instanceof BinaryExpression && expression.operation.text == '+') return collectionKind(expression.leftExpression, locals)
+collectionKind = { Expression expression, Map locals, Set seen = [] as Set ->
+    if (expression instanceof BinaryExpression && expression.operation.text == '+') return collectionKind(expression.leftExpression, locals, seen)
+    if (expression instanceof VariableExpression && locals.containsKey(expression.name) && !seen.contains(expression.name) && expression.accessedVariable.is(locals[expression.name].binding)) {
+        String kind = collectionKind(locals[expression.name].expression, locals, seen + expression.name)
+        if (kind) return kind
+    }
     Map shape = infer(expression, locals, [] as Set)
     shape?.type in ['java.util.List', 'java.util.Map', 'java.util.Set', 'java.util.Collection'] ? shape.type : null
 }
@@ -616,8 +620,9 @@ methods.each { method ->
     List preservation = expressionsByMethod[method.name].findAll { expression ->
         if (expression instanceof BinaryExpression) return expression.operation.text == 'in' || expression.operation.text == '+' && collectionKind(expression.leftExpression, localsByMethod[method.name])
         if (expression instanceof PropertyExpression) return expression.safe && expression.objectExpression instanceof MethodCallExpression && expression.propertyAsString
-        if (expression instanceof MethodCallExpression && !expression.implicitThis && expression.objectExpression instanceof VariableExpression && expression.methodAsString == 'size') {
-            return unionBindings.any { it.is(expression.objectExpression.accessedVariable) }
+        if (expression instanceof MethodCallExpression && !expression.implicitThis && !expression.safe && !expression.spreadSafe) {
+            if (expression.methodAsString == 'addAll' && expression.arguments instanceof TupleExpression && expression.arguments.expressions.size() == 1 && !(expression.arguments.expressions[0] instanceof SpreadExpression)) return true
+            if (expression.objectExpression instanceof VariableExpression && expression.methodAsString == 'size') return unionBindings.any { it.is(expression.objectExpression.accessedVariable) }
         }
         false
     }.sort { expression -> List r = span(expression); r ? r[1] - r[0] : Integer.MAX_VALUE }
@@ -645,15 +650,20 @@ methods.each { method ->
             List receiver = span(expression.objectExpression)
             if (!receiver) return
             helperName = prefix + 'Property_Safe_java_lang_Object'
-            code = "@groovy.transform.CompileDynamic\nprivate Object ${helperName}(Object receiver, String key) {\n    return receiver?.\"\u0024{key}\"\n}\n"
+            String read = 'receiver?."${key}"'
+            code = "@groovy.transform.CompileDynamic\nprivate Object ${helperName}(Object receiver, String key) {\n    return ${read}\n}\n"
             String key = "'" + expression.propertyAsString.replace('\\', '\\\\').replace("'", "\\'") + "'"
             replacement = helperName + '(' + fragment(receiver) + ', ' + key + ')'
         } else {
             List receiver = span(expression.objectExpression)
             if (!receiver) return
-            helperName = prefix + 'ReceiverCall_java_lang_Object_0'
-            code = "@groovy.transform.CompileDynamic\nprivate Object ${helperName}(Object receiver, String target) {\n    return receiver.\"\u0024{target}\"()\n}\n"
-            replacement = helperName + '(' + fragment(receiver) + ", 'size')"
+            int arity = expression.methodAsString == 'addAll' ? 1 : 0
+            helperName = prefix + 'ReceiverCall_java_lang_Object_' + arity
+            String call = arity == 1 ? 'receiver."${target}"(p0)' : 'receiver."${target}"()'
+            code = "@groovy.transform.CompileDynamic\nprivate Object ${helperName}(Object receiver, String target${arity ? ', Object p0' : ''}) {\n    return ${call}\n}\n"
+            List argument = arity ? span(expression.arguments.expressions[0]) : null
+            if (arity && !argument) return
+            replacement = helperName + '(' + fragment(receiver) + ", '" + expression.methodAsString + "'" + (arity ? ', ' + fragment(argument) : '') + ')'
         }
         plan.helpers[helperName] = code
         plan.edits.removeAll { it.start >= r[0] && it.end <= r[1] && it.start != it.end }
