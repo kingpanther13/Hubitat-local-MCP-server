@@ -16,6 +16,7 @@
  * 7. Select devices to expose, click Done
  * 8. Open app to get endpoint URL with access token
  */
+import groovy.json.JsonSlurper
 @groovy.transform.Field static final Object WRITE_RESERVATION_LOCK = new Object()
 @groovy.transform.Field static volatile boolean SETUP_CURRENT = false
 @groovy.transform.Field static volatile long SETUP_RETRY_AT = 0L
@@ -1064,24 +1065,13 @@ def _getAllToolDefinitions_partDashboards() {
     ]
 }
 def _readOnlyToolNames_partDashboards() {
-    return [
-        "hub_list_dashboards", "hub_get_dashboard"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_dashboards","hub_get_dashboard"]]'])
 }
 def _idempotentWriteToolNames_partDashboards() {
-    return [
-        "hub_update_dashboard", "hub_delete_dashboard"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_dashboard","hub_delete_dashboard"]]'])
 }
 def _toolDisplayMeta_partDashboards() {
-    return [
-        hub_list_dashboards: [title: "List Dashboards", summary: "List Easy and legacy Hubitat® Dashboards with ids, names, and type."],
-        hub_get_dashboard: [title: "Get Dashboard", summary: "Get one dashboard's full config by id (Easy config or legacy layout)."],
-        hub_create_dashboard: [title: "Create Dashboard", summary: "Create an Easy Dashboard or an empty legacy Hubitat® Dashboard."],
-        hub_update_dashboard: [title: "Update Dashboard", summary: "Update a dashboard: Easy wholesale, or legacy name/devices/layout edits."],
-        hub_delete_dashboard: [title: "Delete Dashboard", summary: "Permanently delete an Easy or legacy Hubitat® Dashboard by id."],
-        hub_clone_dashboard: [title: "Clone Dashboard", summary: "Clone an Easy or legacy Hubitat® Dashboard into a new one."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_dashboards",["m",[["title","List Dashboards"],["summary","List Easy and legacy Hubitat\\u00ae Dashboards with ids, names, and type."]]]],["hub_get_dashboard",["m",[["title","Get Dashboard"],["summary","Get one dashboard\'s full config by id (Easy config or legacy layout)."]]]],["hub_create_dashboard",["m",[["title","Create Dashboard"],["summary","Create an Easy Dashboard or an empty legacy Hubitat\\u00ae Dashboard."]]]],["hub_update_dashboard",["m",[["title","Update Dashboard"],["summary","Update a dashboard: Easy wholesale, or legacy name/devices/layout edits."]]]],["hub_delete_dashboard",["m",[["title","Delete Dashboard"],["summary","Permanently delete an Easy or legacy Hubitat\\u00ae Dashboard by id."]]]],["hub_clone_dashboard",["m",[["title","Clone Dashboard"],["summary","Clone an Easy or legacy Hubitat\\u00ae Dashboard into a new one."]]]]]]'])
 }
 def toolListRooms(args = null) {
     def rooms = getRooms()
@@ -1298,88 +1288,16 @@ def toolRenameRoom(args) {
     ]
 }
 def _getAllToolDefinitions_partRooms() {
-    return [
-        [
-            name: "hub_list_rooms",
-            description: "List all rooms on the hub, each with its ID, name, device count, and assigned device IDs. Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only — call hub_get_room for per-device states.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_room",
-            description: "Get one room's details: its ID, name, and the full list of assigned devices with each device's current attribute states. Use when you need device-level detail for a single room; for a name-and-count overview of all rooms use hub_list_rooms instead. Read-only and parallel-safe.[[FLAT_TRIM]] Devices unreachable via MCP are returned with accessible=false and no states.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    room: [type: "string", description: "Room name (case-insensitive) or room ID, e.g. \"Living Room\" or \"5\""]
-                ],
-                required: ["room"]
-            ]
-        ],
-        [
-            name: "hub_create_room",
-            description: "Create a new room on the hub, optionally assigning devices to it at creation.[[FLAT_TRIM]] Use when a needed room does not yet exist; to only move devices into an existing room, set the device's room with hub_update_device instead.[[/FLAT_TRIM]] Requires Write master, backup <24h, confirm=true.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Name for the new room, e.g. \"Garage\""],
-                    deviceIds: [type: "array", description: "Optional device IDs to assign to the room at creation, e.g. [\"12\",\"34\"].", items: [type: "string"]],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved creating this room."]
-                ],
-                required: ["name", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_delete_room",
-            description: """⚠️ DESTRUCTIVE: Permanently deletes a room. Devices become unassigned (not deleted). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]]
-
-PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    room: [type: "string", description: "Room name (case-insensitive) or room ID to delete, e.g. \"Garage\" or \"5\""],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]
-                ],
-                required: ["room", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_update_room",
-            description: "Rename a room. Device assignments preserved.[[FLAT_TRIM]] Automations/dashboards referencing the room by name may need updating.[[/FLAT_TRIM]] Requires Write master + confirm + backup <24h.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    room: [type: "string", description: "Current room name (case-insensitive) or room ID, e.g. \"Garage\" or \"5\""],
-                    newName: [type: "string", description: "New name for the room, e.g. \"Workshop\""],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
-                ],
-                required: ["room", "newName", "confirm"]
-            ]
-        ]
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_rooms"],["description","List all rooms on the hub, each with its ID, name, device count, and assigned device IDs. Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only \\u2014 call hub_get_room for per-device states."],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 100)."]]]]]]]]]]]],["m",[["name","hub_get_room"],["description","Get one room\'s details: its ID, name, and the full list of assigned devices with each device\'s current attribute states. Use when you need device-level detail for a single room; for a name-and-count overview of all rooms use hub_list_rooms instead. Read-only and parallel-safe.[[FLAT_TRIM]] Devices unreachable via MCP are returned with accessible=false and no states.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["room",["m",[["type","string"],["description","Room name (case-insensitive) or room ID, e.g. \\"Living Room\\" or \\"5\\""]]]]]]],["required",["l",["room"]]]]]]]],["m",[["name","hub_create_room"],["description","Create a new room on the hub, optionally assigning devices to it at creation.[[FLAT_TRIM]] Use when a needed room does not yet exist; to only move devices into an existing room, set the device\'s room with hub_update_device instead.[[/FLAT_TRIM]] Requires Write master, backup <24h, confirm=true."],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Name for the new room, e.g. \\"Garage\\""]]]],["deviceIds",["m",[["type","array"],["description","Optional device IDs to assign to the room at creation, e.g. [\\"12\\",\\"34\\"]."],["items",["m",[["type","string"]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true. Confirms a recent backup exists and the user approved creating this room."]]]]]]],["required",["l",["name","confirm"]]]]]]]],["m",[["name","hub_delete_room"],["description","\\u26a0\\ufe0f DESTRUCTIVE: Permanently deletes a room. Devices become unassigned (not deleted). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]]\\n\\nPRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["room",["m",[["type","string"],["description","Room name (case-insensitive) or room ID to delete, e.g. \\"Garage\\" or \\"5\\""]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]]]]]]],["required",["l",["room","confirm"]]]]]]]],["m",[["name","hub_update_room"],["description","Rename a room. Device assignments preserved.[[FLAT_TRIM]] Automations/dashboards referencing the room by name may need updating.[[/FLAT_TRIM]] Requires Write master + confirm + backup <24h."],["inputSchema",["m",[["type","object"],["properties",["m",[["room",["m",[["type","string"],["description","Current room name (case-insensitive) or room ID, e.g. \\"Garage\\" or \\"5\\""]]]],["newName",["m",[["type","string"],["description","New name for the room, e.g. \\"Workshop\\""]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["room","newName","confirm"]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partRooms() {
-    return [
-        "hub_list_rooms", "hub_get_room"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_rooms","hub_get_room"]]'])
 }
 def _idempotentWriteToolNames_partRooms() {
-    return [
-        "hub_update_room", "hub_delete_room"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_room","hub_delete_room"]]'])
 }
 def _toolDisplayMeta_partRooms() {
-    return [
-        hub_list_rooms: [title: "List Rooms", summary: "List all rooms with IDs, names, and device counts."],
-        hub_get_room: [title: "Get Room Details", summary: "Get one room's details with its assigned devices."],
-        hub_create_room: [title: "Create Room", summary: "Create a new room, optionally assigning devices."],
-        hub_delete_room: [title: "Delete Room", summary: "Permanently delete a room."],
-        hub_update_room: [title: "Rename Room", summary: "Rename an existing room."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_rooms",["m",[["title","List Rooms"],["summary","List all rooms with IDs, names, and device counts."]]]],["hub_get_room",["m",[["title","Get Room Details"],["summary","Get one room\'s details with its assigned devices."]]]],["hub_create_room",["m",[["title","Create Room"],["summary","Create a new room, optionally assigning devices."]]]],["hub_delete_room",["m",[["title","Delete Room"],["summary","Permanently delete a room."]]]],["hub_update_room",["m",[["title","Rename Room"],["summary","Rename an existing room."]]]]]]'])
 }
 private Map _parseBundleContent(String content) {
     if (!content) return null
@@ -1676,78 +1594,19 @@ def _bundleResponseSucceeded(resp) {
     return text.equalsIgnoreCase("true")
 }
 def _getAllToolDefinitions_partBundles() {
-    return [
-        [
-            name: "hub_install_bundle",
-            description: "Install a Hubitat code bundle (.zip) from a URL the way Hubitat Package Manager does -- the hub fetches the zip and unpacks it into Libraries/Apps/Drivers Code (how a package delivers the libraries an app #includes). Use it to prove on the real hub that a package installs the HPM way before users update. Requires Write master + confirm=true + a recent backup; the hub does not deep-validate the zip.[[FLAT_TRIM]] Verify the result with hub_list_libraries / hub_get_source. Uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else legacy /bundle/uploadZipFromUrl.[[/FLAT_TRIM]][[FLAT_TRIM]] A transport drop can lose the response while the hub still commits this install; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    importUrl: [type: "string", description: "URL of the bundle .zip the hub fetches and installs (http:// or https://)."],
-                    installer: [type: "boolean", description: "OPTIONAL. Mark the bundle's contents as installed-by-this-package (HPM's installer/private flag). Default false."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved installing this bundle."],
-                ],
-                required: ["importUrl", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_list_bundles",
-            description: "List installed code bundles -- the Bundle-Manager containers HPM delivers code in, distinct from Libraries Code.[[FLAT_TRIM]] Each entry: id, name, namespace, private flag, and a 'contains' summary of the apps/drivers/libraries it delivered.[[/FLAT_TRIM]] Use to find a bundle's id for hub_delete_bundle/hub_export_bundle, or to verify a bundle installed. Read-only.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_delete_bundle",
-            description: "Delete an installed code bundle by id (the Bundle-Manager container; find the id with hub_list_bundles). DESTRUCTIVE: requires Write master + confirm=true + a recent backup; verifies by re-listing that the id is gone. Removes only the container -- the libraries/apps/drivers it delivered may remain in Code, so delete those separately with hub_delete_item if needed.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    bundleId: [type: "string", description: "The numeric bundle id from hub_list_bundles (e.g. \"4\")."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved deleting this bundle."]
-                ],
-                required: ["bundleId", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_export_bundle",
-            description: "Export an installed bundle's .zip to the hub File Manager (downloadable at /local/<fileName>; find the id with hub_list_bundles). A write (creates a File Manager file), not destructive -- needs Write master, no confirm.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    bundleId: [type: "string", description: "The numeric bundle id from hub_list_bundles (e.g. \"4\")."],
-                    saveAs: [type: "string", description: "OPTIONAL File Manager filename for the exported .zip. Defaults to the bundle's name.[[FLAT_TRIM]] '.zip' is appended if missing; non-filename characters are replaced with '_'.[[/FLAT_TRIM]]"],
-                ],
-                required: ["bundleId"]
-            ]
-        ]
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_install_bundle"],["description","Install a Hubitat code bundle (.zip) from a URL the way Hubitat Package Manager does -- the hub fetches the zip and unpacks it into Libraries/Apps/Drivers Code (how a package delivers the libraries an app #includes). Use it to prove on the real hub that a package installs the HPM way before users update. Requires Write master + confirm=true + a recent backup; the hub does not deep-validate the zip.[[FLAT_TRIM]] Verify the result with hub_list_libraries / hub_get_source. Uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else legacy /bundle/uploadZipFromUrl.[[/FLAT_TRIM]][[FLAT_TRIM]] A transport drop can lose the response while the hub still commits this install; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["importUrl",["m",[["type","string"],["description","URL of the bundle .zip the hub fetches and installs (http:// or https://)."]]]],["installer",["m",[["type","boolean"],["description","OPTIONAL. Mark the bundle\'s contents as installed-by-this-package (HPM\'s installer/private flag). Default false."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true. Confirms a recent backup exists and the user approved installing this bundle."]]]]]]],["required",["l",["importUrl","confirm"]]]]]]]],["m",[["name","hub_list_bundles"],["description","List installed code bundles -- the Bundle-Manager containers HPM delivers code in, distinct from Libraries Code.[[FLAT_TRIM]] Each entry: id, name, namespace, private flag, and a \'contains\' summary of the apps/drivers/libraries it delivered.[[/FLAT_TRIM]] Use to find a bundle\'s id for hub_delete_bundle/hub_export_bundle, or to verify a bundle installed. Read-only."],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_delete_bundle"],["description","Delete an installed code bundle by id (the Bundle-Manager container; find the id with hub_list_bundles). DESTRUCTIVE: requires Write master + confirm=true + a recent backup; verifies by re-listing that the id is gone. Removes only the container -- the libraries/apps/drivers it delivered may remain in Code, so delete those separately with hub_delete_item if needed."],["inputSchema",["m",[["type","object"],["properties",["m",[["bundleId",["m",[["type","string"],["description","The numeric bundle id from hub_list_bundles (e.g. \\"4\\")."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true. Confirms a recent backup exists and the user approved deleting this bundle."]]]]]]],["required",["l",["bundleId","confirm"]]]]]]]],["m",[["name","hub_export_bundle"],["description","Export an installed bundle\'s .zip to the hub File Manager (downloadable at /local/<fileName>; find the id with hub_list_bundles). A write (creates a File Manager file), not destructive -- needs Write master, no confirm."],["inputSchema",["m",[["type","object"],["properties",["m",[["bundleId",["m",[["type","string"],["description","The numeric bundle id from hub_list_bundles (e.g. \\"4\\")."]]]],["saveAs",["m",[["type","string"],["description","OPTIONAL File Manager filename for the exported .zip. Defaults to the bundle\'s name.[[FLAT_TRIM]] \'.zip\' is appended if missing; non-filename characters are replaced with \'_\'.[[/FLAT_TRIM]]"]]]]]]],["required",["l",["bundleId"]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partBundles() {
-    return [
-        "hub_list_bundles"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_bundles"]]'])
 }
 def _idempotentWriteToolNames_partBundles() {
-    return [
-        "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_install_bundle","hub_delete_bundle","hub_export_bundle"]]'])
 }
 def _openWorldToolNames_partBundles() {
-    return [
-        "hub_install_bundle"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_install_bundle"]]'])
 }
 def _toolDisplayMeta_partBundles() {
-    return [
-        hub_list_bundles: [title: "List Bundles", summary: "List installed code bundles and what they contain."],
-        hub_install_bundle: [title: "Install Bundle", summary: "Install a code bundle (.zip) from a URL."],
-        hub_delete_bundle: [title: "Delete Bundle", summary: "Delete an installed code bundle."],
-        hub_export_bundle: [title: "Export Bundle", summary: "Export an installed bundle's zip to the File Manager."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_bundles",["m",[["title","List Bundles"],["summary","List installed code bundles and what they contain."]]]],["hub_install_bundle",["m",[["title","Install Bundle"],["summary","Install a code bundle (.zip) from a URL."]]]],["hub_delete_bundle",["m",[["title","Delete Bundle"],["summary","Delete an installed code bundle."]]]],["hub_export_bundle",["m",[["title","Export Bundle"],["summary","Export an installed bundle\'s zip to the File Manager."]]]]]]'])
 }
 private Map _vrbAppExistence(Integer appId) {
     def text
@@ -3310,62 +3169,16 @@ Sending a classic definition to CREATE a rule on a hub that offers both builders
 '''
 }
 def _getAllToolDefinitions_partVisualRules() {
-    return [
-        [
-            name: "hub_get_visual_rule",
-            description: "List Visual Rules Builder rules (omit appId; each entry: appId, name, version, disabled, paused) or read one rule's full definition.[[FLAT_TRIM]] List-mode `paused` is detected from the rule's name suffix (no cross-check) and `version` ('2.0' / '1.0') comes from the hub's own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: 'graph' (VRB 2.0, {version, nodes, edges}) or 'classic' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "Visual Rule app id. Omit to list all VRB rules."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_set_visual_rule",
-            description: "Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_set_rule (Rule Machine) only for complex ones (nested logic, loops, variables, custom device commands). On create the definition's shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). Editor and graph definitions are structurally pre-flight validated before anything is created or saved, so a malformed 2.0 rule never strands an empty shell; a classic definition is saved as-is and validated by the hub.[[/FLAT_TRIM]] Omit appId to create (name + definition required). On EDIT two refusals (isError validation results, nothing written): a 2.0 type name this build does not know unless the rule already uses it, and a classic key outside whenNodes/thenNodes/elseNodes. Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "Existing Visual Rule app id to edit. Omit to create."],
-                    name: [type: "string", description: "Rule name. Required on create; renames on edit."],
-                    definition: [type: "object", description: "Full rule definition (wholesale replacement). RECOMMENDED shape: the editor form {triggers, conditions, decisionType, thenActions, elseActions, commonActions}.[[FLAT_TRIM]] A raw 2.0 graph ({version, nodes, edges}) and a classic 1.0 node-list ({whenNodes, thenNodes, elseNodes}) are also accepted. On CREATE the shape picks the builder version: classic makes a Visual Rule Builder 1.0 rule, editor/graph a 2.0 one. On EDIT a 2.0 rule takes any of the three (a classic node-list is translated and the response says translatedFrom); a 1.0 rule takes classic only.[[/FLAT_TRIM]] Field schemas: hub_get_tool_guide(section='visual_rule_reference')."],
-                    paused: [type: "boolean", description: "true=pause, false=resume. May be sent alone with appId."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true (recent backup + user approval)."]
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_delete_visual_rule",
-            description: "Delete a Visual Rules Builder rule by appId.[[FLAT_TRIM]] Type-gated: refuses ids that are not VRB rules (use hub_delete_native_app for RM rules / other classic apps). Returns the pre-delete definition for recovery via hub_set_visual_rule.[[/FLAT_TRIM]] Pre-flight: backup within 24h + confirm=true.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "The Visual Rule app id from hub_get_visual_rule."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true (recent backup + user approval)."]
-                ],
-                required: ["appId", "confirm"]
-            ]
-        ]
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_visual_rule"],["description","List Visual Rules Builder rules (omit appId; each entry: appId, name, version, disabled, paused) or read one rule\'s full definition.[[FLAT_TRIM]] List-mode `paused` is detected from the rule\'s name suffix (no cross-check) and `version` (\'2.0\' / \'1.0\') comes from the hub\'s own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: \'graph\' (VRB 2.0, {version, nodes, edges}) or \'classic\' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Visual Rule app id. Omit to list all VRB rules."]]]]]]]]]]]],["m",[["name","hub_set_visual_rule"],["description","Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_set_rule (Rule Machine) only for complex ones (nested logic, loops, variables, custom device commands). On create the definition\'s shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). Editor and graph definitions are structurally pre-flight validated before anything is created or saved, so a malformed 2.0 rule never strands an empty shell; a classic definition is saved as-is and validated by the hub.[[/FLAT_TRIM]] Omit appId to create (name + definition required). On EDIT two refusals (isError validation results, nothing written): a 2.0 type name this build does not know unless the rule already uses it, and a classic key outside whenNodes/thenNodes/elseNodes. Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section=\'visual_rule_reference\')."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Existing Visual Rule app id to edit. Omit to create."]]]],["name",["m",[["type","string"],["description","Rule name. Required on create; renames on edit."]]]],["definition",["m",[["type","object"],["description","Full rule definition (wholesale replacement). RECOMMENDED shape: the editor form {triggers, conditions, decisionType, thenActions, elseActions, commonActions}.[[FLAT_TRIM]] A raw 2.0 graph ({version, nodes, edges}) and a classic 1.0 node-list ({whenNodes, thenNodes, elseNodes}) are also accepted. On CREATE the shape picks the builder version: classic makes a Visual Rule Builder 1.0 rule, editor/graph a 2.0 one. On EDIT a 2.0 rule takes any of the three (a classic node-list is translated and the response says translatedFrom); a 1.0 rule takes classic only.[[/FLAT_TRIM]] Field schemas: hub_get_tool_guide(section=\'visual_rule_reference\')."]]]],["paused",["m",[["type","boolean"],["description","true=pause, false=resume. May be sent alone with appId."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true (recent backup + user approval)."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_delete_visual_rule"],["description","Delete a Visual Rules Builder rule by appId.[[FLAT_TRIM]] Type-gated: refuses ids that are not VRB rules (use hub_delete_native_app for RM rules / other classic apps). Returns the pre-delete definition for recovery via hub_set_visual_rule.[[/FLAT_TRIM]] Pre-flight: backup within 24h + confirm=true."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","The Visual Rule app id from hub_get_visual_rule."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true (recent backup + user approval)."]]]]]]],["required",["l",["appId","confirm"]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partVisualRules() {
-    return [
-        "hub_get_visual_rule"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_get_visual_rule"]]'])
 }
 def _idempotentWriteToolNames_partVisualRules() {
-    return [
-        "hub_delete_visual_rule"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_delete_visual_rule"]]'])
 }
 def _toolDisplayMeta_partVisualRules() {
-    return [
-        hub_get_visual_rule: [title: "Get Visual Rule", summary: "List Visual Rules Builder rules or read one rule's full definition."],
-        hub_set_visual_rule: [title: "Author Visual Rule", summary: "Create or edit a Visual Rules Builder rule, including rename and pause/resume."],
-        hub_delete_visual_rule: [title: "Delete Visual Rule", summary: "Delete a Visual Rules Builder rule, returning its definition for recovery."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_visual_rule",["m",[["title","Get Visual Rule"],["summary","List Visual Rules Builder rules or read one rule\'s full definition."]]]],["hub_set_visual_rule",["m",[["title","Author Visual Rule"],["summary","Create or edit a Visual Rules Builder rule, including rename and pause/resume."]]]],["hub_delete_visual_rule",["m",[["title","Delete Visual Rule"],["summary","Delete a Visual Rules Builder rule, returning its definition for recovery."]]]]]]'])
 }
 @groovy.transform.CompileStatic
 private String _filesFoldCase(value) {
@@ -3669,76 +3482,16 @@ def toolDeleteFile(args) {
     }
 }
 def _getAllToolDefinitions_partFiles() {
-    return [
-        [
-            name: "hub_list_files",
-            description: "List files stored in the hub's File Manager (the local web-accessible file store), returning each file's name, size, last-modified date, and direct download URL[[FLAT_TRIM]], plus subfolders[[/FLAT_TRIM]]. Optionally filter by a case-insensitive substring of the file name[[FLAT_TRIM]], or list a subfolder[[/FLAT_TRIM]]. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    filter: [type: "string", description: "Optional case-insensitive substring to match against file names, e.g. \"backup\" or \"mcp-rm-backup\"."],
-                    folder: [type: "string", description: "[[FLAT_TRIM]]Optional subfolder, e.g. \"webcore\".[[/FLAT_TRIM]]"],
-                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_read_file",
-            description: "Read the text content of a single file from the hub's File Manager by exact file name.[[FLAT_TRIM]] Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV).[[/FLAT_TRIM]] Read-only.[[FLAT_TRIM]] Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default/max chunk 60000 chars).[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    fileName: [type: "string", description: "The exact file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy')"],
-                    offset: [type: "integer", description: "Character offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 60000"]
-                ],
-                required: ["fileName"]
-            ]
-        ],
-        [
-            name: "hub_write_file",
-            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery). Requires Write master and confirm=true — confirm the write with the user before calling.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    fileName: [type: "string", description: "The file name to write (e.g., 'my-config.json'). Only A-Za-z0-9, hyphens, underscores, and periods allowed."],
-                    content: [type: "string", description: "The text content to write to the file"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the write."]
-                ],
-                required: ["fileName", "content", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_delete_file",
-            description: "⚠️ Permanently delete a file from the hub's File Manager. The file is auto-backed up first (see backupFile/undoHint for recovery). Requires Write master, confirm=true, and a recent hub backup — get user approval before calling.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    fileName: [type: "string", description: "The exact file name to delete"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms user approved the deletion."]
-                ],
-                required: ["fileName", "confirm"]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_files"],["description","List files stored in the hub\'s File Manager (the local web-accessible file store), returning each file\'s name, size, last-modified date, and direct download URL[[FLAT_TRIM]], plus subfolders[[/FLAT_TRIM]]. Optionally filter by a case-insensitive substring of the file name[[FLAT_TRIM]], or list a subfolder[[/FLAT_TRIM]]. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only."],["inputSchema",["m",[["type","object"],["properties",["m",[["filter",["m",[["type","string"],["description","Optional case-insensitive substring to match against file names, e.g. \\"backup\\" or \\"mcp-rm-backup\\"."]]]],["folder",["m",[["type","string"],["description","[[FLAT_TRIM]]Optional subfolder, e.g. \\"webcore\\".[[/FLAT_TRIM]]"]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_read_file"],["description","Read the text content of a single file from the hub\'s File Manager by exact file name.[[FLAT_TRIM]] Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV).[[/FLAT_TRIM]] Read-only.[[FLAT_TRIM]] Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default/max chunk 60000 chars).[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["fileName",["m",[["type","string"],["description","The exact file name (e.g., \'dashboard-backup.json\', \'mcp-backup-app-123.groovy\')"]]]],["offset",["m",[["type","integer"],["description","Character offset to start reading from. Default: 0"]]]],["length",["m",[["type","integer"],["description","Max characters to return in this chunk. Default/max: 60000"]]]]]]],["required",["l",["fileName"]]]]]]]],["m",[["name","hub_write_file"],["description","\\u26a0\\ufe0f Write (create or overwrite) a text file in the hub\'s File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery). Requires Write master and confirm=true \\u2014 confirm the write with the user before calling."],["inputSchema",["m",[["type","object"],["properties",["m",[["fileName",["m",[["type","string"],["description","The file name to write (e.g., \'my-config.json\'). Only A-Za-z0-9, hyphens, underscores, and periods allowed."]]]],["content",["m",[["type","string"],["description","The text content to write to the file"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms user approved the write."]]]]]]],["required",["l",["fileName","content","confirm"]]]]]]]],["m",[["name","hub_delete_file"],["description","\\u26a0\\ufe0f Permanently delete a file from the hub\'s File Manager. The file is auto-backed up first (see backupFile/undoHint for recovery). Requires Write master, confirm=true, and a recent hub backup \\u2014 get user approval before calling."],["inputSchema",["m",[["type","object"],["properties",["m",[["fileName",["m",[["type","string"],["description","The exact file name to delete"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms user approved the deletion."]]]]]]],["required",["l",["fileName","confirm"]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partFiles() {
-    return [
-        "hub_list_files", "hub_read_file"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_files","hub_read_file"]]'])
 }
 def _idempotentWriteToolNames_partFiles() {
-    return [
-        "hub_write_file", "hub_delete_file"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_write_file","hub_delete_file"]]'])
 }
 def _toolDisplayMeta_partFiles() {
-    return [
-        hub_list_files: [title: "List Files", summary: "List files in the hub File Manager, optionally filtered by a name substring."],
-        hub_read_file: [title: "Read File", summary: "Read a File Manager file's contents."],
-        hub_write_file: [title: "Write File", summary: "Create or update a File Manager file (auto-backs up existing)."],
-        hub_delete_file: [title: "Delete File", summary: "Delete a File Manager file (auto-backs up first)."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_files",["m",[["title","List Files"],["summary","List files in the hub File Manager, optionally filtered by a name substring."]]]],["hub_read_file",["m",[["title","Read File"],["summary","Read a File Manager file\'s contents."]]]],["hub_write_file",["m",[["title","Write File"],["summary","Create or update a File Manager file (auto-backs up existing)."]]]],["hub_delete_file",["m",[["title","Delete File"],["summary","Delete a File Manager file (auto-backs up first)."]]]]]]'])
 }
 def toolListItemBackups(args = null) {
     args = args ?: [:]
@@ -4884,117 +4637,19 @@ private _restoreUploadedBackup(Map args) {
             note: "The backup uploaded but the restore did not confirm — verify hub state."]
 }
 def _getAllToolDefinitions_partItemBackups() {
-    return [
-        [
-            name: "hub_create_backup",
-            description: """Create a hub-database backup. Destructive tools require one within 24h.[[FLAT_TRIM]] Whole-hub .lzf, or with full=true a full local backup (.tar.gz: database, File Manager files, Zigbee and Z-Wave data). Optionally set the automatic-backup schedule (`schedule`) and the network-share backup (`networkBackup`, `testNetworkBackup`); scheduleOnly=true changes those settings only. cloudDownload copies an existing cloud backup into File Manager instead. The only write tool needing no prior backup.[[/FLAT_TRIM]]
-[[FLAT_TRIM]]
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    confirm: [type: "boolean", description: "true to create a backup now (omit with scheduleOnly)."],
-                    mock: [type: "boolean", description: "Developer Mode only: stamp the 24h gate record; no real backup (test envs)."],
-                    mockEpoch: [type: "integer", description: "Developer Mode only, with mock=true: stamp this epoch-millis instead of now (test envs; lets tests set a stale gate record)."],
-                    schedule: [type: "object", description: "Optional: set the automatic-backup schedule. Omitted fields keep their current value (read-merged from the hub).[[FLAT_TRIM]] If cloud backup is enabled you MUST pass cloudBackupPassword (the hub doesn't expose it for read-back) or pass cloudBackupFrequency=0 to turn cloud backup off.[[/FLAT_TRIM]]", properties: [
-                        hour: [type: "integer", description: "[[FLAT_TRIM]]Hour 0-23 (kept if omitted)[[/FLAT_TRIM]]"],
-                        minute: [type: "integer", description: "[[FLAT_TRIM]]Minute 0-59 (kept if omitted)[[/FLAT_TRIM]]"],
-                        localBackupFrequency: [type: "integer", enum: [0, 1, 2, 3, 5, 7, 14, 21, 28], description: "[[FLAT_TRIM]]Local backup interval in DAYS (0=off); kept if omitted[[/FLAT_TRIM]]"],
-                        cloudBackupFrequency: [type: "integer", enum: [0, 1, 2, 3, 5, 7, 14, 21, 28], description: "[[FLAT_TRIM]]Cloud backup interval in DAYS (0=off); kept if omitted[[/FLAT_TRIM]]"],
-                        cloudBackupPassword: [type: "string", description: "[[FLAT_TRIM]]Cloud-backup encryption password. Required when cloud backup is/stays enabled.[[/FLAT_TRIM]]"]
-                    ]],
-                    scheduleOnly: [type: "boolean", description: "With schedule/networkBackup: settings only, no backup now."],
-                    full: [type: "boolean", description: "[[FLAT_TRIM]]Full local backup (database + files + radio data). Needs the Full Local Backup subscription.[[/FLAT_TRIM]]"],
-                    networkBackup: [type: "object", description: "[[FLAT_TRIM]]Network-share backup: {enabled?, networkPath?, username?, password?}; omitted fields keep their value.[[/FLAT_TRIM]]"],
-                    testNetworkBackup: [type: "boolean", description: "[[FLAT_TRIM]]Test the network share.[[/FLAT_TRIM]]"],
-                    cloudDownload: [type: "object", description: "[[FLAT_TRIM]]Copy a cloud backup into File Manager: {path, cloudBackupPassword, part? (database|files)}; send alone.[[/FLAT_TRIM]]"],
-                    args: [type: "object"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_delete_backup",
-            description: """⚠️ Delete a whole-hub database backup (DESTRUCTIVE; tell the user first). Write master + confirm + a recent backup.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    location: [type: "string", enum: ["local", "cloud"], description: "Which store to delete from."],
-                    fileName: [type: "string", description: "location=local: backup name from hub_list_backups."],
-                    path: [type: "string", description: "location=cloud: backup path from hub_list_backups."],
-                    confirm: [type: "boolean", description: "REQUIRED true. Confirms the delete."]
-                ],
-                required: ["location", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_list_backups",
-            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups — a local backup's name and a cloud backup's path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule read joins hubBackupErrors (partial:true) and a failed share read stays inside networkBackup; neither fails the listing. See hub_get_tool_guide(section='backup').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub", "all"], description: "Which backups to list; default source."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor (source only); pass \"\" for the first page, iterate nextCursor."]
-                ],
-                required: []
-            ]
-        ],
-        [
-            name: "hub_get_backup",
-            description: "Read the saved source code from one backup. Call hub_list_backups first to find the backupKey.[[FLAT_TRIM]] Use this to inspect or diff a prior version before restoring; to re-apply it use hub_restore_backup, not this tool. Large sources are omitted from the response (sourceTooLargeForResponse=true) with a File Manager download link instead.[[/FLAT_TRIM]] Read-only.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    backupKey: [type: "string", description: "The backup key from hub_list_backups (e.g., 'app_123', 'driver_456', or 'library_42')"]
-                ],
-                required: ["backupKey"]
-            ]
-        ],
-        [
-            name: "hub_restore_backup",
-            description: """⚠️ Restore a backup — tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey (deleted code → hub_create_*; deleted rules DO recreate; a rule restores in place by default; preserveRuleId:false restores a Rule Machine backup that has an App Cloner export as an exact copy with a NEW id -- read ruleId and restoredVia from the result). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local→fileName; hub_cloud→path+cloudBackupPassword); a full local backup (fullBackup:true) runs the full-restore flow with fullRestore choosing radios/files. scope=hub_uploaded: upload an external .lzf (or a full .tar.gz) from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying.[[FLAT_TRIM]] See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub_uploaded"], description: "Default source."],
-                    backupKey: [type: "string", description: "scope=source: backupKey from hub_list_backups (e.g. app_123)."],
-                    fileName: [type: "string", description: "scope=hub_local: backup name from hub_list_backups."],
-                    path: [type: "string", description: "scope=hub_cloud: `path` from hub_list_backups."],
-                    cloudBackupPassword: [type: "string", description: "scope=hub_cloud: cloud backup encryption password."],
-                    backupUrl: [type: "string", description: "scope=hub_uploaded: http(s) URL of the .lzf or full .tar.gz."],
-                    fullRestore: [type: "object", description: "[[FLAT_TRIM]]Full backups: {restoreZigbee?, restoreZwave?, restoreFiles?, deleteExistingFiles?, allowZwaveFirmwareMismatch?} (default false).[[/FLAT_TRIM]]"],
-                    preserveRuleId: [type: "boolean", description: "Keep the rule id (default true).[[FLAT_TRIM]] true: restore an RM/native app backup in place by settings replay; a replay empties settings the app gained after the backup (settingsCleared). false: restore a Rule Machine backup that carries an App Cloner export as an exact copy with a NEW id, deleting the old rule once the copy matches the backup.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED true. Confirms the restore (hub-DB scopes reboot)."],
-                ],
-                required: ["confirm"]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_create_backup"],["description","Create a hub-database backup. Destructive tools require one within 24h.[[FLAT_TRIM]] Whole-hub .lzf, or with full=true a full local backup (.tar.gz: database, File Manager files, Zigbee and Z-Wave data). Optionally set the automatic-backup schedule (`schedule`) and the network-share backup (`networkBackup`, `testNetworkBackup`); scheduleOnly=true changes those settings only. cloudDownload copies an existing cloud backup into File Manager instead. The only write tool needing no prior backup.[[/FLAT_TRIM]]\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["confirm",["m",[["type","boolean"],["description","true to create a backup now (omit with scheduleOnly)."]]]],["mock",["m",[["type","boolean"],["description","Developer Mode only: stamp the 24h gate record; no real backup (test envs)."]]]],["mockEpoch",["m",[["type","integer"],["description","Developer Mode only, with mock=true: stamp this epoch-millis instead of now (test envs; lets tests set a stale gate record)."]]]],["schedule",["m",[["type","object"],["description","Optional: set the automatic-backup schedule. Omitted fields keep their current value (read-merged from the hub).[[FLAT_TRIM]] If cloud backup is enabled you MUST pass cloudBackupPassword (the hub doesn\'t expose it for read-back) or pass cloudBackupFrequency=0 to turn cloud backup off.[[/FLAT_TRIM]]"],["properties",["m",[["hour",["m",[["type","integer"],["description","[[FLAT_TRIM]]Hour 0-23 (kept if omitted)[[/FLAT_TRIM]]"]]]],["minute",["m",[["type","integer"],["description","[[FLAT_TRIM]]Minute 0-59 (kept if omitted)[[/FLAT_TRIM]]"]]]],["localBackupFrequency",["m",[["type","integer"],["enum",["l",[0,1,2,3,5,7,14,21,28]]],["description","[[FLAT_TRIM]]Local backup interval in DAYS (0=off); kept if omitted[[/FLAT_TRIM]]"]]]],["cloudBackupFrequency",["m",[["type","integer"],["enum",["l",[0,1,2,3,5,7,14,21,28]]],["description","[[FLAT_TRIM]]Cloud backup interval in DAYS (0=off); kept if omitted[[/FLAT_TRIM]]"]]]],["cloudBackupPassword",["m",[["type","string"],["description","[[FLAT_TRIM]]Cloud-backup encryption password. Required when cloud backup is/stays enabled.[[/FLAT_TRIM]]"]]]]]]]]]],["scheduleOnly",["m",[["type","boolean"],["description","With schedule/networkBackup: settings only, no backup now."]]]],["full",["m",[["type","boolean"],["description","[[FLAT_TRIM]]Full local backup (database + files + radio data). Needs the Full Local Backup subscription.[[/FLAT_TRIM]]"]]]],["networkBackup",["m",[["type","object"],["description","[[FLAT_TRIM]]Network-share backup: {enabled?, networkPath?, username?, password?}; omitted fields keep their value.[[/FLAT_TRIM]]"]]]],["testNetworkBackup",["m",[["type","boolean"],["description","[[FLAT_TRIM]]Test the network share.[[/FLAT_TRIM]]"]]]],["cloudDownload",["m",[["type","object"],["description","[[FLAT_TRIM]]Copy a cloud backup into File Manager: {path, cloudBackupPassword, part? (database|files)}; send alone.[[/FLAT_TRIM]]"]]]],["args",["m",[["type","object"]]]]]]]]]]]],["m",[["name","hub_delete_backup"],["description","\\u26a0\\ufe0f Delete a whole-hub database backup (DESTRUCTIVE; tell the user first). Write master + confirm + a recent backup."],["inputSchema",["m",[["type","object"],["properties",["m",[["location",["m",[["type","string"],["enum",["l",["local","cloud"]]],["description","Which store to delete from."]]]],["fileName",["m",[["type","string"],["description","location=local: backup name from hub_list_backups."]]]],["path",["m",[["type","string"],["description","location=cloud: backup path from hub_list_backups."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED true. Confirms the delete."]]]]]]],["required",["l",["location","confirm"]]]]]]]],["m",[["name","hub_list_backups"],["description","List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups \\u2014 a local backup\'s name and a cloud backup\'s path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule read joins hubBackupErrors (partial:true) and a failed share read stays inside networkBackup; neither fails the listing. See hub_get_tool_guide(section=\'backup\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["scope",["m",[["type","string"],["enum",["l",["source","hub_local","hub_cloud","hub","all"]]],["description","Which backups to list; default source."]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor (source only); pass \\"\\" for the first page, iterate nextCursor."]]]]]]],["required",["l",[]]]]]]]],["m",[["name","hub_get_backup"],["description","Read the saved source code from one backup. Call hub_list_backups first to find the backupKey.[[FLAT_TRIM]] Use this to inspect or diff a prior version before restoring; to re-apply it use hub_restore_backup, not this tool. Large sources are omitted from the response (sourceTooLargeForResponse=true) with a File Manager download link instead.[[/FLAT_TRIM]] Read-only."],["inputSchema",["m",[["type","object"],["properties",["m",[["backupKey",["m",[["type","string"],["description","The backup key from hub_list_backups (e.g., \'app_123\', \'driver_456\', or \'library_42\')"]]]]]]],["required",["l",["backupKey"]]]]]]]],["m",[["name","hub_restore_backup"],["description","\\u26a0\\ufe0f Restore a backup \\u2014 tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey (deleted code \\u2192 hub_create_*; deleted rules DO recreate; a rule restores in place by default; preserveRuleId:false restores a Rule Machine backup that has an App Cloner export as an exact copy with a NEW id -- read ruleId and restoredVia from the result). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local\\u2192fileName; hub_cloud\\u2192path+cloudBackupPassword); a full local backup (fullBackup:true) runs the full-restore flow with fullRestore choosing radios/files. scope=hub_uploaded: upload an external .lzf (or a full .tar.gz) from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying.[[FLAT_TRIM]] See hub_get_tool_guide(section=\'slow_ops\').[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["scope",["m",[["type","string"],["enum",["l",["source","hub_local","hub_cloud","hub_uploaded"]]],["description","Default source."]]]],["backupKey",["m",[["type","string"],["description","scope=source: backupKey from hub_list_backups (e.g. app_123)."]]]],["fileName",["m",[["type","string"],["description","scope=hub_local: backup name from hub_list_backups."]]]],["path",["m",[["type","string"],["description","scope=hub_cloud: `path` from hub_list_backups."]]]],["cloudBackupPassword",["m",[["type","string"],["description","scope=hub_cloud: cloud backup encryption password."]]]],["backupUrl",["m",[["type","string"],["description","scope=hub_uploaded: http(s) URL of the .lzf or full .tar.gz."]]]],["fullRestore",["m",[["type","object"],["description","[[FLAT_TRIM]]Full backups: {restoreZigbee?, restoreZwave?, restoreFiles?, deleteExistingFiles?, allowZwaveFirmwareMismatch?} (default false).[[/FLAT_TRIM]]"]]]],["preserveRuleId",["m",[["type","boolean"],["description","Keep the rule id (default true).[[FLAT_TRIM]] true: restore an RM/native app backup in place by settings replay; a replay empties settings the app gained after the backup (settingsCleared). false: restore a Rule Machine backup that carries an App Cloner export as an exact copy with a NEW id, deleting the old rule once the copy matches the backup.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED true. Confirms the restore (hub-DB scopes reboot)."]]]]]]],["required",["l",["confirm"]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partItemBackups() {
-    return [
-        "hub_list_backups", "hub_get_backup"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_backups","hub_get_backup"]]'])
 }
 def _idempotentWriteToolNames_partItemBackups() {
-    return [
-        "hub_delete_backup"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_delete_backup"]]'])
 }
 def _openWorldToolNames_partItemBackups() {
-    return ["hub_restore_backup"]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_restore_backup"]]'])
 }
 def _toolDisplayMeta_partItemBackups() {
-    return [
-        hub_create_backup: [title: "Create Hub Backup", summary: "Create a database or full local backup, set backup schedule and network share, or copy a cloud backup."],
-        hub_delete_backup: [title: "Delete Hub Backup", summary: "Delete a whole-hub database backup (local or cloud)."],
-        hub_list_backups: [title: "List Backups", summary: "List code backups and (by scope) hub database/full backups plus the backup schedule and network share."],
-        hub_get_backup: [title: "Get Code Backup", summary: "Read source code from a backup."],
-        hub_restore_backup: [title: "Restore Backup", summary: "Restore a code/rule backup, or (by scope) the whole hub database."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_create_backup",["m",[["title","Create Hub Backup"],["summary","Create a database or full local backup, set backup schedule and network share, or copy a cloud backup."]]]],["hub_delete_backup",["m",[["title","Delete Hub Backup"],["summary","Delete a whole-hub database backup (local or cloud)."]]]],["hub_list_backups",["m",[["title","List Backups"],["summary","List code backups and (by scope) hub database/full backups plus the backup schedule and network share."]]]],["hub_get_backup",["m",[["title","Get Code Backup"],["summary","Read source code from a backup."]]]],["hub_restore_backup",["m",[["title","Restore Backup"],["summary","Restore a code/rule backup, or (by scope) the whole hub database."]]]]]]'])
 }
 def toolGetDebugLogs(args) {
     initDebugLogs()
@@ -5707,67 +5362,16 @@ private String _bugReportRawSection(String heading, String body, boolean include
     return "\n## ${heading}\n${fence}text\n${body}\n${fence}\n".toString()
 }
 def _getAllToolDefinitions_partDebugLogging() {
-    return [
-        [
-            name: "hub_delete_debug_logs",
-            description: "Clear the structured MCP history view read by hub_get_logs(mode='mcp').[[FLAT_TRIM]] A durable clear marker keeps old native entries from reappearing after reload. Use before reproducing an issue. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone.",
-            inputSchema: [type: "object", properties: [:]]
-        ],
-        [
-            name: "hub_set_log_level",
-            description: "Set the minimum log level threshold. Logs below this level won't be stored.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    level: [type: "string", enum: ["debug", "info", "warn", "error"], description: "Minimum log level to store"]
-                ],
-                required: ["level"]
-            ]
-        ],
-        [
-            name: "hub_report_issue",
-            description: "File or report a bug, open a GitHub issue, request a feature/enhancement, or flag agent-behavior issues. Does NOT submit the issue itself: returns a prefilled GitHub issue link (template + title) plus the report body.[[FLAT_TRIM]] It gathers scoped recent logs and hub/version info; the user opens the link and posts. Paste real tool calls and client-host log lines rather than describing them; the result's preflight and missingContext name anything still missing.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    title: [type: "string", description: "Short bug/issue narrative. Seeds GitHub title."],
-                    expected: [type: "string", description: "What should have happened."],
-                    actual: [type: "string", description: "What actually happened."],
-                    stepsToReproduce: [type: "string", description: "Exact repro sequence."],
-                    issueType: [type: "string", enum: ["bug", "enhancement", "agent_behavior"], description: "Default bug."],
-                    failingTool: [type: "string", description: "Failed MCP tool; scopes logs and title."],
-                    ruleId: [type: "string", description: "Legacy custom MCP rule-engine rule id; scopes logs to it.[[FLAT_TRIM]] A native Rule Machine rule goes in nativeAppId, not here.[[/FLAT_TRIM]]"],
-                    nativeAppId: [type: "string", description: "Native Rule Machine app id; scopes logs to that app.[[FLAT_TRIM]] A legacy custom MCP rule goes in ruleId.[[/FLAT_TRIM]]"],
-                    llmClient: [type: "string", description: "Host app + version, e.g. Claude Code 2.1 or Claude Desktop; ask the user, never guess."],
-                    llmModel: [type: "string", description: "Model in use, e.g. Opus 5; ask if unknown."],
-                    verbatimToolCalls: [type: "string", description: "EXACT failing call (tool + args JSON) and raw response text, not paraphrased.[[FLAT_TRIM]] Copy from the transcript: the wording of the real error is usually the whole diagnosis.[[/FLAT_TRIM]]"],
-                    clientLogs: [type: "string", description: "Raw MCP client-host log lines for the failure window.[[FLAT_TRIM]] Claude Desktop writes mcp-server-*.log; Claude Code has its own debug log. Paste the lines, not a summary. Also takes pasted hub_get_logs output.[[/FLAT_TRIM]]"],
-                    privacyMode: [type: "string", enum: ["private", "public"], description: "'public' placeholders hub name; withholds raw logs and the pasted verbatim/client-log sections."],
-                    includeRawLogs: [type: "boolean", description: "Private only (default true). false also hides pasted sections. Public always withholds."],
-                    includeUnrelatedRecentLogs: [type: "boolean", description: "When scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope.[[FLAT_TRIM]] Default false, no-op when unscoped.[[/FLAT_TRIM]]"],
-                    logWindowSeconds: [type: "integer", description: "Default 120."]
-                ],
-                required: ["title", "expected", "actual"]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_delete_debug_logs"],["description","Clear the structured MCP history view read by hub_get_logs(mode=\'mcp\').[[FLAT_TRIM]] A durable clear marker keeps old native entries from reappearing after reload. Use before reproducing an issue. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone."],["inputSchema",["m",[["type","object"],["properties",["m",[]]]]]]]],["m",[["name","hub_set_log_level"],["description","Set the minimum log level threshold. Logs below this level won\'t be stored."],["inputSchema",["m",[["type","object"],["properties",["m",[["level",["m",[["type","string"],["enum",["l",["debug","info","warn","error"]]],["description","Minimum log level to store"]]]]]]],["required",["l",["level"]]]]]]]],["m",[["name","hub_report_issue"],["description","File or report a bug, open a GitHub issue, request a feature/enhancement, or flag agent-behavior issues. Does NOT submit the issue itself: returns a prefilled GitHub issue link (template + title) plus the report body.[[FLAT_TRIM]] It gathers scoped recent logs and hub/version info; the user opens the link and posts. Paste real tool calls and client-host log lines rather than describing them; the result\'s preflight and missingContext name anything still missing.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["title",["m",[["type","string"],["description","Short bug/issue narrative. Seeds GitHub title."]]]],["expected",["m",[["type","string"],["description","What should have happened."]]]],["actual",["m",[["type","string"],["description","What actually happened."]]]],["stepsToReproduce",["m",[["type","string"],["description","Exact repro sequence."]]]],["issueType",["m",[["type","string"],["enum",["l",["bug","enhancement","agent_behavior"]]],["description","Default bug."]]]],["failingTool",["m",[["type","string"],["description","Failed MCP tool; scopes logs and title."]]]],["ruleId",["m",[["type","string"],["description","Legacy custom MCP rule-engine rule id; scopes logs to it.[[FLAT_TRIM]] A native Rule Machine rule goes in nativeAppId, not here.[[/FLAT_TRIM]]"]]]],["nativeAppId",["m",[["type","string"],["description","Native Rule Machine app id; scopes logs to that app.[[FLAT_TRIM]] A legacy custom MCP rule goes in ruleId.[[/FLAT_TRIM]]"]]]],["llmClient",["m",[["type","string"],["description","Host app + version, e.g. Claude Code 2.1 or Claude Desktop; ask the user, never guess."]]]],["llmModel",["m",[["type","string"],["description","Model in use, e.g. Opus 5; ask if unknown."]]]],["verbatimToolCalls",["m",[["type","string"],["description","EXACT failing call (tool + args JSON) and raw response text, not paraphrased.[[FLAT_TRIM]] Copy from the transcript: the wording of the real error is usually the whole diagnosis.[[/FLAT_TRIM]]"]]]],["clientLogs",["m",[["type","string"],["description","Raw MCP client-host log lines for the failure window.[[FLAT_TRIM]] Claude Desktop writes mcp-server-*.log; Claude Code has its own debug log. Paste the lines, not a summary. Also takes pasted hub_get_logs output.[[/FLAT_TRIM]]"]]]],["privacyMode",["m",[["type","string"],["enum",["l",["private","public"]]],["description","\'public\' placeholders hub name; withholds raw logs and the pasted verbatim/client-log sections."]]]],["includeRawLogs",["m",[["type","boolean"],["description","Private only (default true). false also hides pasted sections. Public always withholds."]]]],["includeUnrelatedRecentLogs",["m",[["type","boolean"],["description","When scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope.[[FLAT_TRIM]] Default false, no-op when unscoped.[[/FLAT_TRIM]]"]]]],["logWindowSeconds",["m",[["type","integer"],["description","Default 120."]]]]]]],["required",["l",["title","expected","actual"]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partDebugLogging() {
-    return [
-        "hub_report_issue"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_report_issue"]]'])
 }
 def _idempotentWriteToolNames_partDebugLogging() {
-    return [
-        "hub_set_log_level", "hub_delete_debug_logs"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_set_log_level","hub_delete_debug_logs"]]'])
 }
 def _toolDisplayMeta_partDebugLogging() {
-    return [
-        hub_report_issue: [title: "Generate Diagnostic Report", summary: "Generate a comprehensive diagnostic report for bug reports."],
-        hub_delete_debug_logs: [title: "Clear MCP Debug Logs", summary: "Clear all MCP debug log entries."],
-        hub_set_log_level: [title: "Set MCP Log Level", summary: "Set the MCP log level (debug, info, warn, error)."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_report_issue",["m",[["title","Generate Diagnostic Report"],["summary","Generate a comprehensive diagnostic report for bug reports."]]]],["hub_delete_debug_logs",["m",[["title","Clear MCP Debug Logs"],["summary","Clear all MCP debug log entries."]]]],["hub_set_log_level",["m",[["title","Set MCP Log Level"],["summary","Set the MCP log level (debug, info, warn, error)."]]]]]]'])
 }
 def toolGetRadioDetails(args) {
     def radio = args.radio?.toString()?.toLowerCase()
@@ -8124,280 +7728,19 @@ def toolDeleteCapturedState(args) {
     return stateId ? deleteCapturedState(stateId) : clearAllCapturedStates()
 }
 def _getAllToolDefinitions_partDiagnostics() {
-    return [
-        [
-            name: "hub_get_logs",
-            description: """Read log history and MCP logging status. mode='hub' (default) returns native hub logs; mode='mcp' returns structured MCP entries with component/rule filters; mode='status' returns MCP log level, counts, and capacity.[[FLAT_TRIM]] MCP history recovers from native Past Logs after reload; retention follows the hub's shared log limit.[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    mode: [type: "string", enum: ["hub", "mcp", "status"], default: "hub", description: "hub = native app/device logs; mcp = structured MCP history; status = MCP logging configuration and counts."],
-                    component: [type: "string", description: "MCP mode: component substring filter (for example server or rule)."],
-                    ruleId: [type: "string", description: "MCP mode: filter by custom rule ID."],
-                    level: [type: "string", description: "Filter by log level. Default: all levels.", enum: ["trace", "debug", "info", "warn", "error", "all"]],
-                    source: [type: "string", description: "Hub mode: Filter by source/app name (case-insensitive substring match against the log entry)"],
-                    deviceId: [type: "string", description: "Hub mode: Filter hub-wide history by numeric device ID, regardless of device selection or bypass (mutually exclusive with appId)."],
-                    appId: [type: "string", description: "Hub mode: Scope to a single app's log entries (server-side filter, mutually exclusive with deviceId)"],
-                    limit: [type: "integer", description: "Max entries: hub default 100/max 500; MCP default 50/max 100."],
-                    pattern: [type: "string", description: "Hub mode: Case-insensitive regex applied to the log message field only.[[FLAT_TRIM]] Use source for app/device-name substring matching.[[/FLAT_TRIM]]"],
-                    patterns: [type: "array", items: [type: "string"], description: "Hub mode: Multiple regex patterns; combine via patternMode. Same matching rules and caveats as `pattern`."],
-                    patternMode: [type: "string", description: "Hub mode: How patterns array is combined: 'any' (default) = OR; 'all' = AND.", enum: ["any", "all"]],
-                    since: [type: "string", description: "Hub mode: Return only entries at or after this time; ISO-8601 or relative offset like '2h'.[[FLAT_TRIM]] Full forms: ISO-8601 timestamp (e.g. '2024-01-15T10:30:00Z') or relative '30m'/'2h'/'1d'/'7d'; max relative offset 30d.[[/FLAT_TRIM]][[FLAT_TRIM]] Timestamps without a TZ marker (e.g. '2024-01-15T10:30:00' or '2024-01-15 10:30:00.000') are parsed as UTC. Use '0m' / '0d' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"],
-                    until: [type: "string", description: "Hub mode: Return only entries at or before this time. Same format as since. Default: now (no upper bound)."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_performance_stats",
-            description: "Get device and/or app performance stats from the hub's logs page.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    type: [type: "string", description: "Which stats to return. Default: device.", enum: ["device", "app", "both"], default: "device"],
-                    sortBy: [type: "string", description: "Sort results by field. Default: pct (% busy).", enum: ["pct", "count", "stateSize", "totalMs", "name"], default: "pct"],
-                    limit: [type: "integer", description: "Max entries to return. Default: 20, 0 for all.", default: 20],
-                    includeCloudCalls: [type: "boolean", description: "[[FLAT_TRIM]]Also return per-app cloud-call counts under cloudCalls. Default false.[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_jobs",
-            description: "Get scheduled jobs, running jobs, and hub actions from the hub's logs page.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opaque pagination cursor for scheduledJobs. Omit for the full list; pass '' for the first page of 100, then the returned nextCursor. runningJobs and hubActions stay in full on every page. Pages read a snapshot cached for 30 s, so a traversal that takes longer is best-effort."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_metrics",
-            description: "Retrieve hub metrics (memory, temp, DB size) with CSV trend history. Trend history is sparse/stale[[FLAT_TRIM]] — the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls[[/FLAT_TRIM]].[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    recordSnapshot: [type: "boolean", description: "If true, also append this snapshot to the performance-history CSV in the hub File Manager — the tool's only write side-effect. Default: false (read-only).", default: false],
-                    trendPoints: [type: "integer", description: "Number of recent historical data points to include. Default: 10, max: 50.", default: 10]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_memory_history",
-            description: "Get the hub's free-memory and CPU-load history (the platform's own timestamped ring buffer[[FLAT_TRIM]], each entry with freeMemoryKB and cpuLoad5min[[/FLAT_TRIM]]). Use to diagnose memory leaks or load trends over time.[[FLAT_TRIM]] For a single current snapshot plus temp/DB-size, use hub_get_metrics instead.[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    limit: [type: "integer", description: "Max entries to return (most recent); 0 for all.[[FLAT_TRIM]] Hub may have thousands of entries.[[/FLAT_TRIM]]", default: 100],
-                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Pages within the limit-filtered entries. Pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_device_health",
-            description: "Hub network diagnostics + device-staleness checks. Checks selected devices and MCP-managed children, or all hub devices when allowlist bypass is enabled, for no activity in staleHours.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    staleHours: [type: "integer", description: "Flag devices with no activity in this many hours. Default: 24.", default: 24],
-                    includeHealthy: [type: "boolean", description: "Include healthy devices in the response (can be large). Default: false.", default: false],
-                    pingHosts: [type: "array", items: [type: "string"], description: "Optional IPv4 addresses to ICMP-ping (max 5 per call)."],
-                    pingCount: [type: "integer", description: "Packets to send per host (1-5). Default: 3.", default: 3],
-                    tracerouteHost: [type: "string", description: "Optional single IPv4 dotted-quad host (e.g. '8.8.8.8') to traceroute; plain-text route table returned under traceroute.output."],
-                    speedtest: [type: "boolean", description: "If true, run the hub's WAN download speedtest; plain-text wget log with the measured speed returned under speedtest.output. Default: false."],
-                    identifyHub: [type: "boolean", description: "Blink hub LED to identify hub. Default: false.", default: false],
-                    cursor: [type: "string", description: "Opt-in pagination cursor for the staleDevices array.[[FLAT_TRIM]] Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page.[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_radio_details",
-            description: """Get Z-Wave/Zigbee/Matter radio info and the read-only radio surface. The include_* flags and node_id attach extra read blocks.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    radio: [type: "string", enum: ["zwave", "zigbee", "matter"], description: "Which radio to query. Omit for both Z-Wave and Zigbee; 'matter' for the Matter fabric.[[FLAT_TRIM]] With radio='matter' it also returns the commissioned-device list and the Wi-Fi network the hub gives Matter devices when pairing (never the password).[[/FLAT_TRIM]]"],
-                    include_topology: [type: "boolean", description: "Also include the mesh route/topology map. Z-Wave/Zigbee only. Default false."],
-                    node_id: [type: "string", description: "Per-node status for this id (Z-Wave, or Matter commissioning with radio='matter').[[FLAT_TRIM]] On Z-Wave JS it adds the interview details and link-test status.[[/FLAT_TRIM]]"],
-                    include_status: [type: "boolean", description: "Attach lifecycle status pollers under result.status. Default false.[[FLAT_TRIM]] Repair, join, exclude, antenna test, node replace, Zigbee, Z-Wave JS readiness, Z-Wave local backup, batch firmware.[[/FLAT_TRIM]]"],
-                    include_logs: [type: "boolean", description: "Matter chip-tool logs under result.matterLogs.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
-                    include_channel_scan: [type: "boolean", description: "Zigbee channel-scan results under result.channelScan.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
-                    include_smartstart: [type: "boolean", description: "Z-Wave SmartStart list under result.smartStart.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"],
-                    include_firmware: [type: "boolean", description: "Attach firmware-eligible Z-Wave devices + files under result.firmware. Default false.[[FLAT_TRIM]] With node_id also that node's targets, offered updates (updateId), progress, and batch candidates.[[/FLAT_TRIM]]"],
-                    include_devices: [type: "boolean", description: "[[FLAT_TRIM]]Attach Zigbee devices with their last-message time under result.zigbeeDevices. Default false.[[/FLAT_TRIM]]"],
-                    backup_job_id: [type: "string", description: "[[FLAT_TRIM]]Z-Wave backup/import/restore job id to read under result.zwaveBackupJob.[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_call_gc",
-            description: "Force JVM garbage collection to reclaim memory. Non-destructive but may cause a brief pause.[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [:]
-            ]
-        ],
-        [
-            name: "hub_set_zwave",
-            description: "Configure the Z-Wave radio[[FLAT_TRIM]]: enable/disable it, set region and long-range channel, or switch between the legacy and Z-Wave JS stacks (reboots the hub)[[/FLAT_TRIM]]. Read current values with hub_get_radio_details(radio='zwave').[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    enabled: [type: "boolean", description: "Enable (true) or disable (false) the Z-Wave radio."],
-                    region: [type: "string", description: "Z-Wave RF region (e.g. 'US', 'EU'). Must match a region your hub hardware supports."],
-                    long_range_channel: [type: "integer", enum: [0, 1, 255], description: "Z-Wave Long Range channel: 255=Auto, 0=Channel A, 1=Channel B (US_LR hubs)."],
-                    zwave_js: [type: "boolean", description: "true=Z-Wave JS, false=legacy stack. REBOOTS the hub.[[FLAT_TRIM]] Send alone with confirm=true.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "Required true to DISABLE the radio or switch the stack (backup <24h also enforced)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_set_zigbee",
-            description: "Configure the Zigbee radio (idempotent)[[FLAT_TRIM]]: enable/disable, channel + power, radio settings (rebuild-on-reboot / inactive-device ping), or per-device keep-alive ping[[/FLAT_TRIM]]. One operation per call. Read current values with hub_get_radio_details(radio='zigbee').[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    enabled: [type: "boolean", description: "Enable (true) or disable (false) the Zigbee radio. Disable requires confirm=true."],
-                    channel: [description: "Zigbee channel (typically 11-26). Set together with power_level."],
-                    power_level: [description: "Zigbee transmit power level (hub-dependent dBm scale). Set together with channel."],
-                    rebuild_on_reboot: [type: "boolean", description: "Radio setting: rebuild the Zigbee network on each hub reboot."],
-                    ping_inactive: [type: "boolean", description: "Radio setting: keep-alive ping inactive Zigbee devices."],
-                    ping_device: [type: "object", description: "Toggle keep-alive ping for one authorized device: {device_id: numeric Hubitat device ID, enabled}. Allowlist bypass permits unselected devices."],
-                    confirm: [type: "boolean", description: "Required true to DISABLE the radio (backup <24h also enforced). Not needed for the other changes."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_call_zwave",
-            description: "Z-Wave network lifecycle operations (NOT idempotent)[[FLAT_TRIM]]: repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, SmartStart delete; on Z-Wave JS also re-interview, link reliability test, raw command-class commands, and Z-Wave network backup/import[[/FLAT_TRIM]]. Pick the operation with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    action: [type: "string", enum: ["repair_start", "repair_cancel", "repair_node", "inclusion_start", "inclusion_stop", "grant_keys", "grant_code", "exclusion_start", "exclusion_stop", "node_refresh", "node_rediscover", "node_reinitialize", "refresh_stats", "node_replace", "node_replace_stop", "node_remove", "antenna_test_start", "antenna_test_continue", "smartstart_delete", "reinterview", "link_test_start", "link_test_stop", "cc_command", "local_backup_create", "local_backup_download", "local_backup_import", "local_backup_keys"], description: "The Z-Wave operation.[[FLAT_TRIM]] reinterview, link_test_*, cc_command and local_backup_* need the Z-Wave JS stack.[[/FLAT_TRIM]]"],
-                    node_id: [type: "string", description: "Z-Wave node id for the per-node actions."],
-                    security_keys: [type: "object", description: "grant_keys: S2 grant booleans; local_backup_keys: the network keys as hex.[[FLAT_TRIM]] grant_keys e.g. {S2Authenticated:true}; local_backup_keys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, long_range: {S2_Authenticated, S2_AccessControl}}.[[/FLAT_TRIM]]"],
-                    security_code: [type: "object", description: "grant_code only: S2 DSK, e.g. {accept:true, securityCode:'12345'}."],
-                    node_dsk: [type: "string", description: "smartstart_delete only: the DSK from hub_get_radio_details(include_smartstart=true)."],
-                    backup_url: [type: "string", description: "[[FLAT_TRIM]]local_backup_import: http(s) URL of the backup (8 MB max).[[/FLAT_TRIM]]"],
-                    link_test: [type: "object", description: "[[FLAT_TRIM]]link_test_start (confirm=true): {rounds? (10), interval_ms? (1000)}.[[/FLAT_TRIM]]"],
-                    cc: [type: "object", description: "[[FLAT_TRIM]]cc_command: {command_class (decimal or 0x hex), method_name, endpoint?, args?}.[[/FLAT_TRIM]]"],
-                    job_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_download: the jobId from local_backup_create.[[/FLAT_TRIM]]"],
-                    import_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_keys: the importId from local_backup_import.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "Required true for exclusion_start, node_remove, link_test_start, cc_command, local_backup_download, local_backup_import.[[FLAT_TRIM]] A hub backup <24h is also enforced.[[/FLAT_TRIM]]"]
-                ],
-                required: ["action"]
-            ]
-        ],
-        [
-            name: "hub_call_zigbee",
-            description: "Zigbee radio operations (NOT idempotent); select with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    action: [type: "string", enum: ["radio_reboot", "rebuild_network", "channel_scan"], description: "radio_reboot (restart the Zigbee chip), rebuild_network (rebuild the mesh), or channel_scan (trigger an energy scan)."],
-                ],
-                required: ["action"]
-            ]
-        ],
-        [
-            name: "hub_call_matter",
-            description: "Matter radio operations (NOT idempotent); select with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    action: [type: "string", enum: ["enable", "disable", "pair", "cancel_pair", "open_pairing_window"], description: "The Matter operation.[[FLAT_TRIM]] enable/disable (needs a hub reboot), pair by setup_code, cancel_pair, open_pairing_window to share a commissioned node.[[/FLAT_TRIM]]"],
-                    setup_code: [type: "string", description: "pair only: the 11- or 21-digit Matter setup code, or the MT: QR payload."],
-                    wifi_ssid: [type: "string", description: "[[FLAT_TRIM]]pair: Wi-Fi SSID (default: the hub's selected network). Thread devices ignore it; the stored network is in hub_get_radio_details(radio='matter') wifiCredentials.[[/FLAT_TRIM]]"],
-                    wifi_password: [type: "string", description: "[[FLAT_TRIM]]pair: Wi-Fi password; omit only for the network the hub stores a password for.[[/FLAT_TRIM]]"],
-                    node_id: [type: "string", description: "Node id (open_pairing_window, cancel_pair)."],
-                    confirm: [type: "boolean", description: "Required true to disable Matter (backup <24h also enforced)."]
-                ],
-                required: ["action"]
-            ]
-        ],
-        [
-            name: "hub_call_destructive_ops",
-            description: """⚠️ DESTRUCTIVE hub ops by `target` + `action` (no defaults — both required): radio WIPE/FIRMWARE, network DISCONNECT, or cloud DISABLE.
-
-PRE-FLIGHT: 1) Backup <24h old 2) Tell the user what is affected (irreversible / can brick / disconnects) 3) Get explicit confirmation 4) Set confirm=true.
-Requires Write master.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    target: [type: "string", enum: ["zwave", "zigbee", "matter", "network", "cloud"], description: "REQUIRED: what to act on."],
-                    action: [type: "string", enum: ["reset", "device_firmware_start", "device_firmware_start_available", "device_firmware_batch_start", "device_firmware_batch_start_available", "device_firmware_batch_abort", "device_firmware_abort", "local_backup_restore", "zwave_chip_firmware", "zigbee_firmware", "disconnect_wifi", "disconnect_ethernet", "disable", "enable"], description: "REQUIRED: depends on target."],
-                    node_id: [description: "Z-Wave node id."],
-                    file_name: [type: "string", description: "Firmware file name (device_firmware_start, batch_start)."],
-                    target_index: [description: "Optional Z-Wave firmware target index."],
-                    update_id: [description: "[[FLAT_TRIM]]*_start_available: updateId from firmware.node.available.[[/FLAT_TRIM]]"],
-                    batch: [type: "object", description: "[[FLAT_TRIM]]Batch actions: {node_ids, inactivity_timeout_seconds? (600)}.[[/FLAT_TRIM]]"],
-                    import_id: [type: "string", description: "[[FLAT_TRIM]]local_backup_restore: importId.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true.[[FLAT_TRIM]] Confirms backup was created and the user approved this destructive op.[[/FLAT_TRIM]]"]
-                ],
-                required: ["target", "action", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_list_captured_states",
-            description: "List temporary device-state snapshots used by the legacy custom rule engine. Captures are held only in memory and are lost on hub restart or app code reload.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50).[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_delete_captured_state",
-            description: "Delete a saved device-state snapshot by its stateId, OR delete ALL captured states when stateId is omitted (get stateIds from hub_list_captured_states). Cannot be undone; use the delete-all mode with caution.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    stateId: [type: "string", description: "The ID of the captured state to delete. Omit to delete ALL captured states."],
-                ]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_logs"],["description","Read log history and MCP logging status. mode=\'hub\' (default) returns native hub logs; mode=\'mcp\' returns structured MCP entries with component/rule filters; mode=\'status\' returns MCP log level, counts, and capacity.[[FLAT_TRIM]] MCP history recovers from native Past Logs after reload; retention follows the hub\'s shared log limit.[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["mode",["m",[["type","string"],["enum",["l",["hub","mcp","status"]]],["default","hub"],["description","hub = native app/device logs; mcp = structured MCP history; status = MCP logging configuration and counts."]]]],["component",["m",[["type","string"],["description","MCP mode: component substring filter (for example server or rule)."]]]],["ruleId",["m",[["type","string"],["description","MCP mode: filter by custom rule ID."]]]],["level",["m",[["type","string"],["description","Filter by log level. Default: all levels."],["enum",["l",["trace","debug","info","warn","error","all"]]]]]],["source",["m",[["type","string"],["description","Hub mode: Filter by source/app name (case-insensitive substring match against the log entry)"]]]],["deviceId",["m",[["type","string"],["description","Hub mode: Filter hub-wide history by numeric device ID, regardless of device selection or bypass (mutually exclusive with appId)."]]]],["appId",["m",[["type","string"],["description","Hub mode: Scope to a single app\'s log entries (server-side filter, mutually exclusive with deviceId)"]]]],["limit",["m",[["type","integer"],["description","Max entries: hub default 100/max 500; MCP default 50/max 100."]]]],["pattern",["m",[["type","string"],["description","Hub mode: Case-insensitive regex applied to the log message field only.[[FLAT_TRIM]] Use source for app/device-name substring matching.[[/FLAT_TRIM]]"]]]],["patterns",["m",[["type","array"],["items",["m",[["type","string"]]]],["description","Hub mode: Multiple regex patterns; combine via patternMode. Same matching rules and caveats as `pattern`."]]]],["patternMode",["m",[["type","string"],["description","Hub mode: How patterns array is combined: \'any\' (default) = OR; \'all\' = AND."],["enum",["l",["any","all"]]]]]],["since",["m",[["type","string"],["description","Hub mode: Return only entries at or after this time; ISO-8601 or relative offset like \'2h\'.[[FLAT_TRIM]] Full forms: ISO-8601 timestamp (e.g. \'2024-01-15T10:30:00Z\') or relative \'30m\'/\'2h\'/\'1d\'/\'7d\'; max relative offset 30d.[[/FLAT_TRIM]][[FLAT_TRIM]] Timestamps without a TZ marker (e.g. \'2024-01-15T10:30:00\' or \'2024-01-15 10:30:00.000\') are parsed as UTC. Use \'0m\' / \'0d\' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"]]]],["until",["m",[["type","string"],["description","Hub mode: Return only entries at or before this time. Same format as since. Default: now (no upper bound)."]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor.[[FLAT_TRIM]] Pass \\"\\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_get_performance_stats"],["description","Get device and/or app performance stats from the hub\'s logs page.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["description","Which stats to return. Default: device."],["enum",["l",["device","app","both"]]],["default","device"]]]],["sortBy",["m",[["type","string"],["description","Sort results by field. Default: pct (% busy)."],["enum",["l",["pct","count","stateSize","totalMs","name"]]],["default","pct"]]]],["limit",["m",[["type","integer"],["description","Max entries to return. Default: 20, 0 for all."],["default",20]]]],["includeCloudCalls",["m",[["type","boolean"],["description","[[FLAT_TRIM]]Also return per-app cloud-call counts under cloudCalls. Default false.[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_get_jobs"],["description","Get scheduled jobs, running jobs, and hub actions from the hub\'s logs page.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opaque pagination cursor for scheduledJobs. Omit for the full list; pass \'\' for the first page of 100, then the returned nextCursor. runningJobs and hubActions stay in full on every page. Pages read a snapshot cached for 30 s, so a traversal that takes longer is best-effort."]]]]]]]]]]]],["m",[["name","hub_get_metrics"],["description","Retrieve hub metrics (memory, temp, DB size) with CSV trend history. Trend history is sparse/stale[[FLAT_TRIM]] \\u2014 the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls[[/FLAT_TRIM]].[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["recordSnapshot",["m",[["type","boolean"],["description","If true, also append this snapshot to the performance-history CSV in the hub File Manager \\u2014 the tool\'s only write side-effect. Default: false (read-only)."],["default",false]]]],["trendPoints",["m",[["type","integer"],["description","Number of recent historical data points to include. Default: 10, max: 50."],["default",10]]]]]]]]]]]],["m",[["name","hub_get_memory_history"],["description","Get the hub\'s free-memory and CPU-load history (the platform\'s own timestamped ring buffer[[FLAT_TRIM]], each entry with freeMemoryKB and cpuLoad5min[[/FLAT_TRIM]]). Use to diagnose memory leaks or load trends over time.[[FLAT_TRIM]] For a single current snapshot plus temp/DB-size, use hub_get_metrics instead.[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["limit",["m",[["type","integer"],["description","Max entries to return (most recent); 0 for all.[[FLAT_TRIM]] Hub may have thousands of entries.[[/FLAT_TRIM]]"],["default",100]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor.[[FLAT_TRIM]] Pages within the limit-filtered entries. Pass \\"\\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_get_device_health"],["description","Hub network diagnostics + device-staleness checks. Checks selected devices and MCP-managed children, or all hub devices when allowlist bypass is enabled, for no activity in staleHours."],["inputSchema",["m",[["type","object"],["properties",["m",[["staleHours",["m",[["type","integer"],["description","Flag devices with no activity in this many hours. Default: 24."],["default",24]]]],["includeHealthy",["m",[["type","boolean"],["description","Include healthy devices in the response (can be large). Default: false."],["default",false]]]],["pingHosts",["m",[["type","array"],["items",["m",[["type","string"]]]],["description","Optional IPv4 addresses to ICMP-ping (max 5 per call)."]]]],["pingCount",["m",[["type","integer"],["description","Packets to send per host (1-5). Default: 3."],["default",3]]]],["tracerouteHost",["m",[["type","string"],["description","Optional single IPv4 dotted-quad host (e.g. \'8.8.8.8\') to traceroute; plain-text route table returned under traceroute.output."]]]],["speedtest",["m",[["type","boolean"],["description","If true, run the hub\'s WAN download speedtest; plain-text wget log with the measured speed returned under speedtest.output. Default: false."]]]],["identifyHub",["m",[["type","boolean"],["description","Blink hub LED to identify hub. Default: false."],["default",false]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor for the staleDevices array.[[FLAT_TRIM]] Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page.[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_get_radio_details"],["description","Get Z-Wave/Zigbee/Matter radio info and the read-only radio surface. The include_* flags and node_id attach extra read blocks.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["radio",["m",[["type","string"],["enum",["l",["zwave","zigbee","matter"]]],["description","Which radio to query. Omit for both Z-Wave and Zigbee; \'matter\' for the Matter fabric.[[FLAT_TRIM]] With radio=\'matter\' it also returns the commissioned-device list and the Wi-Fi network the hub gives Matter devices when pairing (never the password).[[/FLAT_TRIM]]"]]]],["include_topology",["m",[["type","boolean"],["description","Also include the mesh route/topology map. Z-Wave/Zigbee only. Default false."]]]],["node_id",["m",[["type","string"],["description","Per-node status for this id (Z-Wave, or Matter commissioning with radio=\'matter\').[[FLAT_TRIM]] On Z-Wave JS it adds the interview details and link-test status.[[/FLAT_TRIM]]"]]]],["include_status",["m",[["type","boolean"],["description","Attach lifecycle status pollers under result.status. Default false.[[FLAT_TRIM]] Repair, join, exclude, antenna test, node replace, Zigbee, Z-Wave JS readiness, Z-Wave local backup, batch firmware.[[/FLAT_TRIM]]"]]]],["include_logs",["m",[["type","boolean"],["description","Matter chip-tool logs under result.matterLogs.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"]]]],["include_channel_scan",["m",[["type","boolean"],["description","Zigbee channel-scan results under result.channelScan.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"]]]],["include_smartstart",["m",[["type","boolean"],["description","Z-Wave SmartStart list under result.smartStart.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"]]]],["include_firmware",["m",[["type","boolean"],["description","Attach firmware-eligible Z-Wave devices + files under result.firmware. Default false.[[FLAT_TRIM]] With node_id also that node\'s targets, offered updates (updateId), progress, and batch candidates.[[/FLAT_TRIM]]"]]]],["include_devices",["m",[["type","boolean"],["description","[[FLAT_TRIM]]Attach Zigbee devices with their last-message time under result.zigbeeDevices. Default false.[[/FLAT_TRIM]]"]]]],["backup_job_id",["m",[["type","string"],["description","[[FLAT_TRIM]]Z-Wave backup/import/restore job id to read under result.zwaveBackupJob.[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_call_gc"],["description","Force JVM garbage collection to reclaim memory. Non-destructive but may cause a brief pause.[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[]]]]]]]],["m",[["name","hub_set_zwave"],["description","Configure the Z-Wave radio[[FLAT_TRIM]]: enable/disable it, set region and long-range channel, or switch between the legacy and Z-Wave JS stacks (reboots the hub)[[/FLAT_TRIM]]. Read current values with hub_get_radio_details(radio=\'zwave\').[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["enabled",["m",[["type","boolean"],["description","Enable (true) or disable (false) the Z-Wave radio."]]]],["region",["m",[["type","string"],["description","Z-Wave RF region (e.g. \'US\', \'EU\'). Must match a region your hub hardware supports."]]]],["long_range_channel",["m",[["type","integer"],["enum",["l",[0,1,255]]],["description","Z-Wave Long Range channel: 255=Auto, 0=Channel A, 1=Channel B (US_LR hubs)."]]]],["zwave_js",["m",[["type","boolean"],["description","true=Z-Wave JS, false=legacy stack. REBOOTS the hub.[[FLAT_TRIM]] Send alone with confirm=true.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","Required true to DISABLE the radio or switch the stack (backup <24h also enforced)."]]]]]]]]]]]],["m",[["name","hub_set_zigbee"],["description","Configure the Zigbee radio (idempotent)[[FLAT_TRIM]]: enable/disable, channel + power, radio settings (rebuild-on-reboot / inactive-device ping), or per-device keep-alive ping[[/FLAT_TRIM]]. One operation per call. Read current values with hub_get_radio_details(radio=\'zigbee\').[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["enabled",["m",[["type","boolean"],["description","Enable (true) or disable (false) the Zigbee radio. Disable requires confirm=true."]]]],["channel",["m",[["description","Zigbee channel (typically 11-26). Set together with power_level."]]]],["power_level",["m",[["description","Zigbee transmit power level (hub-dependent dBm scale). Set together with channel."]]]],["rebuild_on_reboot",["m",[["type","boolean"],["description","Radio setting: rebuild the Zigbee network on each hub reboot."]]]],["ping_inactive",["m",[["type","boolean"],["description","Radio setting: keep-alive ping inactive Zigbee devices."]]]],["ping_device",["m",[["type","object"],["description","Toggle keep-alive ping for one authorized device: {device_id: numeric Hubitat device ID, enabled}. Allowlist bypass permits unselected devices."]]]],["confirm",["m",[["type","boolean"],["description","Required true to DISABLE the radio (backup <24h also enforced). Not needed for the other changes."]]]]]]]]]]]],["m",[["name","hub_call_zwave"],["description","Z-Wave network lifecycle operations (NOT idempotent)[[FLAT_TRIM]]: repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, SmartStart delete; on Z-Wave JS also re-interview, link reliability test, raw command-class commands, and Z-Wave network backup/import[[/FLAT_TRIM]]. Pick the operation with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["action",["m",[["type","string"],["enum",["l",["repair_start","repair_cancel","repair_node","inclusion_start","inclusion_stop","grant_keys","grant_code","exclusion_start","exclusion_stop","node_refresh","node_rediscover","node_reinitialize","refresh_stats","node_replace","node_replace_stop","node_remove","antenna_test_start","antenna_test_continue","smartstart_delete","reinterview","link_test_start","link_test_stop","cc_command","local_backup_create","local_backup_download","local_backup_import","local_backup_keys"]]],["description","The Z-Wave operation.[[FLAT_TRIM]] reinterview, link_test_*, cc_command and local_backup_* need the Z-Wave JS stack.[[/FLAT_TRIM]]"]]]],["node_id",["m",[["type","string"],["description","Z-Wave node id for the per-node actions."]]]],["security_keys",["m",[["type","object"],["description","grant_keys: S2 grant booleans; local_backup_keys: the network keys as hex.[[FLAT_TRIM]] grant_keys e.g. {S2Authenticated:true}; local_backup_keys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, long_range: {S2_Authenticated, S2_AccessControl}}.[[/FLAT_TRIM]]"]]]],["security_code",["m",[["type","object"],["description","grant_code only: S2 DSK, e.g. {accept:true, securityCode:\'12345\'}."]]]],["node_dsk",["m",[["type","string"],["description","smartstart_delete only: the DSK from hub_get_radio_details(include_smartstart=true)."]]]],["backup_url",["m",[["type","string"],["description","[[FLAT_TRIM]]local_backup_import: http(s) URL of the backup (8 MB max).[[/FLAT_TRIM]]"]]]],["link_test",["m",[["type","object"],["description","[[FLAT_TRIM]]link_test_start (confirm=true): {rounds? (10), interval_ms? (1000)}.[[/FLAT_TRIM]]"]]]],["cc",["m",[["type","object"],["description","[[FLAT_TRIM]]cc_command: {command_class (decimal or 0x hex), method_name, endpoint?, args?}.[[/FLAT_TRIM]]"]]]],["job_id",["m",[["type","string"],["description","[[FLAT_TRIM]]local_backup_download: the jobId from local_backup_create.[[/FLAT_TRIM]]"]]]],["import_id",["m",[["type","string"],["description","[[FLAT_TRIM]]local_backup_keys: the importId from local_backup_import.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","Required true for exclusion_start, node_remove, link_test_start, cc_command, local_backup_download, local_backup_import.[[FLAT_TRIM]] A hub backup <24h is also enforced.[[/FLAT_TRIM]]"]]]]]]],["required",["l",["action"]]]]]]]],["m",[["name","hub_call_zigbee"],["description","Zigbee radio operations (NOT idempotent); select with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["action",["m",[["type","string"],["enum",["l",["radio_reboot","rebuild_network","channel_scan"]]],["description","radio_reboot (restart the Zigbee chip), rebuild_network (rebuild the mesh), or channel_scan (trigger an energy scan)."]]]]]]],["required",["l",["action"]]]]]]]],["m",[["name","hub_call_matter"],["description","Matter radio operations (NOT idempotent); select with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["action",["m",[["type","string"],["enum",["l",["enable","disable","pair","cancel_pair","open_pairing_window"]]],["description","The Matter operation.[[FLAT_TRIM]] enable/disable (needs a hub reboot), pair by setup_code, cancel_pair, open_pairing_window to share a commissioned node.[[/FLAT_TRIM]]"]]]],["setup_code",["m",[["type","string"],["description","pair only: the 11- or 21-digit Matter setup code, or the MT: QR payload."]]]],["wifi_ssid",["m",[["type","string"],["description","[[FLAT_TRIM]]pair: Wi-Fi SSID (default: the hub\'s selected network). Thread devices ignore it; the stored network is in hub_get_radio_details(radio=\'matter\') wifiCredentials.[[/FLAT_TRIM]]"]]]],["wifi_password",["m",[["type","string"],["description","[[FLAT_TRIM]]pair: Wi-Fi password; omit only for the network the hub stores a password for.[[/FLAT_TRIM]]"]]]],["node_id",["m",[["type","string"],["description","Node id (open_pairing_window, cancel_pair)."]]]],["confirm",["m",[["type","boolean"],["description","Required true to disable Matter (backup <24h also enforced)."]]]]]]],["required",["l",["action"]]]]]]]],["m",[["name","hub_call_destructive_ops"],["description","\\u26a0\\ufe0f DESTRUCTIVE hub ops by `target` + `action` (no defaults \\u2014 both required): radio WIPE/FIRMWARE, network DISCONNECT, or cloud DISABLE.\\n\\nPRE-FLIGHT: 1) Backup <24h old 2) Tell the user what is affected (irreversible / can brick / disconnects) 3) Get explicit confirmation 4) Set confirm=true.\\nRequires Write master."],["inputSchema",["m",[["type","object"],["properties",["m",[["target",["m",[["type","string"],["enum",["l",["zwave","zigbee","matter","network","cloud"]]],["description","REQUIRED: what to act on."]]]],["action",["m",[["type","string"],["enum",["l",["reset","device_firmware_start","device_firmware_start_available","device_firmware_batch_start","device_firmware_batch_start_available","device_firmware_batch_abort","device_firmware_abort","local_backup_restore","zwave_chip_firmware","zigbee_firmware","disconnect_wifi","disconnect_ethernet","disable","enable"]]],["description","REQUIRED: depends on target."]]]],["node_id",["m",[["description","Z-Wave node id."]]]],["file_name",["m",[["type","string"],["description","Firmware file name (device_firmware_start, batch_start)."]]]],["target_index",["m",[["description","Optional Z-Wave firmware target index."]]]],["update_id",["m",[["description","[[FLAT_TRIM]]*_start_available: updateId from firmware.node.available.[[/FLAT_TRIM]]"]]]],["batch",["m",[["type","object"],["description","[[FLAT_TRIM]]Batch actions: {node_ids, inactivity_timeout_seconds? (600)}.[[/FLAT_TRIM]]"]]]],["import_id",["m",[["type","string"],["description","[[FLAT_TRIM]]local_backup_restore: importId.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true.[[FLAT_TRIM]] Confirms backup was created and the user approved this destructive op.[[/FLAT_TRIM]]"]]]]]]],["required",["l",["target","action","confirm"]]]]]]]],["m",[["name","hub_list_captured_states"],["description","List temporary device-state snapshots used by the legacy custom rule engine. Captures are held only in memory and are lost on hub restart or app code reload."],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_delete_captured_state"],["description","Delete a saved device-state snapshot by its stateId, OR delete ALL captured states when stateId is omitted (get stateIds from hub_list_captured_states). Cannot be undone; use the delete-all mode with caution."],["inputSchema",["m",[["type","object"],["properties",["m",[["stateId",["m",[["type","string"],["description","The ID of the captured state to delete. Omit to delete ALL captured states."]]]]]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partDiagnostics() {
-    return [
-        "hub_list_captured_states",
-        "hub_get_logs", "hub_get_performance_stats", "hub_get_jobs", "hub_get_memory_history", "hub_get_radio_details",
-        "hub_get_metrics",
-        "hub_get_device_health"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_captured_states","hub_get_logs","hub_get_performance_stats","hub_get_jobs","hub_get_memory_history","hub_get_radio_details","hub_get_metrics","hub_get_device_health"]]'])
 }
 def _idempotentWriteToolNames_partDiagnostics() {
-    return [
-        "hub_delete_captured_state",
-        "hub_set_zwave", "hub_set_zigbee"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_delete_captured_state","hub_set_zwave","hub_set_zigbee"]]'])
 }
 def _openWorldToolNames_partDiagnostics() {
-    return [
-        "hub_get_device_health",
-        "hub_call_zwave"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_get_device_health","hub_call_zwave"]]'])
 }
 def _toolDisplayMeta_partDiagnostics() {
-    return [
-        hub_get_logs: [title: "Get Logs", summary: "Hub log history, structured MCP history, or MCP logging status."],
-        hub_get_performance_stats: [title: "Get Performance Stats", summary: "Device and app performance statistics, optionally with per-app cloud-call counts."],
-        hub_get_jobs: [title: "Get Scheduled Jobs", summary: "Scheduled jobs, running jobs, and hub actions."],
-        hub_get_metrics: [title: "Get Hub Metrics", summary: "Hub metrics with CSV trend history."],
-        hub_get_memory_history: [title: "Get Memory History", summary: "Free-memory and CPU-load history with summary stats."],
-        hub_call_gc: [title: "Force Garbage Collection", summary: "Force JVM garbage collection and report freed memory."],
-        hub_get_device_health: [title: "Get Device Health", summary: "Find stale devices, ICMP-ping LAN hosts, run traceroute/WAN speedtest, and optionally blink the hub identify LED."],
-        hub_get_radio_details: [title: "Get Radio Details", summary: "Radio details, topology, node state, status, channel scan, SmartStart, firmware, Zigbee activity, Z-Wave backup jobs."],
-        hub_set_zwave: [title: "Set Z-Wave Radio", summary: "Enable/disable the Z-Wave radio, set region and long-range channel, or switch to or from Z-Wave JS."],
-        hub_set_zigbee: [title: "Set Zigbee Radio", summary: "Enable/disable the radio, set channel/power, radio settings (rebuild-on-reboot, ping-inactive), or per-device keep-alive ping."],
-        hub_call_zwave: [title: "Z-Wave Operations", summary: "Z-Wave repair, inclusion, exclusion, node maintenance, link tests, CC commands, and Z-Wave network backup."],
-        hub_call_zigbee: [title: "Zigbee Operations", summary: "Reboot the Zigbee radio, rebuild the network, or trigger a channel scan."],
-        hub_call_matter: [title: "Matter Operations", summary: "Enable/disable Matter, pair or cancel pairing a device by setup code, or open a pairing window."],
-        hub_call_destructive_ops: [title: "Destructive Hub Ops", summary: "Reset a radio, flash firmware, disconnect WiFi/Ethernet, or disable the cloud controller (irreversible)."],
-        hub_list_captured_states: [title: "List Captured States", summary: "List saved device state snapshots."],
-        hub_delete_captured_state: [title: "Delete Captured State", summary: "Delete one or all captured device state snapshots."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_logs",["m",[["title","Get Logs"],["summary","Hub log history, structured MCP history, or MCP logging status."]]]],["hub_get_performance_stats",["m",[["title","Get Performance Stats"],["summary","Device and app performance statistics, optionally with per-app cloud-call counts."]]]],["hub_get_jobs",["m",[["title","Get Scheduled Jobs"],["summary","Scheduled jobs, running jobs, and hub actions."]]]],["hub_get_metrics",["m",[["title","Get Hub Metrics"],["summary","Hub metrics with CSV trend history."]]]],["hub_get_memory_history",["m",[["title","Get Memory History"],["summary","Free-memory and CPU-load history with summary stats."]]]],["hub_call_gc",["m",[["title","Force Garbage Collection"],["summary","Force JVM garbage collection and report freed memory."]]]],["hub_get_device_health",["m",[["title","Get Device Health"],["summary","Find stale devices, ICMP-ping LAN hosts, run traceroute/WAN speedtest, and optionally blink the hub identify LED."]]]],["hub_get_radio_details",["m",[["title","Get Radio Details"],["summary","Radio details, topology, node state, status, channel scan, SmartStart, firmware, Zigbee activity, Z-Wave backup jobs."]]]],["hub_set_zwave",["m",[["title","Set Z-Wave Radio"],["summary","Enable/disable the Z-Wave radio, set region and long-range channel, or switch to or from Z-Wave JS."]]]],["hub_set_zigbee",["m",[["title","Set Zigbee Radio"],["summary","Enable/disable the radio, set channel/power, radio settings (rebuild-on-reboot, ping-inactive), or per-device keep-alive ping."]]]],["hub_call_zwave",["m",[["title","Z-Wave Operations"],["summary","Z-Wave repair, inclusion, exclusion, node maintenance, link tests, CC commands, and Z-Wave network backup."]]]],["hub_call_zigbee",["m",[["title","Zigbee Operations"],["summary","Reboot the Zigbee radio, rebuild the network, or trigger a channel scan."]]]],["hub_call_matter",["m",[["title","Matter Operations"],["summary","Enable/disable Matter, pair or cancel pairing a device by setup code, or open a pairing window."]]]],["hub_call_destructive_ops",["m",[["title","Destructive Hub Ops"],["summary","Reset a radio, flash firmware, disconnect WiFi/Ethernet, or disable the cloud controller (irreversible)."]]]],["hub_list_captured_states",["m",[["title","List Captured States"],["summary","List saved device state snapshots."]]]],["hub_delete_captured_state",["m",[["title","Delete Captured State"],["summary","Delete one or all captured device state snapshots."]]]]]]'])
 }
 def _getHub2HubData() {
     try {
@@ -9707,36 +9050,16 @@ PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually p
     ]
 }
 def _readOnlyToolNames_partSystem() {
-    return [
-        "hub_get_info", "hub_list_modes", "hub_get_hsm_status", "hub_get_hub_mesh"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_get_info","hub_list_modes","hub_get_hsm_status","hub_get_hub_mesh"]]'])
 }
 def _idempotentWriteToolNames_partSystem() {
-    return [
-        "hub_set_hsm", "hub_set_mode_manager",
-        "hub_update_hub_mesh"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_set_hsm","hub_set_mode_manager","hub_update_hub_mesh"]]'])
 }
 def _openWorldToolNames_partSystem() {
-    return [
-        "hub_get_info", "hub_update_firmware"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_get_info","hub_update_firmware"]]'])
 }
 def _toolDisplayMeta_partSystem() {
-    return [
-        hub_get_info: [title: "Get Hub Info", summary: "Comprehensive hub info: hardware, health, firmware/platform-update status, network, and MCP stats."],
-        hub_list_modes: [title: "List Modes", summary: "List the hub's location modes, the active one, and Mode Manager state."],
-        hub_manage_mode: [title: "Manage Modes", summary: "Create, rename, delete, or activate a hub location mode."],
-        hub_set_mode_manager: [title: "Set Mode Manager", summary: "Pick the Mode Manager and update its per-mode conditions."],
-        hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
-        hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
-        hub_set_system_settings: [title: "Set System Settings", summary: "Set hub name, time zone, location, zip, temperature scale, dark mode, network config, or dismiss a hub alert."],
-        hub_get_hub_mesh: [title: "Get Hub Mesh", summary: "Read Hub Mesh config: enabled state, peer hubs, shared and linked devices/variables, sync interval."],
-        hub_update_hub_mesh: [title: "Update Hub Mesh", summary: "Enable/disable Hub Mesh, set the sync interval, follow a peer's modes, or store a peer's mesh token."],
-        hub_update_firmware: [title: "Update Hub Firmware", summary: "Install the hub's pending platform/firmware update (downloads, installs, and reboots the hub)."],
-        hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime)."],
-        hub_shutdown: [title: "Shut Down Hub", summary: "Power the hub off; a physical restart is required afterwards."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_info",["m",[["title","Get Hub Info"],["summary","Comprehensive hub info: hardware, health, firmware/platform-update status, network, and MCP stats."]]]],["hub_list_modes",["m",[["title","List Modes"],["summary","List the hub\'s location modes, the active one, and Mode Manager state."]]]],["hub_manage_mode",["m",[["title","Manage Modes"],["summary","Create, rename, delete, or activate a hub location mode."]]]],["hub_set_mode_manager",["m",[["title","Set Mode Manager"],["summary","Pick the Mode Manager and update its per-mode conditions."]]]],["hub_get_hsm_status",["m",[["title","Get HSM Status"],["summary","Get the current Hubitat Safety Monitor arm status."]]]],["hub_set_hsm",["m",[["title","Set HSM Arm Mode"],["summary","Arm or disarm Hubitat Safety Monitor."]]]],["hub_set_system_settings",["m",[["title","Set System Settings"],["summary","Set hub name, time zone, location, zip, temperature scale, dark mode, network config, or dismiss a hub alert."]]]],["hub_get_hub_mesh",["m",[["title","Get Hub Mesh"],["summary","Read Hub Mesh config: enabled state, peer hubs, shared and linked devices/variables, sync interval."]]]],["hub_update_hub_mesh",["m",[["title","Update Hub Mesh"],["summary","Enable/disable Hub Mesh, set the sync interval, follow a peer\'s modes, or store a peer\'s mesh token."]]]],["hub_update_firmware",["m",[["title","Update Hub Firmware"],["summary","Install the hub\'s pending platform/firmware update (downloads, installs, and reboots the hub)."]]]],["hub_reboot",["m",[["title","Reboot Hub"],["summary","Reboot the hub (1-3 minutes of downtime)."]]]],["hub_shutdown",["m",[["title","Shut Down Hub"],["summary","Power the hub off; a physical restart is required afterwards."]]]]]]'])
 }
 private List _capabilityNames(def caps) {
     (caps instanceof List ? caps : []).collect { c ->
@@ -14399,30 +13722,13 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
     ]
 }
 def _readOnlyToolNames_partDevices() {
-    return [
-        "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
-        "hub_get_compatible_devices"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_devices","hub_get_device","hub_get_device_attribute","hub_list_device_events","hub_get_compatible_devices"]]'])
 }
 def _idempotentWriteToolNames_partDevices() {
-    return [
-        "hub_update_device", "hub_delete_device"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_device","hub_delete_device"]]'])
 }
 def _toolDisplayMeta_partDevices() {
-    return [
-        hub_list_devices: [title: "List Devices", summary: "List accessible devices with filtering, pagination, and field projection."],
-        hub_get_device: [title: "Get Device Details", summary: "Inspect a device summary, configuration and preferences, or detailed information by section."],
-        hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
-        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location events when neither is given."],
-        hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
-        hub_call_device_swap: [title: "Swap Device", summary: "Exchange two devices' identities so the apps on one run on the other's hardware."],
-        hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
-        hub_update_device: [title: "Update Device Properties", summary: "Update applicable device identity, preferences, display, driver, history limits, or integration assignments."],
-        hub_create_device: [title: "Create Device From Driver", summary: "Create a device from a driver-type id, or link a device shared by a peer hub over Hub Mesh."],
-        hub_get_compatible_devices: [title: "Search Compatible Devices", summary: "Search Hubitat's compatible-device catalog for models and pairing/reset instructions."],
-        hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_devices",["m",[["title","List Devices"],["summary","List accessible devices with filtering, pagination, and field projection."]]]],["hub_get_device",["m",[["title","Get Device Details"],["summary","Inspect a device summary, configuration and preferences, or detailed information by section."]]]],["hub_get_device_attribute",["m",[["title","Get Device Attribute"],["summary","Read one attribute value, optionally waiting until it matches an expected value."]]]],["hub_list_device_events",["m",[["title","List Device Events"],["summary","Recent events for a device or app, or location events when neither is given."]]]],["hub_call_device_command",["m",[["title","Send Device Command"],["summary","Send a command like on, off, or setLevel to one device, or up to 20 in one call."]]]],["hub_call_device_swap",["m",[["title","Swap Device"],["summary","Exchange two devices\' identities so the apps on one run on the other\'s hardware."]]]],["hub_call_device_replace",["m",[["title","Replace Device Hardware"],["summary","Re-point a device to replacement hardware, keeping its id and all references."]]]],["hub_update_device",["m",[["title","Update Device Properties"],["summary","Update applicable device identity, preferences, display, driver, history limits, or integration assignments."]]]],["hub_create_device",["m",[["title","Create Device From Driver"],["summary","Create a device from a driver-type id, or link a device shared by a peer hub over Hub Mesh."]]]],["hub_get_compatible_devices",["m",[["title","Search Compatible Devices"],["summary","Search Hubitat\'s compatible-device catalog for models and pairing/reset instructions."]]]],["hub_delete_device",["m",[["title","Delete Device"],["summary","Permanently delete a device from the hub (no undo)."]]]]]]'])
 }
 def toolManageVirtualDevice(args) {
     def action = args.action
@@ -14785,9 +14091,7 @@ action="delete": provide the target deviceNetworkId.
     ]
 }
 def _toolDisplayMeta_partVirtualDevices() {
-    return [
-        hub_manage_virtual_device: [title: "Manage Virtual Device", summary: "Create or delete an MCP-managed virtual device."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_manage_virtual_device",["m",[["title","Manage Virtual Device"],["summary","Create or delete an MCP-managed virtual device."]]]]]]'])
 }
 private boolean _refreshHubVarInUseRegistrations() {
     Set<String> currentVars = [] as Set
@@ -15930,142 +15234,16 @@ private String _hubVarRevealHtml(String raw) {
     return chunks ? chunks.join("\n") : raw
 }
 def _getAllToolDefinitions_partVariables() {
-    return [
-        [
-            name: "hub_list_variables",
-            description: "List all hub variables and rule-engine variables.[[FLAT_TRIM]] Includes every type, even ones without connectors.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "[[FLAT_TRIM]]Optional: only hub variables of this type.[[/FLAT_TRIM]]"],
-                    cursor: [type: "string", description: "Opt-in pagination cursor for the hubVariables list.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_variable",
-            description: "Get one variable's current value by name; includeDependents=true also lists the apps referencing a hub variable.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables; use hub_list_variables to enumerate. includeDependents reads the hub's in-use registry by clicking the Settings > Hub Variables wizard reveal, returning appsUsing as {id, label} plus coverageNote — apps that never register their use (e.g. webCoRE) are not covered, and a failed registry read is reported via dependentsError without failing the call. See hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Exact variable name to look up, e.g. \"vacationMode\". Case-sensitive."],
-                    includeDependents: [type: "boolean", description: "Opt-in: also list the apps that reference this hub variable.[[FLAT_TRIM]] Returns appsUsing + coverageNote; clicks the Hub Variables wizard reveal, so off by default.[[/FLAT_TRIM]]", default: false]
-                ],
-                required: ["name"]
-            ]
-        ],
-        [
-            name: "hub_set_variable",
-            description: "Set an existing variable's value[[FLAT_TRIM]], or add to a Number/Decimal hub variable with increment[[/FLAT_TRIM]]. For hub variables, value type must match the variable's declared type.[[FLAT_TRIM]] Falls back to the rule_engine namespace when no hub variable matches. Creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both — see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Variable name"],
-                    value: [type: "string", description: "Variable value (string, number, or boolean as string).[[FLAT_TRIM]] Optional when mesh_shared is given.[[/FLAT_TRIM]]"],
-                    increment: [type: "number", description: "[[FLAT_TRIM]]Add this amount atomically to a Number/Decimal hub variable (instead of value; send alone).[[/FLAT_TRIM]]"],
-                    mesh_shared: [type: "boolean", description: "Hub Mesh: share/unshare this hub variable.[[FLAT_TRIM]] true shares into the mesh, false unshares; hub variables only; may accompany value or stand alone.[[/FLAT_TRIM]]"]
-                ],
-                required: ["name"]
-            ]
-        ],
-        [
-            name: "hub_create_variable",
-            description: "Create a new hub variable[[FLAT_TRIM]] (global variable visible to apps and Rule Machine)[[/FLAT_TRIM]], one at a time or several in one call.[[FLAT_TRIM]] Single form: name + type + value. Or LINK a variable a peer hub shares over Hub Mesh: mesh_source_hub_id + mesh_source_name from hub_get_hub_mesh availableLinkedHubVariables[], instead of name/type/value/variables; see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "New variable name, e.g. \"vacationMode\".[[FLAT_TRIM]] Omit when using variables or the Hub Mesh link form.[[/FLAT_TRIM]]"],
-                    type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
-                    value: [description: "Initial value, must match the type.[[FLAT_TRIM]] DateTime uses hub-local time, e.g. 2026-02-04T14:00 or {date,time}; offsets are ignored and seconds/fractions discarded. Omit when using variables.[[/FLAT_TRIM]]"],
-                    mesh_source_hub_id: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with mesh_source_name, not name/type/value.[[/FLAT_TRIM]]"],
-                    mesh_source_name: [type: "string", description: "Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"],
-                    variables: [type: "array", description: "Bulk form: several variables in one call.", items: [
-                        type: "object",
-                        properties: [
-                            name: [type: "string", description: "New variable name"],
-                            type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type"],
-                            value: [description: "Initial value, must match the type"]
-                        ],
-                        required: ["name", "type", "value"]
-                    ]],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true to perform the creation"]
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_delete_variable",
-            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\n\n**Reference safety:** for a hub variable the tool first reads the hub's own in-use registry (what Settings > Hub Variables shows in orange, covering Rule Machine and other registering apps) and refuses when it is in use or when the registry cannot be read. It also scans this server's child rules for the name, quoted or as a %name% substitution. Apps that never register use, such as webCoRE pistons, are not covered (see `coverageNote`). To proceed anyway, pass `force=true` after acknowledging the breakage; `brokenConsumers` then lists the affected child rules.\n\nThe consumer scan makes this call slow; if the transport drops, verify whether the variable still exists before retrying.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Variable name to delete"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the deletion"],
-                    force: [type: "boolean", description: "OPTIONAL: must be true to proceed when the hub reports the variable in use, the in-use registry cannot be read, or a child rule references it. Without force, the tool refuses and says why."],
-                ],
-                required: ["name", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_create_connector",
-            description: "Create a virtual-device connector for an existing hub variable[[FLAT_TRIM]] so apps that only consume devices can read/write it. No-op if a connector already exists; see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Existing hub-variable name"],
-                    connectorType: [type: "string", description: "Optional connector type for Number/Decimal vars (e.g. 'Dimmer', 'Variable'); defaults to 'Variable'.[[FLAT_TRIM]] Other options: 'Volume', 'ColorTemp', 'Humidity', 'Illuminance'. Ignored for vars that don't show a chooser.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true"]
-                ],
-                required: ["name", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_delete_connector",
-            description: "Delete the connector device backing a hub variable. DESTRUCTIVE and not undoable. confirm=true required.[[FLAT_TRIM]] The connector device is removed, but the hub variable itself and its value are unchanged. No-op if the variable has no connector; see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Hub-variable name whose connector device to remove, e.g. \"vacationMode\""],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true to perform the deletion"]
-                ],
-                required: ["name", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_list_variable_changes",
-            description: "List recent hub-variable change events captured by the MCP app's location-event subscription, most-recent first.[[FLAT_TRIM]] Use this to audit or debug what changed a variable and when, without polling hub_get_variable. The buffer holds at most the 200 most recent changes (oldest dropped) and survives app and hub restarts, but it is not a complete history — an empty or partial result does NOT mean the variable never changed. For the hub's separately retained location-event history call hub_list_device_events with no deviceId (location-event mode).[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Optional: filter to changes for this variable name only, e.g. \"vacationMode\".[[FLAT_TRIM]] Omit to include all variables.[[/FLAT_TRIM]]"],
-                    sinceMs: [type: "integer", description: "Optional: only return changes whose timestamp >= this epoch-millis value, e.g. 1717459200000"],
-                    limit: [type: "integer", description: "Optional: max entries to return (default 50)"]
-                ]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_variables"],["description","List all hub variables and rule-engine variables.[[FLAT_TRIM]] Includes every type, even ones without connectors.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["Number","Decimal","String","Boolean","DateTime"]]],["description","[[FLAT_TRIM]]Optional: only hub variables of this type.[[/FLAT_TRIM]]"]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor for the hubVariables list.[[FLAT_TRIM]] Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_get_variable"],["description","Get one variable\'s current value by name; includeDependents=true also lists the apps referencing a hub variable.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables; use hub_list_variables to enumerate. includeDependents reads the hub\'s in-use registry by clicking the Settings > Hub Variables wizard reveal, returning appsUsing as {id, label} plus coverageNote \\u2014 apps that never register their use (e.g. webCoRE) are not covered, and a failed registry read is reported via dependentsError without failing the call. See hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Exact variable name to look up, e.g. \\"vacationMode\\". Case-sensitive."]]]],["includeDependents",["m",[["type","boolean"],["description","Opt-in: also list the apps that reference this hub variable.[[FLAT_TRIM]] Returns appsUsing + coverageNote; clicks the Hub Variables wizard reveal, so off by default.[[/FLAT_TRIM]]"],["default",false]]]]]]],["required",["l",["name"]]]]]]]],["m",[["name","hub_set_variable"],["description","Set an existing variable\'s value[[FLAT_TRIM]], or add to a Number/Decimal hub variable with increment[[/FLAT_TRIM]]. For hub variables, value type must match the variable\'s declared type.[[FLAT_TRIM]] Falls back to the rule_engine namespace when no hub variable matches. Creating new hub variables requires hub_create_variable \\u2014 Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both \\u2014 see hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Variable name"]]]],["value",["m",[["type","string"],["description","Variable value (string, number, or boolean as string).[[FLAT_TRIM]] Optional when mesh_shared is given.[[/FLAT_TRIM]]"]]]],["increment",["m",[["type","number"],["description","[[FLAT_TRIM]]Add this amount atomically to a Number/Decimal hub variable (instead of value; send alone).[[/FLAT_TRIM]]"]]]],["mesh_shared",["m",[["type","boolean"],["description","Hub Mesh: share/unshare this hub variable.[[FLAT_TRIM]] true shares into the mesh, false unshares; hub variables only; may accompany value or stand alone.[[/FLAT_TRIM]]"]]]]]]],["required",["l",["name"]]]]]]]],["m",[["name","hub_create_variable"],["description","Create a new hub variable[[FLAT_TRIM]] (global variable visible to apps and Rule Machine)[[/FLAT_TRIM]], one at a time or several in one call.[[FLAT_TRIM]] Single form: name + type + value. Or LINK a variable a peer hub shares over Hub Mesh: mesh_source_hub_id + mesh_source_name from hub_get_hub_mesh availableLinkedHubVariables[], instead of name/type/value/variables; see hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","New variable name, e.g. \\"vacationMode\\".[[FLAT_TRIM]] Omit when using variables or the Hub Mesh link form.[[/FLAT_TRIM]]"]]]],["type",["m",[["type","string"],["enum",["l",["Number","Decimal","String","Boolean","DateTime"]]],["description","Variable type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"]]]],["value",["m",[["description","Initial value, must match the type.[[FLAT_TRIM]] DateTime uses hub-local time, e.g. 2026-02-04T14:00 or {date,time}; offsets are ignored and seconds/fractions discarded. Omit when using variables.[[/FLAT_TRIM]]"]]]],["mesh_source_hub_id",["m",[["type","string"],["description","Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with mesh_source_name, not name/type/value.[[/FLAT_TRIM]]"]]]],["mesh_source_name",["m",[["type","string"],["description","Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"]]]],["variables",["m",[["type","array"],["description","Bulk form: several variables in one call."],["items",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","New variable name"]]]],["type",["m",[["type","string"],["enum",["l",["Number","Decimal","String","Boolean","DateTime"]]],["description","Variable type"]]]],["value",["m",[["description","Initial value, must match the type"]]]]]]],["required",["l",["name","type","value"]]]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to perform the creation"]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_delete_variable"],["description","Permanently delete a variable (DESTRUCTIVE \\u2014 no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\\n\\n**Reference safety:** for a hub variable the tool first reads the hub\'s own in-use registry (what Settings > Hub Variables shows in orange, covering Rule Machine and other registering apps) and refuses when it is in use or when the registry cannot be read. It also scans this server\'s child rules for the name, quoted or as a %name% substitution. Apps that never register use, such as webCoRE pistons, are not covered (see `coverageNote`). To proceed anyway, pass `force=true` after acknowledging the breakage; `brokenConsumers` then lists the affected child rules.\\n\\nThe consumer scan makes this call slow; if the transport drops, verify whether the variable still exists before retrying.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Variable name to delete"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to confirm the deletion"]]]],["force",["m",[["type","boolean"],["description","OPTIONAL: must be true to proceed when the hub reports the variable in use, the in-use registry cannot be read, or a child rule references it. Without force, the tool refuses and says why."]]]]]]],["required",["l",["name","confirm"]]]]]]]],["m",[["name","hub_create_connector"],["description","Create a virtual-device connector for an existing hub variable[[FLAT_TRIM]] so apps that only consume devices can read/write it. No-op if a connector already exists; see hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Existing hub-variable name"]]]],["connectorType",["m",[["type","string"],["description","Optional connector type for Number/Decimal vars (e.g. \'Dimmer\', \'Variable\'); defaults to \'Variable\'.[[FLAT_TRIM]] Other options: \'Volume\', \'ColorTemp\', \'Humidity\', \'Illuminance\'. Ignored for vars that don\'t show a chooser.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true"]]]]]]],["required",["l",["name","confirm"]]]]]]]],["m",[["name","hub_delete_connector"],["description","Delete the connector device backing a hub variable. DESTRUCTIVE and not undoable. confirm=true required.[[FLAT_TRIM]] The connector device is removed, but the hub variable itself and its value are unchanged. No-op if the variable has no connector; see hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Hub-variable name whose connector device to remove, e.g. \\"vacationMode\\""]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to perform the deletion"]]]]]]],["required",["l",["name","confirm"]]]]]]]],["m",[["name","hub_list_variable_changes"],["description","List recent hub-variable change events captured by the MCP app\'s location-event subscription, most-recent first.[[FLAT_TRIM]] Use this to audit or debug what changed a variable and when, without polling hub_get_variable. The buffer holds at most the 200 most recent changes (oldest dropped) and survives app and hub restarts, but it is not a complete history \\u2014 an empty or partial result does NOT mean the variable never changed. For the hub\'s separately retained location-event history call hub_list_device_events with no deviceId (location-event mode).[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Optional: filter to changes for this variable name only, e.g. \\"vacationMode\\".[[FLAT_TRIM]] Omit to include all variables.[[/FLAT_TRIM]]"]]]],["sinceMs",["m",[["type","integer"],["description","Optional: only return changes whose timestamp >= this epoch-millis value, e.g. 1717459200000"]]]],["limit",["m",[["type","integer"],["description","Optional: max entries to return (default 50)"]]]]]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partVariables() {
-    return [
-        "hub_list_variables", "hub_get_variable", "hub_list_variable_changes"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_variables","hub_get_variable","hub_list_variable_changes"]]'])
 }
 def _idempotentWriteToolNames_partVariables() {
-    return [
-        "hub_delete_variable", "hub_create_connector", "hub_delete_connector"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_delete_variable","hub_create_connector","hub_delete_connector"]]'])
 }
 def _toolDisplayMeta_partVariables() {
-    return [
-        hub_list_variables: [title: "List Variables", summary: "List hub and rule-engine variables, optionally only hub variables of one type."],
-        hub_get_variable: [title: "Get Variable", summary: "Get a variable's value and metadata (optionally the apps that reference it)."],
-        hub_set_variable: [title: "Set Variable", summary: "Set an existing variable's value or atomically add to a numeric hub variable."],
-        hub_create_variable: [title: "Create Variable", summary: "Create a new hub variable."],
-        hub_delete_variable: [title: "Delete Variable", summary: "Permanently delete a hub variable and any connector it has."],
-        hub_create_connector: [title: "Create Variable Connector", summary: "Create a virtual-device connector for a hub variable."],
-        hub_delete_connector: [title: "Delete Variable Connector", summary: "Remove a hub variable's connector device."],
-        hub_list_variable_changes: [title: "List Variable Changes", summary: "Recent hub-variable changes from the retained 200-entry history."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_variables",["m",[["title","List Variables"],["summary","List hub and rule-engine variables, optionally only hub variables of one type."]]]],["hub_get_variable",["m",[["title","Get Variable"],["summary","Get a variable\'s value and metadata (optionally the apps that reference it)."]]]],["hub_set_variable",["m",[["title","Set Variable"],["summary","Set an existing variable\'s value or atomically add to a numeric hub variable."]]]],["hub_create_variable",["m",[["title","Create Variable"],["summary","Create a new hub variable."]]]],["hub_delete_variable",["m",[["title","Delete Variable"],["summary","Permanently delete a hub variable and any connector it has."]]]],["hub_create_connector",["m",[["title","Create Variable Connector"],["summary","Create a virtual-device connector for a hub variable."]]]],["hub_delete_connector",["m",[["title","Delete Variable Connector"],["summary","Remove a hub variable\'s connector device."]]]],["hub_list_variable_changes",["m",[["title","List Variable Changes"],["summary","Recent hub-variable changes from the retained 200-entry history."]]]]]]'])
 }
 def toolListRules(args = null) {
     def childApps = getChildApps()
@@ -16631,144 +15809,16 @@ def toolGetRuleDiagnostics(args) {
     return result
 }
 def _getAllToolDefinitions_partCustomRules() {
-    return [
-        [
-            name: "hub_get_custom_rule",
-            description: "Read MCP custom-engine automation rules. Omit ruleId to LIST all rules (summaries; supports cursor pagination). Provide ruleId for one rule's full detail. Add detailed=true (requires ruleId) for comprehensive diagnostics (config + execution history + recent logs + errors).[[FLAT_TRIM]] When the Custom Rule Engine toggle is OFF this operates read-only -- you can list/inspect existing custom rules, but create/modify/delete are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via hub_manage_native_rules_and_apps.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID. Omit to list all rules; provide for one rule's detail."],
-                    detailed: [type: "boolean", description: "Requires ruleId; returns diagnostics instead of plain rule data. Rejected if set without a ruleId.", default: false],
-                    cursor: [type: "string", description: "List mode only (ruleId omitted): pagination cursor. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_create_custom_rule",
-            description: """*** LEGACY (MCP sandbox engine): for "create a Rule Machine rule" / "Hubitat rule" / anything the user wants visible in Hubitat's RM UI, use hub_manage_rule_machine hub_set_rule instead. ***
-
-Create a new automation rule (MCP sandbox engine). The custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. Call `hub_get_tool_guide(section='rules')` for the trigger/condition/action type lists, per-type fields, structure, syntax, and examples.
-
-Verify rule after creation.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Rule name, e.g. \"Porch light at sunset\""],
-                    description: [type: "string", description: "Optional human-readable rule description"],
-                    enabled: [type: "boolean", description: "Enable rule immediately on creation", default: true],
-                    testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion.", default: false],
-                    triggers: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_event", "button_event", "time", "sunrise", "sunset", "sun", "periodic", "mode_change", "hsm_change"]]]], description: "Trigger objects (at least one required), each a {type, ...} object.[[FLAT_TRIM]] The `type` enum lists the kinds; sunrise/sunset/sun are shortcuts for a time trigger.[[/FLAT_TRIM]]"],
-                    conditions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_state", "device_was", "time_range", "mode", "variable", "days_of_week", "sun_position", "hsm_status", "presence", "lock", "thermostat_mode", "thermostat_state", "illuminance", "power"]]]], description: "Optional condition objects gating the actions, each {type, ...}."],
-                    conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine multiple conditions: 'all' = AND, 'any' = OR.", default: "all"],
-                    actions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_command", "toggle_device", "activate_scene", "set_variable", "set_local_variable", "set_mode", "set_hsm", "delay", "if_then_else", "cancel_delayed", "repeat", "stop", "log", "set_level", "set_color", "set_color_temperature", "lock", "unlock", "capture_state", "restore_state", "send_notification", "set_thermostat", "http_request", "speak", "comment", "set_valve", "set_fan_speed", "set_shade", "variable_math"]]]], description: "Action objects to run when triggered (at least one required), each {type, ...}."]
-                ],
-                required: ["name", "triggers", "actions"]
-            ]
-        ],
-        [
-            name: "hub_update_custom_rule",
-            description: "Update an existing MCP custom-engine rule in place; only the fields you supply are changed (use enabled=true/false to enable/disable). Replacing triggers/conditions/actions overwrites the whole array, not a merge; see hub_get_tool_guide(section='rules') for valid types and structure.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "ID of the rule to update (from hub_get_custom_rule)"],
-                    name: [type: "string", description: "New rule name"],
-                    description: [type: "string", description: "New rule description"],
-                    enabled: [type: "boolean", description: "Enable (true) or disable (false) the rule"],
-                    testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion"],
-                    triggers: [type: "array", description: "Replacement trigger objects (overwrites ALL triggers)"],
-                    conditions: [type: "array", description: "Replacement condition objects (overwrites ALL conditions)"],
-                    conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine conditions: 'all' = AND, 'any' = OR"],
-                    actions: [type: "array", description: "Replacement action objects (overwrites ALL actions)"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "hub_delete_custom_rule",
-            description: "DESTRUCTIVE: Permanently delete an MCP custom-engine rule. Automatically saves a backup to File Manager before deletion.[[FLAT_TRIM]] Backup filename pattern: mcp_rule_backup_*.json. Rules marked testRule=true skip backup automatically.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID"],
-                    confirm: [type: "boolean", description: "REQUIRED: Set to true to confirm deletion."],
-                    skipBackupCheck: [type: "boolean", description: "Force skip backup even for non-test rules."]
-                ],
-                required: ["ruleId", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_test_custom_rule",
-            description: "Dry-run an MCP custom-engine rule: evaluate its conditions against current device/hub state and report whether it would fire, WITHOUT executing any actions.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "ID of the custom rule to dry-run (from hub_get_custom_rule)"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "hub_export_custom_rule",
-            description: "Export a custom rule to JSON and save it to the hub File Manager for backup or sharing.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID to export"],
-                    saveAs: [type: "string", description: "File Manager filename to write the export JSON to (\".json\" appended if missing). Omit to use a generated name based on the rule."]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "hub_import_custom_rule",
-            description: """Import a custom rule from exported JSON (produced by hub_export_custom_rule), creating a NEW rule with a fresh ruleId (it does not overwrite an existing rule).""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    exportData: [type: "object", description: "The full export JSON object from hub_export_custom_rule"],
-                    name: [type: "string", description: "Override the rule name (optional)"],
-                    deviceMapping: [type: "object", description: "Map old device IDs to new ones: {\"old_id\": \"new_id\"} (optional)"]
-                ],
-                required: ["exportData"]
-            ]
-        ],
-        [
-            name: "hub_clone_custom_rule",
-            description: "Duplicate an existing MCP custom-engine rule into a new, independent rule with its own ruleId.[[FLAT_TRIM]] Same triggers/conditions/actions and device references as the source.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID to clone"],
-                    name: [type: "string", description: "Name for the clone (defaults to 'Copy of <original>')"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_custom_rule"],["description","Read MCP custom-engine automation rules. Omit ruleId to LIST all rules (summaries; supports cursor pagination). Provide ruleId for one rule\'s full detail. Add detailed=true (requires ruleId) for comprehensive diagnostics (config + execution history + recent logs + errors).[[FLAT_TRIM]] When the Custom Rule Engine toggle is OFF this operates read-only -- you can list/inspect existing custom rules, but create/modify/delete are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via hub_manage_native_rules_and_apps.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","Rule ID. Omit to list all rules; provide for one rule\'s detail."]]]],["detailed",["m",[["type","boolean"],["description","Requires ruleId; returns diagnostics instead of plain rule data. Rejected if set without a ruleId."],["default",false]]]],["cursor",["m",[["type","string"],["description","List mode only (ruleId omitted): pagination cursor. Pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_create_custom_rule"],["description","*** LEGACY (MCP sandbox engine): for \\"create a Rule Machine rule\\" / \\"Hubitat rule\\" / anything the user wants visible in Hubitat\'s RM UI, use hub_manage_rule_machine hub_set_rule instead. ***\\n\\nCreate a new automation rule (MCP sandbox engine). The custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat\'s RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. Call `hub_get_tool_guide(section=\'rules\')` for the trigger/condition/action type lists, per-type fields, structure, syntax, and examples.\\n\\nVerify rule after creation."],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Rule name, e.g. \\"Porch light at sunset\\""]]]],["description",["m",[["type","string"],["description","Optional human-readable rule description"]]]],["enabled",["m",[["type","boolean"],["description","Enable rule immediately on creation"],["default",true]]]],["testRule",["m",[["type","boolean"],["description","Mark as test rule - will NOT be backed up on deletion."],["default",false]]]],["triggers",["m",[["type","array"],["items",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["device_event","button_event","time","sunrise","sunset","sun","periodic","mode_change","hsm_change"]]]]]]]]]]]],["description","Trigger objects (at least one required), each a {type, ...} object.[[FLAT_TRIM]] The `type` enum lists the kinds; sunrise/sunset/sun are shortcuts for a time trigger.[[/FLAT_TRIM]]"]]]],["conditions",["m",[["type","array"],["items",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["device_state","device_was","time_range","mode","variable","days_of_week","sun_position","hsm_status","presence","lock","thermostat_mode","thermostat_state","illuminance","power"]]]]]]]]]]]],["description","Optional condition objects gating the actions, each {type, ...}."]]]],["conditionLogic",["m",[["type","string"],["enum",["l",["all","any"]]],["description","How to combine multiple conditions: \'all\' = AND, \'any\' = OR."],["default","all"]]]],["actions",["m",[["type","array"],["items",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["device_command","toggle_device","activate_scene","set_variable","set_local_variable","set_mode","set_hsm","delay","if_then_else","cancel_delayed","repeat","stop","log","set_level","set_color","set_color_temperature","lock","unlock","capture_state","restore_state","send_notification","set_thermostat","http_request","speak","comment","set_valve","set_fan_speed","set_shade","variable_math"]]]]]]]]]]]],["description","Action objects to run when triggered (at least one required), each {type, ...}."]]]]]]],["required",["l",["name","triggers","actions"]]]]]]]],["m",[["name","hub_update_custom_rule"],["description","Update an existing MCP custom-engine rule in place; only the fields you supply are changed (use enabled=true/false to enable/disable). Replacing triggers/conditions/actions overwrites the whole array, not a merge; see hub_get_tool_guide(section=\'rules\') for valid types and structure."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","ID of the rule to update (from hub_get_custom_rule)"]]]],["name",["m",[["type","string"],["description","New rule name"]]]],["description",["m",[["type","string"],["description","New rule description"]]]],["enabled",["m",[["type","boolean"],["description","Enable (true) or disable (false) the rule"]]]],["testRule",["m",[["type","boolean"],["description","Mark as test rule - will NOT be backed up on deletion"]]]],["triggers",["m",[["type","array"],["description","Replacement trigger objects (overwrites ALL triggers)"]]]],["conditions",["m",[["type","array"],["description","Replacement condition objects (overwrites ALL conditions)"]]]],["conditionLogic",["m",[["type","string"],["enum",["l",["all","any"]]],["description","How to combine conditions: \'all\' = AND, \'any\' = OR"]]]],["actions",["m",[["type","array"],["description","Replacement action objects (overwrites ALL actions)"]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_delete_custom_rule"],["description","DESTRUCTIVE: Permanently delete an MCP custom-engine rule. Automatically saves a backup to File Manager before deletion.[[FLAT_TRIM]] Backup filename pattern: mcp_rule_backup_*.json. Rules marked testRule=true skip backup automatically.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","Rule ID"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Set to true to confirm deletion."]]]],["skipBackupCheck",["m",[["type","boolean"],["description","Force skip backup even for non-test rules."]]]]]]],["required",["l",["ruleId","confirm"]]]]]]]],["m",[["name","hub_test_custom_rule"],["description","Dry-run an MCP custom-engine rule: evaluate its conditions against current device/hub state and report whether it would fire, WITHOUT executing any actions."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","ID of the custom rule to dry-run (from hub_get_custom_rule)"]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_export_custom_rule"],["description","Export a custom rule to JSON and save it to the hub File Manager for backup or sharing."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","Rule ID to export"]]]],["saveAs",["m",[["type","string"],["description","File Manager filename to write the export JSON to (\\".json\\" appended if missing). Omit to use a generated name based on the rule."]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_import_custom_rule"],["description","Import a custom rule from exported JSON (produced by hub_export_custom_rule), creating a NEW rule with a fresh ruleId (it does not overwrite an existing rule)."],["inputSchema",["m",[["type","object"],["properties",["m",[["exportData",["m",[["type","object"],["description","The full export JSON object from hub_export_custom_rule"]]]],["name",["m",[["type","string"],["description","Override the rule name (optional)"]]]],["deviceMapping",["m",[["type","object"],["description","Map old device IDs to new ones: {\\"old_id\\": \\"new_id\\"} (optional)"]]]]]]],["required",["l",["exportData"]]]]]]]],["m",[["name","hub_clone_custom_rule"],["description","Duplicate an existing MCP custom-engine rule into a new, independent rule with its own ruleId.[[FLAT_TRIM]] Same triggers/conditions/actions and device references as the source.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","Rule ID to clone"]]]],["name",["m",[["type","string"],["description","Name for the clone (defaults to \'Copy of <original>\')"]]]]]]],["required",["l",["ruleId"]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partCustomRules() {
-    return [
-        "hub_get_custom_rule", "hub_test_custom_rule"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_get_custom_rule","hub_test_custom_rule"]]'])
 }
 def _idempotentWriteToolNames_partCustomRules() {
-    return [
-        "hub_update_custom_rule", "hub_delete_custom_rule"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_custom_rule","hub_delete_custom_rule"]]'])
 }
 def _toolDisplayMeta_partCustomRules() {
-    return [
-        hub_get_custom_rule: [title: "Get Custom Rule", summary: "List custom-engine rules or get one rule's details and diagnostics."],
-        hub_create_custom_rule: [title: "Create Custom Rule", summary: "Create a new custom-engine automation rule."],
-        hub_update_custom_rule: [title: "Update Custom Rule", summary: "Update a custom-engine rule's triggers, conditions, actions, or enabled state."],
-        hub_delete_custom_rule: [title: "Delete Custom Rule", summary: "Permanently delete a custom-engine rule (auto-backs up first)."],
-        hub_test_custom_rule: [title: "Test Custom Rule", summary: "Dry-run a custom-engine rule without executing its actions."],
-        hub_export_custom_rule: [title: "Export Custom Rule", summary: "Export a custom-engine rule to JSON in the hub File Manager."],
-        hub_import_custom_rule: [title: "Import Custom Rule", summary: "Import a custom-engine rule from exported JSON as a new rule."],
-        hub_clone_custom_rule: [title: "Clone Custom Rule", summary: "Clone an existing custom-engine rule (the copy starts disabled)."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_custom_rule",["m",[["title","Get Custom Rule"],["summary","List custom-engine rules or get one rule\'s details and diagnostics."]]]],["hub_create_custom_rule",["m",[["title","Create Custom Rule"],["summary","Create a new custom-engine automation rule."]]]],["hub_update_custom_rule",["m",[["title","Update Custom Rule"],["summary","Update a custom-engine rule\'s triggers, conditions, actions, or enabled state."]]]],["hub_delete_custom_rule",["m",[["title","Delete Custom Rule"],["summary","Permanently delete a custom-engine rule (auto-backs up first)."]]]],["hub_test_custom_rule",["m",[["title","Test Custom Rule"],["summary","Dry-run a custom-engine rule without executing its actions."]]]],["hub_export_custom_rule",["m",[["title","Export Custom Rule"],["summary","Export a custom-engine rule to JSON in the hub File Manager."]]]],["hub_import_custom_rule",["m",[["title","Import Custom Rule"],["summary","Import a custom-engine rule from exported JSON as a new rule."]]]],["hub_clone_custom_rule",["m",[["title","Clone Custom Rule"],["summary","Clone an existing custom-engine rule (the copy starts disabled)."]]]]]]'])
 }
 def toolListHubApps(args) {
     def cursor = args?.cursor
@@ -19221,337 +18271,19 @@ def toolGetDeviceInUseBy(args) {
     }
 }
 def _getAllToolDefinitions_partCodeManagement() {
-    return [
-        [
-            name: "hub_list_apps",
-            description: """List apps on the hub — running instances or installed app code/types (see scope).[[FLAT_TRIM]] scope='types' returns both community and built-in app types, each tagged system/isBuiltIn and with its menu tab (Apps/Automations/Integrations). Use system=false/isBuiltIn=false to isolate community (user-installed) types, or menu to group types by the admin UI's Apps/Automations/Integrations tabs. menu is null for a type that declares none. See hub_get_tool_guide(section='builtin_app_tools_apps').[[/FLAT_TRIM]] Per-app event history: hub_list_device_events with appId.[[FLAT_TRIM]] Each instance row carries appTypeId, the app type's code-class id shared with scope='types' and hub_get_source(type='app'), so an instance resolves to its code without matching on the type name. Requires the Read master.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared).", default: "instances"],
-                    filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
-                    includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_list_drivers",
-            description: "List device driver types on the hub.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_list_libraries",
-            description: "List all Groovy libraries installed on the hub (id, name, namespace, version). Use this to discover a library's id, then read its source with hub_get_source(type='library', id=N)[[FLAT_TRIM]]; the source is omitted here to keep the list lean[[/FLAT_TRIM]].[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_source",
-            description: "Get the Groovy source of an installed app, driver, or library. Supports chunked reading (offset/length); large sources are auto-saved to the File Manager for use with the matching update tool's sourceFile mode.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to read."],
-                    id: [type: "string", description: "App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."],
-                    offset: [type: "integer", description: "Char offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
-                ],
-                required: ["type", "id"]
-            ]
-        ],
-        [
-            name: "hub_create_app",
-            description: """⚠️ Install new app. Show code to user and get confirmation first.
-
-Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param).
-
-[[FLAT_TRIM]]
-After the code installs, create a running instance with a SECOND call: hub_create_app(codeAppId: <newAppId>, confirm: true).
-[[/FLAT_TRIM]]
-
-Verifies the install compiled -- returns success=false with the error if it didn't. Requires Write master + confirm + backup <24h. Returns the new app ID.
-[[FLAT_TRIM]]
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-app.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    codeAppId: [type: "integer", description: "Second-step mode: instantiate already-installed code (codeAppId from a prior call) and commit the install; not combinable with source/sourceFile/importUrl."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_create_driver",
-            description: """⚠️ Install new driver. Show code to user and get confirmation first.
-
-Supply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). For >1 driver use BULK mode (the installs param).
-
-Verifies the install compiled: returns success=false with the error if the hub accepted the request but the driver failed to compile. Requires Write master + confirm + backup <24h. Returns new driver ID(s).
-[[FLAT_TRIM]]
-MCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    installs: [
-                        type: "array",
-                        description: "Bulk mode: one round-trip for many drivers. Each entry {source|sourceFile|importUrl}; cannot mix with single-driver fields; continue-on-error.",
-                        items: [
-                            type: "object",
-                            properties: [
-                                sourceFile: [type: "string", description: "File Manager filename (preferred)."],
-                                source: [type: "string", description: "Inline source (stubs only)."],
-                                importUrl: [type: "string", description: "URL the hub fetches directly."]
-                            ]
-                        ]
-                    ],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_update_app",
-            description: """⚠️ CRITICAL: Modify existing app code. Read current source first, explain changes, get confirmation.
-
-Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Optionally enable OAuth via the oauth param (apps only), alone or alongside a source change.
-
-Auto-backs up before modifying. Requires Write master + confirm + backup <24h.[[FLAT_TRIM]]
-
-Self-update guard: refuses to overwrite the MCP server's own app source or OAuth unless Developer Mode is on.[[/FLAT_TRIM]]
-[[FLAT_TRIM]]
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "string", description: "The app ID (Apps Code id) to update"],
-                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
-                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
-                    expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"],
-                    triggerUpdated: [type: "integer", description: "OPTIONAL: running instance appId to refresh via updated() after saving code; re-initializes subscriptions, schedules and atomicState. Protected targets require Developer Mode. Submits mainPage's Done form, RE-SENDING EVERY input from live settings. If live settings cannot be read, refuses the submit to avoid clearing device selections. On refusal/failure, saved code remains deployed: success:true, partial:true, updatedFired:false and repairHints. Omit for the hub editor's normal Save behavior (no lifecycle refresh)."],
-                    oauth: [type: "object", description: "OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section='hub_admin_write_code')."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["appId", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_update_driver",
-            description: """⚠️ CRITICAL: Modify existing driver code. Read current source first, explain changes, get confirmation.
-
-Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). For >1 driver use BULK mode (the updates param).
-
-Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
-[[FLAT_TRIM]]
-MCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    driverId: [type: "string", description: "The driver ID to update (single-driver mode). Omit when using 'updates' array."],
-                    source: [type: "string", description: "Inline Groovy source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
-                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
-                    expectedVersion: [type: "integer", description: "Optional optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] In bulk mode, put it inside each updates[] entry.[[/FLAT_TRIM]]"],
-                    updates: [
-                        type: "array",
-                        description: "Bulk mode: one round-trip for many drivers. Each entry {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}; cannot mix with single-driver fields; continue-on-error.",
-                        items: [
-                            type: "object",
-                            properties: [
-                                driverId: [type: "string", description: "The driver ID to update"],
-                                sourceFile: [type: "string", description: "File Manager filename (preferred)."],
-                                source: [type: "string", description: "Inline source (stubs only)."],
-                                importUrl: [type: "string", description: "URL the hub fetches directly."],
-                                resave: [type: "boolean", description: "Re-save without changes."],
-                                backup: [type: "boolean"],
-                                expectedVersion: [type: "integer", description: "OPTIONAL optimistic-lock guard for this item only."]
-                            ],
-                            required: ["driverId"]
-                        ]
-                    ],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_delete_item",
-            description: """⚠️ DESTRUCTIVE: Permanently delete an app, driver, or library. Auto-backs up the source before deletion.
-
-[[FLAT_TRIM]]
-Pre-flight by type: apps -- remove app instances via the Hubitat UI first; drivers -- switch any devices to a different driver first; libraries -- ensure no apps/drivers still #include it (else compile errors).
-[[/FLAT_TRIM]]
-
-Tell the user the item name/ID, warn it's permanent, get confirmation. Requires Write master + confirm + backup <24h.
-[[FLAT_TRIM]]
-For type=driver, MCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Other item types and older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    type: [type: "string", enum: ["app", "driver", "library"], description: "What to delete."],
-                    item_id: [type: "string", description: "The app/driver/library ID to delete."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
-                ],
-                required: ["type", "item_id", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_create_library",
-            description: """⚠️ Install new Groovy library code. Libraries are #include'd by drivers/apps. Show code to user and get confirmation first.
-
-Provide exactly one of source / sourceFile / importUrl (see each param).
-
-Source must include a library() block with name/namespace/author/description (all required). The hub does NOT compile-check libraries at install -- syntax errors surface only when an app/driver #includes it. Requires Write master + confirm + backup <24h. Returns new libraryId.
-[[FLAT_TRIM]]
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    source: [type: "string", description: "Inline source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_update_library",
-            description: """⚠️ CRITICAL: Modify existing library code. Read current source first, explain changes, get confirmation.
-
-Supply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Not compile-checked at save (see hub_create_library).
-
-Auto-backs up before modifying. Requires Write master + confirm + backup <24h.
-[[FLAT_TRIM]]
-A transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    libraryId: [type: "string", description: "The library ID to update"],
-                    source: [type: "string", description: "Inline source (stubs only)."],
-                    sourceFile: [type: "string", description: "File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."],
-                    importUrl: [type: "string", description: "URL the hub fetches directly (http/https)."],
-                    resave: [type: "boolean", description: "Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"],
-                    backup: [type: "boolean", description: "false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL's publisher keeps the history.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."],
-                ],
-                required: ["libraryId", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_get_app_config",
-            description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page.[[FLAT_TRIM]] Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.).[[/FLAT_TRIM]] Read-only.
-
-Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable RM wizard buttons hub_set_rule can drive. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
-
-Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."],
-                    pageName: [type: "string", description: "Optional sub-page name for multi-page apps; main page when omitted. Call hub_list_app_pages to discover available names."],
-                    includeSettings: [type: "boolean", description: "Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection.", default: false],
-                    summary: [type: "boolean", description: "Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored.", default: false]
-                ],
-                required: ["appId"]
-            ]
-        ],
-        [
-            name: "hub_list_app_pages",
-            description: """List page names for an installed app: the live primary page plus every sub-page it links to (any classic app), with a curated directory added for HPM.[[FLAT_TRIM]] A page linked only from a sub-page appears in hub_get_app_config(appId, pageName=<sub-page>).page.hrefs.[[/FLAT_TRIM]]
-
-Use before hub_get_app_config on multi-page apps to avoid guessing page names.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "string", description: "Installed-app ID (decimal). From hub_list_apps (scope='instances'), hub_list_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]
-                ],
-                required: ["appId"]
-            ]
-        ],
-        [
-            name: "hub_list_device_dependents",
-            description: """List all apps that reference a specific device[[FLAT_TRIM]] (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.)[[/FLAT_TRIM]] — critical before device cleanup, troubleshooting, or reassignment.[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: "string", description: "Device ID from hub_list_devices"],
-                    cursor: [type: "string", description: "Opt-in pagination cursor for the appsUsing list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
-                ],
-                required: ["deviceId"]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_apps"],["description","List apps on the hub \\u2014 running instances or installed app code/types (see scope).[[FLAT_TRIM]] scope=\'types\' returns both community and built-in app types, each tagged system/isBuiltIn and with its menu tab (Apps/Automations/Integrations). Use system=false/isBuiltIn=false to isolate community (user-installed) types, or menu to group types by the admin UI\'s Apps/Automations/Integrations tabs. menu is null for a type that declares none. See hub_get_tool_guide(section=\'builtin_app_tools_apps\').[[/FLAT_TRIM]] Per-app event history: hub_list_device_events with appId.[[FLAT_TRIM]] Each instance row carries appTypeId, the app type\'s code-class id shared with scope=\'types\' and hub_get_source(type=\'app\'), so an instance resolves to its code without matching on the type name. Requires the Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["scope",["m",[["type","string"],["enum",["l",["instances","types"]]],["description","What to list. \'instances\' (default) = running app instances with parent/child tree; \'types\' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared)."],["default","instances"]]]],["filter",["m",[["type","string"],["enum",["l",["all","builtin","user","disabled","parents","children"]]],["description","scope=\'instances\' only: category filter."]]]],["includeHidden",["m",[["type","boolean"],["description","scope=\'instances\' only: include hidden apps (typically Hubitat internal). Default: false"],["default",false]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_list_drivers"],["description","List device driver types on the hub.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["include",["m",[["type","string"],["enum",["l",["user","all"]]],["description","Scope: \'user\' (default) = user-installed drivers only; \'all\' = full catalog (system + virtual + user)."]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_list_libraries"],["description","List all Groovy libraries installed on the hub (id, name, namespace, version). Use this to discover a library\'s id, then read its source with hub_get_source(type=\'library\', id=N)[[FLAT_TRIM]]; the source is omitted here to keep the list lean[[/FLAT_TRIM]].[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_get_source"],["description","Get the Groovy source of an installed app, driver, or library. Supports chunked reading (offset/length); large sources are auto-saved to the File Manager for use with the matching update tool\'s sourceFile mode.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["app","driver","library"]]],["description","What kind of code to read."]]]],["id",["m",[["type","string"],["description","App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."]]]],["offset",["m",[["type","integer"],["description","Char offset to start reading from. Default: 0"]]]],["length",["m",[["type","integer"],["description","Max characters to return in this chunk. Default/max: 64000"]]]]]]],["required",["l",["type","id"]]]]]]]],["m",[["name","hub_create_app"],["description","\\u26a0\\ufe0f Install new app. Show code to user and get confirmation first.\\n\\nSupply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param).\\n\\n[[FLAT_TRIM]]\\nAfter the code installs, create a running instance with a SECOND call: hub_create_app(codeAppId: <newAppId>, confirm: true).\\n[[/FLAT_TRIM]]\\n\\nVerifies the install compiled -- returns success=false with the error if it didn\'t. Requires Write master + confirm + backup <24h. Returns the new app ID.\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["source",["m",[["type","string"],["description","Inline Groovy source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-app.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["codeAppId",["m",[["type","integer"],["description","Second-step mode: instantiate already-installed code (codeAppId from a prior call) and commit the install; not combinable with source/sourceFile/importUrl."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_create_driver"],["description","\\u26a0\\ufe0f Install new driver. Show code to user and get confirmation first.\\n\\nSupply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). For >1 driver use BULK mode (the installs param).\\n\\nVerifies the install compiled: returns success=false with the error if the hub accepted the request but the driver failed to compile. Requires Write master + confirm + backup <24h. Returns new driver ID(s).\\n[[FLAT_TRIM]]\\nMCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["source",["m",[["type","string"],["description","Inline Groovy source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["installs",["m",[["type","array"],["description","Bulk mode: one round-trip for many drivers. Each entry {source|sourceFile|importUrl}; cannot mix with single-driver fields; continue-on-error."],["items",["m",[["type","object"],["properties",["m",[["sourceFile",["m",[["type","string"],["description","File Manager filename (preferred)."]]]],["source",["m",[["type","string"],["description","Inline source (stubs only)."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly."]]]]]]]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_update_app"],["description","\\u26a0\\ufe0f CRITICAL: Modify existing app code. Read current source first, explain changes, get confirmation.\\n\\nSupply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Optionally enable OAuth via the oauth param (apps only), alone or alongside a source change.\\n\\nAuto-backs up before modifying. Requires Write master + confirm + backup <24h.[[FLAT_TRIM]]\\n\\nSelf-update guard: refuses to overwrite the MCP server\'s own app source or OAuth unless Developer Mode is on.[[/FLAT_TRIM]]\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","string"],["description","The app ID (Apps Code id) to update"]]]],["source",["m",[["type","string"],["description","Inline Groovy source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["resave",["m",[["type","boolean"],["description","Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"]]]],["backup",["m",[["type","boolean"],["description","false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL\'s publisher keeps the history.[[/FLAT_TRIM]]"]]]],["expectedVersion",["m",[["type","integer"],["description","OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"]]]],["triggerUpdated",["m",[["type","integer"],["description","OPTIONAL: running instance appId to refresh via updated() after saving code; re-initializes subscriptions, schedules and atomicState. Protected targets require Developer Mode. Submits mainPage\'s Done form, RE-SENDING EVERY input from live settings. If live settings cannot be read, refuses the submit to avoid clearing device selections. On refusal/failure, saved code remains deployed: success:true, partial:true, updatedFired:false and repairHints. Omit for the hub editor\'s normal Save behavior (no lifecycle refresh)."]]]],["oauth",["m",[["type","object"],["description","OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section=\'hub_admin_write_code\')."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["appId","confirm"]]]]]]]],["m",[["name","hub_update_driver"],["description","\\u26a0\\ufe0f CRITICAL: Modify existing driver code. Read current source first, explain changes, get confirmation.\\n\\nSupply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). For >1 driver use BULK mode (the updates param).\\n\\nAuto-backs up before modifying. Requires Write master + confirm + backup <24h.\\n[[FLAT_TRIM]]\\nMCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["driverId",["m",[["type","string"],["description","The driver ID to update (single-driver mode). Omit when using \'updates\' array."]]]],["source",["m",[["type","string"],["description","Inline Groovy source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["resave",["m",[["type","boolean"],["description","Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"]]]],["backup",["m",[["type","boolean"],["description","false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL\'s publisher keeps the history.[[/FLAT_TRIM]]"]]]],["expectedVersion",["m",[["type","integer"],["description","Optional optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] In bulk mode, put it inside each updates[] entry.[[/FLAT_TRIM]]"]]]],["updates",["m",[["type","array"],["description","Bulk mode: one round-trip for many drivers. Each entry {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}; cannot mix with single-driver fields; continue-on-error."],["items",["m",[["type","object"],["properties",["m",[["driverId",["m",[["type","string"],["description","The driver ID to update"]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (preferred)."]]]],["source",["m",[["type","string"],["description","Inline source (stubs only)."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly."]]]],["resave",["m",[["type","boolean"],["description","Re-save without changes."]]]],["backup",["m",[["type","boolean"]]]],["expectedVersion",["m",[["type","integer"],["description","OPTIONAL optimistic-lock guard for this item only."]]]]]]],["required",["l",["driverId"]]]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_delete_item"],["description","\\u26a0\\ufe0f DESTRUCTIVE: Permanently delete an app, driver, or library. Auto-backs up the source before deletion.\\n\\n[[FLAT_TRIM]]\\nPre-flight by type: apps -- remove app instances via the Hubitat UI first; drivers -- switch any devices to a different driver first; libraries -- ensure no apps/drivers still #include it (else compile errors).\\n[[/FLAT_TRIM]]\\n\\nTell the user the item name/ID, warn it\'s permanent, get confirmation. Requires Write master + confirm + backup <24h.\\n[[FLAT_TRIM]]\\nFor type=driver, MCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Other item types and older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["app","driver","library"]]],["description","What to delete."]]]],["item_id",["m",[["type","string"],["description","The app/driver/library ID to delete."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["type","item_id","confirm"]]]]]]]],["m",[["name","hub_create_library"],["description","\\u26a0\\ufe0f Install new Groovy library code. Libraries are #include\'d by drivers/apps. Show code to user and get confirmation first.\\n\\nProvide exactly one of source / sourceFile / importUrl (see each param).\\n\\nSource must include a library() block with name/namespace/author/description (all required). The hub does NOT compile-check libraries at install -- syntax errors surface only when an app/driver #includes it. Requires Write master + confirm + backup <24h. Returns new libraryId.\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["source",["m",[["type","string"],["description","Inline source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_update_library"],["description","\\u26a0\\ufe0f CRITICAL: Modify existing library code. Read current source first, explain changes, get confirmation.\\n\\nSupply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Not compile-checked at save (see hub_create_library).\\n\\nAuto-backs up before modifying. Requires Write master + confirm + backup <24h.\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["libraryId",["m",[["type","string"],["description","The library ID to update"]]]],["source",["m",[["type","string"],["description","Inline source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["resave",["m",[["type","boolean"],["description","Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"]]]],["backup",["m",[["type","boolean"],["description","false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL\'s publisher keeps the history.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["libraryId","confirm"]]]]]]]],["m",[["name","hub_get_app_config"],["description","Read an installed app\'s configuration \\u2014 the structured data the Hubitat Web UI shows on an app\'s settings page.[[FLAT_TRIM]] Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.).[[/FLAT_TRIM]] Read-only.\\n\\nReturns the app\'s identity plus its current config page (sections, inputs, current values) and `embeddedActions` \\u2014 clickable RM wizard buttons hub_set_rule can drive. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]\\n\\nGet appId from hub_list_apps (scope=\'instances\') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","string"],["description","Installed-app ID (decimal). From hub_list_apps (scope=\'instances\'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."]]]],["pageName",["m",[["type","string"],["description","Optional sub-page name for multi-page apps; main page when omitted. Call hub_list_app_pages to discover available names."]]]],["includeSettings",["m",[["type","boolean"],["description","Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection."],["default",false]]]],["summary",["m",[["type","boolean"],["description","Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored."],["default",false]]]]]]],["required",["l",["appId"]]]]]]]],["m",[["name","hub_list_app_pages"],["description","List page names for an installed app: the live primary page plus every sub-page it links to (any classic app), with a curated directory added for HPM.[[FLAT_TRIM]] A page linked only from a sub-page appears in hub_get_app_config(appId, pageName=<sub-page>).page.hrefs.[[/FLAT_TRIM]]\\n\\nUse before hub_get_app_config on multi-page apps to avoid guessing page names.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","string"],["description","Installed-app ID (decimal). From hub_list_apps (scope=\'instances\'), hub_list_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]]]]]]],["required",["l",["appId"]]]]]]]],["m",[["name","hub_list_device_dependents"],["description","List all apps that reference a specific device[[FLAT_TRIM]] (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.)[[/FLAT_TRIM]] \\u2014 critical before device cleanup, troubleshooting, or reassignment.[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["deviceId",["m",[["type","string"],["description","Device ID from hub_list_devices"]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor for the appsUsing list. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 100)."]]]]]]],["required",["l",["deviceId"]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partCodeManagement() {
-    return [
-        "hub_list_apps", "hub_list_drivers", "hub_list_libraries", "hub_get_source",
-        "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_apps","hub_list_drivers","hub_list_libraries","hub_get_source","hub_list_device_dependents","hub_get_app_config","hub_list_app_pages"]]'])
 }
 def _idempotentWriteToolNames_partCodeManagement() {
-    return [
-        "hub_update_app", "hub_update_driver", "hub_update_library", "hub_delete_item"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_app","hub_update_driver","hub_update_library","hub_delete_item"]]'])
 }
 def _openWorldToolNames_partCodeManagement() {
-    return [
-        "hub_create_app", "hub_create_driver", "hub_create_library", "hub_update_app", "hub_update_driver", "hub_update_library"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_create_app","hub_create_driver","hub_create_library","hub_update_app","hub_update_driver","hub_update_library"]]'])
 }
 def _toolDisplayMeta_partCodeManagement() {
-    return [
-        hub_list_apps: [title: "List Apps", summary: "List installed app types or enumerate app instances."],
-        hub_list_drivers: [title: "List Drivers", summary: "List all installed drivers."],
-        hub_list_libraries: [title: "List Libraries", summary: "List installed Groovy libraries."],
-        hub_get_source: [title: "Get Source Code", summary: "Read Groovy source for an app, driver, or library."],
-        hub_create_app: [title: "Install App", summary: "Install a new app from source, a File Manager file, or a URL, or instantiate installed app code."],
-        hub_create_driver: [title: "Install Driver", summary: "Install one or more drivers from source, File Manager files, or a URL."],
-        hub_update_app: [title: "Update App Code", summary: "Modify an existing app's source code, or enable/configure its OAuth (client id/secret)."],
-        hub_update_driver: [title: "Update Driver Code", summary: "Modify an existing driver's source code."],
-        hub_create_library: [title: "Install Library", summary: "Install a new Groovy library."],
-        hub_update_library: [title: "Update Library Code", summary: "Modify an existing library's source code."],
-        hub_delete_item: [title: "Delete Code Item", summary: "Permanently delete an app, driver, or library (auto-backs up first)."],
-        hub_list_device_dependents: [title: "List Device Dependents", summary: "Find all apps that reference a device."],
-        hub_get_app_config: [title: "Get App Configuration", summary: "Read an installed app's configuration page."],
-        hub_list_app_pages: [title: "List App Pages", summary: "List known page names for a multi-page app."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_apps",["m",[["title","List Apps"],["summary","List installed app types or enumerate app instances."]]]],["hub_list_drivers",["m",[["title","List Drivers"],["summary","List all installed drivers."]]]],["hub_list_libraries",["m",[["title","List Libraries"],["summary","List installed Groovy libraries."]]]],["hub_get_source",["m",[["title","Get Source Code"],["summary","Read Groovy source for an app, driver, or library."]]]],["hub_create_app",["m",[["title","Install App"],["summary","Install a new app from source, a File Manager file, or a URL, or instantiate installed app code."]]]],["hub_create_driver",["m",[["title","Install Driver"],["summary","Install one or more drivers from source, File Manager files, or a URL."]]]],["hub_update_app",["m",[["title","Update App Code"],["summary","Modify an existing app\'s source code, or enable/configure its OAuth (client id/secret)."]]]],["hub_update_driver",["m",[["title","Update Driver Code"],["summary","Modify an existing driver\'s source code."]]]],["hub_create_library",["m",[["title","Install Library"],["summary","Install a new Groovy library."]]]],["hub_update_library",["m",[["title","Update Library Code"],["summary","Modify an existing library\'s source code."]]]],["hub_delete_item",["m",[["title","Delete Code Item"],["summary","Permanently delete an app, driver, or library (auto-backs up first)."]]]],["hub_list_device_dependents",["m",[["title","List Device Dependents"],["summary","Find all apps that reference a device."]]]],["hub_get_app_config",["m",[["title","Get App Configuration"],["summary","Read an installed app\'s configuration page."]]]],["hub_list_app_pages",["m",[["title","List App Pages"],["summary","List known page names for a multi-page app."]]]]]]'])
 }
 private Map _fetchAppsListTree(String caller) {
     def responseText
@@ -20082,32 +18814,13 @@ def toolListHpmPackagesWithDrift(args) {
     return listResult
 }
 def _getAllToolDefinitions_partHpm() {
-    return [
-        [
-            name: "hub_list_hpm_packages",
-            description: """List all packages tracked by Hubitat Package Manager (HPM): name, version, beta flag, author, and component inventory (apps/drivers/files) as HPM recorded at install/update time. Requires Read master; HPM must be installed.[[FLAT_TRIM]]
-Set includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan signals). See `hub_get_tool_guide(section='builtin_app_tools_apps')` for the full drift-signal taxonomy, response-field reference, and caveats.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    hpmAppId: [type: "string", description: "HPM's installed-app ID (decimal). Auto-discovered if omitted.[[FLAT_TRIM]] Scans installed apps for type='Hubitat Package Manager'; pass explicitly to skip that discovery call.[[/FLAT_TRIM]]"],
-                    includeDrift: [type: "boolean", description: "Also attach a drift cross-reference under a `drift` key.[[FLAT_TRIM]] Signal types: missing-required/orphan-app/orphan-driver.[[/FLAT_TRIM]] Default false; adds 1-2 hub calls.", default: false],
-                    packageFilter: [type: "string", description: "Drift mode only (includeDrift=true): case-insensitive substring filter on packageName."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor for the packages list. Omit for unbounded; pass \"\" for the first page, iterate nextCursor.[[FLAT_TRIM]] Page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large.[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_hpm_packages"],["description","List all packages tracked by Hubitat Package Manager (HPM): name, version, beta flag, author, and component inventory (apps/drivers/files) as HPM recorded at install/update time. Requires Read master; HPM must be installed.[[FLAT_TRIM]]\\nSet includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan signals). See `hub_get_tool_guide(section=\'builtin_app_tools_apps\')` for the full drift-signal taxonomy, response-field reference, and caveats.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["hpmAppId",["m",[["type","string"],["description","HPM\'s installed-app ID (decimal). Auto-discovered if omitted.[[FLAT_TRIM]] Scans installed apps for type=\'Hubitat Package Manager\'; pass explicitly to skip that discovery call.[[/FLAT_TRIM]]"]]]],["includeDrift",["m",[["type","boolean"],["description","Also attach a drift cross-reference under a `drift` key.[[FLAT_TRIM]] Signal types: missing-required/orphan-app/orphan-driver.[[/FLAT_TRIM]] Default false; adds 1-2 hub calls."],["default",false]]]],["packageFilter",["m",[["type","string"],["description","Drift mode only (includeDrift=true): case-insensitive substring filter on packageName."]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor for the packages list. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor.[[FLAT_TRIM]] Page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large.[[/FLAT_TRIM]]"]]]]]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partHpm() {
-    return [
-        "hub_list_hpm_packages"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_hpm_packages"]]'])
 }
 def _toolDisplayMeta_partHpm() {
-    return [
-        hub_list_hpm_packages: [title: "List HPM Packages", summary: "List packages tracked by Hubitat Package Manager, optionally with drift detection."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_hpm_packages",["m",[["title","List HPM Packages"],["summary","List packages tracked by Hubitat Package Manager, optionally with drift detection."]]]]]]'])
 }
 def toolUpdateMcpSettings(args) {
     if (!settings.enableDeveloperMode) {
@@ -20762,62 +19475,19 @@ private Map _planAppArtifact(String name, String location, String artifactUrl, S
     ]]
 }
 def _getAllToolDefinitions_partSelfAdmin() {
-    return [
-        [
-            name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit.[[FLAT_TRIM]] Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write_system'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
-                ],
-                required: ["settings", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_update_package",
-            description: """Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, anchored to packageManifest.json AT `ref` so an UNMERGED PR installs.[[FLAT_TRIM]] (Plain HPM Repair only reads the PUBLISHED manifest, so it can't reach an unmerged PR's artifacts.)[[/FLAT_TRIM]]
-
-Gated on enableDeveloperMode[[FLAT_TRIM]] (the tool is hidden from tools/list when Developer Mode is off)[[/FLAT_TRIM]] + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed)[[FLAT_TRIM]] and see exactly which bundles and apps would deploy[[/FLAT_TRIM]].
-
-A real deploy is accepted quickly with `status: "in_progress"` and runs in the background; do NOT submit it again while one is in flight.[[FLAT_TRIM]] The background run uses Hubitat's own scheduler, so neither the cloud relay nor the MCP client's request timeout has to stay open for the minutes-long repair; a concurrent second deploy is refused. Poll hub_get_info.lastSelfDeploy until its `requestId` matches the acceptance response; that bound record's `success`/`error` fields carry the outcome. No client extension or custom token is required.[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ref: [type: "string", description: "Branch, tag, or commit SHA to deploy (e.g. 'main' or a PR head SHA)."],
-                    dryRun: [type: "boolean", description: "OPTIONAL. When true, report the deploy plan with NO writes (skips the confirm/backup gate). Default false."],
-                    baseUrl: [type: "string", description: "OPTIONAL raw-source base override (no trailing slash); defaults to the canonical repo.[[FLAT_TRIM]] Per-call URLs are built as <baseUrl>/<ref>/<path>. Use for forks / CI branches on a different remote.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."],
-                    args: [type: "object"]
-                ],
-                required: ["ref"]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_update_mcp_settings"],["description","Update one or more of the MCP rule app\'s own settings (toggles, log levels, tuning, the device-access scope) in place \\u2014 self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit.[[FLAT_TRIM]] Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["settings",["m",[["type","object"],["description","Map of setting key \\u2192 new value (e.g. {\\"mcpLogLevel\\":\\"warn\\",\\"enableCustomRuleEngine\\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch \\u2014 when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section=\'hub_admin_write_system\'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] \\u2014 see hub_get_tool_guide(section=\'hub_admin_write_system\') for per-mode semantics."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to confirm the operation"]]]]]]],["required",["l",["settings","confirm"]]]]]]]],["m",[["name","hub_update_package"],["description","Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, anchored to packageManifest.json AT `ref` so an UNMERGED PR installs.[[FLAT_TRIM]] (Plain HPM Repair only reads the PUBLISHED manifest, so it can\'t reach an unmerged PR\'s artifacts.)[[/FLAT_TRIM]]\\n\\nGated on enableDeveloperMode[[FLAT_TRIM]] (the tool is hidden from tools/list when Developer Mode is off)[[/FLAT_TRIM]] + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed)[[FLAT_TRIM]] and see exactly which bundles and apps would deploy[[/FLAT_TRIM]].\\n\\nA real deploy is accepted quickly with `status: \\"in_progress\\"` and runs in the background; do NOT submit it again while one is in flight.[[FLAT_TRIM]] The background run uses Hubitat\'s own scheduler, so neither the cloud relay nor the MCP client\'s request timeout has to stay open for the minutes-long repair; a concurrent second deploy is refused. Poll hub_get_info.lastSelfDeploy until its `requestId` matches the acceptance response; that bound record\'s `success`/`error` fields carry the outcome. No client extension or custom token is required.[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["ref",["m",[["type","string"],["description","Branch, tag, or commit SHA to deploy (e.g. \'main\' or a PR head SHA)."]]]],["dryRun",["m",[["type","boolean"],["description","OPTIONAL. When true, report the deploy plan with NO writes (skips the confirm/backup gate). Default false."]]]],["baseUrl",["m",[["type","string"],["description","OPTIONAL raw-source base override (no trailing slash); defaults to the canonical repo.[[FLAT_TRIM]] Per-call URLs are built as <baseUrl>/<ref>/<path>. Use for forks / CI branches on a different remote.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."]]]],["args",["m",[["type","object"]]]]]]],["required",["l",["ref"]]]]]]]]]]'])
 }
 def _idempotentWriteToolNames_partSelfAdmin() {
-    return [
-        "hub_update_mcp_settings",
-        "hub_update_package"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_mcp_settings","hub_update_package"]]'])
 }
 def _openWorldToolNames_partSelfAdmin() {
-    return [
-        "hub_update_package"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_package"]]'])
 }
 def _developerModeOnlyToolNames_partSelfAdmin() {
-    return [
-        "hub_update_package"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_package"]]'])
 }
 def _toolDisplayMeta_partSelfAdmin() {
-    return [
-        hub_update_mcp_settings: [title: "Update MCP Settings", summary: "Update the MCP app's own settings + device-access scope (Developer Mode)."],
-        hub_update_package: [title: "Deploy MCP Package", summary: "Full repair-install of the MCP package at a git ref (Developer Mode)."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_update_mcp_settings",["m",[["title","Update MCP Settings"],["summary","Update the MCP app\'s own settings + device-access scope (Developer Mode)."]]]],["hub_update_package",["m",[["title","Deploy MCP Package"],["summary","Full repair-install of the MCP package at a git ref (Developer Mode)."]]]]]]'])
 }
 private Map _appClonerInit(Integer sourceAppId) {
     def resp
@@ -21885,63 +20555,13 @@ private boolean _rmDeviceGone(String id, Map cache) {
     return gone
 }
 def _getAllToolDefinitions_partAppCloner() {
-    return [
-        [
-            name: "hub_clone_native_app",
-            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner, then surgically edit fields via hub_set_rule (RM rules) or hub_set_native_app (other classic apps).[[FLAT_TRIM]] A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that has the shape you want. Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure). The clone completes in tens of seconds for typical rules.[[/FLAT_TRIM]] Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to clone. (alias: appId) Either sourceAppId or appId is required."],
-                    appId: [type: "integer", description: "Alias for sourceAppId."],
-                    newName: [type: "string", description: "Label for the new cloned app.[[FLAT_TRIM]] If omitted, the cloner default ('<source-label> clone') is kept.[[/FLAT_TRIM]]"],
-                    stageDisabled: [type: "boolean", description: "true = disable the new app AND every DESCENDANT under it right after the clone. Staged-migration safety: a clone of an ACTIVE rule lands ACTIVE, and a cloned Button Controller's child Button Rules react to live button events. Re-enable via hub_set_app_disabled(disabled=false)."],
-                    confirm: [type: "boolean", description: "Must be true."]
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_export_native_app",
-            description: """Export any classic native automation app to its canonical JSON shape via Hubitat's first-party appCloner — a self-contained document that round-trips cleanly through hub_import_native_app.[[FLAT_TRIM]] The exported JSON is the same format Hubitat's UI 'Export' button produces. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer.[[/FLAT_TRIM]] Pass saveAs to also write the JSON to the hub's File Manager[[FLAT_TRIM]] (e.g. for HPM-style distribution)[[/FLAT_TRIM]]. Requires the Write master (no confirm/backup required).[[FLAT_TRIM]] Export instantiates a cloner app and persists, so it counts as a write.[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    sourceAppId: [type: "integer", description: "Installed-app ID of the rule/app to export. (alias: appId)"],
-                    appId: [type: "integer", description: "Alias for sourceAppId."],
-                    saveAs: [type: "string", description: "Optional File Manager filename (.json or .txt). When provided, the export is also written to /local/<saveAs>."],
-                ]
-            ]
-        ],
-        [
-            name: "hub_import_native_app",
-            description: """Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner.[[FLAT_TRIM]] Pair with hub_export_native_app for round-trip edits or backup/restore workflows.[[/FLAT_TRIM]] Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by hub_export_native_app). Pass parentHintAppId — any existing rule id under the target parent the imported rule should land under[[FLAT_TRIM]] (e.g. another RM rule for an RM import); the cloner needs it to seed itself[[/FLAT_TRIM]]. Requires the Write master + confirm=true (+ a recent backup).""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    jsonContent: [type: "string", description: "The exported JSON content. Either jsonContent or fromFile is required."],
-                    fromFile: [type: "string", description: "File Manager filename to read the JSON from."],
-                    parentHintAppId: [type: "integer", description: "Any existing rule's id under the target parent app.[[FLAT_TRIM]] Used purely to seed the cloner instance — has no semantic effect on the imported rule beyond placing it under the same parent.[[/FLAT_TRIM]]"],
-                    newName: [type: "string", description: "Label for the imported app.[[FLAT_TRIM]] If omitted, the cloner default ('<original-label> import') is kept.[[/FLAT_TRIM]]"],
-                    stageDisabled: [type: "boolean", description: "true = disable the new app AND every DESCENDANT under it right after the import (staged-migration safety: an import lands ACTIVE). Re-enable via hub_set_app_disabled(disabled=false)."],
-                    confirm: [type: "boolean", description: "Must be true."]
-                ],
-                required: ["parentHintAppId", "confirm"]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_clone_native_app"],["description","Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat\'s first-party appCloner, then surgically edit fields via hub_set_rule (RM rules) or hub_set_native_app (other classic apps).[[FLAT_TRIM]] A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that has the shape you want. Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure). The clone completes in tens of seconds for typical rules.[[/FLAT_TRIM]] Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup)."],["inputSchema",["m",[["type","object"],["properties",["m",[["sourceAppId",["m",[["type","integer"],["description","Installed-app ID of the rule/app to clone. (alias: appId) Either sourceAppId or appId is required."]]]],["appId",["m",[["type","integer"],["description","Alias for sourceAppId."]]]],["newName",["m",[["type","string"],["description","Label for the new cloned app.[[FLAT_TRIM]] If omitted, the cloner default (\'<source-label> clone\') is kept.[[/FLAT_TRIM]]"]]]],["stageDisabled",["m",[["type","boolean"],["description","true = disable the new app AND every DESCENDANT under it right after the clone. Staged-migration safety: a clone of an ACTIVE rule lands ACTIVE, and a cloned Button Controller\'s child Button Rules react to live button events. Re-enable via hub_set_app_disabled(disabled=false)."]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_export_native_app"],["description","Export any classic native automation app to its canonical JSON shape via Hubitat\'s first-party appCloner \\u2014 a self-contained document that round-trips cleanly through hub_import_native_app.[[FLAT_TRIM]] The exported JSON is the same format Hubitat\'s UI \'Export\' button produces. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer.[[/FLAT_TRIM]] Pass saveAs to also write the JSON to the hub\'s File Manager[[FLAT_TRIM]] (e.g. for HPM-style distribution)[[/FLAT_TRIM]]. Requires the Write master (no confirm/backup required).[[FLAT_TRIM]] Export instantiates a cloner app and persists, so it counts as a write.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["sourceAppId",["m",[["type","integer"],["description","Installed-app ID of the rule/app to export. (alias: appId)"]]]],["appId",["m",[["type","integer"],["description","Alias for sourceAppId."]]]],["saveAs",["m",[["type","string"],["description","Optional File Manager filename (.json or .txt). When provided, the export is also written to /local/<saveAs>."]]]]]]]]]]]],["m",[["name","hub_import_native_app"],["description","Create a new rule/app from a previously-exported JSON via Hubitat\'s first-party appCloner.[[FLAT_TRIM]] Pair with hub_export_native_app for round-trip edits or backup/restore workflows.[[/FLAT_TRIM]] Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by hub_export_native_app). Pass parentHintAppId \\u2014 any existing rule id under the target parent the imported rule should land under[[FLAT_TRIM]] (e.g. another RM rule for an RM import); the cloner needs it to seed itself[[/FLAT_TRIM]]. Requires the Write master + confirm=true (+ a recent backup)."],["inputSchema",["m",[["type","object"],["properties",["m",[["jsonContent",["m",[["type","string"],["description","The exported JSON content. Either jsonContent or fromFile is required."]]]],["fromFile",["m",[["type","string"],["description","File Manager filename to read the JSON from."]]]],["parentHintAppId",["m",[["type","integer"],["description","Any existing rule\'s id under the target parent app.[[FLAT_TRIM]] Used purely to seed the cloner instance \\u2014 has no semantic effect on the imported rule beyond placing it under the same parent.[[/FLAT_TRIM]]"]]]],["newName",["m",[["type","string"],["description","Label for the imported app.[[FLAT_TRIM]] If omitted, the cloner default (\'<original-label> import\') is kept.[[/FLAT_TRIM]]"]]]],["stageDisabled",["m",[["type","boolean"],["description","true = disable the new app AND every DESCENDANT under it right after the import (staged-migration safety: an import lands ACTIVE). Re-enable via hub_set_app_disabled(disabled=false)."]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["parentHintAppId","confirm"]]]]]]]]]]'])
 }
 def _idempotentWriteToolNames_partAppCloner() {
-    return [
-        "hub_export_native_app"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_export_native_app"]]'])
 }
 def _toolDisplayMeta_partAppCloner() {
-    return [
-        hub_clone_native_app: [title: "Clone Native App", summary: "Clone an existing classic app."],
-        hub_export_native_app: [title: "Export Native App", summary: "Export a classic app to JSON, optionally saving it to the File Manager."],
-        hub_import_native_app: [title: "Import Native App", summary: "Import previously exported app JSON as a new instance."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_clone_native_app",["m",[["title","Clone Native App"],["summary","Clone an existing classic app."]]]],["hub_export_native_app",["m",[["title","Export Native App"],["summary","Export a classic app to JSON, optionally saving it to the File Manager."]]]],["hub_import_native_app",["m",[["title","Import Native App"],["summary","Import previously exported app JSON as a new instance."]]]]]]'])
 }
 private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
     Map args = _mrtrLeafArguments(rec.outerTool?.toString(), rec.leafTool?.toString(), outerArgs) as Map
@@ -22466,269 +21086,16 @@ private Map _withGuidePage(Map result, content, cursor) {
     return result
 }
 def _getAllToolDefinitions_partDiscovery() {
-    return [
-        [
-            name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (paged via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["device_authorization", "best_practice_reference", "tool_access", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "set_rule_reference", "set_rule_reference_overview", "set_rule_reference_triggers", "set_rule_reference_actions", "set_rule_reference_conditions", "set_rule_reference_walkstep", "set_rule_reference_responses", "set_rule_reference_guards", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
-                    cursor: [type: "string", description: "Continue a paged payload: pass the prior call's nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."],
-                    platform_api_search: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: search the hub's Groovy API docs, e.g. 'eventsBetween'.[[/FLAT_TRIM]]"],
-                    platform_api_page: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_search_tools",
-            description: "Search all MCP tools by natural language query (BM25 ranking). Searches tool names, friendly titles, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    query: [type: "string", description: "Natural language search query (e.g. 'zigbee radio', 'delete app', 'memory leak', 'room management')"],
-                    maxResults: [type: "integer", description: "Max results to return. Default: 5.", default: 5]
-                ],
-                required: ["query"]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_tool_guide"],["description","Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool\'s section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent\'s response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (paged via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub\'s own Groovy API documentation instead.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["section",["m",[["type","string"],["description","One section key from the enum. Omit to get the key list plus the first page of the full guide."],["enum",["l",["device_authorization","best_practice_reference","tool_access","hub_admin_write","hub_admin_write_overview","hub_admin_write_destructive","hub_admin_write_radios","hub_admin_write_devices","hub_admin_write_code","hub_admin_write_system","virtual_devices","update_device","rules","backup","file_manager","performance","performance_overview","performance_devices","performance_diagnostics","builtin_app_tools","builtin_app_tools_overview","builtin_app_tools_apps","builtin_app_tools_rules","builtin_app_tools_crud","set_rule_reference","set_rule_reference_overview","set_rule_reference_triggers","set_rule_reference_actions","set_rule_reference_conditions","set_rule_reference_walkstep","set_rule_reference_responses","set_rule_reference_guards","set_rule_create_reference","visual_rule_reference","variables","dashboards","bundles","rooms","slow_ops"]]]]]],["cursor",["m",[["type","string"],["description","Continue a paged payload: pass the prior call\'s nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."]]]],["platform_api_search",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: search the hub\'s Groovy API docs, e.g. \'eventsBetween\'.[[/FLAT_TRIM]]"]]]],["platform_api_page",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_search_tools"],["description","Search all MCP tools by natural language query (BM25 ranking). Searches tool names, friendly titles, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need."],["inputSchema",["m",[["type","object"],["properties",["m",[["query",["m",[["type","string"],["description","Natural language search query (e.g. \'zigbee radio\', \'delete app\', \'memory leak\', \'room management\')"]]]],["maxResults",["m",[["type","integer"],["description","Max results to return. Default: 5."],["default",5]]]]]]],["required",["l",["query"]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partDiscovery() {
-    return [
-        "hub_get_tool_guide", "hub_search_tools"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_get_tool_guide","hub_search_tools"]]'])
 }
 def _toolDisplayMeta_partDiscovery() {
-    return [
-        hub_get_tool_guide: [title: "Get Tool Guide", summary: "Deep-reference guide for MCP tool topics, plus search of the hub's own Groovy API documentation."],
-        hub_search_tools: [title: "Search Tools", summary: "Search all MCP tools by natural-language query."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_tool_guide",["m",[["title","Get Tool Guide"],["summary","Deep-reference guide for MCP tool topics, plus search of the hub\'s own Groovy API documentation."]]]],["hub_search_tools",["m",[["title","Search Tools"],["summary","Search all MCP tools by natural-language query."]]]]]]'])
 }
 def _getAllToolDefinitions_partNativeRM() {
-    return [
-        [
-            name: "hub_list_rules",
-            description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id) with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub's list source decorates the label (many firmwares don't) — the authoritative stopped check is hub_get_rule_health's `stopped` field. For ONE rule's state, call hub_get_rule_health(appId) instead of listing every rule — it returns that rule's paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_call_rule",
-            description: "Trigger one or more Rule Machine rules. Not destructive (invokes existing user-configured automation).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for action semantics.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"],
-                    action: [type: "string", enum: ["rule", "actions", "stop", "start"], description: "Which RM action to invoke. Default: rule."],
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "hub_set_rule_paused",
-            description: "Pause or resume one or more Rule Machine rules in one call (paused rules don't fire on triggers). paused=true pauses, paused=false resumes (idempotent on the hub). Pass an array of ruleIds to pause/resume a whole set at once — one RMUtils dispatch, e.g. a staged-migration cutover.[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to pause/resume together"],
-                    paused: [type: "boolean", description: "true = pause the rule(s); false = resume."]
-                ],
-                required: ["ruleId", "paused"]
-            ]
-        ],
-        [
-            name: "hub_set_rule_private_boolean",
-            description: "Set the private boolean of one or more Rule Machine rules to true or false (strict: accepts Boolean or lowercase string 'true'/'false' only).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: ["integer", "array"], items: [type: "integer"], description: "Rule ID from hub_list_rules, or an array of rule IDs to set together"],
-                    value: [type: "boolean", description: "Target value for the rule's Private Boolean."]
-                ],
-                required: ["ruleId", "value"]
-            ]
-        ],
-        [
-            name: "hub_set_native_app",
-            description: """Create OR edit a classic native app (Room Lighting, Button Controller, Notifier, Group, Scene, Visual Rule, etc.): omit appId to CREATE (appType + name), provide appId to EDIT.[[FLAT_TRIM]] One generic upsert for any classic SmartApp instance via settings/button.[[/FLAT_TRIM]] For Rule Machine RULES use hub_set_rule[[FLAT_TRIM]] (in the hub_manage_rule_machine gateway)[[/FLAT_TRIM]] instead.[[FLAT_TRIM]] Its one-call structured shortcuts are the preferred RM path, NOT this tool's raw settings/walkStep.[[/FLAT_TRIM]]
-
-Requires the Write master + confirm=true + recent hub backup.[[FLAT_TRIM]]
-
-On MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and eventually return one final result; no custom token or client extension is needed. Older clients retain the existing status:'in_progress' remainder envelope. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "Installed-app id of an existing classic app (from hub_list_apps with scope='instances'). OMIT to CREATE a new app of `appType` (then `name` is required); PROVIDE to EDIT an existing app's settings/button."],
-                    appType: [type: "string", enum: ["rule_machine", "button_controller", "groups_scenes", "notifier", "basic_rule", "room_lighting"], description: "Native app class to CREATE (appId omitted). Default: rule_machine. Visual Rules: use hub_set_visual_rule (not this enum).[[FLAT_TRIM]] Other classic apps are edited by appId and can usually be created through their parent app's own page (e.g. the Room Lighting parent's newScene input creates Room Lights from a group or scene) -- see hub_get_tool_guide(section='builtin_app_tools_crud').[[/FLAT_TRIM]]"],
-                    name: [type: "string", description: "Label for the new app. Required on CREATE (when appId is omitted); ignored when appId is provided."],
-                    settings: [type: "object", description: "Map {inputName: value} to write to the app's current config page: scalars for bool/enum/text/number inputs; for device inputs (capability.* or driver-specific device.*) a List of device IDs or the {id: label} map hub_get_app_config returns. Discover input names via hub_get_app_config; inputs on a sub-page need pageName or walkStep."],
-                    button: [type: "string", description: "Page-transition button name to click (discover via hub_get_app_config)."],
-                    pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
-                    stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
-                    buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    walkStep: [type: "object", description: "Multi-page classic-app walker — EDIT-only (requires appId; rejected on create). Use it for inputs on a sub-page (hub_list_app_pages lists them), inputs that appear only after an earlier choice, and anything settings/button cannot represent.[[FLAT_TRIM]] For RM rules prefer hub_set_rule's structured shortcuts, which do the same walk in one call. Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_set_rule",
-            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. In trigger/action/condition specs use `capability` NOT `type`. RM-only — for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; each edit ensures a File Manager baseline exists (same-rule baselines are reused for one hour by default; backup.backupKey restores it through hub_manage_backup).
-
-ALWAYS prefer the one-call shortcuts (addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, remove/modify/move/clear, addLocalVariable/removeLocalVariable, patches); walkStep and raw settings+button are LAST RESORTS.[[FLAT_TRIM]] Each shortcut orchestrates the full RM 5.1 wizard in one call; walkStep (one wizard page per call) covers capabilities no shortcut can represent.
-
-Partial-success (every shortcut): success:true can pair with partial:true — inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true, first run the close-editor click restoreHint names (cancelCapab for a condition sub-wizard, actionCancel for the action editor). On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).[[/FLAT_TRIM]]
-
-Deep reference + worked examples: guide:true inline, or hub_get_tool_guide(section='set_rule_reference').[[FLAT_TRIM]] Full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
-
-On MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and return one final result. Older clients retain the status:'in_progress' remainder envelope. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "RM rule ID (the rule's installed-app id). OMIT to CREATE a new rule (then `name` is required); PROVIDE to EDIT an existing rule."],
-                    name: [type: "string", description: "Label for the new rule (shown in Hubitat's Rule Machine app list). Required on CREATE (when appId is omitted); ignored when appId is provided. To RENAME an existing rule, do not pass name -- write the new label as a setting: settings:{origLabel:'New Name'} (a mainPage settings write auto-commits via updateRule, which copies origLabel to the display label; passing button:'updateRule' too is harmless but redundant)."],
-                    settings: [type: "object", description: "Map {inputName: value}: scalars for bool/enum/text/number inputs, list of device IDs for multi-device inputs, capability.* or driver-specific device.* (the multiple=true 3-field contract is emitted and verified automatically — you don't manage it)."],
-                    button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule for RM; discover others via hub_get_app_config)."],
-                    pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
-                    stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
-                    addTrigger: [
-                        type: "object",
-                        description: """Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'switch'}` is rejected); returns triggerIndex. Capability families (use these display names): Device-state — Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source; Numeric — Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints; Button; Custom Attribute; Certain Time (and optional date) / Sunrise / Sunset (the picker value is the full 'Certain Time (and optional date)' string); Mode; Periodic Schedule. Modifiers: andStays, allOfThese. Optional per spec: conditional (sets the conditional-trigger gate — pair with `condition` to bind it in one call), condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?, rawSettings?} (a NARROWER set than addRequiredExpression), rawSettings {field:value} with @N = the auto-assigned index (e.g. {'xVar@N':'myVar'}). addTriggers[] = bulk, updateRule once at the end. Per-field specs and the periodic shape: pass {discover: true}, guide:true, or hub_get_tool_guide(section='set_rule_reference_triggers'). Extended condition shapes: section='set_rule_reference_conditions'. Cross-cutting fail-loud steers: section='set_rule_reference_guards'."""
-                    ],
-                    addTriggers: [
-                        type: "array",
-                        description: "Bulk-add triggers (each item the same shape as addTrigger); updateRule fires ONCE at the end. The first failed or partial item stops the batch: later items are notAttempted and updateRule is not fired. Pairs with addActions to build a whole rule in one call.",
-                        items: [type: "object"]
-                    ],
-                    addRequiredExpression: [
-                        type: "object",
-                        description: """Add an RM 5.1 Required Expression (the pre-trigger gate that conditions whether the rule may fire); returns conditionIndices. Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}, ...], operator:'AND'|'OR'|'XOR' OR operators:[...] (one per gap; RM walks left to right and stops early, so group mixed AND/OR with subExpression)}. comparator is REQUIRED with attribute (Custom Attribute) and with variable+value (Variable); ASCII !=/<>/== auto-map to RM glyphs, and a free-valued (String) variable/attribute offers `*contains*` (substring match; negate with not:true). STPage capability list and extended shapes (Mode, Between two times, Variable incl. compareToVariable, device-relative compareToDevice, nested subExpression): guide:true or hub_get_tool_guide(section='set_rule_reference_conditions'); cross-cutting fail-loud steers: section='set_rule_reference_guards'."""
-                    ],
-                    replaceRequiredExpression: [
-                        type: "object",
-                        description: """Replace the rule's existing Required Expression in place (same appId). Same spec as addRequiredExpression ({conditions:[...], operator|operators}, incl. `*contains*` substring match on a free-valued String variable/attribute -- negate with not:true); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing). A failed build leaves the original in place (originalPreserved:true); a failure after the switch rolls back to the original (requiredExpressionRestored).[[FLAT_TRIM]] The new expression is built after the existing one in RM's expression editor and the old one is removed only once the new one is complete. The replaced conditions stay listed as unused under Manage Conditions.[[/FLAT_TRIM]]"""
-                    ],
-                    addActions: [
-                        type: "array",
-                        description: "Bulk-add actions (each item the same shape as addAction; actions self-bake via doActPage); updateRule fires once at the end. The first failed or partial item stops the batch: later items are notAttempted and updateRule is not fired. Pairs with addTriggers.",
-                        items: [type: "object"]
-                    ],
-                    addLocalVariable: [
-                        type: "object",
-                        description: "Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions."
-                    ],
-                    removeLocalVariable: [
-                        type: "object",
-                        description: "Remove a local variable. Spec: {name}. WARNING: RM does NOT refuse to delete a local an action still references — the delete usually succeeds and leaves the referencing action Broken; that returns success=false (deleted=true) with a repairHint to restore the pre-delete backup (backupKey in the response) or remove the references first. List current locals via hub_list_rule_local_variables (in hub_read_rules)."
-                    ],
-                    patches: [
-                        type: "array",
-                        description: "Multi-mutation in one call (not a transaction: ops before a stop stay written): each item is a sub-spec with ONE operation key (settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, modifyAction). Operations run sequentially; updateRule fires once at the end; per-op outcome in patches[i]. The first failed or partial op or inner item stops the batch: later ops are notAttempted and updateRule is not fired.",
-                        items: [type: "object"]
-                    ],
-                    removeAction: [
-                        type: "object",
-                        description: "Delete one action by index: {index:<N>}. RM preserves remaining indices (no renumbering)."
-                    ],
-                    clearActions: [
-                        type: "boolean",
-                        description: "Pass true to delete every action (highest index first) — the wipe-and-rebuild pattern. On a rare unconfirmed late commit (asyncCommitLikely:true) verify via hub_get_app_config(appId); do NOT call cancelTrash (it can commit pending deletes)."
-                    ],
-                    replaceActions: [
-                        type: "array",
-                        description: "Replace the entire action list (not a transaction): clears all actions, bulk-adds every spec here (same shape as addAction items), then updateRule once. The first failed or partial added item stops the rest (notAttempted, no updateRule); the old list is already cleared. Pass [] to clear all (= clearActions). On asyncCommitLikely:true verify before retrying; do NOT call cancelTrash.",
-                        items: [type: "object"]
-                    ],
-                    moveAction: [
-                        type: "object",
-                        description: "Move one action up or down a slot: {index:<N>, direction:'up'|'down'}. For arbitrary reorders prefer replaceActions (one call)."
-                    ],
-                    removeTrigger: [
-                        type: "object",
-                        description: "Delete one trigger by index: {index:<N>}. RM preserves remaining indices. Use addTrigger to add a replacement."
-                    ],
-                    modifyTrigger: [
-                        type: "object",
-                        description: "Change a trigger's state field: {index:<N>, mods:{state:'<new-state>'}}. Only the state field is supported, and only on device-state triggers (Switch, Motion, Contact, Lock, Presence, ...) — Time/Periodic/Mode triggers are rejected with a removeTrigger+addTrigger hint. To change capability or deviceIds, use removeTrigger + addTrigger."
-                    ],
-                    modifyAction: [
-                        type: "object",
-                        description: "Retarget a rule-targeting action in one op: {index:<N>, mods:{ruleIds:[...]}} — e.g. point a Run Rule Actions caller at a replacement rule during a staged migration. Supported on runRule/cancelTimers/pauseRule (mods also: action 'pause'|'resume') and privateBoolean (mods also: value bool) actions; other action shapes are rejected toward removeAction + addAction. Implemented as a position-preserving rebuild (remove + re-add + reposition), so the action's settings index changes while its position is kept."
-                    ],
-                    walkStep: [
-                        type: "object",
-                        description: """Raw wizard walker — LAST RESORT, one call per wizard step (token-heavy): use ONLY when the structured shortcuts can't represent the change (Periodic sub-pages, conditional-trigger binding, later-firmware features). operation='drive' runs a whole steps=[...] loop in ONE call (introspect → navigate into a sub-page → write each field → done → finalize), carrying the page forward and stopping at the first failed step (stopOnError=false to continue); the single-step primitives drive composes are introspect | write (one field) | click | navigate | done. Spec: {page, operation, write?:{field:value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?}, steps?:[...]}; page is e.g. selectTriggers/selectActions/doActPage/periodic. Always check silentRejection / valueEcho.match / health (the fail-loud signals; health.skipped / health.unreadable mean not-checked, not broken; a standalone mutation with budget-skipped health returns success:false, partial:true, healthUnverified:true -- verify health before continuing, do not replay the committed step). Full walker mechanics + page names: guide:true or hub_get_tool_guide(section='set_rule_reference_walkstep')."""
-                    ],
-                    addAction: [
-                        type: "object",
-                        description: """Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'log'}` is rejected); returns actionIndex (no trailing updateRule — doActPage self-bakes). Capability names: switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, hsm, shade, fan, mode, setVariable/setLocalVariable, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, fileWrite/fileAppend/fileDelete, zwavePoll; flow control — delay, delayPerMode, cancelDelay, repeat, stopRepeat, repeatWhile, waitExpression, waitEvents, ifThen, elseIf, else, endIf, exitRule, comment. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents per rule. Rule-targeting caps (runRule/cancelTimers/pauseRule/privateBoolean) validate each ruleIds entry against the live RM rule list before any write; a rule id that is not an existing rule is rejected -- use hub_list_rules for valid ids. privateBoolean also takes '*', RM's "this rule" target, alone or mixed (e.g. ['*', 1809]). (On a hub whose rule list can't be resolved -- RM not installed or app-tree unreadable -- the check is skipped; a hub with zero rules instead rejects every rule target.) Per-condition shape: {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array — a bare integer silently stores {N:null}); nested subExpression not supported here (use addRequiredExpression). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the auto action index (e.g. {'flashRate.@N':750}). Per-field specs, the shape guards, and variable-sourced values: pass {discover: true} for the live schema, hub_get_tool_guide(section='set_rule_reference_actions'), or docs/rm_action_subtype_schemas.md. Extended expression shapes (Mode, Between two times, Variable, compareToDevice): section='set_rule_reference_conditions'."""
-                    ],
-                    guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
-                    buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    confirm: [type: "boolean", description: "Must be true."]
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule). This standalone read adds live eventSubscriptionCount/scheduledJobCount, runtime stopped, and status/markup fallbacks for paused. paused is true/false/null (unknown); explicit stopped state outranks display markup. Embedded health from write tools carries the structural verdict and compiled paused only, without these extra reads. With auto or ruleBuilderJson, Visual Rule labels preserve the raw own name; forcing configPage uses the rendered label.[[/FLAT_TRIM]] Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "Installed-app ID to check (Rule Machine or Visual Rules Builder rule)."],
-                    source: [type: "string", enum: ["auto", "ruleBuilderJson", "configPage"], description: "Which source(s) to read; default auto."]
-                ],
-                required: ["appId"]
-            ]
-        ],
-        [
-            name: "hub_list_rule_local_variables",
-            description: "List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "The Rule Machine rule's installed-app id (the rule whose local variables to list)."]
-                ],
-                required: ["appId"]
-            ]
-        ],
-        [
-            name: "hub_delete_native_app",
-            description: """Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them.[[FLAT_TRIM]] force=false (default) soft-deletes (hub refuses if the app has child apps/devices); force=true hard-deletes with no child safety checks.[[/FLAT_TRIM]]
-
-BEFORE DELETE: full snapshot saved to File Manager (backup.backupKey).[[FLAT_TRIM]] Call hub_restore_backup (in hub_manage_backup) with that key to recreate the app with all its settings re-applied.[[/FLAT_TRIM]]
-
-Requires Write master + confirm=true + recent hub backup.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "Installed-app ID."],
-                    force: [type: "boolean", description: "true = bypass child/device safety checks and force-delete. Default false."],
-                    confirm: [type: "boolean", description: "Must be true."]
-                ],
-                required: ["appId", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_set_app_disabled",
-            description: "Enable or disable any installed app (the admin UI red-X) without deleting it — reversible and preserves the app's config. For Rule Machine rules use hub_set_rule_paused instead. Write master only — no confirm/backup needed[[FLAT_TRIM]]; the disabled flag is read-back verified[[/FLAT_TRIM]].",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    appId: [type: "integer", description: "Installed-app ID to enable/disable (from hub_list_apps)."],
-                    disabled: [type: "boolean", description: "true = disable the app (stop it running), false = enable it."]
-                ],
-                required: ["appId", "disabled"]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_rules"],["description","List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id) with each rule\'s id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub\'s app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub\'s list source decorates the label (many firmwares don\'t) \\u2014 the authoritative stopped check is hub_get_rule_health\'s `stopped` field. For ONE rule\'s state, call hub_get_rule_health(appId) instead of listing every rule \\u2014 it returns that rule\'s paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope=\'instances\'). Call `hub_get_tool_guide(section=\'builtin_app_tools_rules\')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_call_rule"],["description","Trigger one or more Rule Machine rules. Not destructive (invokes existing user-configured automation).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section=\'builtin_app_tools_rules\')` for action semantics."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type",["l",["integer","array"]]],["items",["m",[["type","integer"]]]],["description","Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"]]]],["action",["m",[["type","string"],["enum",["l",["rule","actions","stop","start"]]],["description","Which RM action to invoke. Default: rule."]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_set_rule_paused"],["description","Pause or resume one or more Rule Machine rules in one call (paused rules don\'t fire on triggers). paused=true pauses, paused=false resumes (idempotent on the hub). Pass an array of ruleIds to pause/resume a whole set at once \\u2014 one RMUtils dispatch, e.g. a staged-migration cutover.[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type",["l",["integer","array"]]],["items",["m",[["type","integer"]]]],["description","Rule ID from hub_list_rules, or an array of rule IDs to pause/resume together"]]]],["paused",["m",[["type","boolean"],["description","true = pause the rule(s); false = resume."]]]]]]],["required",["l",["ruleId","paused"]]]]]]]],["m",[["name","hub_set_rule_private_boolean"],["description","Set the private boolean of one or more Rule Machine rules to true or false (strict: accepts Boolean or lowercase string \'true\'/\'false\' only).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type",["l",["integer","array"]]],["items",["m",[["type","integer"]]]],["description","Rule ID from hub_list_rules, or an array of rule IDs to set together"]]]],["value",["m",[["type","boolean"],["description","Target value for the rule\'s Private Boolean."]]]]]]],["required",["l",["ruleId","value"]]]]]]]],["m",[["name","hub_set_native_app"],["description","Create OR edit a classic native app (Room Lighting, Button Controller, Notifier, Group, Scene, Visual Rule, etc.): omit appId to CREATE (appType + name), provide appId to EDIT.[[FLAT_TRIM]] One generic upsert for any classic SmartApp instance via settings/button.[[/FLAT_TRIM]] For Rule Machine RULES use hub_set_rule[[FLAT_TRIM]] (in the hub_manage_rule_machine gateway)[[/FLAT_TRIM]] instead.[[FLAT_TRIM]] Its one-call structured shortcuts are the preferred RM path, NOT this tool\'s raw settings/walkStep.[[/FLAT_TRIM]]\\n\\nRequires the Write master + confirm=true + recent hub backup.[[FLAT_TRIM]]\\n\\nOn MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and eventually return one final result; no custom token or client extension is needed. Older clients retain the existing status:\'in_progress\' remainder envelope. See hub_get_tool_guide(section=\'slow_ops\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app id of an existing classic app (from hub_list_apps with scope=\'instances\'). OMIT to CREATE a new app of `appType` (then `name` is required); PROVIDE to EDIT an existing app\'s settings/button."]]]],["appType",["m",[["type","string"],["enum",["l",["rule_machine","button_controller","groups_scenes","notifier","basic_rule","room_lighting"]]],["description","Native app class to CREATE (appId omitted). Default: rule_machine. Visual Rules: use hub_set_visual_rule (not this enum).[[FLAT_TRIM]] Other classic apps are edited by appId and can usually be created through their parent app\'s own page (e.g. the Room Lighting parent\'s newScene input creates Room Lights from a group or scene) -- see hub_get_tool_guide(section=\'builtin_app_tools_crud\').[[/FLAT_TRIM]]"]]]],["name",["m",[["type","string"],["description","Label for the new app. Required on CREATE (when appId is omitted); ignored when appId is provided."]]]],["settings",["m",[["type","object"],["description","Map {inputName: value} to write to the app\'s current config page: scalars for bool/enum/text/number inputs; for device inputs (capability.* or driver-specific device.*) a List of device IDs or the {id: label} map hub_get_app_config returns. Discover input names via hub_get_app_config; inputs on a sub-page need pageName or walkStep."]]]],["button",["m",[["type","string"],["description","Page-transition button name to click (discover via hub_get_app_config)."]]]],["pageName",["m",[["type","string"],["description","Optional sub-page for schema introspection + settings POST."]]]],["stateAttribute",["m",[["type","string"],["description","Optional state attribute value for the button click."]]]],["buttonRule",["m",[["type","object"],["description","Create a Button Rule under an existing Button Controller."],["properties",["m",[["controllerId",["m",[["type","integer"],["description","Button Controller-5.1 appId"]]]],["buttonNumber",["m",[["type","integer"],["description","button number (>=1)"]]]],["event",["m",[["type","string"],["enum",["l",["pushed","held","doubleTapped","released"]]]]]]]]]]]],["walkStep",["m",[["type","object"],["description","Multi-page classic-app walker \\u2014 EDIT-only (requires appId; rejected on create). Use it for inputs on a sub-page (hub_list_app_pages lists them), inputs that appear only after an earlier choice, and anything settings/button cannot represent.[[FLAT_TRIM]] For RM rules prefer hub_set_rule\'s structured shortcuts, which do the same walk in one call. Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation=\'drive\' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule\'s walkStep.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","Must be true. Safety gate for Write master operations."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_set_rule"],["description","Create OR edit a Hubitat Rule Machine rule (RM 5.1) \\u2014 one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. In trigger/action/condition specs use `capability` NOT `type`. RM-only \\u2014 for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; each edit ensures a File Manager baseline exists (same-rule baselines are reused for one hour by default; backup.backupKey restores it through hub_manage_backup).\\n\\nALWAYS prefer the one-call shortcuts (addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, remove/modify/move/clear, addLocalVariable/removeLocalVariable, patches); walkStep and raw settings+button are LAST RESORTS.[[FLAT_TRIM]] Each shortcut orchestrates the full RM 5.1 wizard in one call; walkStep (one wizard page per call) covers capabilities no shortcut can represent.\\n\\nPartial-success (every shortcut): success:true can pair with partial:true \\u2014 inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button=\'updateRule\', confirm=true). If wizardStuck:true, first run the close-editor click restoreHint names (cancelCapab for a condition sub-wizard, actionCancel for the action editor). On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).[[/FLAT_TRIM]]\\n\\nDeep reference + worked examples: guide:true inline, or hub_get_tool_guide(section=\'set_rule_reference\').[[FLAT_TRIM]] Full create + repair protocol: hub_get_tool_guide(section=\'set_rule_create_reference\'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.\\n\\nOn MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and return one final result. Older clients retain the status:\'in_progress\' remainder envelope. See hub_get_tool_guide(section=\'slow_ops\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","RM rule ID (the rule\'s installed-app id). OMIT to CREATE a new rule (then `name` is required); PROVIDE to EDIT an existing rule."]]]],["name",["m",[["type","string"],["description","Label for the new rule (shown in Hubitat\'s Rule Machine app list). Required on CREATE (when appId is omitted); ignored when appId is provided. To RENAME an existing rule, do not pass name -- write the new label as a setting: settings:{origLabel:\'New Name\'} (a mainPage settings write auto-commits via updateRule, which copies origLabel to the display label; passing button:\'updateRule\' too is harmless but redundant)."]]]],["settings",["m",[["type","object"],["description","Map {inputName: value}: scalars for bool/enum/text/number inputs, list of device IDs for multi-device inputs, capability.* or driver-specific device.* (the multiple=true 3-field contract is emitted and verified automatically \\u2014 you don\'t manage it)."]]]],["button",["m",[["type","string"],["description","Page-transition button name (e.g. updateRule, editCond, pausRule for RM; discover others via hub_get_app_config)."]]]],["pageName",["m",[["type","string"],["description","Optional sub-page for schema introspection + settings POST."]]]],["stateAttribute",["m",[["type","string"],["description","Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."]]]],["addTrigger",["m",[["type","object"],["description","Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:\'switch\'}` is rejected); returns triggerIndex. Capability families (use these display names): Device-state \\u2014 Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source; Numeric \\u2014 Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints; Button; Custom Attribute; Certain Time (and optional date) / Sunrise / Sunset (the picker value is the full \'Certain Time (and optional date)\' string); Mode; Periodic Schedule. Modifiers: andStays, allOfThese. Optional per spec: conditional (sets the conditional-trigger gate \\u2014 pair with `condition` to bind it in one call), condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?, rawSettings?} (a NARROWER set than addRequiredExpression), rawSettings {field:value} with @N = the auto-assigned index (e.g. {\'xVar@N\':\'myVar\'}). addTriggers[] = bulk, updateRule once at the end. Per-field specs and the periodic shape: pass {discover: true}, guide:true, or hub_get_tool_guide(section=\'set_rule_reference_triggers\'). Extended condition shapes: section=\'set_rule_reference_conditions\'. Cross-cutting fail-loud steers: section=\'set_rule_reference_guards\'."]]]],["addTriggers",["m",[["type","array"],["description","Bulk-add triggers (each item the same shape as addTrigger); updateRule fires ONCE at the end. The first failed or partial item stops the batch: later items are notAttempted and updateRule is not fired. Pairs with addActions to build a whole rule in one call."],["items",["m",[["type","object"]]]]]]],["addRequiredExpression",["m",[["type","object"],["description","Add an RM 5.1 Required Expression (the pre-trigger gate that conditions whether the rule may fire); returns conditionIndices. Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}, ...], operator:\'AND\'|\'OR\'|\'XOR\' OR operators:[...] (one per gap; RM walks left to right and stops early, so group mixed AND/OR with subExpression)}. comparator is REQUIRED with attribute (Custom Attribute) and with variable+value (Variable); ASCII !=/<>/== auto-map to RM glyphs, and a free-valued (String) variable/attribute offers `*contains*` (substring match; negate with not:true). STPage capability list and extended shapes (Mode, Between two times, Variable incl. compareToVariable, device-relative compareToDevice, nested subExpression): guide:true or hub_get_tool_guide(section=\'set_rule_reference_conditions\'); cross-cutting fail-loud steers: section=\'set_rule_reference_guards\'."]]]],["replaceRequiredExpression",["m",[["type","object"],["description","Replace the rule\'s existing Required Expression in place (same appId). Same spec as addRequiredExpression ({conditions:[...], operator|operators}, incl. `*contains*` substring match on a free-valued String variable/attribute -- negate with not:true); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing). A failed build leaves the original in place (originalPreserved:true); a failure after the switch rolls back to the original (requiredExpressionRestored).[[FLAT_TRIM]] The new expression is built after the existing one in RM\'s expression editor and the old one is removed only once the new one is complete. The replaced conditions stay listed as unused under Manage Conditions.[[/FLAT_TRIM]]"]]]],["addActions",["m",[["type","array"],["description","Bulk-add actions (each item the same shape as addAction; actions self-bake via doActPage); updateRule fires once at the end. The first failed or partial item stops the batch: later items are notAttempted and updateRule is not fired. Pairs with addTriggers."],["items",["m",[["type","object"]]]]]]],["addLocalVariable",["m",[["type","object"],["description","Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions."]]]],["removeLocalVariable",["m",[["type","object"],["description","Remove a local variable. Spec: {name}. WARNING: RM does NOT refuse to delete a local an action still references \\u2014 the delete usually succeeds and leaves the referencing action Broken; that returns success=false (deleted=true) with a repairHint to restore the pre-delete backup (backupKey in the response) or remove the references first. List current locals via hub_list_rule_local_variables (in hub_read_rules)."]]]],["patches",["m",[["type","array"],["description","Multi-mutation in one call (not a transaction: ops before a stop stay written): each item is a sub-spec with ONE operation key (settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, modifyAction). Operations run sequentially; updateRule fires once at the end; per-op outcome in patches[i]. The first failed or partial op or inner item stops the batch: later ops are notAttempted and updateRule is not fired."],["items",["m",[["type","object"]]]]]]],["removeAction",["m",[["type","object"],["description","Delete one action by index: {index:<N>}. RM preserves remaining indices (no renumbering)."]]]],["clearActions",["m",[["type","boolean"],["description","Pass true to delete every action (highest index first) \\u2014 the wipe-and-rebuild pattern. On a rare unconfirmed late commit (asyncCommitLikely:true) verify via hub_get_app_config(appId); do NOT call cancelTrash (it can commit pending deletes)."]]]],["replaceActions",["m",[["type","array"],["description","Replace the entire action list (not a transaction): clears all actions, bulk-adds every spec here (same shape as addAction items), then updateRule once. The first failed or partial added item stops the rest (notAttempted, no updateRule); the old list is already cleared. Pass [] to clear all (= clearActions). On asyncCommitLikely:true verify before retrying; do NOT call cancelTrash."],["items",["m",[["type","object"]]]]]]],["moveAction",["m",[["type","object"],["description","Move one action up or down a slot: {index:<N>, direction:\'up\'|\'down\'}. For arbitrary reorders prefer replaceActions (one call)."]]]],["removeTrigger",["m",[["type","object"],["description","Delete one trigger by index: {index:<N>}. RM preserves remaining indices. Use addTrigger to add a replacement."]]]],["modifyTrigger",["m",[["type","object"],["description","Change a trigger\'s state field: {index:<N>, mods:{state:\'<new-state>\'}}. Only the state field is supported, and only on device-state triggers (Switch, Motion, Contact, Lock, Presence, ...) \\u2014 Time/Periodic/Mode triggers are rejected with a removeTrigger+addTrigger hint. To change capability or deviceIds, use removeTrigger + addTrigger."]]]],["modifyAction",["m",[["type","object"],["description","Retarget a rule-targeting action in one op: {index:<N>, mods:{ruleIds:[...]}} \\u2014 e.g. point a Run Rule Actions caller at a replacement rule during a staged migration. Supported on runRule/cancelTimers/pauseRule (mods also: action \'pause\'|\'resume\') and privateBoolean (mods also: value bool) actions; other action shapes are rejected toward removeAction + addAction. Implemented as a position-preserving rebuild (remove + re-add + reposition), so the action\'s settings index changes while its position is kept."]]]],["walkStep",["m",[["type","object"],["description","Raw wizard walker \\u2014 LAST RESORT, one call per wizard step (token-heavy): use ONLY when the structured shortcuts can\'t represent the change (Periodic sub-pages, conditional-trigger binding, later-firmware features). operation=\'drive\' runs a whole steps=[...] loop in ONE call (introspect \\u2192 navigate into a sub-page \\u2192 write each field \\u2192 done \\u2192 finalize), carrying the page forward and stopping at the first failed step (stopOnError=false to continue); the single-step primitives drive composes are introspect | write (one field) | click | navigate | done. Spec: {page, operation, write?:{field:value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?}, steps?:[...]}; page is e.g. selectTriggers/selectActions/doActPage/periodic. Always check silentRejection / valueEcho.match / health (the fail-loud signals; health.skipped / health.unreadable mean not-checked, not broken; a standalone mutation with budget-skipped health returns success:false, partial:true, healthUnverified:true -- verify health before continuing, do not replay the committed step). Full walker mechanics + page names: guide:true or hub_get_tool_guide(section=\'set_rule_reference_walkstep\')."]]]],["addAction",["m",[["type","object"],["description","Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:\'log\'}` is rejected); returns actionIndex (no trailing updateRule \\u2014 doActPage self-bakes). Capability names: switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, hsm, shade, fan, mode, setVariable/setLocalVariable, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, fileWrite/fileAppend/fileDelete, zwavePoll; flow control \\u2014 delay, delayPerMode, cancelDelay, repeat, stopRepeat, repeatWhile, waitExpression, waitEvents, ifThen, elseIf, else, endIf, exitRule, comment. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents per rule. Rule-targeting caps (runRule/cancelTimers/pauseRule/privateBoolean) validate each ruleIds entry against the live RM rule list before any write; a rule id that is not an existing rule is rejected -- use hub_list_rules for valid ids. privateBoolean also takes \'*\', RM\'s \\"this rule\\" target, alone or mixed (e.g. [\'*\', 1809]). (On a hub whose rule list can\'t be resolved -- RM not installed or app-tree unreadable -- the check is skipped; a hub with zero rules instead rejects every rule target.) Per-condition shape: {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array \\u2014 a bare integer silently stores {N:null}); nested subExpression not supported here (use addRequiredExpression). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the auto action index (e.g. {\'flashRate.@N\':750}). Per-field specs, the shape guards, and variable-sourced values: pass {discover: true} for the live schema, hub_get_tool_guide(section=\'set_rule_reference_actions\'), or docs/rm_action_subtype_schemas.md. Extended expression shapes (Mode, Between two times, Variable, compareToDevice): section=\'set_rule_reference_conditions\'."]]]],["guide",["m",[["type","boolean"],["description","Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section=\'set_rule_reference\')), without a separate call. Makes NO change to any rule."]]]],["buttonRule",["m",[["type","object"],["description","Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded \\u2014 then author actions via addAction on that appId. The controller must already have a button device."],["properties",["m",[["controllerId",["m",[["type","integer"],["description","Button Controller-5.1 appId"]]]],["buttonNumber",["m",[["type","integer"],["description","button number (>=1)"]]]],["event",["m",[["type","string"],["enum",["l",["pushed","held","doubleTapped","released"]]]]]]]]]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_get_rule_health"],["description","Inspect a rule\'s current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule). This standalone read adds live eventSubscriptionCount/scheduledJobCount, runtime stopped, and status/markup fallbacks for paused. paused is true/false/null (unknown); explicit stopped state outranks display markup. Embedded health from write tools carries the structural verdict and compiled paused only, without these extra reads. With auto or ruleBuilderJson, Visual Rule labels preserve the raw own name; forcing configPage uses the rendered label.[[/FLAT_TRIM]] Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn\'t-check verdict, not evidence of breakage."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app ID to check (Rule Machine or Visual Rules Builder rule)."]]]],["source",["m",[["type","string"],["enum",["l",["auto","ruleBuilderJson","configPage"]]],["description","Which source(s) to read; default auto."]]]]]]],["required",["l",["appId"]]]]]]]],["m",[["name","hub_list_rule_local_variables"],["description","List a Rule Machine rule\'s LOCAL variables (per-rule, distinct from hub globals).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","The Rule Machine rule\'s installed-app id (the rule whose local variables to list)."]]]]]]],["required",["l",["appId"]]]]]]]],["m",[["name","hub_delete_native_app"],["description","Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them.[[FLAT_TRIM]] force=false (default) soft-deletes (hub refuses if the app has child apps/devices); force=true hard-deletes with no child safety checks.[[/FLAT_TRIM]]\\n\\nBEFORE DELETE: full snapshot saved to File Manager (backup.backupKey).[[FLAT_TRIM]] Call hub_restore_backup (in hub_manage_backup) with that key to recreate the app with all its settings re-applied.[[/FLAT_TRIM]]\\n\\nRequires Write master + confirm=true + recent hub backup."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app ID."]]]],["force",["m",[["type","boolean"],["description","true = bypass child/device safety checks and force-delete. Default false."]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["appId","confirm"]]]]]]]],["m",[["name","hub_set_app_disabled"],["description","Enable or disable any installed app (the admin UI red-X) without deleting it \\u2014 reversible and preserves the app\'s config. For Rule Machine rules use hub_set_rule_paused instead. Write master only \\u2014 no confirm/backup needed[[FLAT_TRIM]]; the disabled flag is read-back verified[[/FLAT_TRIM]]."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app ID to enable/disable (from hub_list_apps)."]]]],["disabled",["m",[["type","boolean"],["description","true = disable the app (stop it running), false = enable it."]]]]]]],["required",["l",["appId","disabled"]]]]]]]]]]'])
 }
 def toolSetAppDisabled(args) {
     def id = args?.appId
@@ -33054,28 +31421,13 @@ def toolListRuleLocalVariables(args) {
     return [appId: appId, localVariables: localVariables, total: localVariables.size()]
 }
 def _readOnlyToolNames_partNativeRM() {
-    return [
-        "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_rules","hub_get_rule_health","hub_list_rule_local_variables"]]'])
 }
 def _idempotentWriteToolNames_partNativeRM() {
-    return [
-        "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_app_disabled"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_set_rule_paused","hub_set_rule_private_boolean","hub_set_app_disabled"]]'])
 }
 def _toolDisplayMeta_partNativeRM() {
-    return [
-        hub_list_rules: [title: "List Rule Machine Rules", summary: "List all Rule Machine rules."],
-        hub_call_rule: [title: "Trigger Rule Machine Rule", summary: "Trigger one or more Rule Machine rules, run their actions, or stop them."],
-        hub_set_rule_paused: [title: "Pause or Resume Rule", summary: "Pause or resume one or more Rule Machine rules in one call."],
-        hub_set_rule_private_boolean: [title: "Set Rule Private Boolean", summary: "Set the private boolean of one or more Rule Machine rules."],
-        hub_set_rule: [title: "Author Rule Machine Rule", summary: "Create or edit a Rule Machine rule."],
-        hub_get_rule_health: [title: "Get Rule Health", summary: "Read-only health check on any installed app."],
-        hub_list_rule_local_variables: [title: "List Rule Local Variables", summary: "Read-only list of a Rule Machine rule's local variables."],
-        hub_set_native_app: [title: "Create or Edit Native App", summary: "Create or edit a classic native app (Room Lighting, Notifier, etc.)."],
-        hub_delete_native_app: [title: "Delete Native App", summary: "Delete a classic native app (auto-snapshot first)."],
-        hub_set_app_disabled: [title: "Enable or Disable App", summary: "Enable or disable any installed app without deleting it (reversible)."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_rules",["m",[["title","List Rule Machine Rules"],["summary","List all Rule Machine rules."]]]],["hub_call_rule",["m",[["title","Trigger Rule Machine Rule"],["summary","Trigger one or more Rule Machine rules, run their actions, or stop them."]]]],["hub_set_rule_paused",["m",[["title","Pause or Resume Rule"],["summary","Pause or resume one or more Rule Machine rules in one call."]]]],["hub_set_rule_private_boolean",["m",[["title","Set Rule Private Boolean"],["summary","Set the private boolean of one or more Rule Machine rules."]]]],["hub_set_rule",["m",[["title","Author Rule Machine Rule"],["summary","Create or edit a Rule Machine rule."]]]],["hub_get_rule_health",["m",[["title","Get Rule Health"],["summary","Read-only health check on any installed app."]]]],["hub_list_rule_local_variables",["m",[["title","List Rule Local Variables"],["summary","Read-only list of a Rule Machine rule\'s local variables."]]]],["hub_set_native_app",["m",[["title","Create or Edit Native App"],["summary","Create or edit a classic native app (Room Lighting, Notifier, etc.)."]]]],["hub_delete_native_app",["m",[["title","Delete Native App"],["summary","Delete a classic native app (auto-snapshot first)."]]]],["hub_set_app_disabled",["m",[["title","Enable or Disable App"],["summary","Enable or disable any installed app without deleting it (reversible)."]]]]]]'])
 }
 preferences {
     page(name: "mainPage")
@@ -42212,4 +40564,29 @@ def guideSubSectionLookup(subKey) {
     }
     if (!mine) return null
     return [parent: parentKey, content: mine.join("\n")]
+}
+@groovy.transform.CompileStatic
+private Object _bat529EmbeddedCatalogRead(List<String> chunks) {
+    StringBuilder text = new StringBuilder()
+    for (String chunk : chunks) text.append(chunk)
+    JsonSlurper parser = new JsonSlurper()
+    parser.setCheckDates(false)
+    return _bat529EmbeddedCatalogDecode(parser.parseText(text.toString()))
+}
+@groovy.transform.CompileStatic
+private Object _bat529EmbeddedCatalogDecode(Object value) {
+    if (!(value instanceof List)) return value
+    List packet = (List) value
+    List contents = (List) packet.get(1)
+    if (packet.get(0) == "m") {
+        Map<String, Object> result = new LinkedHashMap<String, Object>()
+        for (Object rawEntry : contents) {
+            List entry = (List) rawEntry
+            result.put((String) entry.get(0), _bat529EmbeddedCatalogDecode(entry.get(1)))
+        }
+        return result
+    }
+    List<Object> result = new ArrayList<Object>()
+    for (Object item : contents) result.add(_bat529EmbeddedCatalogDecode(item))
+    return result
 }
