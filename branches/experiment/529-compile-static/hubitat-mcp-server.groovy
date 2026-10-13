@@ -1038,6 +1038,16 @@ def _bat529Cb_298d4999_30(def probe, def tiles, def warnings, def spec) {
             (spec).each(((this.&_bat529Cb_298d4999_16).curry([tile] as Object[])))
             _warnUnauthorizedTileDevice(tile, probe, warnings)
 }
+def _bat529Cb_298d4999_16(def tile, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_298d4999_16(tile, *__bat529Tuple)
+}
+def _bat529Cb_298d4999_29(def layout, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_298d4999_29(layout, *__bat529Tuple)
+}
 def toolListRooms(args = null) {
     def rooms = getRooms()
     if (!rooms) {
@@ -3279,6 +3289,21 @@ def _bat529Cb_c0a86baf_42(def errors, def ids, def kinds, def nextMap, def seenE
         usedPorts << portKey
         nextMap["${from}:${port}".toString()] = to
 }
+def _bat529Cb_c0a86baf_39(def conditionIds, def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_39(conditionIds, errors, *__bat529Tuple)
+}
+def _bat529Cb_c0a86baf_41(def errors, def ids, def kinds, def types, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_41(errors, ids, kinds, types, *__bat529Tuple)
+}
+def _bat529Cb_c0a86baf_42(def errors, def ids, def kinds, def nextMap, def seenEdges, def usedPorts, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_42(errors, ids, kinds, nextMap, seenEdges, usedPorts, *__bat529Tuple)
+}
 @groovy.transform.CompileStatic
 private String _filesFoldCase(value) {
     return value?.toString()?.tr('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
@@ -3603,6 +3628,16 @@ def _bat529Cb_f7f9d965_7(def prefix, def f) {
                         entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
                     }
                     return entry
+}
+def _bat529Cb_f7f9d965_2(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_f7f9d965_2(*__bat529Tuple)
+}
+def _bat529Cb_f7f9d965_3(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_f7f9d965_3(*__bat529Tuple)
 }
 def toolListItemBackups(args = null) {
     args = args ?: [:]
@@ -4764,6 +4799,16 @@ def _bat529Cb_8f5ba462_8(def key, def entry) {
         return base
 }
 def _bat529Cb_8f5ba462_9(def a, def b) { (b.timestampEpoch <=> a.timestampEpoch)
+}
+def _bat529Cb_8f5ba462_8(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_8f5ba462_8(*__bat529Tuple)
+}
+def _bat529Cb_8f5ba462_9(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_8f5ba462_9(*__bat529Tuple)
 }
 def toolGetDebugLogs(args) {
     initDebugLogs()
@@ -7977,6 +8022,41 @@ def _bat529Cb_7399a956_50(def healthy, def stale, def staleThreshold, def unknow
             unknown << [id: device.id?.toString() ?: "unknown", name: "Error: ${e.message}", lastActivity: "error", errorClass: e.class.simpleName]
         }
 }
+def _bat529Cb_7399a956_6(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_6(*__bat529Tuple)
+}
+def _bat529Cb_7399a956_9(def id, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_9(id, *__bat529Tuple)
+}
+def _bat529Cb_7399a956_18(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_18(*__bat529Tuple)
+}
+def _bat529Cb_7399a956_21(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_21(*__bat529Tuple)
+}
+def _bat529Cb_7399a956_31(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_31(*__bat529Tuple)
+}
+def _bat529Cb_7399a956_32(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_32(*__bat529Tuple)
+}
+def _bat529Cb_7399a956_44(def entries, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_44(entries, *__bat529Tuple)
+}
 def _getHub2HubData() {
     try {
         def raw = hubInternalGet("/hub2/hubData")
@@ -9183,6 +9263,16 @@ def _bat529Cb_523e098a_15(def s, def it) { it?.id?.toString() == s || it?.name?.
 def _bat529Cb_523e098a_16(def it) { it instanceof Map && it.key == "PLATFORM_UPDATE_AVAILABLE"
 }
 def _bat529Cb_523e098a_17(def it) { [key: it.key, message: it.message, version: it.version, dismissible: it.dismissible == true]
+}
+def _bat529Cb_523e098a_5(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_523e098a_5(*__bat529Tuple)
+}
+def _bat529Cb_523e098a_13(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_523e098a_13(*__bat529Tuple)
 }
 private List _capabilityNames(def caps) {
     (((caps instanceof List ? caps : [])).collect((this.&_bat529Cb_15d0a4c9_199))).findAll((this.&_bat529Cb_15d0a4c9_206))
@@ -14011,6 +14101,181 @@ def _bat529Cb_15d0a4c9_258(def d, def deviceId, def fields, def fj, def identity
         }
         result.sections.put(section, value)
 }
+def _bat529Cb_15d0a4c9_69(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_69(*__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_81(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_81(*__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_86(def spineIds, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_86(spineIds, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_98(def payload, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_98(payload, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_122(def names, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_122(names, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_151(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_151(*__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_161(def fresh, def payload, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_161(fresh, payload, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_167(def fields, def selected, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_167(fields, selected, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_175(def e, def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_175(e, errors, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_176(def e, def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_176(e, errors, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_185(def copy, def name, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_185(copy, name, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_191(def enc, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_191(enc, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_195(def changes, def deviceId, def errors, def model, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_195(changes, deviceId, errors, model, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_202(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_202(*__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_211(def declaredTypes, def out, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_211(declaredTypes, out, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_213(def states, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_213(states, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_216(def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_216(errors, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_217(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_217(*__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_219(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_219(*__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_223(def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_223(errors, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_224(def snapshot, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_224(snapshot, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_226(def args, def assistantAvailable, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_226(args, assistantAvailable, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_229(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_229(*__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_231(def coercedIds, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_231(coercedIds, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_236(def recovered, def recoveryErrors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_236(recovered, recoveryErrors, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_240(def problems, def scope, def source, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_240(problems, scope, source, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_241(def args, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_241(args, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_242(def errors, def response, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_242(errors, response, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_244(def d, def fj, def problems, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_244(d, fj, problems, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_246(def declaredTypes, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_246(declaredTypes, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_247(def assistants, def changes, def errors, def readback, def response, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_247(assistants, changes, errors, readback, response, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_248(def changes, def deviceId, def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_248(changes, deviceId, errors, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_249(def changes, def errors, def full, def updated, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_249(changes, errors, full, updated, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_251(def entryDeviceIds, def validEntryKeys, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_251(entryDeviceIds, validEntryKeys, *__bat529Tuple)
+}
+def _bat529Cb_15d0a4c9_254(def model, def normalized, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_254(model, normalized, *__bat529Tuple)
+}
 def toolManageVirtualDevice(args) {
     def action = args.action
     if (!action) {
@@ -15586,6 +15851,26 @@ def _bat529Cb_b8585dac_26(def consumers, def needles, def child) {
                 }
             }
 }
+def _bat529Cb_b8585dac_9(def varName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_b8585dac_9(varName, *__bat529Tuple)
+}
+def _bat529Cb_b8585dac_19(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_b8585dac_19(*__bat529Tuple)
+}
+def _bat529Cb_b8585dac_20(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_b8585dac_20(*__bat529Tuple)
+}
+def _bat529Cb_b8585dac_24(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_b8585dac_24(*__bat529Tuple)
+}
 def toolListRules(args = null) {
     def childApps = getChildApps()
     def rules = ((childApps)?.collect((this.&_bat529Cb_221baae5_28)))?.findAll((this.&_bat529Cb_221baae5_30))?: []
@@ -16220,6 +16505,11 @@ def _bat529Cb_221baae5_28(def childApp) {
 def _bat529Cb_221baae5_29(def it) { it != null
 }
 def _bat529Cb_221baae5_30(def it) { it != null
+}
+def _bat529Cb_221baae5_26(def manifest, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_221baae5_26(manifest, *__bat529Tuple)
 }
 def toolListHubApps(args) {
     def cursor = args?.cursor
@@ -18739,6 +19029,16 @@ def _bat529Cb_3ac884d1_34(def filter, def entry) {
                     throw new IllegalStateException("filter branch missing for '${filter}' -- validFilters and switch have drifted")
             }
 }
+def _bat529Cb_3ac884d1_25(def passwordInputNames, def redactedPw, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_3ac884d1_25(passwordInputNames, redactedPw, *__bat529Tuple)
+}
+def _bat529Cb_3ac884d1_32(def body, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_3ac884d1_32(body, *__bat529Tuple)
+}
 private Map _fetchAppsListTree(String caller) {
     def responseText
     try {
@@ -19300,6 +19600,26 @@ def _bat529Cb_112d3686_14(def skippedMalformed, def manifestUrl, def manifest) {
         pkg
 }
 def _bat529Cb_112d3686_15(def it) { it != null
+}
+def _bat529Cb_112d3686_4(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_112d3686_4(*__bat529Tuple)
+}
+def _bat529Cb_112d3686_6(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_112d3686_6(*__bat529Tuple)
+}
+def _bat529Cb_112d3686_7(def packageFilter, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_112d3686_7(packageFilter, *__bat529Tuple)
+}
+def _bat529Cb_112d3686_14(def skippedMalformed, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_112d3686_14(skippedMalformed, *__bat529Tuple)
 }
 def toolUpdateMcpSettings(args) {
     if (!settings.enableDeveloperMode) {
@@ -19982,6 +20302,11 @@ def _bat529Cb_13cb0dba_17(def requestedIds, def raw) {
             throw new IllegalArgumentException("selectedDevices ids entries must be non-empty device IDs")
         }
         if (!requestedIds.contains(s)) requestedIds << s
+}
+def _bat529Cb_13cb0dba_15(def allowedSettings, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_13cb0dba_15(allowedSettings, *__bat529Tuple)
 }
 private Map _appClonerInit(Integer sourceAppId) {
     def resp
@@ -21331,6 +21656,31 @@ def _bat529Cb_dbfd46be_40(def deviceGone, def liveDeviceIds, def savedSchema, de
         }
         return [(key): ids]
 }
+def _bat529Cb_dbfd46be_21(def savedSchema, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_21(savedSchema, *__bat529Tuple)
+}
+def _bat529Cb_dbfd46be_30(def navValues, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_30(navValues, *__bat529Tuple)
+}
+def _bat529Cb_dbfd46be_33(def navValues, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_33(navValues, *__bat529Tuple)
+}
+def _bat529Cb_dbfd46be_35(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_35(*__bat529Tuple)
+}
+def _bat529Cb_dbfd46be_40(def deviceGone, def liveDeviceIds, def savedSchema, def skippedDevices, def skippedMaps, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_40(deviceGone, liveDeviceIds, savedSchema, skippedDevices, skippedMaps, *__bat529Tuple)
+}
 def toolSearchTools(args) {
     def query = args.query
     if (!query?.trim()) return [error: "query is required"]
@@ -21692,6 +22042,31 @@ def _bat529Cb_ac505e8e_23(def displayMeta, def gatewayConfig, def searchHideByNa
             entry.callAs = "Call directly: ${_externalToolName(tool.name as String)}({...})"
         }
         return entry
+}
+def _bat529Cb_ac505e8e_3(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_3(*__bat529Tuple)
+}
+def _bat529Cb_ac505e8e_12(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_12(*__bat529Tuple)
+}
+def _bat529Cb_ac505e8e_15(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_15(*__bat529Tuple)
+}
+def _bat529Cb_ac505e8e_16(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_16(*__bat529Tuple)
+}
+def _bat529Cb_ac505e8e_22(def allDefsMap, def corpus, def displayMeta, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_22(allDefsMap, corpus, displayMeta, *__bat529Tuple)
 }
 def _getAllToolDefinitions_partNativeRM() {
     return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_rules"],["description","List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id) with each rule\'s id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub\'s app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub\'s list source decorates the label (many firmwares don\'t) \\u2014 the authoritative stopped check is hub_get_rule_health\'s `stopped` field. For ONE rule\'s state, call hub_get_rule_health(appId) instead of listing every rule \\u2014 it returns that rule\'s paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope=\'instances\'). Call `hub_get_tool_guide(section=\'builtin_app_tools_rules\')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_call_rule"],["description","Trigger one or more Rule Machine rules. Not destructive (invokes existing user-configured automation).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section=\'builtin_app_tools_rules\')` for action semantics."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type",["l",["integer","array"]]],["items",["m",[["type","integer"]]]],["description","Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"]]]],["action",["m",[["type","string"],["enum",["l",["rule","actions","stop","start"]]],["description","Which RM action to invoke. Default: rule."]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_set_rule_paused"],["description","Pause or resume one or more Rule Machine rules in one call (paused rules don\'t fire on triggers). paused=true pauses, paused=false resumes (idempotent on the hub). Pass an array of ruleIds to pause/resume a whole set at once \\u2014 one RMUtils dispatch, e.g. a staged-migration cutover.[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type",["l",["integer","array"]]],["items",["m",[["type","integer"]]]],["description","Rule ID from hub_list_rules, or an array of rule IDs to pause/resume together"]]]],["paused",["m",[["type","boolean"],["description","true = pause the rule(s); false = resume."]]]]]]],["required",["l",["ruleId","paused"]]]]]]]],["m",[["name","hub_set_rule_private_boolean"],["description","Set the private boolean of one or more Rule Machine rules to true or false (strict: accepts Boolean or lowercase string \'true\'/\'false\' only).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type",["l",["integer","array"]]],["items",["m",[["type","integer"]]]],["description","Rule ID from hub_list_rules, or an array of rule IDs to set together"]]]],["value",["m",[["type","boolean"],["description","Target value for the rule\'s Private Boolean."]]]]]]],["required",["l",["ruleId","value"]]]]]]]],["m",[["name","hub_set_native_app"],["description","Create OR edit a classic native app (Room Lighting, Button Controller, Notifier, Group, Scene, Visual Rule, etc.): omit appId to CREATE (appType + name), provide appId to EDIT.[[FLAT_TRIM]] One generic upsert for any classic SmartApp instance via settings/button.[[/FLAT_TRIM]] For Rule Machine RULES use hub_set_rule[[FLAT_TRIM]] (in the hub_manage_rule_machine gateway)[[/FLAT_TRIM]] instead.[[FLAT_TRIM]] Its one-call structured shortcuts are the preferred RM path, NOT this tool\'s raw settings/walkStep.[[/FLAT_TRIM]]\\n\\nRequires the Write master + confirm=true + recent hub backup.[[FLAT_TRIM]]\\n\\nOn MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and eventually return one final result; no custom token or client extension is needed. Older clients retain the existing status:\'in_progress\' remainder envelope. See hub_get_tool_guide(section=\'slow_ops\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app id of an existing classic app (from hub_list_apps with scope=\'instances\'). OMIT to CREATE a new app of `appType` (then `name` is required); PROVIDE to EDIT an existing app\'s settings/button."]]]],["appType",["m",[["type","string"],["enum",["l",["rule_machine","button_controller","groups_scenes","notifier","basic_rule","room_lighting"]]],["description","Native app class to CREATE (appId omitted). Default: rule_machine. Visual Rules: use hub_set_visual_rule (not this enum).[[FLAT_TRIM]] Other classic apps are edited by appId and can usually be created through their parent app\'s own page (e.g. the Room Lighting parent\'s newScene input creates Room Lights from a group or scene) -- see hub_get_tool_guide(section=\'builtin_app_tools_crud\').[[/FLAT_TRIM]]"]]]],["name",["m",[["type","string"],["description","Label for the new app. Required on CREATE (when appId is omitted); ignored when appId is provided."]]]],["settings",["m",[["type","object"],["description","Map {inputName: value} to write to the app\'s current config page: scalars for bool/enum/text/number inputs; for device inputs (capability.* or driver-specific device.*) a List of device IDs or the {id: label} map hub_get_app_config returns. Discover input names via hub_get_app_config; inputs on a sub-page need pageName or walkStep."]]]],["button",["m",[["type","string"],["description","Page-transition button name to click (discover via hub_get_app_config)."]]]],["pageName",["m",[["type","string"],["description","Optional sub-page for schema introspection + settings POST."]]]],["stateAttribute",["m",[["type","string"],["description","Optional state attribute value for the button click."]]]],["buttonRule",["m",[["type","object"],["description","Create a Button Rule under an existing Button Controller."],["properties",["m",[["controllerId",["m",[["type","integer"],["description","Button Controller-5.1 appId"]]]],["buttonNumber",["m",[["type","integer"],["description","button number (>=1)"]]]],["event",["m",[["type","string"],["enum",["l",["pushed","held","doubleTapped","released"]]]]]]]]]]]],["walkStep",["m",[["type","object"],["description","Multi-page classic-app walker \\u2014 EDIT-only (requires appId; rejected on create). Use it for inputs on a sub-page (hub_list_app_pages lists them), inputs that appear only after an earlier choice, and anything settings/button cannot represent.[[FLAT_TRIM]] For RM rules prefer hub_set_rule\'s structured shortcuts, which do the same walk in one call. Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation=\'drive\' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule\'s walkStep.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","Must be true. Safety gate for Write master operations."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_set_rule"],["description","Create OR edit a Hubitat Rule Machine rule (RM 5.1) \\u2014 one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. In trigger/action/condition specs use `capability` NOT `type`. RM-only \\u2014 for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; each edit ensures a File Manager baseline exists (same-rule baselines are reused for one hour by default; backup.backupKey restores it through hub_manage_backup).\\n\\nALWAYS prefer the one-call shortcuts (addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, remove/modify/move/clear, addLocalVariable/removeLocalVariable, patches); walkStep and raw settings+button are LAST RESORTS.[[FLAT_TRIM]] Each shortcut orchestrates the full RM 5.1 wizard in one call; walkStep (one wizard page per call) covers capabilities no shortcut can represent.\\n\\nPartial-success (every shortcut): success:true can pair with partial:true \\u2014 inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button=\'updateRule\', confirm=true). If wizardStuck:true, first run the close-editor click restoreHint names (cancelCapab for a condition sub-wizard, actionCancel for the action editor). On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).[[/FLAT_TRIM]]\\n\\nDeep reference + worked examples: guide:true inline, or hub_get_tool_guide(section=\'set_rule_reference\').[[FLAT_TRIM]] Full create + repair protocol: hub_get_tool_guide(section=\'set_rule_create_reference\'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.\\n\\nOn MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and return one final result. Older clients retain the status:\'in_progress\' remainder envelope. See hub_get_tool_guide(section=\'slow_ops\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","RM rule ID (the rule\'s installed-app id). OMIT to CREATE a new rule (then `name` is required); PROVIDE to EDIT an existing rule."]]]],["name",["m",[["type","string"],["description","Label for the new rule (shown in Hubitat\'s Rule Machine app list). Required on CREATE (when appId is omitted); ignored when appId is provided. To RENAME an existing rule, do not pass name -- write the new label as a setting: settings:{origLabel:\'New Name\'} (a mainPage settings write auto-commits via updateRule, which copies origLabel to the display label; passing button:\'updateRule\' too is harmless but redundant)."]]]],["settings",["m",[["type","object"],["description","Map {inputName: value}: scalars for bool/enum/text/number inputs, list of device IDs for multi-device inputs, capability.* or driver-specific device.* (the multiple=true 3-field contract is emitted and verified automatically \\u2014 you don\'t manage it)."]]]],["button",["m",[["type","string"],["description","Page-transition button name (e.g. updateRule, editCond, pausRule for RM; discover others via hub_get_app_config)."]]]],["pageName",["m",[["type","string"],["description","Optional sub-page for schema introspection + settings POST."]]]],["stateAttribute",["m",[["type","string"],["description","Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."]]]],["addTrigger",["m",[["type","object"],["description","Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:\'switch\'}` is rejected); returns triggerIndex. Capability families (use these display names): Device-state \\u2014 Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source; Numeric \\u2014 Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints; Button; Custom Attribute; Certain Time (and optional date) / Sunrise / Sunset (the picker value is the full \'Certain Time (and optional date)\' string); Mode; Periodic Schedule. Modifiers: andStays, allOfThese. Optional per spec: conditional (sets the conditional-trigger gate \\u2014 pair with `condition` to bind it in one call), condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?, rawSettings?} (a NARROWER set than addRequiredExpression), rawSettings {field:value} with @N = the auto-assigned index (e.g. {\'xVar@N\':\'myVar\'}). addTriggers[] = bulk, updateRule once at the end. Per-field specs and the periodic shape: pass {discover: true}, guide:true, or hub_get_tool_guide(section=\'set_rule_reference_triggers\'). Extended condition shapes: section=\'set_rule_reference_conditions\'. Cross-cutting fail-loud steers: section=\'set_rule_reference_guards\'."]]]],["addTriggers",["m",[["type","array"],["description","Bulk-add triggers (each item the same shape as addTrigger); updateRule fires ONCE at the end. The first failed or partial item stops the batch: later items are notAttempted and updateRule is not fired. Pairs with addActions to build a whole rule in one call."],["items",["m",[["type","object"]]]]]]],["addRequiredExpression",["m",[["type","object"],["description","Add an RM 5.1 Required Expression (the pre-trigger gate that conditions whether the rule may fire); returns conditionIndices. Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}, ...], operator:\'AND\'|\'OR\'|\'XOR\' OR operators:[...] (one per gap; RM walks left to right and stops early, so group mixed AND/OR with subExpression)}. comparator is REQUIRED with attribute (Custom Attribute) and with variable+value (Variable); ASCII !=/<>/== auto-map to RM glyphs, and a free-valued (String) variable/attribute offers `*contains*` (substring match; negate with not:true). STPage capability list and extended shapes (Mode, Between two times, Variable incl. compareToVariable, device-relative compareToDevice, nested subExpression): guide:true or hub_get_tool_guide(section=\'set_rule_reference_conditions\'); cross-cutting fail-loud steers: section=\'set_rule_reference_guards\'."]]]],["replaceRequiredExpression",["m",[["type","object"],["description","Replace the rule\'s existing Required Expression in place (same appId). Same spec as addRequiredExpression ({conditions:[...], operator|operators}, incl. `*contains*` substring match on a free-valued String variable/attribute -- negate with not:true); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing). A failed build leaves the original in place (originalPreserved:true); a failure after the switch rolls back to the original (requiredExpressionRestored).[[FLAT_TRIM]] The new expression is built after the existing one in RM\'s expression editor and the old one is removed only once the new one is complete. The replaced conditions stay listed as unused under Manage Conditions.[[/FLAT_TRIM]]"]]]],["addActions",["m",[["type","array"],["description","Bulk-add actions (each item the same shape as addAction; actions self-bake via doActPage); updateRule fires once at the end. The first failed or partial item stops the batch: later items are notAttempted and updateRule is not fired. Pairs with addTriggers."],["items",["m",[["type","object"]]]]]]],["addLocalVariable",["m",[["type","object"],["description","Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions."]]]],["removeLocalVariable",["m",[["type","object"],["description","Remove a local variable. Spec: {name}. WARNING: RM does NOT refuse to delete a local an action still references \\u2014 the delete usually succeeds and leaves the referencing action Broken; that returns success=false (deleted=true) with a repairHint to restore the pre-delete backup (backupKey in the response) or remove the references first. List current locals via hub_list_rule_local_variables (in hub_read_rules)."]]]],["patches",["m",[["type","array"],["description","Multi-mutation in one call (not a transaction: ops before a stop stay written): each item is a sub-spec with ONE operation key (settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, modifyAction). Operations run sequentially; updateRule fires once at the end; per-op outcome in patches[i]. The first failed or partial op or inner item stops the batch: later ops are notAttempted and updateRule is not fired."],["items",["m",[["type","object"]]]]]]],["removeAction",["m",[["type","object"],["description","Delete one action by index: {index:<N>}. RM preserves remaining indices (no renumbering)."]]]],["clearActions",["m",[["type","boolean"],["description","Pass true to delete every action (highest index first) \\u2014 the wipe-and-rebuild pattern. On a rare unconfirmed late commit (asyncCommitLikely:true) verify via hub_get_app_config(appId); do NOT call cancelTrash (it can commit pending deletes)."]]]],["replaceActions",["m",[["type","array"],["description","Replace the entire action list (not a transaction): clears all actions, bulk-adds every spec here (same shape as addAction items), then updateRule once. The first failed or partial added item stops the rest (notAttempted, no updateRule); the old list is already cleared. Pass [] to clear all (= clearActions). On asyncCommitLikely:true verify before retrying; do NOT call cancelTrash."],["items",["m",[["type","object"]]]]]]],["moveAction",["m",[["type","object"],["description","Move one action up or down a slot: {index:<N>, direction:\'up\'|\'down\'}. For arbitrary reorders prefer replaceActions (one call)."]]]],["removeTrigger",["m",[["type","object"],["description","Delete one trigger by index: {index:<N>}. RM preserves remaining indices. Use addTrigger to add a replacement."]]]],["modifyTrigger",["m",[["type","object"],["description","Change a trigger\'s state field: {index:<N>, mods:{state:\'<new-state>\'}}. Only the state field is supported, and only on device-state triggers (Switch, Motion, Contact, Lock, Presence, ...) \\u2014 Time/Periodic/Mode triggers are rejected with a removeTrigger+addTrigger hint. To change capability or deviceIds, use removeTrigger + addTrigger."]]]],["modifyAction",["m",[["type","object"],["description","Retarget a rule-targeting action in one op: {index:<N>, mods:{ruleIds:[...]}} \\u2014 e.g. point a Run Rule Actions caller at a replacement rule during a staged migration. Supported on runRule/cancelTimers/pauseRule (mods also: action \'pause\'|\'resume\') and privateBoolean (mods also: value bool) actions; other action shapes are rejected toward removeAction + addAction. Implemented as a position-preserving rebuild (remove + re-add + reposition), so the action\'s settings index changes while its position is kept."]]]],["walkStep",["m",[["type","object"],["description","Raw wizard walker \\u2014 LAST RESORT, one call per wizard step (token-heavy): use ONLY when the structured shortcuts can\'t represent the change (Periodic sub-pages, conditional-trigger binding, later-firmware features). operation=\'drive\' runs a whole steps=[...] loop in ONE call (introspect \\u2192 navigate into a sub-page \\u2192 write each field \\u2192 done \\u2192 finalize), carrying the page forward and stopping at the first failed step (stopOnError=false to continue); the single-step primitives drive composes are introspect | write (one field) | click | navigate | done. Spec: {page, operation, write?:{field:value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?}, steps?:[...]}; page is e.g. selectTriggers/selectActions/doActPage/periodic. Always check silentRejection / valueEcho.match / health (the fail-loud signals; health.skipped / health.unreadable mean not-checked, not broken; a standalone mutation with budget-skipped health returns success:false, partial:true, healthUnverified:true -- verify health before continuing, do not replay the committed step). Full walker mechanics + page names: guide:true or hub_get_tool_guide(section=\'set_rule_reference_walkstep\')."]]]],["addAction",["m",[["type","object"],["description","Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:\'log\'}` is rejected); returns actionIndex (no trailing updateRule \\u2014 doActPage self-bakes). Capability names: switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, hsm, shade, fan, mode, setVariable/setLocalVariable, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, fileWrite/fileAppend/fileDelete, zwavePoll; flow control \\u2014 delay, delayPerMode, cancelDelay, repeat, stopRepeat, repeatWhile, waitExpression, waitEvents, ifThen, elseIf, else, endIf, exitRule, comment. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents per rule. Rule-targeting caps (runRule/cancelTimers/pauseRule/privateBoolean) validate each ruleIds entry against the live RM rule list before any write; a rule id that is not an existing rule is rejected -- use hub_list_rules for valid ids. privateBoolean also takes \'*\', RM\'s \\"this rule\\" target, alone or mixed (e.g. [\'*\', 1809]). (On a hub whose rule list can\'t be resolved -- RM not installed or app-tree unreadable -- the check is skipped; a hub with zero rules instead rejects every rule target.) Per-condition shape: {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array \\u2014 a bare integer silently stores {N:null}); nested subExpression not supported here (use addRequiredExpression). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the auto action index (e.g. {\'flashRate.@N\':750}). Per-field specs, the shape guards, and variable-sourced values: pass {discover: true} for the live schema, hub_get_tool_guide(section=\'set_rule_reference_actions\'), or docs/rm_action_subtype_schemas.md. Extended expression shapes (Mode, Between two times, Variable, compareToDevice): section=\'set_rule_reference_conditions\'."]]]],["guide",["m",[["type","boolean"],["description","Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section=\'set_rule_reference\')), without a separate call. Makes NO change to any rule."]]]],["buttonRule",["m",[["type","object"],["description","Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded \\u2014 then author actions via addAction on that appId. The controller must already have a button device."],["properties",["m",[["controllerId",["m",[["type","integer"],["description","Button Controller-5.1 appId"]]]],["buttonNumber",["m",[["type","integer"],["description","button number (>=1)"]]]],["event",["m",[["type","string"],["enum",["l",["pushed","held","doubleTapped","released"]]]]]]]]]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_get_rule_health"],["description","Inspect a rule\'s current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule). This standalone read adds live eventSubscriptionCount/scheduledJobCount, runtime stopped, and status/markup fallbacks for paused. paused is true/false/null (unknown); explicit stopped state outranks display markup. Embedded health from write tools carries the structural verdict and compiled paused only, without these extra reads. With auto or ruleBuilderJson, Visual Rule labels preserve the raw own name; forcing configPage uses the rendered label.[[/FLAT_TRIM]] Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn\'t-check verdict, not evidence of breakage."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app ID to check (Rule Machine or Visual Rules Builder rule)."]]]],["source",["m",[["type","string"],["enum",["l",["auto","ruleBuilderJson","configPage"]]],["description","Which source(s) to read; default auto."]]]]]]],["required",["l",["appId"]]]]]]]],["m",[["name","hub_list_rule_local_variables"],["description","List a Rule Machine rule\'s LOCAL variables (per-rule, distinct from hub globals).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","The Rule Machine rule\'s installed-app id (the rule whose local variables to list)."]]]]]]],["required",["l",["appId"]]]]]]]],["m",[["name","hub_delete_native_app"],["description","Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them.[[FLAT_TRIM]] force=false (default) soft-deletes (hub refuses if the app has child apps/devices); force=true hard-deletes with no child safety checks.[[/FLAT_TRIM]]\\n\\nBEFORE DELETE: full snapshot saved to File Manager (backup.backupKey).[[FLAT_TRIM]] Call hub_restore_backup (in hub_manage_backup) with that key to recreate the app with all its settings re-applied.[[/FLAT_TRIM]]\\n\\nRequires Write master + confirm=true + recent hub backup."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app ID."]]]],["force",["m",[["type","boolean"],["description","true = bypass child/device safety checks and force-delete. Default false."]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["appId","confirm"]]]]]]]],["m",[["name","hub_set_app_disabled"],["description","Enable or disable any installed app (the admin UI red-X) without deleting it \\u2014 reversible and preserves the app\'s config. For Rule Machine rules use hub_set_rule_paused instead. Write master only \\u2014 no confirm/backup needed[[FLAT_TRIM]]; the disabled flag is read-back verified[[/FLAT_TRIM]]."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app ID to enable/disable (from hub_list_apps)."]]]],["disabled",["m",[["type","boolean"],["description","true = disable the app (stop it running), false = enable it."]]]]]]],["required",["l",["appId","disabled"]]]]]]]]]]'])
@@ -32104,6 +32479,276 @@ def _bat529Cb_4076886b_436(def actionSpec, def appId, def applied, def idx, def 
                 _rmWriteSettingOnPage(appId, "doActPage", cpValField, pValue, applied, null, skipped)
             }
 }
+def _bat529Cb_4076886b_20(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_20(*__bat529Tuple)
+}
+def _bat529Cb_4076886b_25(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_25(*__bat529Tuple)
+}
+def _bat529Cb_4076886b_106(def fullMap, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_106(fullMap, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_115(def body, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_115(body, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_179(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_179(*__bat529Tuple)
+}
+def _bat529Cb_4076886b_187(def name, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_187(name, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_190(def bare, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_190(bare, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_195(def bare, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_195(bare, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_236(def configAppName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_236(configAppName, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_237(def configAppName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_237(configAppName, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_265(def failed, def ruleIds, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_265(failed, ruleIds, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_274(def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_274(hrefParams, writeST, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_275(def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_275(hrefParams, writeST, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_276(def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_276(hrefParams, writeST, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_278(def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_278(hrefParams, writeST, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_279(def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_279(hrefParams, writeST, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_280(def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_280(hrefParams, writeST, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_282(def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_282(hrefParams, writeST, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_283(def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_283(hrefParams, writeST, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_296(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_296(*__bat529Tuple)
+}
+def _bat529Cb_4076886b_314(def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_314(hrefParams, writeST, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_317(def writePeriodic, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_317(writePeriodic, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_319(def appId, def cache, def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_319(appId, cache, hrefParams, writeST, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_320(def appId, def cache, def hrefParams, def writeST, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_320(appId, cache, hrefParams, writeST, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_329(def bare, def configAppName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_329(bare, configAppName, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_335(def idx, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_335(idx, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_353(def schema, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_353(schema, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_354(def partialActions, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_354(partialActions, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_356(def partialTriggers, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_356(partialTriggers, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_358(def liveSettings, def settingsMap, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_358(liveSettings, settingsMap, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_359(def liveSettings, def settingsMap, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_359(liveSettings, settingsMap, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_370(def fromValues, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_370(fromValues, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_381(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_381(*__bat529Tuple)
+}
+def _bat529Cb_4076886b_382(def label, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_382(label, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_383(def schema, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_383(schema, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_385(def knownSettings, def schema, def unknownSettings, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_385(knownSettings, schema, unknownSettings, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_387(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_387(*__bat529Tuple)
+}
+def _bat529Cb_4076886b_389(def ids, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_389(ids, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_392(def appId, def applied, def idx, def skipped, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_392(appId, applied, idx, skipped, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_409(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_409(*__bat529Tuple)
+}
+def _bat529Cb_4076886b_413(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_413(*__bat529Tuple)
+}
+def _bat529Cb_4076886b_414(def body, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_414(body, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_415(def body, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_415(body, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_416(def cap, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_416(cap, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_421(def nowMs, def ruleId, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_421(nowMs, ruleId, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_424(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_424(*__bat529Tuple)
+}
+def _bat529Cb_4076886b_426(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_426(*__bat529Tuple)
+}
+def _bat529Cb_4076886b_427(def cap, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_427(cap, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_429(def appId, def label, def validRuleIds, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_429(appId, label, validRuleIds, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_430(def label, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_430(label, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_432(def appId, def blankedInputs, def currentSettings, def extraSettings, def fullMap, def pageName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_432(appId, blankedInputs, currentSettings, extraSettings, fullMap, pageName, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_433(def operator, def opsList, def path, def plan, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_433(operator, opsList, path, plan, *__bat529Tuple)
+}
+def _bat529Cb_4076886b_435(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_435(*__bat529Tuple)
+}
+def _bat529Cb_4076886b_436(def actionSpec, def appId, def applied, def idx, def skipped, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_4076886b_436(actionSpec, appId, applied, idx, skipped, *__bat529Tuple)
+}
 preferences {
     page(name: "mainPage")
     page(name: "confirmDeletePage")
@@ -41015,4 +41660,149 @@ def _bat529Cb_ad9a62cb_192(def body, def schema, def rawKey, def rawVal) {
         if (isDevicePicker) {
             body["deviceList".toString()] = key
         }
+}
+def _bat529Cb_ad9a62cb_53(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_53(*__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_83(def wanted, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_83(wanted, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_89(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_89(*__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_91(def envelopeOnly, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_91(envelopeOnly, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_93(def fileName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_93(fileName, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_101(def readLeaf, def readSet, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_101(readLeaf, readSet, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_107(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_107(*__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_109(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_109(*__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_126(def numbered, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_126(numbered, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_129(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_129(*__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_138(def exactKey, def fileName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_138(exactKey, fileName, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_140(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_140(*__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_141(def manifest, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_141(manifest, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_155(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_155(*__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_157(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_157(*__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_162(def options, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_162(options, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_163(def at, def graceMs, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_163(at, graceMs, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_164(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_164(*__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_165(def mine, def prefixes, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_165(mine, prefixes, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_168(def active, def at, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_168(active, at, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_169(def multipleFlagPoison, def settingsByName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_169(multipleFlagPoison, settingsByName, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_171(def required, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_171(required, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_176(def entries, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_176(entries, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_178(def at, def cleanup, def kept, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_178(at, cleanup, kept, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_183(def stored, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_183(stored, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_187(def rows, def writes, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_187(rows, writes, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_189(def displayMeta, def gatewayConfig, def hideByName, def idempotentNames, def openWorldNames, def readOnlyNames, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_189(displayMeta, gatewayConfig, hideByName, idempotentNames, openWorldNames, readOnlyNames, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_190(def problems, def values, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_190(problems, values, *__bat529Tuple)
+}
+def _bat529Cb_ad9a62cb_192(def body, def schema, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ad9a62cb_192(body, schema, *__bat529Tuple)
 }
