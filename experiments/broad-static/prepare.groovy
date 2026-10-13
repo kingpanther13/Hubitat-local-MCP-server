@@ -416,6 +416,12 @@ def storeReference = { Expression expression ->
     })
     found
 }
+def collectionKind
+collectionKind = { Expression expression, Map locals ->
+    if (expression instanceof BinaryExpression && expression.operation.text == '+') return collectionKind(expression.leftExpression, locals)
+    Map shape = infer(expression, locals, [] as Set)
+    shape?.type in ['java.util.List', 'java.util.Map', 'java.util.Set', 'java.util.Collection'] ? shape.type : null
+}
 
 def originalEdit = { int start, int end, String replacement ->
     // Main-app lines have separate origins; their newlines are appended outside
@@ -592,6 +598,67 @@ methods.each { method ->
         // Offsets below map through replacements, so line count need not match.
         plan.edits.removeAll { it.start >= r[0] && it.end <= r[1] && it.start != it.end }
         plan.edits << [start: r[0], end: r[1], replacement: replacement]
+    }
+    // Some static overloads compile successfully but change runtime behavior.
+    // Collection + Object appends a nested object; Object.isCase uses equality
+    // instead of the runtime List/Set membership. Preserve those operators even
+    // when the static checker reports no error.
+    List unionBindings = []
+    expressionsByMethod[method.name].findAll { it instanceof BinaryExpression && it.operation.text == '||' }.each { either ->
+        if (either.leftExpression instanceof BinaryExpression && either.rightExpression instanceof BinaryExpression &&
+            either.leftExpression.operation.text == 'instanceof' && either.rightExpression.operation.text == 'instanceof' &&
+            either.leftExpression.leftExpression instanceof VariableExpression && either.rightExpression.leftExpression instanceof VariableExpression) {
+            def a = either.leftExpression.leftExpression.accessedVariable
+            def b = either.rightExpression.leftExpression.accessedVariable
+            if (a != null && a.is(b)) unionBindings << a
+        }
+    }
+    List preservation = expressionsByMethod[method.name].findAll { expression ->
+        if (expression instanceof BinaryExpression) return expression.operation.text == 'in' || expression.operation.text == '+' && collectionKind(expression.leftExpression, localsByMethod[method.name])
+        if (expression instanceof PropertyExpression) return expression.safe && expression.objectExpression instanceof MethodCallExpression && expression.propertyAsString
+        if (expression instanceof MethodCallExpression && !expression.implicitThis && expression.objectExpression instanceof VariableExpression && expression.methodAsString == 'size') {
+            return unionBindings.any { it.is(expression.objectExpression.accessedVariable) }
+        }
+        false
+    }.sort { expression -> List r = span(expression); r ? r[1] - r[0] : Integer.MAX_VALUE }
+    preservation.each { expression ->
+        List r = span(expression)
+        if (!r || plan.edits.any { it.start < r[1] && it.end > r[0] && it.start != it.end && !(it.start >= r[0] && it.end <= r[1]) }) return
+        def fragment = { List part ->
+            if (!part) return null
+            String text = source.substring(part[0], part[1])
+            plan.edits.findAll { it.start >= part[0] && it.end <= part[1] && it.start != it.end }.sort { -it.start }.each { edit ->
+                text = text.substring(0, edit.start - part[0]) + edit.replacement + text.substring(edit.end - part[0])
+            }
+            text
+        }
+        String helperName, code, replacement
+        if (expression instanceof BinaryExpression) {
+            List left = span(expression.leftExpression), right = span(expression.rightExpression)
+            if (!left || !right) return
+            String type = expression.operation.text == 'in' ? 'boolean' : collectionKind(expression.leftExpression, localsByMethod[method.name])
+            helperName = prefix + 'Preserve_' + (expression.operation.text == 'in' ? 'In' : 'Plus_' + type.replace('.', '_'))
+            String result = expression.operation.text == 'in' ? 'left in right' : '(' + type + ') (left + right)'
+            code = "@groovy.transform.CompileDynamic\nprivate ${type} ${helperName}(Object left, Object right) {\n    return ${result}\n}\n"
+            replacement = helperName + '(' + fragment(left) + ', ' + fragment(right) + ')'
+        } else if (expression instanceof PropertyExpression) {
+            List receiver = span(expression.objectExpression)
+            if (!receiver) return
+            helperName = prefix + 'Property_Safe_java_lang_Object'
+            code = "@groovy.transform.CompileDynamic\nprivate Object ${helperName}(Object receiver, String key) {\n    return receiver?.\"\u0024{key}\"\n}\n"
+            String key = "'" + expression.propertyAsString.replace('\\', '\\\\').replace("'", "\\'") + "'"
+            replacement = helperName + '(' + fragment(receiver) + ', ' + key + ')'
+        } else {
+            List receiver = span(expression.objectExpression)
+            if (!receiver) return
+            helperName = prefix + 'ReceiverCall_java_lang_Object_0'
+            code = "@groovy.transform.CompileDynamic\nprivate Object ${helperName}(Object receiver, String target) {\n    return receiver.\"\u0024{target}\"()\n}\n"
+            replacement = helperName + '(' + fragment(receiver) + ", 'size')"
+        }
+        plan.helpers[helperName] = code
+        plan.edits.removeAll { it.start >= r[0] && it.end <= r[1] && it.start != it.end }
+        plan.edits << [start: r[0], end: r[1], replacement: replacement]
+        plan.islands << [line: expression.lineNumber, shared: true, semanticBoundary: true, expression: source.substring(r[0], r[1])]
     }
     plans[method.name] = plan
 }

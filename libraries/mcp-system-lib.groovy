@@ -1630,7 +1630,7 @@ def _bat529Cb_523e098a_8(def it) { it
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_523e098a_9(def known, def it) { !(it in known) 
+def _bat529Cb_523e098a_9(def known, def it) { !(__bat529Repair_In(it, known))
 }
 
 @groovy.transform.CompileStatic

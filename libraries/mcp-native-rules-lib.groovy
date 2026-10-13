@@ -93,7 +93,7 @@ private Map _rmWholeGuideSection(String sectionKey) {
         parts << (page.content as String)
         cursor = page.nextCursor
     }
-    def whole = [:] + (result as Map)
+    def whole = __bat529Repair_Plus_java_util_Map([:], result as Map)
     whole.content = parts.join('')
     whole.remove('nextCursor')
     whole.remove('offset')
@@ -528,7 +528,7 @@ def toolRunRmRule(args) {
             if (!out.error) out.error = "Response-budget checkpoint: rule(s) ${remaining.join(', ')} were not yet actioned."
             // Failed ids and un-reached ids are DIFFERENT sets -- the re-issue
             // guidance must carry both or a caller following it strands the failures.
-            def reissueIds = (failed + remaining).unique()
+            def reissueIds = (__bat529Repair_Plus_java_util_List(failed, remaining)).unique()
             out.note = "Budget checkpoint -- re-issue with ruleId=[${reissueIds.join(', ')}] to finish${failed ? " (includes the ${failed.size()} failed id(s), not just the un-reached ones)" : ""}; already-actioned rules no-op safely."
         }
         return out
@@ -1251,7 +1251,7 @@ private List _rmRuleTargetCaps() { ["privateBoolean", "runRule", "cancelTimers",
 @groovy.transform.CompileStatic
 private boolean _rmSpecTargetsRule(Object spec) {
     if (!(spec instanceof Map)) return false
-    return ((__bat529StaticProperty_java_lang_Object(spec, 'capability')?.toString()?.trim()) in __bat529StaticCall_java_util_List_0('_rmRuleTargetCaps'))
+    return (__bat529Repair_In(__bat529StaticProperty_java_lang_Object(spec, 'capability')?.toString()?.trim(), __bat529StaticCall_java_util_List_0('_rmRuleTargetCaps')))
 }
 
 // True when any spec in a bulk action list targets another RM rule. Lets a bulk
@@ -1527,7 +1527,7 @@ private List<String> _rmRecognizedTriggerKeys() {
 // _rmRhsOptionalComparatorMarkers so the changed/became stems have one owner and cannot
 // drift. Used to detect a state-change token that was mistakenly supplied as `state`.
 @groovy.transform.CompileStatic
-private List<String> _rmStateChangeTokenStems() { _rmRhsOptionalComparatorMarkers() + ["increased", "decreased"] }
+private List<String> _rmStateChangeTokenStems() { __bat529Repair_Plus_java_util_List(_rmRhsOptionalComparatorMarkers(), ["increased", "decreased"]) }
 
 // Internal _rm helper -- not part of the tool surface.
 // True when a value looks like a state-change comparator token (wrapped '*changed*' or bare
@@ -1601,7 +1601,7 @@ private String _rmSuggestTriggerCapability(String cap, Collection liveOptions = 
 // shared by the add and modify paths.
 @groovy.transform.CompileStatic
 private boolean _rmStateChangeGuardApplies(String cap) {
-    !(_rmTriggerCapabilityFamily(cap) in ["hub-state", "variable", "custom-attribute", "time", "button"])
+    !(__bat529Repair_In(_rmTriggerCapabilityFamily(cap), ["hub-state", "variable", "custom-attribute", "time", "button"]))
 }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -1681,13 +1681,13 @@ private void _rmValidateRoundZeroTriggerSpec(Map triggerSpec) {
 
     // time is the trigger's mode picker; the UI offers only these options, the clock rides in atTime.
     if (cap.equalsIgnoreCase("Certain Time (and optional date)") && triggerSpec.time != null &&
-            !(triggerSpec.time?.toString() in ["A specific time", "Sunrise", "Sunset"])) {
+            !(__bat529Repair_In(triggerSpec.time?.toString(), ["A specific time", "Sunrise", "Sunset"]))) {
         throw new IllegalArgumentException("addTrigger.time must be one of ['A specific time', 'Sunrise', 'Sunset']; got '${triggerSpec.time}'. Put the clock time in atTime (e.g. time:'A specific time', atTime:'17:30'). Pass {discover: true} for the full trigger schema. RM is not touched.")
     }
 
     if (cap.equalsIgnoreCase("Periodic Schedule") && !(triggerSpec.periodic instanceof Map)) {
         def strayKeys = triggerSpec.keySet().findAll {
-            !(it?.toString() in _rmRecognizedTriggerKeys())
+            !(__bat529Repair_In(it?.toString(), _rmRecognizedTriggerKeys()))
         }
         def detail
         if (triggerSpec.containsKey("periodic")) {
@@ -1717,7 +1717,7 @@ private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
         def periodicKeys = ["frequency", "everyN", "startingTime", "weekdaysOnly", "selectedHours", "selectedMinutes",
                             "selectedDaysOfMonth", "daysOfWeek", "dayOfWeek", "dayOfMonth", "everyNMonths", "months",
                             "weekOfMonth", "minutesOffset", "cronString", "rawSettings"]
-        def unknownKeys = periodic.keySet().collect { it?.toString() }.findAll { !(it in periodicKeys) }
+        def unknownKeys = periodic.keySet().collect { it?.toString() }.findAll { !(__bat529Repair_In(it, periodicKeys)) }
         if (unknownKeys) {
             throw new IllegalArgumentException("Periodic Schedule: unknown periodic key(s) ${unknownKeys}; accepted keys are ${periodicKeys}. Pass {discover:true} for the full periodic field schema. RM is not touched.")
         }
@@ -1726,7 +1726,7 @@ private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
             def requestedCount = null
             try { requestedCount = periodic.everyN as Integer }
             catch (Exception ignored) { requestedCount = null }
-            if (requestedCount == null || !(requestedCount in allowedCounts)) {
+            if (requestedCount == null || !(__bat529Repair_In(requestedCount, allowedCounts))) {
                 throw new IllegalArgumentException("Periodic ${frequency} everyN must be one of ${allowedCounts} (RM restricts the count to this enum); got '${periodic.everyN}'. RM is not touched.")
             }
         }
@@ -1752,7 +1752,7 @@ private void _rmValidateRoundZeroActionSpec(Map actionSpec) {
 
     def capLc = cap.toLowerCase()
     def expressionBearingCaps = ["ifthen", "elseif", "repeatwhile", "waitexpression"]
-    if (capLc in expressionBearingCaps && actionSpec.conditions != null &&
+    if (__bat529Repair_In(capLc, expressionBearingCaps) && actionSpec.conditions != null &&
             !(actionSpec.expression instanceof Map)) {
         throw new IllegalArgumentException("${cap} action takes expression:{conditions:[...], operator|operators}, not a top-level conditions array. Wrap them: expression:{conditions:[...], operator:'AND'}. Pass {discover:true} for the expression shape. RM is not touched.")
     }
@@ -3719,9 +3719,9 @@ private List _rmPatchModifyOpKeys() { ["removeTrigger", "modifyTrigger", "modify
 // success.
 @groovy.transform.CompileStatic
 private List _rmPatchOpKeys() {
-    ["settings", "button", "addTrigger", "addTriggers", "addAction", "addActions", "addRequiredExpression",
+    __bat529Repair_Plus_java_util_List(["settings", "button", "addTrigger", "addTriggers", "addAction", "addActions", "addRequiredExpression",
      "replaceRequiredExpression", "addLocalVariable", "removeLocalVariable", "removeAction", "clearActions",
-     "replaceActions", "moveAction"] + _rmPatchModifyOpKeys()
+     "replaceActions", "moveAction"], _rmPatchModifyOpKeys())
 }
 
 // Refuse the whole batch, before any op runs, when an item carries more than one operation.
@@ -4144,7 +4144,7 @@ private Map _rmRecoverEmptyNavRender(Integer appId, String targetPage, Map hrefP
                 // one beside a fresh page hands the next form post an out-of-date app.version.
                 java.util.Map grafted = [configPage: reread.configPage, navRetried: true]
                 if (reread.app != null) grafted.app = reread.app
-                return navResp + grafted
+                return __bat529Repair_Plus_java_util_Map(navResp, grafted)
             }
         }
     } catch (Exception rereadExc) {
@@ -4614,7 +4614,7 @@ private boolean _rmActionCapUsesActionVerb(String capRaw) {
     def actionEnumCaps = __bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_util_List(((__bat529StaticCall_java_util_Map_0('_rmActionSchemaForDiscover')?.capabilities ?: [])), (this.&_bat529Cb_4076886b_375))), (this.&_bat529Cb_4076886b_388))
     // Actuator display name that names the same operation picker as the shade schema entry.
     def resolved = (want == "window shade" || want == "windowshade") ? "shade" : want
-    return resolved in actionEnumCaps
+    return __bat529Repair_In(resolved, actionEnumCaps)
 }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -5751,7 +5751,7 @@ private Map _rmWithClock(Map spec, Long reqT0) {
     // this internal key, and "x" or 0 would either blow up the cast downstream or read as a
     // budget already spent -- so anything else is ignored and replaced by the real clock.
     if (spec.__reqT0 instanceof Number && ((Number) spec.__reqT0).longValue() > 0) return spec
-    return spec + [__reqT0: reqT0]
+    return __bat529Repair_Plus_java_util_Map(spec, [__reqT0: reqT0])
 }
 
 // Extracted from _rmAddAction to keep that method under the JVM's 64KB per-method bytecode
@@ -5850,7 +5850,7 @@ private String _rmSetVariableValueNumOp(Map actionSpec) {
         throw new IllegalArgumentException("${capLabel}: numOp is only supported with 'value' ('number' sets the variable to value, 'add number' adds value to it). sourceVariable, fromDevice and math select their own numOp -- remove numOp. RM is not touched.")
     }
     String requested = actionSpec.numOp.toString().trim().toLowerCase()
-    if (!(requested in ["number", "add number"])) {
+    if (!(__bat529Repair_In(requested, ["number", "add number"]))) {
         throw new IllegalArgumentException("${capLabel}: numOp '${actionSpec.numOp}' is not supported with 'value'. Supported: 'number' (default, sets the variable to value) or 'add number' (adds value to its current value). To copy another variable use sourceVariable instead of numOp 'variable'; to read a device attribute use fromDevice instead of numOp 'device attribute'; for arithmetic use math instead of numOp 'variable math'. RM is not touched.")
     }
     return requested
@@ -8371,7 +8371,7 @@ java.util.List _setRuleCreateHonored() { ['addTrigger', 'addTriggers', 'addActio
 @groovy.transform.CompileStatic
 java.util.List _setRuleEditOnly() { ['replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions', 'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger', 'modifyAction', 'walkStep', 'settings', 'button'] }
 @groovy.transform.CompileStatic
-def _setRuleOperations() { (['create'] + __bat529StaticCall_java_util_List_0('_setRuleCreateHonored') + __bat529StaticCall_java_util_List_0('_setRuleEditOnly') + ['buttonRule', 'guide', 'discover']).unique() }
+def _setRuleOperations() { (__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(['create'], __bat529StaticCall_java_util_List_0('_setRuleCreateHonored')), __bat529StaticCall_java_util_List_0('_setRuleEditOnly')), ['buttonRule', 'guide', 'discover'])).unique() }
 
 // The thin flat-mode tool (description + inputSchema), substituted for hub_set_rule
 // in getToolDefinitions()'s useGateways==false branch.
@@ -9252,8 +9252,8 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
         if (value instanceof Boolean) serializedValue = value ? "true" : "false"
         else {
             def s = value.toString().toLowerCase()
-            if (s in ["true", "false", "1", "0", "yes", "no"]) {
-                serializedValue = (s in ["true", "1", "yes"]) ? "true" : "false"
+            if (__bat529Repair_In(s, ["true", "false", "1", "0", "yes", "no"])) {
+                serializedValue = (__bat529Repair_In(s, ["true", "1", "yes"])) ? "true" : "false"
             } else {
                 throw new IllegalArgumentException("addLocalVariable.value for Boolean type must be true/false (got '${value}')")
             }
@@ -12617,12 +12617,12 @@ private Map _rmRevertRequiredExpression(Integer appId, List origTokens, String e
     java.util.Map r = __bat529StaticCall_java_util_Map_2('_rmTokSetExpression', appId, origTokens)
     if (r.restored == true) {
         __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "replaceRequiredExpression: rolled app ${appId} back to its original Required Expression: ${errMsg}")
-        return carry + [requiredExpressionRestored: true, originalPreserved: true,
-            error: "${errMsg} The original Required Expression was put back and confirmed."]
+        return __bat529Repair_Plus_java_util_Map(carry, [requiredExpressionRestored: true, originalPreserved: true,
+            error: "${errMsg} The original Required Expression was put back and confirmed."])
     }
     __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "rm-native", "replaceRequiredExpression: rollback of app ${appId} failed (${r.error}): ${errMsg}")
-    return carry + [requiredExpressionRestored: false, originalPreserved: false, partial: true,
-        error: "${errMsg} Putting the original Required Expression back ALSO failed (${r.error}); the rule may be left without its gate. Inspect it with hub_get_app_config(appId=${appId}) and rebuild it with addRequiredExpression if it is gone."]
+    return __bat529Repair_Plus_java_util_Map(carry, [requiredExpressionRestored: false, originalPreserved: false, partial: true,
+        error: "${errMsg} Putting the original Required Expression back ALSO failed (${r.error}); the rule may be left without its gate. Inspect it with hub_get_app_config(appId=${appId}) and rebuild it with addRequiredExpression if it is gone."])
 }
 
 // ---- Restoring a Required Expression from a rule backup ------------------------------------
@@ -13354,7 +13354,7 @@ private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter,
         def recoveryHint = (stopItem instanceof Map && stopItem.op == "modifyTrigger") ?
             __bat529StaticCall_java_lang_String_1('_rmModifyTriggerWizardRecoveryHint', appId) :
             "An item left an editor open (wizardStuck). Close it before any retry: hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for an action, or button='cancelCapab' with the wizard's pageName for a condition. Verify with hub_get_app_config(includeSettings=true), then retry the failed item.".toString()
-        out.repairHints = ([recoveryHint] + (out.repairHints as List))
+        out.repairHints = (__bat529Repair_Plus_java_util_List([recoveryHint], out.repairHints as List))
     }
     out.putAll(extra ?: [:])
     return out
@@ -15796,7 +15796,7 @@ def _bat529Cb_4076886b_71(def it) { __bat529StaticProperty_Safe_java_lang_Object
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_4076886b_72(def it) { !(it in ["AND", "OR", "XOR"]) 
+def _bat529Cb_4076886b_72(def it) { !(__bat529Repair_In(it, ["AND", "OR", "XOR"]))
 }
 
 @groovy.transform.CompileStatic
@@ -16437,7 +16437,7 @@ def _bat529Cb_4076886b_233(def snap, def it) { __bat529StaticReceiverCall_java_l
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_4076886b_234(def it) { it?.toString()?.toLowerCase() in ["true", "false"] 
+def _bat529Cb_4076886b_234(def it) { __bat529Repair_In(it?.toString()?.toLowerCase(), ["true", "false"])
 }
 
 @groovy.transform.CompileStatic
@@ -16471,7 +16471,7 @@ void _bat529Cb_4076886b_242(def it) { __bat529StaticCall_java_lang_Object_2('_re
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_4076886b_243(def it) { __bat529StaticProperty_java_lang_Object(it, 'operation') in ["write", "click", "navigate", "done"] 
+def _bat529Cb_4076886b_243(def it) { __bat529Repair_In(__bat529StaticProperty_java_lang_Object(it, 'operation'), ["write", "click", "navigate", "done"])
 }
 
 @groovy.transform.CompileStatic
@@ -16603,7 +16603,7 @@ def _bat529Cb_4076886b_276(def hrefParams, def writeST, def rk, def rv) { writeS
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_4076886b_277(def specificHintReasons, def it) { !(it instanceof Map && it.reason in specificHintReasons) 
+def _bat529Cb_4076886b_277(def specificHintReasons, def it) { !(it instanceof Map && __bat529Repair_In(it.reason, specificHintReasons))
 }
 
 def _bat529Cb_4076886b_278(def hrefParams, def writeST, def rk, def rv) { writeST(hrefParams, rk.toString(), rv) 
@@ -16616,7 +16616,7 @@ def _bat529Cb_4076886b_280(def hrefParams, def writeST, def rk, def rv) { writeS
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_4076886b_281(def specificHintReasons, def it) { !(it instanceof Map && it.reason in specificHintReasons) 
+def _bat529Cb_4076886b_281(def specificHintReasons, def it) { !(it instanceof Map && __bat529Repair_In(it.reason, specificHintReasons))
 }
 
 def _bat529Cb_4076886b_282(def hrefParams, def writeST, def rk, def rv) { writeST(hrefParams, rk.toString(), rv) 
@@ -16630,7 +16630,7 @@ def _bat529Cb_4076886b_284(def it) { it instanceof Map && it.key?.toString()?.st
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_4076886b_285(def it) { it instanceof Map && !(it.reason in __bat529StaticCall_java_util_List_0('_rmInformationalSkippedReasons')) 
+def _bat529Cb_4076886b_285(def it) { it instanceof Map && !(__bat529Repair_In(it.reason, __bat529StaticCall_java_util_List_0('_rmInformationalSkippedReasons')))
 }
 
 @groovy.transform.CompileStatic
@@ -16793,7 +16793,7 @@ def _bat529Cb_4076886b_322(def it) { it?.toString()
 
 @groovy.transform.CompileStatic
 def _bat529Cb_4076886b_323(def informationalReasons, def it) {
-        it instanceof Map && it.reason != null && !(it.reason in informationalReasons)
+        it instanceof Map && it.reason != null && !(__bat529Repair_In(it.reason, informationalReasons))
     
 }
 
@@ -16974,7 +16974,7 @@ def _bat529Cb_4076886b_361(def s) {
 
 @groovy.transform.CompileStatic
 def _bat529Cb_4076886b_362(def informational, def it) { it instanceof Map && it.key && it.reason &&
-            !(it.reason in informational) && !it.key.toString().startsWith("isCondTrig.") 
+            !(__bat529Repair_In(it.reason, informational)) && !it.key.toString().startsWith("isCondTrig.")
 }
 
 @groovy.transform.CompileStatic

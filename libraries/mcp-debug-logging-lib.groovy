@@ -50,10 +50,10 @@ def toolGetDebugLogs(args) {
 def toolClearDebugLogs(args) {
     __bat529StaticCall_java_lang_Object_0('initDebugLogs')
     java.util.Map cleared = __bat529StaticCall_java_util_Map_1('clearDebugLogEntries', args)
-    if (cleared.status == "in_progress") return cleared + [tool: "hub_delete_debug_logs"]
+    if (cleared.status == "in_progress") return __bat529Repair_Plus_java_util_Map(cleared, [tool: "hub_delete_debug_logs"])
     def detail = cleared.countIncomplete ? "previous entry count unavailable" : "${cleared.clearedCount} entries removed"
     __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "server", "Debug logs cleared (${detail})")
-    return [success: true] + cleared
+    return __bat529Repair_Plus_java_util_Map([success: true], cleared)
 }
 
 def toolSetLogLevel(args) {
@@ -246,9 +246,9 @@ def toolGenerateBugReport(args) {
 @groovy.transform.CompileStatic
 private String _bugReportNormalizeIssueType(raw) {
     def s = raw?.toString()?.toLowerCase()?.trim()
-    if (s in ["bug", "enhancement", "agent_behavior"]) return s
-    if (s in ["feature", "feature_request", "feat"]) return "enhancement"
-    if (s in ["agent-behavior", "agent", "tool_description"]) return "agent_behavior"
+    if (__bat529Repair_In(s, ["bug", "enhancement", "agent_behavior"])) return s
+    if (__bat529Repair_In(s, ["feature", "feature_request", "feat"])) return "enhancement"
+    if (__bat529Repair_In(s, ["agent-behavior", "agent", "tool_description"])) return "agent_behavior"
     return "bug"
 }
 

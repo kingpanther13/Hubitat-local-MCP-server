@@ -231,7 +231,7 @@ private Map _legacyLayoutPost(String id, String accessToken, Map layout) {
 private Map _getLegacyDashboard(String id, Map match) {
     java.util.Map probe = __bat529StaticCall_java_util_Map_1('_legacyDashboardProbe', id)
     if (probe == null || probe.legacy != true) {
-        return match + [partial: true, note: "Listed as a legacy dashboard but its status page was unreadable; layout unavailable (not empty). Retry hub_get_dashboard."]
+        return __bat529Repair_Plus_java_util_Map(match, [partial: true, note: "Listed as a legacy dashboard but its status page was unreadable; layout unavailable (not empty). Retry hub_get_dashboard."])
     }
     java.util.Map out = [id: id, name: (probe.label ?: match.name), type: "legacy"]
     if (probe.deviceIds != null) out.deviceIds = probe.deviceIds
@@ -362,7 +362,7 @@ private void _requireUnprotectedEasyDashboardParent() {
 private String _dashboardTypeArg(raw) {
     def t = raw?.toString()?.trim()?.toLowerCase()
     if (!t) return "easy"
-    if (!(t in ["easy", "legacy"])) {
+    if (!(__bat529Repair_In(t, ["easy", "legacy"]))) {
         throw new IllegalArgumentException("type must be 'easy' or 'legacy' (got '${raw}').")
     }
     return t
@@ -1029,7 +1029,7 @@ private String _dashboardNavSelectionCsv(navigationSelection) {
 private String _dashboardTheme(theme) {
     if (theme == null || !theme.toString().trim()) return "legacy"
     def t = theme.toString().trim().toLowerCase()
-    if (!(t in ["legacy", "light", "dark", "auto"])) {
+    if (!(__bat529Repair_In(t, ["legacy", "light", "dark", "auto"]))) {
         throw new IllegalArgumentException("theme must be one of: legacy, light, dark, auto (got '${theme}').")
     }
     return t

@@ -453,7 +453,7 @@ private Map _vrb2NodeFromDialog(Map node, String typeKey) {
     node.each { k, v ->
         def key = k?.toString()
         if (key == null) return
-        if (key in [typeKey, "id", "kind", "config", "description", "deviceIds", "predefinedColor", "index", "type", "result"]) return
+        if (__bat529Repair_In(key, [typeKey, "id", "kind", "config", "description", "deviceIds", "predefinedColor", "index", "type", "result"])) return
         config.put(key, v)
     }
     def out = [type: node.get(typeKey), config: config]
@@ -548,12 +548,12 @@ private Map _vrb2Compose(Map editor) {
     if (editor == null) throw new IllegalArgumentException("The editor definition must be a JSON object.")
     // A typo such as `conditons` must not silently become "no conditions" (an unconditional
     // rule that reports verified:true). The key set is closed, so refuse anything outside it.
-    def unknownKeys = editor.keySet().collect { it.toString() }.findAll { !(it in _vrb2EditorKeys()) }
+    def unknownKeys = editor.keySet().collect { it.toString() }.findAll { !(__bat529Repair_In(it, _vrb2EditorKeys())) }
     if (unknownKeys) {
         throw new IllegalArgumentException("Unknown editor key(s): ${unknownKeys.join(', ')}. The editor form takes only ${_vrb2EditorKeys().join(', ')}.")
     }
     String decisionType = editor.decisionType?.toString()?.trim() ?: "all"
-    if (!(decisionType in ["all", "any"])) {
+    if (!(__bat529Repair_In(decisionType, ["all", "any"]))) {
         throw new IllegalArgumentException("Unsupported decision type '${decisionType}'. Use 'all' (AND) or 'any' (OR).")
     }
     List<Map> triggers = _vrb2EditorList(editor.triggers, "triggerType", "triggers")
@@ -767,7 +767,7 @@ private List _vrb2Validate(Map graph) {
             errors << "The triggerMerge node must connect to the decision node."
         }
         def terminal = branchMergeIds.size() == 1 ? branchMergeIds[0] : null
-        java.util.Set visited = ([triggerMergeId, decisionId] + triggerIds) as Set
+        java.util.Set visited = (__bat529Repair_Plus_java_util_List([triggerMergeId, decisionId], triggerIds)) as Set
         if (terminal != null) visited << terminal
         java.util.List chainErrors = []
         chainErrors.addAll(__bat529StaticCall_java_util_List_6('_vrb2ValidateChain', kinds, nextMap, decisionId, "true", terminal, visited))
@@ -876,7 +876,7 @@ private void _vrbValidateClassicShape(Map definition) {
     // (and ignored -- the top-level name/paused arguments govern) so a classic read can be fed
     // straight back, which is exactly what the format-mismatch note tells the caller to do.
     def readEnvelope = ["promptHistory", "name", "rawName", "rulePaused", "success", "appId", "format"]
-    def unknownKeys = definition.keySet().collect { it.toString() }.findAll { !(it in ["whenNodes", "thenNodes", "elseNodes"] + readEnvelope) }
+    def unknownKeys = definition.keySet().collect { it.toString() }.findAll { !(__bat529Repair_In(it, __bat529Repair_Plus_java_util_List(["whenNodes", "thenNodes", "elseNodes"], readEnvelope))) }
     if (unknownKeys) throw new IllegalArgumentException("Unknown classic key(s): ${unknownKeys.join(', ')}. A classic definition takes only whenNodes, thenNodes, elseNodes (the keys a hub_get_visual_rule read adds around them are ignored).")
     ["whenNodes", "thenNodes", "elseNodes"].each { key ->
         if (definition[key] == null) return
@@ -2024,7 +2024,7 @@ def _bat529Cb_c0a86baf_21(def it) { it
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_22(def placeholders, def it) { !(it instanceof Map && it.triggerType?.toString() in placeholders) 
+def _bat529Cb_c0a86baf_22(def placeholders, def it) { !(it instanceof Map && __bat529Repair_In(it.triggerType?.toString(), placeholders))
 }
 
 @groovy.transform.CompileStatic
@@ -2047,11 +2047,11 @@ def _bat529Cb_c0a86baf_27(def errors, def it) { errors << "Node '${it}' is not c
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_28(def it) { it instanceof Map && it.kind == "decision" && (it.type == null || it.type in ["all", "any"]) 
+def _bat529Cb_c0a86baf_28(def it) { it instanceof Map && it.kind == "decision" && (it.type == null || __bat529Repair_In(it.type, ["all", "any"]))
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_29(def bareKnown, def knownToRule, def it) { !(__bat529StaticCall_java_lang_String_2('_vrb2TypeKey', __bat529StaticProperty_java_lang_Object(it, 'where'), __bat529StaticProperty_java_lang_Object(it, 'type')) in knownToRule) && !(__bat529StaticProperty_java_lang_Object(it, 'type') in bareKnown) 
+def _bat529Cb_c0a86baf_29(def bareKnown, def knownToRule, def it) { !(__bat529Repair_In(__bat529StaticCall_java_lang_String_2('_vrb2TypeKey', __bat529StaticProperty_java_lang_Object(it, 'where'), __bat529StaticProperty_java_lang_Object(it, 'type')), knownToRule)) && !(__bat529Repair_In(__bat529StaticProperty_java_lang_Object(it, 'type'), bareKnown))
 }
 
 @groovy.transform.CompileStatic
@@ -2088,7 +2088,7 @@ def _bat529Cb_c0a86baf_35(def errors, def nextMap, def triggerMergeId, def tid) 
 
 @groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_36(def out, def cond) {
-                if (cond instanceof Map && !(cond.type?.toString() in __bat529StaticCall_java_util_List_0('_vrb2ConditionTypes'))) __bat529StaticExpr__bat529Cb_c0a86baf_36_0(cond, out)
+                if (cond instanceof Map && !(__bat529Repair_In(cond.type?.toString(), __bat529StaticCall_java_util_List_0('_vrb2ConditionTypes')))) __bat529StaticExpr__bat529Cb_c0a86baf_36_0(cond, out)
             
 }
 

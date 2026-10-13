@@ -184,7 +184,7 @@ java.util.Map toolRestoreItemBackup(args) {
     // REPLACE THE ENTIRE HUB DATABASE and REBOOT the hub -- far higher blast radius than a source
     // re-paste -- so they are confirm-gated here too. Default "source" = app/driver/rule restore.
     def scope = (__bat529StaticProperty_java_lang_Object(args, 'scope') ?: "source").toString()
-    if (scope in ["hub_local", "hub_cloud"]) {
+    if (__bat529Repair_In(scope, ["hub_local", "hub_cloud"])) {
         __bat529StaticCall_java_lang_Object_1('requireDestructiveConfirm', __bat529StaticProperty_java_lang_Object(args, 'confirm'))
         return __bat529StaticCall_java_util_Map_2('_restoreHubBackup', scope, args)
     }
@@ -1084,7 +1084,7 @@ private Map _fullRestoreOptions(opts) {
     if (opts != null && !(opts instanceof Map)) throw new IllegalArgumentException("fullRestore must be an object: {restoreZigbee, restoreZwave, restoreFiles, deleteExistingFiles, allowZwaveFirmwareMismatch} (all booleans, default false).")
     def known = ["restoreZigbee", "restoreZwave", "restoreFiles", "deleteExistingFiles", "allowZwaveFirmwareMismatch"]
     def m = (opts ?: [:]) as Map
-    def unknown = m.keySet().findAll { !(it in known) }
+    def unknown = m.keySet().findAll { !(__bat529Repair_In(it, known)) }
     if (unknown) throw new IllegalArgumentException("Unknown fullRestore field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
     def notBool = m.findAll { k, v -> v != null && !(v instanceof Boolean) }.keySet()
     if (notBool) throw new IllegalArgumentException("fullRestore field(s) ${notBool.join(', ')} must be true or false.")
@@ -1382,7 +1382,7 @@ def _bat529Cb_8f5ba462_1(def it) { __bat529StaticProperty_java_lang_Object(it, '
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_8f5ba462_2(def known, def it) { !(it in known) 
+def _bat529Cb_8f5ba462_2(def known, def it) { !(__bat529Repair_In(it, known))
 }
 
 @groovy.transform.CompileStatic

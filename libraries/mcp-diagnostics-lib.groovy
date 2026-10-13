@@ -8,7 +8,7 @@ library(name: "McpDiagnosticsLib", namespace: "mcp", author: "kingpanther13", de
 def toolGetRadioDetails(args) {
     // Normalize case so clients that capitalize the arg (e.g. "Matter") still dispatch.
     def radio = __bat529StaticProperty_java_lang_Object(args, 'radio')?.toString()?.toLowerCase()
-    if (radio != null && !(radio in ["zwave", "zigbee", "matter"]))
+    if (radio != null && !(__bat529Repair_In(radio, ["zwave", "zigbee", "matter"])))
         throw new IllegalArgumentException("radio must be 'zwave', 'zigbee', or 'matter' (or omit for both Z-Wave and Zigbee)")
     def result
     if (radio == "zwave") result = __bat529StaticCall_java_util_Map_1('toolGetZwaveDetails', args)
@@ -378,7 +378,7 @@ private Map _parseHubLogLine(String line) {
         (parts[0] ==~ /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?/)) {
         String message = parts[2..-1].join("\t").trim()
         def source = message.split("\\|", 4)
-        boolean identified = source.size() == 4 && (source[0] in ["app", "dev"])
+        boolean identified = source.size() == 4 && (__bat529Repair_In(source[0], ["app", "dev"]))
         return [name: identified ? source[2] : "", level: parts[1].trim(), message: message,
                 time: parts[0].trim(), type: identified ? source[0] : "",
                 sourceId: identified ? source[1] : null, hubLocalTime: true]
@@ -2270,7 +2270,7 @@ private Map _zwArgObject(v, String name, List known) {
 
 @groovy.transform.CompileStatic
 private void _zwValidateNetworkKeys(Map keys, List known, String label) {
-    def unknown = keys.keySet().findAll { !(it in known) }
+    def unknown = keys.keySet().findAll { !(__bat529Repair_In(it, known)) }
     if (unknown) throw new IllegalArgumentException("Unknown ${label} key(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
     keys.each { k, v ->
         if (!(v?.toString()?.trim() ==~ /(?i)(0x)?[0-9a-f]{32}/)) throw new IllegalArgumentException("${label}.${k} must be a 32-hex-digit network key.")
@@ -2851,7 +2851,7 @@ def _bat529Cb_7399a956_6(def k, def v) { v != null
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_7399a956_7(def known, def it) { !(it in known) 
+def _bat529Cb_7399a956_7(def known, def it) { !(__bat529Repair_In(it, known))
 }
 
 def _bat529Cb_7399a956_8(def it) { -(it.stateSize ?: 0) 

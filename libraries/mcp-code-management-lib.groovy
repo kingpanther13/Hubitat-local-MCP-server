@@ -935,7 +935,7 @@ def toolListAppPages(args) {
 @groovy.transform.CompileStatic
 java.util.Map toolGetSource(args) {
     def type = __bat529StaticProperty_java_lang_Object(args, 'type')
-    if (!(type in ["app", "driver", "library"])) {
+    if (!(__bat529Repair_In(type, ["app", "driver", "library"]))) {
         throw new IllegalArgumentException("type is required and must be one of: app, driver, library")
     }
     def id = (__bat529StaticProperty_java_lang_Object(args, 'id') != null) ? __bat529StaticProperty_java_lang_Object(args, 'id') : (type == "app" ? __bat529StaticProperty_java_lang_Object(args, 'appId') : (type == "driver" ? __bat529StaticProperty_java_lang_Object(args, 'driverId') : __bat529StaticProperty_java_lang_Object(args, 'libraryId')))
@@ -2276,7 +2276,7 @@ def toolUpdateDriverCode(args) {
 @groovy.transform.CompileStatic
 java.util.Map toolDeleteItem(args) {
     def type = __bat529StaticProperty_java_lang_Object(args, 'type')
-    if (!(type in ["app", "driver", "library"])) {
+    if (!(__bat529Repair_In(type, ["app", "driver", "library"]))) {
         throw new IllegalArgumentException("type is required and must be one of: app, driver, library")
     }
     def id = (__bat529StaticProperty_java_lang_Object(args, 'item_id') != null) ? __bat529StaticProperty_java_lang_Object(args, 'item_id') : (type == "app" ? __bat529StaticProperty_java_lang_Object(args, 'appId') : (type == "driver" ? __bat529StaticProperty_java_lang_Object(args, 'driverId') : __bat529StaticProperty_java_lang_Object(args, 'libraryId')))
@@ -3169,7 +3169,7 @@ def _bat529Cb_3ac884d1_20(def it) { it
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_3ac884d1_21(def knownNames, def it) { !(__bat529StaticProperty_java_lang_Object(it, 'page') in knownNames) 
+def _bat529Cb_3ac884d1_21(def knownNames, def it) { !(__bat529Repair_In(__bat529StaticProperty_java_lang_Object(it, 'page'), knownNames))
 }
 
 @groovy.transform.CompileStatic

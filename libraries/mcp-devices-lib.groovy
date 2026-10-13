@@ -688,7 +688,7 @@ def _buildContextSummaryText() {
     header << "Devices: ${Math.min(lines.size(), records.size())} of ${records.size()}".toString()
     if (meta.idsComplete == false) header << "Inventory incomplete: ${meta.partialNote}".toString()
     if (!records) header << "No devices selected for MCP access and no MCP-managed virtual devices"
-    return __bat529StaticCall_java_lang_String_2('_truncateContextText', (header + lines).join("\n"), records.size())
+    return __bat529StaticCall_java_lang_String_2('_truncateContextText', (__bat529Repair_Plus_java_util_List(header, lines)).join("\n"), records.size())
 }
 
 private String _truncateContextText(String text, int totalDevices) {
@@ -1205,7 +1205,7 @@ private Map _confirmDisabledFlip(deviceId, boolean wantDisabled) {
     java.util.Map fj = __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
     if (fj?.device == null) return [ok: false, fetchFailed: true]
     def raw = __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(fj, 'device'), 'disabled')
-    if (!(raw instanceof Boolean) && !(raw instanceof CharSequence && raw.toString() in ['true', 'false'])) {
+    if (!(raw instanceof Boolean) && !(raw instanceof CharSequence && __bat529Repair_In(raw.toString(), ['true', 'false']))) {
         return [ok: false, fetchFailed: true]
     }
     def nowDisabled = (raw == true || raw?.toString() == "true")
@@ -1410,7 +1410,7 @@ private boolean _deviceConfigurationSecretKey(key) {
     String normalized = key?.toString()?.toLowerCase()?.replaceAll(/[^a-z0-9]/, '') ?: ''
     return normalized.contains('password') || normalized.contains('token') || normalized.contains('secret') ||
         normalized.contains('credential') || normalized.contains('apikey') || normalized.contains('privatekey') ||
-        normalized.contains('accesskey') || normalized in ['psk', 'psw']
+        normalized.contains('accesskey') || __bat529Repair_In(normalized, ['psk', 'psw'])
 }
 
 @groovy.transform.CompileStatic
@@ -1484,14 +1484,14 @@ private _withResolvedManufacturer(value) {
 private Map _publicDevicePreference(Map entry) {
     def copy = [:]
     entry.each { key, value ->
-        if (!(key in ['rawValue', 'declared'])) copy.put(key, _deviceConfigurationPublicValue(value))
+        if (!(__bat529Repair_In(key, ['rawValue', 'declared']))) copy.put(key, _deviceConfigurationPublicValue(value))
     }
     if (_devicePreferenceIsSecret(entry)) {
         if (copy.containsKey('value')) copy.value = '***redacted (password)***'
         if (copy.containsKey('defaultValue')) copy.defaultValue = '***redacted (password)***'
         copy.redacted = true
     }
-    copy.writable = !(entry.valueStatus in ['unknown', 'invalid'])
+    copy.writable = !(__bat529Repair_In(entry.valueStatus, ['unknown', 'invalid']))
     return copy
 }
 
@@ -2432,7 +2432,7 @@ def normalizeCommandParams(params, List declaredTypes = []) {
             def parsed = new groovy.json.JsonSlurper().parseText(s)
             if (parsed instanceof List) return convertParamElements(parsed, declaredTypes)
         } catch (Exception ignored) {}
-        if (declaredTypes[0]?.toString()?.toUpperCase() in ['STRING', 'ENUM']) {
+        if (__bat529Repair_In(declaredTypes[0]?.toString()?.toUpperCase(), ['STRING', 'ENUM'])) {
             if (s.startsWith('["') && s.endsWith('"]')) {
                 return convertParamElements(s.substring(2, s.length() - 2).split('","').toList(), declaredTypes)
             }
@@ -3584,7 +3584,7 @@ private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, Li
         return
     }
     java.util.Map entry = __bat529StaticCall_java_util_Map_2('_lookupDevicePreference', model, name)
-    if (model.writeSafe != true || entry == null || entry.valueStatus in ["unknown", "invalid"]) {
+    if (model.writeSafe != true || entry == null || __bat529Repair_In(entry.valueStatus, ["unknown", "invalid"])) {
         errors << [property: "preference.${name}", stage: "verify", status: entry?.valueStatus == "invalid" ? "invalid" : "unavailable", error: "Update accepted but could not confirm the preference -- saved-value storage is unavailable or invalid."]
         return
     }
@@ -5314,7 +5314,7 @@ def _bat529Cb_15d0a4c9_65(def attr, def it) { __bat529StaticProperty_java_lang_O
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_15d0a4c9_66(def it) { !(it in ["id", "mcpManaged"]) 
+def _bat529Cb_15d0a4c9_66(def it) { !(__bat529Repair_In(it, ["id", "mcpManaged"]))
 }
 
 @groovy.transform.CompileStatic
@@ -5418,7 +5418,7 @@ def _bat529Cb_15d0a4c9_92(def allowed, def it) { !__bat529StaticReceiverCall_jav
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_15d0a4c9_93(def it) { it in ["id", "mcpManaged", "label"] 
+def _bat529Cb_15d0a4c9_93(def it) { __bat529Repair_In(it, ["id", "mcpManaged", "label"])
 }
 
 @groovy.transform.CompileStatic
@@ -5581,7 +5581,7 @@ def _bat529Cb_15d0a4c9_135(def it) { it instanceof String && it
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_15d0a4c9_136(def it) { !(it in ['type', 'value', 'clear', 'multiple']) 
+def _bat529Cb_15d0a4c9_136(def it) { !(__bat529Repair_In(it, ['type', 'value', 'clear', 'multiple']))
 }
 
 @groovy.transform.CompileStatic
@@ -5608,7 +5608,7 @@ def _bat529Cb_15d0a4c9_142(def meshDeviceId, def r, def k) { __bat529StaticRecei
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_15d0a4c9_143(def it) { !(it in ['deviceId', 'bestPracticeKey', 'confirm']) 
+def _bat529Cb_15d0a4c9_143(def it) { !(__bat529Repair_In(it, ['deviceId', 'bestPracticeKey', 'confirm']))
 }
 
 @groovy.transform.CompileStatic
@@ -5648,7 +5648,7 @@ def _bat529Cb_15d0a4c9_153(def record, def it) { __bat529StaticReceiverCall_java
 }
 
 @groovy.transform.CompileStatic
-def _bat529Cb_15d0a4c9_154(def it) { it in ['currentStates', 'capabilities'] 
+def _bat529Cb_15d0a4c9_154(def it) { __bat529Repair_In(it, ['currentStates', 'capabilities'])
 }
 
 @groovy.transform.CompileStatic

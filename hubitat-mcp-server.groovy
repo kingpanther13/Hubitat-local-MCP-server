@@ -1273,7 +1273,7 @@ def _originAllowed() {
 // entries rather than failing open or throwing.
 @groovy.transform.CompileStatic
 def _allowedOriginHosts() {
-    def allowed = [] + __bat529StaticCall_java_util_List_0('_originStaticHosts')
+    def allowed = __bat529Repair_Plus_java_util_List([], __bat529StaticCall_java_util_List_0('_originStaticHosts'))
     try {
         def localIp = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_location(), 'hub'), 'localIP')?.toString()
         if (localIp) {
@@ -1839,10 +1839,10 @@ private def _normalizeInboundToolName(msg) {
     Map params = __bat529StaticProperty_java_lang_Object(msg, 'params') as Map
     Map newParams = params
     if (params.name instanceof String) {
-        newParams = newParams + [name: __bat529StaticCall_java_lang_String_1('_internalToolName', params.name as String)]
+        newParams = __bat529Repair_Plus_java_util_Map(newParams, [name: __bat529StaticCall_java_lang_String_1('_internalToolName', params.name as String)])
     }
     if (params.arguments instanceof Map && __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(params, 'arguments'), 'tool') instanceof String) {
-        newParams = newParams + [arguments: (params.arguments as Map) + [tool: __bat529StaticCall_java_lang_String_1('_internalToolName', __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(params, 'arguments'), 'tool') as String)]]
+        newParams = __bat529Repair_Plus_java_util_Map(newParams, [arguments: __bat529Repair_Plus_java_util_Map(params.arguments as Map, [tool: __bat529StaticCall_java_lang_String_1('_internalToolName', __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(params, 'arguments'), 'tool') as String)])])
     }
     return __bat529StaticBinary_Plus_java_lang_Object(msg, [params: newParams])
 }
@@ -2232,7 +2232,7 @@ private Map _mrtrPendingResult(String stateId, boolean rejoined = false, leafToo
 @groovy.transform.CompileStatic
 private def _mrtrMarkRejoined(result, boolean rejoined) {
     if (!rejoined || !(result instanceof Map)) return result
-    return ([:] + (result as Map)) + [rejoined: true]
+    return __bat529Repair_Plus_java_util_Map(__bat529Repair_Plus_java_util_Map([:], result as Map), [rejoined: true])
 }
 
 // A failed slice may sit on top of committed earlier slices: hand back that ledger and
@@ -2476,7 +2476,7 @@ def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     if (leaf == "hub_call_rule") {
         def ids = __bat529StaticProperty_java_lang_Object(leafArgs, 'ruleId')
         def idCount = (ids instanceof List) ? ids.size() : (ids == null ? 0 : 1)
-        return __bat529StaticProperty_java_lang_Object(leafArgs, 'action') in ["stop", "start"] && idCount > 1
+        return __bat529Repair_In(__bat529StaticProperty_java_lang_Object(leafArgs, 'action'), ["stop", "start"]) && idCount > 1
     }
     return true
 }
@@ -3413,7 +3413,7 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
         retryIds.addAll(__bat529StaticProperty_java_lang_Object(result, 'remainingRuleIds'))
         nextLeaf.ruleId = retryIds.unique()
         kind = "call_rule"
-    } else if (leafTool in ["hub_set_rule", "hub_set_native_app"] && __bat529StaticProperty_java_lang_Object(result, 'status') == "in_progress") {
+    } else if (__bat529Repair_In(leafTool, ["hub_set_rule", "hub_set_native_app"]) && __bat529StaticProperty_java_lang_Object(result, 'status') == "in_progress") {
         if (__bat529StaticProperty_java_lang_Object(result, 'stepsRemaining') instanceof List && !__bat529StaticProperty_java_lang_Object(result, 'stepsRemaining').isEmpty()) {
             if (nextLeaf.operation?.toString() == "walkStep") {
                 def spec = (nextLeaf.args instanceof Map) ? __bat529StaticCall_java_util_Map_1('_mrtrCopyMap', nextLeaf.args as Map) : [:]
@@ -3429,7 +3429,7 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
             kind = "walk_steps"
         } else if ((__bat529StaticProperty_java_lang_Object(result, 'addTriggersRemaining') instanceof List && !__bat529StaticProperty_java_lang_Object(result, 'addTriggersRemaining').isEmpty())
                 || (__bat529StaticProperty_java_lang_Object(result, 'addActionsRemaining') instanceof List && !__bat529StaticProperty_java_lang_Object(result, 'addActionsRemaining').isEmpty())) {
-            if (nextLeaf.operation?.toString() in ["addTriggers", "addActions"]) {
+            if (__bat529Repair_In(nextLeaf.operation?.toString(), ["addTriggers", "addActions"])) {
                 nextLeaf.args = nextLeaf.operation == "addTriggers"
                     ? (__bat529StaticProperty_java_lang_Object(result, 'addTriggersRemaining') ?: []) : (__bat529StaticProperty_java_lang_Object(result, 'addActionsRemaining') ?: [])
             } else {
@@ -3986,7 +3986,7 @@ java.lang.Integer _mrtrAutoContinueDelaySeconds() { 5 }
 @groovy.transform.CompileStatic
 def _mrtrRecentOperations(int limit = 10) {
     Map stored
-    synchronized (WRITE_RESERVATION_LOCK) { stored = [:] + __bat529StaticCall_java_util_Map_1('_writeStateMapLocked', "mrtrRequests") }
+    synchronized (WRITE_RESERVATION_LOCK) { stored = __bat529Repair_Plus_java_util_Map([:], __bat529StaticCall_java_util_Map_1('_writeStateMapLocked', "mrtrRequests")) }
     Set writes = __bat529StaticCall_java_util_Set_0('_mrtrWriteTools')
     List rows = []
     __bat529StaticDgm_each_1_java_util_Map((stored), ((this.&_bat529Cb_ad9a62cb_187).curry([rows, writes] as Object[])))
@@ -4035,7 +4035,7 @@ def runMrtrAutoContinue(Map job = [:]) {
     Map rec
     synchronized (WRITE_RESERVATION_LOCK) {
         java.util.Map stored = __bat529StaticCall_java_util_Map_1('_writeStateMapLocked', "mrtrRequests")
-        rec = (stored.get(stateId) instanceof Map) ? ([:] + (stored.get(stateId) as Map)) : null
+        rec = (stored.get(stateId) instanceof Map) ? (__bat529Repair_Plus_java_util_Map([:], stored.get(stateId) as Map)) : null
     }
     // Only an unclaimed record still sitting at the checkpointed generation needs help. A
     // client that claimed or advanced it is the documented no-op; a record that is gone,
@@ -4219,7 +4219,7 @@ private List _mrtrPatchResults(Map result) {
         // A paused inner list marks its row partial even when every completed item succeeded.
         // That checkpoint marker must not survive successful completion as an item defect.
         if (result.status == "in_progress" && row instanceof Map &&
-                row.op in ["addActions", "addTriggers"] && row.success == true &&
+                __bat529Repair_In(row.op, ["addActions", "addTriggers"]) && row.success == true &&
                 row.results instanceof List && row.results.every {
                     it instanceof Map && it.success != false && it.partial != true
                 }) {
@@ -4806,9 +4806,8 @@ __bat529EachReceiver7
 def getDeveloperModeOnlyToolNames() {
     def cached = __bat529StaticCall_java_lang_Object_1('_toolMetadataGet', "getDeveloperModeOnlyToolNames")
     if (cached != null) return cached
-    java.util.Set built = ([
-    ]
-        + __bat529StaticCall_java_lang_Object_0('_developerModeOnlyToolNames_partSelfAdmin')
+    java.util.Set built = (__bat529Repair_Plus_java_util_List([
+    ], __bat529StaticCall_java_lang_Object_0('_developerModeOnlyToolNames_partSelfAdmin'))
     ) as Set
     return __bat529StaticCall_java_lang_Object_2('_toolMetadataPut', "getDeveloperModeOnlyToolNames", built)
 }
@@ -4817,24 +4816,8 @@ def getDeveloperModeOnlyToolNames() {
 def getReadOnlyToolNames() {
     def cached = __bat529StaticCall_java_lang_Object_1('_toolMetadataGet', "getReadOnlyToolNames")
     if (cached != null) return cached
-    java.util.Set built = ([
-    ]
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partNativeRM')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partRooms')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partBundles')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partVisualRules')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partFiles')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partItemBackups')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDebugLogging')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDiagnostics')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partSystem')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDevices')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partVariables')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partCustomRules')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partCodeManagement')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partHpm')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDiscovery')
-        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDashboards')
+    java.util.Set built = (__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List([
+    ], __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partNativeRM')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partRooms')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partBundles')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partVisualRules')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partFiles')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partItemBackups')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDebugLogging')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDiagnostics')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partSystem')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDevices')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partVariables')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partCustomRules')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partCodeManagement')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partHpm')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDiscovery')), __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDashboards'))
     ) as Set
     return __bat529StaticCall_java_lang_Object_2('_toolMetadataPut', "getReadOnlyToolNames", built)
 }
@@ -4867,24 +4850,8 @@ def getReadOnlyToolNames() {
 def getIdempotentWriteToolNames() {
     def cached = __bat529StaticCall_java_lang_Object_1('_toolMetadataGet', "getIdempotentWriteToolNames")
     if (cached != null) return cached
-    java.util.Set built = ([
-    ]
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partNativeRM')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partRooms')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partBundles')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partVisualRules')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partFiles')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partItemBackups')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partDebugLogging')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partDiagnostics')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partSystem')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partDevices')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partVariables')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partCustomRules')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partCodeManagement')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partSelfAdmin')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partAppCloner')
-        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partDashboards')
+    java.util.Set built = (__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List([
+    ], __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partNativeRM')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partRooms')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partBundles')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partVisualRules')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partFiles')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partItemBackups')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partDebugLogging')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partDiagnostics')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partSystem')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partDevices')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partVariables')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partCustomRules')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partCodeManagement')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partSelfAdmin')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partAppCloner')), __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partDashboards'))
     ) as Set
     return __bat529StaticCall_java_lang_Object_2('_toolMetadataPut', "getIdempotentWriteToolNames", built)
 }
@@ -4910,14 +4877,8 @@ def getIdempotentToolNames() {
 def getOpenWorldToolNames() {
     def cached = __bat529StaticCall_java_lang_Object_1('_toolMetadataGet', "getOpenWorldToolNames")
     if (cached != null) return cached
-    java.util.Set built = ([
-    ]
-        + __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partBundles')
-        + __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partDiagnostics')
-        + __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partSystem')
-        + __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partCodeManagement')
-        + __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partSelfAdmin')
-        + __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partItemBackups')
+    java.util.Set built = (__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List(__bat529Repair_Plus_java_util_List([
+    ], __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partBundles')), __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partDiagnostics')), __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partSystem')), __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partCodeManagement')), __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partSelfAdmin')), __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partItemBackups'))
     ) as Set
     return __bat529StaticCall_java_lang_Object_2('_toolMetadataPut', "getOpenWorldToolNames", built)
 }
@@ -5364,7 +5325,7 @@ def getToolDefinitions() {
 
 @groovy.transform.CompileStatic
 private Map _withMrtrClientErrorHint(Map tool) {
-    return tool + [description: "${tool.description ?: ''}\n\n${_mrtrClientErrorHint()}".toString()]
+    return __bat529Repair_Plus_java_util_Map(tool, [description: "${tool.description ?: ''}\n\n${_mrtrClientErrorHint()}".toString()])
 }
 
 // Returns ALL tool definitions (used internally by gateway catalog and executeTool dispatch)
@@ -9449,7 +9410,7 @@ private boolean _uiValueIsEmpty(v, Map meta = null) {
     if (v instanceof Map) return v.isEmpty()
     def t = meta?.type?.toString()
     if (t != null && t != "enum" && !_isDevicePickerType(t)) {
-        return (t in ["number", "decimal"]) ? v.toString().trim().isEmpty() : v.toString().isEmpty()
+        return (__bat529Repair_In(t, ["number", "decimal"])) ? v.toString().trim().isEmpty() : v.toString().isEmpty()
     }
     def s = v.toString().trim()
     return s.isEmpty() || s == "[]" || s == "null"
@@ -9758,21 +9719,21 @@ def _guideSectionForTool(toolName) {
     if (t == 'hub_set_rule') return 'set_rule_reference'
     if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
     if (t.endsWith('_custom_rule')) return 'rules'
-    if (t in ['hub_set_native_app', 'hub_delete_native_app', 'hub_clone_native_app',
-              'hub_export_native_app', 'hub_import_native_app']) return 'builtin_app_tools_crud'
-    if (t in ['hub_set_app_disabled', 'hub_call_rule', 'hub_set_rule_paused',
-              'hub_set_rule_private_boolean']) return 'builtin_app_tools_rules'
-    if (t in ['hub_get_device', 'hub_update_device']) return 'update_device'
+    if (__bat529Repair_In(t, ['hub_set_native_app', 'hub_delete_native_app', 'hub_clone_native_app',
+              'hub_export_native_app', 'hub_import_native_app'])) return 'builtin_app_tools_crud'
+    if (__bat529Repair_In(t, ['hub_set_app_disabled', 'hub_call_rule', 'hub_set_rule_paused',
+              'hub_set_rule_private_boolean'])) return 'builtin_app_tools_rules'
+    if (__bat529Repair_In(t, ['hub_get_device', 'hub_update_device'])) return 'update_device'
     if (t == 'hub_manage_virtual_device') return 'virtual_devices'
-    if (t in ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard']) return 'dashboards'
-    if (t in ['hub_create_backup', 'hub_restore_backup']) return 'backup'
-    if (t in ['hub_write_file', 'hub_delete_file']) return 'file_manager'
-    if (t in ['hub_call_zwave', 'hub_set_zwave', 'hub_call_zigbee', 'hub_set_zigbee',
-              'hub_call_matter']) return 'hub_admin_write_radios'
-    if (t in ['hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
-              'hub_create_device']) return 'hub_admin_write_devices'
-    if (t in ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
-              'hub_update_firmware', 'hub_call_destructive_ops']) return 'hub_admin_write_destructive'
+    if (__bat529Repair_In(t, ['hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard'])) return 'dashboards'
+    if (__bat529Repair_In(t, ['hub_create_backup', 'hub_restore_backup'])) return 'backup'
+    if (__bat529Repair_In(t, ['hub_write_file', 'hub_delete_file'])) return 'file_manager'
+    if (__bat529Repair_In(t, ['hub_call_zwave', 'hub_set_zwave', 'hub_call_zigbee', 'hub_set_zigbee',
+              'hub_call_matter'])) return 'hub_admin_write_radios'
+    if (__bat529Repair_In(t, ['hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
+              'hub_create_device'])) return 'hub_admin_write_devices'
+    if (__bat529Repair_In(t, ['hub_delete_device', 'hub_delete_room', 'hub_delete_item', 'hub_reboot', 'hub_shutdown',
+              'hub_update_firmware', 'hub_call_destructive_ops'])) return 'hub_admin_write_destructive'
     if (t == 'hub_get_device_attribute') return 'device_authorization'
     if (t == 'hub_report_issue') return 'performance_diagnostics'
     return null
@@ -12611,7 +12572,7 @@ def _bat529Cb_ad9a62cb_181(def excludeIndices, def sequence, def settingsByName,
         if (aType == null && sType != null) aType = __bat529StaticCall_java_lang_String_1('_rmActTypeForStructuralSubType', sType)
         java.util.Map entry = [idx: idx, actType: aType, actSubType: sType]
         // The reverse half-pair is an add-action half-commit, not a leaf; mark it for the walker.
-        if (aType in ["condActs", "repeatActs"] && sType == null) entry.partial = true
+        if (__bat529Repair_In(aType, ["condActs", "repeatActs"]) && sType == null) entry.partial = true
         __bat529StaticExpr__bat529Cb_ad9a62cb_181_1(entry, sequence)
     
 }
@@ -12722,7 +12683,7 @@ def _bat529Cb_ad9a62cb_188(def displayMeta, def idempotentNames, def openWorldNa
                 // (caught by the flat-mode no-leak specs, and it is the flat wire an LLM
                 // actually reads).
                 // The name lets the transform classify the selector as the write tool it fronts.
-                def flatTool = __bat529StaticCall_java_util_List_2('applyDescriptionTransform', [__bat529StaticCall_java_util_Map_0('_setRuleFlatTool') + [name: __bat529StaticProperty_java_lang_Object(base, 'name')]], true)[0]
+                def flatTool = __bat529StaticCall_java_util_List_2('applyDescriptionTransform', [__bat529Repair_Plus_java_util_Map(__bat529StaticCall_java_util_Map_0('_setRuleFlatTool'), [name: __bat529StaticProperty_java_lang_Object(base, 'name')])], true)[0]
                 base = __bat529StaticBinary_Plus_java_lang_Object(base, [description: __bat529StaticProperty_java_lang_Object(flatTool, 'description'), inputSchema: __bat529StaticProperty_java_lang_Object(flatTool, 'inputSchema')])
             }
             __bat529StaticBinary_Plus_java_lang_Object(base, [annotations: __bat529StaticCall_java_util_Map_5('annotationsForLeaf', __bat529StaticProperty_java_lang_Object(tool, 'name') as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)])
@@ -14073,4 +14034,19 @@ private Object __bat529StaticStore_shouldRetryWithFreshCookie_0() {
 @groovy.transform.CompileDynamic
 private Object __bat529StaticStore_shouldRetryWithFreshCookie_1() {
     return atomicState.hubSecurityCookie = null
+}
+
+@groovy.transform.CompileDynamic
+private boolean __bat529Repair_In(Object left, Object right) {
+    return left in right
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529Repair_Plus_java_util_List(Object left, Object right) {
+    return (java.util.List) (left + right)
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529Repair_Plus_java_util_Map(Object left, Object right) {
+    return (java.util.Map) (left + right)
 }
