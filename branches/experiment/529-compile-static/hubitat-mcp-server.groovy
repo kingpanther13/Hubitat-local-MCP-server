@@ -144,9 +144,11 @@ private List _listDashboardsViaChildApps() {
         return null
     }
 }
+@groovy.transform.CompileStatic
 private boolean _isLegacyDashboardParentType(String t) {
     return t && t.startsWith("Hubitat") && t.endsWith("Dashboard")
 }
+@groovy.transform.CompileStatic
 private String _requireDashboardId(rawId, String verbNote) {
     def s = rawId?.toString()?.trim()
     if (!s) {
@@ -344,6 +346,7 @@ private void _requireUnprotectedEasyDashboardParent() {
     }
     parsed.apps.each { walk(it) }
 }
+@groovy.transform.CompileStatic
 private String _dashboardTypeArg(raw) {
     def t = raw?.toString()?.trim()?.toLowerCase()
     if (!t) return "easy"
@@ -682,6 +685,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
     layout.tiles = tiles
     return layout
 }
+@groovy.transform.CompileStatic
 private Integer _tileIdOf(tile) {
     def raw = (tile instanceof Map) ? tile.id : tile
     if (raw == null) return null
@@ -836,10 +840,12 @@ private Map _summarizeDashboard(raw) {
     if (_dashboardRealValue(raw.hsmPin)) out.hsmPin = raw.hsmPin
     return out
 }
+@groovy.transform.CompileStatic
 private boolean _dashboardRealValue(v) {
     def s = v?.toString()
     return s && s != "null" && s != "None"
 }
+@groovy.transform.CompileStatic
 private String _dashboardDeviceCsv(deviceIds, boolean required) {
     def tokens
     if (deviceIds == null) {
@@ -862,6 +868,7 @@ private String _dashboardDeviceCsv(deviceIds, boolean required) {
     }
     return ids.join(",")
 }
+@groovy.transform.CompileStatic
 private List _normalizeDeviceIdList(raw) {
     if (raw instanceof Collection) return raw.collect { it?.toString() }.findAll { it }
     if (raw instanceof String) {
@@ -905,6 +912,7 @@ private String _dashboardNavSelectionCsv(navigationSelection) {
     }
     return items.collect { it?.toString()?.trim() }.findAll { it }.join(",")
 }
+@groovy.transform.CompileStatic
 private String _dashboardTheme(theme) {
     if (theme == null || !theme.toString().trim()) return "legacy"
     def t = theme.toString().trim().toLowerCase()
@@ -2028,6 +2036,7 @@ private List _vrb2ActionTypes() {
             "controlPlayer", "controlThermostat", "setFanSpeed", "setMode", "setModeUnlessAway",
             "exitAwayMode", "runRule", "wait", "cancelWait", "sample"]
 }
+@groovy.transform.CompileStatic
 private Map _vrb2NodeFromDialog(Map node, String typeKey) {
     def config = [:]
     node.each { k, v ->
@@ -2070,6 +2079,7 @@ private List _vrb2EditorList(def raw, String typeKey, String label) {
     raw.eachWithIndex { item, i -> out << _vrb2EditorItem(item, typeKey, "${label}[${i}]") }
     return out
 }
+@groovy.transform.CompileStatic
 private String _vrb2UniqueId(String base, Set used) {
     def candidate = base
     int n = 1
@@ -2210,6 +2220,7 @@ private Map _vrb2Decompose(Map graph) {
             commonActions: branchMergeId != null ? _vrb2WalkChain(byId, nextMap, nextMap["${branchMergeId}:next".toString()], null) : [],
             structureIds: structureIds]
 }
+@groovy.transform.CompileStatic
 private List _vrb2ValidateChain(Map kinds, Map nextMap, String from, String port, String terminal, Set visited) {
     def errs = []
     def start = nextMap["${from}:${port}".toString()]
@@ -2379,6 +2390,7 @@ private List _vrb2Validate(Map graph) {
 private String _vrb2Where(String kind) {
     return kind == "trigger" ? "Trigger node" : (kind == "action" ? "Action node" : "Condition")
 }
+@groovy.transform.CompileStatic
 private String _vrb2TypeKey(String where, String type) {
     return "${where}|${type}".toString()
 }
@@ -2439,6 +2451,7 @@ private Map _vrbClassicToGraph(Map classic, List warnings = null) {
         commonActions: []
     ])
 }
+@groovy.transform.CompileStatic
 private void _vrbValidateClassicShape(Map definition) {
     if (definition == null) throw new IllegalArgumentException("definition must be a JSON object.")
     def readEnvelope = ["promptHistory", "name", "rawName", "rulePaused", "success", "appId", "format"]
@@ -2452,6 +2465,7 @@ private void _vrbValidateClassicShape(Map definition) {
         }
     }
 }
+@groovy.transform.CompileStatic
 private String _vrbPreflightMessage(List validationErrors) {
     return "Definition failed pre-flight validation; nothing was created or saved. Problems: " + validationErrors.join(" ") +
            " Fix them and retry -- see hub_get_tool_guide(section='visual_rule_reference') for the graph schema, the editor form and the type catalogs."
@@ -2489,6 +2503,7 @@ private Map _vrbPreflightRefusal(Integer appId, List validationErrors, String ex
     out.note = extraNote ? "${note} ${extraNote}" : note
     return out
 }
+@groovy.transform.CompileStatic
 private Map _vrbFormatMismatchRefusal(Integer appId, String definitionFormat, String extraNote) {
     def out = [success: false]
     if (appId != null) out.appId = appId
@@ -2502,6 +2517,7 @@ private Map _vrbFormatMismatchRefusal(Integer appId, String definitionFormat, St
     out.note = extraNote ? "${note} ${extraNote}" : note
     return out
 }
+@groovy.transform.CompileStatic
 private String _vrbDetectDefinitionFormat(Map definition) {
     def looksGraph = definition.containsKey("nodes") || definition.containsKey("edges")
     def looksClassic = definition.containsKey("whenNodes") || definition.containsKey("thenNodes") || definition.containsKey("elseNodes")
@@ -2533,6 +2549,7 @@ private Map _vrbNormalizeDefinition(def rawDefinition) {
     }
     return [map: map, format: _vrbDetectDefinitionFormat(map)]
 }
+@groovy.transform.CompileStatic
 private String _vrbBareName(Object raw, boolean paused) {
     def s = raw?.toString()
     if (s != null && paused) {
@@ -3315,6 +3332,7 @@ def _toolDisplayMeta_partVisualRules() {
         hub_delete_visual_rule: [title: "Delete Visual Rule", summary: "Delete a Visual Rules Builder rule, returning its definition for recovery."]
     ]
 }
+@groovy.transform.CompileStatic
 private String _filesFoldCase(value) {
     return value?.toString()?.tr('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
 }
@@ -4567,11 +4585,13 @@ private Map _cloudBackupSize(String path) {
     Long size = _parseSizeBytes(entry.fileSize)
     return (size != null) ? [size: size] : [reason: "sizeUnknown"]
 }
+@groovy.transform.CompileStatic
 private String _sizeLookupError(String reason, String name, String where) {
     if (reason == "notListed") return "No backup '${name}' is in the hub's ${where} backup list.".toString()
     if (reason == "unreadable") return "The hub's ${where} backup list could not be read, so the size of '${name}' is unknown and it was not downloaded.".toString()
     return "The hub's ${where} backup list gives no size for '${name}', so it was not downloaded.".toString()
 }
+@groovy.transform.CompileStatic
 private Long _parseSizeBytes(value) {
     def m = value?.toString() =~ /(?i)^\s*([\d.]+)\s*(B|KB|MB|GB)?\s*$/
     if (!m.find()) return null
@@ -4589,6 +4609,7 @@ private boolean _isFullLocalHubBackup(String fileName) {
     }
     return fileName.toLowerCase().endsWith(".tar.gz")
 }
+@groovy.transform.CompileStatic
 private Map _fullRestoreOptions(opts) {
     if (opts != null && !(opts instanceof Map)) throw new IllegalArgumentException("fullRestore must be an object: {restoreZigbee, restoreZwave, restoreFiles, deleteExistingFiles, allowZwaveFirmwareMismatch} (all booleans, default false).")
     def known = ["restoreZigbee", "restoreZwave", "restoreFiles", "deleteExistingFiles", "allowZwaveFirmwareMismatch"]
@@ -4659,6 +4680,7 @@ private Map _restoreRequestFailed(String type, String location, Exception e) {
     return [success: false, type: type, location: location, outcome: "unknown", error: "The restore request got no answer: ${e.message}",
             note: "The hub may be rebooting into the restore. Do not resend: wait a few minutes, then check hub_get_info (uptime) before deciding."]
 }
+@groovy.transform.CompileStatic
 private _parseJsonOrNull(String raw) {
     if (!raw) return null
     try { return new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return null }
@@ -5153,6 +5175,7 @@ def toolGenerateBugReport(args) {
     }
     return result
 }
+@groovy.transform.CompileStatic
 private String _bugReportNormalizeIssueType(raw) {
     def s = raw?.toString()?.toLowerCase()?.trim()
     if (s in ["bug", "enhancement", "agent_behavior"]) return s
@@ -5261,6 +5284,7 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode, Map identity)
         settingsLines: _bugReportSettingsLines(privacyMode)
     ]
 }
+@groovy.transform.CompileStatic
 private String _bugReportClientLine(Map client) {
     if (!client?.name) return "not reported on this request"
     def line = client.name.toString()
@@ -5312,11 +5336,13 @@ private List _bugReportSettingsLines(String privacyMode) {
         return ["- **Settings:** unavailable (${e.class.simpleName}: ${e.message})".toString()]
     }
 }
+@groovy.transform.CompileStatic
 private String _bugReportFence(String text) {
     def runs = (text ?: "").findAll(/`+/)
     int longest = runs ? runs.collect { it.length() }.max() : 0
     return "`".multiply(Math.max(3, longest + 1))
 }
+@groovy.transform.CompileStatic
 private String _bugReportWrap(String text, int width = 100) {
     if (text == null) return null
     def limit = width > 0 ? width : 100
@@ -5489,6 +5515,7 @@ private String _bugReportFormatLogEntry(entry) {
     def benignTag = _isBenignRmInternalNoise(entry.message) ? " [KNOWN-BENIGN RM-internal noise — non-fatal, not an MCP bug]" : ""
     return "[${ts}] ${lvl}${tool}: ${_bugReportScrubSecrets(entry.message?.toString())}${ruleRef}${benignTag}"
 }
+@groovy.transform.CompileStatic
 private boolean _isBenignRmInternalNoise(message) {
     def m = message?.toString()
     if (m == null) return false
@@ -5607,6 +5634,7 @@ _Add any other context, screenshots, or transcripts when filing._
         verbatimSection + clientLogSection + _stripLibraryMarkers(tailPart) + retainedSection + logSection +
         _stripLibraryMarkers(contextPart)
 }
+@groovy.transform.CompileStatic
 private String _bugReportScrubSecrets(String text) {
     if (text == null) return null
     String keys = "access_token|refresh_token|id_token|auth_token|authToken|access_key|secret_key|secretkey|api_key|apikey|apiKey|x-api-key|client_secret|secret|signature|sig|password|passwd|pwd|token|bearer|auth|key|authorization|cookie"
@@ -5953,6 +5981,7 @@ def toolGetZigbeeDetails(args) {
     mcpLog("info", "hub-admin", "Retrieved Zigbee details")
     return result
 }
+@groovy.transform.CompileStatic
 private Map _parseHubLogLine(String line) {
     if (!line?.trim()) return null
     def parts = line.split("\t", -1)
@@ -6474,6 +6503,7 @@ private List _logsJsonTrimStats(statsList) {
         return trimmed
     }
 }
+@groovy.transform.CompileStatic
 private List _logsJsonTable(Map data, String key) {
     def table = data[key]
     if (table == null) return []
@@ -6612,6 +6642,7 @@ private Map _logsJsonInProgress(String tool) {
         note: "The hub is still producing its Logs page payload (every device and app stat plus the job tables, which grows with hub size). Call ${tool} again with the same arguments; once the fetch finishes, its result is served from a ${(_logsJsonSnapshotTtlMs() / 1000L) as Long} s cache."
     ]
 }
+@groovy.transform.CompileStatic
 private Map _logsJsonFailure(String tool, String detail) {
     String reason = detail?.toString()?.trim() ?: "unknown /logs/json fetch failure"
     return [
@@ -7566,10 +7597,12 @@ private Map _zwFirmwareStartResult(String action, resp, nodeId) {
             note: "Poll hub_get_radio_details(include_firmware=true, node_id=${nodeId}) (firmware.node.progress) or include_status=true (status.zwaveFirmwareBatch) for a batch.",
             response: resp]
 }
+@groovy.transform.CompileStatic
 private Integer _zwNodeNumber(String nodeId) {
     if (!(nodeId ==~ /\d+/)) throw new IllegalArgumentException("node_id must be a decimal Z-Wave node number, got '${nodeId}'.")
     return nodeId as Integer
 }
+@groovy.transform.CompileStatic
 private Integer _zwIntArg(v, String name) {
     def s = v?.toString()?.trim()
     try {
@@ -7585,6 +7618,7 @@ private Map _zwArgObject(v, String name, List known) {
     if (unknown) throw new IllegalArgumentException("Unknown ${name} field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
     return v
 }
+@groovy.transform.CompileStatic
 private void _zwValidateNetworkKeys(Map keys, List known, String label) {
     def unknown = keys.keySet().findAll { !(it in known) }
     if (unknown) throw new IllegalArgumentException("Unknown ${label} key(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
@@ -7592,11 +7626,13 @@ private void _zwValidateNetworkKeys(Map keys, List known, String label) {
         if (!(v?.toString()?.trim() ==~ /(?i)(0x)?[0-9a-f]{32}/)) throw new IllegalArgumentException("${label}.${k} must be a 32-hex-digit network key.")
     }
 }
+@groovy.transform.CompileStatic
 private boolean _radioRefused(resp, boolean strict = false) {
     if (strict) return !(resp instanceof Map) || resp.success != true
     if (resp instanceof Map) return resp.success == false || resp.error || resp._unparseable
     return resp != null
 }
+@groovy.transform.CompileStatic
 private Map _matterPairAnswer(resp, String action, String wifiSsid) {
     def node = (resp instanceof Map) ? resp.nodeId : resp
     String nodeId = node?.toString()?.trim()
@@ -7610,6 +7646,7 @@ private Map _matterPairAnswer(resp, String action, String wifiSsid) {
     if (wifiSsid != null) out.wifiSsid = wifiSsid
     return out
 }
+@groovy.transform.CompileStatic
 private String _radioReason(resp) {
     if (resp == null) return "the hub returned nothing"
     if (resp instanceof Map) return (resp.message ?: resp.error ?: "no reason given").toString()
@@ -7662,6 +7699,7 @@ private Map _zwaveBackupImport(String url) {
         return [success: false, action: "local_backup_import", error: "Upload failed: ${e.message}"]
     }
 }
+@groovy.transform.CompileStatic
 private Map _zwNormalizeKeys(Map keys) {
     return keys.collectEntries { k, v -> [(k.toString()): (v == null ? "" : v.toString().trim().replaceFirst(/(?i)^0x/, ""))] }
 }
@@ -8774,6 +8812,7 @@ private List _meshList(v) {
 private List _meshRefreshIntervals() {
     return [0, 120, 300, 3600]
 }
+@groovy.transform.CompileStatic
 private Map _meshLegFailure(List applied, String whatFailed, detail, String recoveryNote) {
     def msg = (detail instanceof Throwable) ? detail.message : detail?.toString()
     return [success: false,
@@ -9069,6 +9108,7 @@ def toolManageMode(args) {
 private _modePost(String path, Map body) {
     return hubInternalPostJson(path, groovy.json.JsonOutput.toJson(body))
 }
+@groovy.transform.CompileStatic
 private _modeWriteResult(String op, parsed) {
     if (parsed instanceof Map && parsed.success == true) {
         return [success: true, action: op, note: "Read the updated mode list with hub_list_modes."]
@@ -10168,6 +10208,7 @@ private boolean _seedNativeInventoryFromTree(List records, Map inventory = null)
     return true
 }
 def _contextResourceByteBudget() { 80000 }
+@groovy.transform.CompileStatic
 private int _escapedLen(String s) { s == null ? 0 : groovy.json.JsonOutput.toJson(s).length() - 2 }
 def _contextResourcePerDeviceFetchCap() { 20 }
 private int _loadContextResourcePopulation(List records, Map inventory = null) {
@@ -10437,6 +10478,7 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
     }
     return spineFailure
 }
+@groovy.transform.CompileStatic
 private String _allHubCapabilitiesNote(Map inventory) {
     return inventory.partialNote ?: "No capability-bearing source was usable on this hub -- /device/listWithCapabilities/json was removed in platform 2.5.1.173 and later, and /hub2/vrb/devices either did not answer or carried no capabilities lists -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities cannot be read under the current device-access policy. capabilityFilter therefore matches authorized devices only."
 }
@@ -10568,6 +10610,7 @@ private boolean _requireDeviceToolAccess(deviceId) {
     }
     return listed
 }
+@groovy.transform.CompileStatic
 private void _validateNativeDeviceId(deviceId) {
     if (deviceId == null || !(deviceId.toString() ==~ /[0-9]+/)) {
         throw new IllegalArgumentException('deviceId must contain only decimal digits from hub_list_devices')
@@ -10641,6 +10684,7 @@ private Map _mapBypassEventRow(evt) {
     if (triggered) row.triggered = triggered
     return row
 }
+@groovy.transform.CompileStatic
 private Map _parseEventProducer(html) {
     def s = html?.toString()?.trim()
     if (!s) return null
@@ -10814,6 +10858,7 @@ private Map _lookupDevicePreference(Map model, name) {
 private boolean _devicePreferenceIsSecret(Map entry) {
     return entry?.type?.toString() == 'password' || _deviceConfigurationSecretKey(entry?.name)
 }
+@groovy.transform.CompileStatic
 private boolean _deviceConfigurationSecretKey(key) {
     String normalized = key?.toString()?.toLowerCase()?.replaceAll(/[^a-z0-9]/, '') ?: ''
     return normalized.contains('password') || normalized.contains('token') || normalized.contains('secret') ||
@@ -11313,6 +11358,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
     }
     return result
 }
+@groovy.transform.CompileStatic
 private Map _deviceReadFragment(Map snapshot, String token, int start) {
     String serialized = snapshot.content
     int end = Math.min(start + 18000, serialized.length())
@@ -11342,6 +11388,7 @@ private Map _deviceReadContinuation(String cursor, String selection) {
     int start = _parseListCursor(parts[2], snapshot.content.length(), 'hub_get_device')
     return _deviceReadFragment(snapshot, parts[1], start)
 }
+@groovy.transform.CompileStatic
 private int _deviceReadRawCharacters(value, int remaining) {
     if (value instanceof CharSequence) return Math.min(value.length(), remaining + 1)
     int count = 0
@@ -11503,6 +11550,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     }
     return result
 }
+@groovy.transform.CompileStatic
 private _canonicalDeviceIdArg(value) {
     if (value instanceof CharSequence) return value.toString().trim() ?: null
     if (value instanceof Number) return (value == value.longValue()) ? value.longValue().toString() : null
@@ -11697,6 +11745,7 @@ private Map _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) {
     pollArgs.pollIntervalMs = waitFor.containsKey("pollIntervalMs") ? waitFor.pollIntervalMs : 250
     return pollArgs
 }
+@groovy.transform.CompileStatic
 private BigDecimal _parseBigDecimalOrNull(v) {
     if (v instanceof Number) return v as BigDecimal
     if (v instanceof CharSequence && v.isNumber()) {
@@ -11734,6 +11783,7 @@ private Map _fireBypassCommand(deviceId, command, List params, Map fullJson) {
     }
     return null
 }
+@groovy.transform.CompileStatic
 private _runMethodDeviceId(deviceId) {
     def s = deviceId?.toString()
     return (s != null && s.isInteger()) ? s.toInteger() : deviceId
@@ -12515,6 +12565,7 @@ private Map _deviceHistoryBypass(args, Map fj, sinceDate, sinceMode, effectiveHo
     if (timeFilterUnparseable > 0) deviceResult.timeFilterUnparseable = timeFilterUnparseable
     return deviceResult
 }
+@groovy.transform.CompileStatic
 def _prefSaveDeviceId(deviceId) {
     try { return (deviceId != null) ? (deviceId.toString() as Long) : deviceId }
     catch (Exception ignored) { return deviceId }
@@ -12544,6 +12595,7 @@ private List _deviceExtendedFormProperties() {
 private Map _deviceAssistantProperties() {
     return [homeKitEnabled: "homeKit", amazonAlexaEnabled: "amazonAlexa", googleHomeEnabled: "googleHome"]
 }
+@groovy.transform.CompileStatic
 private boolean _deviceFlag(value) {
     return value == true || value?.toString() == "true"
 }
@@ -13945,6 +13997,7 @@ private Map _deviceSwapSnapshot(String deviceId) {
         return null
     }
 }
+@groovy.transform.CompileStatic
 private String _deviceSwapIdentityOutcome(Map fromBefore, Map toBefore, Map fromAfter, Map toAfter) {
     if (fromBefore == null || toBefore == null || fromAfter == null || toAfter == null) return "unreadable"
     for (key in ["dni", "createTime"]) {
@@ -13964,6 +14017,7 @@ private Map _deviceSwapFindInput(Map cfg, String name) {
     }
     return null
 }
+@groovy.transform.CompileStatic
 private List _deviceSwapEnumOptions(Map input) {
     def out = []
     def opts = input?.options
@@ -15149,6 +15203,7 @@ private Map _createVariablesBulk(variables) {
         failedCount: failedCount
     ]
 }
+@groovy.transform.CompileStatic
 private void _validateInitialValue(String name, String type, value) {
     if (value == null) {
         throw new IllegalArgumentException("Initial value is required")
@@ -15750,6 +15805,7 @@ Map _hubVarInUseApps(Integer hubVarsAppId, String varName) {
     }
     return [apps: apps]
 }
+@groovy.transform.CompileStatic
 private List _parseHubVarConsumerAnchors(String html) {
     def apps = []
     def m = html =~ /<a\s+href='\/installedapp\/configure\/(\d+)'[^>]*?title='Open (.*?)'>.*?<\/a>/
@@ -16219,6 +16275,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
         return null
     }
 }
+@groovy.transform.CompileStatic
 private Map buildRuleExport(Map ruleData) {
     return [
         name: ruleData.name,
@@ -16394,6 +16451,7 @@ private void collectDeviceIds(component, String section, Map deviceUsage) {
         }
     }
 }
+@groovy.transform.CompileStatic
 def applyDeviceMapping(data, Map mapping) {
     if (data == null) return null
     if (data instanceof List) {
@@ -16904,6 +16962,7 @@ def toolGetItemSource(String type, String idParam, args) {
         return [success: false, error: "Failed to get ${type} source: ${e.message}"]
     }
 }
+@groovy.transform.CompileStatic
 private String stripAppConfigHtml(value) {
     if (value == null) return null
     def s = value.toString()
@@ -17531,6 +17590,7 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
     return [status: resp?.status, page: page, submitted: true,
             liveSettingsUnavailable: liveSettingsUnavailable, shapeRejections: shapeRejections]
 }
+@groovy.transform.CompileStatic
 boolean _isSimpleSettingValue(v) {
     if (v instanceof Map) return false
     if (v instanceof List) {
@@ -20189,6 +20249,7 @@ def _artifactSizeMarker(String artifactUrl) {
 def _bundleArtifactExists(String artifactUrl) {
     return _artifactSizeMarker(artifactUrl) != null
 }
+@groovy.transform.CompileStatic
 def _parseIncludeDirectives(String source) {
     def tokens = []
     def seen = [] as Set
@@ -21237,6 +21298,7 @@ private void _appClonerApplyStageDisabled(Map result, Integer newAppId, Long req
     Map outcome = _appClonerDisableTargets(plan.targets as List, reqT0, [], plan.failures as List)
     _appClonerFinishStaging(result, newAppId, outcome)
 }
+@groovy.transform.CompileStatic
 private void _appClonerStagingDiscoveryMiss(Map result, String operationLabel) {
     result.stagedDisabled = []
     result.success = false
@@ -22082,6 +22144,7 @@ def toolSearchCorpusFingerprint(List defs = null) {
 private String _bm25DocText(entry) {
     return "${entry.name} ${entry.title ?: ''} ${entry.description} ${entry.params ?: ''} ${entry.hints ?: ''}"
 }
+@groovy.transform.CompileStatic
 private long _fpField(long h, value) {
     String s = (value == null) ? "" : value.toString()
     h = h * 31L + s.length()
@@ -22111,10 +22174,12 @@ private buildToolSearchCorpus(List defs = null) {
     }
     return corpus
 }
+@groovy.transform.CompileStatic
 private bm25Tokenize(String text) {
     if (!text) return []
     return text.toLowerCase().split(/[^a-z0-9]+/).findAll { it.length() > 1 }
 }
+@groovy.transform.CompileStatic
 private String _bm25Key(String token) {
     return "t_${token}".toString()
 }
@@ -22800,6 +22865,7 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
     entry.paused = paused
     entry.status = disabled ? "disabled" : (stopped ? "stopped" : (paused ? "paused" : "active"))
 }
+@groovy.transform.CompileStatic
 private String _rmStripTrailingDecoration(Object raw, String suffix) {
     def s = raw?.toString()
     if (s == null) return null
@@ -23030,6 +23096,7 @@ private Map sendRmActionFallback(List<Integer> ruleIds, String rmAction, String 
         return [success: false, error: "RMUtils.sendAction failed: ${m2}", note: "4-arg attempt also failed: ${m1}. ${_rmSendActionErrorNote(rmAction, ruleIds, m2)}"]
     }
 }
+@groovy.transform.CompileStatic
 private String _rmMainPageDoneRepairHint(Integer appId, Map done) {
     if (done?.uiBlocked == true) {
         return "The closing mainPage Done was refused, as Hubitat's app page would refuse it (${done.reason}). Settings are already written; set the listed fields with hub_set_native_app(appId=${appId}, settings={...}), which re-runs the Done.".toString()
@@ -23104,6 +23171,7 @@ private Map _rmCheckSubscriptionSettle(Integer appId) {
         suppressedBy: _rmTriggerSubscriptionGate(status)
     ]
 }
+@groovy.transform.CompileStatic
 private String _rmSuppressedSettleText(Object gate) {
     def why = [requiredExpressionFalse: "its Required Expression is false (RM removes trigger subscriptions until it is true)",
                paused: "the rule is paused", stopped: "the rule is stopped"][gate?.toString()] ?: "RM reports the rule as inactive (${gate})"
@@ -23209,11 +23277,13 @@ private List _rmInformationalSkippedReasons() {
             "state_change_comparator_ignored_explicit_value",
             "device_list_committed_schema_unchanged"]
 }
+@groovy.transform.CompileStatic
 private boolean _rmStatusEntryIsDeviceList(Object entry) {
     if (!(entry instanceof Map)) return false
     def e = entry as Map
     return (e.deviceIdsForDeviceList instanceof List) || (e.deviceList instanceof Map)
 }
+@groovy.transform.CompileStatic
 private Set _rmStatusEntryDeviceIds(Object entry) {
     if (!(entry instanceof Map)) return [] as Set
     def e = entry as Map
@@ -23300,15 +23370,19 @@ private List _rmNormalizeRuleIdsForWrite(Object ids, boolean allowThisRule = fal
         return c
     }
 }
+@groovy.transform.CompileStatic
 private boolean _rmIsThisRuleTarget(Object id) {
     return id?.toString()?.trim() == "*"
 }
+@groovy.transform.CompileStatic
 private boolean _rmTargetAllowsThisRule(Object capability) {
     return capability?.toString() == "privateBoolean"
 }
+@groovy.transform.CompileStatic
 private String _rmThisRuleUnsupportedMessage(Object label) {
     return "${label} target '*' is Rule Machine's \"this rule\" target. It is supported only for privateBoolean actions; for this action use the rule's own numeric id (hub_list_rules) or edit it in the RM wizard. RM is not touched.".toString()
 }
+@groovy.transform.CompileStatic
 private Integer _rmCoerceRuleId(Object id) {
     try {
         if (id instanceof Number) {
@@ -23344,6 +23418,7 @@ private void _rmValidateRuleTargetExists(String label, Object ids, Set validRule
         }
     }
 }
+@groovy.transform.CompileStatic
 String _rmNormalizeComparator(Object raw) {
     if (raw == null) return null
     def s = raw.toString()
@@ -23361,6 +23436,7 @@ boolean _rmComparatorIsRhsOptional(Object rawComparator) {
     if (token == null) return false
     return _rmRhsOptionalComparatorMarkers().any { m -> token == m || token.startsWith(m + " ") }
 }
+@groovy.transform.CompileStatic
 private String _rmComparatorToken(Object raw) {
     def s = raw?.toString()?.trim()?.toLowerCase()
     if (!s) return null
@@ -23391,6 +23467,7 @@ List _rmReadPickerOptionStrings(Object pickerInput) {
         (o instanceof Map ? o.value?.toString() : o?.toString())
     }).findAll { it }
 }
+@groovy.transform.CompileStatic
 private String _rmNotRepresentableEnumComparatorHint(Object attribute, Object comparator) {
     def attrName = attribute?.toString()
     def cmp = comparator?.toString()
@@ -23435,6 +23512,7 @@ private String _rmSuggestTriggerCapability(String cap, Collection liveOptions = 
 private boolean _rmStateChangeGuardApplies(String cap) {
     !(_rmTriggerCapabilityFamily(cap) in ["hub-state", "variable", "custom-attribute", "time", "button"])
 }
+@groovy.transform.CompileStatic
 private String _rmPeriodicShapeError(String freq, Map per) {
     if (per?.rawSettings instanceof Map && !(per.rawSettings as Map).isEmpty()) return null
     switch (freq) {
@@ -25061,6 +25139,7 @@ Boolean _rmIsAppDisabled(Integer appId) {
     mcpLog("warn", "rm-native", "_rmIsAppDisabled(${appId}): ${why} on two attempts -- disabled state UNKNOWN, proceeding")
     return null
 }
+@groovy.transform.CompileStatic
 private String _rmEditOpLabel(Map args) {
     if (args == null) return "edit"
     def first = ["button", "addTrigger", "addAction", "addActions", "addTriggers",
@@ -25171,9 +25250,11 @@ Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
     }
     throw new IllegalStateException("removeTrigger(${triggerIdx}): after the delete click, one verified re-click, and ~8s of polling, trigger ${triggerIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check trigger ${triggerIdx}. If still present -> safe to call removeTrigger(index:${triggerIdx}) again. If gone -> a click committed late (rare); the removal already succeeded, do not retry. If a retry also fails, hub_restore_backup to the pre-operation snapshot. Indices shift on deletion, so retrying without this check can delete the wrong trigger.")
 }
+@groovy.transform.CompileStatic
 private String _rmModifyTriggerNoStateMessage(Integer triggerIdx) {
     return "modifyTrigger: trigger ${triggerIdx} has no 'state' value to change -- this trigger does not expose a plain state field. Use removeTrigger + addTrigger to reconfigure it.".toString()
 }
+@groovy.transform.CompileStatic
 private String _rmModifyTriggerWizardRecoveryHint(Integer appId) {
     return "A trigger editor may still be open. Inspect hub_get_app_config(appId=${appId}, pageName='selectTriggers', includeSettings=true) before another edit. Only if the original trigger editor remains open, close it with hub_set_rule(appId=${appId}, button='hasAll', pageName='selectTriggers', confirm=true), then verify it closed with hub_get_app_config. Do not click hasAll again if the editor already closed.".toString()
 }
@@ -25394,12 +25475,14 @@ private void _rmRejectMultiOpPatchItems(List patchesList) {
         }
     }
 }
+@groovy.transform.CompileStatic
 private Integer _rmPatchOpIndex(String op, Object raw) {
     if (raw instanceof Number) return (raw as Number).intValue()
     String text = raw?.toString()?.trim()
     if (text?.isInteger()) return text.toInteger()
     throw new IllegalArgumentException("${op}.index must be an integer index (from hub_get_app_config), got '${raw}'")
 }
+@groovy.transform.CompileStatic
 private boolean _rmModifyTriggerInnerPartial(Map res) {
     ((res?.settingsSkipped as List)?.size() ?: 0) > 0 || res?.verificationFetchFailed == true
 }
@@ -25423,6 +25506,7 @@ private Map _rmPatchModifyOp(Integer appId, Map pm, Long reqT0) {
     }
     return [op: op] + (_rmModifyAction(appId, index, spec.mods as Map, reqT0) ?: [:])
 }
+@groovy.transform.CompileStatic
 private String _rmModifyPostDeleteMsg(Integer actionIdx, String leg, Exception e, Integer rebuiltIdx = null) {
     def m = (e.message ?: e.toString()).replace("RM is not touched", "the original action WAS already removed")
     def rebuilt = rebuiltIdx != null ? " The rebuilt action IS in the rule at settings index ${rebuiltIdx} (position NOT restored)." : ""
@@ -25815,6 +25899,7 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     def persisted = schemaShifted || valueLanded || renderShifted || settingsLanded
     return [persisted: persisted, schemaShifted: schemaShifted, valueLanded: valueLanded, renderShifted: renderShifted, settingsLanded: settingsLanded, verifyFetchFailed: false, afterKeys: afterKeys.toList().sort()]
 }
+@groovy.transform.CompileStatic
 private String _rmCommaJoinedModeHint(Object rawName, Collection validNames, String context = "") {
     def s = rawName?.toString()
     if (s == null || !s.contains(",")) return null
@@ -26718,6 +26803,7 @@ private void _rmValidateActionExpressionShape(String cap, Map exprSpec) {
         }
     }
 }
+@groovy.transform.CompileStatic
 private Map _rmWithClock(Map spec, Long reqT0) {
     if (reqT0 == null || spec == null) return spec
     if (spec.__reqT0 instanceof Number && ((Number) spec.__reqT0).longValue() > 0) return spec
@@ -26816,9 +26902,11 @@ private void _rmPrevalidateActionSpecList(List specs, String label, Set validRul
         }
     }
 }
+@groovy.transform.CompileStatic
 private String _rmNotTouched(String msg) {
     return (msg ?: "").contains("RM is not touched") ? msg : "${msg} RM is not touched.".toString()
 }
+@groovy.transform.CompileStatic
 private String _rmSetVariableValueNumOp(Map actionSpec) {
     if (actionSpec.numOp == null) return "number"
     String capLabel = (actionSpec.capability?.toString()?.trim() == "setLocalVariable") ? "setLocalVariable" : "setVariable"
@@ -27344,6 +27432,7 @@ def _rmNumericVarTypeTokens() { ["integer", "bigdecimal"] }
 boolean _rmIsNumericVarType(String token) {
     token != null && _rmNumericVarTypeTokens().any { it.equalsIgnoreCase(token) }
 }
+@groovy.transform.CompileStatic
 def _rmAsPositiveDeviceId(Object raw) {
     if (raw == null) return null
     if (raw instanceof Number) {
@@ -27391,6 +27480,7 @@ private List _rmStructuralSequenceFromSpecList(List specList) {
     }
     out
 }
+@groovy.transform.CompileStatic
 private String _rmPreflightRestoreHint(String reason = null, Map backup = null, String lead = null) {
     def why = reason ? " Reason: ${reason}" : ""
     def snapshot = !backup?.backupKey ? " No backup was taken." :
@@ -27429,6 +27519,7 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
     if (health != null) result.health = health
     result
 }
+@groovy.transform.CompileStatic
 private List _rmStructuralPairForCapability(String cap) {
     if (cap == null) return null
     switch (cap.toString()) {
@@ -27844,6 +27935,7 @@ private Map _rmWalkStepHealth(Integer appId, Long t0) {
     }
     return _rmCheckRuleHealth(appId)
 }
+@groovy.transform.CompileStatic
 private boolean _rmHealthGatePass(Map health) {
     return health?.ok == true || health?.unreadable == true
 }
@@ -27864,6 +27956,7 @@ private List _rmPreExistingStructuralOnly(List baseline, Map finalHealth) {
     if (!after) return null
     return _rmPreExistingStructuralSubset(baseline, finalHealth).size() == after.size() ? after : null
 }
+@groovy.transform.CompileStatic
 private List _rmPreExistingStructuralSubset(List baseline, Map finalHealth) {
     if (baseline == null || !(finalHealth instanceof Map)) return []
     def before = baseline.collect { it?.toString() } as Set
@@ -30264,6 +30357,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
     }
     return out
 }
+@groovy.transform.CompileStatic
 private String _rmStripNotTouched(String msg) {
     (msg ?: "").replace(" RM is not touched.", "").replace("RM is not touched", "the rule WAS changed")
 }
@@ -30509,6 +30603,7 @@ Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache = null) {
         (sec?.input ?: []).collect { it?.name?.toString() }
     }.findAll { it } as Set
 }
+@groovy.transform.CompileStatic
 private List _rmHealthRegressionNewIssues(Map baselineHealth, Map nowHealth) {
     if (nowHealth?.unreadable == true) return []
     def baselineIssues = (baselineHealth?.issues ?: []) as Set
@@ -30610,6 +30705,7 @@ private List _rmReadExpressionTokens(Integer appId) {
     def toks = (parsed.eval instanceof Map) ? parsed.eval["0"] : null
     return (toks instanceof List) ? new ArrayList(toks as List) : []
 }
+@groovy.transform.CompileStatic
 private String _rmTokenValue(Object tok) {
     return tok?.toString()?.trim()
 }
@@ -30749,6 +30845,7 @@ private Map _rmRevertRequiredExpression(Integer appId, List origTokens, String e
     return carry + [requiredExpressionRestored: false, originalPreserved: false, partial: true,
         error: "${errMsg} Putting the original Required Expression back ALSO failed (${r.error}); the rule may be left without its gate. Inspect it with hub_get_app_config(appId=${appId}) and rebuild it with addRequiredExpression if it is gone."]
 }
+@groovy.transform.CompileStatic
 private Map _rmConditionTexts(Map state) {
     def out = [:]
     if (state?.get("capabsfalse") instanceof Map) (state.get("capabsfalse") as Map).each { id, txt ->
@@ -30936,6 +31033,7 @@ private Integer _rmReplayConditionSlot(Integer appId, Map srcSettings, int srcId
     }
     throw new IllegalStateException("the restored condition (from slot ${srcIdx}) did not complete within the wizard step limit")
 }
+@groovy.transform.CompileStatic
 private boolean _rmReplayValueMatches(Object current, Object want) {
     def norm = { o ->
         if (o instanceof Map) return (o as Map).keySet().collect { it?.toString() }.sort()
@@ -31337,12 +31435,15 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Map backup
         [baselineHealth: baselineHealth, deferUpdateRule: deferFinalize,
          deferredRestoreExtra: [origTokens: origTokens]])
 }
+@groovy.transform.CompileStatic
 private _stripInternalClock(rem) {
     return (rem instanceof Map) ? ((Map) rem).findAll { k, v -> k?.toString() != "__reqT0" } : rem
 }
+@groovy.transform.CompileStatic
 private boolean _rmBulkItemBlocks(r) {
     return r instanceof Map && (r.success == false || r.partial == true)
 }
+@groovy.transform.CompileStatic
 private Map _rmBulkNotAttempted(String stoppedAfter) {
     return [success: false, notAttempted: true, error: "not attempted: bulk stopped after ${stoppedAfter} failed or was partial".toString()]
 }
@@ -33229,6 +33330,7 @@ def uninstalled() {
     try { unsubscribe() } catch (Exception e) {   }
     try { unschedule() } catch (Exception e) {   }
 }
+@groovy.transform.CompileStatic
 private String _protectedAppId(value) {
     String id = value?.toString()?.trim()
     return id?.isLong() && id.toLong() > 0L ? id.toLong().toString() : null
@@ -33611,6 +33713,7 @@ def _originHost(String origin) {
     if (scheme < 0) return null
     return _authorityHost(s.substring(scheme + 3))
 }
+@groovy.transform.CompileStatic
 def _authorityHost(String authority) {
     String s = authority?.trim()
     if (!s) return null
@@ -33684,6 +33787,7 @@ def _requestMetaProtocolVersion(msg) {
     def version = meta["io.modelcontextprotocol/protocolVersion"]
     return version == null ? null : version.toString()
 }
+@groovy.transform.CompileStatic
 def _decodeHeaderValue(String value) {
     if (value == null) return null
     if (value.length() < 11 || !value.startsWith("=?base64?") || !value.endsWith("?=")) return value
@@ -33746,12 +33850,14 @@ private Map _mcpClientInfoFrom(msg) {
     if (!(info instanceof Map)) info = params["clientInfo"]
     return (info instanceof Map) ? info : null
 }
+@groovy.transform.CompileStatic
 private boolean _mcpClientIsWrapper(String name, String version) {
     String lower = name?.toLowerCase()
     if (!lower) return false
     if (lower == "mcp") return version == null || version == "0.1.0"
     return ["mcp-remote", "mcp-proxy", "fastmcp-remote", "supergateway"].contains(lower)
 }
+@groovy.transform.CompileStatic
 private String _mcpClientString(value) {
     if (value == null) return null
     String s = value.toString().replaceAll(/[\r\n\t`]/, " ").replaceAll(/ {2,}/, " ").trim()
@@ -34204,6 +34310,7 @@ private Map _mrtrPendingResult(String stateId, boolean rejoined = false, leafToo
     }
     return pending
 }
+@groovy.transform.CompileStatic
 private def _mrtrMarkRejoined(result, boolean rejoined) {
     if (!rejoined || !(result instanceof Map)) return result
     return ([:] + (result as Map)) + [rejoined: true]
@@ -34293,6 +34400,7 @@ def _relayBudgetMs() {
 def _lanBudgetMs() {
     return _flooredBudgetMs(settings.lanBudgetMs != null ? (settings.lanBudgetMs as Long) : 0L)
 }
+@groovy.transform.CompileStatic
 private long _flooredBudgetMs(long configuredMs) {
     return configuredMs > 0L ? Math.max(6000L, configuredMs) : configuredMs
 }
@@ -34382,7 +34490,9 @@ private boolean _isActualWriteCall(outerToolName, leafToolName, args) {
     if (leaf == "hub_set_native_app" && _isNativeAppSchemaOnlyCall(safeArgs)) return false
     return true
 }
+@groovy.transform.CompileStatic
 private long _writeLeaseMs() { 3L * 60L * 1000L }
+@groovy.transform.CompileStatic
 private long _packageDeployRecoveryMs() { 10L * 60L * 1000L }
 private def _writeStateDurableRead(String stateKey) {
     if (stateKey == "mrtrRequests") return atomicState.mrtrRequests
@@ -34559,10 +34669,12 @@ private void _writeReleaseRequest(String leaseId) {
         }
     }
 }
+@groovy.transform.CompileStatic
 private Map _mrtrCopyMap(Map value) {
     if (value == null) return [:]
     return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(value)) as Map
 }
+@groovy.transform.CompileStatic
 private def _mrtrLeafArguments(String outerTool, String leafTool, Map outerArgs) {
     if (outerTool == leafTool) return outerArgs
     def inner = outerArgs.args
@@ -34625,6 +34737,7 @@ private Map _mrtrBinding(outerToolName, leafToolName, Map args) {
         argDigest: _mrtrSha256(canonical)
     ]
 }
+@groovy.transform.CompileStatic
 private String _mrtrSha256(String value) {
     def digester = java.security.MessageDigest.getInstance("SHA-256")
     def digest = digester.digest(value.getBytes("UTF-8"))
@@ -34637,6 +34750,7 @@ private String _mrtrSha256(String value) {
     }
     return hex.toString()
 }
+@groovy.transform.CompileStatic
 private def _mrtrCanonicalArgs(value) {
     if (value instanceof Map) {
         def canonical = [:]
@@ -34649,12 +34763,14 @@ private def _mrtrCanonicalArgs(value) {
     if (value instanceof List) return value.collect { _mrtrCanonicalArgs(it) }
     return value
 }
+@groovy.transform.CompileStatic
 private boolean _mrtrBindingMatches(Map rec, Map binding) {
     return rec.outerTool?.toString() == binding.outerTool?.toString() &&
         rec.leafTool?.toString() == binding.leafTool?.toString() &&
         rec.argDigest?.toString() == binding.argDigest?.toString()
 }
 def _mrtrActiveTtlMs() { _writeLeaseMs() }
+@groovy.transform.CompileStatic
 def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
 def _mrtrReadTerminalTtlMs() { _logsJsonSnapshotTtlMs() }
 def _mrtrMaxRecords() { 16 }
@@ -35418,6 +35534,7 @@ private def _mrtrAggregateTerminal(Map rec, result) {
                 startedAt: rec.startedAt]
     return out
 }
+@groovy.transform.CompileStatic
 private String _mrtrShiftIndex(String text, String token, int offset) {
     if (text == null || offset == 0 || !text.contains(token)) return text
     StringBuilder out = new StringBuilder()
@@ -35439,6 +35556,7 @@ private String _mrtrShiftIndex(String text, String token, int offset) {
     out.append(text.substring(from))
     return out.toString()
 }
+@groovy.transform.CompileStatic
 private void _mrtrRewriteStopRefs(node, Closure fix) {
     if (node instanceof Map) {
         Map m = node as Map
@@ -35786,6 +35904,7 @@ private List _mrtrWalkSteps(Map aggregate, Map result) {
     }
     return numbered
 }
+@groovy.transform.CompileStatic
 private List _mrtrPatchResults(Map result) {
     def rows = result.patchResults instanceof List ? result.patchResults :
         (result.patches instanceof List ? result.patches : [])
@@ -35843,6 +35962,7 @@ private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
     return [results: _mrtrCollapseRuleResults(prior + _mrtrRuleResultRows(resultLike)),
             ruleIds: (priorIds + roundIds).unique { it?.toString() }]
 }
+@groovy.transform.CompileStatic
 private List _mrtrCollapseRuleResults(List entries) {
     def lastByRule = [:]
     def unkeyed = []
@@ -35864,6 +35984,7 @@ private void _mrtrCleanupRecord(Map rec) {
         _cleanupError("mrtr", "Could not clean temporary appCloner ${clonerId}: ${_cleanupFailureDetail(e)}")
     }
 }
+@groovy.transform.CompileStatic
 private def _publicToolResultValue(value, boolean backupMetadata = false) {
     if (value instanceof Map) {
         def copy = new LinkedHashMap()
@@ -35878,6 +35999,7 @@ private def _publicToolResultValue(value, boolean backupMetadata = false) {
     }
     return value
 }
+@groovy.transform.CompileStatic
 private boolean _isProtocolValidation(String message) {
     String txt = (message ?: '').toString()
     return ["Unknown tool", "Unknown gateway", "Cannot call a gateway", "Gateway arg",
@@ -35975,6 +36097,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     }
     return [__preserialized: candidateJson]
 }
+@groovy.transform.CompileStatic
 private def _redactAccessTokens(value) {
     String marker = "***redacted (access token)***"
     if (value instanceof Map) {
@@ -36051,6 +36174,7 @@ def _responseTooLargeSuggestion(String toolName) {
             return "Narrow your query (filters, smaller limit, or projection of fields) or pass cursor if this tool supports pagination."
     }
 }
+@groovy.transform.CompileStatic
 def _parseListCursor(cursor, int totalSize, String toolName) {
     if (cursor == null || cursor == "") return 0
     def safeCursor = (cursor?.toString() ?: "").replaceAll(/[\r\n]/, " ").take(80)
@@ -36077,6 +36201,7 @@ def _paginateList(List fullList, cursor, int pageSize, String toolName) {
 private def _toolMetadataGet(String key) {
     synchronized (TOOL_METADATA_CACHE) { return TOOL_METADATA_CACHE.get(key) }
 }
+@groovy.transform.CompileStatic
 private def _immutableToolMetadata(value) {
     if (value instanceof Map) return value.collectEntries { k, v -> [(k): _immutableToolMetadata(v)] }.asImmutable()
     if (value instanceof Set) return (value.collect { _immutableToolMetadata(it) } as Set).asImmutable()
@@ -36093,6 +36218,7 @@ private def _toolMetadataPut(String key, value) {
 def _invalidateToolMetadata() {
     synchronized (TOOL_METADATA_CACHE) { TOOL_METADATA_CACHE.clear() }
 }
+@groovy.transform.CompileStatic
 private String _cleanupFailureDetail(Exception error) {
     return error.message ?: error.cause?.message ?: error.toString()
 }
@@ -36771,6 +36897,7 @@ def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta, Set 
     ann.openWorldHint = openWorldNames.contains(toolName)
     return ann
 }
+@groovy.transform.CompileStatic
 def annotationsForGateway(List visibleSubTools, Set readOnlyNames, Set idempotentNames, Set openWorldNames) {
     if (!visibleSubTools) {
         throw new IllegalArgumentException(
@@ -36864,6 +36991,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChec
     }
     return executeTool(toolName, safeArgs, bpsChecked)
 }
+@groovy.transform.CompileStatic
 def _stripLibraryMarkers(String s) {
     if (s == null || !s.contains('// library marker')) return s
     return s.replaceAll(/ *\/\/ library marker [\w.]+, line \d+/, '')
@@ -37026,6 +37154,7 @@ private Map _toolCatalogIndexes() {
 def requiredParamsByTool() {
     return _toolCatalogIndexes().required
 }
+@groovy.transform.CompileStatic
 def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
     return toolName == 'hub_call_device_replace' && (args instanceof Map) && args.list_options == true
 }
@@ -37778,6 +37907,7 @@ def getSelectedDevices() {
     return settings.selectedDevices
 }
 def hubBaseUri() { "http://127.0.0.1:8080" }
+@groovy.transform.CompileStatic
 def _firmwareAtLeast(fw, String target) {
     if (fw == null || !fw.toString().trim()) return true
     def fwParts = fw.toString().trim().split("\\.")
@@ -37948,6 +38078,7 @@ private String _readRespText(resp) {
     if (d instanceof CharSequence) return d.toString()
     return d.text
 }
+@groovy.transform.CompileStatic
 private String _redactSecretsInPath(String path) {
     if (path == null) return path
     return path.replaceAll(/(?i)(psk|password|psw)=[^&]*/, '$1=***')
@@ -38250,12 +38381,15 @@ def hubInternalBytes(String method, String path, Map query = null, Map formBody 
     }
     return out
 }
+@groovy.transform.CompileStatic
 def _isGzip(byte[] b) {
     return b != null && b.length > 2 && (b[0] & 0xff) == 0x1f && (b[1] & 0xff) == 0x8b
 }
+@groovy.transform.CompileStatic
 def _isH2Database(byte[] b) {
     return b != null && b.length > 5 && b[0] == (byte) 45 && b[1] == (byte) 45 && b[2] == (byte) 32 && b[3] == (byte) 72 && b[4] == (byte) 50
 }
+@groovy.transform.CompileStatic
 def _bytesPreview(byte[] b) {
     if (b == null) return "nothing"
     return new String(b, 0, Math.min(b.length, 120), "UTF-8").replaceAll(/\s+/, " ").trim()
@@ -38908,6 +39042,7 @@ def _typeName(v) {
     if (v instanceof Boolean) return "Boolean"
     return "unknown"
 }
+@groovy.transform.CompileStatic
 Integer _compareVersions(String a, String b) {
     def pat = ~/^\d+(\.\d+)*$/
     if (!(a?.trim() ==~ pat) || !(b?.trim() ==~ pat)) return null
@@ -38940,6 +39075,7 @@ def _exceptionStack(Throwable e) {
     } catch (Exception ignored) { }
     return ("${e.class.name}: ${e.message}\n" + (e.getStackTrace()?.take(5)?.collect { it.toString() }?.join("\n") ?: "")).toString()
 }
+@groovy.transform.CompileStatic
 private Integer normalizeRuleId(def ruleId) {
     if (ruleId instanceof Number) return ruleId.toInteger()
     try {
@@ -39129,6 +39265,7 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
     }
     return resp
 }
+@groovy.transform.CompileStatic
 private String _rmSanitizeRenderForHash(Object sections) {
     def raw = sections?.toString() ?: ""
     if (!raw) return ""
@@ -39249,6 +39386,7 @@ private Map _rmFetchConfigJson(Integer appId, String pageName = null, Map cache 
     }
     return parsed
 }
+@groovy.transform.CompileStatic
 private void _rmCacheInvalidate(Map cache, Integer appId) {
     if (cache != null) cache.put(appId, [:])
 }
@@ -39388,6 +39526,7 @@ private String _rmActionSettingText(Map settingsByName, String prefix, Integer i
     def v = settingsByName["${prefix}.${idx}".toString()]?.value?.toString()
     (v == null || v == "") ? null : v
 }
+@groovy.transform.CompileStatic
 private List _rmCoerceActionIndices(List raw) {
     if (raw == null) return null
     def out = []
@@ -39401,6 +39540,7 @@ private List _rmCoerceActionIndices(List raw) {
 List _rmOrderedActionIndices(Integer appId) {
     _rmCoerceActionIndices(_ruleCompiledState(appId)?.actionList)
 }
+@groovy.transform.CompileStatic
 private TreeSet _rmScannedActionIndices(Map settingsByName) {
     def scanned = [] as TreeSet
     settingsByName?.keySet()?.each { name ->
@@ -39448,6 +39588,7 @@ private String _classicAppFormat(Map cfg) {
     if (t.contains("button controller")) return "button-controller"
     return "classic-app"
 }
+@groovy.transform.CompileStatic
 private Map _rmEmptyHealthVerdict(Map overrides) {
     def v = [ok: false, unreadable: false, broken: null, source: "none", ruleFormat: null,
              label: null, disabled: null, paused: null, configPageError: null,
@@ -39704,6 +39845,7 @@ private boolean _uiValueIsEmpty(v, Map meta = null) {
     def s = v.toString().trim()
     return s.isEmpty() || s == "[]" || s == "null"
 }
+@groovy.transform.CompileStatic
 private boolean _isDevicePickerType(type) {
     def t = type?.toString()
     return t != null && (t.startsWith("capability.") || t.startsWith("device."))
@@ -39718,6 +39860,7 @@ private _devicePickerIds(v) {
     }
     return v
 }
+@groovy.transform.CompileStatic
 private Map _uiRangeBounds(range) {
     if (!range || !range.toString().contains("..")) return null
     def parts = range.toString().split(/\.\./, 2)
@@ -39728,6 +39871,7 @@ private Map _uiRangeBounds(range) {
     }
     return [min: parse(parts[0]), max: parts.size() > 1 ? parse(parts[1]) : null]
 }
+@groovy.transform.CompileStatic
 private String _uiPlainTitle(title) {
     if (!title) return null
     return title.toString().replaceAll(/<[^>]*>/, "").trim() ?: null
@@ -39859,6 +40003,7 @@ boolean hubBpsKeyAccepted(String section, value) {
     return v == hubBpsGuideKey(section, t) || v == hubBpsGuideKey(section, t - 3600000L)
 }
 String _bpsSectionForTool(toolName) { _guideSectionForTool(toolName) ?: 'best_practice_reference' }
+@groovy.transform.CompileStatic
 String _bpsBlockMessage(String section, value) {
     String v = value?.toString() ?: ''
     String prefix = 'I-HAVE-READ-THE-GUIDE-'
@@ -39910,6 +40055,7 @@ String _guideSectionServed(String key, String body) {
         : "Pass this exact value as the bestPracticeKey argument on the write tools this section covers. ${dropped} ${receipt}".toString())
     return lines.join("\n") + "\n\n" + (body ?: '')
 }
+@groovy.transform.CompileStatic
 def _guideSectionForTool(toolName) {
     def t = (toolName ?: '').toString()
     if (t == 'hub_set_rule') return 'set_rule_reference'
