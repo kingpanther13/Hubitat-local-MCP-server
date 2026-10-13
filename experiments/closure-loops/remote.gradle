@@ -40,5 +40,16 @@ allprojects {
                 if (System.getenv('GITHUB_ACTIONS') != 'true') throw new GradleException('GitHub Actions only')
             }
         }
+        tasks.register('bat529BroadClosurePrepare', JavaExec) {
+            workingDir rootDir
+            javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
+            classpath = configurations.bat529ClosureGroovy24
+            mainClass = 'groovy.ui.GroovyMain'
+            args = [new File(preparation, 'broad.groovy').absolutePath,
+                    rootDir.absolutePath, new File(artifacts, 'broad').absolutePath]
+            doFirst {
+                if (System.getenv('GITHUB_ACTIONS') != 'true') throw new GradleException('GitHub Actions only')
+            }
+        }
     }
 }
