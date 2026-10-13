@@ -1,14 +1,15 @@
 library(name: "McpRoomsLib", namespace: "mcp", author: "kingpanther13", description: "Room management tool implementations for the MCP Rule Server (hub_list_rooms/hub_get_room/hub_create_room/hub_delete_room/hub_update_room); #include'd by the main app. Gateway entries and dispatch stay in the app; tool definitions live here alongside the impl.")
 
-def toolListRooms(args = null) {
-    def rooms = getRooms()
+@groovy.transform.CompileStatic
+java.util.Map toolListRooms(args = null) {
+    def rooms = __bat529StaticCall_java_lang_Object_0('getRooms')
     if (!rooms) {
         return [rooms: [], count: 0, message: "No rooms configured on this hub."]
     }
-    def roomList = (((rooms).findAll((this.&_bat529Cb_cfcfe2bd_4))).collect((this.&_bat529Cb_cfcfe2bd_28))).sort((this.&_bat529Cb_cfcfe2bd_29))
-    def cursor = args?.cursor
-    def paged = _paginateList(roomList, cursor, 100, "hub_list_rooms")
-    def result = [rooms: paged.page, count: paged.page.size()]
+    def roomList = (__bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_lang_Object((rooms), (this.&_bat529Cb_cfcfe2bd_4))), (this.&_bat529Cb_cfcfe2bd_28))).sort((this.&_bat529Cb_cfcfe2bd_29))
+    def cursor = __bat529StaticProperty_Safe_java_lang_Object(args, 'cursor')
+    java.util.Map paged = __bat529StaticCall_java_util_Map_4('_paginateList', roomList, cursor, 100, "hub_list_rooms")
+    java.util.Map result = [rooms: paged.page, count: __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(paged, 'page'), 'size')]
     if (cursor != null) {
         result.total = roomList.size()
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
@@ -236,90 +237,115 @@ def _getAllToolDefinitions_partRooms() {
     return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_rooms"],["description","List all rooms on the hub, each with its ID, name, device count, and assigned device IDs. Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only \\u2014 call hub_get_room for per-device states."],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 100)."]]]]]]]]]]]],["m",[["name","hub_get_room"],["description","Get one room\'s details: its ID, name, and the full list of assigned devices with each device\'s current attribute states. Use when you need device-level detail for a single room; for a name-and-count overview of all rooms use hub_list_rooms instead. Read-only and parallel-safe.[[FLAT_TRIM]] Devices unreachable via MCP are returned with accessible=false and no states.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["room",["m",[["type","string"],["description","Room name (case-insensitive) or room ID, e.g. \\"Living Room\\" or \\"5\\""]]]]]]],["required",["l",["room"]]]]]]]],["m",[["name","hub_create_room"],["description","Create a new room on the hub, optionally assigning devices to it at creation.[[FLAT_TRIM]] Use when a needed room does not yet exist; to only move devices into an existing room, set the device\'s room with hub_update_device instead.[[/FLAT_TRIM]] Requires Write master, backup <24h, confirm=true."],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Name for the new room, e.g. \\"Garage\\""]]]],["deviceIds",["m",[["type","array"],["description","Optional device IDs to assign to the room at creation, e.g. [\\"12\\",\\"34\\"]."],["items",["m",[["type","string"]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true. Confirms a recent backup exists and the user approved creating this room."]]]]]]],["required",["l",["name","confirm"]]]]]]]],["m",[["name","hub_delete_room"],["description","\\u26a0\\ufe0f DESTRUCTIVE: Permanently deletes a room. Devices become unassigned (not deleted). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]]\\n\\nPRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["room",["m",[["type","string"],["description","Room name (case-insensitive) or room ID to delete, e.g. \\"Garage\\" or \\"5\\""]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]]]]]]],["required",["l",["room","confirm"]]]]]]]],["m",[["name","hub_update_room"],["description","Rename a room. Device assignments preserved.[[FLAT_TRIM]] Automations/dashboards referencing the room by name may need updating.[[/FLAT_TRIM]] Requires Write master + confirm + backup <24h."],["inputSchema",["m",[["type","object"],["properties",["m",[["room",["m",[["type","string"],["description","Current room name (case-insensitive) or room ID, e.g. \\"Garage\\" or \\"5\\""]]]],["newName",["m",[["type","string"],["description","New name for the room, e.g. \\"Workshop\\""]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["room","newName","confirm"]]]]]]]]]]'])
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partRooms() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_list_rooms","hub_get_room"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_list_rooms","hub_get_room"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partRooms() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_update_room","hub_delete_room"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_update_room","hub_delete_room"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partRooms() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_rooms",["m",[["title","List Rooms"],["summary","List all rooms with IDs, names, and device counts."]]]],["hub_get_room",["m",[["title","Get Room Details"],["summary","Get one room\'s details with its assigned devices."]]]],["hub_create_room",["m",[["title","Create Room"],["summary","Create a new room, optionally assigning devices."]]]],["hub_delete_room",["m",[["title","Delete Room"],["summary","Permanently delete a room."]]]],["hub_update_room",["m",[["title","Rename Room"],["summary","Rename an existing room."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_list_rooms",["m",[["title","List Rooms"],["summary","List all rooms with IDs, names, and device counts."]]]],["hub_get_room",["m",[["title","Get Room Details"],["summary","Get one room\'s details with its assigned devices."]]]],["hub_create_room",["m",[["title","Create Room"],["summary","Create a new room, optionally assigning devices."]]]],["hub_delete_room",["m",[["title","Delete Room"],["summary","Permanently delete a room."]]]],["hub_update_room",["m",[["title","Rename Room"],["summary","Rename an existing room."]]]]]]'])
 }
 
 
-def _bat529Cb_cfcfe2bd_1(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_1(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_cfcfe2bd_2(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_2(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_cfcfe2bd_3(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_3(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_cfcfe2bd_4(def it) { it != null 
 }
 
-def _bat529Cb_cfcfe2bd_5(def it) { it.id.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_5(def it) { __bat529StaticProperty_java_lang_Object(it, 'id').toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_cfcfe2bd_6(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_cfcfe2bd_7(def it) { it.toString() 
 }
 
-def _bat529Cb_cfcfe2bd_8(def it) { it as Integer 
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_cfcfe2bd_8(def it) { it as Integer 
 }
 
-def _bat529Cb_cfcfe2bd_9(def it) { it as Integer 
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_cfcfe2bd_9(def it) { it as Integer 
 }
 
-def _bat529Cb_cfcfe2bd_10(def roomIdentifier, def it) { it?.id?.toString() == roomIdentifier 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_10(def roomIdentifier, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() == roomIdentifier 
 }
 
-def _bat529Cb_cfcfe2bd_11(def roomIdentifier, def it) { it?.id?.toString() == roomIdentifier 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_11(def roomIdentifier, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() == roomIdentifier 
 }
 
-def _bat529Cb_cfcfe2bd_12(def it) { (it.label ?: "").toLowerCase() 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_12(def it) { __bat529StaticReceiverCall_java_lang_Object_0((__bat529StaticProperty_java_lang_Object(it, 'label') ?: ""), 'toLowerCase') 
 }
 
-def _bat529Cb_cfcfe2bd_13(def args, def it) { it?.id?.toString() == args.room.trim() 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_13(def args, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() == __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(args, 'room'), 'trim') 
 }
 
-def _bat529Cb_cfcfe2bd_14(def args, def it) { it?.id?.toString() == args.room.trim() 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_14(def args, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() == __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(args, 'room'), 'trim') 
 }
 
-def _bat529Cb_cfcfe2bd_15(def args, def it) { it?.id?.toString() == args.room.trim() 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_15(def args, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() == __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(args, 'room'), 'trim') 
 }
 
-def _bat529Cb_cfcfe2bd_16(def args, def it) { it?.id?.toString() == args.room.trim() 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_16(def args, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() == __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(args, 'room'), 'trim') 
 }
 
-def _bat529Cb_cfcfe2bd_17(def devId, def it) { it?.id?.toString() == devId.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_17(def devId, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() == devId.toString() 
 }
 
-def _bat529Cb_cfcfe2bd_18(def roomId, def it) { it?.id?.toString() == roomId.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_18(def roomId, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() == roomId.toString() 
 }
 
-def _bat529Cb_cfcfe2bd_19(def roomId, def it) { it?.id?.toString() == roomId.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_19(def roomId, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() == roomId.toString() 
 }
 
-def _bat529Cb_cfcfe2bd_20(def roomName, def it) { it?.name?.toLowerCase() == roomName.toLowerCase() 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_20(def roomName, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_Safe_java_lang_Object(it, 'name'), 'toLowerCase') == __bat529StaticReceiverCall_java_lang_Object_0(roomName, 'toLowerCase') 
 }
 
-def _bat529Cb_cfcfe2bd_21(def roomIdentifier, def it) { it?.name?.toLowerCase() == roomIdentifier.toLowerCase() 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_21(def roomIdentifier, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_Safe_java_lang_Object(it, 'name'), 'toLowerCase') == __bat529StaticReceiverCall_java_lang_Object_0(roomIdentifier, 'toLowerCase') 
 }
 
-def _bat529Cb_cfcfe2bd_22(def roomName, def it) { it?.name?.toLowerCase() == roomName.toLowerCase() 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_22(def roomName, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_Safe_java_lang_Object(it, 'name'), 'toLowerCase') == __bat529StaticReceiverCall_java_lang_Object_0(roomName, 'toLowerCase') 
 }
 
 def _bat529Cb_cfcfe2bd_23(def args, def it) { it?.name?.toLowerCase() == args.room.trim().toLowerCase() 
@@ -328,14 +354,17 @@ def _bat529Cb_cfcfe2bd_23(def args, def it) { it?.name?.toLowerCase() == args.ro
 def _bat529Cb_cfcfe2bd_24(def args, def it) { it?.name?.toLowerCase() == args.room.trim().toLowerCase() 
 }
 
-def _bat529Cb_cfcfe2bd_25(def newName, def room, def it) { it?.name?.toLowerCase() == newName.toLowerCase() && it.id != room.id 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_25(def newName, def room, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_Safe_java_lang_Object(it, 'name'), 'toLowerCase') == __bat529StaticReceiverCall_java_lang_Object_0(newName, 'toLowerCase') && __bat529StaticProperty_java_lang_Object(it, 'id') != __bat529StaticProperty_java_lang_Object(room, 'id') 
 }
 
-def _bat529Cb_cfcfe2bd_26(def allDevices, def selectedIds, def cd) { if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_26(def allDevices, def selectedIds, def cd) { if (!__bat529StaticReceiverCall_java_lang_Object_1(selectedIds, 'contains', __bat529StaticProperty_java_lang_Object(cd, 'id').toString())) { __bat529StaticReceiverCall_java_lang_Object_1(allDevices, 'add', cd) } 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_cfcfe2bd_27(def states, def st) {
-                    states.put(st.name, st.value)
+                    __bat529StaticReceiverCall_java_lang_Object_2(states, 'put', __bat529StaticProperty_java_lang_Object(st, 'name'), __bat529StaticProperty_java_lang_Object(st, 'value'))
                 
 }
 
@@ -349,10 +378,12 @@ def _bat529Cb_cfcfe2bd_28(def room) {
     
 }
 
-def _bat529Cb_cfcfe2bd_29(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_cfcfe2bd_29(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_cfcfe2bd_30(def it) {
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_cfcfe2bd_30(def it) {
         def s = it?.toString()?.trim()
         if (!(s ==~ /\d+/)) {
             throw new IllegalArgumentException("deviceIds must be numeric device ids; got '${it}'. Use hub_list_devices to find device ids.")

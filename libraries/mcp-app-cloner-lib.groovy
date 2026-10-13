@@ -248,15 +248,16 @@ private void _appClonerCommitImportRule(Integer clonerAppId, Integer sourceAppId
     }
 }
 
+@groovy.transform.CompileStatic
 private Map _appClonerSnapshotChildren(Integer parentAppId) {
     // A missing baseline makes existing siblings look newly created. Never start
     // the wizard unless discovery can exclude every app already under the parent.
     try {
-        def cfg = _rmFetchConfigJson(parentAppId)
+        java.util.Map cfg = __bat529StaticCall_java_util_Map_1('_rmFetchConfigJson', parentAppId)
         if (!(cfg.childApps instanceof List)) {
             throw new IllegalStateException("missing childApps list")
         }
-        return [ids: ((cfg.childApps).collect((this.&_bat529Cb_dbfd46be_5))).findAll((this.&_bat529Cb_dbfd46be_11))]
+        return [ids: __bat529StaticDgm_findAll_1_java_lang_Object((__bat529StaticDgm_collect_1_java_util_List((cfg.childApps), (this.&_bat529Cb_dbfd46be_5))), (this.&_bat529Cb_dbfd46be_11))]
     } catch (Exception e) {
         return [success: false, isError: true,
                 error: "Cannot read the child-app snapshot for parent ${parentAppId}: ${e.message}".toString(),
@@ -264,53 +265,56 @@ private Map _appClonerSnapshotChildren(Integer parentAppId) {
     }
 }
 
+@groovy.transform.CompileStatic
 private Integer _appClonerDiscoverNewChild(Integer parentAppId, Set<String> preCloneIds, String sourceLabel, String hint) {
     if (parentAppId == null) return null
     def afterCfg
     try {
-        afterCfg = _rmFetchConfigJson(parentAppId)
+        afterCfg = __bat529StaticCall_java_util_Map_1('_rmFetchConfigJson', parentAppId)
     } catch (Exception e) {
-        mcpLog("warn", "rm-native", "appCloner: parent ${parentAppId} fetch after commit failed: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "appCloner: parent ${parentAppId} fetch after commit failed: ${e.message}")
         return null
     }
-    def afterIds = ((((afterCfg?.childApps ?: []) as List)).collect((this.&_bat529Cb_dbfd46be_17))).findAll((this.&_bat529Cb_dbfd46be_22))
-    def added = (afterIds).findAll(((this.&_bat529Cb_dbfd46be_8).curry([preCloneIds] as Object[])))
-    if (added.isEmpty()) return null
-    if (added.size() == 1) return added[0] as Integer
+    def afterIds = __bat529StaticDgm_findAll_1_java_lang_Object((__bat529StaticDgm_collect_1_java_util_List((((afterCfg?.childApps ?: []) as List)), (this.&_bat529Cb_dbfd46be_17))), (this.&_bat529Cb_dbfd46be_22))
+    def added = __bat529StaticDgm_findAll_1_java_lang_Object((afterIds), ((this.&_bat529Cb_dbfd46be_8).curry([preCloneIds] as Object[])))
+    if (__bat529StaticReceiverCall_java_lang_Object_0(added, 'isEmpty')) return null
+    if (__bat529StaticReceiverCall_java_lang_Object_0(added, 'size') == 1) return __bat529StaticBinary_GetAt_java_lang_Object(added, 0) as Integer
     // Concurrent creations can appear in the same diff. Only an unambiguous
     // requested name identifies our result; a prefix or largest ID is a guess.
-    def candidates = ((afterCfg.childApps as List)).findAll(((this.&_bat529Cb_dbfd46be_18).curry([added] as Object[])))
-    def hintMatches = hint ? (candidates).findAll(((this.&_bat529Cb_dbfd46be_12).curry([hint] as Object[]))): []
-    if (hintMatches.size() == 1) return hintMatches[0].id as Integer
-    mcpLog("warn", "rm-native", "appCloner: ambiguous new children ${added} for '${hint ?: sourceLabel}'; no app selected")
+    def candidates = __bat529StaticDgm_findAll_1_java_util_List(((afterCfg.childApps as List)), ((this.&_bat529Cb_dbfd46be_18).curry([added] as Object[])))
+    def hintMatches = hint ? __bat529StaticDgm_findAll_1_java_lang_Object((candidates), ((this.&_bat529Cb_dbfd46be_12).curry([hint] as Object[]))): []
+    if (__bat529StaticReceiverCall_java_lang_Object_0(hintMatches, 'size') == 1) return __bat529StaticProperty_java_lang_Object(__bat529StaticBinary_GetAt_java_lang_Object(hintMatches, 0), 'id') as Integer
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "appCloner: ambiguous new children ${added} for '${hint ?: sourceLabel}'; no app selected")
     return null
 }
 
+@groovy.transform.CompileStatic
 private boolean _appClonerCleanup(Integer clonerAppId) {
     if (clonerAppId == null) return false
     try {
-        _rmForceDeleteApp(clonerAppId)
-        mcpLog("debug", "rm-native", "appCloner: cleaned up temporary cloner ${clonerAppId}")
+        __bat529StaticCall_java_util_Map_1('_rmForceDeleteApp', clonerAppId)
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "rm-native", "appCloner: cleaned up temporary cloner ${clonerAppId}")
         return true
     } catch (Exception e) {
-        mcpLog("warn", "rm-native", "appCloner: cleanup of temporary cloner ${clonerAppId} failed: ${e.message} -- a hidden 'Export/Import/Clone' app may remain; delete via hub_delete_native_app(appId=${clonerAppId}, force=true)")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "appCloner: cleanup of temporary cloner ${clonerAppId} failed: ${e.message} -- a hidden 'Export/Import/Clone' app may remain; delete via hub_delete_native_app(appId=${clonerAppId}, force=true)")
         return false
     }
 }
 
+@groovy.transform.CompileStatic
 private void _appClonerClickClone(Integer clonerAppId, String referrer, String configUrl) {
     // Hubitat can swallow the first click; repeat both the click and form refresh.
-    def btnBody = [
+    java.util.Map btnBody = [
         id: clonerAppId.toString(),
         name: "cloneRuleButton",
         ("settings[cloneRuleButton]".toString()): "clicked",
         ("cloneRuleButton.type".toString()): "button"
     ]
     for (int attempt = 0; attempt < 2; attempt++) {
-        hubInternalPostForm("/installedapp/btn", btnBody)
-        pauseExecution(500)
-        _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, null)
-        pauseExecution(500)
+        __bat529StaticCall_java_lang_Object_2('hubInternalPostForm', "/installedapp/btn", btnBody)
+        __bat529StaticCall_java_lang_Object_1('pauseExecution', 500)
+        __bat529StaticCall_java_util_Map_6('_appClonerSubmitForm', clonerAppId, "main", "source", referrer, configUrl, null)
+        __bat529StaticCall_java_lang_Object_1('pauseExecution', 500)
     }
 }
 
@@ -446,9 +450,10 @@ def toolExportNativeApp(args) {
 }
 
 // Hubitat's App Cloner export of one app: [json, clonerAppId]. Throws when the cloner renders none.
+@groovy.transform.CompileStatic
 Map _appClonerExportJson(Integer sourceAppId) {
-    def initRes = _appClonerInit(sourceAppId)
-    Integer clonerAppId = initRes.clonerAppId
+    java.util.Map initRes = __bat529StaticCall_java_util_Map_1('_appClonerInit', sourceAppId)
+    Integer clonerAppId = __bat529StaticProperty_java_lang_Integer(initRes, 'clonerAppId')
     String referrer = initRes.referrer
     String configUrl = initRes.configUrl
 
@@ -462,16 +467,16 @@ Map _appClonerExportJson(Integer sourceAppId) {
         // body of the same POST that fires the click rather than fetching the
         // cloner's state in a subsequent request (different session = bare view,
         // no JSON). One click is sufficient here.
-        def btnBody = [
+        java.util.Map btnBody = [
             id: clonerAppId.toString(),
             name: "exportRuleButton",
             ("settings[exportRuleButton]".toString()): "clicked",
             ("exportRuleButton.type".toString()): "button"
         ]
-        hubInternalPostForm("/installedapp/btn", btnBody)
-        pauseExecution(500)
-        def refreshResp = _appClonerSubmitForm(clonerAppId, "main", "source", referrer, configUrl, null)
-        String jsonContent = _appClonerExtractJsonFromResponse(refreshResp?.data)
+        __bat529StaticCall_java_lang_Object_2('hubInternalPostForm', "/installedapp/btn", btnBody)
+        __bat529StaticCall_java_lang_Object_1('pauseExecution', 500)
+        java.util.Map refreshResp = __bat529StaticCall_java_util_Map_6('_appClonerSubmitForm', clonerAppId, "main", "source", referrer, configUrl, null)
+        String jsonContent = __bat529StaticCall_java_lang_String_1('_appClonerExtractJsonFromResponse', refreshResp?.data)
         if (!jsonContent) {
             // Distinguish an unreadable response body (the struct read path returns
             // data:null on a 2xx when the body read fails mid-stream) from a genuine
@@ -498,25 +503,26 @@ Map _appClonerExportJson(Integer sourceAppId) {
     } finally {
         // Reap the transient cloner on every path (success or throw) so repeated
         // exports don't accumulate hidden 'Export/Import/Clone' apps (BUG-8).
-        _appClonerCleanup(clonerAppId)
+        __bat529StaticCall_boolean_1('_appClonerCleanup', clonerAppId)
     }
 }
 
+@groovy.transform.CompileStatic
 private String _appClonerExtractJsonFromResponse(String responseBody) {
     if (!responseBody || !(responseBody instanceof String)) return null
     def parsed
     try { parsed = new groovy.json.JsonSlurper().parseText(responseBody) }
     catch (Exception e) {
-        mcpLog("debug", "rm-native", "appCloner: response JSON parse failed: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "rm-native", "appCloner: response JSON parse failed: ${e.message}")
         return null
     }
-    def sections = (parsed instanceof Map) ? parsed?.configPage?.sections : null
+    def sections = (parsed instanceof Map) ? __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(parsed, 'configPage'), 'sections') : null
     if (!(sections instanceof List)) return null
     for (section in sections) {
         // The filecontent lives on input[] entries (download-type inputs)
         // and is mirrored in body[] entries. Either works.
         for (key in ["input", "inputs", "body"]) {
-            def items = section?."${key}"
+            def items = __bat529StaticExpr__appClonerExtractJsonFromResponse_1(key, section)
             if (!(items instanceof List)) continue
             for (item in items) {
                 def fc = (item instanceof Map) ? item.filecontent : null
@@ -720,18 +726,19 @@ private Map _appClonerStagePlan(Integer newAppId) {
     return [targets: targets.unique(), failures: failures]
 }
 
+@groovy.transform.CompileStatic
 private Map _appClonerDisableTargets(List targets, Long reqT0, List staged, List failures) {
     // Each disable includes read-back. Retain unattempted IDs when the budget
     // expires so the result/checkpoint keeps the committed app and a safe remedy.
     List stageRemaining = []
     for (int i = 0; i < targets.size(); i++) {
-        if (i > 0 && _timeBudgetExceeded(reqT0)) {
-            stageRemaining = (targets.subList(i, targets.size())).collect((this.&_bat529Cb_dbfd46be_10))
+        if (i > 0 && __bat529StaticCall_java_lang_Object_1('_timeBudgetExceeded', reqT0)) {
+            stageRemaining = __bat529StaticDgm_collect_1_java_util_List((targets.subList(i, targets.size())), (this.&_bat529Cb_dbfd46be_10))
             break
         }
         def tid = targets[i]
         def dres
-        try { dres = toolSetAppDisabled([appId: tid, disabled: true]) }
+        try { dres = __bat529StaticCall_java_util_Map_1('toolSetAppDisabled', [appId: tid, disabled: true]) }
         catch (Exception dErr) { dres = [success: false, error: dErr.message ?: dErr.toString()] }
         if (dres?.success == true) staged << tid
         else failures << [appId: tid, kind: "disable", error: dres?.error ?: "disable read-back mismatch"]
@@ -739,12 +746,13 @@ private Map _appClonerDisableTargets(List targets, Long reqT0, List staged, List
     return [staged: staged.unique(), failures: failures, remaining: stageRemaining]
 }
 
+@groovy.transform.CompileStatic
 private void _appClonerFinishStaging(Map result, Integer newAppId, Map outcome) {
     // Staging is the requested safety property, but creation already committed.
     // Report partial failure with a disable remedy; retrying creation makes duplicates.
-    List staged = outcome.staged
-    List failures = outcome.failures
-    List stageRemaining = outcome.remaining
+    List staged = __bat529StaticProperty_java_util_List(outcome, 'staged')
+    List failures = __bat529StaticProperty_java_util_List(outcome, 'failures')
+    List stageRemaining = __bat529StaticProperty_java_util_List(outcome, 'remaining')
     result.stagedDisabled = staged
     if (failures || stageRemaining) {
         if (failures) result.stageFailures = failures
@@ -752,7 +760,7 @@ private void _appClonerFinishStaging(Map result, Integer newAppId, Map outcome) 
         result.partial = true
         result.success = false
         result.isError = true
-        def newAppItselfFailed = (failures).any(((this.&_bat529Cb_dbfd46be_14).curry([newAppId] as Object[])))
+        def newAppItselfFailed = __bat529StaticDgm_any_1_boolean((failures), ((this.&_bat529Cb_dbfd46be_14).curry([newAppId] as Object[])))
         def remainderText = stageRemaining ? "Response budget ran out before ${stageRemaining.size()} app(s) were disabled (${stageRemaining.join(', ')}). " : ""
         result.error = "stageDisabled did NOT fully land: ${failures.size()} failure(s)${stageRemaining ? " + ${stageRemaining.size()} not yet attempted" : ""} -- see stageFailures/stageRemaining. ${newAppItselfFailed ? "The NEW APP ITSELF (${newAppId}) is still ENABLED and live. " : ""}${remainderText}The clone/import DID commit (newAppId=${newAppId}) -- do NOT re-issue this call (that would create a duplicate app); disable the listed apps via hub_set_app_disabled(appId=<id>, disabled=true) instead."
         result.note = "${result.note} STAGING ${stageRemaining ? 'INCOMPLETE' : 'FAILED'} -- see error/stageFailures."
@@ -761,10 +769,11 @@ private void _appClonerFinishStaging(Map result, Integer newAppId, Map outcome) 
     }
 }
 
+@groovy.transform.CompileStatic
 private void _appClonerApplyStageDisabled(Map result, Integer newAppId, Long reqT0 = null) {
-    Map plan = _appClonerStagePlan(newAppId)
-    Map outcome = _appClonerDisableTargets(plan.targets as List, reqT0, [], plan.failures as List)
-    _appClonerFinishStaging(result, newAppId, outcome)
+    Map plan = __bat529StaticCall_java_util_Map_1('_appClonerStagePlan', newAppId)
+    Map outcome = __bat529StaticCall_java_util_Map_4('_appClonerDisableTargets', plan.targets as List, reqT0, [], plan.failures as List)
+    __bat529StaticCall_java_lang_Object_3('_appClonerFinishStaging', result, newAppId, outcome)
 }
 
 @groovy.transform.CompileStatic
@@ -775,11 +784,12 @@ private void _appClonerStagingDiscoveryMiss(Map result, String operationLabel) {
     result.error = "${result.error ?: ''} stageDisabled was requested but could NOT run: no newAppId was discovered. If the ${operationLabel} did land, it is ENABLED and live -- find it via hub_list_apps (scope='instances') and disable it with hub_set_app_disabled. Do NOT re-issue creation: it may already have committed.".toString().trim()
 }
 
+@groovy.transform.CompileStatic
 private Map _appClonerCappedStaging(Map cp) {
     // The latest returned checkpoint includes the final slice's disables. The
     // generic MRTR aggregate has no cloner ledger, and terminal storage drops cp.
-    Map result = (cp.baseResult instanceof Map) ? ([:] + cp.baseResult) : [:]
-    _appClonerFinishStaging(result, cp.newAppId as Integer, [
+    Map result = __bat529StaticExpr__appClonerCappedStaging_0(cp)
+    __bat529StaticCall_java_lang_Object_3('_appClonerFinishStaging', result, cp.newAppId as Integer, [
         staged: (cp.stagedDisabled ?: []) as List,
         failures: (cp.stageFailures ?: []) as List,
         remaining: (cp.stageTargets ?: []) as List
@@ -811,11 +821,12 @@ private Map _rmReadBackupSnapshot(Map entry) {
 // Hubitat's App Cloner export of an app, kept in its backup so a restore can bring back app
 // state (triggers, actions, IF conditions) that a settings replay cannot. A rule with a Required
 // Expression is never exported (the cloner renders nothing for it).
+@groovy.transform.CompileStatic
 Map _rmNativeExportForBackup(Integer appId) {
     try {
-        return [json: _appClonerExportJson(appId).json]
+        return [json: __bat529StaticCall_java_util_Map_1('_appClonerExportJson', appId).json]
     } catch (Exception e) {
-        mcpLog("warn", "rm-native", "Backup for app ${appId}: App Cloner export failed (${e.message}); this backup restores by settings replay")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "Backup for app ${appId}: App Cloner export failed (${e.message}); this backup restores by settings replay")
         return [error: e.message ?: e.toString()]
     }
 }
@@ -995,19 +1006,20 @@ String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
 
 // Record on the backup entry the app a native restore created (and whether it is meant to stay
 // disabled), so a retry returns it instead of importing again.
+@groovy.transform.CompileStatic
 void _rmRecordNativeRestore(String backupKey, Integer newId, boolean keepDisabled = false) {
     if (!backupKey) return
     try {
-        _withBackupLock("record restore of ${backupKey}") {
-            Map manifest = _itemBackupManifest()
+        __bat529StaticCall_java_lang_Object_2('_withBackupLock', "record restore of ${backupKey}") {
+            Map manifest = __bat529StaticCall_java_util_Map_0('_itemBackupManifest')
             if (manifest[backupKey] instanceof Map) {
                 (manifest[backupKey] as Map).restoredAppId = newId
                 (manifest[backupKey] as Map).restoredKeepDisabled = keepDisabled
-                _commitItemBackupManifest(manifest)
+                __bat529StaticCall_java_lang_Object_1('_commitItemBackupManifest', manifest)
             }
         }
     } catch (Exception e) {
-        mcpLog("warn", "rm-native", "Recording that backup ${backupKey} was restored as app ${newId} failed (${e.message}); a retry would import it again")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "Recording that backup ${backupKey} was restored as app ${newId} failed (${e.message}); a retry would import it again")
     }
 }
 
@@ -1258,33 +1270,35 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
 // Empty every non-button setting the app has that the backup does not, through the same update
 // endpoint as the replay (an emptied setting reads as unset; the hub keeps no way to delete one).
 // Returns the keys emptied.
+@groovy.transform.CompileStatic
 List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings) {
-    def status = _rmFetchStatusJson(appId)
+    java.util.Map status = __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', appId)
     if (!(status?.appSettings instanceof List)) return []
-    def saved = (savedSettings.keySet()).collect((this.&_bat529Cb_dbfd46be_9))as Set
-    def extra = ((status.appSettings as List)).findAll(((this.&_bat529Cb_dbfd46be_39).curry([saved] as Object[])))
+    java.util.Set saved = __bat529StaticDgm_collect_1_java_util_List((savedSettings.keySet()), (this.&_bat529Cb_dbfd46be_9))as Set
+    def extra = __bat529StaticDgm_findAll_1_java_util_List(((status.appSettings as List)), ((this.&_bat529Cb_dbfd46be_39).curry([saved] as Object[])))
     if (!extra) return []
-    def body = [id: appId.toString()]
-    (extra).each(((this.&_bat529Cb_dbfd46be_36).curry([body] as Object[])))
-    _rmPostSettings(appId, body)
-    return (extra).collect((this.&_bat529Cb_dbfd46be_2)).sort()
+    java.util.Map body = [id: appId.toString()]
+    __bat529StaticDgm_each_1_java_lang_Object((extra), ((this.&_bat529Cb_dbfd46be_36).curry([body] as Object[])))
+    __bat529StaticCall_java_util_Map_2('_rmPostSettings', appId, body)
+    return __bat529StaticDgm_collect_1_java_util_List((extra), (this.&_bat529Cb_dbfd46be_2)).sort()
 }
 
 // True only when the hub positively says the device is gone (404 or an empty object). An empty or
 // unreadable answer keeps the id: dropping a live device from a restore is worse than keeping it.
+@groovy.transform.CompileStatic
 private boolean _rmDeviceGone(String id, Map cache) {
     if (!id) return false
     if (cache.containsKey(id)) return cache.get(id) as boolean
     boolean gone = false
     try {
-        def txt = hubInternalGet("/device/fullJson/${id}")
+        def txt = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/device/fullJson/${id}")
         if (txt) {
-            def parsed = new groovy.json.JsonSlurper().parseText(txt)
+            def parsed = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', txt)
             gone = (parsed instanceof Map) && parsed.isEmpty()
         }
     } catch (Exception e) {
         // Without a status, only the hub's own "status code: 404 ... Not Found" wording counts.
-        Integer status = _httpStatusOf(e)
+        Integer status = __bat529StaticCall_java_lang_Integer_1('_httpStatusOf', e)
         def msg = e.message ?: ""
         gone = (status != null) ? status == 404 : (msg ==~ /(?s).*status code:? 404\b.*/ && msg.contains("Not Found"))
     }
@@ -1292,20 +1306,23 @@ private boolean _rmDeviceGone(String id, Map cache) {
     return gone
 }
 
+@groovy.transform.CompileStatic
 def _getAllToolDefinitions_partAppCloner() {
-    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_clone_native_app"],["description","Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat\'s first-party appCloner, then surgically edit fields via hub_set_rule (RM rules) or hub_set_native_app (other classic apps).[[FLAT_TRIM]] A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that has the shape you want. Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure). The clone completes in tens of seconds for typical rules.[[/FLAT_TRIM]] Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup)."],["inputSchema",["m",[["type","object"],["properties",["m",[["sourceAppId",["m",[["type","integer"],["description","Installed-app ID of the rule/app to clone. (alias: appId) Either sourceAppId or appId is required."]]]],["appId",["m",[["type","integer"],["description","Alias for sourceAppId."]]]],["newName",["m",[["type","string"],["description","Label for the new cloned app.[[FLAT_TRIM]] If omitted, the cloner default (\'<source-label> clone\') is kept.[[/FLAT_TRIM]]"]]]],["stageDisabled",["m",[["type","boolean"],["description","true = disable the new app AND every DESCENDANT under it right after the clone. Staged-migration safety: a clone of an ACTIVE rule lands ACTIVE, and a cloned Button Controller\'s child Button Rules react to live button events. Re-enable via hub_set_app_disabled(disabled=false)."]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_export_native_app"],["description","Export any classic native automation app to its canonical JSON shape via Hubitat\'s first-party appCloner \\u2014 a self-contained document that round-trips cleanly through hub_import_native_app.[[FLAT_TRIM]] The exported JSON is the same format Hubitat\'s UI \'Export\' button produces. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer.[[/FLAT_TRIM]] Pass saveAs to also write the JSON to the hub\'s File Manager[[FLAT_TRIM]] (e.g. for HPM-style distribution)[[/FLAT_TRIM]]. Requires the Write master (no confirm/backup required).[[FLAT_TRIM]] Export instantiates a cloner app and persists, so it counts as a write.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["sourceAppId",["m",[["type","integer"],["description","Installed-app ID of the rule/app to export. (alias: appId)"]]]],["appId",["m",[["type","integer"],["description","Alias for sourceAppId."]]]],["saveAs",["m",[["type","string"],["description","Optional File Manager filename (.json or .txt). When provided, the export is also written to /local/<saveAs>."]]]]]]]]]]]],["m",[["name","hub_import_native_app"],["description","Create a new rule/app from a previously-exported JSON via Hubitat\'s first-party appCloner.[[FLAT_TRIM]] Pair with hub_export_native_app for round-trip edits or backup/restore workflows.[[/FLAT_TRIM]] Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by hub_export_native_app). Pass parentHintAppId \\u2014 any existing rule id under the target parent the imported rule should land under[[FLAT_TRIM]] (e.g. another RM rule for an RM import); the cloner needs it to seed itself[[/FLAT_TRIM]]. Requires the Write master + confirm=true (+ a recent backup)."],["inputSchema",["m",[["type","object"],["properties",["m",[["jsonContent",["m",[["type","string"],["description","The exported JSON content. Either jsonContent or fromFile is required."]]]],["fromFile",["m",[["type","string"],["description","File Manager filename to read the JSON from."]]]],["parentHintAppId",["m",[["type","integer"],["description","Any existing rule\'s id under the target parent app.[[FLAT_TRIM]] Used purely to seed the cloner instance \\u2014 has no semantic effect on the imported rule beyond placing it under the same parent.[[/FLAT_TRIM]]"]]]],["newName",["m",[["type","string"],["description","Label for the imported app.[[FLAT_TRIM]] If omitted, the cloner default (\'<original-label> import\') is kept.[[/FLAT_TRIM]]"]]]],["stageDisabled",["m",[["type","boolean"],["description","true = disable the new app AND every DESCENDANT under it right after the import (staged-migration safety: an import lands ACTIVE). Re-enable via hub_set_app_disabled(disabled=false)."]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["parentHintAppId","confirm"]]]]]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",[["m",[["name","hub_clone_native_app"],["description","Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat\'s first-party appCloner, then surgically edit fields via hub_set_rule (RM rules) or hub_set_native_app (other classic apps).[[FLAT_TRIM]] A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that has the shape you want. Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure). The clone completes in tens of seconds for typical rules.[[/FLAT_TRIM]] Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup)."],["inputSchema",["m",[["type","object"],["properties",["m",[["sourceAppId",["m",[["type","integer"],["description","Installed-app ID of the rule/app to clone. (alias: appId) Either sourceAppId or appId is required."]]]],["appId",["m",[["type","integer"],["description","Alias for sourceAppId."]]]],["newName",["m",[["type","string"],["description","Label for the new cloned app.[[FLAT_TRIM]] If omitted, the cloner default (\'<source-label> clone\') is kept.[[/FLAT_TRIM]]"]]]],["stageDisabled",["m",[["type","boolean"],["description","true = disable the new app AND every DESCENDANT under it right after the clone. Staged-migration safety: a clone of an ACTIVE rule lands ACTIVE, and a cloned Button Controller\'s child Button Rules react to live button events. Re-enable via hub_set_app_disabled(disabled=false)."]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_export_native_app"],["description","Export any classic native automation app to its canonical JSON shape via Hubitat\'s first-party appCloner \\u2014 a self-contained document that round-trips cleanly through hub_import_native_app.[[FLAT_TRIM]] The exported JSON is the same format Hubitat\'s UI \'Export\' button produces. Use for: (1) backup before risky edits, (2) edit-as-text workflows that materialize the rule, mutate the JSON, and re-import as a new rule, (3) hub-to-hub transfer.[[/FLAT_TRIM]] Pass saveAs to also write the JSON to the hub\'s File Manager[[FLAT_TRIM]] (e.g. for HPM-style distribution)[[/FLAT_TRIM]]. Requires the Write master (no confirm/backup required).[[FLAT_TRIM]] Export instantiates a cloner app and persists, so it counts as a write.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["sourceAppId",["m",[["type","integer"],["description","Installed-app ID of the rule/app to export. (alias: appId)"]]]],["appId",["m",[["type","integer"],["description","Alias for sourceAppId."]]]],["saveAs",["m",[["type","string"],["description","Optional File Manager filename (.json or .txt). When provided, the export is also written to /local/<saveAs>."]]]]]]]]]]]],["m",[["name","hub_import_native_app"],["description","Create a new rule/app from a previously-exported JSON via Hubitat\'s first-party appCloner.[[FLAT_TRIM]] Pair with hub_export_native_app for round-trip edits or backup/restore workflows.[[/FLAT_TRIM]] Pass jsonContent (the exported JSON string) OR fromFile (a File Manager filename written by hub_export_native_app). Pass parentHintAppId \\u2014 any existing rule id under the target parent the imported rule should land under[[FLAT_TRIM]] (e.g. another RM rule for an RM import); the cloner needs it to seed itself[[/FLAT_TRIM]]. Requires the Write master + confirm=true (+ a recent backup)."],["inputSchema",["m",[["type","object"],["properties",["m",[["jsonContent",["m",[["type","string"],["description","The exported JSON content. Either jsonContent or fromFile is required."]]]],["fromFile",["m",[["type","string"],["description","File Manager filename to read the JSON from."]]]],["parentHintAppId",["m",[["type","integer"],["description","Any existing rule\'s id under the target parent app.[[FLAT_TRIM]] Used purely to seed the cloner instance \\u2014 has no semantic effect on the imported rule beyond placing it under the same parent.[[/FLAT_TRIM]]"]]]],["newName",["m",[["type","string"],["description","Label for the imported app.[[FLAT_TRIM]] If omitted, the cloner default (\'<original-label> import\') is kept.[[/FLAT_TRIM]]"]]]],["stageDisabled",["m",[["type","boolean"],["description","true = disable the new app AND every DESCENDANT under it right after the import (staged-migration safety: an import lands ACTIVE). Re-enable via hub_set_app_disabled(disabled=false)."]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["parentHintAppId","confirm"]]]]]]]]]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partAppCloner() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_export_native_app"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_export_native_app"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partAppCloner() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_clone_native_app",["m",[["title","Clone Native App"],["summary","Clone an existing classic app."]]]],["hub_export_native_app",["m",[["title","Export Native App"],["summary","Export a classic app to JSON, optionally saving it to the File Manager."]]]],["hub_import_native_app",["m",[["title","Import Native App"],["summary","Import previously exported app JSON as a new instance."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_clone_native_app",["m",[["title","Clone Native App"],["summary","Clone an existing classic app."]]]],["hub_export_native_app",["m",[["title","Export Native App"],["summary","Export a classic app to JSON, optionally saving it to the File Manager."]]]],["hub_import_native_app",["m",[["title","Import Native App"],["summary","Import previously exported app JSON as a new instance."]]]]]]'])
 }
 
 private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
@@ -1527,88 +1544,113 @@ private Map _mrtrAppClonerStageSlice(Map cp, String operationLabel) {
 }
 
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_1(def it) { it?.toString() 
 }
 
-def _bat529Cb_dbfd46be_2(def it) { it.name.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_dbfd46be_2(def it) { __bat529StaticProperty_java_lang_Object(it, 'name').toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_3(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_4(def it) { it.toString() 
 }
 
-def _bat529Cb_dbfd46be_5(def it) { it?.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_dbfd46be_5(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() 
 }
 
-def _bat529Cb_dbfd46be_6(def deviceGone, def it) { _rmDeviceGone(it, deviceGone) 
+@groovy.transform.CompileStatic
+boolean _bat529Cb_dbfd46be_6(def deviceGone, def it) { __bat529StaticCall_boolean_2('_rmDeviceGone', it, deviceGone) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_7(def it) { it.toString() 
 }
 
-def _bat529Cb_dbfd46be_8(def preCloneIds, def it) { !preCloneIds.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_dbfd46be_8(def preCloneIds, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(preCloneIds, 'contains', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_9(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_10(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_11(def it) { it 
 }
 
-def _bat529Cb_dbfd46be_12(def hint, def it) { (it.label?.toString() ?: "") == hint 
+@groovy.transform.CompileStatic
+def _bat529Cb_dbfd46be_12(def hint, def it) { (__bat529StaticProperty_java_lang_Object(it, 'label')?.toString() ?: "") == hint 
 }
 
 def _bat529Cb_dbfd46be_13(def it) { "${it.key} (${it.ids.join(', ')})" 
 }
 
-def _bat529Cb_dbfd46be_14(def newAppId, def it) { it.kind == "disable" && it.appId == newAppId 
+@groovy.transform.CompileStatic
+def _bat529Cb_dbfd46be_14(def newAppId, def it) { __bat529StaticProperty_java_lang_Object(it, 'kind') == "disable" && __bat529StaticProperty_java_lang_Object(it, 'appId') == newAppId 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_15(def it) { it.toString().startsWith("_action_") 
 }
 
-def _bat529Cb_dbfd46be_16(def it) { it.isInteger() 
+@groovy.transform.CompileStatic
+def _bat529Cb_dbfd46be_16(def it) { __bat529StaticReceiverCall_java_lang_Object_0(it, 'isInteger') 
 }
 
-def _bat529Cb_dbfd46be_17(def it) { it?.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_dbfd46be_17(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() 
 }
 
-def _bat529Cb_dbfd46be_18(def added, def it) { added.contains(it?.id?.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_dbfd46be_18(def added, def it) { __bat529StaticReceiverCall_java_lang_Object_1(added, 'contains', __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString()) 
 }
 
-def _bat529Cb_dbfd46be_19(def gone, def it) { !gone.contains(it.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_dbfd46be_19(def gone, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(gone, 'contains', it.toString()) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_20(def it) { it.toString() 
 }
 
 def _bat529Cb_dbfd46be_21(def savedSchema, def k, def v) { savedSchema.get(k.toString())?.type != "button" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_22(def it) { it 
 }
 
-def _bat529Cb_dbfd46be_23(def key) { [key: key, reason: "button input excluded from replay"] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_dbfd46be_23(def key) { [key: key, reason: "button input excluded from replay"] 
 }
 
-def _bat529Cb_dbfd46be_24(def snap, def it) { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) 
+@groovy.transform.CompileStatic
+def _bat529Cb_dbfd46be_24(def snap, def it) { if (it instanceof Map && it.name != null) __bat529StaticReceiverCall_java_lang_Object_2(snap, 'put', it.name.toString(), it.value) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_25(def it) { it.toString() 
 }
 
 def _bat529Cb_dbfd46be_26(def sd) { [key: sd.key, reason: "device(s) ${sd.ids.join(', ')} no longer exist on the hub; left out of the replay".toString()] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_27(def it) { it 
 }
 
-def _bat529Cb_dbfd46be_28(def key) { [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_dbfd46be_28(def key) { [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] 
 }
 
 def _bat529Cb_dbfd46be_29(def query, def kv) {
@@ -1623,12 +1665,14 @@ def _bat529Cb_dbfd46be_30(def navValues, def k, def v) {
             
 }
 
-def _bat529Cb_dbfd46be_31(def gone, def it) { _rmDeviceGone(it, gone) 
+@groovy.transform.CompileStatic
+boolean _bat529Cb_dbfd46be_31(def gone, def it) { __bat529StaticCall_boolean_2('_rmDeviceGone', it, gone) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_32(def queue, def c) {
-                    def cid = c?.id?.toString()
-                    if (cid?.isInteger()) queue << cid.toInteger()
+                    def cid = __bat529StaticProperty_Safe_java_lang_Object(c, 'id')?.toString()
+                    if (cid?.isInteger()) __bat529StaticExpr__bat529Cb_dbfd46be_32_1(cid, queue)
                 
 }
 
@@ -1637,49 +1681,54 @@ def _bat529Cb_dbfd46be_33(def navValues, def k, def meta) {
             
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_34(def liveDeviceIds, def st) {
-        def n = st?.name?.toString()
-        if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds.put(n, st.deviceIdsForDeviceList)
+        def n = __bat529StaticProperty_Safe_java_lang_Object(st, 'name')?.toString()
+        if (n && __bat529StaticProperty_Safe_java_lang_Object(st, 'deviceIdsForDeviceList') instanceof List && __bat529StaticProperty_java_lang_Object(st, 'deviceIdsForDeviceList')) __bat529StaticReceiverCall_java_lang_Object_2(liveDeviceIds, 'put', n, __bat529StaticProperty_java_lang_Object(st, 'deviceIdsForDeviceList'))
     
 }
 
 def _bat529Cb_dbfd46be_35(def k, def meta) { [(k): meta.defaultValue] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_36(def body, def rec) {
-        def n = rec.name.toString()
+        def n = __bat529StaticProperty_java_lang_Object(rec, 'name').toString()
         body["settings[${n}]".toString()] = ""
-        if (rec.type) body["${n}.type".toString()] = rec.type.toString()
-        body["${n}.multiple".toString()] = (rec.multiple == true).toString()
+        if (__bat529StaticProperty_java_lang_Object(rec, 'type')) body["${n}.type".toString()] = __bat529StaticProperty_java_lang_Object(rec, 'type').toString()
+        body["${n}.multiple".toString()] = (__bat529StaticProperty_java_lang_Object(rec, 'multiple') == true).toString()
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_37(def savedSchema, def s) {
-        def n = s?.name?.toString()
-        if (n && !savedSchema.containsKey(n)) {
-            savedSchema.put(n, [
+        def n = __bat529StaticProperty_Safe_java_lang_Object(s, 'name')?.toString()
+        if (n && !__bat529StaticReceiverCall_java_lang_Object_1(savedSchema, 'containsKey', n)) {
+            __bat529StaticReceiverCall_java_lang_Object_2(savedSchema, 'put', n, [
                 name: n,
-                type: s?.type?.toString(),
-                multiple: s?.multiple == true
+                type: __bat529StaticProperty_Safe_java_lang_Object(s, 'type')?.toString(),
+                multiple: __bat529StaticProperty_Safe_java_lang_Object(s, 'multiple') == true
             ])
         }
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_38(def savedId, def id) {
-            try { toolSetAppDisabled([appId: id, disabled: false])?.success != true } catch (Exception enableExc) {
-                mcpLog("warn", "rm-native", "Restore of app ${savedId}: re-enabling app ${id} threw (${enableExc.message})")
+            try { __bat529StaticCall_java_util_Map_1('toolSetAppDisabled', [appId: id, disabled: false])?.success != true } catch (Exception enableExc) {
+                __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "Restore of app ${savedId}: re-enabling app ${id} threw (${enableExc.message})")
                 true
             }
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_39(def saved, def rec) {
-        def n = rec?.name?.toString()
+        def n = __bat529StaticProperty_Safe_java_lang_Object(rec, 'name')?.toString()
         // A device picker reports its devices in deviceIdsForDeviceList, with a null value.
-        boolean hasValue = (rec?.value != null && rec?.value != "") ||
-            (rec?.deviceIdsForDeviceList instanceof List && !(rec.deviceIdsForDeviceList as List).isEmpty())
-        n && !saved.contains(n) && rec?.type?.toString() != "button" && hasValue
+        boolean hasValue = (__bat529StaticProperty_Safe_java_lang_Object(rec, 'value') != null && __bat529StaticProperty_Safe_java_lang_Object(rec, 'value') != "") ||
+            (__bat529StaticProperty_Safe_java_lang_Object(rec, 'deviceIdsForDeviceList') instanceof List && !(__bat529StaticProperty_java_lang_Object(rec, 'deviceIdsForDeviceList') as List).isEmpty())
+        n && !__bat529StaticReceiverCall_java_lang_Object_1(saved, 'contains', n) && __bat529StaticProperty_Safe_java_lang_Object(rec, 'type')?.toString() != "button" && hasValue
     
 }
 

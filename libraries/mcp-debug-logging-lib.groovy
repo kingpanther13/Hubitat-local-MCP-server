@@ -46,12 +46,13 @@ def toolGetDebugLogs(args) {
     return result
 }
 
+@groovy.transform.CompileStatic
 def toolClearDebugLogs(args) {
-    initDebugLogs()
-    def cleared = clearDebugLogEntries(args)
+    __bat529StaticCall_java_lang_Object_0('initDebugLogs')
+    java.util.Map cleared = __bat529StaticCall_java_util_Map_1('clearDebugLogEntries', args)
     if (cleared.status == "in_progress") return cleared + [tool: "hub_delete_debug_logs"]
     def detail = cleared.countIncomplete ? "previous entry count unavailable" : "${cleared.clearedCount} entries removed"
-    mcpLog("info", "server", "Debug logs cleared (${detail})")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "server", "Debug logs cleared (${detail})")
     return [success: true] + cleared
 }
 
@@ -133,30 +134,33 @@ __bat529EachReceiver1
     }
 }
 
+@groovy.transform.CompileStatic
 private List _reportErrorSnapshot() {
-    if (settings?.retainReportErrors != true) return []
-    def entries = atomicState.reportErrors instanceof List ? atomicState.reportErrors : []
-    def generation = atomicState.debugLogGeneration
-    def current = (entries).findAll(((this.&_bat529Cb_1fa286f7_16).curry([generation] as Object[])))
-    return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(current.takeRight(10)))
+    if (__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_settings(), 'retainReportErrors') != true) return []
+    def entries = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_atomicState(), 'reportErrors') instanceof List ? __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_atomicState(), 'reportErrors') : []
+    def generation = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_atomicState(), 'debugLogGeneration')
+    def current = __bat529StaticDgm_findAll_1_java_lang_Object((entries), ((this.&_bat529Cb_1fa286f7_16).curry([generation] as Object[])))
+    return __bat529StaticReceiverCall_java_util_List_1(new groovy.json.JsonSlurper(), 'parseText', groovy.json.JsonOutput.toJson(__bat529StaticReceiverCall_java_lang_Object_1(current, 'takeRight', 10)))
 }
 
 // Same any-key match as the native log scope (_bugReportScopedLogs): a caller naming both a
 // tool and an app wants the errors of either, not only records carrying both.
+@groovy.transform.CompileStatic
 private List _reportErrorsForScope(args, List entries) {
-    boolean scoped = args.failingTool || args.ruleId || args.nativeAppId
+    boolean scoped = __bat529StaticProperty_java_lang_Object(args, 'failingTool') || __bat529StaticProperty_java_lang_Object(args, 'ruleId') || __bat529StaticProperty_java_lang_Object(args, 'nativeAppId')
     if (!scoped) return entries
-    return (entries).findAll(((this.&_bat529Cb_1fa286f7_22).curry([args] as Object[])))
+    return __bat529StaticDgm_findAll_1_java_util_List((entries), ((this.&_bat529Cb_1fa286f7_22).curry([args] as Object[])))
 }
 
 // A bug report with no failingTool takes the newest retained tool error inside its own log
 // window as the title/form default. It is a label only -- the log scope stays the caller's,
 // and the report tool's own validation errors never nominate it.
+@groovy.transform.CompileStatic
 private String _inferredFailingTool(args, String issueType, List retainedErrors, long windowMs) {
-    if (issueType != "bug" || args.failingTool) return null
-    long cutoff = now() - windowMs
-    def hit = (retainedErrors.reverse()).find(((this.&_bat529Cb_1fa286f7_21).curry([cutoff] as Object[])))
-    return hit?.details?.tool?.toString()
+    if (issueType != "bug" || __bat529StaticProperty_java_lang_Object(args, 'failingTool')) return null
+    long cutoff = __bat529StaticCall_long_0('now') - windowMs
+    def hit = __bat529StaticDgm_find_1_java_lang_Object((retainedErrors.reverse()), ((this.&_bat529Cb_1fa286f7_21).curry([cutoff] as Object[])))
+    return __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(hit, 'details'), 'tool')?.toString()
 }
 
 def toolGenerateBugReport(args) {
@@ -248,19 +252,20 @@ private String _bugReportNormalizeIssueType(raw) {
     return "bug"
 }
 
+@groovy.transform.CompileStatic
 private Map _bugReportResolveAnchor(args, List entries) {
     if (!entries) return [entry: null, matchedOn: "none"]
     def reversed = entries.reverse()
-    if (args.failingTool) {
-        def hit = (reversed).find(((this.&_bat529Cb_1fa286f7_10).curry([args] as Object[])))
+    if (__bat529StaticProperty_java_lang_Object(args, 'failingTool')) {
+        def hit = __bat529StaticDgm_find_1_java_lang_Object((reversed), ((this.&_bat529Cb_1fa286f7_10).curry([args] as Object[])))
         if (hit) return [entry: hit, matchedOn: "tool"]
     }
-    if (args.ruleId) {
-        def hit = (reversed).find(((this.&_bat529Cb_1fa286f7_15).curry([args] as Object[])))
+    if (__bat529StaticProperty_java_lang_Object(args, 'ruleId')) {
+        def hit = __bat529StaticDgm_find_1_java_lang_Object((reversed), ((this.&_bat529Cb_1fa286f7_15).curry([args] as Object[])))
         if (hit) return [entry: hit, matchedOn: "ruleId"]
     }
-    if (args.nativeAppId) {
-        def hit = (reversed).find(((this.&_bat529Cb_1fa286f7_19).curry([args] as Object[])))
+    if (__bat529StaticProperty_java_lang_Object(args, 'nativeAppId')) {
+        def hit = __bat529StaticDgm_find_1_java_lang_Object((reversed), ((this.&_bat529Cb_1fa286f7_19).curry([args] as Object[])))
         if (hit) return [entry: hit, matchedOn: "nativeAppId"]
     }
     return [entry: null, matchedOn: "none"]
@@ -502,18 +507,19 @@ private List _bugReportMissingContext(args, String issueType, Map client, String
     return missing
 }
 
+@groovy.transform.CompileStatic
 private List _bugReportPreflight(String issueType, boolean includeRawLogs, String privacyMode) {
-    def verbatimStep = "Paste the exact tool calls and raw responses in verbatimToolCalls -- do not paraphrase."
+    java.lang.String verbatimStep = "Paste the exact tool calls and raw responses in verbatimToolCalls -- do not paraphrase."
     // An agent-behavior report is about what the agent did, so the transcript is the whole
     // evidence; server-side log level changes nothing about it.
     if (issueType == "agent_behavior") return [verbatimStep]
     if (issueType != "bug") return []
-    def steps = []
-    def level = getConfiguredLogLevel()
+    java.util.List steps = []
+    def level = __bat529StaticCall_java_lang_Object_0('getConfiguredLogLevel')
     if (level != "debug") {
         // The report embeds only error/warn entries, so debug output reaches the maintainer
         // only when the agent pastes it back in -- say that rather than implying a re-run collects it.
-        if (getHiddenToolNames()?.contains("hub_set_log_level")) {
+        if (__bat529StaticCall_java_util_Set_0('getHiddenToolNames')?.contains("hub_set_log_level")) {
             steps << "MCP log level is ${level} and hub_set_log_level is not available to this client: ask the user to raise it in the app's settings, reproduce, then attach the debug lines from hub_get_logs(mode='mcp') via clientLogs.".toString()
         } else {
             steps << "MCP log level is ${level}. Call hub_set_log_level(level='debug'), reproduce the failure, then attach the debug lines from hub_get_logs(mode='mcp') via clientLogs -- the report itself embeds only error/warn entries.".toString()
@@ -586,10 +592,11 @@ private Map _bugReportRuleInfo(args) {
     }
 }
 
+@groovy.transform.CompileStatic
 private String _bugReportSuggestedTitle(args, String issueType) {
     def prefix = ["bug": "[bug]", "enhancement": "[feature]", "agent_behavior": "[agent-behavior]"][issueType]
-    def toolCtx = _mcpClientString(args.failingTool)
-    def userTitle = _bugReportScrubSecrets(args.title?.toString()?.trim()) ?: "Issue report"
+    java.lang.String toolCtx = __bat529StaticCall_java_lang_String_1('_mcpClientString', __bat529StaticProperty_java_lang_Object(args, 'failingTool'))
+    java.lang.String userTitle = __bat529StaticCall_java_lang_String_1('_bugReportScrubSecrets', __bat529StaticProperty_java_lang_Object(args, 'title')?.toString()?.trim()) ?: "Issue report"
     def body = toolCtx ? "${toolCtx}: ${userTitle}" : userTitle
     def full = "${prefix} ${body}"
     return full.length() > 140 ? (full.take(137) + "...") : full
@@ -822,78 +829,99 @@ def _getAllToolDefinitions_partDebugLogging() {
     return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_delete_debug_logs"],["description","Clear the structured MCP history view read by hub_get_logs(mode=\'mcp\').[[FLAT_TRIM]] A durable clear marker keeps old native entries from reappearing after reload. Use before reproducing an issue. Does NOT touch Hubitat system logs (hub_get_logs) or captured device states (hub_delete_captured_state).[[/FLAT_TRIM]] Cannot be undone."],["inputSchema",["m",[["type","object"],["properties",["m",[]]]]]]]],["m",[["name","hub_set_log_level"],["description","Set the minimum log level threshold. Logs below this level won\'t be stored."],["inputSchema",["m",[["type","object"],["properties",["m",[["level",["m",[["type","string"],["enum",["l",["debug","info","warn","error"]]],["description","Minimum log level to store"]]]]]]],["required",["l",["level"]]]]]]]],["m",[["name","hub_report_issue"],["description","File or report a bug, open a GitHub issue, request a feature/enhancement, or flag agent-behavior issues. Does NOT submit the issue itself: returns a prefilled GitHub issue link (template + title) plus the report body.[[FLAT_TRIM]] It gathers scoped recent logs and hub/version info; the user opens the link and posts. Paste real tool calls and client-host log lines rather than describing them; the result\'s preflight and missingContext name anything still missing.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["title",["m",[["type","string"],["description","Short bug/issue narrative. Seeds GitHub title."]]]],["expected",["m",[["type","string"],["description","What should have happened."]]]],["actual",["m",[["type","string"],["description","What actually happened."]]]],["stepsToReproduce",["m",[["type","string"],["description","Exact repro sequence."]]]],["issueType",["m",[["type","string"],["enum",["l",["bug","enhancement","agent_behavior"]]],["description","Default bug."]]]],["failingTool",["m",[["type","string"],["description","Failed MCP tool; scopes logs and title."]]]],["ruleId",["m",[["type","string"],["description","Legacy custom MCP rule-engine rule id; scopes logs to it.[[FLAT_TRIM]] A native Rule Machine rule goes in nativeAppId, not here.[[/FLAT_TRIM]]"]]]],["nativeAppId",["m",[["type","string"],["description","Native Rule Machine app id; scopes logs to that app.[[FLAT_TRIM]] A legacy custom MCP rule goes in ruleId.[[/FLAT_TRIM]]"]]]],["llmClient",["m",[["type","string"],["description","Host app + version, e.g. Claude Code 2.1 or Claude Desktop; ask the user, never guess."]]]],["llmModel",["m",[["type","string"],["description","Model in use, e.g. Opus 5; ask if unknown."]]]],["verbatimToolCalls",["m",[["type","string"],["description","EXACT failing call (tool + args JSON) and raw response text, not paraphrased.[[FLAT_TRIM]] Copy from the transcript: the wording of the real error is usually the whole diagnosis.[[/FLAT_TRIM]]"]]]],["clientLogs",["m",[["type","string"],["description","Raw MCP client-host log lines for the failure window.[[FLAT_TRIM]] Claude Desktop writes mcp-server-*.log; Claude Code has its own debug log. Paste the lines, not a summary. Also takes pasted hub_get_logs output.[[/FLAT_TRIM]]"]]]],["privacyMode",["m",[["type","string"],["enum",["l",["private","public"]]],["description","\'public\' placeholders hub name; withholds raw logs and the pasted verbatim/client-log sections."]]]],["includeRawLogs",["m",[["type","boolean"],["description","Private only (default true). false also hides pasted sections. Public always withholds."]]]],["includeUnrelatedRecentLogs",["m",[["type","boolean"],["description","When scoped (failingTool/ruleId/nativeAppId set), also attach recent logs outside that scope.[[FLAT_TRIM]] Default false, no-op when unscoped.[[/FLAT_TRIM]]"]]]],["logWindowSeconds",["m",[["type","integer"],["description","Default 120."]]]]]]],["required",["l",["title","expected","actual"]]]]]]]]]]'])
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partDebugLogging() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_report_issue"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_report_issue"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partDebugLogging() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_set_log_level","hub_delete_debug_logs"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_set_log_level","hub_delete_debug_logs"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partDebugLogging() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_report_issue",["m",[["title","Generate Diagnostic Report"],["summary","Generate a comprehensive diagnostic report for bug reports."]]]],["hub_delete_debug_logs",["m",[["title","Clear MCP Debug Logs"],["summary","Clear all MCP debug log entries."]]]],["hub_set_log_level",["m",[["title","Set MCP Log Level"],["summary","Set the MCP log level (debug, info, warn, error)."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_report_issue",["m",[["title","Generate Diagnostic Report"],["summary","Generate a comprehensive diagnostic report for bug reports."]]]],["hub_delete_debug_logs",["m",[["title","Clear MCP Debug Logs"],["summary","Clear all MCP debug log entries."]]]],["hub_set_log_level",["m",[["title","Set MCP Log Level"],["summary","Set the MCP log level (debug, info, warn, error)."]]]]]]'])
 }
 
 
-def _bat529Cb_1fa286f7_1(def level, def it) { it.level == level 
+@groovy.transform.CompileStatic
+def _bat529Cb_1fa286f7_1(def level, def it) { __bat529StaticProperty_java_lang_Object(it, 'level') == level 
 }
 
-def _bat529Cb_1fa286f7_2(def it) { it.level == "info" 
+@groovy.transform.CompileStatic
+def _bat529Cb_1fa286f7_2(def it) { __bat529StaticProperty_java_lang_Object(it, 'level') == "info" 
 }
 
-def _bat529Cb_1fa286f7_3(def ruleId, def it) { it.ruleId == ruleId 
+@groovy.transform.CompileStatic
+def _bat529Cb_1fa286f7_3(def ruleId, def it) { __bat529StaticProperty_java_lang_Object(it, 'ruleId') == ruleId 
 }
 
-def _bat529Cb_1fa286f7_4(def it) { it.level == "warn" 
+@groovy.transform.CompileStatic
+def _bat529Cb_1fa286f7_4(def it) { __bat529StaticProperty_java_lang_Object(it, 'level') == "warn" 
 }
 
-def _bat529Cb_1fa286f7_5(def it) { it.level == "debug" 
+@groovy.transform.CompileStatic
+def _bat529Cb_1fa286f7_5(def it) { __bat529StaticProperty_java_lang_Object(it, 'level') == "debug" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_1fa286f7_6(def it) { it.toString() 
 }
 
-def _bat529Cb_1fa286f7_7(def it) { it.level == "error" 
+@groovy.transform.CompileStatic
+def _bat529Cb_1fa286f7_7(def it) { __bat529StaticProperty_java_lang_Object(it, 'level') == "error" 
 }
 
-def _bat529Cb_1fa286f7_8(def component, def it) { it.component?.contains(component) 
+@groovy.transform.CompileStatic
+def _bat529Cb_1fa286f7_8(def component, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(it, 'component'), 'contains', component) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_1fa286f7_9(def it) { it.toString() 
 }
 
-def _bat529Cb_1fa286f7_10(def args, def it) { it.details?.tool == args.failingTool 
+@groovy.transform.CompileStatic
+def _bat529Cb_1fa286f7_10(def args, def it) { __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_java_lang_Object(it, 'details'), 'tool') == __bat529StaticProperty_java_lang_Object(args, 'failingTool') 
 }
 
-def _bat529Cb_1fa286f7_11(def it) { _bugReportFormatLogEntry(it) 
+@groovy.transform.CompileStatic
+java.lang.String _bat529Cb_1fa286f7_11(def it) { __bat529StaticCall_java_lang_String_1('_bugReportFormatLogEntry', it) 
 }
 
-def _bat529Cb_1fa286f7_12(def ids, def r) { if (r?.id != null) ids << r.id.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_1fa286f7_12(def ids, def r) { if (__bat529StaticProperty_Safe_java_lang_Object(r, 'id') != null) __bat529StaticExpr__bat529Cb_1fa286f7_12_2(ids, r) 
 }
 
-def _bat529Cb_1fa286f7_13(def ids, def r) { if (r?.id != null) ids << r.id.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_1fa286f7_13(def ids, def r) { if (__bat529StaticProperty_Safe_java_lang_Object(r, 'id') != null) __bat529StaticExpr__bat529Cb_1fa286f7_13_2(ids, r) 
 }
 
-def _bat529Cb_1fa286f7_14(def it) { _bugReportFormatLogEntry(it) 
+@groovy.transform.CompileStatic
+java.lang.String _bat529Cb_1fa286f7_14(def it) { __bat529StaticCall_java_lang_String_1('_bugReportFormatLogEntry', it) 
 }
 
-def _bat529Cb_1fa286f7_15(def args, def it) { it.ruleId?.toString() == args.ruleId?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_1fa286f7_15(def args, def it) { __bat529StaticProperty_java_lang_Object(it, 'ruleId')?.toString() == __bat529StaticProperty_java_lang_Object(args, 'ruleId')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_1fa286f7_16(def generation, def it) { it instanceof Map && it.generation == generation 
 }
 
-def _bat529Cb_1fa286f7_17(def it) { _bugReportFormatLogEntry(it) 
+@groovy.transform.CompileStatic
+java.lang.String _bat529Cb_1fa286f7_17(def it) { __bat529StaticCall_java_lang_String_1('_bugReportFormatLogEntry', it) 
 }
 
-def _bat529Cb_1fa286f7_18(def it) { it.level == "error" || it.level == "warn" 
+@groovy.transform.CompileStatic
+def _bat529Cb_1fa286f7_18(def it) { __bat529StaticProperty_java_lang_Object(it, 'level') == "error" || __bat529StaticProperty_java_lang_Object(it, 'level') == "warn" 
 }
 
 def _bat529Cb_1fa286f7_19(def args, def it) { it.details?.appId?.toString() == args.nativeAppId?.toString() 
@@ -924,19 +952,20 @@ def _bat529Cb_1fa286f7_22(def args, def entry) {
     
 }
 
-def _bat529Cb_1fa286f7_23(def entry) {
-        def e = [
-            timestamp: entry.timestamp,
-            time: formatTimestamp(entry.timestamp),
-            level: entry.level,
-            component: entry.component,
-            message: entry.message
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_1fa286f7_23(def entry) {
+        java.util.Map e = [
+            timestamp: __bat529StaticProperty_java_lang_Object(entry, 'timestamp'),
+            time: __bat529StaticCall_java_lang_Object_1('formatTimestamp', __bat529StaticProperty_java_lang_Object(entry, 'timestamp')),
+            level: __bat529StaticProperty_java_lang_Object(entry, 'level'),
+            component: __bat529StaticProperty_java_lang_Object(entry, 'component'),
+            message: __bat529StaticProperty_java_lang_Object(entry, 'message')
         ]
-        if (entry.ruleId) e.ruleId = entry.ruleId
-        if (entry.ruleName) e.ruleName = entry.ruleName
-        if (entry.duration) e.durationMs = entry.duration
-        if (entry.stackTrace) e.stackTrace = entry.stackTrace
-        if (entry.details) e.details = entry.details
+        if (__bat529StaticProperty_java_lang_Object(entry, 'ruleId')) e.ruleId = __bat529StaticProperty_java_lang_Object(entry, 'ruleId')
+        if (__bat529StaticProperty_java_lang_Object(entry, 'ruleName')) e.ruleName = __bat529StaticProperty_java_lang_Object(entry, 'ruleName')
+        if (__bat529StaticProperty_java_lang_Object(entry, 'duration')) e.durationMs = __bat529StaticProperty_java_lang_Object(entry, 'duration')
+        if (__bat529StaticProperty_java_lang_Object(entry, 'stackTrace')) e.stackTrace = __bat529StaticProperty_java_lang_Object(entry, 'stackTrace')
+        if (__bat529StaticProperty_java_lang_Object(entry, 'details')) e.details = __bat529StaticProperty_java_lang_Object(entry, 'details')
         return e
     
 }

@@ -1,9 +1,10 @@
 library(name: "McpCodeManagementLib", namespace: "mcp", author: "kingpanther13", description: "App/driver/library code management tool implementations (list/source/install/update/delete, app config + pages, device dependents) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
-def toolListHubApps(args) {
+@groovy.transform.CompileStatic
+java.util.Map toolListHubApps(args) {
 
-    def cursor = args?.cursor
-    def result = [:]
+    def cursor = __bat529StaticProperty_Safe_java_lang_Object(args, 'cursor')
+    java.util.Map result = [:]
     try {
         // /hub2/userAppTypes is the Apps Code registry: every user code DEFINITION with its
         // class id + usedBy, including child-app templates that have zero running instances.
@@ -11,34 +12,34 @@ def toolListHubApps(args) {
         // resolution, HPM orphan detection), so it stays the primary source here. It omits
         // `menu` and the built-in types entirely, so both are layered on from /hub2/appsList
         // (the payload the Apps admin page itself loads) via _appTypeEnrichment().
-        def responseText = hubInternalGet("/hub2/userAppTypes")
+        def responseText = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/hub2/userAppTypes")
         if (responseText) {
             def parsed = null
             boolean notJson = false
             // Narrow the catch to the parse itself -- a failure in enrichment/projection below is a
             // real bug and must not masquerade as "Response was not JSON".
             try {
-                parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                parsed = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', responseText)
             } catch (Exception parseErr) {
                 // Response was not JSON - return what we can. apps=[] keeps the cursor
                 // block + downstream shape consistent so a paginating caller doesn't
                 // silently lose the pagination contract on a firmware shape drift.
                 result.apps = []
-                result.rawResponse = responseText?.take(2000)
+                result.rawResponse = __bat529StaticReceiverCall_Safe_java_lang_Object_1(responseText, 'take', 2000)
                 result.source = "hub_api_raw"
                 result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
                 notJson = true
             }
             if (!notJson) {
                 if (parsed instanceof List) {
-                    def enrich = _appTypeEnrichment()
-                    def types = []
+                    java.util.Map enrich = __bat529StaticCall_java_util_Map_0('_appTypeEnrichment')
+                    java.util.List types = []
                     // Community (user-installed) code definitions: system/isBuiltIn=false,
                     // menu looked up from the appsList catalog (null when undeclared/unlisted).
-                    (parsed).each(((this.&_bat529Cb_3ac884d1_22).curry([enrich, types] as Object[])))
+                    __bat529StaticDgm_each_1_java_lang_Object((parsed), ((this.&_bat529Cb_3ac884d1_22).curry([enrich, types] as Object[])))
                     // Built-in types never appear in the code registry; append them so a caller
                     // can answer "community vs built-in" over ALL app types in one call.
-                    (enrich.builtIn).each(((this.&_bat529Cb_3ac884d1_23).curry([enrich, types] as Object[])))
+                    __bat529StaticDgm_each_1_java_util_List((enrich.builtIn), ((this.&_bat529Cb_3ac884d1_23).curry([enrich, types] as Object[])))
                     result.apps = types
                     result.count = types.size()
                     result.source = "hub_api"
@@ -56,24 +57,24 @@ def toolListHubApps(args) {
             result.note = "Empty response from hub API"
         }
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "hub_list_apps API call failed: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "hub_list_apps API call failed: ${e.message}")
         // Fallback: return MCP child apps as the only apps we can enumerate
-        def childApps = getChildApps()
-        result.apps = (childApps)?.collect((this.&_bat529Cb_3ac884d1_27))?: []
-        result.count = result.apps.size()
+        def childApps = __bat529StaticCall_java_util_List_0('getChildApps')
+        result.apps = __bat529StaticDgm_collect_1_Safe_java_util_List((childApps), (this.&_bat529Cb_3ac884d1_27))?: []
+        result.count = __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(result, 'apps'), 'size')
         result.source = "mcp_only"
         result.note = "Hub internal API unavailable (${e.message}). Showing only MCP Rule Server apps. This may require Hub Security credentials or a firmware update."
     }
 
     if (cursor != null && result.apps instanceof List) {
-        def paged = _paginateList(result.apps, cursor, 50, "hub_list_apps")
+        java.util.Map paged = __bat529StaticCall_java_util_Map_4('_paginateList', result.apps, cursor, 50, "hub_list_apps")
         result.total = result.apps.size()
         result.apps = paged.page
-        result.count = paged.page.size()
+        result.count = __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(paged, 'page'), 'size')
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
 
-    mcpLog("info", "hub-admin", "Listed hub apps (source: ${result.source})")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "hub-admin", "Listed hub apps (source: ${result.source})")
     return result
 }
 
@@ -214,38 +215,39 @@ def toolListHubDrivers(args) {
     return result
 }
 
-def toolListLibraries(args) {
+@groovy.transform.CompileStatic
+java.util.Map toolListLibraries(args) {
 
-    def cursor = args?.cursor
-    def result = [:]
+    def cursor = __bat529StaticProperty_Safe_java_lang_Object(args, 'cursor')
+    java.util.Map result = [:]
     try {
-        def responseText = hubInternalGet("/hub2/userLibraries")
+        def responseText = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/hub2/userLibraries")
         if (responseText) {
             try {
-                def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                def parsed = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', responseText)
                 if (parsed instanceof List) {
                     // Project to summaries -- omit each library's `source` (full Groovy) to keep
                     // the list lean; read source via hub_get_source(type='library', id=N).
-                    result.libraries = (parsed).collect((this.&_bat529Cb_3ac884d1_28))
-                    result.count = result.libraries.size()
+                    result.libraries = __bat529StaticDgm_collect_1_java_util_List((parsed), (this.&_bat529Cb_3ac884d1_28))
+                    result.count = __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(result, 'libraries'), 'size')
                     result.source = "hub_api"
                     // A library with no id can't be chained into hub_get_source -- surface it in a
                     // note instead of silently shipping an unusable row under the hub_api all-clear.
-                    def noId = (result.libraries).count((this.&_bat529Cb_3ac884d1_5))
-                    if (noId > 0) {
+                    def noId = __bat529StaticReceiverCall_java_lang_Object_1((result.libraries), 'count', (this.&_bat529Cb_3ac884d1_5))
+                    if (__bat529StaticBinary_Greater_java_lang_Object(noId, 0)) {
                         result.note = "${noId} librar${noId == 1 ? 'y' : 'ies'} returned by the hub had no id and cannot be read via hub_get_source (possible firmware shape change)."
                     }
                 } else {
                     result.libraries = []
                     result.count = 0
-                    result.rawResponse = responseText?.take(2000)
+                    result.rawResponse = __bat529StaticReceiverCall_Safe_java_lang_Object_1(responseText, 'take', 2000)
                     result.source = "hub_api_raw"
                     result.note = "Response was not a JSON array. This endpoint may return a different shape on your firmware version."
                 }
             } catch (Exception parseErr) {
                 result.libraries = []
                 result.count = 0
-                result.rawResponse = responseText?.take(2000)
+                result.rawResponse = __bat529StaticReceiverCall_Safe_java_lang_Object_1(responseText, 'take', 2000)
                 result.source = "hub_api_raw"
                 result.note = "Response was not JSON. This endpoint may return HTML on your firmware version."
             }
@@ -256,7 +258,7 @@ def toolListLibraries(args) {
             result.note = "Empty response from hub API"
         }
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "hub_list_libraries API call failed: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "hub_list_libraries API call failed: ${e.message}")
         result.libraries = []
         result.count = 0
         result.source = "unavailable"
@@ -264,14 +266,14 @@ def toolListLibraries(args) {
     }
 
     if (cursor != null && result.libraries instanceof List) {
-        def paged = _paginateList(result.libraries, cursor, 50, "hub_list_libraries")
+        java.util.Map paged = __bat529StaticCall_java_util_Map_4('_paginateList', result.libraries, cursor, 50, "hub_list_libraries")
         result.total = result.libraries.size()
         result.libraries = paged.page
-        result.count = paged.page.size()
+        result.count = __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(paged, 'page'), 'size')
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
 
-    mcpLog("info", "hub-admin", "Listed hub libraries (source: ${result.source})")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "hub-admin", "Listed hub libraries (source: ${result.source})")
     return result
 }
 
@@ -397,15 +399,18 @@ private stripOptionsHtml(options) {
 // mainPage that span is the only carrier of the state (it lives in RM app state, not
 // settings); selectActions also flips the row's disable<N> button title to "Enable Action".
 // Live-captured on firmware 2.5.2 / RM 5.1.
+@groovy.transform.CompileStatic
 private String _rmDisabledActionSpanRegex() {
     // Assigned first: the hub's Groovy 2.4 parses a slashy literal right after `return` as division.
-    def regex = /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
+    java.lang.String regex = /(?is)<span\s+style=['"]\s*color:\s*red;?\s*['"]\s*>\s*<i>(.*?)<\/i>\s*<\/span>/
     return regex
 }
 
+@groovy.transform.CompileStatic
 private String _rmDisabledActionMark() { return "[DISABLED] " }
 
 // The Rule Machine parent app is not a rule; older hubs still run Rule-4.x children.
+@groovy.transform.CompileStatic
 private boolean _rmIsRuleAppType(String name) {
     return name != null && name ==~ /(Button )?Rule-\d.*/
 }
@@ -454,28 +459,29 @@ private String _rmDisabledRowText(String innerRaw) {
 
 // markDisabled flags RM disabled rows; disabledRows, when given, collects
 // [text:, disableButton:] for each one (disableButton only when that button is on the page).
+@groovy.transform.CompileStatic
 private List _extractEmbeddedActions(String html, boolean markDisabled = false, List disabledRows = null) {
     if (!html) return []
-    def buttonNames = []
+    java.util.List buttonNames = []
     def im = (html =~ /<input\s+type=['"]hidden['"]\s+name=['"]([^'"]+?)\.type['"]\s+value=['"]button['"][^>]*>/)
-    while (im.find()) {
+    while (__bat529StaticDgm_find_0_java_lang_Object(im)) {
         buttonNames << im.group(1)
     }
-    def divs = []
+    java.util.List divs = []
     def dm = (html =~ /(?s)<div([^>]*)class=['"]submitOnChange['"]([^>]*)>(.*?)<\/div>/)
-    while (dm.find()) {
+    while (__bat529StaticDgm_find_0_java_lang_Object(dm)) {
         def attrs = (dm.group(1) ?: "") + (dm.group(2) ?: "")
         def innerRaw = dm.group(3) ?: ""
         def title = null
         def state = null
         def tm = attrs =~ /title=['"]([^'"]+?)['"]/
-        if (tm.find()) title = tm.group(1)
+        if (__bat529StaticDgm_find_0_java_lang_Object(tm)) title = tm.group(1)
         def sm = attrs =~ /data-stateAttribute=['"]([^'"]+?)['"]/
-        if (sm.find()) state = sm.group(1)
-        def div = [title: title, stateAttribute: state]
-        def disabledText = markDisabled ? _rmDisabledRowText(innerRaw) : null
+        if (__bat529StaticDgm_find_0_java_lang_Object(sm)) state = sm.group(1)
+        java.util.Map div = [title: title, stateAttribute: state]
+        java.lang.String disabledText = markDisabled ? __bat529StaticCall_java_lang_String_1('_rmDisabledRowText', innerRaw) : null
         if (disabledText) {
-            div.description = stripAppConfigHtml(innerRaw) ?: null
+            div.description = __bat529StaticCall_java_lang_String_1('stripAppConfigHtml', innerRaw) ?: null
             div.disabledText = disabledText
         } else {
             def inner = innerRaw.replaceAll(/<\/?[A-Za-z!][^>]*>/, "").replaceAll(/&nbsp;|&#65291|&#x[0-9a-fA-F]+;|&#\d+;/, "").trim()
@@ -484,21 +490,21 @@ private List _extractEmbeddedActions(String html, boolean markDisabled = false, 
         divs << div
     }
     if (!buttonNames || !divs) return []
-    def actions = []
+    java.util.List actions = []
     int n = Math.min(buttonNames.size(), divs.size())
     for (int i = 0; i < n; i++) {
-        def a = [name: buttonNames[i]]
+        java.util.Map a = [name: buttonNames[i]]
         def d = divs[i]
-        if (d.title) a.title = d.title
-        if (d.stateAttribute) a.stateAttribute = d.stateAttribute
-        if (d.description) a.description = d.description
-        if (d.disabledText) {
+        if (__bat529StaticProperty_java_lang_Object(d, 'title')) a.title = __bat529StaticProperty_java_lang_Object(d, 'title')
+        if (__bat529StaticProperty_java_lang_Object(d, 'stateAttribute')) a.stateAttribute = __bat529StaticProperty_java_lang_Object(d, 'stateAttribute')
+        if (__bat529StaticProperty_java_lang_Object(d, 'description')) a.description = __bat529StaticProperty_java_lang_Object(d, 'description')
+        if (__bat529StaticProperty_java_lang_Object(d, 'disabledText')) {
             a.disabled = true
             if (disabledRows != null) {
-                def row = [text: d.disabledText]
+                java.util.Map row = [text: __bat529StaticProperty_java_lang_Object(d, 'disabledText')]
                 // RM names the row's buttons by action index: <N>.0.false (edit) pairs with disable<N>.
                 def im2 = (a.name.toString() =~ /^(\d+)\./)
-                if (im2.find() && buttonNames.contains("disable" + im2.group(1))) row.disableButton = "disable" + im2.group(1)
+                if (__bat529StaticDgm_find_0_java_lang_Object(im2) && buttonNames.contains("disable" + im2.group(1))) row.disableButton = "disable" + im2.group(1)
                 disabledRows << row
             }
         }
@@ -926,17 +932,18 @@ def toolListAppPages(args) {
 // Unified source reader for the hub_get_source tool: dispatches on type to the
 // shared app/driver helper (toolGetItemSource) or the library helper. The
 // public param is `id`; we map it to the per-type id the helpers expect.
-def toolGetSource(args) {
-    def type = args.type
+@groovy.transform.CompileStatic
+java.util.Map toolGetSource(args) {
+    def type = __bat529StaticProperty_java_lang_Object(args, 'type')
     if (!(type in ["app", "driver", "library"])) {
         throw new IllegalArgumentException("type is required and must be one of: app, driver, library")
     }
-    def id = (args.id != null) ? args.id : (type == "app" ? args.appId : (type == "driver" ? args.driverId : args.libraryId))
+    def id = (__bat529StaticProperty_java_lang_Object(args, 'id') != null) ? __bat529StaticProperty_java_lang_Object(args, 'id') : (type == "app" ? __bat529StaticProperty_java_lang_Object(args, 'appId') : (type == "driver" ? __bat529StaticProperty_java_lang_Object(args, 'driverId') : __bat529StaticProperty_java_lang_Object(args, 'libraryId')))
     if (type == "library") {
-        return toolGetLibrarySource(args + [libraryId: id])
+        return __bat529StaticCall_java_util_Map_1('toolGetLibrarySource', __bat529StaticBinary_Plus_java_lang_Object(args, [libraryId: id]))
     }
-    def idParam = (type == "app") ? "appId" : "driverId"
-    return toolGetItemSource(type, idParam, args + [(idParam): id])
+    java.lang.String idParam = (type == "app") ? "appId" : "driverId"
+    return __bat529StaticCall_java_util_Map_3('toolGetItemSource', type, idParam, __bat529StaticBinary_Plus_java_lang_Object(args, [(idParam): id]))
 }
 
 private Map _createUserAppInstance(Integer codeAppId) {
@@ -1170,18 +1177,20 @@ boolean _isSimpleSettingValue(v) {
 
 // Coarse shape label for a log line: never getClass() (reflection is sandbox-blocked) and never the
 // value, which can be a password. Closure-callable for the same reason as above.
-def _settingShapeName(v) {
+@groovy.transform.CompileStatic
+java.lang.String _settingShapeName(v) {
     if (v == null) return "null"
     if (v instanceof Map) return "Map"
     if (v instanceof List) return "List(with a non-scalar element)"
     return "non-scalar"
 }
 
+@groovy.transform.CompileStatic
 private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     // requireLiveSettings=false: a fresh shell has no configured values to protect, so the page
     // defaults ARE correct and refusing over an unreadable statusJson would block the install for
     // nothing. The degradation still has to be VISIBLE, so it rides out as a note below.
-    def submit = _submitAppDoneForm(instanceId, pageName, false)
+    java.util.Map submit = __bat529StaticCall_java_util_Map_3('_submitAppDoneForm', instanceId, pageName, false)
     if (submit.uiBlocked) {
         return [
             success: false,
@@ -1194,7 +1203,7 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     }
     def st = submit.status
     def page = submit.page
-    if (st != null && st >= 400) {
+    if (st != null && __bat529StaticBinary_GreaterEqual_java_lang_Object(st, 400)) {
         return [
             success: false,
             error: "Done POST to /installedapp/update/json returned status ${st}",
@@ -1207,10 +1216,10 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     // so "the POST didn't 4xx" is not proof the commit took.
     def installedConfirmed = null   // null = read failed -> committed-but-unconfirmed
     try {
-        def postCfg = _rmFetchConfigJson(instanceId, page)
-        installedConfirmed = (postCfg?.app?.installed == true)
+        java.util.Map postCfg = __bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', instanceId, page)
+        installedConfirmed = (__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(postCfg, 'app'), 'installed') == true)
     } catch (Exception ce) {
-        mcpLog("warn", "hub-admin", "_commitUserAppInstall: post-commit installed-confirmation read for ${instanceId} failed (${ce.message}) -- reporting committed but unconfirmed")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "_commitUserAppInstall: post-commit installed-confirmation read for ${instanceId} failed (${ce.message}) -- reporting committed but unconfirmed")
     }
     if (installedConfirmed == false) {
         return [
@@ -1222,16 +1231,16 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
     }
     // Read back runtime state as evidence installed()/initialize() ran.
     def post = null
-    try { post = _rmFetchStatusJson(instanceId) } catch (Exception se) {
-        mcpLog("debug", "hub-admin", "_commitUserAppInstall: post-commit statusJson read for ${instanceId} failed (${se.message}) -- reporting zero counts")
+    try { post = __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', instanceId) } catch (Exception se) {
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-admin", "_commitUserAppInstall: post-commit statusJson read for ${instanceId} failed (${se.message}) -- reporting zero counts")
     }
-    def schedCount = (post?.scheduledJobs instanceof List) ? post.scheduledJobs.size() : 0
-    def subCount = (post?.eventSubscriptions instanceof List) ? post.eventSubscriptions.size() : 0
-    def out = [success: true, scheduledJobCount: schedCount, eventSubscriptionCount: subCount,
+    def schedCount = (post?.scheduledJobs instanceof List) ? __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(post, 'scheduledJobs'), 'size') : 0
+    def subCount = (post?.eventSubscriptions instanceof List) ? __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(post, 'eventSubscriptions'), 'size') : 0
+    java.util.Map out = [success: true, scheduledJobCount: schedCount, eventSubscriptionCount: subCount,
                installedConfirmed: (installedConfirmed == true)]
     // Every degradation on this path gets a sentence -- an unexplained zero count or a silent
     // settings fallback is indistinguishable from a healthy install otherwise.
-    def notes = []
+    java.util.List notes = []
     if (installedConfirmed == null) {
         notes << "app.installed could not be independently confirmed (the config read failed); scheduledJobCount/eventSubscriptionCount are the lifecycle evidence."
     }
@@ -1284,8 +1293,9 @@ def toolInstallApp(args) {
     return toolInstallItemSingle("app", args)
 }
 
-def toolInstallDriver(args) {
-    return toolInstallItem("driver", args)
+@groovy.transform.CompileStatic
+java.util.Map toolInstallDriver(args) {
+    return __bat529StaticCall_java_util_Map_2('toolInstallItem', "driver", args)
 }
 
 private Map toolInstallItem(String type, args) {
@@ -1506,9 +1516,10 @@ private Map toolInstallItemSingle(String type, args) {
     }
 }
 
-def toolUpdateItemCode(String type, String idParam, args) {
-    requireDestructiveConfirm(args.confirm)
-    return toolUpdateItemCodeInner(type, idParam, args)
+@groovy.transform.CompileStatic
+java.util.Map toolUpdateItemCode(String type, String idParam, args) {
+    __bat529StaticCall_java_lang_Object_1('requireDestructiveConfirm', __bat529StaticProperty_java_lang_Object(args, 'confirm'))
+    return __bat529StaticCall_java_util_Map_3('toolUpdateItemCodeInner', type, idParam, args)
 }
 
 // Version of an app/driver from its list row (/<type>/list/single/data/<id>: small JSON, no
@@ -1528,24 +1539,29 @@ private _itemRowVersion(String type, itemId) {
 // Self-save tuning (issue #522). The POST wait is short on purpose: the hub finishes the save on its
 // own, and the App Code row's version is the confirmation. A direct call answers its client quickly;
 // the detached package worker has nobody waiting and polls until the compile is done.
-def _selfSaveRequestTimeoutSec() { 20 }
-def _selfSaveWaitMs() { 20000L }
-def _packageSelfSaveWaitMs() { 900000L }
-def _selfSavePollMs() { 5000L }
+@groovy.transform.CompileStatic
+java.lang.Integer _selfSaveRequestTimeoutSec() { 20 }
+@groovy.transform.CompileStatic
+java.lang.Long _selfSaveWaitMs() { 20000L }
+@groovy.transform.CompileStatic
+java.lang.Long _packageSelfSaveWaitMs() { 900000L }
+@groovy.transform.CompileStatic
+java.lang.Long _selfSavePollMs() { 5000L }
 
 // Poll the item's row until its version passes startedVersion. [version: n] when it did, null when
 // the budget ran out first (the save may still land; hub_get_info settles the record later).
+@groovy.transform.CompileStatic
 private Map _awaitSelfSave(String type, itemId, startedVersion, long waitMs) {
     Integer started = null
     try { started = startedVersion as Integer } catch (Exception ignored) { return null }
-    long deadline = now() + waitMs
+    long deadline = __bat529StaticCall_long_0('now') + waitMs
     while (true) {
         Integer cur = null
-        try { cur = _itemRowVersion(type, itemId) as Integer } catch (Exception ignored) { cur = null }
+        try { cur = __bat529StaticCall_java_lang_Object_2('_itemRowVersion', type, itemId) as Integer } catch (Exception ignored) { cur = null }
         if (cur != null && cur > started) return [version: cur]
-        long left = deadline - now()
+        long left = deadline - __bat529StaticCall_long_0('now')
         if (left <= 0L) return null
-        pauseExecution(Math.min(_selfSavePollMs(), left))
+        __bat529StaticCall_java_lang_Object_1('pauseExecution', Math.min(__bat529StaticCall_java_lang_Long_0('_selfSavePollMs'), left))
     }
 }
 
@@ -2028,31 +2044,32 @@ def toolUpdateAppCode(args) {
 
 // Worker-only overload: package identity is an out-of-band execution context,
 // never a field accepted from hub_update_app's public argument map.
+@groovy.transform.CompileStatic
 def _toolUpdateAppCode(args, Map packageWorkerContext) {
-    if (args.updates != null) {
+    if (__bat529StaticProperty_java_lang_Object(args, 'updates') != null) {
         throw new IllegalArgumentException("Bulk mode ('updates' array) is not supported for hub_update_app. Apps do not cluster the way drivers do; update each app individually.")
     }
-    if (args.oauth == null) {
-        requireDestructiveConfirm(args.confirm)
-        return toolUpdateItemCodeInner("app", "appId", args, packageWorkerContext)
+    if (__bat529StaticProperty_java_lang_Object(args, 'oauth') == null) {
+        __bat529StaticCall_java_lang_Object_1('requireDestructiveConfirm', __bat529StaticProperty_java_lang_Object(args, 'confirm'))
+        return __bat529StaticCall_java_util_Map_4('toolUpdateItemCodeInner', "app", "appId", args, packageWorkerContext)
     }
 
     // OAuth fold: enable/configure OAuth on the app CODE definition (apps only), optionally alongside
     // a source update. The destructive gate fires once here; the inner source path is then called
     // WITHOUT re-gating. OAuth-only is allowed (no source mode required).
-    requireDestructiveConfirm(args.confirm)
-    if (!args.appId) throw new IllegalArgumentException("appId is required")
+    __bat529StaticCall_java_lang_Object_1('requireDestructiveConfirm', __bat529StaticProperty_java_lang_Object(args, 'confirm'))
+    if (!__bat529StaticProperty_java_lang_Object(args, 'appId')) throw new IllegalArgumentException("appId is required")
 
-    def hasSourceMode = ([args.resave, args.sourceFile, args.source, args.importUrl]).count((this.&_bat529Cb_3ac884d1_20))> 0
+    def hasSourceMode = ([__bat529StaticProperty_java_lang_Object(args, 'resave'), __bat529StaticProperty_java_lang_Object(args, 'sourceFile'), __bat529StaticProperty_java_lang_Object(args, 'source'), __bat529StaticProperty_java_lang_Object(args, 'importUrl')]).count((this.&_bat529Cb_3ac884d1_20))> 0
     def result
     if (hasSourceMode) {
-        result = toolUpdateItemCodeInner("app", "appId", args, packageWorkerContext)   // gate already fired above
+        result = __bat529StaticCall_java_util_Map_4('toolUpdateItemCodeInner', "app", "appId", args, packageWorkerContext)   // gate already fired above
         if (result?.success != true) return result               // source update failed -- leave OAuth untouched
     } else {
-        result = [success: true, appId: args.appId.toString(), message: "OAuth settings updated (no source change)."]
+        result = [success: true, appId: __bat529StaticProperty_java_lang_Object(args, 'appId').toString(), message: "OAuth settings updated (no source change)."]
     }
 
-    def oauthRes = _updateAppOAuth(args.appId, args.oauth)
+    java.util.Map oauthRes = __bat529StaticCall_java_util_Map_2('_updateAppOAuth', __bat529StaticProperty_java_lang_Object(args, 'appId'), __bat529StaticProperty_java_lang_Object(args, 'oauth'))
     result.oauth = oauthRes
     if (oauthRes.success != true) {
         result.success = false
@@ -2256,18 +2273,19 @@ def toolUpdateDriverCode(args) {
 // Unified delete for the hub_delete_item tool: dispatches on type to the shared
 // app/driver endpoint helper or the library-specific handler. Public param is
 // `item_id`; mapped to the per-type id the helpers expect.
-def toolDeleteItem(args) {
-    def type = args.type
+@groovy.transform.CompileStatic
+java.util.Map toolDeleteItem(args) {
+    def type = __bat529StaticProperty_java_lang_Object(args, 'type')
     if (!(type in ["app", "driver", "library"])) {
         throw new IllegalArgumentException("type is required and must be one of: app, driver, library")
     }
-    def id = (args.item_id != null) ? args.item_id : (type == "app" ? args.appId : (type == "driver" ? args.driverId : args.libraryId))
+    def id = (__bat529StaticProperty_java_lang_Object(args, 'item_id') != null) ? __bat529StaticProperty_java_lang_Object(args, 'item_id') : (type == "app" ? __bat529StaticProperty_java_lang_Object(args, 'appId') : (type == "driver" ? __bat529StaticProperty_java_lang_Object(args, 'driverId') : __bat529StaticProperty_java_lang_Object(args, 'libraryId')))
     if (type == "library") {
-        return toolDeleteLibrary(args + [libraryId: id])
+        return __bat529StaticCall_java_util_Map_1('toolDeleteLibrary', __bat529StaticBinary_Plus_java_lang_Object(args, [libraryId: id]))
     }
-    def idParam = (type == "app") ? "appId" : "driverId"
-    def deletePath = (type == "app") ? "/app/edit/deleteJsonSafe/" : "/driver/editor/deleteJson/"
-    return _deleteItemViaEndpoint(type, idParam, deletePath, args + [(idParam): id])
+    java.lang.String idParam = (type == "app") ? "appId" : "driverId"
+    java.lang.String deletePath = (type == "app") ? "/app/edit/deleteJsonSafe/" : "/driver/editor/deleteJson/"
+    return __bat529StaticCall_java_util_Map_4('_deleteItemViaEndpoint', type, idParam, deletePath, __bat529StaticBinary_Plus_java_lang_Object(args, [(idParam): id]))
 }
 
 private Map _deleteItemViaEndpoint(String type, String idParam, String deletePath, args) {
@@ -2933,14 +2951,15 @@ def toolListInstalledApps(args) {
 
 // getAppsUsingDevice(Long) from the app API, projected like the appsUsing rows. Null when the
 // platform lacks it (firmware before 2.5.2) or the call fails.
+@groovy.transform.CompileStatic
 def _platformAppsUsingDevice(String deviceId) {
     if (!(deviceId ==~ /\d+/)) return null
     try {
-        def apps = getAppsUsingDevice(deviceId as Long)
+        def apps = __bat529StaticCall_java_lang_Object_1('getAppsUsingDevice', deviceId as Long)
         if (!(apps instanceof List)) return null
-        return ((apps).findAll((this.&_bat529Cb_3ac884d1_2))).collect((this.&_bat529Cb_3ac884d1_29))
+        return __bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_lang_Object((apps), (this.&_bat529Cb_3ac884d1_2))), (this.&_bat529Cb_3ac884d1_29))
     } catch (Exception e) {
-        mcpLog(_hubFirmwareBefore("2.5.2") ? "debug" : "warn", "installed-apps", "getAppsUsingDevice(${deviceId}) unavailable: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', __bat529StaticCall_boolean_1('_hubFirmwareBefore', "2.5.2") ? "debug" : "warn", "installed-apps", "getAppsUsingDevice(${deviceId}) unavailable: ${e.message}")
         return null
     }
 }
@@ -3040,102 +3059,129 @@ def _getAllToolDefinitions_partCodeManagement() {
     return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_apps"],["description","List apps on the hub \\u2014 running instances or installed app code/types (see scope).[[FLAT_TRIM]] scope=\'types\' returns both community and built-in app types, each tagged system/isBuiltIn and with its menu tab (Apps/Automations/Integrations). Use system=false/isBuiltIn=false to isolate community (user-installed) types, or menu to group types by the admin UI\'s Apps/Automations/Integrations tabs. menu is null for a type that declares none. See hub_get_tool_guide(section=\'builtin_app_tools_apps\').[[/FLAT_TRIM]] Per-app event history: hub_list_device_events with appId.[[FLAT_TRIM]] Each instance row carries appTypeId, the app type\'s code-class id shared with scope=\'types\' and hub_get_source(type=\'app\'), so an instance resolves to its code without matching on the type name. Requires the Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["scope",["m",[["type","string"],["enum",["l",["instances","types"]]],["description","What to list. \'instances\' (default) = running app instances with parent/child tree; \'types\' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared)."],["default","instances"]]]],["filter",["m",[["type","string"],["enum",["l",["all","builtin","user","disabled","parents","children"]]],["description","scope=\'instances\' only: category filter."]]]],["includeHidden",["m",[["type","boolean"],["description","scope=\'instances\' only: include hidden apps (typically Hubitat internal). Default: false"],["default",false]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_list_drivers"],["description","List device driver types on the hub.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["include",["m",[["type","string"],["enum",["l",["user","all"]]],["description","Scope: \'user\' (default) = user-installed drivers only; \'all\' = full catalog (system + virtual + user)."]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_list_libraries"],["description","List all Groovy libraries installed on the hub (id, name, namespace, version). Use this to discover a library\'s id, then read its source with hub_get_source(type=\'library\', id=N)[[FLAT_TRIM]]; the source is omitted here to keep the list lean[[/FLAT_TRIM]].[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_get_source"],["description","Get the Groovy source of an installed app, driver, or library. Supports chunked reading (offset/length); large sources are auto-saved to the File Manager for use with the matching update tool\'s sourceFile mode.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["app","driver","library"]]],["description","What kind of code to read."]]]],["id",["m",[["type","string"],["description","App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."]]]],["offset",["m",[["type","integer"],["description","Char offset to start reading from. Default: 0"]]]],["length",["m",[["type","integer"],["description","Max characters to return in this chunk. Default/max: 64000"]]]]]]],["required",["l",["type","id"]]]]]]]],["m",[["name","hub_create_app"],["description","\\u26a0\\ufe0f Install new app. Show code to user and get confirmation first.\\n\\nSupply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param).\\n\\n[[FLAT_TRIM]]\\nAfter the code installs, create a running instance with a SECOND call: hub_create_app(codeAppId: <newAppId>, confirm: true).\\n[[/FLAT_TRIM]]\\n\\nVerifies the install compiled -- returns success=false with the error if it didn\'t. Requires Write master + confirm + backup <24h. Returns the new app ID.\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["source",["m",[["type","string"],["description","Inline Groovy source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-app.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["codeAppId",["m",[["type","integer"],["description","Second-step mode: instantiate already-installed code (codeAppId from a prior call) and commit the install; not combinable with source/sourceFile/importUrl."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_create_driver"],["description","\\u26a0\\ufe0f Install new driver. Show code to user and get confirmation first.\\n\\nSupply the code via exactly one of source / sourceFile / importUrl (mutually exclusive; see each param). For >1 driver use BULK mode (the installs param).\\n\\nVerifies the install compiled: returns success=false with the error if the hub accepted the request but the driver failed to compile. Requires Write master + confirm + backup <24h. Returns new driver ID(s).\\n[[FLAT_TRIM]]\\nMCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["source",["m",[["type","string"],["description","Inline Groovy source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["installs",["m",[["type","array"],["description","Bulk mode: one round-trip for many drivers. Each entry {source|sourceFile|importUrl}; cannot mix with single-driver fields; continue-on-error."],["items",["m",[["type","object"],["properties",["m",[["sourceFile",["m",[["type","string"],["description","File Manager filename (preferred)."]]]],["source",["m",[["type","string"],["description","Inline source (stubs only)."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly."]]]]]]]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_update_app"],["description","\\u26a0\\ufe0f CRITICAL: Modify existing app code. Read current source first, explain changes, get confirmation.\\n\\nSupply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Optionally enable OAuth via the oauth param (apps only), alone or alongside a source change.\\n\\nAuto-backs up before modifying. Requires Write master + confirm + backup <24h.[[FLAT_TRIM]]\\n\\nSelf-update guard: refuses to overwrite the MCP server\'s own app source or OAuth unless Developer Mode is on.[[/FLAT_TRIM]]\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","string"],["description","The app ID (Apps Code id) to update"]]]],["source",["m",[["type","string"],["description","Inline Groovy source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["resave",["m",[["type","boolean"],["description","Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"]]]],["backup",["m",[["type","boolean"],["description","false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL\'s publisher keeps the history.[[/FLAT_TRIM]]"]]]],["expectedVersion",["m",[["type","integer"],["description","OPTIONAL optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] Stringified integers coerced; explicit null rejected.[[/FLAT_TRIM]]"]]]],["triggerUpdated",["m",[["type","integer"],["description","OPTIONAL: running instance appId to refresh via updated() after saving code; re-initializes subscriptions, schedules and atomicState. Protected targets require Developer Mode. Submits mainPage\'s Done form, RE-SENDING EVERY input from live settings. If live settings cannot be read, refuses the submit to avoid clearing device selections. On refusal/failure, saved code remains deployed: success:true, partial:true, updatedFired:false and repairHints. Omit for the hub editor\'s normal Save behavior (no lifecycle refresh)."]]]],["oauth",["m",[["type","object"],["description","OPTIONAL: enable/configure OAuth on this app (apps only); e.g. {enabled:true}. Full shape: hub_get_tool_guide(section=\'hub_admin_write_code\')."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["appId","confirm"]]]]]]]],["m",[["name","hub_update_driver"],["description","\\u26a0\\ufe0f CRITICAL: Modify existing driver code. Read current source first, explain changes, get confirmation.\\n\\nSupply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). For >1 driver use BULK mode (the updates param).\\n\\nAuto-backs up before modifying. Requires Write master + confirm + backup <24h.\\n[[FLAT_TRIM]]\\nMCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["driverId",["m",[["type","string"],["description","The driver ID to update (single-driver mode). Omit when using \'updates\' array."]]]],["source",["m",[["type","string"],["description","Inline Groovy source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["resave",["m",[["type","boolean"],["description","Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"]]]],["backup",["m",[["type","boolean"],["description","false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL\'s publisher keeps the history.[[/FLAT_TRIM]]"]]]],["expectedVersion",["m",[["type","integer"],["description","Optional optimistic-lock guard; aborts with conflict:true on mismatch.[[FLAT_TRIM]] In bulk mode, put it inside each updates[] entry.[[/FLAT_TRIM]]"]]]],["updates",["m",[["type","array"],["description","Bulk mode: one round-trip for many drivers. Each entry {driverId, sourceFile|source|importUrl|resave, optional expectedVersion}; cannot mix with single-driver fields; continue-on-error."],["items",["m",[["type","object"],["properties",["m",[["driverId",["m",[["type","string"],["description","The driver ID to update"]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (preferred)."]]]],["source",["m",[["type","string"],["description","Inline source (stubs only)."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly."]]]],["resave",["m",[["type","boolean"],["description","Re-save without changes."]]]],["backup",["m",[["type","boolean"]]]],["expectedVersion",["m",[["type","integer"],["description","OPTIONAL optimistic-lock guard for this item only."]]]]]]],["required",["l",["driverId"]]]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_delete_item"],["description","\\u26a0\\ufe0f DESTRUCTIVE: Permanently delete an app, driver, or library. Auto-backs up the source before deletion.\\n\\n[[FLAT_TRIM]]\\nPre-flight by type: apps -- remove app instances via the Hubitat UI first; drivers -- switch any devices to a different driver first; libraries -- ensure no apps/drivers still #include it (else compile errors).\\n[[/FLAT_TRIM]]\\n\\nTell the user the item name/ID, warn it\'s permanent, get confirmation. Requires Write master + confirm + backup <24h.\\n[[FLAT_TRIM]]\\nFor type=driver, MCP 2026-07-28 clients automatically continue this slow write and can replay its retained terminal response. Other item types and older clients can still lose the response on a transport drop; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["app","driver","library"]]],["description","What to delete."]]]],["item_id",["m",[["type","string"],["description","The app/driver/library ID to delete."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["type","item_id","confirm"]]]]]]]],["m",[["name","hub_create_library"],["description","\\u26a0\\ufe0f Install new Groovy library code. Libraries are #include\'d by drivers/apps. Show code to user and get confirmation first.\\n\\nProvide exactly one of source / sourceFile / importUrl (see each param).\\n\\nSource must include a library() block with name/namespace/author/description (all required). The hub does NOT compile-check libraries at install -- syntax errors surface only when an app/driver #includes it. Requires Write master + confirm + backup <24h. Returns new libraryId.\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["source",["m",[["type","string"],["description","Inline source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_update_library"],["description","\\u26a0\\ufe0f CRITICAL: Modify existing library code. Read current source first, explain changes, get confirmation.\\n\\nSupply the new code via exactly one of source / sourceFile / importUrl, or resave to recompile in place (see each param). Not compile-checked at save (see hub_create_library).\\n\\nAuto-backs up before modifying. Requires Write master + confirm + backup <24h.\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["libraryId",["m",[["type","string"],["description","The library ID to update"]]]],["source",["m",[["type","string"],["description","Inline source (stubs only)."]]]],["sourceFile",["m",[["type","string"],["description","File Manager filename (write it first via hub_write_file), e.g. my-code.groovy."]]]],["importUrl",["m",[["type","string"],["description","URL the hub fetches directly (http/https)."]]]],["resave",["m",[["type","boolean"],["description","Re-save the current source without changes.[[FLAT_TRIM]] Runs entirely on-hub.[[/FLAT_TRIM]]"]]]],["backup",["m",[["type","boolean"],["description","false: no pre-save backup.[[FLAT_TRIM]] Default true: the current source goes to File Manager first (hub_list_backups scope=source). Never taken in importUrl mode: the URL\'s publisher keeps the history.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["libraryId","confirm"]]]]]]]],["m",[["name","hub_get_app_config"],["description","Read an installed app\'s configuration \\u2014 the structured data the Hubitat Web UI shows on an app\'s settings page.[[FLAT_TRIM]] Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.).[[/FLAT_TRIM]] Read-only.\\n\\nReturns the app\'s identity plus its current config page (sections, inputs, current values) and `embeddedActions` \\u2014 clickable RM wizard buttons hub_set_rule can drive. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]\\n\\nGet appId from hub_list_apps (scope=\'instances\') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","string"],["description","Installed-app ID (decimal). From hub_list_apps (scope=\'instances\'), hub_list_rules, or the numeric id in the Hubitat UI URL (/installedapp/configure/<id>)."]]]],["pageName",["m",[["type","string"],["description","Optional sub-page name for multi-page apps; main page when omitted. Call hub_list_app_pages to discover available names."]]]],["includeSettings",["m",[["type","boolean"],["description","Include the raw app-internal settings key-value map (default false). Set true only for power-user inspection."],["default",false]]]],["summary",["m",[["type","boolean"],["description","Fast identity-only read: returns the thin app record (id, name, type, disabled, user), no config page; pageName/includeSettings ignored."],["default",false]]]]]]],["required",["l",["appId"]]]]]]]],["m",[["name","hub_list_app_pages"],["description","List page names for an installed app: the live primary page plus every sub-page it links to (any classic app), with a curated directory added for HPM.[[FLAT_TRIM]] A page linked only from a sub-page appears in hub_get_app_config(appId, pageName=<sub-page>).page.hrefs.[[/FLAT_TRIM]]\\n\\nUse before hub_get_app_config on multi-page apps to avoid guessing page names.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","string"],["description","Installed-app ID (decimal). From hub_list_apps (scope=\'instances\'), hub_list_rules, or the Hubitat UI URL (/installedapp/configure/<id>)."]]]]]]],["required",["l",["appId"]]]]]]]],["m",[["name","hub_list_device_dependents"],["description","List all apps that reference a specific device[[FLAT_TRIM]] (Room Lighting instances, Rule Machine rules, Groups and Scenes, Mode Manager, dashboards, Maker API, Echo Skill, etc.)[[/FLAT_TRIM]] \\u2014 critical before device cleanup, troubleshooting, or reassignment.[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["deviceId",["m",[["type","string"],["description","Device ID from hub_list_devices"]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor for the appsUsing list. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 100)."]]]]]]],["required",["l",["deviceId"]]]]]]]]]]'])
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partCodeManagement() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_list_apps","hub_list_drivers","hub_list_libraries","hub_get_source","hub_list_device_dependents","hub_get_app_config","hub_list_app_pages"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_list_apps","hub_list_drivers","hub_list_libraries","hub_get_source","hub_list_device_dependents","hub_get_app_config","hub_list_app_pages"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partCodeManagement() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_update_app","hub_update_driver","hub_update_library","hub_delete_item"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_update_app","hub_update_driver","hub_update_library","hub_delete_item"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _openWorldToolNames_partCodeManagement() {
     // Tools in this library that reach BEYOND the hub to the open internet (MCP
     // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_create_app","hub_create_driver","hub_create_library","hub_update_app","hub_update_driver","hub_update_library"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_create_app","hub_create_driver","hub_create_library","hub_update_app","hub_update_driver","hub_update_library"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partCodeManagement() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_apps",["m",[["title","List Apps"],["summary","List installed app types or enumerate app instances."]]]],["hub_list_drivers",["m",[["title","List Drivers"],["summary","List all installed drivers."]]]],["hub_list_libraries",["m",[["title","List Libraries"],["summary","List installed Groovy libraries."]]]],["hub_get_source",["m",[["title","Get Source Code"],["summary","Read Groovy source for an app, driver, or library."]]]],["hub_create_app",["m",[["title","Install App"],["summary","Install a new app from source, a File Manager file, or a URL, or instantiate installed app code."]]]],["hub_create_driver",["m",[["title","Install Driver"],["summary","Install one or more drivers from source, File Manager files, or a URL."]]]],["hub_update_app",["m",[["title","Update App Code"],["summary","Modify an existing app\'s source code, or enable/configure its OAuth (client id/secret)."]]]],["hub_update_driver",["m",[["title","Update Driver Code"],["summary","Modify an existing driver\'s source code."]]]],["hub_create_library",["m",[["title","Install Library"],["summary","Install a new Groovy library."]]]],["hub_update_library",["m",[["title","Update Library Code"],["summary","Modify an existing library\'s source code."]]]],["hub_delete_item",["m",[["title","Delete Code Item"],["summary","Permanently delete an app, driver, or library (auto-backs up first)."]]]],["hub_list_device_dependents",["m",[["title","List Device Dependents"],["summary","Find all apps that reference a device."]]]],["hub_get_app_config",["m",[["title","Get App Configuration"],["summary","Read an installed app\'s configuration page."]]]],["hub_list_app_pages",["m",[["title","List App Pages"],["summary","List known page names for a multi-page app."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_list_apps",["m",[["title","List Apps"],["summary","List installed app types or enumerate app instances."]]]],["hub_list_drivers",["m",[["title","List Drivers"],["summary","List all installed drivers."]]]],["hub_list_libraries",["m",[["title","List Libraries"],["summary","List installed Groovy libraries."]]]],["hub_get_source",["m",[["title","Get Source Code"],["summary","Read Groovy source for an app, driver, or library."]]]],["hub_create_app",["m",[["title","Install App"],["summary","Install a new app from source, a File Manager file, or a URL, or instantiate installed app code."]]]],["hub_create_driver",["m",[["title","Install Driver"],["summary","Install one or more drivers from source, File Manager files, or a URL."]]]],["hub_update_app",["m",[["title","Update App Code"],["summary","Modify an existing app\'s source code, or enable/configure its OAuth (client id/secret)."]]]],["hub_update_driver",["m",[["title","Update Driver Code"],["summary","Modify an existing driver\'s source code."]]]],["hub_create_library",["m",[["title","Install Library"],["summary","Install a new Groovy library."]]]],["hub_update_library",["m",[["title","Update Library Code"],["summary","Modify an existing library\'s source code."]]]],["hub_delete_item",["m",[["title","Delete Code Item"],["summary","Permanently delete an app, driver, or library (auto-backs up first)."]]]],["hub_list_device_dependents",["m",[["title","List Device Dependents"],["summary","Find all apps that reference a device."]]]],["hub_get_app_config",["m",[["title","Get App Configuration"],["summary","Read an installed app\'s configuration page."]]]],["hub_list_app_pages",["m",[["title","List App Pages"],["summary","List known page names for a multi-page app."]]]]]]'])
 }
 
 
-def _bat529Cb_3ac884d1_1(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_1(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_3ac884d1_2(def it) { it != null 
 }
 
-def _bat529Cb_3ac884d1_3(def t, def it) { it.text == t 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_3(def t, def it) { __bat529StaticProperty_java_lang_Object(it, 'text') == t 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_3ac884d1_4(def it) { it?.toString() 
 }
 
-def _bat529Cb_3ac884d1_5(def it) { it.id == null 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_5(def it) { __bat529StaticProperty_java_lang_Object(it, 'id') == null 
 }
 
-def _bat529Cb_3ac884d1_6(def it) { it.success == true 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_6(def it) { __bat529StaticProperty_java_lang_Object(it, 'success') == true 
 }
 
-def _bat529Cb_3ac884d1_7(def it) { it.success == true 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_7(def it) { __bat529StaticProperty_java_lang_Object(it, 'success') == true 
 }
 
-def _bat529Cb_3ac884d1_8(def it) { it.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_8(def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_3ac884d1_9(def it) { it 
 }
 
-def _bat529Cb_3ac884d1_10(def newLibraryId, def it) { it.id?.toString() == newLibraryId 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_10(def newLibraryId, def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() == newLibraryId 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_3ac884d1_11(def it) { it instanceof Map 
 }
 
-def _bat529Cb_3ac884d1_12(def it) { it.trim() 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_12(def it) { __bat529StaticReceiverCall_java_lang_Object_0(it, 'trim') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_3ac884d1_13(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_3ac884d1_14(def it) { it 
 }
 
 def _bat529Cb_3ac884d1_15(def it) { "${it.name} (${it.title}): ${it.problem}" 
 }
 
-def _bat529Cb_3ac884d1_16(def seen, def it) { !seen.contains(it.id?.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_16(def seen, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(seen, 'contains', __bat529StaticProperty_java_lang_Object(it, 'id')?.toString()) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_3ac884d1_17(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_3ac884d1_18(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_3ac884d1_19(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_3ac884d1_20(def it) { it 
 }
 
-def _bat529Cb_3ac884d1_21(def knownNames, def it) { !(it.page in knownNames) 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_21(def knownNames, def it) { !(__bat529StaticProperty_java_lang_Object(it, 'page') in knownNames) 
 }
 
-def _bat529Cb_3ac884d1_22(def enrich, def types, def t) { if (t instanceof Map) types << _projectAppType(t, false, enrich) 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_22(def enrich, def types, def t) { if (t instanceof Map) __bat529StaticExpr__bat529Cb_3ac884d1_22_0(enrich, t, types) 
 }
 
-def _bat529Cb_3ac884d1_23(def enrich, def types, def t) { if (t instanceof Map) types << _projectAppType(t, true, enrich) 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_23(def enrich, def types, def t) { if (t instanceof Map) __bat529StaticExpr__bat529Cb_3ac884d1_23_0(enrich, t, types) 
 }
 
-def _bat529Cb_3ac884d1_24(def it) { it.page 
+@groovy.transform.CompileStatic
+def _bat529Cb_3ac884d1_24(def it) { __bat529StaticProperty_java_lang_Object(it, 'page') 
 }
 
 def _bat529Cb_3ac884d1_25(def passwordInputNames, def redactedPw, def k, def v) {
@@ -3143,45 +3189,51 @@ def _bat529Cb_3ac884d1_25(def passwordInputNames, def redactedPw, def k, def v) 
         
 }
 
-def _bat529Cb_3ac884d1_26(def ca) {
-            [id: ca.id.toString(), name: ca.getSetting("ruleName") ?: ca.label ?: "Unknown", type: "MCP Rule"]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_3ac884d1_26(def ca) {
+            [id: __bat529StaticProperty_java_lang_Object(ca, 'id').toString(), name: __bat529StaticReceiverCall_java_lang_Object_1(ca, 'getSetting', "ruleName") ?: __bat529StaticProperty_java_lang_Object(ca, 'label') ?: "Unknown", type: "MCP Rule"]
         
 }
 
-def _bat529Cb_3ac884d1_27(def ca) {
-            [id: ca.id.toString(), name: ca.getSetting("ruleName") ?: ca.label ?: "Unknown", type: "MCP Rule"]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_3ac884d1_27(def ca) {
+            [id: __bat529StaticProperty_java_lang_Object(ca, 'id').toString(), name: __bat529StaticReceiverCall_java_lang_Object_1(ca, 'getSetting', "ruleName") ?: __bat529StaticProperty_java_lang_Object(ca, 'label') ?: "Unknown", type: "MCP Rule"]
         
 }
 
-def _bat529Cb_3ac884d1_28(def lib) {
-                        [id: lib.id?.toString(), name: lib.name, namespace: lib.namespace, version: lib.version]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_3ac884d1_28(def lib) {
+                        [id: __bat529StaticProperty_java_lang_Object(lib, 'id')?.toString(), name: __bat529StaticProperty_java_lang_Object(lib, 'name'), namespace: __bat529StaticProperty_java_lang_Object(lib, 'namespace'), version: __bat529StaticProperty_java_lang_Object(lib, 'version')]
                     
 }
 
-def _bat529Cb_3ac884d1_29(def a) {
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_3ac884d1_29(def a) {
             def disabled = null
-            try { disabled = a.disabled } catch (Exception ignored) { }
+            try { disabled = __bat529StaticProperty_java_lang_Object(a, 'disabled') } catch (Exception ignored) { }
             def trueLabel = null
-            try { trueLabel = a.trueLabel } catch (Exception ignored) { }
-            [id: a.id, name: a.name, label: a.label, trueLabel: trueLabel, disabled: disabled == true]
+            try { trueLabel = __bat529StaticProperty_java_lang_Object(a, 'trueLabel') } catch (Exception ignored) { }
+            [id: __bat529StaticProperty_java_lang_Object(a, 'id'), name: __bat529StaticProperty_java_lang_Object(a, 'name'), label: __bat529StaticProperty_java_lang_Object(a, 'label'), trueLabel: trueLabel, disabled: disabled == true]
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_3ac884d1_30(def projected, def d) {
-                    if (d?.type == "dep" || d?.category == "Hidden") return
-                    def nm = d?.name?.toString() ?: ""
-                    def bucket = (d?.type == "usr") ? "user" : (nm.startsWith("Virtual") ? "virtual" : "system")
-                    projected << [id: d?.id?.toString(), name: nm, namespace: d?.namespace, bucket: bucket]
+                    if (__bat529StaticProperty_Safe_java_lang_Object(d, 'type') == "dep" || __bat529StaticProperty_Safe_java_lang_Object(d, 'category') == "Hidden") return
+                    def nm = __bat529StaticProperty_Safe_java_lang_Object(d, 'name')?.toString() ?: ""
+                    java.lang.String bucket = (__bat529StaticProperty_Safe_java_lang_Object(d, 'type') == "usr") ? "user" : (nm.startsWith("Virtual") ? "virtual" : "system")
+                    __bat529StaticExpr__bat529Cb_3ac884d1_30_6(bucket, d, nm, projected)
                 
 }
 
-def _bat529Cb_3ac884d1_31(def a) {
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_3ac884d1_31(def a) {
             [
-                id: a?.id,
-                name: a?.name,         // app type name (e.g. "Room Lights", "Rule-5.1")
-                label: a?.label,       // user-visible label, may include HTML decoration
-                trueLabel: a?.trueLabel,  // label stripped of HTML (null if same as label)
-                disabled: a?.disabled == true
+                id: __bat529StaticProperty_Safe_java_lang_Object(a, 'id'),
+                name: __bat529StaticProperty_Safe_java_lang_Object(a, 'name'),         // app type name (e.g. "Room Lights", "Rule-5.1")
+                label: __bat529StaticProperty_Safe_java_lang_Object(a, 'label'),       // user-visible label, may include HTML decoration
+                trueLabel: __bat529StaticProperty_Safe_java_lang_Object(a, 'trueLabel'),  // label stripped of HTML (null if same as label)
+                disabled: __bat529StaticProperty_Safe_java_lang_Object(a, 'disabled') == true
             ]
         
 }
@@ -3213,14 +3265,15 @@ def _bat529Cb_3ac884d1_33(def out, def e) {
             
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_3ac884d1_34(def filter, def entry) {
             switch (filter) {
                 case "all": return true
-                case "builtin": return !entry.user
-                case "user": return entry.user
-                case "disabled": return entry.disabled
-                case "parents": return entry.hasChildren
-                case "children": return entry.parentId != null
+                case "builtin": return !__bat529StaticProperty_java_lang_Object(entry, 'user')
+                case "user": return __bat529StaticProperty_java_lang_Object(entry, 'user')
+                case "disabled": return __bat529StaticProperty_java_lang_Object(entry, 'disabled')
+                case "parents": return __bat529StaticProperty_java_lang_Object(entry, 'hasChildren')
+                case "children": return __bat529StaticProperty_java_lang_Object(entry, 'parentId') != null
                 default:
                     // Whitelist-validated above; reaching here means validFilters and this
                     // switch have drifted. Throw rather than return an over-broad result,

@@ -1,9 +1,10 @@
 library(name: "McpHpmLib", namespace: "mcp", author: "kingpanther13", description: "Hubitat Package Manager read tool implementations (hub_list_hpm_packages + drift detection) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
+@groovy.transform.CompileStatic
 private Map _fetchAppsListTree(String caller) {
     def responseText
     try {
-        responseText = hubInternalGet("/hub2/appsList")
+        responseText = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/hub2/appsList")
     } catch (Exception e) {
         throw new IllegalArgumentException("Failed to fetch installed apps for ${caller} [${e.class.simpleName}]: ${e.message ?: e.toString()}")
     }
@@ -11,7 +12,7 @@ private Map _fetchAppsListTree(String caller) {
         throw new IllegalArgumentException("Empty response from /hub2/appsList during ${caller} -- hub internal API may be unavailable")
     }
     try {
-        return new groovy.json.JsonSlurper().parseText(responseText)
+        return __bat529StaticReceiverCall_java_util_Map_1(new groovy.json.JsonSlurper(), 'parseText', responseText)
     } catch (Exception e) {
         throw new IllegalArgumentException("Failed to parse /hub2/appsList for ${caller}: ${e.message ?: e.toString()}")
     }
@@ -128,41 +129,42 @@ private Map _hpmFetchManifests(String hpmAppId) {
     return manifests
 }
 
-def toolListHpmPackages(args) {
+@groovy.transform.CompileStatic
+java.util.Map toolListHpmPackages(args) {
 
     def hpmAppId
-    if (args?.hpmAppId != null && args.hpmAppId.toString().trim() != "") {
-        hpmAppId = args.hpmAppId.toString().trim()
+    if (__bat529StaticProperty_Safe_java_lang_Object(args, 'hpmAppId') != null && __bat529StaticProperty_java_lang_Object(args, 'hpmAppId').toString().trim() != "") {
+        hpmAppId = __bat529StaticProperty_java_lang_Object(args, 'hpmAppId').toString().trim()
         if (!hpmAppId.isInteger()) {
             throw new IllegalArgumentException("hpmAppId must be numeric: ${hpmAppId}")
         }
-        _hpmAssertAppIsHpm(hpmAppId)
+        __bat529StaticCall_java_lang_Object_1('_hpmAssertAppIsHpm', hpmAppId)
     } else {
-        hpmAppId = _hpmDiscoverAppId()
+        hpmAppId = __bat529StaticCall_java_lang_String_0('_hpmDiscoverAppId')
     }
 
-    mcpLog("info", "hpm", "hub_list_hpm_packages hpmAppId=${hpmAppId}")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "hpm", "hub_list_hpm_packages hpmAppId=${hpmAppId}")
 
     def manifests
     try {
-        manifests = _hpmFetchManifests(hpmAppId)
+        manifests = __bat529StaticCall_java_util_Map_1('_hpmFetchManifests', hpmAppId)
     } catch (IllegalArgumentException e) {
         return [success: false, error: e.message, hpmAppId: hpmAppId]
     }
 
-    def skippedMalformed = []
-    def packages = ((manifests).collect(((this.&_bat529Cb_112d3686_14).curry([skippedMalformed] as Object[])))).findAll((this.&_bat529Cb_112d3686_15))
+    java.util.List skippedMalformed = []
+    def packages = __bat529StaticDgm_findAll_1_java_lang_Object((__bat529StaticDgm_collect_1_java_util_List((manifests), ((this.&_bat529Cb_112d3686_14).curry([skippedMalformed] as Object[])))), (this.&_bat529Cb_112d3686_15))
 
-    def cursor = args?.cursor
-    def paged = _paginateList(packages, cursor, 25, "hub_list_hpm_packages")
-    def result = [
+    def cursor = __bat529StaticProperty_Safe_java_lang_Object(args, 'cursor')
+    java.util.Map paged = __bat529StaticCall_java_util_Map_4('_paginateList', packages, cursor, 25, "hub_list_hpm_packages")
+    java.util.Map result = [
         success   : true,
         hpmAppId  : hpmAppId,
-        count     : paged.page.size(),
+        count     : __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(paged, 'page'), 'size'),
         packages  : paged.page
     ]
     if (cursor != null) {
-        result.total = packages.size()
+        result.total = __bat529StaticReceiverCall_java_lang_Object_0(packages, 'size')
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
     if (skippedMalformed) result.skippedMalformed = skippedMalformed
@@ -507,45 +509,53 @@ def toolGetHpmDrift(args) {
 
 // HPM-packages dispatch helper (same case-block-extraction reason as above):
 // optionally attaches per-component drift signals when includeDrift=true.
+@groovy.transform.CompileStatic
 def toolListHpmPackagesWithDrift(args) {
-    def listResult = toolListHpmPackages(args)
-    if (args.includeDrift == true && listResult instanceof Map) {
-        listResult = listResult + [drift: toolGetHpmDrift(args)]
+    def listResult = __bat529StaticCall_java_util_Map_1('toolListHpmPackages', args)
+    if (__bat529StaticProperty_java_lang_Object(args, 'includeDrift') == true && listResult instanceof Map) {
+        listResult = listResult + [drift: __bat529StaticCall_java_util_Map_1('toolGetHpmDrift', args)]
     }
     return listResult
 }
 
+@groovy.transform.CompileStatic
 def _getAllToolDefinitions_partHpm() {
-    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_hpm_packages"],["description","List all packages tracked by Hubitat Package Manager (HPM): name, version, beta flag, author, and component inventory (apps/drivers/files) as HPM recorded at install/update time. Requires Read master; HPM must be installed.[[FLAT_TRIM]]\\nSet includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan signals). See `hub_get_tool_guide(section=\'builtin_app_tools_apps\')` for the full drift-signal taxonomy, response-field reference, and caveats.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["hpmAppId",["m",[["type","string"],["description","HPM\'s installed-app ID (decimal). Auto-discovered if omitted.[[FLAT_TRIM]] Scans installed apps for type=\'Hubitat Package Manager\'; pass explicitly to skip that discovery call.[[/FLAT_TRIM]]"]]]],["includeDrift",["m",[["type","boolean"],["description","Also attach a drift cross-reference under a `drift` key.[[FLAT_TRIM]] Signal types: missing-required/orphan-app/orphan-driver.[[/FLAT_TRIM]] Default false; adds 1-2 hub calls."],["default",false]]]],["packageFilter",["m",[["type","string"],["description","Drift mode only (includeDrift=true): case-insensitive substring filter on packageName."]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor for the packages list. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor.[[FLAT_TRIM]] Page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large.[[/FLAT_TRIM]]"]]]]]]]]]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",[["m",[["name","hub_list_hpm_packages"],["description","List all packages tracked by Hubitat Package Manager (HPM): name, version, beta flag, author, and component inventory (apps/drivers/files) as HPM recorded at install/update time. Requires Read master; HPM must be installed.[[FLAT_TRIM]]\\nSet includeDrift=true to ALSO cross-reference tracked state against what is actually installed and attach a `drift` block (missing-required / orphan signals). See `hub_get_tool_guide(section=\'builtin_app_tools_apps\')` for the full drift-signal taxonomy, response-field reference, and caveats.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["hpmAppId",["m",[["type","string"],["description","HPM\'s installed-app ID (decimal). Auto-discovered if omitted.[[FLAT_TRIM]] Scans installed apps for type=\'Hubitat Package Manager\'; pass explicitly to skip that discovery call.[[/FLAT_TRIM]]"]]]],["includeDrift",["m",[["type","boolean"],["description","Also attach a drift cross-reference under a `drift` key.[[FLAT_TRIM]] Signal types: missing-required/orphan-app/orphan-driver.[[/FLAT_TRIM]] Default false; adds 1-2 hub calls."],["default",false]]]],["packageFilter",["m",[["type","string"],["description","Drift mode only (includeDrift=true): case-insensitive substring filter on packageName."]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor for the packages list. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor.[[FLAT_TRIM]] Page size 25 -- HPM entries carry full app/driver/file inventories so each entry can be large.[[/FLAT_TRIM]]"]]]]]]]]]]]]]]'])
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partHpm() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_list_hpm_packages"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_list_hpm_packages"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partHpm() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_hpm_packages",["m",[["title","List HPM Packages"],["summary","List packages tracked by Hubitat Package Manager, optionally with drift detection."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_list_hpm_packages",["m",[["title","List HPM Packages"],["summary","List packages tracked by Hubitat Package Manager, optionally with drift detection."]]]]]]'])
 }
 
 
-def _bat529Cb_112d3686_1(def it) { it.signals 
+@groovy.transform.CompileStatic
+def _bat529Cb_112d3686_1(def it) { __bat529StaticProperty_java_lang_Object(it, 'signals') 
 }
 
-def _bat529Cb_112d3686_2(def workQueue, def it) { workQueue << it 
+@groovy.transform.CompileStatic
+def _bat529Cb_112d3686_2(def workQueue, def it) { __bat529StaticExpr__bat529Cb_112d3686_2_0(it, workQueue) 
 }
 
-def _bat529Cb_112d3686_3(def workQueue, def it) { workQueue << it 
+@groovy.transform.CompileStatic
+def _bat529Cb_112d3686_3(def workQueue, def it) { __bat529StaticExpr__bat529Cb_112d3686_3_0(it, workQueue) 
 }
 
 def _bat529Cb_112d3686_4(def url, def m) { m instanceof Map 
 }
 
-def _bat529Cb_112d3686_5(def it) { it?.name?.toString() == "manifests" 
+@groovy.transform.CompileStatic
+def _bat529Cb_112d3686_5(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "manifests" 
 }
 
 def _bat529Cb_112d3686_6(def url, def m) { m.packageName?.toString() 
@@ -554,27 +564,33 @@ def _bat529Cb_112d3686_6(def url, def m) { m.packageName?.toString()
 def _bat529Cb_112d3686_7(def packageFilter, def url, def m) { m instanceof Map && m.packageName?.toString()?.toLowerCase()?.contains(packageFilter.toLowerCase()) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_112d3686_8(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_112d3686_9(def installedAppCodeIds, def t) {
-                    def typeId = t?.id?.toString()
-                    if (typeId) installedAppCodeIds << typeId
+                    def typeId = __bat529StaticProperty_Safe_java_lang_Object(t, 'id')?.toString()
+                    if (typeId) __bat529StaticExpr__bat529Cb_112d3686_9_1(installedAppCodeIds, typeId)
                 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_112d3686_10(def installedDriverCodeIds, def t) {
-                    def typeId = t?.id?.toString()
-                    if (typeId) installedDriverCodeIds << typeId
+                    def typeId = __bat529StaticProperty_Safe_java_lang_Object(t, 'id')?.toString()
+                    if (typeId) __bat529StaticExpr__bat529Cb_112d3686_10_1(installedDriverCodeIds, typeId)
                 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_112d3686_11(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_112d3686_12(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_112d3686_13(def it) { it != null 
 }
 
@@ -689,6 +705,7 @@ def _bat529Cb_112d3686_14(def skippedMalformed, def manifestUrl, def manifest) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_112d3686_15(def it) { it != null 
 }
 

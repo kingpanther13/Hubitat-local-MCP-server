@@ -339,31 +339,36 @@ def toolDeleteFile(args) {
     }
 }
 
+@groovy.transform.CompileStatic
 def _getAllToolDefinitions_partFiles() {
-    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_files"],["description","List files stored in the hub\'s File Manager (the local web-accessible file store), returning each file\'s name, size, last-modified date, and direct download URL[[FLAT_TRIM]], plus subfolders[[/FLAT_TRIM]]. Optionally filter by a case-insensitive substring of the file name[[FLAT_TRIM]], or list a subfolder[[/FLAT_TRIM]]. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only."],["inputSchema",["m",[["type","object"],["properties",["m",[["filter",["m",[["type","string"],["description","Optional case-insensitive substring to match against file names, e.g. \\"backup\\" or \\"mcp-rm-backup\\"."]]]],["folder",["m",[["type","string"],["description","[[FLAT_TRIM]]Optional subfolder, e.g. \\"webcore\\".[[/FLAT_TRIM]]"]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_read_file"],["description","Read the text content of a single file from the hub\'s File Manager by exact file name.[[FLAT_TRIM]] Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV).[[/FLAT_TRIM]] Read-only.[[FLAT_TRIM]] Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default/max chunk 60000 chars).[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["fileName",["m",[["type","string"],["description","The exact file name (e.g., \'dashboard-backup.json\', \'mcp-backup-app-123.groovy\')"]]]],["offset",["m",[["type","integer"],["description","Character offset to start reading from. Default: 0"]]]],["length",["m",[["type","integer"],["description","Max characters to return in this chunk. Default/max: 60000"]]]]]]],["required",["l",["fileName"]]]]]]]],["m",[["name","hub_write_file"],["description","\\u26a0\\ufe0f Write (create or overwrite) a text file in the hub\'s File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery). Requires Write master and confirm=true \\u2014 confirm the write with the user before calling."],["inputSchema",["m",[["type","object"],["properties",["m",[["fileName",["m",[["type","string"],["description","The file name to write (e.g., \'my-config.json\'). Only A-Za-z0-9, hyphens, underscores, and periods allowed."]]]],["content",["m",[["type","string"],["description","The text content to write to the file"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms user approved the write."]]]]]]],["required",["l",["fileName","content","confirm"]]]]]]]],["m",[["name","hub_delete_file"],["description","\\u26a0\\ufe0f Permanently delete a file from the hub\'s File Manager. The file is auto-backed up first (see backupFile/undoHint for recovery). Requires Write master, confirm=true, and a recent hub backup \\u2014 get user approval before calling."],["inputSchema",["m",[["type","object"],["properties",["m",[["fileName",["m",[["type","string"],["description","The exact file name to delete"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms user approved the deletion."]]]]]]],["required",["l",["fileName","confirm"]]]]]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",[["m",[["name","hub_list_files"],["description","List files stored in the hub\'s File Manager (the local web-accessible file store), returning each file\'s name, size, last-modified date, and direct download URL[[FLAT_TRIM]], plus subfolders[[/FLAT_TRIM]]. Optionally filter by a case-insensitive substring of the file name[[FLAT_TRIM]], or list a subfolder[[/FLAT_TRIM]]. Use this to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. Read-only."],["inputSchema",["m",[["type","object"],["properties",["m",[["filter",["m",[["type","string"],["description","Optional case-insensitive substring to match against file names, e.g. \\"backup\\" or \\"mcp-rm-backup\\"."]]]],["folder",["m",[["type","string"],["description","[[FLAT_TRIM]]Optional subfolder, e.g. \\"webcore\\".[[/FLAT_TRIM]]"]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_read_file"],["description","Read the text content of a single file from the hub\'s File Manager by exact file name.[[FLAT_TRIM]] Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV).[[/FLAT_TRIM]] Read-only.[[FLAT_TRIM]] Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default/max chunk 60000 chars).[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["fileName",["m",[["type","string"],["description","The exact file name (e.g., \'dashboard-backup.json\', \'mcp-backup-app-123.groovy\')"]]]],["offset",["m",[["type","integer"],["description","Character offset to start reading from. Default: 0"]]]],["length",["m",[["type","integer"],["description","Max characters to return in this chunk. Default/max: 60000"]]]]]]],["required",["l",["fileName"]]]]]]]],["m",[["name","hub_write_file"],["description","\\u26a0\\ufe0f Write (create or overwrite) a text file in the hub\'s File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery). Requires Write master and confirm=true \\u2014 confirm the write with the user before calling."],["inputSchema",["m",[["type","object"],["properties",["m",[["fileName",["m",[["type","string"],["description","The file name to write (e.g., \'my-config.json\'). Only A-Za-z0-9, hyphens, underscores, and periods allowed."]]]],["content",["m",[["type","string"],["description","The text content to write to the file"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms user approved the write."]]]]]]],["required",["l",["fileName","content","confirm"]]]]]]]],["m",[["name","hub_delete_file"],["description","\\u26a0\\ufe0f Permanently delete a file from the hub\'s File Manager. The file is auto-backed up first (see backupFile/undoHint for recovery). Requires Write master, confirm=true, and a recent hub backup \\u2014 get user approval before calling."],["inputSchema",["m",[["type","object"],["properties",["m",[["fileName",["m",[["type","string"],["description","The exact file name to delete"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms user approved the deletion."]]]]]]],["required",["l",["fileName","confirm"]]]]]]]]]]'])
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partFiles() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_list_files","hub_read_file"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_list_files","hub_read_file"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partFiles() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_write_file","hub_delete_file"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_write_file","hub_delete_file"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partFiles() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_files",["m",[["title","List Files"],["summary","List files in the hub File Manager, optionally filtered by a name substring."]]]],["hub_read_file",["m",[["title","Read File"],["summary","Read a File Manager file\'s contents."]]]],["hub_write_file",["m",[["title","Write File"],["summary","Create or update a File Manager file (auto-backs up existing)."]]]],["hub_delete_file",["m",[["title","Delete File"],["summary","Delete a File Manager file (auto-backs up first)."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_list_files",["m",[["title","List Files"],["summary","List files in the hub File Manager, optionally filtered by a name substring."]]]],["hub_read_file",["m",[["title","Read File"],["summary","Read a File Manager file\'s contents."]]]],["hub_write_file",["m",[["title","Write File"],["summary","Create or update a File Manager file (auto-backs up existing)."]]]],["hub_delete_file",["m",[["title","Delete File"],["summary","Delete a File Manager file (auto-backs up first)."]]]]]]'])
 }
 
 
-def _bat529Cb_f7f9d965_1(def name, def it) { it.name == name 
+@groovy.transform.CompileStatic
+def _bat529Cb_f7f9d965_1(def name, def it) { __bat529StaticProperty_java_lang_Object(it, 'name') == name 
 }
 
 def _bat529Cb_f7f9d965_2(def a, def b) { (a.name <=> b.name) 
@@ -372,10 +377,12 @@ def _bat529Cb_f7f9d965_2(def a, def b) { (a.name <=> b.name)
 def _bat529Cb_f7f9d965_3(def a, def b) { (a.name <=> b.name) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_f7f9d965_4(def it) { it == ".." || it == "." || it == "" 
 }
 
-def _bat529Cb_f7f9d965_5(def filterLower, def it) { _filesFoldCase(it?.name)?.contains(filterLower) 
+@groovy.transform.CompileStatic
+def _bat529Cb_f7f9d965_5(def filterLower, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_1(__bat529StaticExpr__bat529Cb_f7f9d965_5_1(it), 'contains', filterLower) 
 }
 
 def _bat529Cb_f7f9d965_6(def prefix, def f) {

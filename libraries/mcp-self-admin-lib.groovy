@@ -366,7 +366,8 @@ private coerceSettingValue(String key, value, String type) {
 // Canonical raw-source base for the MCP package. Per-call URLs are "${base}/${ref}/${path}";
 // mirrors packageManifest.json's location (.../Hubitat-local-MCP-server/main/hubitat-mcp-server.groovy).
 // Overridable per call via baseUrl for forks / CI branches on a different remote.
-def getPackageSourceBase() {
+@groovy.transform.CompileStatic
+java.lang.String getPackageSourceBase() {
     return "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server"
 }
 
@@ -411,22 +412,24 @@ def _bundleArtifactUrlForRef(location, String base, String ref) {
 // publish workflow) instead of downloading the artifact just to check existence. Returns
 // the byte count it records, or null when there is no artifact: a 404 (throws), an HTML
 // error page, or any non-integer body.
-def _artifactSizeMarker(String artifactUrl) {
+@groovy.transform.CompileStatic
+java.lang.Long _artifactSizeMarker(String artifactUrl) {
     try {
-        def r = _httpFetchUrl("${artifactUrl}.size")
+        java.util.Map r = __bat529StaticCall_java_util_Map_1('_httpFetchUrl', "${artifactUrl}.size")
         def body = r?.body?.toString()?.trim()
         return ((r?.status as Integer) == 200 && body ==~ /\d+/) ? (body as Long) : null
     } catch (Exception e) {
         // A legitimate miss (404) and a transient probe failure (rate limit, network blip) both
         // land here; log so a fallback caused by a TRANSIENT failure is at least diagnosable
         // instead of silently indistinguishable from "no artifact published for this ref".
-        mcpLog("warn", "developer-mode", "_artifactSizeMarker: probe of ${artifactUrl}.size failed (${e.toString()}) -- treating as no artifact")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "developer-mode", "_artifactSizeMarker: probe of ${artifactUrl}.size failed (${e.toString()}) -- treating as no artifact")
         return null
     }
 }
 
+@groovy.transform.CompileStatic
 def _bundleArtifactExists(String artifactUrl) {
-    return _artifactSizeMarker(artifactUrl) != null
+    return __bat529StaticCall_java_lang_Long_1('_artifactSizeMarker', artifactUrl) != null
 }
 
 // Parse "#include namespace.Name" directives from Groovy source. Returns an ordered,
@@ -448,17 +451,18 @@ def _parseIncludeDirectives(String source) {
 // id) by matching definition()'s namespace+name against /hub2/userAppTypes -- the same
 // lookup the e2e deploy script does. Returns the id String, or null when it can't be
 // resolved (the caller fails closed and writes nothing).
+@groovy.transform.CompileStatic
 def _resolveSelfAppClassId() {
     try {
-        def responseText = hubInternalGet("/hub2/userAppTypes")
+        def responseText = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/hub2/userAppTypes")
         if (!responseText) return null
-        def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+        def parsed = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', responseText)
         if (!(parsed instanceof List)) return null
-        def match = (parsed).find((this.&_bat529Cb_13cb0dba_11))
-        return match?.id?.toString()
+        def match = __bat529StaticDgm_find_1_java_lang_Object((parsed), (this.&_bat529Cb_13cb0dba_11))
+        return __bat529StaticProperty_Safe_java_lang_Object(match, 'id')?.toString()
     } catch (Exception e) {
         // Reached from the code-update path too (not just hub_update_package); keep the label neutral.
-        mcpLog("warn", "hub-admin", "_resolveSelfAppClassId: self app-class lookup failed (${e.toString()}) -- caller must handle the unavailable class identity")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "_resolveSelfAppClassId: self app-class lookup failed (${e.toString()}) -- caller must handle the unavailable class identity")
         return null
     }
 }
@@ -926,11 +930,12 @@ private Map _planPackageBundles(List manifestBundles, String base, String ref, S
 // records. Only ref=main may fall back to the manifest's literal location (the same
 // branches/main build HPM serves); any other ref without its own artifact would install
 // main's code, so it is refused.
+@groovy.transform.CompileStatic
 private Map _planAppArtifact(String name, String location, String artifactUrl, String ref) {
-    def bytes = _artifactSizeMarker(artifactUrl)
+    def bytes = __bat529StaticCall_java_lang_Long_1('_artifactSizeMarker', artifactUrl)
     if (bytes != null) return [url: artifactUrl, source: "bundle-artifacts", expectedBytes: bytes]
     if (ref == "main" && location != artifactUrl) {
-        bytes = _artifactSizeMarker(location)
+        bytes = __bat529StaticCall_java_lang_Long_1('_artifactSizeMarker', location)
         if (bytes != null) return [url: location, source: "manifest-current", expectedBytes: bytes]
     }
     return [abort: [
@@ -939,22 +944,26 @@ private Map _planAppArtifact(String name, String location, String artifactUrl, S
     ]]
 }
 
+@groovy.transform.CompileStatic
 def _getAllToolDefinitions_partSelfAdmin() {
-    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_update_mcp_settings"],["description","Update one or more of the MCP rule app\'s own settings (toggles, log levels, tuning, the device-access scope) in place \\u2014 self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit.[[FLAT_TRIM]] Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["settings",["m",[["type","object"],["description","Map of setting key \\u2192 new value (e.g. {\\"mcpLogLevel\\":\\"warn\\",\\"enableCustomRuleEngine\\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch \\u2014 when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section=\'hub_admin_write_system\'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] \\u2014 see hub_get_tool_guide(section=\'hub_admin_write_system\') for per-mode semantics."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to confirm the operation"]]]]]]],["required",["l",["settings","confirm"]]]]]]]],["m",[["name","hub_update_package"],["description","Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, anchored to packageManifest.json AT `ref` so an UNMERGED PR installs.[[FLAT_TRIM]] (Plain HPM Repair only reads the PUBLISHED manifest, so it can\'t reach an unmerged PR\'s artifacts.)[[/FLAT_TRIM]]\\n\\nGated on enableDeveloperMode[[FLAT_TRIM]] (the tool is hidden from tools/list when Developer Mode is off)[[/FLAT_TRIM]] + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed)[[FLAT_TRIM]] and see exactly which bundles and apps would deploy[[/FLAT_TRIM]].\\n\\nA real deploy is accepted quickly with `status: \\"in_progress\\"` and runs in the background; do NOT submit it again while one is in flight.[[FLAT_TRIM]] The background run uses Hubitat\'s own scheduler, so neither the cloud relay nor the MCP client\'s request timeout has to stay open for the minutes-long repair; a concurrent second deploy is refused. Poll hub_get_info.lastSelfDeploy until its `requestId` matches the acceptance response; that bound record\'s `success`/`error` fields carry the outcome. No client extension or custom token is required.[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["ref",["m",[["type","string"],["description","Branch, tag, or commit SHA to deploy (e.g. \'main\' or a PR head SHA)."]]]],["dryRun",["m",[["type","boolean"],["description","OPTIONAL. When true, report the deploy plan with NO writes (skips the confirm/backup gate). Default false."]]]],["baseUrl",["m",[["type","string"],["description","OPTIONAL raw-source base override (no trailing slash); defaults to the canonical repo.[[FLAT_TRIM]] Per-call URLs are built as <baseUrl>/<ref>/<path>. Use for forks / CI branches on a different remote.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."]]]],["args",["m",[["type","object"]]]]]]],["required",["l",["ref"]]]]]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",[["m",[["name","hub_update_mcp_settings"],["description","Update one or more of the MCP rule app\'s own settings (toggles, log levels, tuning, the device-access scope) in place \\u2014 self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit.[[FLAT_TRIM]] Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["settings",["m",[["type","object"],["description","Map of setting key \\u2192 new value (e.g. {\\"mcpLogLevel\\":\\"warn\\",\\"enableCustomRuleEngine\\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch \\u2014 when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section=\'hub_admin_write_system\'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] \\u2014 see hub_get_tool_guide(section=\'hub_admin_write_system\') for per-mode semantics."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to confirm the operation"]]]]]]],["required",["l",["settings","confirm"]]]]]]]],["m",[["name","hub_update_package"],["description","Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, anchored to packageManifest.json AT `ref` so an UNMERGED PR installs.[[FLAT_TRIM]] (Plain HPM Repair only reads the PUBLISHED manifest, so it can\'t reach an unmerged PR\'s artifacts.)[[/FLAT_TRIM]]\\n\\nGated on enableDeveloperMode[[FLAT_TRIM]] (the tool is hidden from tools/list when Developer Mode is off)[[/FLAT_TRIM]] + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed)[[FLAT_TRIM]] and see exactly which bundles and apps would deploy[[/FLAT_TRIM]].\\n\\nA real deploy is accepted quickly with `status: \\"in_progress\\"` and runs in the background; do NOT submit it again while one is in flight.[[FLAT_TRIM]] The background run uses Hubitat\'s own scheduler, so neither the cloud relay nor the MCP client\'s request timeout has to stay open for the minutes-long repair; a concurrent second deploy is refused. Poll hub_get_info.lastSelfDeploy until its `requestId` matches the acceptance response; that bound record\'s `success`/`error` fields carry the outcome. No client extension or custom token is required.[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["ref",["m",[["type","string"],["description","Branch, tag, or commit SHA to deploy (e.g. \'main\' or a PR head SHA)."]]]],["dryRun",["m",[["type","boolean"],["description","OPTIONAL. When true, report the deploy plan with NO writes (skips the confirm/backup gate). Default false."]]]],["baseUrl",["m",[["type","string"],["description","OPTIONAL raw-source base override (no trailing slash); defaults to the canonical repo.[[FLAT_TRIM]] Per-call URLs are built as <baseUrl>/<ref>/<path>. Use for forks / CI branches on a different remote.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."]]]],["args",["m",[["type","object"]]]]]]],["required",["l",["ref"]]]]]]]]]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partSelfAdmin() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_update_mcp_settings","hub_update_package"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_update_mcp_settings","hub_update_package"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _openWorldToolNames_partSelfAdmin() {
     // Tools in this library that reach BEYOND the hub to the open internet (MCP
     // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_update_package"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_update_package"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _developerModeOnlyToolNames_partSelfAdmin() {
     // Developer-Mode-only tools in this library (catalog-hidden until the toggle is on) --
     // contributed to the app's getDeveloperModeOnlyToolNames() aggregator.
@@ -965,55 +974,70 @@ def _developerModeOnlyToolNames_partSelfAdmin() {
     // discoverability surface. hub_update_mcp_settings is that anchor, so it is deliberately
     // absent from this list. Every OTHER self-admin tool hides when the toggle is off (the
     // anchor already provides discoverability), so they go here.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_update_package"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_update_package"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partSelfAdmin() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_update_mcp_settings",["m",[["title","Update MCP Settings"],["summary","Update the MCP app\'s own settings + device-access scope (Developer Mode)."]]]],["hub_update_package",["m",[["title","Deploy MCP Package"],["summary","Full repair-install of the MCP package at a git ref (Developer Mode)."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_update_mcp_settings",["m",[["title","Update MCP Settings"],["summary","Update the MCP app\'s own settings + device-access scope (Developer Mode)."]]]],["hub_update_package",["m",[["title","Deploy MCP Package"],["summary","Full repair-install of the MCP package at a git ref (Developer Mode)."]]]]]]'])
 }
 
 
-def _bat529Cb_13cb0dba_1(def it) { it.isSelf 
+@groovy.transform.CompileStatic
+def _bat529Cb_13cb0dba_1(def it) { __bat529StaticProperty_java_lang_Object(it, 'isSelf') 
 }
 
-def _bat529Cb_13cb0dba_2(def it) { !it.isSelf 
+@groovy.transform.CompileStatic
+def _bat529Cb_13cb0dba_2(def it) { !__bat529StaticProperty_java_lang_Object(it, 'isSelf') 
 }
 
-def _bat529Cb_13cb0dba_3(def currentSet, def it) { !currentSet.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_13cb0dba_3(def currentSet, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(currentSet, 'contains', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_13cb0dba_4(def it) { it instanceof Map 
 }
 
-def _bat529Cb_13cb0dba_5(def requestedIds, def it) { !requestedIds.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_13cb0dba_5(def requestedIds, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(requestedIds, 'contains', it) 
 }
 
-def _bat529Cb_13cb0dba_6(def it) { it.source == "manifest-current" 
+@groovy.transform.CompileStatic
+def _bat529Cb_13cb0dba_6(def it) { __bat529StaticProperty_java_lang_Object(it, 'source') == "manifest-current" 
 }
 
-def _bat529Cb_13cb0dba_7(def it) { it.source == "manifest-current" 
+@groovy.transform.CompileStatic
+def _bat529Cb_13cb0dba_7(def it) { __bat529StaticProperty_java_lang_Object(it, 'source') == "manifest-current" 
 }
 
-def _bat529Cb_13cb0dba_8(def it) { it.source == "committed-at-ref" 
+@groovy.transform.CompileStatic
+def _bat529Cb_13cb0dba_8(def it) { __bat529StaticProperty_java_lang_Object(it, 'source') == "committed-at-ref" 
 }
 
-def _bat529Cb_13cb0dba_9(def schemaAffectingKeys, def it) { schemaAffectingKeys.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_13cb0dba_9(def schemaAffectingKeys, def it) { __bat529StaticReceiverCall_java_lang_Object_1(schemaAffectingKeys, 'contains', it) 
 }
 
-def _bat529Cb_13cb0dba_10(def a, def it) { it?.namespace == a?.namespace && it?.name == a?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_13cb0dba_10(def a, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'namespace') == __bat529StaticProperty_Safe_java_lang_Object(a, 'namespace') && __bat529StaticProperty_Safe_java_lang_Object(it, 'name') == __bat529StaticProperty_Safe_java_lang_Object(a, 'name') 
 }
 
-def _bat529Cb_13cb0dba_11(def it) { it?.namespace == "mcp" && it?.name == "MCP Rule Server" 
+@groovy.transform.CompileStatic
+def _bat529Cb_13cb0dba_11(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'namespace') == "mcp" && __bat529StaticProperty_Safe_java_lang_Object(it, 'name') == "MCP Rule Server" 
 }
 
-def _bat529Cb_13cb0dba_12(def it) { it.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_13cb0dba_12(def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() 
 }
 
-def _bat529Cb_13cb0dba_13(def it) { it?.location instanceof String && it.location.contains("/bundle-artifacts/") 
+@groovy.transform.CompileStatic
+def _bat529Cb_13cb0dba_13(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'location') instanceof String && __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(it, 'location'), 'contains', "/bundle-artifacts/") 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_13cb0dba_14(def it) { it != null 
 }
 
@@ -1027,8 +1051,9 @@ def _bat529Cb_13cb0dba_15(def allowedSettings, def key, def value) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_13cb0dba_16(def dev) {
-        def id = (dev instanceof String || dev instanceof Number) ? dev.toString() : dev?.id?.toString()
+        def id = (dev instanceof String || dev instanceof Number) ? dev.toString() : __bat529StaticProperty_Safe_java_lang_Object(dev, 'id')?.toString()
         if (id == null) {
             throw new IllegalArgumentException("settings.selectedDevices contains an unrecognized element (neither a device with an id nor a String/Number id): ${dev}. Nothing was changed.")
         }
@@ -1036,6 +1061,7 @@ def _bat529Cb_13cb0dba_16(def dev) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_13cb0dba_17(def requestedIds, def raw) {
         if (raw == null || raw instanceof Map || raw instanceof List) {
             throw new IllegalArgumentException("selectedDevices ids entries must be device ID strings or integers, got: ${raw}")
@@ -1044,7 +1070,7 @@ def _bat529Cb_13cb0dba_17(def requestedIds, def raw) {
         if (!s) {
             throw new IllegalArgumentException("selectedDevices ids entries must be non-empty device IDs")
         }
-        if (!requestedIds.contains(s)) requestedIds << s
+        if (!__bat529StaticReceiverCall_java_lang_Object_1(requestedIds, 'contains', s)) __bat529StaticExpr__bat529Cb_13cb0dba_17_1(requestedIds, s)
     
 }
 

@@ -1,33 +1,34 @@
 library(name: "McpDashboardsLib", namespace: "mcp", author: "kingpanther13", description: "Dashboard CRUD tools (list/get/create/update/delete/clone) covering Easy Dashboards and legacy Hubitat® Dashboards for the MCP Rule Server.")
 
-def toolListDashboards(args = null) {
+@groovy.transform.CompileStatic
+java.util.Map toolListDashboards(args = null) {
     args = args ?: [:]
     // /dashboard/all returns [] unless given the page-global pinToken from /dashboard/select. Use a
     // caller token if present, else scrape it; if still empty, fall back to child-app enumeration.
-    def token = (args.pinToken != null) ? args.pinToken.toString() : _fetchDashboardPinToken()
-    def q = [:]
+    def token = (__bat529StaticProperty_java_lang_Object(args, 'pinToken') != null) ? __bat529StaticProperty_java_lang_Object(args, 'pinToken').toString() : __bat529StaticCall_java_lang_String_0('_fetchDashboardPinToken')
+    java.util.Map q = [:]
     if (token) q.pinToken = token
     def parsed = null
     boolean allErrored = false   // true iff /dashboard/all threw (hub error), not merely empty
     try {
-        def raw = hubInternalGet("/dashboard/all", q)
-        parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : []
+        def raw = __bat529StaticCall_java_lang_Object_2('hubInternalGet', "/dashboard/all", q)
+        parsed = raw ? __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', raw) : []
     } catch (Exception e) {
-        mcpLogError("dashboard", "list dashboards via /dashboard/all failed", e)
+        __bat529StaticCall_java_lang_Object_3('mcpLogError', "dashboard", "list dashboards via /dashboard/all failed", e)
         parsed = null
         allErrored = true
     }
     // Keep Easy (2.x) AND legacy Hubitat® (1.x) dashboards; a null/absent version (create/update
     // echo, which only the Easy endpoints produce) is kept and classified easy.
-    def list = (parsed instanceof List) ? (parsed).findAll((this.&_bat529Cb_298d4999_24)): []
-    if (!list.isEmpty()) {
-        def dashboards = (list).collect((this.&_bat529Cb_298d4999_7))
+    def list = (parsed instanceof List) ? __bat529StaticDgm_findAll_1_java_lang_Object((parsed), (this.&_bat529Cb_298d4999_24)): []
+    if (!__bat529StaticReceiverCall_java_lang_Object_0(list, 'isEmpty')) {
+        def dashboards = __bat529StaticDgm_collect_1_java_util_List((list), (this.&_bat529Cb_298d4999_7))
         return [dashboards: dashboards, count: dashboards.size(), source: "dashboard-all"]
     }
-    def viaApps = _listDashboardsViaChildApps()
+    java.util.List viaApps = __bat529StaticCall_java_util_List_0('_listDashboardsViaChildApps')
     if (viaApps != null && !viaApps.isEmpty()) {
         // Don't blame a missing pinToken for a hub ERROR: only mention pinToken when /dashboard/all was empty.
-        def note = allErrored
+        java.lang.String note = allErrored
             ? "/dashboard/all errored (logged); listed via the dashboard parents' child apps instead. Each entry carries id + name + type only; call hub_get_dashboard for full config."
             : "Listed from the dashboard parents' child apps (/dashboard/all returned nothing -- a pinToken may be required). Each entry carries id + name + type only; call hub_get_dashboard for full config."
         return [dashboards: viaApps, count: viaApps.size(), source: "child-apps", note: note]
@@ -115,37 +116,38 @@ private String _requireDashboardId(rawId, String verbNote) {
     return s
 }
 
+@groovy.transform.CompileStatic
 def toolGetDashboard(args) {
     args = args ?: [:]
-    def wantId = _requireDashboardId(args.dashboardId, "")
+    java.lang.String wantId = __bat529StaticCall_java_lang_String_2('_requireDashboardId', __bat529StaticProperty_java_lang_Object(args, 'dashboardId'), "")
     // No single-dashboard read endpoint; derive from the list and filter by id.
-    def listed = toolListDashboards(args)
+    java.util.Map listed = __bat529StaticCall_java_util_Map_1('toolListDashboards', args)
     if (listed instanceof Map && listed.success == false) {
         return listed
     }
-    def match = ((listed.dashboards ?: [])).find(((this.&_bat529Cb_298d4999_15).curry([wantId] as Object[])))
+    def match = __bat529StaticDgm_find_1_java_lang_Object(((listed.dashboards ?: [])), ((this.&_bat529Cb_298d4999_15).curry([wantId] as Object[])))
     if (!match) {
-        def available = (((listed.dashboards ?: [])).collect((this.&_bat529Cb_298d4999_9))).findAll((this.&_bat529Cb_298d4999_18))
+        def available = __bat529StaticDgm_findAll_1_java_lang_Object((__bat529StaticDgm_collect_1_java_util_List(((listed.dashboards ?: [])), (this.&_bat529Cb_298d4999_9))), (this.&_bat529Cb_298d4999_18))
         return [success: false, error: "No dashboard found with id '${wantId}'.",
                 availableIds: available,
-                note: available.isEmpty()
+                note: __bat529StaticReceiverCall_java_lang_Object_0(available, 'isEmpty')
                     ? "The list returned no dashboards -- a pinToken may be required (pass pinToken and retry)."
                     : "Use hub_list_dashboards to see valid ids."]
     }
-    if (match.type == "legacy") {
-        return _getLegacyDashboard(wantId, match)
+    if (__bat529StaticProperty_java_lang_Object(match, 'type') == "legacy") {
+        return __bat529StaticCall_java_util_Map_2('_getLegacyDashboard', wantId, match)
     }
     // Child-app list has only id+name; enrich from the app-config page for the full shape (no theme there).
-    if (!match.containsKey("showClockTile")) {
-        def full = _dashboardConfigFromApp(wantId)
+    if (!__bat529StaticReceiverCall_java_lang_Object_1(match, 'containsKey', "showClockTile")) {
+        java.util.Map full = __bat529StaticCall_java_util_Map_1('_dashboardConfigFromApp', wantId)
         if (full != null) {
             full.id = wantId
-            if (!full.name) full.name = match.name
+            if (!full.name) full.name = __bat529StaticProperty_java_lang_Object(match, 'name')
             return full
         }
         // Enrichment read FAILED: return id + name but flag it as partial, so a caller doesn't mistake
         // "config unreadable" for "a dashboard whose tile/device/pin fields are all empty/default".
-        return match + [partial: true, note: "Only id + name could be read (the dashboard's config page was unreadable); tile/device/pin fields are unavailable, not defaulted. Retry hub_get_dashboard."]
+        return __bat529StaticBinary_Plus_java_lang_Object(match, [partial: true, note: "Only id + name could be read (the dashboard's config page was unreadable); tile/device/pin fields are unavailable, not defaulted. Retry hub_get_dashboard."])
     }
     return match
 }
@@ -191,50 +193,54 @@ private Map _legacyDashboardProbe(String id) {
 // Render the dashboard page to mint the requestToken the layout endpoint demands. Every page load
 // mints a fresh one, so each read/write mints its own instead of caching (tokens are timestamped
 // server-side and stale ones are rejected).
+@groovy.transform.CompileStatic
 private String _legacyMintRequestToken(String id, String accessToken) {
-    def html = hubInternalGet("/apps/api/${id}/dashboard/${id}", [access_token: accessToken])
+    def html = __bat529StaticCall_java_lang_Object_2('hubInternalGet', "/apps/api/${id}/dashboard/${id}", [access_token: accessToken])
     if (!html) return null
     def m = (html =~ /javascriptRequestToken\s*=\s*["']([^"']+)["']/)
-    return m.find() ? m.group(1) : null
+    return __bat529StaticDgm_find_0_java_lang_Object(m) ? m.group(1) : null
 }
 
 // Read the current layout JSON. Returns the parsed Map, or null when the token/page/layout read
 // came up empty (transport errors bubble to the caller for logging).
+@groovy.transform.CompileStatic
 private Map _legacyLayoutFetch(String id, String accessToken) {
     if (!accessToken) return null
-    def rt = _legacyMintRequestToken(id, accessToken)
+    java.lang.String rt = __bat529StaticCall_java_lang_String_2('_legacyMintRequestToken', id, accessToken)
     if (!rt) return null
-    def raw = hubInternalGet("/apps/api/${id}/dashboard/${id}/layout", [access_token: accessToken, requestToken: rt])
-    def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+    def raw = __bat529StaticCall_java_lang_Object_2('hubInternalGet', "/apps/api/${id}/dashboard/${id}/layout", [access_token: accessToken, requestToken: rt])
+    def parsed = raw ? __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', raw) : null
     return (parsed instanceof Map) ? parsed : null
 }
 
 // Save a layout wholesale. The endpoint echoes the saved layout back (with `name` re-stamped from
 // the app label server-side) -- callers use that echo as the write confirmation.
+@groovy.transform.CompileStatic
 private Map _legacyLayoutPost(String id, String accessToken, Map layout) {
-    def rt = _legacyMintRequestToken(id, accessToken)
+    java.lang.String rt = __bat529StaticCall_java_lang_String_2('_legacyMintRequestToken', id, accessToken)
     if (!rt) {
         throw new IllegalStateException("Could not mint a dashboard requestToken (the dashboard page render failed); the layout was not saved.")
     }
-    def resp = hubInternalPostJson("/apps/api/${id}/dashboard/${id}/layout",
+    def resp = __bat529StaticCall_java_lang_Object_5('hubInternalPostJson', "/apps/api/${id}/dashboard/${id}/layout",
         groovy.json.JsonOutput.toJson(layout), 420, false, [access_token: accessToken, requestToken: rt])
     return (resp instanceof Map) ? resp : null
 }
 
 // Full legacy read shape: the list summary + authorized deviceIds + the layout (tiles/grid/colors).
+@groovy.transform.CompileStatic
 private Map _getLegacyDashboard(String id, Map match) {
-    def probe = _legacyDashboardProbe(id)
+    java.util.Map probe = __bat529StaticCall_java_util_Map_1('_legacyDashboardProbe', id)
     if (probe == null || probe.legacy != true) {
         return match + [partial: true, note: "Listed as a legacy dashboard but its status page was unreadable; layout unavailable (not empty). Retry hub_get_dashboard."]
     }
-    def out = [id: id, name: (probe.label ?: match.name), type: "legacy"]
+    java.util.Map out = [id: id, name: (probe.label ?: match.name), type: "legacy"]
     if (probe.deviceIds != null) out.deviceIds = probe.deviceIds
     if (!probe.accessToken) {
-        return out + [partial: true, note: "The dashboard's access token could not be read from its app state, so its layout endpoint is unreachable. Open the dashboard app page once and retry."]
+        return __bat529StaticBinary_Plus_java_util_Map(out, [partial: true, note: "The dashboard's access token could not be read from its app state, so its layout endpoint is unreachable. Open the dashboard app page once and retry."])
     }
     def layout = null
-    try { layout = _legacyLayoutFetch(id, probe.accessToken) } catch (Exception e) {
-        mcpLogError("dashboard", "legacy layout read failed for ${id}", e)
+    try { layout = __bat529StaticCall_java_util_Map_2('_legacyLayoutFetch', id, probe.accessToken) } catch (Exception e) {
+        __bat529StaticCall_java_lang_Object_3('mcpLogError', "dashboard", "legacy layout read failed for ${id}", e)
     }
     if (layout instanceof Map) {
         out.layout = layout
@@ -279,36 +285,38 @@ __bat529EachReceiver1
 
 // Confirms a delete by effect (since /dashboard/delete's success flag is unreliable). TRI-STATE:
 // true=present, false=confirmed absent, null=could not verify (so delete never false-claims "gone").
+@groovy.transform.CompileStatic
 private Boolean _dashboardPresent(String id) {
-    def viaApps = _listDashboardsViaChildApps()
-    if (viaApps != null) return (viaApps).any(((this.&_bat529Cb_298d4999_6).curry([id] as Object[])))
-    def listed = toolListDashboards([:])
+    java.util.List viaApps = __bat529StaticCall_java_util_List_0('_listDashboardsViaChildApps')
+    if (viaApps != null) return __bat529StaticDgm_any_1_boolean((viaApps), ((this.&_bat529Cb_298d4999_6).curry([id] as Object[])))
+    java.util.Map listed = __bat529StaticCall_java_util_Map_1('toolListDashboards', [:])
     if (!(listed instanceof Map) || listed.success == false) return null   // couldn't read either source
-    return ((listed.dashboards ?: [])).any(((this.&_bat529Cb_298d4999_13).curry([id] as Object[])))
+    return __bat529StaticDgm_any_1_boolean(((listed.dashboards ?: [])), ((this.&_bat529Cb_298d4999_13).curry([id] as Object[])))
 }
 
-def toolCreateDashboard(args) {
+@groovy.transform.CompileStatic
+java.util.Map toolCreateDashboard(args) {
     args = args ?: [:]
     // Create requires name; Easy additionally needs >=1 deviceId (tile toggles, theme, navigation,
     // and pins optional). Legacy starts as an empty grid; deviceIds is its authorized-device list.
-    if (!args.name?.toString()?.trim()) {
+    if (!__bat529StaticProperty_java_lang_Object(args, 'name')?.toString()?.trim()) {
         throw new IllegalArgumentException("name is required (the dashboard's display name).")
     }
-    if (_dashboardTypeArg(args.type) == "legacy") {
-        return _createLegacyDashboard(args)
+    if (__bat529StaticCall_java_lang_String_1('_dashboardTypeArg', __bat529StaticProperty_java_lang_Object(args, 'type')) == "legacy") {
+        return __bat529StaticCall_java_util_Map_1('_createLegacyDashboard', args)
     }
-    def deviceCsv = _dashboardDeviceCsv(args.deviceIds, true)
-    def q = _buildDashboardConfigQuery(args, deviceCsv)
+    java.lang.String deviceCsv = __bat529StaticCall_java_lang_String_2('_dashboardDeviceCsv', __bat529StaticProperty_java_lang_Object(args, 'deviceIds'), true)
+    java.util.Map q = __bat529StaticCall_java_util_Map_2('_buildDashboardConfigQuery', args, deviceCsv)
     // CREATE-ONLY: the Vue editor sends version=2.0 on create (stripped on update) for an Easy Dashboard.
-    q.version = (args.version ?: "2.0").toString()
-    _requireUnprotectedEasyDashboardParent()
+    q.version = (__bat529StaticProperty_java_lang_Object(args, 'version') ?: "2.0").toString()
+    __bat529StaticCall_java_lang_Object_0('_requireUnprotectedEasyDashboardParent')
     try {
-        def raw = hubInternalGet("/dashboard/create", q)
-        return _dashboardWriteResult(raw, "create", null)
+        def raw = __bat529StaticCall_java_lang_Object_2('hubInternalGet', "/dashboard/create", q)
+        return __bat529StaticCall_java_util_Map_3('_dashboardWriteResult', raw, "create", null)
     } catch (IllegalArgumentException iae) {
         throw iae
     } catch (Exception e) {
-        mcpLogError("dashboard", "create dashboard failed", e)
+        __bat529StaticCall_java_lang_Object_3('mcpLogError', "dashboard", "create dashboard failed", e)
         return [success: false, outcomeUnknown: true, error: "Failed to confirm dashboard creation: ${e.message}",
                 note: "A dashboard may have been created. Inspect hub_list_dashboards before retrying; retrying blindly may create a duplicate."]
     }
@@ -364,32 +372,33 @@ private String _dashboardTypeArg(raw) {
 // built-in parent isn't installed, bootstrap it through the hub's Add Built-In App link (the
 // same GET /installedapp/sysApp/<type name> flow the RM-family parent discovery uses). The
 // parent is a self-installing singleton (installOnOpen), so the GET can never duplicate it.
+@groovy.transform.CompileStatic
 private Integer _legacyDashboardParentId() {
-    def node = _findLegacyDashboardParentNode()
+    def node = __bat529StaticCall_java_util_Map_0('_findLegacyDashboardParentNode')
     if (node == null) {
         // Literal name, no pre-encoding -- the HTTP layer encodes the path; pre-encoding gets
         // double-encoded and the hub then matches no app.
         def created = null
         try {
-            created = hubInternalGetRaw("/installedapp/sysApp/Hubitat® Dashboard")
+            created = __bat529StaticCall_java_lang_Object_1('hubInternalGetRaw', "/installedapp/sysApp/Hubitat® Dashboard")
         } catch (Exception e) {
-            mcpLogError("dashboard", "legacy dashboard parent bootstrap (Add Built-In App) failed", e)
+            __bat529StaticCall_java_lang_Object_3('mcpLogError', "dashboard", "legacy dashboard parent bootstrap (Add Built-In App) failed", e)
         }
-        node = _findLegacyDashboardParentNode()
-        if (node == null && created?.location) {
+        node = __bat529StaticCall_java_util_Map_0('_findLegacyDashboardParentNode')
+        if (node == null && __bat529StaticProperty_Safe_java_lang_Object(created, 'location')) {
             // /hub2/appsList can lag right after creation -- fall back to the id in the redirect.
-            def lm = (created.location.toString() =~ /\/installedapp\/configure\/(\d+)/)
-            if (lm.find()) node = [id: lm.group(1), installed: true]
+            def lm = (__bat529StaticProperty_java_lang_Object(created, 'location').toString() =~ /\/installedapp\/configure\/(\d+)/)
+            if (__bat529StaticDgm_find_0_java_lang_Object(lm)) node = [id: lm.group(1), installed: true]
         }
         if (node != null) {
             if (node.installed != true) {
                 // installOnOpen normally self-installs the singleton; commit defensively when a
                 // firmware surfaces it install-pending (same belt-and-braces as the RM bootstrap).
-                try { _commitUserAppInstall(node.id.toString().toInteger(), null) } catch (Exception e) {
-                    mcpLog("warn", "dashboard", "legacy dashboard parent install commit unverified: ${e.message}")
+                try { __bat529StaticCall_java_util_Map_2('_commitUserAppInstall', node.id.toString().toInteger(), null) } catch (Exception e) {
+                    __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "dashboard", "legacy dashboard parent install commit unverified: ${e.message}")
                 }
             }
-            mcpLog("info", "dashboard", "legacy Hubitat® Dashboard parent bootstrapped via Add Built-In App (id ${node.id})")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "dashboard", "legacy Hubitat® Dashboard parent bootstrapped via Add Built-In App (id ${node.id})")
         }
     }
     if (node?.id == null) return null
@@ -739,9 +748,10 @@ private Integer _requireTileId(raw, String op) {
 
 // A tile bound to a device the dashboard hasn't authorized renders empty -- warn (don't block; the
 // caller may authorize afterward via deviceIds).
+@groovy.transform.CompileStatic
 private void _warnUnauthorizedTileDevice(Map tile, Map probe, List warnings) {
     def dev = tile.device?.toString()
-    if (dev && dev ==~ /\d+/ && probe.deviceIds != null && !probe.deviceIds.contains(dev)) {
+    if (dev && dev ==~ /\d+/ && probe.deviceIds != null && !__bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(probe, 'deviceIds'), 'contains', dev)) {
         warnings << "Tile ${tile.id}: device ${dev} is not in this dashboard's authorized devices, so the tile will show no data. Authorize it via hub_update_dashboard(deviceIds=[...full list...])."
     }
 }
@@ -893,32 +903,33 @@ private Map _cloneLegacyDashboard(String sourceId, Map src) {
 // ---- domain helpers ----
 
 // Normalize one /dashboard/all record into a stable summary (id from installedAppId or a bare id echo).
+@groovy.transform.CompileStatic
 private Map _summarizeDashboard(raw) {
     if (!(raw instanceof Map)) return [raw: raw]
-    def out = [
-        id: (raw.installedAppId ?: raw.id)?.toString(),
-        name: raw.name,
+    java.util.Map out = [
+        id: (__bat529StaticProperty_java_lang_Object(raw, 'installedAppId') ?: __bat529StaticProperty_java_lang_Object(raw, 'id'))?.toString(),
+        name: __bat529StaticProperty_java_lang_Object(raw, 'name'),
         // version 1.x = legacy Hubitat® Dashboard; 2.x = Easy. A create/update echo carries no
         // version, and only the Easy endpoints produce those.
-        type: raw.version?.toString()?.startsWith("1") ? "legacy" : "easy"
+        type: __bat529StaticProperty_java_lang_Object(raw, 'version')?.toString()?.startsWith("1") ? "legacy" : "easy"
     ]
     // Pass through config fields (when present) so a read can round-trip back through hub_update_dashboard.
     if (true) {
-def __bat529EachReceiver5 = (["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
+java.util.List __bat529EachReceiver5 = (["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
      "showNavigation", "showTutorial", "theme"])
 for (def k in __bat529EachReceiver5) {
-        if (raw.containsKey(k)) out.put(k, raw.get(k))
+        if (__bat529StaticReceiverCall_java_lang_Object_1(raw, 'containsKey', k)) out.put(k, __bat529StaticReceiverCall_java_lang_Object_1(raw, 'get', k))
     
 }
 __bat529EachReceiver5
 } else { null }
-    if (raw.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(raw.navigationSelection)
+    if (__bat529StaticReceiverCall_java_lang_Object_1(raw, 'containsKey', "navigationSelection")) out.navigationSelection = __bat529StaticCall_java_lang_String_1('_dashboardNavSelectionCsv', __bat529StaticProperty_java_lang_Object(raw, 'navigationSelection'))
     // /dashboard/all gives deviceIds as a JSON-array string ("[8,1,9]"); normalize to a list of id strings.
-    if (raw.containsKey("deviceIds")) out.deviceIds = _normalizeDeviceIdList(raw.deviceIds)
+    if (__bat529StaticReceiverCall_java_lang_Object_1(raw, 'containsKey', "deviceIds")) out.deviceIds = __bat529StaticCall_java_util_List_1('_normalizeDeviceIdList', __bat529StaticProperty_java_lang_Object(raw, 'deviceIds'))
     // Unset pins echo as "", "null", or (on legacy records) "None" -- all mean "no pin"; only a real
     // value is worth surfacing.
-    if (_dashboardRealValue(raw.dashboardPin)) out.dashboardPin = raw.dashboardPin
-    if (_dashboardRealValue(raw.hsmPin)) out.hsmPin = raw.hsmPin
+    if (__bat529StaticCall_boolean_1('_dashboardRealValue', __bat529StaticProperty_java_lang_Object(raw, 'dashboardPin'))) out.dashboardPin = __bat529StaticProperty_java_lang_Object(raw, 'dashboardPin')
+    if (__bat529StaticCall_boolean_1('_dashboardRealValue', __bat529StaticProperty_java_lang_Object(raw, 'hsmPin'))) out.hsmPin = __bat529StaticProperty_java_lang_Object(raw, 'hsmPin')
     return out
 }
 
@@ -1059,92 +1070,117 @@ private Map _dashboardWriteResult(raw, String op, String reqId) {
 }
 
 // Tool DEFINITIONS (issue #209: schema lives with the impl); gateway membership + dispatch stay in main.
-def _getAllToolDefinitions_partDashboards() {
-    def dashFields = (_bat529EmbeddedCatalogRead(['["m",[["id",["m",[["type","string"]]]],["name",["m",[["type","string"]]]],["type",["m",[["type","string"]]]],["showModeTile",["m",[["type","boolean"]]]],["showClockTile",["m",[["type","boolean"]]]],["showCalendarTile",["m",[["type","boolean"]]]],["showHSMTile",["m",[["type","boolean"]]]],["showEdit",["m",[["type","boolean"]]]],["showNavigation",["m",[["type","boolean"]]]],["showTutorial",["m",[["type","boolean"]]]],["navigationSelection",["m",[["type","string"]]]],["theme",["m",[["type","string"]]]],["deviceIds",["m",[["type","array"]]]],["dashboardPin",["m",[["type","string"]]]],["hsmPin",["m",[["type","string"]]]]]]']) as Map)
-    return (_bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_dashboards"],["description","List the hub\'s dashboards -- both Easy Dashboards and legacy Hubitat\\u00ae Dashboards.[[FLAT_TRIM]] Read-only; each entry carries id, name, and a type (\'easy\' or \'legacy\'). Easy entries also include tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed. See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["pinToken",["m",[["type","string"],["description","Optional pin token. Auto-resolved when omitted."]]]]]]]]]]]],["m",[["name","hub_get_dashboard"],["description","Get a dashboard\'s full config by id. Easy Dashboard: tiles/theme/devices/PINs. Legacy Hubitat\\u00ae Dashboard: its authorized deviceIds plus the nested layout (tiles, grid, colors).[[FLAT_TRIM]] Read this before a wholesale hub_update_dashboard and pass its output straight back. A read that partly fails returns partial:true with a note (values are unavailable, not defaulted). See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["dashboardId",["m",[["type","string"],["description","installedAppId."]]]],["pinToken",["m",[["type","string"],["description","Optional pin token. Auto-resolved when omitted."]]]]]]],["required",["l",["dashboardId"]]]]]]]],["m",[["name","hub_create_dashboard"],["description","Create a dashboard. type=\'easy\' (default) builds an Easy Dashboard from devices + tile options; type=\'legacy\' creates an empty legacy Hubitat\\u00ae Dashboard whose deviceIds are its authorized-device list.[[FLAT_TRIM]] A legacy dashboard starts with an empty layout -- add tiles afterward with hub_update_dashboard (addTiles / setOptions) -- and rejects the Easy-only options arg. See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Display name."]]]],["type",["m",[["type","string"],["enum",["l",["easy","legacy"]]],["description","Dashboard kind: \'easy\' (default) or \'legacy\' Hubitat\\u00ae Dashboard."]]]],["deviceIds",["m",[["type","array"],["description","Device ids. Required (>=1, runtime-enforced) for an Easy Dashboard; for a legacy dashboard these are its authorized devices (optional)."],["items",["m",[["type","string"]]]]]]],["options",["m",[["type","object"],["description","Easy-only optional config; see hub_get_tool_guide(section=\'dashboards\'). Rejected for type=\'legacy\'."]]]]]]],["required",["l",["name"]]]]]]]],["m",[["name","hub_update_dashboard"],["description","Update a dashboard by id; behavior depends on its kind. Easy Dashboard: wholesale config replace -- read hub_get_dashboard first and pass the FULL config back (name + deviceIds required; omitted fields revert to default). Legacy Hubitat\\u00ae Dashboard: edit its name (label), deviceIds (authorized devices), and/or layout.[[FLAT_TRIM]] Legacy layout edits are EITHER `layout` (wholesale object) OR the granular ops removeTileIds / updateTiles / addTiles / setOptions (not both); ops apply in that order in one save and are retry-safe (an already-gone removal and an identical add are skipped with a warning). Passing a legacy layout arg at an Easy Dashboard, or options at a legacy one, is rejected. See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["dashboardId",["m",[["type","string"],["description","installedAppId."]]]],["name",["m",[["type","string"],["description","Display name (Easy) or app label (legacy)."]]]],["deviceIds",["m",[["type","array"],["description","Full device id set. Required (>=1) for Easy; wholesale-replaces a legacy dashboard\'s authorized devices."],["items",["m",[["type","string"]]]]]]],["options",["m",[["type","object"],["description","Easy-only. Same keys as hub_create_dashboard.options."]]]],["layout",["m",[["type","object"],["description","Legacy-only. Wholesale layout replace (the hub_get_dashboard object)."]]]],["setOptions",["m",[["type","object"],["description","Legacy-only. Merge top-level layout fields (cols, rows, bgColor, iconSize, fontSize, gridGap)."]]]],["addTiles",["m",[["type","array"],["description","Legacy-only. Tiles to add; each needs template, col, row (device/colSpan/rowSpan/templateExtra optional)."],["items",["m",[["type","object"]]]]]]],["updateTiles",["m",[["type","array"],["description","Legacy-only. Tile edits; each entry is {id, ...fields-to-change}."],["items",["m",[["type","object"]]]]]]],["removeTileIds",["m",[["type","array"],["description","Legacy-only. Tile ids to remove; ids already gone are skipped."],["items",["m",[["type","integer"]]]]]]]]]],["required",["l",["dashboardId"]]]]]]]],["m",[["name","hub_delete_dashboard"],["description","\\u26a0\\ufe0f Permanently delete a dashboard by id (irreversible), Easy or legacy Hubitat\\u00ae. Tell the user first.[[FLAT_TRIM]] A legacy dashboard is removed through the classic force-delete and confirmed by effect; the result carries its type. See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["dashboardId",["m",[["type","string"],["description","installedAppId to delete."]]]],["confirm",["m",[["type","boolean"],["description","Must be true (requires a recent backup + user approval)."]]]]]]],["required",["l",["dashboardId","confirm"]]]]]]]],["m",[["name","hub_clone_dashboard"],["description","Clone a dashboard into a copy by id. Easy: copies its config. Legacy Hubitat\\u00ae: creates a new legacy dashboard with the same authorized devices and copies the layout wholesale (clone-by-value; the source is never touched).[[FLAT_TRIM]] See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["dashboardId",["m",[["type","string"],["description","Source installedAppId."]]]]]]],["required",["l",["dashboardId"]]]]]]]]]]']) as List)
+@groovy.transform.CompileStatic
+java.util.List _getAllToolDefinitions_partDashboards() {
+    java.util.Map dashFields = (__bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["id",["m",[["type","string"]]]],["name",["m",[["type","string"]]]],["type",["m",[["type","string"]]]],["showModeTile",["m",[["type","boolean"]]]],["showClockTile",["m",[["type","boolean"]]]],["showCalendarTile",["m",[["type","boolean"]]]],["showHSMTile",["m",[["type","boolean"]]]],["showEdit",["m",[["type","boolean"]]]],["showNavigation",["m",[["type","boolean"]]]],["showTutorial",["m",[["type","boolean"]]]],["navigationSelection",["m",[["type","string"]]]],["theme",["m",[["type","string"]]]],["deviceIds",["m",[["type","array"]]]],["dashboardPin",["m",[["type","string"]]]],["hsmPin",["m",[["type","string"]]]]]]']) as Map)
+    return (__bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",[["m",[["name","hub_list_dashboards"],["description","List the hub\'s dashboards -- both Easy Dashboards and legacy Hubitat\\u00ae Dashboards.[[FLAT_TRIM]] Read-only; each entry carries id, name, and a type (\'easy\' or \'legacy\'). Easy entries also include tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed. See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["pinToken",["m",[["type","string"],["description","Optional pin token. Auto-resolved when omitted."]]]]]]]]]]]],["m",[["name","hub_get_dashboard"],["description","Get a dashboard\'s full config by id. Easy Dashboard: tiles/theme/devices/PINs. Legacy Hubitat\\u00ae Dashboard: its authorized deviceIds plus the nested layout (tiles, grid, colors).[[FLAT_TRIM]] Read this before a wholesale hub_update_dashboard and pass its output straight back. A read that partly fails returns partial:true with a note (values are unavailable, not defaulted). See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["dashboardId",["m",[["type","string"],["description","installedAppId."]]]],["pinToken",["m",[["type","string"],["description","Optional pin token. Auto-resolved when omitted."]]]]]]],["required",["l",["dashboardId"]]]]]]]],["m",[["name","hub_create_dashboard"],["description","Create a dashboard. type=\'easy\' (default) builds an Easy Dashboard from devices + tile options; type=\'legacy\' creates an empty legacy Hubitat\\u00ae Dashboard whose deviceIds are its authorized-device list.[[FLAT_TRIM]] A legacy dashboard starts with an empty layout -- add tiles afterward with hub_update_dashboard (addTiles / setOptions) -- and rejects the Easy-only options arg. See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Display name."]]]],["type",["m",[["type","string"],["enum",["l",["easy","legacy"]]],["description","Dashboard kind: \'easy\' (default) or \'legacy\' Hubitat\\u00ae Dashboard."]]]],["deviceIds",["m",[["type","array"],["description","Device ids. Required (>=1, runtime-enforced) for an Easy Dashboard; for a legacy dashboard these are its authorized devices (optional)."],["items",["m",[["type","string"]]]]]]],["options",["m",[["type","object"],["description","Easy-only optional config; see hub_get_tool_guide(section=\'dashboards\'). Rejected for type=\'legacy\'."]]]]]]],["required",["l",["name"]]]]]]]],["m",[["name","hub_update_dashboard"],["description","Update a dashboard by id; behavior depends on its kind. Easy Dashboard: wholesale config replace -- read hub_get_dashboard first and pass the FULL config back (name + deviceIds required; omitted fields revert to default). Legacy Hubitat\\u00ae Dashboard: edit its name (label), deviceIds (authorized devices), and/or layout.[[FLAT_TRIM]] Legacy layout edits are EITHER `layout` (wholesale object) OR the granular ops removeTileIds / updateTiles / addTiles / setOptions (not both); ops apply in that order in one save and are retry-safe (an already-gone removal and an identical add are skipped with a warning). Passing a legacy layout arg at an Easy Dashboard, or options at a legacy one, is rejected. See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["dashboardId",["m",[["type","string"],["description","installedAppId."]]]],["name",["m",[["type","string"],["description","Display name (Easy) or app label (legacy)."]]]],["deviceIds",["m",[["type","array"],["description","Full device id set. Required (>=1) for Easy; wholesale-replaces a legacy dashboard\'s authorized devices."],["items",["m",[["type","string"]]]]]]],["options",["m",[["type","object"],["description","Easy-only. Same keys as hub_create_dashboard.options."]]]],["layout",["m",[["type","object"],["description","Legacy-only. Wholesale layout replace (the hub_get_dashboard object)."]]]],["setOptions",["m",[["type","object"],["description","Legacy-only. Merge top-level layout fields (cols, rows, bgColor, iconSize, fontSize, gridGap)."]]]],["addTiles",["m",[["type","array"],["description","Legacy-only. Tiles to add; each needs template, col, row (device/colSpan/rowSpan/templateExtra optional)."],["items",["m",[["type","object"]]]]]]],["updateTiles",["m",[["type","array"],["description","Legacy-only. Tile edits; each entry is {id, ...fields-to-change}."],["items",["m",[["type","object"]]]]]]],["removeTileIds",["m",[["type","array"],["description","Legacy-only. Tile ids to remove; ids already gone are skipped."],["items",["m",[["type","integer"]]]]]]]]]],["required",["l",["dashboardId"]]]]]]]],["m",[["name","hub_delete_dashboard"],["description","\\u26a0\\ufe0f Permanently delete a dashboard by id (irreversible), Easy or legacy Hubitat\\u00ae. Tell the user first.[[FLAT_TRIM]] A legacy dashboard is removed through the classic force-delete and confirmed by effect; the result carries its type. See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["dashboardId",["m",[["type","string"],["description","installedAppId to delete."]]]],["confirm",["m",[["type","boolean"],["description","Must be true (requires a recent backup + user approval)."]]]]]]],["required",["l",["dashboardId","confirm"]]]]]]]],["m",[["name","hub_clone_dashboard"],["description","Clone a dashboard into a copy by id. Easy: copies its config. Legacy Hubitat\\u00ae: creates a new legacy dashboard with the same authorized devices and copies the layout wholesale (clone-by-value; the source is never touched).[[FLAT_TRIM]] See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["dashboardId",["m",[["type","string"],["description","Source installedAppId."]]]]]]],["required",["l",["dashboardId"]]]]]]]]]]']) as List)
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partDashboards() {
     // Read-only tools, contributed to getReadOnlyToolNames(). Absent => write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_list_dashboards","hub_get_dashboard"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_list_dashboards","hub_get_dashboard"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partDashboards() {
     // Retry-safe writes (idempotentHint): update = wholesale (same args -> same state); delete = no-op once gone.
     // create/clone each make ANOTHER dashboard, so they are NOT idempotent.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_update_dashboard","hub_delete_dashboard"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_update_dashboard","hub_delete_dashboard"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partDashboards() {
     // Title + Advanced-menu summary per tool, merged into getToolDisplayMeta().
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_dashboards",["m",[["title","List Dashboards"],["summary","List Easy and legacy Hubitat\\u00ae Dashboards with ids, names, and type."]]]],["hub_get_dashboard",["m",[["title","Get Dashboard"],["summary","Get one dashboard\'s full config by id (Easy config or legacy layout)."]]]],["hub_create_dashboard",["m",[["title","Create Dashboard"],["summary","Create an Easy Dashboard or an empty legacy Hubitat\\u00ae Dashboard."]]]],["hub_update_dashboard",["m",[["title","Update Dashboard"],["summary","Update a dashboard: Easy wholesale, or legacy name/devices/layout edits."]]]],["hub_delete_dashboard",["m",[["title","Delete Dashboard"],["summary","Permanently delete an Easy or legacy Hubitat\\u00ae Dashboard by id."]]]],["hub_clone_dashboard",["m",[["title","Clone Dashboard"],["summary","Clone an Easy or legacy Hubitat\\u00ae Dashboard into a new one."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_list_dashboards",["m",[["title","List Dashboards"],["summary","List Easy and legacy Hubitat\\u00ae Dashboards with ids, names, and type."]]]],["hub_get_dashboard",["m",[["title","Get Dashboard"],["summary","Get one dashboard\'s full config by id (Easy config or legacy layout)."]]]],["hub_create_dashboard",["m",[["title","Create Dashboard"],["summary","Create an Easy Dashboard or an empty legacy Hubitat\\u00ae Dashboard."]]]],["hub_update_dashboard",["m",[["title","Update Dashboard"],["summary","Update a dashboard: Easy wholesale, or legacy name/devices/layout edits."]]]],["hub_delete_dashboard",["m",[["title","Delete Dashboard"],["summary","Permanently delete an Easy or legacy Hubitat\\u00ae Dashboard by id."]]]],["hub_clone_dashboard",["m",[["title","Clone Dashboard"],["summary","Clone an Easy or legacy Hubitat\\u00ae Dashboard into a new one."]]]]]]'])
 }
 
 
-def _bat529Cb_298d4999_1(def it) { it.id 
+@groovy.transform.CompileStatic
+def _bat529Cb_298d4999_1(def it) { __bat529StaticProperty_java_lang_Object(it, 'id') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_298d4999_2(def it) { it != null 
 }
 
-def _bat529Cb_298d4999_3(def it) { _tileIdOf(it) 
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_298d4999_3(def it) { __bat529StaticCall_java_lang_Integer_1('_tileIdOf', it) 
 }
 
-def _bat529Cb_298d4999_4(def tid, def it) { _tileIdOf(it) == tid 
+@groovy.transform.CompileStatic
+def _bat529Cb_298d4999_4(def tid, def it) { __bat529StaticCall_java_lang_Integer_1('_tileIdOf', it) == tid 
 }
 
-def _bat529Cb_298d4999_5(def tid, def it) { _tileIdOf(it) == tid 
+@groovy.transform.CompileStatic
+def _bat529Cb_298d4999_5(def tid, def it) { __bat529StaticCall_java_lang_Integer_1('_tileIdOf', it) == tid 
 }
 
-def _bat529Cb_298d4999_6(def id, def it) { it.id?.toString() == id 
+@groovy.transform.CompileStatic
+def _bat529Cb_298d4999_6(def id, def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() == id 
 }
 
-def _bat529Cb_298d4999_7(def it) { _summarizeDashboard(it) 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_298d4999_7(def it) { __bat529StaticCall_java_util_Map_1('_summarizeDashboard', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_298d4999_8(def it) { it instanceof Map 
 }
 
-def _bat529Cb_298d4999_9(def it) { it.id 
+@groovy.transform.CompileStatic
+def _bat529Cb_298d4999_9(def it) { __bat529StaticProperty_java_lang_Object(it, 'id') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_298d4999_10(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_298d4999_11(def it) { it != null 
 }
 
-def _bat529Cb_298d4999_12(def it) { _requireTileId(it, "removeTileIds") 
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_298d4999_12(def it) { __bat529StaticCall_java_lang_Integer_2('_requireTileId', it, "removeTileIds") 
 }
 
-def _bat529Cb_298d4999_13(def id, def it) { it.id?.toString() == id 
+@groovy.transform.CompileStatic
+def _bat529Cb_298d4999_13(def id, def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() == id 
 }
 
-def _bat529Cb_298d4999_14(def spec, def it) { spec.get(it) == null 
+@groovy.transform.CompileStatic
+def _bat529Cb_298d4999_14(def spec, def it) { __bat529StaticReceiverCall_java_lang_Object_1(spec, 'get', it) == null 
 }
 
-def _bat529Cb_298d4999_15(def wantId, def it) { it.id?.toString() == wantId 
+@groovy.transform.CompileStatic
+def _bat529Cb_298d4999_15(def wantId, def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() == wantId 
 }
 
 def _bat529Cb_298d4999_16(def tile, def k, def v) { if (k?.toString() != "id") tile.put(k, v) 
 }
 
-def _bat529Cb_298d4999_17(def it) { _summarizeDashboard(it) 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_298d4999_17(def it) { __bat529StaticCall_java_util_Map_1('_summarizeDashboard', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_298d4999_18(def it) { it != null 
 }
 
-def _bat529Cb_298d4999_19(def it) { it?.name?.toString() == "localAccess" 
+@groovy.transform.CompileStatic
+def _bat529Cb_298d4999_19(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "localAccess" 
 }
 
-def _bat529Cb_298d4999_20(def it) { it?.name?.toString() == "devicesPicked" 
+@groovy.transform.CompileStatic
+def _bat529Cb_298d4999_20(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "devicesPicked" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_298d4999_21(def it) { new LinkedHashMap(it as Map) 
 }
 
-def _bat529Cb_298d4999_22(def spec, def t, def k) { t.get(k)?.toString() == spec.get(k)?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_298d4999_22(def spec, def t, def k) { __bat529StaticReceiverCall_java_lang_Object_1(t, 'get', k)?.toString() == __bat529StaticReceiverCall_java_lang_Object_1(spec, 'get', k)?.toString() 
 }
 
 def _bat529Cb_298d4999_23(def out, def s) {
@@ -1152,30 +1188,35 @@ def _bat529Cb_298d4999_23(def out, def s) {
     
 }
 
-def _bat529Cb_298d4999_24(def it) { it != null && (it.version == null || it.version.toString().startsWith("2") || it.version.toString().startsWith("1")) 
+@groovy.transform.CompileStatic
+def _bat529Cb_298d4999_24(def it) { it != null && (__bat529StaticProperty_java_lang_Object(it, 'version') == null || __bat529StaticProperty_java_lang_Object(it, 'version').toString().startsWith("2") || __bat529StaticProperty_java_lang_Object(it, 'version').toString().startsWith("1")) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_298d4999_25(def tiles, def warnings, def tid) {
-            if (!(tiles).any(((this.&_bat529Cb_298d4999_4).curry([tid] as Object[])))) warnings << "removeTileIds: no tile with id ${tid} (already removed?); skipped."
+            if (!__bat529StaticDgm_any_1_boolean((tiles), ((this.&_bat529Cb_298d4999_4).curry([tid] as Object[])))) __bat529StaticExpr__bat529Cb_298d4999_25_0(tid, warnings)
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_298d4999_26(def out, def c) {
-                    def cd = c?.data ?: [:]
-                    if (cd.id != null) out << [id: cd.id?.toString(), name: cd.name, type: "easy"]
+                    def cd = __bat529StaticProperty_Safe_java_lang_Object(c, 'data') ?: [:]
+                    if (__bat529StaticProperty_java_lang_Object(cd, 'id') != null) __bat529StaticExpr__bat529Cb_298d4999_26_4(cd, out)
                 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_298d4999_27(def out, def c) {
-                    def cd = c?.data ?: [:]
-                    if (cd.id != null && cd.type?.toString() == "Dashboard") out << [id: cd.id?.toString(), name: cd.name, type: "legacy"]
+                    def cd = __bat529StaticProperty_Safe_java_lang_Object(c, 'data') ?: [:]
+                    if (__bat529StaticProperty_java_lang_Object(cd, 'id') != null && __bat529StaticProperty_java_lang_Object(cd, 'type')?.toString() == "Dashboard") __bat529StaticExpr__bat529Cb_298d4999_27_5(cd, out)
                 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_298d4999_28(def spec, def t) {
-                (["template", "device", "col", "row", "templateExtra"]).every(((this.&_bat529Cb_298d4999_22).curry([spec, t] as Object[])))&&
-                    (t.colSpan ?: 1).toString() == (spec.colSpan ?: 1).toString() &&
-                    (t.rowSpan ?: 1).toString() == (spec.rowSpan ?: 1).toString()
+                __bat529StaticDgm_every_1_boolean((["template", "device", "col", "row", "templateExtra"]), ((this.&_bat529Cb_298d4999_22).curry([spec, t] as Object[])))&&
+                    (__bat529StaticProperty_java_lang_Object(t, 'colSpan') ?: 1).toString() == (__bat529StaticProperty_java_lang_Object(spec, 'colSpan') ?: 1).toString() &&
+                    (__bat529StaticProperty_java_lang_Object(t, 'rowSpan') ?: 1).toString() == (__bat529StaticProperty_java_lang_Object(spec, 'rowSpan') ?: 1).toString()
             
 }
 

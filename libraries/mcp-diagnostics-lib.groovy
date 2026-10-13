@@ -4,19 +4,20 @@ library(name: "McpDiagnosticsLib", namespace: "mcp", author: "kingpanther13", de
 // case body is a plain method call: a bare `{ ... }` block right after a
 // `case X:` label is rejected by the hub's Groovy parser (ambiguous
 // parameterless-closure vs open-block) even though hubitat_ci's parser accepts it.
+@groovy.transform.CompileStatic
 def toolGetRadioDetails(args) {
     // Normalize case so clients that capitalize the arg (e.g. "Matter") still dispatch.
-    def radio = args.radio?.toString()?.toLowerCase()
+    def radio = __bat529StaticProperty_java_lang_Object(args, 'radio')?.toString()?.toLowerCase()
     if (radio != null && !(radio in ["zwave", "zigbee", "matter"]))
         throw new IllegalArgumentException("radio must be 'zwave', 'zigbee', or 'matter' (or omit for both Z-Wave and Zigbee)")
     def result
-    if (radio == "zwave") result = toolGetZwaveDetails(args)
-    else if (radio == "zigbee") result = toolGetZigbeeDetails(args)
-    else if (radio == "matter") result = toolGetMatterDetails(args)
+    if (radio == "zwave") result = __bat529StaticCall_java_util_Map_1('toolGetZwaveDetails', args)
+    else if (radio == "zigbee") result = __bat529StaticCall_java_util_Map_1('toolGetZigbeeDetails', args)
+    else if (radio == "matter") result = __bat529StaticCall_java_util_Map_1('toolGetMatterDetails', args)
     // OMIT (both-shape) is deliberately Z-Wave + Zigbee only -- Matter is opt-in
     // via radio="matter" so existing callers that omit radio keep their shape.
-    else result = [zwave: toolGetZwaveDetails(args), zigbee: toolGetZigbeeDetails(args)]
-    _attachRadioIncludes(result, args)
+    else result = [zwave: __bat529StaticCall_java_util_Map_1('toolGetZwaveDetails', args), zigbee: __bat529StaticCall_java_util_Map_1('toolGetZigbeeDetails', args)]
+    __bat529StaticCall_java_lang_Object_2('_attachRadioIncludes', result, args)
     return result
 }
 
@@ -137,18 +138,20 @@ private Map _zigbeeDeviceActivity() {
 // (the hub_get_radio_details includes) use _radioGetSafe instead.
 // `query` rides hubInternalGet's query MAP -- an embedded '?' in the path is escaped into the
 // literal path by the platform client, which 404s these exact routes (see the _hubRequest guard).
+@groovy.transform.CompileStatic
 private _radioGet(String path, Map query = null) {
-    def txt = hubInternalGet(path, query)
+    def txt = __bat529StaticCall_java_lang_Object_2('hubInternalGet', path, query)
     if (!txt) return null
-    try { return new groovy.json.JsonSlurper().parseText(txt) }
-    catch (Exception parseErr) { return txt.take(8000) }
+    try { return __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', txt) }
+    catch (Exception parseErr) { return __bat529StaticReceiverCall_java_lang_Object_1(txt, 'take', 8000) }
 }
 
 // Non-throwing read variant: a hub fault becomes an {error} map instead of
 // propagating, so one bad include (an absent radio or older firmware) does not
 // fail the whole hub_get_radio_details read -- the miss stays visible per-include.
+@groovy.transform.CompileStatic
 private _radioGetSafe(String path, Map query = null) {
-    try { return _radioGet(path, query) }
+    try { return __bat529StaticCall_java_lang_Object_2('_radioGet', path, query) }
     catch (IllegalStateException guardErr) {
         // The ?-in-path guard is a server coding bug, not a hub fault -- rethrow it so it cannot
         // be laundered into an {error} map that a caller reports as a per-include miss (see
@@ -156,7 +159,7 @@ private _radioGetSafe(String path, Map query = null) {
         throw guardErr
     }
     catch (Exception e) {
-        mcpLog("debug", "hub-admin", "_radioGetSafe ${path} failed: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-admin", "_radioGetSafe ${path} failed: ${e.message}")
         return [error: "Failed to fetch ${path}: ${e.message}"]
     }
 }
@@ -166,41 +169,43 @@ private _radioGetSafe(String path, Map query = null) {
 // body (the securityKeys/securityCode/nodeReplace/deviceFirmware/smartstart-delete
 // endpoints). Returns the parsed-or-raw response body; rethrows so the caller's
 // structured error path owns the failure shape.
+@groovy.transform.CompileStatic
 private _radioPost(String path, body = null) {
     String txt
     if (body == null) {
-        txt = hubInternalPost(path)
+        txt = __bat529StaticCall_java_lang_Object_1('hubInternalPost', path)
     } else if (body instanceof Map) {
-        txt = hubInternalPostForm(path, body)?.data
+        txt = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticExpr__radioPost_0(body, path), 'data')
     } else {
         // String -> JSON body. hubInternalPostJson already parses JSON for us.
-        return hubInternalPostJson(path, body.toString())
+        return __bat529StaticCall_java_lang_Object_2('hubInternalPostJson', path, body.toString())
     }
     if (!txt) return null
     try { return new groovy.json.JsonSlurper().parseText(txt) }
     catch (Exception parseErr) { return txt.take(2000) }
 }
 
-def toolGetMatterDetails(args) {
+@groovy.transform.CompileStatic
+java.util.Map toolGetMatterDetails(args) {
 
-    def result = [:]
+    java.util.Map result = [:]
 
     // Matter fabric + commissioned-device details via internal API. The hub's
     // Matter controller exposes /hub/matterDetails/json on firmware that supports
     // a Matter radio (C-8 / C-8 Pro); older hubs / non-Matter models return nothing.
-    def endpoint = "/hub/matterDetails/json"
+    java.lang.String endpoint = "/hub/matterDetails/json"
     def matterSuccess = false
     def matterFault = null
     try {
-        def responseText = hubInternalGet(endpoint)
+        def responseText = __bat529StaticCall_java_lang_Object_1('hubInternalGet', endpoint)
         if (responseText) {
             try {
-                result.matterData = new groovy.json.JsonSlurper().parseText(responseText)
+                result.matterData = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', responseText)
                 result.source = "hub_api"
                 result.endpoint = endpoint
                 matterSuccess = true
             } catch (Exception parseErr) {
-                result.rawResponse = responseText?.take(3000)
+                result.rawResponse = __bat529StaticReceiverCall_Safe_java_lang_Object_1(responseText, 'take', 3000)
                 result.source = "hub_api_raw"
                 result.endpoint = endpoint
                 result.note = "Response was not JSON format"
@@ -213,7 +218,7 @@ def toolGetMatterDetails(args) {
         // C-8 fault is visible at the default log level, and tag the result below
         // so the caller can tell a fault apart from absent hardware.
         matterFault = e.message
-        mcpLog("warn", "hub-admin", "Matter endpoint ${endpoint} failed: ${matterFault}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "Matter endpoint ${endpoint} failed: ${matterFault}")
     }
 
     if (!matterSuccess) {
@@ -226,34 +231,35 @@ def toolGetMatterDetails(args) {
         }
     }
 
-    mcpLog("info", "hub-admin", "Retrieved Matter details")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "hub-admin", "Retrieved Matter details")
     return result
 }
 
-def toolGetZwaveDetails(args) {
+@groovy.transform.CompileStatic
+java.util.Map toolGetZwaveDetails(args) {
 
-    def hub = location.hub
-    def result = [:]
+    def hub = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_location(), 'hub')
+    java.util.Map result = [:]
 
     // Basic Z-Wave info from hub object
-    try { result.zwaveVersion = hub?.zwaveVersion } catch (Exception e) { result.zwaveVersion = null }
+    try { result.zwaveVersion = __bat529StaticProperty_Safe_java_lang_Object(hub, 'zwaveVersion') } catch (Exception e) { result.zwaveVersion = null }
 
     // Extended Z-Wave info via internal API
     // Firmware 2.3.7.1+ uses /hub/zwaveDetails/json; older uses /hub2/zwaveInfo
-    def zwaveEndpoints = ["/hub/zwaveDetails/json", "/hub2/zwaveInfo"]
+    java.util.List zwaveEndpoints = ["/hub/zwaveDetails/json", "/hub2/zwaveInfo"]
     def zwaveSuccess = false
     for (endpoint in zwaveEndpoints) {
         try {
-            def responseText = hubInternalGet(endpoint)
+            def responseText = __bat529StaticCall_java_lang_Object_1('hubInternalGet', endpoint)
             if (responseText) {
                 try {
-                    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                    def parsed = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', responseText)
                     result.zwaveData = parsed
                     result.source = "hub_api"
                     result.endpoint = endpoint
                     zwaveSuccess = true
                 } catch (Exception parseErr) {
-                    result.rawResponse = responseText?.take(3000)
+                    result.rawResponse = __bat529StaticReceiverCall_Safe_java_lang_Object_1(responseText, 'take', 3000)
                     result.source = "hub_api_raw"
                     result.endpoint = endpoint
                     result.note = "Response was not JSON format"
@@ -262,7 +268,7 @@ def toolGetZwaveDetails(args) {
             }
             if (zwaveSuccess) break
         } catch (Exception e) {
-            mcpLog("debug", "hub-admin", "Z-Wave endpoint ${endpoint} failed: ${e.message}")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-admin", "Z-Wave endpoint ${endpoint} failed: ${e.message}")
             // Try next endpoint
         }
     }
@@ -272,11 +278,11 @@ def toolGetZwaveDetails(args) {
         result.note = "Extended Z-Wave info unavailable from all endpoints. Showing basic info from hub SDK."
     }
     // The Hub object has no zwaveVersion property on current firmware; the details JSON carries the radio firmware.
-    if (result.zwaveVersion == null) result.zwaveVersion = (result.zwaveData instanceof Map ? result.zwaveData.firmwareVersion : null) ?: "unavailable"
+    if (result.zwaveVersion == null) result.zwaveVersion = (result.zwaveData instanceof Map ? __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(result, 'zwaveData'), 'firmwareVersion') : null) ?: "unavailable"
 
-    if (args?.include_topology) result.topology = _fetchRadioTopology("zwave")
+    if (__bat529StaticProperty_Safe_java_lang_Object(args, 'include_topology')) result.topology = __bat529StaticCall_java_util_Map_1('_fetchRadioTopology', "zwave")
 
-    mcpLog("info", "hub-admin", "Retrieved Z-Wave details")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "hub-admin", "Retrieved Z-Wave details")
     return result
 }
 
@@ -284,58 +290,60 @@ def toolGetZwaveDetails(args) {
 // (nodes + source->target connectors) + /hub/zwaveTopology (raw route table). Zigbee:
 // /hub/zigbee/getChildAndRouteInfoJson (children + neighbors + routes with status/age/nextHopId).
 // All GET/read-only -- no radio mutation, so this does not touch the no-radio-ops guardrail.
+@groovy.transform.CompileStatic
 private Map _fetchRadioTopology(String radio) {
-    def topo = [:]
-    def jsonEndpoint = (radio == "zwave") ? "/hub/zwave/getChildAndRouteInfoJson" : "/hub/zigbee/getChildAndRouteInfoJson"
+    java.util.Map topo = [:]
+    java.lang.String jsonEndpoint = (radio == "zwave") ? "/hub/zwave/getChildAndRouteInfoJson" : "/hub/zigbee/getChildAndRouteInfoJson"
     topo.endpoint = jsonEndpoint
     try {
-        def txt = hubInternalGet(jsonEndpoint)
+        def txt = __bat529StaticCall_java_lang_Object_1('hubInternalGet', jsonEndpoint)
         if (txt) {
-            try { topo.routes = new groovy.json.JsonSlurper().parseText(txt) }
-            catch (Exception parseErr) { topo.rawRoutes = txt?.take(8000); topo.note = "Route info was not JSON format" }
+            try { topo.routes = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', txt) }
+            catch (Exception parseErr) { topo.rawRoutes = __bat529StaticReceiverCall_Safe_java_lang_Object_1(txt, 'take', 8000); topo.note = "Route info was not JSON format" }
         }
     } catch (Exception e) {
         topo.error = "Failed to fetch ${jsonEndpoint}: ${e.message}"
     }
     if (radio == "zwave") {
         try {
-            def t = hubInternalGet("/hub/zwaveTopology")
-            if (t) topo.zwaveTopologyTable = t.take(8000)
+            def t = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/hub/zwaveTopology")
+            if (t) topo.zwaveTopologyTable = __bat529StaticReceiverCall_java_lang_Object_1(t, 'take', 8000)
         } catch (Exception e) {
             // The raw route table is optional context on top of the JSON route info above, but
             // record the miss so an absent table can't be mistaken for an empty one.
             topo.zwaveTopologyTableError = "Failed to fetch /hub/zwaveTopology: ${e.message}"
-            mcpLog("debug", "hub-admin", "_fetchRadioTopology zwaveTopology miss: ${e.message}")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-admin", "_fetchRadioTopology zwaveTopology miss: ${e.message}")
         }
     }
     return topo
 }
 
-def toolGetZigbeeDetails(args) {
+@groovy.transform.CompileStatic
+java.util.Map toolGetZigbeeDetails(args) {
 
-    def hub = location.hub
-    def result = [:]
+    def hub = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_location(), 'hub')
+    java.util.Map result = [:]
 
     // Basic Zigbee info from hub object
-    try { result.zigbeeChannel = hub?.zigbeeChannel } catch (Exception e) { result.zigbeeChannel = null }
-    try { result.zigbeeId = hub?.zigbeeId } catch (Exception e) { result.zigbeeId = "unavailable" }
+    try { result.zigbeeChannel = __bat529StaticProperty_Safe_java_lang_Object(hub, 'zigbeeChannel') } catch (Exception e) { result.zigbeeChannel = null }
+    try { result.zigbeeId = __bat529StaticProperty_Safe_java_lang_Object(hub, 'zigbeeId') } catch (Exception e) { result.zigbeeId = "unavailable" }
 
     // Extended Zigbee info via internal API
     // Firmware 2.3.7.1+ uses /hub/zigbeeDetails/json; older uses /hub2/zigbeeInfo
-    def zigbeeEndpoints = ["/hub/zigbeeDetails/json", "/hub2/zigbeeInfo"]
+    java.util.List zigbeeEndpoints = ["/hub/zigbeeDetails/json", "/hub2/zigbeeInfo"]
     def zigbeeSuccess = false
     for (endpoint in zigbeeEndpoints) {
         try {
-            def responseText = hubInternalGet(endpoint)
+            def responseText = __bat529StaticCall_java_lang_Object_1('hubInternalGet', endpoint)
             if (responseText) {
                 try {
-                    def parsed = new groovy.json.JsonSlurper().parseText(responseText)
+                    def parsed = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', responseText)
                     result.zigbeeData = parsed
                     result.source = "hub_api"
                     result.endpoint = endpoint
                     zigbeeSuccess = true
                 } catch (Exception parseErr) {
-                    result.rawResponse = responseText?.take(3000)
+                    result.rawResponse = __bat529StaticReceiverCall_Safe_java_lang_Object_1(responseText, 'take', 3000)
                     result.source = "hub_api_raw"
                     result.endpoint = endpoint
                     result.note = "Response was not JSON format"
@@ -344,7 +352,7 @@ def toolGetZigbeeDetails(args) {
             }
             if (zigbeeSuccess) break
         } catch (Exception e) {
-            mcpLog("debug", "hub-admin", "Zigbee endpoint ${endpoint} failed: ${e.message}")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-admin", "Zigbee endpoint ${endpoint} failed: ${e.message}")
             // Try next endpoint
         }
     }
@@ -353,11 +361,11 @@ def toolGetZigbeeDetails(args) {
         result.source = "sdk_only"
         result.note = "Extended Zigbee info unavailable from all endpoints. Showing basic info from hub SDK."
     }
-    if (result.zigbeeChannel == null) result.zigbeeChannel = (result.zigbeeData instanceof Map ? result.zigbeeData.channel : null) ?: "unavailable"
+    if (result.zigbeeChannel == null) result.zigbeeChannel = (result.zigbeeData instanceof Map ? __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(result, 'zigbeeData'), 'channel') : null) ?: "unavailable"
 
-    if (args?.include_topology) result.topology = _fetchRadioTopology("zigbee")
+    if (__bat529StaticProperty_Safe_java_lang_Object(args, 'include_topology')) result.topology = __bat529StaticCall_java_util_Map_1('_fetchRadioTopology', "zigbee")
 
-    mcpLog("info", "hub-admin", "Retrieved Zigbee details")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "hub-admin", "Retrieved Zigbee details")
     return result
 }
 
@@ -389,11 +397,12 @@ private Map _parseHubLogLine(String line) {
 
 // Scoped snapshots live only long enough for a continuation or terminal replay. Bound
 // simultaneous snapshots, never their content; retain continuation snapshots until replay expires.
-def _nativeLogSnapshot(Map query, Map args) {
-    if (!_mrtrReadContinuationActive()) {
-        return [state: "ready", text: hubInternalGet("/logs/past/json", query, 30)]
+@groovy.transform.CompileStatic
+java.util.Map _nativeLogSnapshot(Map query, Map args) {
+    if (!__bat529StaticCall_java_lang_Object_0('_mrtrReadContinuationActive')) {
+        return [state: "ready", text: __bat529StaticCall_java_lang_Object_3('hubInternalGet', "/logs/past/json", query, 30)]
     }
-    return _hubReadSnapshot(query, args, null)
+    return __bat529StaticCall_java_util_Map_3('_hubReadSnapshot', query, args, null)
 }
 
 private String _deviceReadAccessScope() {
@@ -404,17 +413,18 @@ private String _deviceReadAccessScope() {
     ])
 }
 
+@groovy.transform.CompileStatic
 private def _deviceReadSnapshot(String tool, Map args, Map context) {
     Map work = [id: context.id, fresh: context.fresh, tool: tool,
                 outerTool: context.outerTool ?: tool,
-                args: _mrtrCopyMap(args), scope: _deviceReadAccessScope()]
-    Map snapshot = _hubReadSnapshot(null, args, work)
-    if (work.scope != _deviceReadAccessScope()) {
+                args: __bat529StaticCall_java_util_Map_1('_mrtrCopyMap', args), scope: __bat529StaticCall_java_lang_String_0('_deviceReadAccessScope')]
+    Map snapshot = __bat529StaticCall_java_util_Map_3('_hubReadSnapshot', null, args, work)
+    if (work.scope != __bat529StaticCall_java_lang_String_0('_deviceReadAccessScope')) {
         throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")
     }
     if (snapshot.state == "pending") return [status: "in_progress", tool: tool]
     context.fetchedAt = snapshot.fetchedAt
-    return new groovy.json.JsonSlurper().parseText(snapshot.text)
+    return __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', snapshot.text)
 }
 
 private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
@@ -996,29 +1006,34 @@ def hubLogIsoFmts = __bat529EachReceiver2Result
 // result is held in the JVM for a short window so both tools built on it, and their cursor
 // pages, answer from one fetch. hub_get_jobs and hub_get_performance_stats are the only
 // readers; keep any new /logs/json consumer on _logsJsonSnapshot (sandbox_lint enforces it).
-def _logsJsonSnapshotTtlMs() { 30000L }
+@groovy.transform.CompileStatic
+java.lang.Long _logsJsonSnapshotTtlMs() { 30000L }
 // A fetch marker or failure older than this is treated as stale: the marker no longer blocks a
 // new worker, and the failure is no longer reported. It is a bound, not proof the worker died,
 // so every publish is fenced by the fetchId the worker was scheduled with.
-def _logsJsonFetchStaleMs() { 45000L }
+@groovy.transform.CompileStatic
+java.lang.Long _logsJsonFetchStaleMs() { 45000L }
 
 // How long a budgeted request may wait for the worker before handing back in_progress. The
 // leg does nothing else, so it keeps 1500 ms of headroom under the budget (the write
 // observer's cloud path keeps 2000 ms), capped so eight continuation slices still cover the
 // fetch's own 30 s timeout.
+@groovy.transform.CompileStatic
 def _logsJsonObserveWaitMs() {
-    boolean cloud = _isCloudRequest()
+    boolean cloud = __bat529StaticCall_java_lang_Object_0('_isCloudRequest')
     long cap = cloud ? 4500L : 6000L
-    long budget = cloud ? _relayBudgetMs() : _lanBudgetMs()
+    long budget = cloud ? __bat529StaticCall_long_0('_relayBudgetMs') : __bat529StaticCall_long_0('_lanBudgetMs')
     if (budget <= 0L) return cap
     return Math.max(1L, Math.min(cap, budget - 1500L))
 }
 
-def _logsJsonUsesBackgroundFetch() { _mrtrReadContinuationActive() }
+@groovy.transform.CompileStatic
+def _logsJsonUsesBackgroundFetch() { __bat529StaticCall_java_lang_Object_0('_mrtrReadContinuationActive') }
 
+@groovy.transform.CompileStatic
 private List _logsJsonTrimStats(statsList) {
     if (!(statsList instanceof List)) return []
-    return (statsList).collect((this.&_bat529Cb_7399a956_45))
+    return __bat529StaticDgm_collect_1_java_util_List((statsList), (this.&_bat529Cb_7399a956_45))
 }
 
 // A present table that is not an array, or a table row that is not an object, is a changed
@@ -1036,25 +1051,26 @@ private List _logsJsonTable(Map data, String key) {
 // Fetch, trim to the fields the tools read, and publish. Runs inline on an unbudgeted request
 // and inside runLogsJsonFetch for budgeted ones. A worker passes the fetchId it was scheduled
 // with; a stale worker (its id already replaced) parses for nothing and publishes nothing.
-def _logsJsonFetchAndPublish(Long fetchId = null, boolean background = false) {
-    long t0 = now()
-    def responseText = hubInternalGet("/logs/json", null, 30)
+@groovy.transform.CompileStatic
+java.util.Map _logsJsonFetchAndPublish(Long fetchId = null, boolean background = false) {
+    long t0 = __bat529StaticCall_long_0('now')
+    def responseText = __bat529StaticCall_java_lang_Object_3('hubInternalGet', "/logs/json", null, 30)
     if (!responseText) throw new RuntimeException("No data returned from /logs/json")
-    def data = new groovy.json.JsonSlurper().parseText(responseText)
+    def data = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', responseText)
     if (!(data instanceof Map)) throw new IllegalStateException("Unexpected /logs/json response: expected a JSON object")
-    if (data.jobs == null && data.deviceStats == null && data.appStats == null) {
+    if (__bat529StaticProperty_java_lang_Object(data, 'jobs') == null && __bat529StaticProperty_java_lang_Object(data, 'deviceStats') == null && __bat529StaticProperty_java_lang_Object(data, 'appStats') == null) {
         throw new IllegalStateException("Unexpected /logs/json response: no jobs or stats tables (page shape changed?)")
     }
-    def snap = [
-        at: now(), fetchMs: now() - t0, background: background,
-        uptime: data.uptime,
-        totalDevicesRuntime: data.totalDevicesRuntime, devicePct: data.devicePct,
-        totalAppsRuntime: data.totalAppsRuntime, appPct: data.appPct,
-        deviceStats: _logsJsonTrimStats(_logsJsonTable(data, "deviceStats")),
-        appStats: _logsJsonTrimStats(_logsJsonTable(data, "appStats")),
-        jobs: (_logsJsonTable(data, "jobs")).collect((this.&_bat529Cb_7399a956_33)),
-        runningJobs: (_logsJsonTable(data, "runningJobs")).collect((this.&_bat529Cb_7399a956_30)),
-        hubCommands: _logsJsonTable(data, "hubCommands")
+    java.util.Map snap = [
+        at: __bat529StaticCall_long_0('now'), fetchMs: __bat529StaticCall_long_0('now') - t0, background: background,
+        uptime: __bat529StaticProperty_java_lang_Object(data, 'uptime'),
+        totalDevicesRuntime: __bat529StaticProperty_java_lang_Object(data, 'totalDevicesRuntime'), devicePct: __bat529StaticProperty_java_lang_Object(data, 'devicePct'),
+        totalAppsRuntime: __bat529StaticProperty_java_lang_Object(data, 'totalAppsRuntime'), appPct: __bat529StaticProperty_java_lang_Object(data, 'appPct'),
+        deviceStats: __bat529StaticCall_java_util_List_1('_logsJsonTrimStats', __bat529StaticCall_java_util_List_2('_logsJsonTable', data, "deviceStats")),
+        appStats: __bat529StaticCall_java_util_List_1('_logsJsonTrimStats', __bat529StaticCall_java_util_List_2('_logsJsonTable', data, "appStats")),
+        jobs: __bat529StaticDgm_collect_1_java_util_List((__bat529StaticCall_java_util_List_2('_logsJsonTable', data, "jobs")), (this.&_bat529Cb_7399a956_33)),
+        runningJobs: __bat529StaticDgm_collect_1_java_util_List((__bat529StaticCall_java_util_List_2('_logsJsonTable', data, "runningJobs")), (this.&_bat529Cb_7399a956_30)),
+        hubCommands: __bat529StaticCall_java_util_List_2('_logsJsonTable', data, "hubCommands")
     ]
     synchronized (LOGS_JSON_SNAPSHOT) {
         if (fetchId != null && LOGS_JSON_SNAPSHOT.fetchId != fetchId) return snap
@@ -1066,10 +1082,11 @@ def _logsJsonFetchAndPublish(Long fetchId = null, boolean background = false) {
 
 // Provenance a client can read back: whether this answer came from a cached snapshot, how old
 // it is, and whether the fetch ran in the background worker. Makes cache reuse observable.
+@groovy.transform.CompileStatic
 private Map _logsJsonProvenance(Map snap) {
-    return [fetchedAt: snap.at, ageMs: Math.max(0L, now() - (snap.at as Long)),
+    return [fetchedAt: snap.at, ageMs: Math.max(0L, __bat529StaticCall_long_0('now') - (snap.at as Long)),
             fetchMs: snap.fetchMs, background: snap.background == true,
-            budgeted: _logsJsonUsesBackgroundFetch()]
+            budgeted: __bat529StaticCall_java_lang_Object_0('_logsJsonUsesBackgroundFetch')]
 }
 
 private Map _logsJsonFreshSnapshot() {
@@ -1083,17 +1100,18 @@ private Map _logsJsonFreshSnapshot() {
 
 // Schedule the worker unless a non-stale fetch is already in flight. The marker is owned by a
 // fetchId; a scheduling failure rolls back exactly that marker and propagates.
+@groovy.transform.CompileStatic
 private void _logsJsonEnsureFetchScheduled() {
     long fetchId
     synchronized (LOGS_JSON_SNAPSHOT) {
         def startedAt = LOGS_JSON_SNAPSHOT.fetchStartedAt
-        if (startedAt instanceof Long && now() - (startedAt as Long) < _logsJsonFetchStaleMs()) return
+        if (startedAt instanceof Long && __bat529StaticCall_long_0('now') - (startedAt as Long) < __bat529StaticCall_java_lang_Long_0('_logsJsonFetchStaleMs')) return
         fetchId = ((LOGS_JSON_SNAPSHOT.fetchId instanceof Long) ? (LOGS_JSON_SNAPSHOT.fetchId as Long) : 0L) + 1L
         LOGS_JSON_SNAPSHOT.fetchId = fetchId
-        LOGS_JSON_SNAPSHOT.fetchStartedAt = now()
+        LOGS_JSON_SNAPSHOT.fetchStartedAt = __bat529StaticCall_long_0('now')
     }
     try {
-        runInMillis(WORKER_START_DELAY_MS, "runLogsJsonFetch", [overwrite: false, data: [fetchId: fetchId]])
+        __bat529StaticCall_java_lang_Object_3('runInMillis', WORKER_START_DELAY_MS, "runLogsJsonFetch", [overwrite: false, data: [fetchId: fetchId]])
     } catch (Exception scheduleErr) {
         synchronized (LOGS_JSON_SNAPSHOT) {
             if (LOGS_JSON_SNAPSHOT.fetchId == fetchId) LOGS_JSON_SNAPSHOT.remove("fetchStartedAt")
@@ -1126,15 +1144,16 @@ def runLogsJsonFetch(Map job = [:]) {
 // The most recent worker failure, while it is younger than the stale bound. It stays visible to
 // every caller until a later fetch succeeds (publishing clears it) or it ages out, so a legacy
 // client repeating the call sees the same error and stops instead of polling.
+@groovy.transform.CompileStatic
 private Map _logsJsonRecentFetchError() {
     synchronized (LOGS_JSON_SNAPSHOT) {
         def failure = LOGS_JSON_SNAPSHOT.fetchError
         if (!(failure instanceof Map)) return null
-        if (!(failure.at instanceof Long) || now() - (failure.at as Long) >= _logsJsonFetchStaleMs()) {
+        if (!(__bat529StaticProperty_java_lang_Object(failure, 'at') instanceof Long) || __bat529StaticCall_long_0('now') - (__bat529StaticProperty_java_lang_Object(failure, 'at') as Long) >= __bat529StaticCall_java_lang_Long_0('_logsJsonFetchStaleMs')) {
             LOGS_JSON_SNAPSHOT.remove("fetchError")
             return null
         }
-        return [:] + failure
+        return __bat529StaticBinary_Plus_java_util_Map([:], failure)
     }
 }
 
@@ -1142,34 +1161,35 @@ private Map _logsJsonRecentFetchError() {
 //   [state: "ready", snapshot: ...]   a snapshot inside its TTL (fetched inline when unbudgeted)
 //   [state: "pending"]                a budgeted request whose worker has not landed yet
 //   [state: "failed", error: ...]     the most recent worker failure; a retry is already scheduled
-def _logsJsonSnapshot(Map args) {
-    def fresh = _logsJsonFreshSnapshot()
+@groovy.transform.CompileStatic
+java.util.Map _logsJsonSnapshot(Map args) {
+    def fresh = __bat529StaticCall_java_util_Map_0('_logsJsonFreshSnapshot')
     if (fresh != null) return [state: "ready", snapshot: fresh]
-    if (!_logsJsonUsesBackgroundFetch()) return [state: "ready", snapshot: _logsJsonFetchAndPublish()]
-    def failure = _logsJsonRecentFetchError()
+    if (!__bat529StaticCall_java_lang_Object_0('_logsJsonUsesBackgroundFetch')) return [state: "ready", snapshot: __bat529StaticCall_java_util_Map_0('_logsJsonFetchAndPublish')]
+    def failure = __bat529StaticCall_java_util_Map_0('_logsJsonRecentFetchError')
     if (failure != null) {
-        _logsJsonEnsureFetchScheduled()
+        __bat529StaticCall_java_lang_Object_0('_logsJsonEnsureFetchScheduled')
         return [state: "failed", error: failure.message]
     }
-    long t0 = (args?.__reqT0 instanceof Number) ? (args.__reqT0 as Long) : now()
-    _logsJsonEnsureFetchScheduled()
-    long deadline = t0 + _logsJsonObserveWaitMs()
+    long t0 = (args?.__reqT0 instanceof Number) ? (args.__reqT0 as Long) : __bat529StaticCall_long_0('now')
+    __bat529StaticCall_java_lang_Object_0('_logsJsonEnsureFetchScheduled')
+    long deadline = __bat529StaticBinary_Plus_java_lang_Long(t0, __bat529StaticCall_java_lang_Object_0('_logsJsonObserveWaitMs'))
     // remainingBudget bounds the loop even when the clock does not advance between pauses.
-    long remainingBudget = Math.max(0L, deadline - now())
+    long remainingBudget = Math.max(0L, deadline - __bat529StaticCall_long_0('now'))
     while (true) {
-        fresh = _logsJsonFreshSnapshot()
+        fresh = __bat529StaticCall_java_util_Map_0('_logsJsonFreshSnapshot')
         if (fresh != null) return [state: "ready", snapshot: fresh]
-        failure = _logsJsonRecentFetchError()
+        failure = __bat529StaticCall_java_util_Map_0('_logsJsonRecentFetchError')
         if (failure != null) return [state: "failed", error: failure.message]
-        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
+        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - __bat529StaticCall_long_0('now')))
         if (remaining <= 0L) return [state: "pending"]
         long sleepMs = Math.min(WORKER_POLL_MS, remaining)
         try {
-            pauseExecution(sleepMs as Long)
+            __bat529StaticCall_java_lang_Object_1('pauseExecution', sleepMs as Long)
         } catch (Exception waitErr) {
             // Not an ordinary timeout: name the exception so a scheduler fault does not hide
             // behind normal-looking in_progress traffic.
-            mcpLog("warn", "monitoring", "Snapshot wait interrupted (${waitErr.class.simpleName}): ${waitErr.message}")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "monitoring", "Snapshot wait interrupted (${waitErr.class.simpleName}): ${waitErr.message}")
             return [state: "pending"]
         }
         remainingBudget -= sleepMs
@@ -1178,10 +1198,11 @@ def _logsJsonSnapshot(Map args) {
 
 // The remainder envelope for a budgeted request whose fetch is still running. A modern client
 // continues it through requestState; a legacy client repeats the identical call.
+@groovy.transform.CompileStatic
 private Map _logsJsonInProgress(String tool) {
     return [
         status: "in_progress", tool: tool, retryable: true,
-        note: "The hub is still producing its Logs page payload (every device and app stat plus the job tables, which grows with hub size). Call ${tool} again with the same arguments; once the fetch finishes, its result is served from a ${(_logsJsonSnapshotTtlMs() / 1000L) as Long} s cache."
+        note: "The hub is still producing its Logs page payload (every device and app stat plus the job tables, which grows with hub size). Call ${tool} again with the same arguments; once the fetch finishes, its result is served from a ${(__bat529StaticCall_java_lang_Long_0('_logsJsonSnapshotTtlMs') / 1000L) as Long} s cache."
     ]
 }
 
@@ -1309,12 +1330,13 @@ private Map _cloudCallsSummary() {
     }
 }
 
+@groovy.transform.CompileStatic
 private Map _shapeCloudCalls(Map raw) {
-    def hoursByApp = [:]
-    ((raw.hours instanceof List ? raw.hours : [])).each(((this.&_bat529Cb_7399a956_38).curry([hoursByApp] as Object[])))
-    def apps = ((((raw.apps instanceof List ? raw.apps : [])).findAll((this.&_bat529Cb_7399a956_23))).collect(((this.&_bat529Cb_7399a956_41).curry([hoursByApp] as Object[])))).sort((this.&_bat529Cb_7399a956_43))
+    java.util.Map hoursByApp = [:]
+    __bat529StaticDgm_each_1_java_lang_Object(((raw.hours instanceof List ? raw.hours : [])), ((this.&_bat529Cb_7399a956_38).curry([hoursByApp] as Object[])))
+    def apps = (__bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_lang_Object(((raw.apps instanceof List ? raw.apps : [])), (this.&_bat529Cb_7399a956_23))), ((this.&_bat529Cb_7399a956_41).curry([hoursByApp] as Object[])))).sort((this.&_bat529Cb_7399a956_43))
     return [apps: apps, timeZone: raw.timeZone,
-            countingSince: raw.startedAt != null ? formatTimestamp(raw.startedAt as Long) : null,
+            countingSince: raw.startedAt != null ? __bat529StaticCall_java_lang_Object_1('formatTimestamp', raw.startedAt as Long) : null,
             note: "Calls each app made to Hubitat cloud services. hourly lists the newest hours first (at most 48 per app)."]
 }
 
@@ -1802,9 +1824,10 @@ def toolDeviceHealthCheck(args) {
     return result
 }
 
-def runPingChecks(List rawHosts, Integer count) {
-    def results = []
-    (rawHosts).each(((this.&_bat529Cb_7399a956_49).curry([count, results] as Object[])))
+@groovy.transform.CompileStatic
+java.util.List runPingChecks(List rawHosts, Integer count) {
+    java.util.List results = []
+    __bat529StaticDgm_each_1_java_util_List((rawHosts), ((this.&_bat529Cb_7399a956_49).curry([count, results] as Object[])))
     return results
 }
 
@@ -2206,9 +2229,10 @@ def toolCallZwave(args) {
 }
 
 // Shared result for the firmware-service and batch flashes: the hub answers {success, message}.
+@groovy.transform.CompileStatic
 private Map _zwFirmwareStartResult(String action, resp, nodeId) {
-    if (_radioRefused(resp, true)) {
-        return [success: false, target: "zwave", action: action, error: "The hub did not start the firmware update: ${_radioReason(resp)}",
+    if (__bat529StaticCall_boolean_2('_radioRefused', resp, true)) {
+        return [success: false, target: "zwave", action: action, error: "The hub did not start the firmware update: ${__bat529StaticCall_java_lang_String_1('_radioReason', resp)}",
                 note: "Firmware 2.5.2 refuses device firmware updates over Remote Admin, and batch updates need Z-Wave JS.", response: resp]
     }
     return [success: true, target: "zwave", action: action, nodeId: nodeId?.toString(),
@@ -2345,23 +2369,24 @@ private Map _zwNormalizeKeys(Map keys) {
 
 // hub_call_zigbee: non-idempotent Zigbee operations (radio reboot, network rebuild,
 // channel scan trigger).
-def toolCallZigbee(args) {
-    def action = args.action?.toString()
+@groovy.transform.CompileStatic
+java.util.Map toolCallZigbee(args) {
+    def action = __bat529StaticProperty_java_lang_Object(args, 'action')?.toString()
     if (!action) throw new IllegalArgumentException("action is required: radio_reboot, rebuild_network, or channel_scan.")
     try {
         def resp
         switch (action) {
             case "radio_reboot":
                 // Vue uses plain GET fetch for these Zigbee ops.
-                resp = _radioGet("/hub/rebootZigbeeRadio")
+                resp = __bat529StaticCall_java_lang_Object_1('_radioGet', "/hub/rebootZigbeeRadio")
                 return [success: true, action: action, message: "Zigbee radio reboot requested.",
                         note: "Verify with hub_get_radio_details(radio='zigbee', include_status=true).", response: resp]
             case "rebuild_network":
-                resp = _radioGet("/hub/rebuildZigbeeNetwork")
+                resp = __bat529StaticCall_java_lang_Object_1('_radioGet', "/hub/rebuildZigbeeNetwork")
                 return [success: true, action: action, message: "Zigbee network rebuild started.",
                         warning: "Rebuilding takes time; Zigbee devices may be briefly unresponsive.", response: resp]
             case "channel_scan":
-                resp = _radioGet("/hub/zigbeeChannelScan")
+                resp = __bat529StaticCall_java_lang_Object_1('_radioGet', "/hub/zigbeeChannelScan")
                 return [success: true, action: action, message: "Zigbee channel scan triggered.",
                         note: "Read results with hub_get_radio_details(include_channel_scan=true).", response: resp]
             default:
@@ -2370,7 +2395,7 @@ def toolCallZigbee(args) {
     } catch (IllegalArgumentException iae) {
         throw iae
     } catch (Exception e) {
-        mcpLogError("hub-admin", "hub_call_zigbee action '${action}' failed", e)
+        __bat529StaticCall_java_lang_Object_3('mcpLogError', "hub-admin", "hub_call_zigbee action '${action}' failed", e)
         return [success: false, action: action, error: "Zigbee action '${action}' failed: ${e.message}", note: "Check Hub Security credentials."]
     }
 }
@@ -2568,6 +2593,7 @@ def toolCallDestructiveOps(args) {
 
 // target=network: disconnect the hub's WiFi or Ethernet link. GET endpoints RE'd from
 // resources/hub2-source/vue-hub2.min.js. Confirm-gated by the caller; a structured error on failure.
+@groovy.transform.CompileStatic
 private _destructiveNetworkOp(String action) {
     def path
     switch (action) {
@@ -2579,21 +2605,22 @@ private _destructiveNetworkOp(String action) {
         // Fire-and-return GET: success == the GET returned 2xx. There is NO response-body inspection
         // or state read-back to confirm the link actually dropped, so the result reports the command
         // was accepted, not a verified disconnected state.
-        def resp = _radioGet(path)
-        mcpLog("warn", "hub-admin", "DESTRUCTIVE: hub ${action} via MCP")
+        def resp = __bat529StaticCall_java_lang_Object_1('_radioGet', path)
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "DESTRUCTIVE: hub ${action} via MCP")
         return [success: true, target: "network", action: action,
                 message: "Hub ${action == 'disconnect_wifi' ? 'WiFi' : 'Ethernet'} disconnect command accepted.",
                 warning: "The hub may become unreachable over the disconnected interface until it is reconnected.",
                 note: "Command accepted (HTTP 2xx); there is no read-back to confirm the link dropped.",
                 response: resp]
     } catch (Exception e) {
-        mcpLogError("hub-admin", "hub_call_destructive_ops network/${action} failed", e)
+        __bat529StaticCall_java_lang_Object_3('mcpLogError', "hub-admin", "hub_call_destructive_ops network/${action} failed", e)
         return [success: false, target: "network", action: action, error: "Network op '${action}' failed: ${e.message}", note: "The hub may already be unreachable over this interface. Check Hub Security credentials."]
     }
 }
 
 // target=cloud: disable or enable the hub's cloud controller. Disabling severs Alexa/Google, cloud
 // dashboards, firmware updates, and subscription features. GET endpoints RE'd from vue-hub2.min.js.
+@groovy.transform.CompileStatic
 private _destructiveCloudOp(String action) {
     def path
     switch (action) {
@@ -2605,8 +2632,8 @@ private _destructiveCloudOp(String action) {
         // Fire-and-return GET: success == the GET returned 2xx. There is NO response-body inspection
         // or state read-back to confirm the controller actually flipped, so the result reports the
         // command was accepted, not a verified enabled/disabled state.
-        def resp = _radioGet(path)
-        mcpLog("warn", "hub-admin", "DESTRUCTIVE: cloud controller ${action} via MCP")
+        def resp = __bat529StaticCall_java_lang_Object_1('_radioGet', path)
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "DESTRUCTIVE: cloud controller ${action} via MCP")
         def disabling = (action == "disable")
         return [success: true, target: "cloud", action: action,
                 message: "Hub cloud controller ${disabling ? 'disable' : 'enable'} command accepted.",
@@ -2616,16 +2643,17 @@ private _destructiveCloudOp(String action) {
                 note: "Command accepted (HTTP 2xx); there is no read-back to confirm the controller's new state.",
                 response: resp]
     } catch (Exception e) {
-        mcpLogError("hub-admin", "hub_call_destructive_ops cloud/${action} failed", e)
+        __bat529StaticCall_java_lang_Object_3('mcpLogError', "hub-admin", "hub_call_destructive_ops cloud/${action} failed", e)
         return [success: false, target: "cloud", action: action, error: "Cloud op '${action}' failed: ${e.message}", note: "Check Hub Security credentials."]
     }
 }
 
 // Get the user-configured max captured states limit (default: 20, minimum: 1)
+@groovy.transform.CompileStatic
 def getMaxCapturedStates() {
-    def max = settings.maxCapturedStates ?: 20
+    def max = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'maxCapturedStates') ?: 20
     // Ensure minimum of 1 to prevent infinite loops in cleanup logic
-    return max < 1 ? 1 : (max > 100 ? 100 : max)
+    return __bat529StaticBinary_Less_java_lang_Object(max, 1) ? 1 : (__bat529StaticBinary_Greater_java_lang_Object(max, 100) ? 100 : max)
 }
 
 private Map _captureStore() {
@@ -2639,54 +2667,58 @@ private Map _captureStore() {
     }
 }
 
+@groovy.transform.CompileStatic
 private void _resetCaptureStore() {
-    if (!app?.id) return
-    synchronized (CAPTURE_STORES) { CAPTURE_STORES.remove(app.id.toString()) }
+    if (!__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_app(), 'id')) return
+    synchronized (CAPTURE_STORES) { CAPTURE_STORES.remove(__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_app(), 'id').toString()) }
 }
 
+@groovy.transform.CompileStatic
 private Map _captureEntriesLocked(Map store) {
     if (!store.loaded) {
         // Import once per class lifetime; stale execution-local state must never
         // resurrect a snapshot deleted from the shared memory store.
         Map legacy = [:]
-        if (state.capturedDeviceStates instanceof Map) legacy.putAll(state.capturedDeviceStates)
-        if (atomicState.capturedDeviceStates instanceof Map) legacy.putAll(atomicState.capturedDeviceStates)
+        if (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'capturedDeviceStates') instanceof Map) __bat529StaticReceiverCall_java_lang_Object_1(legacy, 'putAll', __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'capturedDeviceStates'))
+        if (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_atomicState(), 'capturedDeviceStates') instanceof Map) __bat529StaticReceiverCall_java_lang_Object_1(legacy, 'putAll', __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_atomicState(), 'capturedDeviceStates'))
         Map entries = [:]
-        (legacy).each(((this.&_bat529Cb_7399a956_44).curry([entries] as Object[])))
+        __bat529StaticDgm_each_1_java_util_Map((legacy), ((this.&_bat529Cb_7399a956_44).curry([entries] as Object[])))
         store.entries = entries
         store.loaded = true
     }
     // Retry removal after a failed state write without importing stale values again.
-    if (atomicState.containsKey("capturedDeviceStates")) atomicState.remove("capturedDeviceStates")
-    if (state.containsKey("capturedDeviceStates")) state.remove("capturedDeviceStates")
-    return store.entries
+    if (__bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_atomicState(), 'containsKey', "capturedDeviceStates")) __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_atomicState(), 'remove', "capturedDeviceStates")
+    if (__bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_state(), 'containsKey', "capturedDeviceStates")) __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_state(), 'remove', "capturedDeviceStates")
+    return __bat529StaticProperty_java_util_Map(store, 'entries')
 }
 
+@groovy.transform.CompileStatic
 def countCapturedStates() {
-    if (!app?.id) return 0
-    Map store = _captureStore()
-    synchronized (store) { return _captureEntriesLocked(store).size() }
+    if (!__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_app(), 'id')) return 0
+    Map store = __bat529StaticCall_java_util_Map_0('_captureStore')
+    synchronized (store) { return __bat529StaticCall_java_util_Map_1('_captureEntriesLocked', store).size() }
 }
 
-def saveCapturedState(stateId, capturedStates) {
+@groovy.transform.CompileStatic
+java.util.Map saveCapturedState(stateId, capturedStates) {
     String id = stateId?.toString()
     if (id == null || (!(capturedStates instanceof Map) && !(capturedStates instanceof List))) {
         throw new IllegalArgumentException("A state ID and device map or list are required")
     }
     // JSON detaches caller-owned maps; readers receive their own parsed copy too.
     String text = groovy.json.JsonOutput.toJson(capturedStates)
-    Map store = _captureStore()
+    Map store = __bat529StaticCall_java_util_Map_0('_captureStore')
     synchronized (store) {
-        Map entries = _captureEntriesLocked(store)
-        entries.put(id, [text: text, timestamp: now(), deviceCount: capturedStates.size()])
+        Map entries = __bat529StaticCall_java_util_Map_1('_captureEntriesLocked', store)
+        entries.put(id, [text: text, timestamp: __bat529StaticCall_long_0('now'), deviceCount: __bat529StaticReceiverCall_java_lang_Object_0(capturedStates, 'size')])
         List deleted = []
-        int max = getMaxCapturedStates()
+        int max = __bat529StaticExpr_saveCapturedState_1()
         while (entries.size() > max) {
-            def oldest = ((entries).findAll(((this.&_bat529Cb_7399a956_9).curry([id] as Object[])))).min((this.&_bat529Cb_7399a956_24))
+            def oldest = (__bat529StaticDgm_findAll_1_java_util_Map((entries), ((this.&_bat529Cb_7399a956_9).curry([id] as Object[])))).min((this.&_bat529Cb_7399a956_24))
             deleted << oldest.key
             entries.remove(oldest.key)
         }
-        return [stateId: stateId, deviceCount: capturedStates.size(), totalStored: entries.size(),
+        return [stateId: stateId, deviceCount: __bat529StaticReceiverCall_java_lang_Object_0(capturedStates, 'size'), totalStored: entries.size(),
                 maxLimit: max, deletedStates: deleted, nearLimit: entries.size() >= max - 4]
     }
 }
@@ -2698,17 +2730,19 @@ def getCapturedState(stateId) {
     return text == null ? null : new groovy.json.JsonSlurper().parseText(text)
 }
 
+@groovy.transform.CompileStatic
 def listCapturedStates() {
-    Map store = _captureStore()
+    Map store = __bat529StaticCall_java_util_Map_0('_captureStore')
     synchronized (store) {
-        return ((_captureEntriesLocked(store).entrySet().toList()).sort((this.&_bat529Cb_7399a956_31))).collect((this.&_bat529Cb_7399a956_39))
+        return __bat529StaticDgm_collect_1_java_util_List(((__bat529StaticCall_java_util_Map_1('_captureEntriesLocked', store).entrySet().toList()).sort((this.&_bat529Cb_7399a956_31))), (this.&_bat529Cb_7399a956_39))
     }
 }
 
-def deleteCapturedState(stateId) {
-    Map store = _captureStore()
+@groovy.transform.CompileStatic
+java.util.Map deleteCapturedState(stateId) {
+    Map store = __bat529StaticCall_java_util_Map_0('_captureStore')
     synchronized (store) {
-        Map entries = _captureEntriesLocked(store)
+        Map entries = __bat529StaticCall_java_util_Map_1('_captureEntriesLocked', store)
         String id = stateId?.toString()
         if (!entries) return [success: false, message: "No captured states exist"]
         if (!entries.containsKey(id)) return [success: false, message: "Captured state '${stateId}' not found"]
@@ -2717,10 +2751,11 @@ def deleteCapturedState(stateId) {
     }
 }
 
-def clearAllCapturedStates() {
-    Map store = _captureStore()
+@groovy.transform.CompileStatic
+java.util.Map clearAllCapturedStates() {
+    Map store = __bat529StaticCall_java_util_Map_0('_captureStore')
     synchronized (store) {
-        Map entries = _captureEntriesLocked(store)
+        Map entries = __bat529StaticCall_java_util_Map_1('_captureEntriesLocked', store)
         int count = entries.size()
         entries.clear()
         return [success: true, message: "Cleared ${count} captured state(s)", cleared: count]
@@ -2755,47 +2790,54 @@ def toolListCapturedStates(args = null) {
 // hub_delete_captured_state: stateId present -> delete that one; omitted -> delete all
 // (no-ID = delete all, per the verb vocabulary). Accepts either an args map or a
 // raw stateId for backward-compatible internal calls.
-def toolDeleteCapturedState(args) {
+@groovy.transform.CompileStatic
+java.util.Map toolDeleteCapturedState(args) {
     def stateId = (args instanceof Map) ? args.stateId : args
-    return stateId ? deleteCapturedState(stateId) : clearAllCapturedStates()
+    return stateId ? __bat529StaticCall_java_util_Map_1('deleteCapturedState', stateId) : __bat529StaticCall_java_util_Map_0('clearAllCapturedStates')
 }
 
 def _getAllToolDefinitions_partDiagnostics() {
     return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_logs"],["description","Read log history and MCP logging status. mode=\'hub\' (default) returns native hub logs; mode=\'mcp\' returns structured MCP entries with component/rule filters; mode=\'status\' returns MCP log level, counts, and capacity.[[FLAT_TRIM]] MCP history recovers from native Past Logs after reload; retention follows the hub\'s shared log limit.[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["mode",["m",[["type","string"],["enum",["l",["hub","mcp","status"]]],["default","hub"],["description","hub = native app/device logs; mcp = structured MCP history; status = MCP logging configuration and counts."]]]],["component",["m",[["type","string"],["description","MCP mode: component substring filter (for example server or rule)."]]]],["ruleId",["m",[["type","string"],["description","MCP mode: filter by custom rule ID."]]]],["level",["m",[["type","string"],["description","Filter by log level. Default: all levels."],["enum",["l",["trace","debug","info","warn","error","all"]]]]]],["source",["m",[["type","string"],["description","Hub mode: Filter by source/app name (case-insensitive substring match against the log entry)"]]]],["deviceId",["m",[["type","string"],["description","Hub mode: Filter hub-wide history by numeric device ID, regardless of device selection or bypass (mutually exclusive with appId)."]]]],["appId",["m",[["type","string"],["description","Hub mode: Scope to a single app\'s log entries (server-side filter, mutually exclusive with deviceId)"]]]],["limit",["m",[["type","integer"],["description","Max entries: hub default 100/max 500; MCP default 50/max 100."]]]],["pattern",["m",[["type","string"],["description","Hub mode: Case-insensitive regex applied to the log message field only.[[FLAT_TRIM]] Use source for app/device-name substring matching.[[/FLAT_TRIM]]"]]]],["patterns",["m",[["type","array"],["items",["m",[["type","string"]]]],["description","Hub mode: Multiple regex patterns; combine via patternMode. Same matching rules and caveats as `pattern`."]]]],["patternMode",["m",[["type","string"],["description","Hub mode: How patterns array is combined: \'any\' (default) = OR; \'all\' = AND."],["enum",["l",["any","all"]]]]]],["since",["m",[["type","string"],["description","Hub mode: Return only entries at or after this time; ISO-8601 or relative offset like \'2h\'.[[FLAT_TRIM]] Full forms: ISO-8601 timestamp (e.g. \'2024-01-15T10:30:00Z\') or relative \'30m\'/\'2h\'/\'1d\'/\'7d\'; max relative offset 30d.[[/FLAT_TRIM]][[FLAT_TRIM]] Timestamps without a TZ marker (e.g. \'2024-01-15T10:30:00\' or \'2024-01-15 10:30:00.000\') are parsed as UTC. Use \'0m\' / \'0d\' as a degenerate since to filter out everything older than now -- useful for testing harnesses but rarely otherwise.[[/FLAT_TRIM]]"]]]],["until",["m",[["type","string"],["description","Hub mode: Return only entries at or before this time. Same format as since. Default: now (no upper bound)."]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor.[[FLAT_TRIM]] Pass \\"\\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_get_performance_stats"],["description","Get device and/or app performance stats from the hub\'s logs page.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["description","Which stats to return. Default: device."],["enum",["l",["device","app","both"]]],["default","device"]]]],["sortBy",["m",[["type","string"],["description","Sort results by field. Default: pct (% busy)."],["enum",["l",["pct","count","stateSize","totalMs","name"]]],["default","pct"]]]],["limit",["m",[["type","integer"],["description","Max entries to return. Default: 20, 0 for all."],["default",20]]]],["includeCloudCalls",["m",[["type","boolean"],["description","[[FLAT_TRIM]]Also return per-app cloud-call counts under cloudCalls. Default false.[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_get_jobs"],["description","Get scheduled jobs, running jobs, and hub actions from the hub\'s logs page.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opaque pagination cursor for scheduledJobs. Omit for the full list; pass \'\' for the first page of 100, then the returned nextCursor. runningJobs and hubActions stay in full on every page. Pages read a snapshot cached for 30 s, so a traversal that takes longer is best-effort."]]]]]]]]]]]],["m",[["name","hub_get_metrics"],["description","Retrieve hub metrics (memory, temp, DB size) with CSV trend history. Trend history is sparse/stale[[FLAT_TRIM]] \\u2014 the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls[[/FLAT_TRIM]].[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["recordSnapshot",["m",[["type","boolean"],["description","If true, also append this snapshot to the performance-history CSV in the hub File Manager \\u2014 the tool\'s only write side-effect. Default: false (read-only)."],["default",false]]]],["trendPoints",["m",[["type","integer"],["description","Number of recent historical data points to include. Default: 10, max: 50."],["default",10]]]]]]]]]]]],["m",[["name","hub_get_memory_history"],["description","Get the hub\'s free-memory and CPU-load history (the platform\'s own timestamped ring buffer[[FLAT_TRIM]], each entry with freeMemoryKB and cpuLoad5min[[/FLAT_TRIM]]). Use to diagnose memory leaks or load trends over time.[[FLAT_TRIM]] For a single current snapshot plus temp/DB-size, use hub_get_metrics instead.[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["limit",["m",[["type","integer"],["description","Max entries to return (most recent); 0 for all.[[FLAT_TRIM]] Hub may have thousands of entries.[[/FLAT_TRIM]]"],["default",100]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor.[[FLAT_TRIM]] Pages within the limit-filtered entries. Pass \\"\\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_get_device_health"],["description","Hub network diagnostics + device-staleness checks. Checks selected devices and MCP-managed children, or all hub devices when allowlist bypass is enabled, for no activity in staleHours."],["inputSchema",["m",[["type","object"],["properties",["m",[["staleHours",["m",[["type","integer"],["description","Flag devices with no activity in this many hours. Default: 24."],["default",24]]]],["includeHealthy",["m",[["type","boolean"],["description","Include healthy devices in the response (can be large). Default: false."],["default",false]]]],["pingHosts",["m",[["type","array"],["items",["m",[["type","string"]]]],["description","Optional IPv4 addresses to ICMP-ping (max 5 per call)."]]]],["pingCount",["m",[["type","integer"],["description","Packets to send per host (1-5). Default: 3."],["default",3]]]],["tracerouteHost",["m",[["type","string"],["description","Optional single IPv4 dotted-quad host (e.g. \'8.8.8.8\') to traceroute; plain-text route table returned under traceroute.output."]]]],["speedtest",["m",[["type","boolean"],["description","If true, run the hub\'s WAN download speedtest; plain-text wget log with the measured speed returned under speedtest.output. Default: false."]]]],["identifyHub",["m",[["type","boolean"],["description","Blink hub LED to identify hub. Default: false."],["default",false]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor for the staleDevices array.[[FLAT_TRIM]] Omit to get all stale devices in one response (subject to the universal response-size guard). Pass nextCursor from a prior call to fetch the next page (page size 100). unknownDevices and healthyDevices are always returned in full alongside the page.[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_get_radio_details"],["description","Get Z-Wave/Zigbee/Matter radio info and the read-only radio surface. The include_* flags and node_id attach extra read blocks.[[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["radio",["m",[["type","string"],["enum",["l",["zwave","zigbee","matter"]]],["description","Which radio to query. Omit for both Z-Wave and Zigbee; \'matter\' for the Matter fabric.[[FLAT_TRIM]] With radio=\'matter\' it also returns the commissioned-device list and the Wi-Fi network the hub gives Matter devices when pairing (never the password).[[/FLAT_TRIM]]"]]]],["include_topology",["m",[["type","boolean"],["description","Also include the mesh route/topology map. Z-Wave/Zigbee only. Default false."]]]],["node_id",["m",[["type","string"],["description","Per-node status for this id (Z-Wave, or Matter commissioning with radio=\'matter\').[[FLAT_TRIM]] On Z-Wave JS it adds the interview details and link-test status.[[/FLAT_TRIM]]"]]]],["include_status",["m",[["type","boolean"],["description","Attach lifecycle status pollers under result.status. Default false.[[FLAT_TRIM]] Repair, join, exclude, antenna test, node replace, Zigbee, Z-Wave JS readiness, Z-Wave local backup, batch firmware.[[/FLAT_TRIM]]"]]]],["include_logs",["m",[["type","boolean"],["description","Matter chip-tool logs under result.matterLogs.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"]]]],["include_channel_scan",["m",[["type","boolean"],["description","Zigbee channel-scan results under result.channelScan.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"]]]],["include_smartstart",["m",[["type","boolean"],["description","Z-Wave SmartStart list under result.smartStart.[[FLAT_TRIM]] Default false.[[/FLAT_TRIM]]"]]]],["include_firmware",["m",[["type","boolean"],["description","Attach firmware-eligible Z-Wave devices + files under result.firmware. Default false.[[FLAT_TRIM]] With node_id also that node\'s targets, offered updates (updateId), progress, and batch candidates.[[/FLAT_TRIM]]"]]]],["include_devices",["m",[["type","boolean"],["description","[[FLAT_TRIM]]Attach Zigbee devices with their last-message time under result.zigbeeDevices. Default false.[[/FLAT_TRIM]]"]]]],["backup_job_id",["m",[["type","string"],["description","[[FLAT_TRIM]]Z-Wave backup/import/restore job id to read under result.zwaveBackupJob.[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_call_gc"],["description","Force JVM garbage collection to reclaim memory. Non-destructive but may cause a brief pause.[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[]]]]]]]],["m",[["name","hub_set_zwave"],["description","Configure the Z-Wave radio[[FLAT_TRIM]]: enable/disable it, set region and long-range channel, or switch between the legacy and Z-Wave JS stacks (reboots the hub)[[/FLAT_TRIM]]. Read current values with hub_get_radio_details(radio=\'zwave\').[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["enabled",["m",[["type","boolean"],["description","Enable (true) or disable (false) the Z-Wave radio."]]]],["region",["m",[["type","string"],["description","Z-Wave RF region (e.g. \'US\', \'EU\'). Must match a region your hub hardware supports."]]]],["long_range_channel",["m",[["type","integer"],["enum",["l",[0,1,255]]],["description","Z-Wave Long Range channel: 255=Auto, 0=Channel A, 1=Channel B (US_LR hubs)."]]]],["zwave_js",["m",[["type","boolean"],["description","true=Z-Wave JS, false=legacy stack. REBOOTS the hub.[[FLAT_TRIM]] Send alone with confirm=true.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","Required true to DISABLE the radio or switch the stack (backup <24h also enforced)."]]]]]]]]]]]],["m",[["name","hub_set_zigbee"],["description","Configure the Zigbee radio (idempotent)[[FLAT_TRIM]]: enable/disable, channel + power, radio settings (rebuild-on-reboot / inactive-device ping), or per-device keep-alive ping[[/FLAT_TRIM]]. One operation per call. Read current values with hub_get_radio_details(radio=\'zigbee\').[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["enabled",["m",[["type","boolean"],["description","Enable (true) or disable (false) the Zigbee radio. Disable requires confirm=true."]]]],["channel",["m",[["description","Zigbee channel (typically 11-26). Set together with power_level."]]]],["power_level",["m",[["description","Zigbee transmit power level (hub-dependent dBm scale). Set together with channel."]]]],["rebuild_on_reboot",["m",[["type","boolean"],["description","Radio setting: rebuild the Zigbee network on each hub reboot."]]]],["ping_inactive",["m",[["type","boolean"],["description","Radio setting: keep-alive ping inactive Zigbee devices."]]]],["ping_device",["m",[["type","object"],["description","Toggle keep-alive ping for one authorized device: {device_id: numeric Hubitat device ID, enabled}. Allowlist bypass permits unselected devices."]]]],["confirm",["m",[["type","boolean"],["description","Required true to DISABLE the radio (backup <24h also enforced). Not needed for the other changes."]]]]]]]]]]]],["m",[["name","hub_call_zwave"],["description","Z-Wave network lifecycle operations (NOT idempotent)[[FLAT_TRIM]]: repair, device inclusion (join + S2 grants), exclusion, per-node maintenance, node replace/remove, antenna test, SmartStart delete; on Z-Wave JS also re-interview, link reliability test, raw command-class commands, and Z-Wave network backup/import[[/FLAT_TRIM]]. Pick the operation with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["action",["m",[["type","string"],["enum",["l",["repair_start","repair_cancel","repair_node","inclusion_start","inclusion_stop","grant_keys","grant_code","exclusion_start","exclusion_stop","node_refresh","node_rediscover","node_reinitialize","refresh_stats","node_replace","node_replace_stop","node_remove","antenna_test_start","antenna_test_continue","smartstart_delete","reinterview","link_test_start","link_test_stop","cc_command","local_backup_create","local_backup_download","local_backup_import","local_backup_keys"]]],["description","The Z-Wave operation.[[FLAT_TRIM]] reinterview, link_test_*, cc_command and local_backup_* need the Z-Wave JS stack.[[/FLAT_TRIM]]"]]]],["node_id",["m",[["type","string"],["description","Z-Wave node id for the per-node actions."]]]],["security_keys",["m",[["type","object"],["description","grant_keys: S2 grant booleans; local_backup_keys: the network keys as hex.[[FLAT_TRIM]] grant_keys e.g. {S2Authenticated:true}; local_backup_keys {S0_Legacy, S2_Unauthenticated, S2_Authenticated, S2_AccessControl, long_range: {S2_Authenticated, S2_AccessControl}}.[[/FLAT_TRIM]]"]]]],["security_code",["m",[["type","object"],["description","grant_code only: S2 DSK, e.g. {accept:true, securityCode:\'12345\'}."]]]],["node_dsk",["m",[["type","string"],["description","smartstart_delete only: the DSK from hub_get_radio_details(include_smartstart=true)."]]]],["backup_url",["m",[["type","string"],["description","[[FLAT_TRIM]]local_backup_import: http(s) URL of the backup (8 MB max).[[/FLAT_TRIM]]"]]]],["link_test",["m",[["type","object"],["description","[[FLAT_TRIM]]link_test_start (confirm=true): {rounds? (10), interval_ms? (1000)}.[[/FLAT_TRIM]]"]]]],["cc",["m",[["type","object"],["description","[[FLAT_TRIM]]cc_command: {command_class (decimal or 0x hex), method_name, endpoint?, args?}.[[/FLAT_TRIM]]"]]]],["job_id",["m",[["type","string"],["description","[[FLAT_TRIM]]local_backup_download: the jobId from local_backup_create.[[/FLAT_TRIM]]"]]]],["import_id",["m",[["type","string"],["description","[[FLAT_TRIM]]local_backup_keys: the importId from local_backup_import.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","Required true for exclusion_start, node_remove, link_test_start, cc_command, local_backup_download, local_backup_import.[[FLAT_TRIM]] A hub backup <24h is also enforced.[[/FLAT_TRIM]]"]]]]]]],["required",["l",["action"]]]]]]]],["m",[["name","hub_call_zigbee"],["description","Zigbee radio operations (NOT idempotent); select with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["action",["m",[["type","string"],["enum",["l",["radio_reboot","rebuild_network","channel_scan"]]],["description","radio_reboot (restart the Zigbee chip), rebuild_network (rebuild the mesh), or channel_scan (trigger an energy scan)."]]]]]]],["required",["l",["action"]]]]]]]],["m",[["name","hub_call_matter"],["description","Matter radio operations (NOT idempotent); select with action.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["action",["m",[["type","string"],["enum",["l",["enable","disable","pair","cancel_pair","open_pairing_window"]]],["description","The Matter operation.[[FLAT_TRIM]] enable/disable (needs a hub reboot), pair by setup_code, cancel_pair, open_pairing_window to share a commissioned node.[[/FLAT_TRIM]]"]]]],["setup_code",["m",[["type","string"],["description","pair only: the 11- or 21-digit Matter setup code, or the MT: QR payload."]]]],["wifi_ssid",["m",[["type","string"],["description","[[FLAT_TRIM]]pair: Wi-Fi SSID (default: the hub\'s selected network). Thread devices ignore it; the stored network is in hub_get_radio_details(radio=\'matter\') wifiCredentials.[[/FLAT_TRIM]]"]]]],["wifi_password",["m",[["type","string"],["description","[[FLAT_TRIM]]pair: Wi-Fi password; omit only for the network the hub stores a password for.[[/FLAT_TRIM]]"]]]],["node_id",["m",[["type","string"],["description","Node id (open_pairing_window, cancel_pair)."]]]],["confirm",["m",[["type","boolean"],["description","Required true to disable Matter (backup <24h also enforced)."]]]]]]],["required",["l",["action"]]]]]]]],["m",[["name","hub_call_destructive_ops"],["description","\\u26a0\\ufe0f DESTRUCTIVE hub ops by `target` + `action` (no defaults \\u2014 both required): radio WIPE/FIRMWARE, network DISCONNECT, or cloud DISABLE.\\n\\nPRE-FLIGHT: 1) Backup <24h old 2) Tell the user what is affected (irreversible / can brick / disconnects) 3) Get explicit confirmation 4) Set confirm=true.\\nRequires Write master."],["inputSchema",["m",[["type","object"],["properties",["m",[["target",["m",[["type","string"],["enum",["l",["zwave","zigbee","matter","network","cloud"]]],["description","REQUIRED: what to act on."]]]],["action",["m",[["type","string"],["enum",["l",["reset","device_firmware_start","device_firmware_start_available","device_firmware_batch_start","device_firmware_batch_start_available","device_firmware_batch_abort","device_firmware_abort","local_backup_restore","zwave_chip_firmware","zigbee_firmware","disconnect_wifi","disconnect_ethernet","disable","enable"]]],["description","REQUIRED: depends on target."]]]],["node_id",["m",[["description","Z-Wave node id."]]]],["file_name",["m",[["type","string"],["description","Firmware file name (device_firmware_start, batch_start)."]]]],["target_index",["m",[["description","Optional Z-Wave firmware target index."]]]],["update_id",["m",[["description","[[FLAT_TRIM]]*_start_available: updateId from firmware.node.available.[[/FLAT_TRIM]]"]]]],["batch",["m",[["type","object"],["description","[[FLAT_TRIM]]Batch actions: {node_ids, inactivity_timeout_seconds? (600)}.[[/FLAT_TRIM]]"]]]],["import_id",["m",[["type","string"],["description","[[FLAT_TRIM]]local_backup_restore: importId.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true.[[FLAT_TRIM]] Confirms backup was created and the user approved this destructive op.[[/FLAT_TRIM]]"]]]]]]],["required",["l",["target","action","confirm"]]]]]]]],["m",[["name","hub_list_captured_states"],["description","List temporary device-state snapshots used by the legacy custom rule engine. Captures are held only in memory and are lost on hub restart or app code reload."],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor.[[FLAT_TRIM]] Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_delete_captured_state"],["description","Delete a saved device-state snapshot by its stateId, OR delete ALL captured states when stateId is omitted (get stateIds from hub_list_captured_states). Cannot be undone; use the delete-all mode with caution."],["inputSchema",["m",[["type","object"],["properties",["m",[["stateId",["m",[["type","string"],["description","The ID of the captured state to delete. Omit to delete ALL captured states."]]]]]]]]]]]]]]'])
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partDiagnostics() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_list_captured_states","hub_get_logs","hub_get_performance_stats","hub_get_jobs","hub_get_memory_history","hub_get_radio_details","hub_get_metrics","hub_get_device_health"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_list_captured_states","hub_get_logs","hub_get_performance_stats","hub_get_jobs","hub_get_memory_history","hub_get_radio_details","hub_get_metrics","hub_get_device_health"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partDiagnostics() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_delete_captured_state","hub_set_zwave","hub_set_zigbee"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_delete_captured_state","hub_set_zwave","hub_set_zigbee"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _openWorldToolNames_partDiagnostics() {
     // Tools in this library that reach BEYOND the hub to the open internet (MCP
     // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_get_device_health","hub_call_zwave"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_get_device_health","hub_call_zwave"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partDiagnostics() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_logs",["m",[["title","Get Logs"],["summary","Hub log history, structured MCP history, or MCP logging status."]]]],["hub_get_performance_stats",["m",[["title","Get Performance Stats"],["summary","Device and app performance statistics, optionally with per-app cloud-call counts."]]]],["hub_get_jobs",["m",[["title","Get Scheduled Jobs"],["summary","Scheduled jobs, running jobs, and hub actions."]]]],["hub_get_metrics",["m",[["title","Get Hub Metrics"],["summary","Hub metrics with CSV trend history."]]]],["hub_get_memory_history",["m",[["title","Get Memory History"],["summary","Free-memory and CPU-load history with summary stats."]]]],["hub_call_gc",["m",[["title","Force Garbage Collection"],["summary","Force JVM garbage collection and report freed memory."]]]],["hub_get_device_health",["m",[["title","Get Device Health"],["summary","Find stale devices, ICMP-ping LAN hosts, run traceroute/WAN speedtest, and optionally blink the hub identify LED."]]]],["hub_get_radio_details",["m",[["title","Get Radio Details"],["summary","Radio details, topology, node state, status, channel scan, SmartStart, firmware, Zigbee activity, Z-Wave backup jobs."]]]],["hub_set_zwave",["m",[["title","Set Z-Wave Radio"],["summary","Enable/disable the Z-Wave radio, set region and long-range channel, or switch to or from Z-Wave JS."]]]],["hub_set_zigbee",["m",[["title","Set Zigbee Radio"],["summary","Enable/disable the radio, set channel/power, radio settings (rebuild-on-reboot, ping-inactive), or per-device keep-alive ping."]]]],["hub_call_zwave",["m",[["title","Z-Wave Operations"],["summary","Z-Wave repair, inclusion, exclusion, node maintenance, link tests, CC commands, and Z-Wave network backup."]]]],["hub_call_zigbee",["m",[["title","Zigbee Operations"],["summary","Reboot the Zigbee radio, rebuild the network, or trigger a channel scan."]]]],["hub_call_matter",["m",[["title","Matter Operations"],["summary","Enable/disable Matter, pair or cancel pairing a device by setup code, or open a pairing window."]]]],["hub_call_destructive_ops",["m",[["title","Destructive Hub Ops"],["summary","Reset a radio, flash firmware, disconnect WiFi/Ethernet, or disable the cloud controller (irreversible)."]]]],["hub_list_captured_states",["m",[["title","List Captured States"],["summary","List saved device state snapshots."]]]],["hub_delete_captured_state",["m",[["title","Delete Captured State"],["summary","Delete one or all captured device state snapshots."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_get_logs",["m",[["title","Get Logs"],["summary","Hub log history, structured MCP history, or MCP logging status."]]]],["hub_get_performance_stats",["m",[["title","Get Performance Stats"],["summary","Device and app performance statistics, optionally with per-app cloud-call counts."]]]],["hub_get_jobs",["m",[["title","Get Scheduled Jobs"],["summary","Scheduled jobs, running jobs, and hub actions."]]]],["hub_get_metrics",["m",[["title","Get Hub Metrics"],["summary","Hub metrics with CSV trend history."]]]],["hub_get_memory_history",["m",[["title","Get Memory History"],["summary","Free-memory and CPU-load history with summary stats."]]]],["hub_call_gc",["m",[["title","Force Garbage Collection"],["summary","Force JVM garbage collection and report freed memory."]]]],["hub_get_device_health",["m",[["title","Get Device Health"],["summary","Find stale devices, ICMP-ping LAN hosts, run traceroute/WAN speedtest, and optionally blink the hub identify LED."]]]],["hub_get_radio_details",["m",[["title","Get Radio Details"],["summary","Radio details, topology, node state, status, channel scan, SmartStart, firmware, Zigbee activity, Z-Wave backup jobs."]]]],["hub_set_zwave",["m",[["title","Set Z-Wave Radio"],["summary","Enable/disable the Z-Wave radio, set region and long-range channel, or switch to or from Z-Wave JS."]]]],["hub_set_zigbee",["m",[["title","Set Zigbee Radio"],["summary","Enable/disable the radio, set channel/power, radio settings (rebuild-on-reboot, ping-inactive), or per-device keep-alive ping."]]]],["hub_call_zwave",["m",[["title","Z-Wave Operations"],["summary","Z-Wave repair, inclusion, exclusion, node maintenance, link tests, CC commands, and Z-Wave network backup."]]]],["hub_call_zigbee",["m",[["title","Zigbee Operations"],["summary","Reboot the Zigbee radio, rebuild the network, or trigger a channel scan."]]]],["hub_call_matter",["m",[["title","Matter Operations"],["summary","Enable/disable Matter, pair or cancel pairing a device by setup code, or open a pairing window."]]]],["hub_call_destructive_ops",["m",[["title","Destructive Hub Ops"],["summary","Reset a radio, flash firmware, disconnect WiFi/Ethernet, or disable the cloud controller (irreversible)."]]]],["hub_list_captured_states",["m",[["title","List Captured States"],["summary","List saved device state snapshots."]]]],["hub_delete_captured_state",["m",[["title","Delete Captured State"],["summary","Delete one or all captured device state snapshots."]]]]]]'])
 }
 
 
-def _bat529Cb_7399a956_1(def it) { it.value.at 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_1(def it) { __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(it, 'value'), 'at') 
 }
 
 def _bat529Cb_7399a956_2(def it) { -(it.pct ?: 0) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_7399a956_3(def it) { !(it instanceof Map) 
 }
 
@@ -2808,6 +2850,7 @@ def _bat529Cb_7399a956_5(def it) { -(it.count ?: 0)
 def _bat529Cb_7399a956_6(def k, def v) { v != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_7399a956_7(def known, def it) { !(it in known) 
 }
 
@@ -2817,16 +2860,19 @@ def _bat529Cb_7399a956_8(def it) { -(it.stateSize ?: 0)
 def _bat529Cb_7399a956_9(def id, def key, def row) { key != id 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_7399a956_10(def it) { it instanceof Map 
 }
 
-def _bat529Cb_7399a956_11(def it) { it.directJavaKB != null 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_11(def it) { __bat529StaticProperty_java_lang_Object(it, 'directJavaKB') != null 
 }
 
 def _bat529Cb_7399a956_12(def msg, def it) { it.matcher(msg).find() 
 }
 
-def _bat529Cb_7399a956_13(def it) { (it.name ?: "").toLowerCase() 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_13(def it) { __bat529StaticReceiverCall_java_lang_Object_0((__bat529StaticProperty_java_lang_Object(it, 'name') ?: ""), 'toLowerCase') 
 }
 
 def _bat529Cb_7399a956_14(def msg, def it) { it.matcher(msg).find() 
@@ -2835,52 +2881,64 @@ def _bat529Cb_7399a956_14(def msg, def it) { it.matcher(msg).find()
 def _bat529Cb_7399a956_15(def it) { it.message = it.message?.take(200) 
 }
 
-def _bat529Cb_7399a956_16(def it) { it.id.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_16(def it) { __bat529StaticProperty_java_lang_Object(it, 'id').toString() 
 }
 
-def _bat529Cb_7399a956_17(def it) { _zwNodeNumber(it.toString()) 
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_7399a956_17(def it) { __bat529StaticCall_java_lang_Integer_1('_zwNodeNumber', it.toString()) 
 }
 
 def _bat529Cb_7399a956_18(def k, def v) { k != "long_range" 
 }
 
-def _bat529Cb_7399a956_19(def it) { _isBenignRmInternalNoise(it.message) 
+@groovy.transform.CompileStatic
+boolean _bat529Cb_7399a956_19(def it) { __bat529StaticCall_boolean_1('_isBenignRmInternalNoise', __bat529StaticProperty_java_lang_Object(it, 'message')) 
 }
 
-def _bat529Cb_7399a956_20(def it) { it.id.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_20(def it) { __bat529StaticProperty_java_lang_Object(it, 'id').toString() 
 }
 
 def _bat529Cb_7399a956_21(def a, def b) { (b.hoursAgo ?: 0) <=> (a.hoursAgo ?: 0) 
 }
 
-def _bat529Cb_7399a956_22(def it) { -(it.epoch as long) 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_22(def it) { -(__bat529StaticProperty_java_lang_Object(it, 'epoch') as long) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_7399a956_23(def it) { it instanceof Map 
 }
 
-def _bat529Cb_7399a956_24(def it) { it.value.timestamp ?: 0 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_24(def it) { __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(it, 'value'), 'timestamp') ?: 0 
 }
 
-def _bat529Cb_7399a956_25(def it) { !it.contains("Z") && !it.contains("'Z'") 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_25(def it) { !__bat529StaticReceiverCall_java_lang_Object_1(it, 'contains', "Z") && !__bat529StaticReceiverCall_java_lang_Object_1(it, 'contains', "'Z'") 
 }
 
-def _bat529Cb_7399a956_26(def it) { it.directJavaKB 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_26(def it) { __bat529StaticProperty_java_lang_Object(it, 'directJavaKB') 
 }
 
 def _bat529Cb_7399a956_27(def it) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 
 }
 
-def _bat529Cb_7399a956_28(def it) { it.id.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_28(def it) { __bat529StaticProperty_java_lang_Object(it, 'id').toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_7399a956_29(def byId, def id) {
-        if (!byId.containsKey(id)) byId.put(id, [id: id, metadataUnavailable: true])
+        if (!__bat529StaticReceiverCall_java_lang_Object_1(byId, 'containsKey', id)) __bat529StaticReceiverCall_java_lang_Object_2(byId, 'put', id, [id: id, metadataUnavailable: true])
     
 }
 
-def _bat529Cb_7399a956_30(def job) {
-            [id: job.id, name: job.name, method: job.methodName]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_7399a956_30(def job) {
+            [id: __bat529StaticProperty_java_lang_Object(job, 'id'), name: __bat529StaticProperty_java_lang_Object(job, 'name'), method: __bat529StaticProperty_java_lang_Object(job, 'methodName')]
         
 }
 
@@ -2894,12 +2952,14 @@ def _bat529Cb_7399a956_32(def k, def v) {
             
 }
 
-def _bat529Cb_7399a956_33(def job) {
-            [id: job.id, name: job.name, recurring: job.recurring, method: job.methodName, nextRun: job.nextRun]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_7399a956_33(def job) {
+            [id: __bat529StaticProperty_java_lang_Object(job, 'id'), name: __bat529StaticProperty_java_lang_Object(job, 'name'), recurring: __bat529StaticProperty_java_lang_Object(job, 'recurring'), method: __bat529StaticProperty_java_lang_Object(job, 'methodName'), nextRun: __bat529StaticProperty_java_lang_Object(job, 'nextRun')]
         
 }
 
-def _bat529Cb_7399a956_34(def it) { [hourStart: formatTimestamp(it.epoch as Long), count: it.count] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_7399a956_34(def it) { [hourStart: __bat529StaticCall_java_lang_Object_1('formatTimestamp', __bat529StaticProperty_java_lang_Object(it, 'epoch') as Long), count: __bat529StaticProperty_java_lang_Object(it, 'count')] 
 }
 
 def _bat529Cb_7399a956_35(def utcParser) {
@@ -2918,11 +2978,12 @@ def _bat529Cb_7399a956_36(def hubLogUtcTz, def fmt) {
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_7399a956_37(def allowedIds, def byId, def bypass, def record) {
-        String id = record.id.toString()
-        if (bypass || allowedIds.contains(id)) {
-            byId.put(id, [id: id, label: record.label, lastActivity: record.lastActivity,
-                metadataUnavailable: !record.containsKey('lastActivity')])
+        String id = __bat529StaticProperty_java_lang_Object(record, 'id').toString()
+        if (bypass || __bat529StaticReceiverCall_java_lang_Object_1(allowedIds, 'contains', id)) {
+            __bat529StaticReceiverCall_java_lang_Object_2(byId, 'put', id, [id: id, label: __bat529StaticProperty_java_lang_Object(record, 'label'), lastActivity: __bat529StaticProperty_java_lang_Object(record, 'lastActivity'),
+                metadataUnavailable: !__bat529StaticReceiverCall_java_lang_Object_1(record, 'containsKey', 'lastActivity')])
         }
     
 }
@@ -2935,17 +2996,19 @@ def _bat529Cb_7399a956_38(def hoursByApp, def h) {
     
 }
 
-def _bat529Cb_7399a956_39(def item) {
-            [stateId: item.key, deviceCount: item.value.deviceCount, timestamp: item.value.timestamp,
-             capturedAt: formatTimestamp(item.value.timestamp)]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_7399a956_39(def item) {
+            [stateId: __bat529StaticProperty_java_lang_Object(item, 'key'), deviceCount: __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(item, 'value'), 'deviceCount'), timestamp: __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(item, 'value'), 'timestamp'),
+             capturedAt: __bat529StaticCall_java_lang_Object_1('formatTimestamp', __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(item, 'value'), 'timestamp'))]
         
 }
 
-def _bat529Cb_7399a956_40(def nowMs, def d) {
-        Long last = (d.lastMessage instanceof Number) ? (d.lastMessage as Long) : null
-        [id: d.id, name: d.name, zigbeeId: d.zigbeeId,
-         lastMessage: last != null ? formatTimestamp(last) : null,
-         minutesSinceLastMessage: last != null ? (long) ((nowMs - last) / 60000L) : null]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_7399a956_40(def nowMs, def d) {
+        Long last = (__bat529StaticProperty_java_lang_Object(d, 'lastMessage') instanceof Number) ? (__bat529StaticProperty_java_lang_Object(d, 'lastMessage') as Long) : null
+        [id: __bat529StaticProperty_java_lang_Object(d, 'id'), name: __bat529StaticProperty_java_lang_Object(d, 'name'), zigbeeId: __bat529StaticProperty_java_lang_Object(d, 'zigbeeId'),
+         lastMessage: last != null ? __bat529StaticCall_java_lang_Object_1('formatTimestamp', last) : null,
+         minutesSinceLastMessage: last != null ? __bat529StaticExpr__bat529Cb_7399a956_40_6(last, nowMs) : null]
     
 }
 
@@ -2956,10 +3019,12 @@ def _bat529Cb_7399a956_41(def hoursByApp, def a) {
     
 }
 
-def _bat529Cb_7399a956_42(def it) { it.minutesSinceLastMessage == null ? Long.MIN_VALUE : -(it.minutesSinceLastMessage as long) 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_42(def it) { __bat529StaticProperty_java_lang_Object(it, 'minutesSinceLastMessage') == null ? Long.MIN_VALUE : -(__bat529StaticProperty_java_lang_Object(it, 'minutesSinceLastMessage') as long) 
 }
 
-def _bat529Cb_7399a956_43(def it) { -((it.total ?: 0) as long) 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_43(def it) { -((__bat529StaticProperty_java_lang_Object(it, 'total') ?: 0) as long) 
 }
 
 def _bat529Cb_7399a956_44(def entries, def id, def raw) {
@@ -2988,24 +3053,27 @@ def _bat529Cb_7399a956_45(def stat) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_7399a956_46(def entry) {
-            Map value = entry.value as Map
+            Map value = __bat529StaticProperty_java_lang_Object(entry, 'value') as Map
             // Health permits serial 30s traceroute + 90s speedtest + inventory/ping work.
             // Retention outlasts those HTTP deadlines; it is not a worker cancellation timer.
-            long pendingTtl = value.work?.tool == "hub_get_device_health" ? 240000L : 90000L
+            long pendingTtl = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_java_lang_Object(value, 'work'), 'tool') == "hub_get_device_health" ? 240000L : 90000L
             long ttl = value.pending == true ? pendingTtl : 30000L
             // Readers protect normal TTL expiry. A leaked counter must not reserve
             // one of the eight slots forever: recover after ten minutes in this
             // phase. Worker completion resets at, preserving the full replay TTL;
             // fetchId fencing prevents an expired worker publishing into a new slot.
-            long age = now() - (value.at as Long)
+            long age = __bat529StaticCall_long_0('now') - (value.at as Long)
             age >= 600000L || (age >= ttl && ((value.readers ?: 0) as Integer) == 0)
         
 }
 
-def _bat529Cb_7399a956_47(def it) { it.key 
+@groovy.transform.CompileStatic
+def _bat529Cb_7399a956_47(def it) { __bat529StaticProperty_java_lang_Object(it, 'key') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_7399a956_48(def it) { NATIVE_LOG_SNAPSHOTS.remove(it) 
 }
 

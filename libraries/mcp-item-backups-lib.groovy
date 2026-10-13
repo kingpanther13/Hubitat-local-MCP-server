@@ -177,25 +177,26 @@ def toolGetItemBackup(args) {
     return result
 }
 
-def toolRestoreItemBackup(args) {
+@groovy.transform.CompileStatic
+java.util.Map toolRestoreItemBackup(args) {
     args = args ?: [:]
     // `scope` folds WHOLE-HUB database restore (issue #259 item #1) into this tool. hub_local/hub_cloud
     // REPLACE THE ENTIRE HUB DATABASE and REBOOT the hub -- far higher blast radius than a source
     // re-paste -- so they are confirm-gated here too. Default "source" = app/driver/rule restore.
-    def scope = (args.scope ?: "source").toString()
+    def scope = (__bat529StaticProperty_java_lang_Object(args, 'scope') ?: "source").toString()
     if (scope in ["hub_local", "hub_cloud"]) {
-        requireDestructiveConfirm(args.confirm)
-        return _restoreHubBackup(scope, args)
+        __bat529StaticCall_java_lang_Object_1('requireDestructiveConfirm', __bat529StaticProperty_java_lang_Object(args, 'confirm'))
+        return __bat529StaticCall_java_util_Map_2('_restoreHubBackup', scope, args)
     }
     if (scope == "hub_uploaded") {
-        requireDestructiveConfirm(args.confirm)
-        return _restoreUploadedBackup(args)
+        __bat529StaticCall_java_lang_Object_1('requireDestructiveConfirm', __bat529StaticProperty_java_lang_Object(args, 'confirm'))
+        return __bat529StaticCall_java_util_Map_1('_restoreUploadedBackup', args)
     }
     if (scope != "source") {
         throw new IllegalArgumentException("scope must be 'source' (default), 'hub_local', 'hub_cloud', or 'hub_uploaded'.")
     }
-    requireDestructiveConfirm(args.confirm)
-    return _toolRestoreSourceBackup(args)
+    __bat529StaticCall_java_lang_Object_1('requireDestructiveConfirm', __bat529StaticProperty_java_lang_Object(args, 'confirm'))
+    return __bat529StaticCall_java_util_Map_1('_toolRestoreSourceBackup', args)
 }
 
 private Map _toolRestoreSourceBackup(args) {
@@ -728,17 +729,18 @@ private Map _fullBackupUnavailable() {
 
 // asynchttpGet completion sink for the backup triggers (/hub/backupDB and /hub2/createFullLocalBackup):
 // the archive body is never read into this app; the new entry in the hub's backup list confirms it.
+@groovy.transform.CompileStatic
 def backupResponseSink(response, data) {
     // The async /hub/backupDB response is the one place a rejected backup request surfaces. It
     // arrives AFTER toolCreateHubBackup returns (so it can't gate that call -- statusJson confirmation
     // does), but a non-2xx must NOT be swallowed at debug: log it loudly so a rejected backup leaves
     // a trace instead of silently looking fine.
     try {
-        def st = response?.status
-        if (st != null && !(st >= 200 && st < 300)) {
-            mcpLog("warn", "hub-admin", "Hub backup async request returned non-2xx status=${st}; the backup may have been rejected -- verify before relying on it")
+        def st = __bat529StaticProperty_Safe_java_lang_Object(response, 'status')
+        if (st != null && !(__bat529StaticBinary_GreaterEqual_java_lang_Object(st, 200) && __bat529StaticBinary_Less_java_lang_Object(st, 300))) {
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "Hub backup async request returned non-2xx status=${st}; the backup may have been rejected -- verify before relying on it")
         } else {
-            mcpLog("debug", "hub-admin", "backup async response status=${st}")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-admin", "backup async response status=${st}")
         }
     } catch (Exception ignored) { }
 }
@@ -856,13 +858,14 @@ private Map _readHubBackupSchedule() {
 // Network-share backup settings (firmware 2.5.2): GET /hub2/networkBackup/settings answers
 // {enabled, networkPath, username, password}. `raw` (with the password) is only for the read-merge
 // write; `settings` is what a response carries, with passwordSet instead of the password.
+@groovy.transform.CompileStatic
 private Map _readNetworkBackupSettings() {
     try {
-        def raw = hubInternalGet("/hub2/networkBackup/settings")
-        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
+        def raw = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/hub2/networkBackup/settings")
+        def parsed = raw ? __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', raw) : null
         if (!(parsed instanceof Map)) return [ok: false, error: "networkBackup: the hub did not return readable settings (/hub2/networkBackup/settings)"]
-        return [ok: true, raw: parsed, settings: [enabled: parsed.enabled == true, networkPath: parsed.networkPath ?: null,
-                                                   username: parsed.username ?: null, passwordSet: (parsed.password ? true : false)]]
+        return [ok: true, raw: parsed, settings: [enabled: __bat529StaticProperty_java_lang_Object(parsed, 'enabled') == true, networkPath: __bat529StaticProperty_java_lang_Object(parsed, 'networkPath') ?: null,
+                                                   username: __bat529StaticProperty_java_lang_Object(parsed, 'username') ?: null, passwordSet: (__bat529StaticProperty_java_lang_Object(parsed, 'password') ? true : false)]]
     } catch (Exception e) {
         return [ok: false, error: "networkBackup: could not read the network backup settings (/hub2/networkBackup/settings): ${e.message}"]
     }
@@ -1013,17 +1016,18 @@ private _listHubBackups(boolean wantLocal, boolean wantCloud) {
 }
 
 // A backup's size from the hub's own list: [size: bytes] or [reason: unreadable | notListed | sizeUnknown].
+@groovy.transform.CompileStatic
 private Map _localBackupSize(String fileName) {
     def parsed
     try {
-        parsed = _parseJsonOrNull(hubInternalGet("/hub2/localBackups"))
+        parsed = __bat529StaticCall_java_lang_Object_1('_parseJsonOrNull', __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/hub2/localBackups"))
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "local backup list unreadable (${e.message})")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "local backup list unreadable (${e.message})")
     }
     if (!(parsed instanceof List)) return [reason: "unreadable"]
-    def entry = (parsed).find(((this.&_bat529Cb_8f5ba462_3).curry([fileName] as Object[])))
+    def entry = __bat529StaticDgm_find_1_java_lang_Object((parsed), ((this.&_bat529Cb_8f5ba462_3).curry([fileName] as Object[])))
     if (entry == null) return [reason: "notListed"]
-    Long size = _parseSizeBytes(entry.fileSize ?: entry.size)
+    Long size = __bat529StaticCall_java_lang_Long_1('_parseSizeBytes', __bat529StaticProperty_java_lang_Object(entry, 'fileSize') ?: __bat529StaticProperty_java_lang_Object(entry, 'size'))
     return (size != null) ? [size: size] : [reason: "sizeUnknown"]
 }
 
@@ -1060,14 +1064,15 @@ private Long _parseSizeBytes(value) {
 
 // A full local backup as the hub lists it (fullBackup:true); the .tar.gz name decides when the list
 // is unreadable or does not list the file.
+@groovy.transform.CompileStatic
 private boolean _isFullLocalHubBackup(String fileName) {
     try {
-        def raw = hubInternalGet("/hub2/localBackups")
-        def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
-        def entry = (parsed instanceof List) ? (parsed).find(((this.&_bat529Cb_8f5ba462_4).curry([fileName] as Object[]))): null
-        if (entry != null) return entry.fullBackup == true
+        def raw = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/hub2/localBackups")
+        def parsed = raw ? __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', raw) : null
+        def entry = (parsed instanceof List) ? __bat529StaticDgm_find_1_java_lang_Object((parsed), ((this.&_bat529Cb_8f5ba462_4).curry([fileName] as Object[]))): null
+        if (entry != null) return __bat529StaticProperty_java_lang_Object(entry, 'fullBackup') == true
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "_isFullLocalHubBackup: local backup list unreadable (${e.message}); deciding from the file name")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "_isFullLocalHubBackup: local backup list unreadable (${e.message}); deciding from the file name")
     }
     return fileName.toLowerCase().endsWith(".tar.gz")
 }
@@ -1341,55 +1346,66 @@ def _getAllToolDefinitions_partItemBackups() {
     return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_create_backup"],["description","Create a hub-database backup. Destructive tools require one within 24h.[[FLAT_TRIM]] Whole-hub .lzf, or with full=true a full local backup (.tar.gz: database, File Manager files, Zigbee and Z-Wave data). Optionally set the automatic-backup schedule (`schedule`) and the network-share backup (`networkBackup`, `testNetworkBackup`); scheduleOnly=true changes those settings only. cloudDownload copies an existing cloud backup into File Manager instead. The only write tool needing no prior backup.[[/FLAT_TRIM]]\\n[[FLAT_TRIM]]\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["confirm",["m",[["type","boolean"],["description","true to create a backup now (omit with scheduleOnly)."]]]],["mock",["m",[["type","boolean"],["description","Developer Mode only: stamp the 24h gate record; no real backup (test envs)."]]]],["mockEpoch",["m",[["type","integer"],["description","Developer Mode only, with mock=true: stamp this epoch-millis instead of now (test envs; lets tests set a stale gate record)."]]]],["schedule",["m",[["type","object"],["description","Optional: set the automatic-backup schedule. Omitted fields keep their current value (read-merged from the hub).[[FLAT_TRIM]] If cloud backup is enabled you MUST pass cloudBackupPassword (the hub doesn\'t expose it for read-back) or pass cloudBackupFrequency=0 to turn cloud backup off.[[/FLAT_TRIM]]"],["properties",["m",[["hour",["m",[["type","integer"],["description","[[FLAT_TRIM]]Hour 0-23 (kept if omitted)[[/FLAT_TRIM]]"]]]],["minute",["m",[["type","integer"],["description","[[FLAT_TRIM]]Minute 0-59 (kept if omitted)[[/FLAT_TRIM]]"]]]],["localBackupFrequency",["m",[["type","integer"],["enum",["l",[0,1,2,3,5,7,14,21,28]]],["description","[[FLAT_TRIM]]Local backup interval in DAYS (0=off); kept if omitted[[/FLAT_TRIM]]"]]]],["cloudBackupFrequency",["m",[["type","integer"],["enum",["l",[0,1,2,3,5,7,14,21,28]]],["description","[[FLAT_TRIM]]Cloud backup interval in DAYS (0=off); kept if omitted[[/FLAT_TRIM]]"]]]],["cloudBackupPassword",["m",[["type","string"],["description","[[FLAT_TRIM]]Cloud-backup encryption password. Required when cloud backup is/stays enabled.[[/FLAT_TRIM]]"]]]]]]]]]],["scheduleOnly",["m",[["type","boolean"],["description","With schedule/networkBackup: settings only, no backup now."]]]],["full",["m",[["type","boolean"],["description","[[FLAT_TRIM]]Full local backup (database + files + radio data). Needs the Full Local Backup subscription.[[/FLAT_TRIM]]"]]]],["networkBackup",["m",[["type","object"],["description","[[FLAT_TRIM]]Network-share backup: {enabled?, networkPath?, username?, password?}; omitted fields keep their value.[[/FLAT_TRIM]]"]]]],["testNetworkBackup",["m",[["type","boolean"],["description","[[FLAT_TRIM]]Test the network share.[[/FLAT_TRIM]]"]]]],["cloudDownload",["m",[["type","object"],["description","[[FLAT_TRIM]]Copy a cloud backup into File Manager: {path, cloudBackupPassword, part? (database|files)}; send alone.[[/FLAT_TRIM]]"]]]],["args",["m",[["type","object"]]]]]]]]]]]],["m",[["name","hub_delete_backup"],["description","\\u26a0\\ufe0f Delete a whole-hub database backup (DESTRUCTIVE; tell the user first). Write master + confirm + a recent backup."],["inputSchema",["m",[["type","object"],["properties",["m",[["location",["m",[["type","string"],["enum",["l",["local","cloud"]]],["description","Which store to delete from."]]]],["fileName",["m",[["type","string"],["description","location=local: backup name from hub_list_backups."]]]],["path",["m",[["type","string"],["description","location=cloud: backup path from hub_list_backups."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED true. Confirms the delete."]]]]]]],["required",["l",["location","confirm"]]]]]]]],["m",[["name","hub_list_backups"],["description","List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups \\u2014 a local backup\'s name and a cloud backup\'s path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule read joins hubBackupErrors (partial:true) and a failed share read stays inside networkBackup; neither fails the listing. See hub_get_tool_guide(section=\'backup\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["scope",["m",[["type","string"],["enum",["l",["source","hub_local","hub_cloud","hub","all"]]],["description","Which backups to list; default source."]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor (source only); pass \\"\\" for the first page, iterate nextCursor."]]]]]]],["required",["l",[]]]]]]]],["m",[["name","hub_get_backup"],["description","Read the saved source code from one backup. Call hub_list_backups first to find the backupKey.[[FLAT_TRIM]] Use this to inspect or diff a prior version before restoring; to re-apply it use hub_restore_backup, not this tool. Large sources are omitted from the response (sourceTooLargeForResponse=true) with a File Manager download link instead.[[/FLAT_TRIM]] Read-only."],["inputSchema",["m",[["type","object"],["properties",["m",[["backupKey",["m",[["type","string"],["description","The backup key from hub_list_backups (e.g., \'app_123\', \'driver_456\', or \'library_42\')"]]]]]]],["required",["l",["backupKey"]]]]]]]],["m",[["name","hub_restore_backup"],["description","\\u26a0\\ufe0f Restore a backup \\u2014 tell the user first; hub-DB scopes REBOOT the hub.[[FLAT_TRIM]] scope=source (default): an app/driver/rule by backupKey (deleted code \\u2192 hub_create_*; deleted rules DO recreate; a rule restores in place by default; preserveRuleId:false restores a Rule Machine backup that has an App Cloner export as an exact copy with a NEW id -- read ruleId and restoredVia from the result). scope=hub_local/hub_cloud: restore the WHOLE hub DB (hub_local\\u2192fileName; hub_cloud\\u2192path+cloudBackupPassword); a full local backup (fullBackup:true) runs the full-restore flow with fullRestore choosing radios/files. scope=hub_uploaded: upload an external .lzf (or a full .tar.gz) from backupUrl, then restore (open-world).[[/FLAT_TRIM]] Write master + confirm.\\nA transport drop can lose the response while the hub still commits this write; verify current hub state before retrying.[[FLAT_TRIM]] See hub_get_tool_guide(section=\'slow_ops\').[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["scope",["m",[["type","string"],["enum",["l",["source","hub_local","hub_cloud","hub_uploaded"]]],["description","Default source."]]]],["backupKey",["m",[["type","string"],["description","scope=source: backupKey from hub_list_backups (e.g. app_123)."]]]],["fileName",["m",[["type","string"],["description","scope=hub_local: backup name from hub_list_backups."]]]],["path",["m",[["type","string"],["description","scope=hub_cloud: `path` from hub_list_backups."]]]],["cloudBackupPassword",["m",[["type","string"],["description","scope=hub_cloud: cloud backup encryption password."]]]],["backupUrl",["m",[["type","string"],["description","scope=hub_uploaded: http(s) URL of the .lzf or full .tar.gz."]]]],["fullRestore",["m",[["type","object"],["description","[[FLAT_TRIM]]Full backups: {restoreZigbee?, restoreZwave?, restoreFiles?, deleteExistingFiles?, allowZwaveFirmwareMismatch?} (default false).[[/FLAT_TRIM]]"]]]],["preserveRuleId",["m",[["type","boolean"],["description","Keep the rule id (default true).[[FLAT_TRIM]] true: restore an RM/native app backup in place by settings replay; a replay empties settings the app gained after the backup (settingsCleared). false: restore a Rule Machine backup that carries an App Cloner export as an exact copy with a NEW id, deleting the old rule once the copy matches the backup.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED true. Confirms the restore (hub-DB scopes reboot)."]]]]]]],["required",["l",["confirm"]]]]]]]]]]'])
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partItemBackups() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_list_backups","hub_get_backup"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_list_backups","hub_get_backup"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partItemBackups() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_delete_backup"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_delete_backup"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _openWorldToolNames_partItemBackups() {
     // hub_restore_backup can reach the internet (scope=hub_uploaded fetches backupUrl), so the whole
     // tool is open-world (the MCP openWorldHint is per-tool, not per-scope). Contributed to the app's
     // getOpenWorldToolNames() aggregator.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_restore_backup"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_restore_backup"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partItemBackups() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_create_backup",["m",[["title","Create Hub Backup"],["summary","Create a database or full local backup, set backup schedule and network share, or copy a cloud backup."]]]],["hub_delete_backup",["m",[["title","Delete Hub Backup"],["summary","Delete a whole-hub database backup (local or cloud)."]]]],["hub_list_backups",["m",[["title","List Backups"],["summary","List code backups and (by scope) hub database/full backups plus the backup schedule and network share."]]]],["hub_get_backup",["m",[["title","Get Code Backup"],["summary","Read source code from a backup."]]]],["hub_restore_backup",["m",[["title","Restore Backup"],["summary","Restore a code/rule backup, or (by scope) the whole hub database."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_create_backup",["m",[["title","Create Hub Backup"],["summary","Create a database or full local backup, set backup schedule and network share, or copy a cloud backup."]]]],["hub_delete_backup",["m",[["title","Delete Hub Backup"],["summary","Delete a whole-hub database backup (local or cloud)."]]]],["hub_list_backups",["m",[["title","List Backups"],["summary","List code backups and (by scope) hub database/full backups plus the backup schedule and network share."]]]],["hub_get_backup",["m",[["title","Get Code Backup"],["summary","Read source code from a backup."]]]],["hub_restore_backup",["m",[["title","Restore Backup"],["summary","Restore a code/rule backup, or (by scope) the whole hub database."]]]]]]'])
 }
 
 
-def _bat529Cb_8f5ba462_1(def it) { it.deletePending 
+@groovy.transform.CompileStatic
+def _bat529Cb_8f5ba462_1(def it) { __bat529StaticProperty_java_lang_Object(it, 'deletePending') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_8f5ba462_2(def known, def it) { !(it in known) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_8f5ba462_3(def fileName, def it) { it instanceof Map && it.name?.toString() == fileName 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_8f5ba462_4(def fileName, def it) { it instanceof Map && it.name?.toString() == fileName 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_8f5ba462_5(def path, def it) { it instanceof Map && it.path?.toString() == path 
 }
 
-def _bat529Cb_8f5ba462_6(def it) { [path: it.path, createTime: it.createTime, hubVersion: it.hubVersion, hubName: it.hubName] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_8f5ba462_6(def it) { [path: __bat529StaticProperty_java_lang_Object(it, 'path'), createTime: __bat529StaticProperty_java_lang_Object(it, 'createTime'), hubVersion: __bat529StaticProperty_java_lang_Object(it, 'hubVersion'), hubName: __bat529StaticProperty_java_lang_Object(it, 'hubName')] 
 }
 
-def _bat529Cb_8f5ba462_7(def it) {
-                [name: it.name, createTime: it.createTime, createTimeOrig: it.createTimeOrig, size: it.fileSize != null ? it.fileSize : it.size,
-                 fullBackup: it.fullBackup == true, hasZWave: it.hasZWave == true, hasZigbee: it.hasZigbee == true,
-                 platformVersion: it.platformVersion]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_8f5ba462_7(def it) {
+                [name: __bat529StaticProperty_java_lang_Object(it, 'name'), createTime: __bat529StaticProperty_java_lang_Object(it, 'createTime'), createTimeOrig: __bat529StaticProperty_java_lang_Object(it, 'createTimeOrig'), size: __bat529StaticProperty_java_lang_Object(it, 'fileSize') != null ? __bat529StaticProperty_java_lang_Object(it, 'fileSize') : __bat529StaticProperty_java_lang_Object(it, 'size'),
+                 fullBackup: __bat529StaticProperty_java_lang_Object(it, 'fullBackup') == true, hasZWave: __bat529StaticProperty_java_lang_Object(it, 'hasZWave') == true, hasZigbee: __bat529StaticProperty_java_lang_Object(it, 'hasZigbee') == true,
+                 platformVersion: __bat529StaticProperty_java_lang_Object(it, 'platformVersion')]
             
 }
 

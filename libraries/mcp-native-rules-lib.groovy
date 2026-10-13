@@ -79,16 +79,17 @@ def toolSetAppDisabled(args) {
 // Fetch a guide section in full for an inline meta-call on a tool that has no cursor of its own.
 // Returns the same envelope hub_get_tool_guide does, with every page concatenated and the
 // pagination bookkeeping stripped -- the caller asked for the reference, not a page of it.
+@groovy.transform.CompileStatic
 private Map _rmWholeGuideSection(String sectionKey) {
-    def result = toolGetToolGuide(sectionKey)
+    java.util.Map result = __bat529StaticCall_java_util_Map_1('toolGetToolGuide', sectionKey)
     if (!(result instanceof Map) || result.nextCursor == null) return result as Map
-    def parts = [result.content as String]
+    java.util.List parts = [result.content as String]
     def cursor = result.nextCursor
     // Bounded: a page is guidePageChars() and the whole guide is well under 20 pages, so the
     // guard can only fire if the pager itself regressed.
     int guard = 0
     while (cursor != null && guard++ < 50) {
-        def page = toolGetToolGuide(sectionKey, cursor)
+        java.util.Map page = __bat529StaticCall_java_util_Map_2('toolGetToolGuide', sectionKey, cursor)
         parts << (page.content as String)
         cursor = page.nextCursor
     }
@@ -163,8 +164,9 @@ private Map _rmCollectFilteredRmRules() {
 // installed, or a transient one-sided v4/v5 failure) or the app-tree cross-check could
 // not run -- so a caller treats "cannot verify" as skip-validation rather than a
 // false-empty reject.
+@groovy.transform.CompileStatic
 private Set _rmValidRuleIds() {
-    def collected = _rmCollectFilteredRmRules()
+    java.util.Map collected = __bat529StaticCall_java_util_Map_0('_rmCollectFilteredRmRules')
     // Any RMUtils lookup error -- including a one-sided v4 or v5 failure -- makes the
     // enumeration incomplete, so the set cannot be trusted. On a 5.x-only hub the v4
     // getRuleList() legitimately returns [] with no error; if the v5 getRuleList("5.0")
@@ -175,8 +177,8 @@ private Set _rmValidRuleIds() {
     if (collected.v4Error || collected.v5Error) return null
     // App tree unreadable: membership is unverifiable (combined is unfiltered).
     if (!collected.treeReadable) return null
-    def ids = [] as Set
-    (collected.combined).each(((this.&_bat529Cb_4076886b_389).curry([ids] as Object[])))
+    java.util.Set ids = [] as Set
+    __bat529StaticDgm_each_1_java_lang_Object((collected.combined), ((this.&_bat529Cb_4076886b_389).curry([ids] as Object[])))
     return ids
 }
 
@@ -281,6 +283,7 @@ def toolListRmRules(args) {
 // The key may arrive as String or Integer depending on how the hub built the Map.
 // - RM 4.x: Map with explicit fields `[id: <id>, label: "<label>", name: "...", type: "..."]`.
 // - Raw primitive (int or String ID): defensive fallback for shapes not covered above.
+@groovy.transform.CompileStatic
 private void registerRmRule(Map combined, def r, String version) {
     def id
     def label
@@ -307,8 +310,8 @@ private void registerRmRule(Map combined, def r, String version) {
                 // ruleId: integer schema (callers would see a String id in the
                 // response and fail to dispatch hub_call_rule against it). Skip
                 // the entry and surface the anomaly via logs instead.
-                def keyType = rawKey instanceof Number ? 'Number' : rawKey instanceof String ? 'String' : 'other'
-                mcpLog("warn", "rm-interop", "registerRmRule: non-integer ruleId '${rawKey}' (type=${keyType}) in RM ${version} list -- skipping entry")
+                java.lang.String keyType = rawKey instanceof Number ? 'Number' : rawKey instanceof String ? 'String' : 'other'
+                __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-interop", "registerRmRule: non-integer ruleId '${rawKey}' (type=${keyType}) in RM ${version} list -- skipping entry")
                 return
             }
             label = entry.value?.toString()
@@ -348,6 +351,7 @@ private void registerRmRule(Map combined, def r, String version) {
 // {disabled:true, paused:true, status:"disabled"} is truthful. "unknown" (booleans then
 // omitted, never asserted false) covers both a null liveApps (whole tree unreadable) and
 // this one rule's node lacking data.disabled / name / RMUtils label.
+@groovy.transform.CompileStatic
 private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps) {
     def idInt
     try { idInt = (entry.id instanceof Number) ? entry.id.intValue() : entry.id?.toString()?.toInteger() }
@@ -357,15 +361,15 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
         entry.status = "unknown"
         return
     }
-    def disabledRaw = node.disabled
-    def cleanApps = stripAppConfigHtml(node.name)
-    def cleanRm = stripAppConfigHtml(entry.label)
+    def disabledRaw = __bat529StaticProperty_java_lang_Object(node, 'disabled')
+    java.lang.String cleanApps = __bat529StaticCall_java_lang_String_1('stripAppConfigHtml', __bat529StaticProperty_java_lang_Object(node, 'name'))
+    java.lang.String cleanRm = __bat529StaticCall_java_lang_String_1('stripAppConfigHtml', entry.label)
     if (disabledRaw == null || cleanApps == null || cleanRm == null) {
-        def missing = []
+        java.util.List missing = []
         if (disabledRaw == null) missing << "data.disabled"
         if (cleanApps == null) missing << "appsList name"
         if (cleanRm == null) missing << "RMUtils label"
-        mcpLog("warn", "rm-interop", "_rmAnnotateRuleStatus: rule ${entry.id} has incomplete node data (missing ${missing.join(', ')}); status unknown")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-interop", "_rmAnnotateRuleStatus: rule ${entry.id} has incomplete node data (missing ${missing.join(', ')}); status unknown")
         entry.status = "unknown"
         return
     }
@@ -386,8 +390,8 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
         if (remainder.contains("(Required Expression false)")) entry.requiredExpressionFalse = true
     }
     if (stopped) {
-        entry.label = _rmStripTrailingDecoration(entry.label, "(Stopped)")
-        entry.name = _rmStripTrailingDecoration(entry.name, "(Stopped)")
+        entry.label = __bat529StaticCall_java_lang_String_2('_rmStripTrailingDecoration', entry.label, "(Stopped)")
+        entry.name = __bat529StaticCall_java_lang_String_2('_rmStripTrailingDecoration', entry.name, "(Stopped)")
     }
     entry.disabled = disabled
     entry.paused = paused
@@ -417,22 +421,23 @@ private String _rmStripTrailingDecoration(Object raw, String suffix) {
 // reports nothing per-rule) is the exact failure the batch exists to prevent.
 // Single-id calls keep their long-standing no-validation behavior. The check
 // skips when the rule list is unverifiable (_rmValidRuleIds returns null).
+@groovy.transform.CompileStatic
 private Map _rmRuleIdListArg(Object raw) {
     if (raw == null) throw new IllegalArgumentException("ruleId is required")
     def rawList = (raw instanceof List) ? raw : [raw]
     if (rawList.isEmpty()) throw new IllegalArgumentException("ruleId array must not be empty")
     List<Integer> ids = []
-    (rawList).each(((this.&_bat529Cb_4076886b_419).curry([ids] as Object[])))
+    __bat529StaticDgm_each_1_java_lang_Object((rawList), ((this.&_bat529Cb_4076886b_419).curry([ids] as Object[])))
     Boolean verified = null
     if (ids.size() > 1) {
-        def valid = _rmValidRuleIds()
+        java.util.Set valid = __bat529StaticCall_java_util_Set_0('_rmValidRuleIds')
         if (valid != null) {
             verified = true
-            def __bat529EachReceiver1 = (ids)
-def __bat529EachReceiver1Result = []
+            java.util.List __bat529EachReceiver1 = (ids)
+java.util.List __bat529EachReceiver1Result = []
 for (def it in __bat529EachReceiver1) {if (!valid.contains(it) ) __bat529EachReceiver1Result.add(it)
 }
-def unknown = __bat529EachReceiver1Result
+java.util.List unknown = __bat529EachReceiver1Result
             if (unknown) {
                 throw new IllegalArgumentException("ruleId array contains id(s) that are not existing RM rules: ${unknown.join(', ')}. Nothing was dispatched. Verify ids via hub_list_rules and re-issue the batch.")
             }
@@ -442,7 +447,7 @@ def unknown = __bat529EachReceiver1Result
             // an up-front existence check, and a silent skip would let a typo'd id
             // report success on a fire-and-forget dispatch.
             verified = false
-            mcpLog("warn", "rm-interop", "_rmRuleIdListArg: multi-id existence check SKIPPED (rule list unverifiable) for ids ${ids.join(', ')}")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-interop", "_rmRuleIdListArg: multi-id existence check SKIPPED (rule list unverifiable) for ids ${ids.join(', ')}")
         }
     }
     return [ids: ids, idsVerified: verified]
@@ -457,12 +462,13 @@ def unknown = __bat529EachReceiver1Result
 // the platform's per-app load limiter.
 //
 // Not destructive — invokes existing user-configured automation.
+@groovy.transform.CompileStatic
 def toolRunRmRule(args) {
-    if (args?.ruleId == null) throw new IllegalArgumentException("ruleId is required")
-    def idArg = _rmRuleIdListArg(args.ruleId)
-    List<Integer> ruleIds = idArg.ids
-    (ruleIds).each((this.&_bat529Cb_4076886b_242))
-    def action = args?.action ?: "rule"
+    if (__bat529StaticProperty_Safe_java_lang_Object(args, 'ruleId') == null) throw new IllegalArgumentException("ruleId is required")
+    java.util.Map idArg = __bat529StaticCall_java_util_Map_1('_rmRuleIdListArg', __bat529StaticProperty_java_lang_Object(args, 'ruleId'))
+    List<Integer> ruleIds = __bat529StaticProperty_java_util_List(idArg, 'ids')
+    __bat529StaticDgm_each_1_java_util_List((ruleIds), (this.&_bat529Cb_4076886b_242))
+    def action = __bat529StaticProperty_Safe_java_lang_Object(args, 'action') ?: "rule"
 
     // start/stop route through the stopRule button click (a toggle on
     // state.stopped) rather than RMUtils.sendAction — verified live on
@@ -473,7 +479,7 @@ def toolRunRmRule(args) {
     // clicking and no-op if the rule is already in the target state.
     if (action == "stop" || action == "start" || action == "actions") {
         boolean runActions = (action == "actions")
-        def perRule = { Integer id -> runActions ? _rmRunActionsButton(id) : _rmToggleStopped(id, action) }
+        def perRule = { Integer id -> runActions ? __bat529StaticCall_java_util_Map_1('_rmRunActionsButton', id) : __bat529StaticCall_java_util_Map_2('_rmToggleStopped', id, action) }
         String verb = runActions ? "runAction button" : "stopRule toggle"
         if (ruleIds.size() == 1) {
             def single = perRule(ruleIds[0])
@@ -486,20 +492,20 @@ def toolRunRmRule(args) {
         // statusJson read + (maybe) a button click, so a long list can outlive the
         // response budget. _rmToggleStopped no-ops rules already in the target
         // state, so re-issuing with the remainder is safe.
-        def results = []
+        java.util.List results = []
         List remaining = []
         boolean budgetPaused = false
         for (int i = 0; i < ruleIds.size(); i++) {
-            if (i > 0 && _timeBudgetExceeded(args?.__reqT0 as Long)) {
+            if (i > 0 && __bat529StaticCall_java_lang_Object_1('_timeBudgetExceeded', __bat529StaticProperty_Safe_java_lang_Object(args, '__reqT0') as Long)) {
                 budgetPaused = true
-                remaining = (ruleIds.subList(i, ruleIds.size())).collect((this.&_bat529Cb_4076886b_104))
+                remaining = __bat529StaticDgm_collect_1_java_util_List((ruleIds.subList(i, ruleIds.size())), (this.&_bat529Cb_4076886b_104))
                 break
             }
             results << perRule(ruleIds[i])
         }
         List failed = []
         (results).eachWithIndex(((this.&_bat529Cb_4076886b_265).curry([failed, ruleIds] as Object[])))
-        def out = [
+        java.util.Map out = [
             success: failed.isEmpty() && !budgetPaused,
             partial: budgetPaused || (!failed.isEmpty() && failed.size() < results.size()),
             ruleIds: ruleIds,
@@ -529,16 +535,17 @@ def toolRunRmRule(args) {
     }
 
     if (action != "rule") throw new IllegalArgumentException("Invalid action '${action}'. Must be 'rule', 'actions', 'stop', or 'start'.")
-    def result = sendRmAction(ruleIds, "runRule", "hub_call_rule action=${action}")
+    java.util.Map result = __bat529StaticCall_java_util_Map_3('sendRmAction', ruleIds, "runRule", "hub_call_rule action=${action}")
     if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
     return result
 }
 
 // Click the rule's Run Actions button (runAction on the main page): runs the action list
 // directly, skipping condition evaluation, exactly as the hub UI does.
+@groovy.transform.CompileStatic
 private Map _rmRunActionsButton(Integer ruleId) {
     try {
-        _rmClickAppButton(ruleId, "runAction")
+        __bat529StaticCall_java_lang_Object_2('_rmClickAppButton', ruleId, "runAction")
     } catch (Exception e) {
         return [success: false, ruleId: ruleId, error: "hub_call_rule action=actions: runAction button click failed (${e.message})"]
     }
@@ -550,14 +557,15 @@ private Map _rmRunActionsButton(Integer ruleId) {
 // clicking stopRule when state.stopped is already the target value would
 // toggle it the wrong way (running -> stopped, stopped -> running), so
 // we read state.stopped first and no-op if we're already there.
+@groovy.transform.CompileStatic
 private Map _rmToggleStopped(Integer ruleId, String action) {
     def status
     try {
-        status = _rmFetchStatusJson(ruleId)
+        status = __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', ruleId)
     } catch (Exception e) {
         return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: cannot read rule state before toggle (${e.message})"]
     }
-    def stoppedNow = _readAppStateBoolean(status, "stopped", false)
+    def stoppedNow = __bat529StaticCall_java_lang_Boolean_3('_readAppStateBoolean', status, "stopped", false)
     def targetStopped = (action == "stop")
     if (stoppedNow == targetStopped) {
         return [
@@ -568,7 +576,7 @@ private Map _rmToggleStopped(Integer ruleId, String action) {
         ]
     }
     try {
-        _rmClickAppButton(ruleId, "stopRule")
+        __bat529StaticCall_java_lang_Object_2('_rmClickAppButton', ruleId, "stopRule")
     } catch (Exception e) {
         return [success: false, ruleId: ruleId, error: "hub_call_rule action=${action}: stopRule button click failed (${e.message})"]
     }
@@ -582,10 +590,11 @@ private Map _rmToggleStopped(Integer ruleId, String action) {
 // Pull a named Boolean out of statusJson.appState[]. Hubitat serializes
 // Booleans in appState entries as the real `true`/`false` value, but
 // occasionally as the string "true"/"false" -- treat both equivalently.
+@groovy.transform.CompileStatic
 private Boolean _readAppStateBoolean(Map status, String name, Boolean fallback) {
-    def entry = ((status?.appState ?: [])).find(((this.&_bat529Cb_4076886b_111).curry([name] as Object[])))
+    def entry = __bat529StaticDgm_find_1_java_lang_Object(((status?.appState ?: [])), ((this.&_bat529Cb_4076886b_111).curry([name] as Object[])))
     if (entry == null) return fallback
-    def v = entry.value
+    def v = __bat529StaticProperty_java_lang_Object(entry, 'value')
     if (v instanceof Boolean) return v
     if (v == "true") return true
     if (v == "false") return false
@@ -608,10 +617,11 @@ private Boolean _readAppStateBoolean(Map status, String name, Boolean fallback) 
 // after 5+ minutes. Treat the timeout as best-effort, not guaranteed. The value
 // is typically an Integer (the action index) but may be serialized as a
 // String by some firmware versions -- returned as-is without coercion.
+@groovy.transform.CompileStatic
 private Object _rmGetStateEditAct(Integer appId) {
-    def status = _rmFetchStatusJson(appId)
-    def entry = ((status?.appState ?: [])).find((this.&_bat529Cb_4076886b_209))
-    return entry?.value
+    java.util.Map status = __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', appId)
+    def entry = __bat529StaticDgm_find_1_java_lang_Object(((status?.appState ?: [])), (this.&_bat529Cb_4076886b_209))
+    return __bat529StaticProperty_Safe_java_lang_Object(entry, 'value')
 }
 
 // Pause or resume a Rule Machine rule via RMUtils.sendAction(pauseRule|resumeRule).
@@ -708,6 +718,7 @@ private Map sendRmAction(List<Integer> ruleIds, String rmAction, String logConte
 // Single source of truth for the RMUtils load-limiter marker substring (matched
 // case-insensitively). RMUtils surfaces this text when the hub's per-app load limiter
 // has tripped; centralized so a wording change is one edit, not a scatter of literals.
+@groovy.transform.CompileStatic
 private String _rmExcessiveLoadMarker() { "excessive hub load" }
 
 // Build the actionable note for a failed RMUtils.sendAction. When RMUtils reports the hub's
@@ -780,14 +791,16 @@ private String _rmMainPageDoneRepairHint(Integer appId, Map done) {
 
 // True when configAppName is a registry type (matching as _resolveCommitButton does) or the Room
 // Lighting parent, i.e. its commit button is known rather than defaulted.
+@groovy.transform.CompileStatic
 private boolean _appTypeRegistryKnows(String configAppName) {
     if (!configAppName) return false
     if (configAppName == "Room Lighting") return true
     def versioned = (configAppName =~ /^(.+) [0-9]+(?:\.[0-9]+)*$/)
     def bare = versioned.matches() ? (versioned[0] as List)[1].toString() : null
-    return (_appTypeRegistry()).any(((this.&_bat529Cb_4076886b_329).curry([bare, configAppName] as Object[])))
+    return __bat529StaticDgm_any_1_boolean((__bat529StaticCall_java_util_Map_0('_appTypeRegistry')), ((this.&_bat529Cb_4076886b_329).curry([bare, configAppName] as Object[])))
 }
 
+@groovy.transform.CompileStatic
 private String _resolveCommitButton(String configAppName) {
     if (!configAppName) return "updateRule"
     // The Room Lighting parent has no updateRule button and no create entry of its own. A settings write on
@@ -798,9 +811,9 @@ private String _resolveCommitButton(String configAppName) {
     // the bare family name. Exact match first, then the version-stripped name.
     def versioned = (configAppName.toString() =~ /^(.+) [0-9]+(?:\.[0-9]+)*$/)
     def bare = versioned.matches() ? (versioned[0] as List)[1].toString() : null
-    def match = (_appTypeRegistry()).find(((this.&_bat529Cb_4076886b_237).curry([configAppName] as Object[])))?:
-                (bare != null ? (_appTypeRegistry()).find(((this.&_bat529Cb_4076886b_195).curry([bare] as Object[]))): null)
-    if (match != null && match.value.containsKey("commitButton")) return match.value.commitButton
+    def match = __bat529StaticDgm_find_1_java_lang_Object((_appTypeRegistry()), ((this.&_bat529Cb_4076886b_237).curry([configAppName] as Object[])))?:
+                (bare != null ? __bat529StaticDgm_find_1_java_lang_Object((__bat529StaticCall_java_util_Map_0('_appTypeRegistry')), ((this.&_bat529Cb_4076886b_195).curry([bare] as Object[]))): null)
+    if (match != null && __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(match, 'value'), 'containsKey', "commitButton")) return __bat529StaticProperty_java_lang_String(__bat529StaticProperty_java_lang_Object(match, 'value'), 'commitButton')
     return "updateRule"
 }
 
@@ -823,12 +836,13 @@ private String _resolveCommitButton(String configAppName) {
 // stays<N>         trigger-N "and stays?" toggle
 // editAct<N>       action-N edit scaffold
 // editCond<N>      condition-N edit scaffold
+@groovy.transform.CompileStatic
 private boolean _rmHasWizardScaffold(Map configPage) {
     if (!(configPage?.sections instanceof List)) return false
     def scaffoldPattern = ~/^(isCondTrig\.\d+|tCapab\d+|tDev\d+|tstate\d+|AlltDev\d+|stays\d+|editAct\d+|editCond\d+)$/
     for (sec in configPage.sections) {
-        for (inp in (sec?.input ?: [])) {
-            def n = inp?.name?.toString()
+        for (inp in (__bat529StaticProperty_Safe_java_lang_Object(sec, 'input') ?: [])) {
+            def n = __bat529StaticProperty_Safe_java_lang_Object(inp, 'name')?.toString()
             if (n && scaffoldPattern.matcher(n).matches()) return true
         }
     }
@@ -850,14 +864,15 @@ private boolean _rmHasWizardScaffold(Map configPage) {
 // finished filling the trigger; finalizing now would commit an
 // incomplete trigger). The caller's higher-level scaffold check
 // handles that case separately.
+@groovy.transform.CompileStatic
 private String _rmFindResidualCondTrig(Map configPage) {
     if (!(configPage?.sections instanceof List)) return null
     def condTrigPattern = ~/^isCondTrig\.\d+$/
     def otherScaffoldPattern = ~/^(tCapab\d+|tDev\d+|tstate\d+|AlltDev\d+|stays\d+|editAct\d+|editCond\d+)$/
     String foundCondTrig = null
     for (sec in configPage.sections) {
-        for (inp in (sec?.input ?: [])) {
-            def n = inp?.name?.toString()
+        for (inp in (__bat529StaticProperty_Safe_java_lang_Object(sec, 'input') ?: [])) {
+            def n = __bat529StaticProperty_Safe_java_lang_Object(inp, 'name')?.toString()
             if (!n) continue
             if (condTrigPattern.matcher(n).matches()) {
                 if (foundCondTrig != null) return null  // Multiple condTrigs — not a clean finalize case
@@ -889,22 +904,23 @@ private String _rmFindResidualCondTrig(Map configPage) {
 // typically settles them immediately. This function detects the case
 // so hub_set_rule can auto-retry once + surface a clean warning
 // if the retry still doesn't help.
+@groovy.transform.CompileStatic
 private Map _rmCheckSubscriptionSettle(Integer appId) {
     def status
     try {
-        status = _rmFetchStatusJson(appId)
+        status = __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', appId)
     } catch (Exception e) {
         return null
     }
     def settings = status?.appSettings ?: []
-    def triggerDevs = (settings).findAll((this.&_bat529Cb_4076886b_361))
+    def triggerDevs = __bat529StaticDgm_findAll_1_java_lang_Object((settings), (this.&_bat529Cb_4076886b_361))
     if (!triggerDevs) return null
     def subs = status?.eventSubscriptions ?: []
     return [
-        unsettled: subs.isEmpty(),
-        triggerCount: triggerDevs.size(),
-        subCount: subs.size(),
-        suppressedBy: _rmTriggerSubscriptionGate(status)
+        unsettled: __bat529StaticReceiverCall_java_lang_Object_0(subs, 'isEmpty'),
+        triggerCount: __bat529StaticReceiverCall_java_lang_Object_0(triggerDevs, 'size'),
+        subCount: __bat529StaticReceiverCall_java_lang_Object_0(subs, 'size'),
+        suppressedBy: __bat529StaticCall_java_lang_String_1('_rmTriggerSubscriptionGate', status)
     ]
 }
 
@@ -1113,6 +1129,7 @@ String _rmNormalizeAtTime(String raw) {
 // in this list and continue to flip `partial`.
 // Reason-code is the disambiguator -- doc contract at the inline hub_get_tool_guide
 // content block calls this list out by name.
+@groovy.transform.CompileStatic
 private List _rmInformationalSkippedReasons() {
     // useST_idempotent_noop: the Step-1 useST=true mainPage toggle is idempotent
     // (safe to re-write when an expression already exists). When the toggle is
@@ -1183,27 +1200,28 @@ private Set _rmStatusEntryDeviceIds(Object entry) {
 // Only a device-list picker that is an action's LAST write (revealing no further schema) earns
 // the cosmetic silent_rejection this re-tags; a condition/trigger device picker advances the
 // schema (a later field reveals after the pick), so it never gets the cosmetic skip.
+@groovy.transform.CompileStatic
 private void _rmReclassifyDeviceListSkips(Integer appId, List skipped) {
     if (!skipped) return
-    def candidates = (skipped).findAll((this.&_bat529Cb_4076886b_330))
+    def candidates = __bat529StaticDgm_findAll_1_java_util_List((skipped), (this.&_bat529Cb_4076886b_330))
     if (candidates.isEmpty()) return
     def status
     try {
-        status = _rmFetchStatusJson(appId)
+        status = __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', appId)
     } catch (Exception statusExc) {
         // Null-guard the identity: an exception with no message renders "(null)" from a bare
         // ${e.message}; ?: falls back to toString(), which carries the class name.
-        mcpLog("warn", "rm-native", "_rmReclassifyDeviceListSkips: statusJson fetch for app ${appId} failed (${statusExc.message ?: statusExc}) -- device-list silent_rejections left as-is (stay partial)")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "_rmReclassifyDeviceListSkips: statusJson fetch for app ${appId} failed (${statusExc.message ?: statusExc}) -- device-list silent_rejections left as-is (stay partial)")
         return
     }
     // Defensive: a malformed appSettings shape (a scalar where a List/Map is expected, etc.)
     // must never bubble an exception up through _rmAddAction's partial computation. On any
     // post-fetch anomaly, log and leave every skip as-is (stays partial -- the conservative side).
     try {
-        def byName = (((status?.appSettings ?: [])).findAll((this.&_bat529Cb_4076886b_257))).collectEntries((this.&_bat529Cb_4076886b_349))
-        (candidates).each(((this.&_bat529Cb_4076886b_422).curry([byName] as Object[])))
+        def byName = __bat529StaticDgm_collectEntries_1_java_util_Map((__bat529StaticDgm_findAll_1_java_lang_Object(((status?.appSettings ?: [])), (this.&_bat529Cb_4076886b_257))), (this.&_bat529Cb_4076886b_349))
+        __bat529StaticDgm_each_1_java_lang_Object((candidates), ((this.&_bat529Cb_4076886b_422).curry([byName] as Object[])))
     } catch (Exception reclassExc) {
-        mcpLog("warn", "rm-native", "_rmReclassifyDeviceListSkips: post-fetch reclassification for app ${appId} failed (${reclassExc.message ?: reclassExc}) -- device-list silent_rejections left as-is (stay partial)")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "_rmReclassifyDeviceListSkips: post-fetch reclassification for app ${appId} failed (${reclassExc.message ?: reclassExc}) -- device-list silent_rejections left as-is (stay partial)")
     }
 }
 
@@ -1215,9 +1233,10 @@ private void _rmReclassifyDeviceListSkips(Integer appId, List skipped) {
 // phantom in-flight rule. Throws IllegalArgumentException on the
 // first missing id with a message keyed by `label` (e.g.
 // "addTrigger.deviceIds[2]"). Idempotent for List<null>/empty.
+@groovy.transform.CompileStatic
 private void _rmValidateDeviceIdsExist(String label, Object ids) {
     if (!(ids instanceof List)) return
-    (ids).each(((this.&_bat529Cb_4076886b_434).curry([label] as Object[])))
+    __bat529StaticDgm_each_1_java_lang_Object((ids), ((this.&_bat529Cb_4076886b_434).curry([label] as Object[])))
 }
 
 // Action capabilities whose primary target is another RM rule -- their ruleIds
@@ -1225,12 +1244,14 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
 // pre-write existence guard's capability gate and the bulk-path "does this batch
 // target a rule?" scan; keep it aligned with the capability branches in
 // _rmAddAction that write a rule field (ruleAct / stopAct / pauseRule / privateT).
+@groovy.transform.CompileStatic
 private List _rmRuleTargetCaps() { ["privateBoolean", "runRule", "cancelTimers", "pauseRule"] }
 
 // True when an action spec's capability targets another RM rule (see _rmRuleTargetCaps).
+@groovy.transform.CompileStatic
 private boolean _rmSpecTargetsRule(Object spec) {
     if (!(spec instanceof Map)) return false
-    return ((spec.capability?.toString()?.trim()) in _rmRuleTargetCaps())
+    return ((__bat529StaticProperty_java_lang_Object(spec, 'capability')?.toString()?.trim()) in __bat529StaticCall_java_util_List_0('_rmRuleTargetCaps'))
 }
 
 // True when any spec in a bulk action list targets another RM rule. Lets a bulk
@@ -1331,21 +1352,22 @@ private Integer _rmCoerceRuleId(Object id) {
 // integer deviceId is the very bug it exists to catch (RM stores {N:null} for it), so
 // silently ignoring the scalar is the safe stance there. For a rule target the scalar
 // is a legitimate single-rule reference, so it is validated rather than skipped.
+@groovy.transform.CompileStatic
 private void _rmValidateRuleTargetExists(String label, Object ids, Set validRuleIds = null) {
     def idList = (ids instanceof List) ? ids : (ids != null ? [ids] : [])
     if (!idList) return
     // Shape checks need no rule list, so they run before the cannot-verify skip below.
-    (idList).each(((this.&_bat529Cb_4076886b_412).curry([label] as Object[])))
-    if ((idList).every((this.&_bat529Cb_4076886b_47))) return
-    def liveIds = (validRuleIds != null) ? validRuleIds : _rmValidRuleIds()
+    __bat529StaticDgm_each_1_java_lang_Object((idList), ((this.&_bat529Cb_4076886b_412).curry([label] as Object[])))
+    if (__bat529StaticDgm_every_1_boolean((idList), (this.&_bat529Cb_4076886b_47))) return
+    java.util.Set liveIds = (validRuleIds != null) ? validRuleIds : __bat529StaticCall_java_util_Set_0('_rmValidRuleIds')
     if (liveIds == null) {
         // Cannot verify (RMUtils absent / tree unreadable) -> skip; an empty set (verified
         // zero rules) falls through and rejects every target. Log the skip like the sibling
         // device guard so a target that later bakes broken has a diagnostic trail.
-        mcpLog("warn", "rm-native", "_rmValidateRuleTargetExists: ${label} rule-target existence check skipped -- the RM rule list was unverifiable (RMUtils lookup or /hub2/appsList read failed); a bogus rule id could bake a broken reference")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "_rmValidateRuleTargetExists: ${label} rule-target existence check skipped -- the RM rule list was unverifiable (RMUtils lookup or /hub2/appsList read failed); a bogus rule id could bake a broken reference")
         return
     }
-    (idList).each(((this.&_bat529Cb_4076886b_403).curry([label, liveIds] as Object[])))
+    __bat529StaticDgm_each_1_java_lang_Object((idList), ((this.&_bat529Cb_4076886b_403).curry([label, liveIds] as Object[])))
 }
 
 // Map common ASCII comparator aliases to the Unicode glyphs RM 5.1's
@@ -1372,6 +1394,7 @@ String _rmNormalizeComparator(Object raw) {
 // lockActs, actSubType getSetHSM, field alarm.<N>). Bare tokens exactly as RM's alarm
 // enum offers them -- NOT the vue hsmArm* tokens. The handler, the validation error, and
 // the discover schema must all agree on this list. No 'armAll': use 'armRules'.
+@groovy.transform.CompileStatic
 private List _rmHsmCommands() {
     ["armAway", "armHome", "armNight", "disarm", "rearm", "disarmAll", "armRules", "cancelAlerts"]
 }
@@ -1386,6 +1409,7 @@ private List _rmHsmCommands() {
 // lockstep -- the enum branches across the four wizard surfaces consult the predicate,
 // not a private copy of the markers. Method-constant, not `static final` (script-scope
 // rejects the field in the Hubitat sandbox -- see hubResponseCapBytes).
+@groovy.transform.CompileStatic
 private List<String> _rmRhsOptionalComparatorMarkers() { ["changed", "became"] }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -1490,6 +1514,7 @@ private String _rmNotRepresentableEnumComparatorHint(Object attribute, Object co
 // report the leftover (unrecognized) keys, so a plausible-but-wrong shape (e.g. a bare
 // `minutes` where a `periodic` map belongs) names the offending key instead of silently
 // committing a broken trigger. Keep in lockstep with the triggerSpec fields read below.
+@groovy.transform.CompileStatic
 private List<String> _rmRecognizedTriggerKeys() {
     ["discover", "capability", "deviceIds", "condition", "conditional",
      "periodic", "rawSettings", "variable", "comparator", "attribute", "buttonNumber",
@@ -1530,11 +1555,12 @@ private boolean _rmLooksLikeStateChangeToken(Object raw) {
 // the Garage entry's device-state family). Returns null for an unrecognized capability, which
 // callers treat as "unknown -- fail safe". Reuses the discover schema so the family taxonomy
 // has one owner and cannot drift from the documented capability list.
+@groovy.transform.CompileStatic
 private String _rmTriggerCapabilityFamily(String cap) {
     if (!cap) return null
     def wanted = cap.trim()
-    def match = ((_rmTriggerSchemaForDiscover()?.capabilities ?: [])).find(((this.&_bat529Cb_4076886b_386).curry([wanted] as Object[])))
-    return match?.family?.toString()
+    def match = __bat529StaticDgm_find_1_java_lang_Object(((__bat529StaticCall_java_util_Map_0('_rmTriggerSchemaForDiscover')?.capabilities ?: [])), ((this.&_bat529Cb_4076886b_386).curry([wanted] as Object[])))
+    return __bat529StaticProperty_Safe_java_lang_Object(match, 'family')?.toString()
 }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -1547,15 +1573,16 @@ private String _rmTriggerCapabilityFamily(String cap) {
 // SUBSTRING to be at least 4 chars, so a short name/token ('co'/'on'/'fan') never matches as a
 // spurious substring of an unrelated request. Advisory only -- it enriches an already-throwing
 // message and never gates a valid capability.
+@groovy.transform.CompileStatic
 private String _rmSuggestTriggerCapability(String cap, Collection liveOptions = null) {
     def want = cap?.trim()?.toLowerCase()
     if (!want) return null
-    def live = (((liveOptions ?: [])).collect((this.&_bat529Cb_4076886b_87))).findAll((this.&_bat529Cb_4076886b_173))
-    def schemaNames = ((_rmTriggerSchemaForDiscover()?.capabilities ?: [])).collectMany((this.&_bat529Cb_4076886b_394))
-    def candidates = ((live ? live : schemaNames)).findAll((this.&_bat529Cb_4076886b_56)).unique()
-    def exact = (candidates).find(((this.&_bat529Cb_4076886b_77).curry([want] as Object[])))
+    def live = __bat529StaticDgm_findAll_1_java_lang_Object((__bat529StaticDgm_collect_1_java_util_List(((liveOptions ?: [])), (this.&_bat529Cb_4076886b_87))), (this.&_bat529Cb_4076886b_173))
+    def schemaNames = __bat529StaticReceiverCall_java_lang_Object_1(((__bat529StaticCall_java_util_Map_0('_rmTriggerSchemaForDiscover')?.capabilities ?: [])), 'collectMany', (this.&_bat529Cb_4076886b_394))
+    def candidates = __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticDgm_findAll_1_java_lang_Object(((live ? live : schemaNames)), (this.&_bat529Cb_4076886b_56)), 'unique')
+    def exact = __bat529StaticDgm_find_1_java_lang_Object((candidates), ((this.&_bat529Cb_4076886b_77).curry([want] as Object[])))
     if (exact) return exact
-    return (candidates).find(((this.&_bat529Cb_4076886b_345).curry([want] as Object[])))
+    return __bat529StaticDgm_find_1_java_lang_Object((candidates), ((this.&_bat529Cb_4076886b_345).curry([want] as Object[])))
 }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -2990,10 +3017,11 @@ private Map _rmActionSchemaForDiscover() {
 // Scan an RM rule's appSettings for tCapab<N> entries and return the
 // Set of trigger indices currently in use. Used by _rmAddTrigger to pick
 // the next free index without colliding with existing triggers.
+@groovy.transform.CompileStatic
 private List _rmCollectTriggerIndices(Integer appId) {
-    def status = _rmFetchStatusJson(appId)
-    def out = []
-    ((status?.appSettings ?: [])).each(((this.&_bat529Cb_4076886b_378).curry([out] as Object[])))
+    java.util.Map status = __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', appId)
+    java.util.List out = []
+    __bat529StaticDgm_each_1_java_lang_Object(((status?.appSettings ?: [])), ((this.&_bat529Cb_4076886b_378).curry([out] as Object[])))
     return out
 }
 
@@ -3004,10 +3032,11 @@ private List _rmCollectTriggerIndices(Integer appId) {
 // ids in deviceIdsForDeviceList). Lets a caller resolve both the live trigger set
 // and a trigger's capability from ONE hub fetch; a tCapab entry with an absent
 // value maps to null, which the family guard treats as unresolved -- fail safe.
+@groovy.transform.CompileStatic
 private Map _rmCollectTriggerCapabilities(Integer appId) {
-    def status = _rmFetchStatusJson(appId)
-    def out = [:]
-    ((status?.appSettings ?: [])).each(((this.&_bat529Cb_4076886b_384).curry([out] as Object[])))
+    java.util.Map status = __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', appId)
+    java.util.Map out = [:]
+    __bat529StaticDgm_each_1_java_lang_Object(((status?.appSettings ?: [])), ((this.&_bat529Cb_4076886b_384).curry([out] as Object[])))
     return out
 }
 
@@ -3023,10 +3052,11 @@ private Map _rmCollectTriggerCapabilities(Integer appId) {
 // What this sees and the compiled action list does not is a row that exists ONLY in settings -- a
 // wizard write that landed but was never baked -- which is why the add path's index allocation and
 // orphan rollback read this and not the compiled list.
+@groovy.transform.CompileStatic
 private List _rmActionIndicesFromSettings(Map status) {
-    def out = []
-    def seen = [] as Set
-    ((status?.appSettings ?: [])).each(((this.&_bat529Cb_4076886b_400).curry([out, seen] as Object[])))
+    java.util.List out = []
+    java.util.Set seen = [] as Set
+    __bat529StaticDgm_each_1_java_lang_Object(((status?.appSettings ?: [])), ((this.&_bat529Cb_4076886b_400).curry([out, seen] as Object[])))
     return out
 }
 
@@ -3034,9 +3064,10 @@ private List _rmActionIndicesFromSettings(Map status) {
 // Excludes rows whose actType/actSubType are both blank, which RM leaves behind after a delete or
 // a cancel. This answers "what is on this rule at the settings level": a row the compiled
 // actionList never listed still occupies its index, and ignoring it leaves a permanent orphan.
+@groovy.transform.CompileStatic
 private List _rmLiveActionIndicesFromSettings(Map status) {
-    def live = [:]
-    ((status?.appSettings ?: [])).each(((this.&_bat529Cb_4076886b_398).curry([live] as Object[])))
+    java.util.Map live = [:]
+    __bat529StaticDgm_each_1_java_lang_Object(((status?.appSettings ?: [])), ((this.&_bat529Cb_4076886b_398).curry([live] as Object[])))
     return live.keySet().sort()
 }
 
@@ -3048,11 +3079,12 @@ private List _rmLiveActionIndicesFromSettings(Map status) {
 // WHICH rows exist but NOT the order they display in.
 //
 // Note action keys use a dot-N suffix (actType.1) vs trigger keys without dot (tCapab1).
+@groovy.transform.CompileStatic
 private List _rmCollectActionIndices(Integer appId) {
-    def ordered = _rmOrderedActionIndices(appId)
+    java.util.List ordered = __bat529StaticCall_java_util_List_1('_rmOrderedActionIndices', appId)
     // null = unreadable (scan settings); [] = the rule genuinely has no actions, honoured as such.
     if (ordered != null) return ordered
-    return _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
+    return __bat529StaticCall_java_util_List_1('_rmActionIndicesFromSettings', __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', appId))
 }
 
 // Tri-state: true = positively disabled, false = positively enabled, null = the read established
@@ -3101,8 +3133,9 @@ private String _rmEditOpLabel(Map args) {
 
 // Shared disabled-app refusal, so the wording cannot drift between the sites that need it.
 // IllegalArgumentException: this is caller-recoverable -- re-enable, edit, re-disable.
+@groovy.transform.CompileStatic
 void _rmRejectDisabledAppEdit(Integer appId, String opName) {
-    if (_rmIsAppDisabled(appId) != true) return
+    if (__bat529StaticCall_java_lang_Boolean_1('_rmIsAppDisabled', appId) != true) return
     throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
 }
 
@@ -3678,6 +3711,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     return (out).findAll((this.&_bat529Cb_4076886b_20))
 }
 
+@groovy.transform.CompileStatic
 private List _rmPatchModifyOpKeys() { ["removeTrigger", "modifyTrigger", "modifyAction"] }
 
 // Every operation key a patches[] item can carry. An item names exactly one: the dispatch chain
@@ -3849,8 +3883,9 @@ private List _rmClearActions(Integer appId) {
 // Note: RM may renumber actions when moves cross gaps — caller should
 // re-collect indices via _rmCollectActionIndices if subsequent moves
 // depend on positions.
+@groovy.transform.CompileStatic
 Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
-    def stateAttr = direction == "up" ? "arrowUp" : (direction == "down" ? "arrowDn" : null)
+    java.lang.String stateAttr = direction == "up" ? "arrowUp" : (direction == "down" ? "arrowDn" : null)
     if (!stateAttr) throw new IllegalArgumentException("moveAction direction must be 'up' or 'down'")
     // Capture pre-move ORDERING from ruleBuilderJson's actionList (RM's own
     // display-ordered array). appSettings key order is arbitrary -- neither
@@ -3859,7 +3894,7 @@ Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     // POSITION moved, not just that the index set is unchanged -- a mid-list
     // silent no-op leaves both before- and after-sets identical AND positions
     // identical, but a real move shifts position by exactly one slot.
-    def beforeOrderRaw = _rmOrderedActionIndices(appId)
+    java.util.List beforeOrderRaw = __bat529StaticCall_java_util_List_1('_rmOrderedActionIndices', appId)
     if (beforeOrderRaw == null) {
         // The settings scan is not display order; a position computed from it can misclassify a
         // boundary move or verify the wrong shift, and the rule reorders silently. Refuse pre-write.
@@ -3873,21 +3908,21 @@ Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     // burning a slow position-shift check and surfacing a confusing failure.
     // Placed after the index-existence check (mirrors _rmDeleteAction ordering):
     // an invalid index gets the more actionable IllegalArgumentException first.
-    def stuckEditAct = _rmGetStateEditAct(appId)
+    def stuckEditAct = __bat529StaticCall_java_lang_Object_1('_rmGetStateEditAct', appId)
     if (stuckEditAct != null) {
         throw new IllegalStateException("moveAction(${actionIdx}, ${direction}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops move-arrow clicks until this clears. Recovery options: (a) wait ~60s and retry (RM's stale-state timeout -- UNVERIFIED for this marker: an artificially-set editAct observed live did NOT clear after 5+ minutes); (b) open the rule in the Hubitat UI and finish or cancel the open action editor. Verified live on fw 2.5.1.135: cancelBtn/cancelAct clicks, updateRule, and an in-place hub_restore_backup do NOT clear a stuck editAct (restore-in-place rewrites settings, not app state) -- if (a) and (b) fail, delete the rule, then hub_restore_backup(scope='source', backupKey='<a recent rm-rule snapshot for this rule>', confirm=true), which RECREATES it with fresh state.")
     }
     def beforePosition = beforeOrderRaw.indexOf(actionIdx)
     def isBoundary = (direction == "up" && beforePosition == 0) ||
                      (direction == "down" && beforePosition == beforeOrderRaw.size() - 1)
-    _rmClickAppButton(appId, actionIdx.toString(), stateAttr, "selectActions")
+    __bat529StaticCall_java_lang_Object_4('_rmClickAppButton', appId, actionIdx.toString(), stateAttr, "selectActions")
     // The compiled order ONLY: the settings fallback is arbitrary key order, and a position taken
     // from it compared against a compiled-order position can coincidentally show the expected
     // one-slot shift and report a move that never happened. Unreadable is UNCONFIRMED, and is kept
     // distinct from a genuinely empty list -- collapsing the two reported a boundary no-op as a
     // confirmed success carrying indicesAfter:[] and afterPosition:-1, i.e. "the rule has no
     // actions", for a click nobody could verify.
-    def afterOrderFetched = _rmOrderedActionIndices(appId)
+    java.util.List afterOrderFetched = __bat529StaticCall_java_util_List_1('_rmOrderedActionIndices', appId)
     def afterOrderRaw = afterOrderFetched ?: []
     def afterPosition = afterOrderRaw.indexOf(actionIdx)
     if (afterOrderFetched == null) {
@@ -3903,11 +3938,11 @@ Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
         ]
     }
     def cfg = null
-    try { cfg = _rmFetchConfigJson(appId, "selectActions") }
+    try { cfg = __bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', appId, "selectActions") }
     catch (Exception verifyExc) {
-        mcpLog("warn", "rm-native", "moveAction: post-click selectActions fetch failed for app ${appId} (${verifyExc.message}) -- render-error check skipped, action ordering may have left the page in an inconsistent state")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "moveAction: post-click selectActions fetch failed for app ${appId} (${verifyExc.message}) -- render-error check skipped, action ordering may have left the page in an inconsistent state")
     }
-    def renderError = cfg?.configPage?.error
+    def renderError = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(cfg, 'configPage'), 'error')
     if (renderError) {
         throw new IllegalStateException("moveAction(${actionIdx}, ${direction}): click returned 200 but selectActions render now errors: ${renderError}")
     }
@@ -3927,17 +3962,17 @@ Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
         // a false-negative that tempts a caller into a second move that
         // double-shifts the action.
         if (actualShift != expectedShift) {
-            pauseExecution(1500)
+            __bat529StaticCall_java_lang_Object_1('pauseExecution', 1500)
             // The re-check read is the one fetch in this otherwise verify-tolerant
             // path; if it throws (transient relay flake), treat the move as
             // unconfirmed -- fall through to the soft asyncCommitLikely return
             // rather than hard-throwing out of the function.
             try {
-                afterOrderRaw = _rmOrderedActionIndices(appId) ?: []
+                afterOrderRaw = __bat529StaticCall_java_util_List_1('_rmOrderedActionIndices', appId) ?: []
                 afterPosition = afterOrderRaw.indexOf(actionIdx)
                 actualShift = afterPosition - beforePosition
             } catch (Exception recheckExc) {
-                mcpLog("warn", "rm-native", "moveAction: post-pause re-check fetch failed for app ${appId} (${recheckExc.message}) -- treating as unconfirmed (soft asyncCommitLikely return)")
+                __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "moveAction: post-pause re-check fetch failed for app ${appId} (${recheckExc.message}) -- treating as unconfirmed (soft asyncCommitLikely return)")
             }
         }
         if (actualShift != expectedShift) {
@@ -4057,6 +4092,7 @@ private Map _rmNavigateToPage(Integer appId, String fromPage, String targetPage,
     return null
 }
 
+@groovy.transform.CompileStatic
 private int _rmEmptyRenderPauseMs() {
     // One tuning value for one problem -- RM's transient empty render -- shared by the walker's
     // nav recovery and addAction's doActPage re-read. A method, not a field: the Groovy sandbox
@@ -4074,14 +4110,15 @@ private int _rmEmptyRenderPauseMs() {
 // nav response, a GET cannot stand in), a spent time budget, and a re-read that is empty too.
 // A null or non-JSON POST never reaches here -- that is precisely the case where the first
 // request may have landed, and a retry would double-submit.
+@groovy.transform.CompileStatic
 private Map _rmRecoverEmptyNavRender(Integer appId, String targetPage, Map hrefParams, Map navResp, Long reqT0) {
     if (!(navResp?.configPage instanceof Map)) return navResp
     if (hrefParams != null && !hrefParams.isEmpty()) {
         // A param-bearing sub-page's schema lives ONLY in this nav response, so a re-read cannot
         // stand in for it and the empty render is reported as-is. Say so, or it leaves no trace.
-        def paramSchema = _rmCollectWalkSchema(navResp.configPage as Map, null)
-        if (paramSchema.inputs.isEmpty() && paramSchema.hrefs.isEmpty()) {
-            mcpLog("debug", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page, but it was entered with href params whose state a plain GET cannot reproduce; reporting it as-is")
+        java.util.Map paramSchema = __bat529StaticCall_java_util_Map_2('_rmCollectWalkSchema', navResp.configPage as Map, null)
+        if (__bat529StaticProperty_java_util_List(paramSchema, 'inputs').isEmpty() && __bat529StaticProperty_java_util_List(paramSchema, 'hrefs').isEmpty()) {
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page, but it was entered with href params whose state a plain GET cannot reproduce; reporting it as-is")
         }
         return navResp
     }
@@ -4089,29 +4126,29 @@ private Map _rmRecoverEmptyNavRender(Integer appId, String targetPage, Map hrefP
     // the page has nothing on it (live: a doActPage entered without the wizard state RM expects
     // answers "Cannot invoke method startsWith() on null object" on the POST and on a GET alike).
     // Re-reading it yields the same error; the walker surfaces the error text instead.
-    if (navResp.configPage.error != null) return navResp
-    def schema = _rmCollectWalkSchema(navResp.configPage as Map, null)
-    if (!schema.inputs.isEmpty() || !schema.hrefs.isEmpty()) return navResp
-    if (_timeBudgetExceeded(reqT0)) {
-        mcpLog("warn", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page; time budget spent, reporting it as-is")
+    if (__bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(navResp, 'configPage'), 'error') != null) return navResp
+    java.util.Map schema = __bat529StaticCall_java_util_Map_2('_rmCollectWalkSchema', navResp.configPage as Map, null)
+    if (!__bat529StaticProperty_java_util_List(schema, 'inputs').isEmpty() || !__bat529StaticProperty_java_util_List(schema, 'hrefs').isEmpty()) return navResp
+    if (__bat529StaticCall_java_lang_Object_1('_timeBudgetExceeded', reqT0)) {
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page; time budget spent, reporting it as-is")
         return navResp
     }
-    mcpLog("warn", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page; re-reading it once")
-    pauseExecution(_rmEmptyRenderPauseMs())
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "navigate -> ${targetPage} for app ${appId} rendered an empty page; re-reading it once")
+    __bat529StaticCall_java_lang_Object_1('pauseExecution', __bat529StaticCall_int_0('_rmEmptyRenderPauseMs'))
     try {
-        def reread = _rmFetchConfigJson(appId, targetPage)
+        java.util.Map reread = __bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', appId, targetPage)
         if (reread?.configPage instanceof Map) {
-            def again = _rmCollectWalkSchema(reread.configPage as Map, null)
-            if (!again.inputs.isEmpty() || !again.hrefs.isEmpty()) {
+            java.util.Map again = __bat529StaticCall_java_util_Map_2('_rmCollectWalkSchema', reread.configPage as Map, null)
+            if (!__bat529StaticProperty_java_util_List(again, 'inputs').isEmpty() || !__bat529StaticProperty_java_util_List(again, 'hrefs').isEmpty()) {
                 // The re-read's `app` token travels with its configPage: leaving the POST's stale
                 // one beside a fresh page hands the next form post an out-of-date app.version.
-                def grafted = [configPage: reread.configPage, navRetried: true]
+                java.util.Map grafted = [configPage: reread.configPage, navRetried: true]
                 if (reread.app != null) grafted.app = reread.app
                 return navResp + grafted
             }
         }
     } catch (Exception rereadExc) {
-        mcpLog("debug", "rm-native", "navigate -> ${targetPage} re-read failed for app ${appId}: ${rereadExc.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "rm-native", "navigate -> ${targetPage} re-read failed for app ${appId}: ${rereadExc.message}")
     }
     return navResp
 }
@@ -4460,12 +4497,13 @@ private String _rmCommaJoinedModeHint(Object rawName, Collection validNames, Str
     return "${prefix}'${s}' looks like a comma-joined list -- pass a list instead, one entry per mode (e.g. state:['Day','Evening']), not a single comma-separated string. Valid modes: ${valid}"
 }
 
+@groovy.transform.CompileStatic
 private List _rmResolveModeIds(Collection keys) {
-    def hubModes = location?.modes ?: []
-    def nameToId = [:]
-    (hubModes).each(((this.&_bat529Cb_4076886b_312).curry([nameToId] as Object[])))
-    def out = []
-    (keys).each(((this.&_bat529Cb_4076886b_418).curry([nameToId, out] as Object[])))
+    def hubModes = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_location(), 'modes') ?: []
+    java.util.Map nameToId = [:]
+    __bat529StaticDgm_each_1_java_lang_Object((hubModes), ((this.&_bat529Cb_4076886b_312).curry([nameToId] as Object[])))
+    java.util.List out = []
+    __bat529StaticDgm_each_1_java_lang_Object((keys), ((this.&_bat529Cb_4076886b_418).curry([nameToId, out] as Object[])))
     return out
 }
 
@@ -4474,20 +4512,21 @@ private List _rmResolveModeIds(Collection keys) {
 // no mode selected. Prefer the picker's option keys when the caller discovered a
 // non-empty set; otherwise fall back to the hub's location.modes IDs. Returns
 // the offending IDs, the valid set, and a human-readable source for the message.
+@groovy.transform.CompileStatic
 private Map _rmBadModeIds(List resolvedIds, Object pickerOptions) {
     def pickerIds = []
     if (pickerOptions instanceof Map) {
-        pickerIds = ((pickerOptions as Map).keySet()).collect((this.&_bat529Cb_4076886b_157))
+        pickerIds = __bat529StaticDgm_collect_1_java_util_List(((pickerOptions as Map).keySet()), (this.&_bat529Cb_4076886b_157))
     } else if (pickerOptions instanceof List) {
-        (pickerOptions as List).each { o ->
+        __bat529StaticDgm_each_1_java_util_List((pickerOptions as List)) { o ->
             if (o instanceof Map) { if (o.id != null) pickerIds << o.id.toString() }
             else if (o != null) pickerIds << o.toString()
         }
     }
     def hasPicker = !pickerIds.isEmpty()
-    def validIds = hasPicker ? pickerIds : (((location?.modes ?: [])).collect((this.&_bat529Cb_4076886b_130))).findAll((this.&_bat529Cb_4076886b_213))
-    def source = hasPicker ? "the mode picker" : "hub modes"
-    def bad = (resolvedIds).findAll(((this.&_bat529Cb_4076886b_156).curry([validIds] as Object[])))
+    def validIds = __bat529StaticExpr__rmBadModeIds_0(hasPicker, pickerIds)
+    java.lang.String source = hasPicker ? "the mode picker" : "hub modes"
+    def bad = __bat529StaticDgm_findAll_1_java_util_List((resolvedIds), ((this.&_bat529Cb_4076886b_156).curry([validIds] as Object[])))
     return [valid: validIds, bad: bad, source: source]
 }
 
@@ -4496,25 +4535,27 @@ private Map _rmBadModeIds(List resolvedIds, Object pickerOptions) {
 // name rather than the ID (e.g. delayActs/getDelayPerMode uses
 // delayHourDay.<N> / delayHourAway.<N> rather than delayHour1.<N> /
 // delayHour4.<N>).
+@groovy.transform.CompileStatic
 private List _rmResolveModeNames(Collection keys) {
-    def hubModes = location?.modes ?: []
-    def idToName = [:]
-    def nameSet = [] as Set
-    (hubModes).each(((this.&_bat529Cb_4076886b_367).curry([idToName, nameSet] as Object[])))
-    def out = []
-    (keys).each(((this.&_bat529Cb_4076886b_417).curry([idToName, nameSet, out] as Object[])))
+    def hubModes = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_location(), 'modes') ?: []
+    java.util.Map idToName = [:]
+    java.util.Set nameSet = [] as Set
+    __bat529StaticDgm_each_1_java_lang_Object((hubModes), ((this.&_bat529Cb_4076886b_367).curry([idToName, nameSet] as Object[])))
+    java.util.List out = []
+    __bat529StaticDgm_each_1_java_lang_Object((keys), ((this.&_bat529Cb_4076886b_417).curry([idToName, nameSet, out] as Object[])))
     return out
 }
 
 // True if `key` (Integer or String mode-name) refers to the same hub mode as
 // the numeric `mid` (String form). Used by per-mode action subtypes to look
 // up per-mode values keyed by either ID or name.
+@groovy.transform.CompileStatic
 private boolean _rmModeIdMatches(Object key, String mid) {
     def s = key?.toString()
     if (!s) return false
     if (s == mid) return true
-    def hubModes = location?.modes ?: []
-    return (hubModes).any(((this.&_bat529Cb_4076886b_246).curry([mid, s] as Object[])))
+    def hubModes = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_location(), 'modes') ?: []
+    return __bat529StaticDgm_any_1_boolean((hubModes), ((this.&_bat529Cb_4076886b_246).curry([mid, s] as Object[])))
 }
 
 private void _rmInitSelectActionsPage(Integer appId) {
@@ -4566,10 +4607,11 @@ private void _rmInitSelectActionsPage(Integer appId) {
 // ...) rather than a hardcoded few. The Window Shade display name resolves to the shade
 // operation picker, so it is recognized too. Case-insensitive. Advisory-only -- used to steer a
 // caller who passed state: where action: belongs.
+@groovy.transform.CompileStatic
 private boolean _rmActionCapUsesActionVerb(String capRaw) {
     def want = capRaw?.trim()?.toLowerCase()
     if (!want) return false
-    def actionEnumCaps = (((_rmActionSchemaForDiscover()?.capabilities ?: [])).findAll((this.&_bat529Cb_4076886b_375))).collect((this.&_bat529Cb_4076886b_388))
+    def actionEnumCaps = __bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_util_List(((__bat529StaticCall_java_util_Map_0('_rmActionSchemaForDiscover')?.capabilities ?: [])), (this.&_bat529Cb_4076886b_375))), (this.&_bat529Cb_4076886b_388))
     // Actuator display name that names the same operation picker as the shade schema entry.
     def resolved = (want == "window shade" || want == "windowshade") ? "shade" : want
     return resolved in actionEnumCaps
@@ -4585,6 +4627,7 @@ private boolean _rmActionCapUsesActionVerb(String capRaw) {
 // persist (the caller then surfaces a stuck marker so the envelope points at recovery). Every step
 // is tolerant -- a rollback must never mask the original error, and "nothing to cancel/delete" is
 // a benign no-op.
+@groovy.transform.CompileStatic
 private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean condWizardOpen = false) {
     // 1. Close the in-flight condition wizard ONLY when one is genuinely open and not already cancelled.
     //    On the walker-thrown path the walker's cancelInFlightActCond already issued the single allowed
@@ -4594,15 +4637,15 @@ private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean co
     //    so this only runs on paths that opened a slot and threw before it was cancelled (e.g. the schema
     //    did not render rCapab_<N>).
     if (condWizardOpen) {
-        try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") } catch (Exception ignored) { /* nothing to cancel */ }
+        try { __bat529StaticCall_java_lang_Object_4('_rmClickAppButton', appId, "cancelCapab", null, "doActPage") } catch (Exception ignored) { /* nothing to cancel */ }
     }
     // 2. Abort the action editor via doActPage's Cancel button (actionCancel; "cancelAct" is only the
     //    delay "Cancelable?" toggle). This must precede step 3: RM silently no-ops delAct while
     //    state.editAct is set. On success RM drops the uncommitted row's values and consumes its
     //    index; the click is best-effort, so step 3 verifies rather than assumes.
-    try { _rmClickAppButton(appId, "actionCancel", null, "doActPage") } catch (Exception cancelExc) {
+    try { __bat529StaticCall_java_lang_Object_4('_rmClickAppButton', appId, "actionCancel", null, "doActPage") } catch (Exception cancelExc) {
         // Editor may already be closed; step 3 verifies. Log the cause so a failing cancel is traceable.
-        mcpLog("debug", "rm-native", "_rmRollbackInFlightAction: actionCancel click failed for app ${appId} action ${idx} (${cancelExc.message ?: cancelExc.toString()})")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "rm-native", "_rmRollbackInFlightAction: actionCancel click failed for app ${appId} action ${idx} (${cancelExc.message ?: cancelExc.toString()})")
     }
     // 3. If the row still persists in settings (actType.<idx> written by this call), delete it.
     try {
@@ -4610,11 +4653,11 @@ private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean co
         // ruleBuilderJson.actionList, so a compiled read would call it already gone.
         // Live rows only: the key-count view would report a blank row as present (a false
         // wizardStuck) and delete a row that is already empty.
-        if (!_rmLiveActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)) return true
-        _rmDeleteAction(appId, idx, true)   // our own uncommitted row: skip the structural pre-flight
-        return !_rmLiveActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)
+        if (!__bat529StaticCall_java_util_List_1('_rmLiveActionIndicesFromSettings', __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', appId)).contains(idx)) return true
+        __bat529StaticCall_java_util_Map_3('_rmDeleteAction', appId, idx, true)   // our own uncommitted row: skip the structural pre-flight
+        return !__bat529StaticCall_java_util_List_1('_rmLiveActionIndicesFromSettings', __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', appId)).contains(idx)
     } catch (Exception delExc) {
-        mcpLog("warn", "rm-native", "_rmRollbackInFlightAction: rollback of action ${idx} failed for app ${appId} (${delExc.message ?: delExc.toString()}) -- the action row may persist; caller surfaces a stuck-orphan marker so the response points at recovery")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "_rmRollbackInFlightAction: rollback of action ${idx} failed for app ${appId} (${delExc.message ?: delExc.toString()}) -- the action row may persist; caller surfaces a stuck-orphan marker so the response points at recovery")
         return false
     }
 }
@@ -5775,6 +5818,7 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
 
 // The argument checks _rmAddTrigger runs before it opens the trigger editor, applied to a whole
 // list so a create can refuse a bad trigger before the rule exists. Device ids are read-only lookups.
+@groovy.transform.CompileStatic
 private void _rmPrevalidateTriggerSpecList(List specs, String label) {
     (specs).eachWithIndex(((this.&_bat529Cb_4076886b_430).curry([label] as Object[])))
 }
@@ -5783,6 +5827,7 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
 // refused before any of it is written. Everything here only reads (appId null: no rule yet).
 // Structural balance is checked separately; checks that need the rule's own state (one waitEvents
 // action per rule, a fileDelete/fileAppend file list, the disabled-app gate) stay in the add.
+@groovy.transform.CompileStatic
 private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null) {
     (specs).eachWithIndex(((this.&_bat529Cb_4076886b_429).curry([appId, label, validRuleIds] as Object[])))
 }
@@ -5813,6 +5858,7 @@ private String _rmSetVariableValueNumOp(Map actionSpec) {
 
 // Extracted from _rmAddAction for the same bytecode budget. Returns the action index RM
 // actually allocated (its high-water mark), falling back to the caller's computed idx.
+@groovy.transform.CompileStatic
 private Integer _rmResolveAllocatedActionIdx(Integer appId, Integer idx, Long reqT0) {
     // Re-read the index RM actually allocated. RM keeps a high-water mark
     // (state.actNdx) — even after clearActions deletes all actions, the
@@ -5820,35 +5866,35 @@ private Integer _rmResolveAllocatedActionIdx(Integer appId, Integer idx, Long re
     // not idx = 1. Verified live: a rule that had actions
     // 1/2/3 deleted then opens the wizard with actType.4 (not actType.1).
     // Use the schema's freshly-exposed actType.<N> as ground truth.
-    def doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
-    def doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
-    def actTypeField = (doActSchema?.keySet())?.find((this.&_bat529Cb_4076886b_206))
-    if (!actTypeField && doActPageCfg?.configPage?.error == null && !_timeBudgetExceeded(reqT0)) {
+    def doActPageCfg = __bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', appId, "doActPage")
+    def doActSchema = __bat529StaticCall_java_util_Map_1('_rmCollectInputSchema', doActPageCfg?.configPage)
+    def actTypeField = __bat529StaticDgm_find_1_Safe_java_lang_Object((doActSchema?.keySet()), (this.&_bat529Cb_4076886b_206))
+    if (!actTypeField && __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(doActPageCfg, 'configPage'), 'error') == null && !__bat529StaticCall_java_lang_Object_1('_timeBudgetExceeded', reqT0)) {
         // RM occasionally renders doActPage EMPTY right after the "Create New Action" click
         // (seen on the CI test hub under load: no actType.<N> in the schema, so every later
         // write landed not_in_schema and the action came back partial). That is not an error
         // page -- those carry configPage.error and are reported as they are -- so one re-read
         // after a short pause; a second empty render flows into the schema-gated writes, which
         // report it the way they always have.
-        mcpLog("warn", "rm-native", "addAction: doActPage rendered with no actType field for app ${appId} after the Create New Action click; re-reading it once")
-        pauseExecution(_rmEmptyRenderPauseMs())
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "addAction: doActPage rendered with no actType field for app ${appId} after the Create New Action click; re-reading it once")
+        __bat529StaticCall_java_lang_Object_1('pauseExecution', __bat529StaticCall_int_0('_rmEmptyRenderPauseMs'))
         try {
             // _rmFetchConfigJson THROWS on an empty body -- the very transient this block exists to
             // survive -- so a failed re-read degrades to the original read (schema-gated writes then
             // report it as they always have) instead of failing the add with "app N may not exist".
-            doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
-            doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
-            actTypeField = (doActSchema?.keySet())?.find((this.&_bat529Cb_4076886b_207))
+            doActPageCfg = __bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', appId, "doActPage")
+            doActSchema = __bat529StaticCall_java_util_Map_1('_rmCollectInputSchema', doActPageCfg?.configPage)
+            actTypeField = __bat529StaticDgm_find_1_Safe_java_lang_Object((doActSchema?.keySet()), (this.&_bat529Cb_4076886b_207))
         } catch (Exception rereadExc) {
-            mcpLog("debug", "rm-native", "addAction: doActPage re-read failed for app ${appId} (${rereadExc.message}); keeping the original read")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "rm-native", "addAction: doActPage re-read failed for app ${appId} (${rereadExc.message}); keeping the original read")
         }
     }
     if (actTypeField) {
         def m = (actTypeField.toString() =~ /^actType\.(\d+)$/)
         if (m.matches()) {
-            def actualIdx = m[0][1] as Integer
+            def actualIdx = __bat529StaticBinary_GetAt_java_lang_Object(__bat529StaticBinary_GetAt_java_lang_Object(m, 0), 1) as Integer
             if (actualIdx != idx) {
-                mcpLog("info", "rm-native", "addAction: RM allocated idx ${actualIdx} (computed ${idx} from existing settings) -- using ${actualIdx}")
+                __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "rm-native", "addAction: RM allocated idx ${actualIdx} (computed ${idx} from existing settings) -- using ${actualIdx}")
                 idx = actualIdx
             }
         }
@@ -6500,6 +6546,7 @@ __bat529EachReceiver2
 // addRequiredExpression / ifThen): their date/day pickers are unimplemented everywhere.
 // Single source of truth so the trigger-condition guard and the walker guard reject the same
 // set and cannot drift.
+@groovy.transform.CompileStatic
 private List _rmUnsupportedDateDayConditionCaps() { ["Between two dates", "Days of week", "On a Day"] }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -6507,6 +6554,7 @@ private List _rmUnsupportedDateDayConditionCaps() { ["Between two dates", "Days 
 // names every structured surface -- the reveal-walker serves all four addAction expression
 // subtypes), so both the conditional-trigger builder and the reveal-walker throw identical,
 // uniform guidance. ASCII-only.
+@groovy.transform.CompileStatic
 private String _rmUnsupportedDateDayConditionMessage(String cap) {
     "'${cap}' is not yet supported via the structured condition shortcut on any surface (addTrigger.condition, addRequiredExpression, or the addAction expression subtypes ifThen/elseIf/repeatWhile/waitExpression); its date/day picker is not modelled. Author it directly against the wizard via rawSettings or a walkStep call."
 }
@@ -6517,6 +6565,7 @@ private String _rmUnsupportedDateDayConditionMessage(String cap) {
 // point-in-time (is the state X right now?), so a change comparator has no meaning there -- it
 // belongs on a trigger row. Single source of truth so the static condition builder and the
 // reveal-walker steer identically. ASCII-only.
+@groovy.transform.CompileStatic
 private String _rmChangeComparatorConditionMessage(String cap, Integer condIdx) {
     def where = condIdx != null ? "conditions[${condIdx}]: " : ""
     "${where}capability '${cap}' with a state-change comparator ('*changed*'/'*became*') is not valid as a condition -- conditions are evaluated point-in-time (is the state X right now?), so a change comparator has nowhere to apply. Author it as a TRIGGER row instead (addTrigger.capability with comparator:'*changed*'), where device-state change events ARE supported; for a condition, pass an explicit state (e.g. state:'on')."
@@ -6529,10 +6578,12 @@ private String _rmChangeComparatorConditionMessage(String cap, Integer condIdx) 
 // either. On a condition surface it would write rCapab_<N> with no field handling, committing a broken
 // condition. Distinct from the date/day list (unmodelled everywhere); single source of truth so the
 // static condition builder and the reveal-walker reject the same set; extend it if more such caps surface.
+@groovy.transform.CompileStatic
 private List _rmNonConditionCaps() { ["Last Event Device"] }
 
 // Internal _rm helper -- not part of the tool surface.
 // Shared fail-loud message for a picker capability that is not usable as a condition. ASCII-only.
+@groovy.transform.CompileStatic
 private String _rmNonConditionMessage(String cap) {
     "'${cap}' is not usable as a condition -- it references the device that fired the rule's trigger and is only meaningful in actions (e.g. run a command on the triggering device), not as a state to test in a Required Expression or condition. Remove it from the expression."
 }
@@ -6544,6 +6595,7 @@ private String _rmNonConditionMessage(String cap) {
 // would commit an incomplete condition (the render is "Last lock code entered on null: null") that the
 // health guard does not flag. Single source of truth so the static condition builder and the reveal-
 // walker reject the same set; extend it (and the message) if more such caps surface.
+@groovy.transform.CompileStatic
 private List _rmUnconfigurableConditionCaps() { ["Lock codes"] }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -6563,14 +6615,15 @@ private String _rmUnconfigurableConditionMessage(String cap) {
 // surfaces the throw precedes every wizard write, and on the action-expression surface the caller rolls
 // the in-flight opener back, so the reject is atomic in each case. ASCII-only. Returns without throwing
 // when the capability is walkable (the caller proceeds to picker resolution + the normal walk).
+@groovy.transform.CompileStatic
 private void _rmRejectUnwalkableConditionCapability(String requestedCap) {
     if (!requestedCap) return
-    def dateDay = (_rmUnsupportedDateDayConditionCaps()).find(((this.&_bat529Cb_4076886b_266).curry([requestedCap] as Object[])))
-    if (dateDay) throw new IllegalArgumentException(_rmUnsupportedDateDayConditionMessage(dateDay) + " RM is not touched.")
-    def nonCond = (_rmNonConditionCaps()).find(((this.&_bat529Cb_4076886b_193).curry([requestedCap] as Object[])))
-    if (nonCond) throw new IllegalArgumentException(_rmNonConditionMessage(nonCond) + " RM is not touched.")
-    def unconfigurableCond = (_rmUnconfigurableConditionCaps()).find(((this.&_bat529Cb_4076886b_253).curry([requestedCap] as Object[])))
-    if (unconfigurableCond) throw new IllegalArgumentException(_rmUnconfigurableConditionMessage(unconfigurableCond) + " RM is not touched.")
+    def dateDay = __bat529StaticDgm_find_1_java_lang_Object((__bat529StaticCall_java_util_List_0('_rmUnsupportedDateDayConditionCaps')), ((this.&_bat529Cb_4076886b_266).curry([requestedCap] as Object[])))
+    if (dateDay) throw new IllegalArgumentException(__bat529StaticCall_java_lang_String_1('_rmUnsupportedDateDayConditionMessage', dateDay) + " RM is not touched.")
+    def nonCond = __bat529StaticDgm_find_1_java_lang_Object((__bat529StaticCall_java_util_List_0('_rmNonConditionCaps')), ((this.&_bat529Cb_4076886b_193).curry([requestedCap] as Object[])))
+    if (nonCond) throw new IllegalArgumentException(__bat529StaticCall_java_lang_String_1('_rmNonConditionMessage', nonCond) + " RM is not touched.")
+    def unconfigurableCond = __bat529StaticDgm_find_1_java_lang_Object((__bat529StaticCall_java_util_List_0('_rmUnconfigurableConditionCaps')), ((this.&_bat529Cb_4076886b_253).curry([requestedCap] as Object[])))
+    if (unconfigurableCond) throw new IllegalArgumentException(__bat529StaticCall_java_lang_String_1('_rmUnconfigurableConditionMessage', unconfigurableCond) + " RM is not touched.")
 }
 
 // Pre-flight reject for the unwalkable condition capabilities inside an expression-bearing action
@@ -6806,9 +6859,11 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
 // Binary vs unary partition for setVariable variable-math operators. This local partition is
 // the ARITY authority: the live valMathOp enum lists the operators but does NOT label their
 // arity, so the handler cannot derive "needs a second operand" from the schema alone.
-def _rmMathBinaryOps() { ["+", "-", "*", "/", "%"] }
+@groovy.transform.CompileStatic
+java.util.List _rmMathBinaryOps() { ["+", "-", "*", "/", "%"] }
 
-def _rmMathUnaryOps() {
+@groovy.transform.CompileStatic
+java.util.List _rmMathUnaryOps() {
     ["negate", "absolute", "round", "random", "sqrt", "sin", "cos", "tan",
      "asin", "acos", "atan", "log", "toRadians", "toDegrees"]
 }
@@ -6819,10 +6874,12 @@ def _rmMathUnaryOps() {
 // "boolean"/"datetime". The setVariable device-attribute (fromDevice) and variable-math (math)
 // source modes are NUMERIC-TARGET-ONLY, so this is the single source of truth for "is this target
 // numeric". Single-list so the guard and any future caller cannot drift. Case-insensitive at use.
-def _rmNumericVarTypeTokens() { ["integer", "bigdecimal"] }
+@groovy.transform.CompileStatic
+java.util.List _rmNumericVarTypeTokens() { ["integer", "bigdecimal"] }
 
+@groovy.transform.CompileStatic
 boolean _rmIsNumericVarType(String token) {
-    token != null && (_rmNumericVarTypeTokens()).any(((this.&_bat529Cb_4076886b_168).curry([token] as Object[])))
+    token != null && __bat529StaticDgm_any_1_boolean((__bat529StaticCall_java_util_List_0('_rmNumericVarTypeTokens')), ((this.&_bat529Cb_4076886b_168).curry([token] as Object[])))
 }
 
 // Coerce a caller-supplied device-id value to its canonical positive-integer string,
@@ -6865,17 +6922,18 @@ def _rmAsPositiveDeviceId(Object raw) {
 // default ["mainPage"] (selectTriggers + doActPage via _rmWriteSettingOnPage); STPage
 // walker callers pass '[]' (_rmWriteSubPageField -- re-firing the mainPage href would
 // reset the in-flight condition-builder accumulator).
+@groovy.transform.CompileStatic
 private void _rmForceWriteEnumField(Integer appId, String pageName, String key, Object value, List applied, List skipped, String pageBreadcrumbs = '["mainPage"]') {
     // The comparator field is a single-value enum; pre-normalize defensively so a
     // future caller cannot write a raw '!='/'==' the hub does not recognize (idempotent
     // -- an already-normalized token passes through unchanged, and a null/non-comparator
     // value is returned untouched).
-    value = _rmNormalizeComparator(value)
+    value = __bat529StaticCall_java_lang_String_1('_rmNormalizeComparator', value)
     // type:"enum", multiple:false is correct because the only callers force-write a
     // single-value comparator enum field (ReltDev<N>/RelrDev_<N>); no non-enum or
     // multi-select field reaches this helper.
-    def synthSchema = [(key.toString()): [type: "enum", multiple: false]]
-    def body = _rmBuildSettingsBody(appId, [(key): value], synthSchema)
+    java.util.Map synthSchema = [(key.toString()): [type: "enum", multiple: false]]
+    java.util.Map body = __bat529StaticCall_java_util_Map_3('_rmBuildSettingsBody', appId, [(key): value], synthSchema)
     // Wizard sub-pages need formAction=update + currentPage + pageBreadcrumbs or the
     // wizard silently rejects the field. The breadcrumb shape mirrors the page's normal
     // write convention (see method docstring) -- ["mainPage"] for _rmWriteSettingOnPage
@@ -6892,9 +6950,9 @@ private void _rmForceWriteEnumField(Integer appId, String pageName, String key, 
     // rejected force-write degrades the add (comparator did not land -> partial)
     // instead of propagating and aborting it -- the F9 never-abort contract.
     try {
-        _rmPostSettings(appId, body)
+        __bat529StaticCall_java_util_Map_2('_rmPostSettings', appId, body)
     } catch (Exception postEx) {
-        mcpLog("warn", "rm-native", "_rmForceWriteEnumField: fallback POST of ${key} on page '${pageName}' for app ${appId} was rejected (${postEx.message ?: postEx}); comparator did not land -- add degrades to partial")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "_rmForceWriteEnumField: fallback POST of ${key} on page '${pageName}' for app ${appId} was rejected (${postEx.message ?: postEx}); comparator did not land -- add degrades to partial")
         if (skipped != null) {
             skipped << [key: key, reason: "comparator_force_write_failed", value: value]
         }
@@ -6961,6 +7019,7 @@ private String _rmPreflightRestoreHint(String reason = null, Map backup = null, 
 // the existing damage that motivated the refusal; on a mutation failure it is
 // whether the write left the rule broken — without a follow-up
 // hub_get_rule_health call.
+@groovy.transform.CompileStatic
 private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, String pageName = "doActPage") {
     def msgStr = msg?.toString() ?: ""
     // No backup means the refusal fired before the baseline snapshot, so nothing was written: a
@@ -6971,16 +7030,16 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
     def wizardStuck = msgStr.contains("wizardStuck") || msgStr.contains("cancelCapab cleanup failed")
     def health = null
     // Best effort -- a health read must never mask the real error, but a failed one is reported.
-    try { health = _rmCheckRuleHealth(appId) } catch (Exception healthExc) {
+    try { health = __bat529StaticCall_java_util_Map_1('_rmCheckRuleHealth', appId) } catch (Exception healthExc) {
         health = [ok: false, unreadable: true, checkErrors: [healthExc.message ?: healthExc.toString()]]
-        mcpLog("warn", "rm-native", "_rmBuildUpdateErrorResponse: health probe failed for app ${appId}: ${healthExc.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "_rmBuildUpdateErrorResponse: health probe failed for app ${appId}: ${healthExc.message}")
     }
     def restoreHint
     if (isPreflightRefusal) {
         // Echo the disabled-rule cause specifically: it is the one refusal whose remedy is a
         // hub setting rather than a change to the caller's arguments, so a caller that reads
         // only the hint would otherwise never learn a disabled rule cannot be edited at all.
-        restoreHint = _rmPreflightRestoreHint(
+        restoreHint = __bat529StaticCall_java_lang_String_2('_rmPreflightRestoreHint', 
             msgStr.contains("is DISABLED") ? "the rule is disabled, and Hubitat does not allow editing a disabled app -- re-enable it, make the change, then disable it again" : null,
             backup)
     } else if (wizardStuck) {
@@ -6991,7 +7050,7 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
     } else {
         restoreHint = "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
     }
-    def result = [
+    java.util.Map result = [
         success: false,
         appId: appId,
         error: msg,
@@ -7034,9 +7093,10 @@ private List _rmStructuralPairForCapability(String cap) {
 // inline new-condition selector. requireStopOnST (the add path's existing-RE refusal) also needs
 // stopOnST, so a transient render showing the pair without it does not trip the refusal; elsewhere
 // stopOnST is left out because its presence varies across firmware.
+@groovy.transform.CompileStatic
 private boolean _rmIsCommittedRETell(Set names, boolean requireStopOnST = false) {
     if (names == null) return false
-    def hasNewCondSelector = names.contains("cond") || (names).any((this.&_bat529Cb_4076886b_35))
+    def hasNewCondSelector = names.contains("cond") || __bat529StaticDgm_any_1_boolean((names), (this.&_bat529Cb_4076886b_35))
     def base = names.contains("cancelST") && names.contains("editST")
     if (requireStopOnST) base = base && names.contains("stopOnST")
     return base && !hasNewCondSelector
@@ -7623,12 +7683,13 @@ private void _rmVerifySubPageMultipleFlags(Integer appId, String pageName, Map s
 // skipped:true, with a pointer to hub_get_rule_health) so the committed op's
 // response returns under the transport ceiling instead of burning the remaining
 // window on diagnostics. t0 == null (no budget threaded) always probes.
+@groovy.transform.CompileStatic
 private Map _rmWalkStepHealth(Integer appId, Long t0) {
-    if (_timeBudgetExceeded(t0)) {
-        return _rmEmptyHealthVerdict(ok: true, skipped: true, source: "skipped",
+    if (__bat529StaticCall_java_lang_Object_1('_timeBudgetExceeded', t0)) {
+        return __bat529StaticCall__rmEmptyHealthVerdict_java_util_Map_1(ok: true, skipped: true, source: "skipped",
                 note: "health probe skipped: the transport time budget was reached after the committed operation -- verify via hub_get_rule_health(${appId})".toString())
     }
-    return _rmCheckRuleHealth(appId)
+    return __bat529StaticCall_java_util_Map_1('_rmCheckRuleHealth', appId)
 }
 
 // The success gate for a health verdict attached to COMMITTED work: pass unless
@@ -7645,12 +7706,13 @@ private boolean _rmHealthGatePass(Map health) {
 // Structural issues of an RM rule computed the same way the health check does, from the compiled action list and
 // statusJson settings only. Null for an app that is not an RM rule; a compiled-state read that failed throws, so the
 // caller can say why the baseline is missing rather than mistaking the failure for a non-RM app.
+@groovy.transform.CompileStatic
 List _rmStructuralBaseline(Integer appId) {
-    def cs = _ruleCompiledState(appId)
+    java.util.Map cs = __bat529StaticCall_java_util_Map_1('_ruleCompiledState', appId)
     if (cs?.readError != null) throw new IllegalStateException("compiled rule state could not be read: ${cs.readError}")
     if (cs == null || cs.ruleFormat != "rm") return null
-    def settingsByName = _rmFetchSettingsByName(appId)
-    return (_rmStructuralIssuesFromSequence(_rmStructuralSequenceFromSettings(settingsByName, ([] as Set), _rmCoerceActionIndices(cs.actionList)))).collect((this.&_bat529Cb_4076886b_360))
+    java.util.Map settingsByName = __bat529StaticCall_java_util_Map_1('_rmFetchSettingsByName', appId)
+    return __bat529StaticDgm_collect_1_java_util_List((__bat529StaticCall_java_util_List_1('_rmStructuralIssuesFromSequence', __bat529StaticCall_java_util_List_3('_rmStructuralSequenceFromSettings', settingsByName, ([] as Set), __bat529StaticCall_java_util_List_1('_rmCoerceActionIndices', cs.actionList)))), (this.&_bat529Cb_4076886b_360))
 }
 
 // Non-empty list when the final verdict fails ONLY on structural issues that were all present in the baseline
@@ -7999,9 +8061,10 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 // backups are enabled. Deletes call _rmBackupRuleSnapshot directly and a standalone
 // replaceRequiredExpression is exempted below, so both always get a fresh image.
 // A fresh snapshot is taken after the lock is released, since its App Cloner export is slow.
+@groovy.transform.CompileStatic
 Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
-    def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason) }
-    return reused ?: _rmBackupRuleSnapshot(ruleId, reason)
+    def reused = __bat529StaticCall_java_lang_Object_2('_withBackupLock', "rule ${ruleId} baseline (${reason})") { __bat529StaticCall_java_util_Map_2('_rmBackupBeforeEditLocked', ruleId, reason) }
+    return __bat529StaticExpr__rmBackupBeforeEdit_0(reason, reused, ruleId)
 }
 
 private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
@@ -8215,11 +8278,12 @@ __bat529EachReceiver3
     return [snapshot: snapshot, config: config]
 }
 
+@groovy.transform.CompileStatic
 private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config) {
-    def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
+    def ts = new Date(__bat529StaticCall_long_0('now')).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
-    def fileName = _itemBackupFileName(namePrefix + ts + nameExt)
+    java.lang.String fileName = __bat529StaticCall_java_lang_String_1('_itemBackupFileName', namePrefix + ts + nameExt)
 
     def jsonBytes
     try {
@@ -8228,14 +8292,14 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
         throw new IllegalArgumentException("Cannot serialize backup for rule ${ruleId}: ${e.message}")
     }
     try {
-        uploadHubFile(fileName, jsonBytes)
+        __bat529StaticCall_java_lang_Object_2('uploadHubFile', fileName, jsonBytes)
     } catch (Exception e) {
         throw new IllegalArgumentException("Cannot save backup file '${fileName}' for rule ${ruleId}: ${e.message}")
     }
 
     def suffix = fileName.substring(namePrefix.length(), fileName.length() - nameExt.length())
     String backupKey = "rm-rule_${ruleId}_${suffix}"
-    def entry = [
+    java.util.Map entry = [
         type: "rm-rule",
         id: ruleId,
         ruleId: ruleId,
@@ -8245,19 +8309,19 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
         timestamp: snapshot.timestamp,
         sourceLength: jsonBytes.length  // reusing the existing field name for byte size
     ]
-    _publishUploadedItemBackup(backupKey, entry)
+    __bat529StaticCall_java_lang_Object_2('_publishUploadedItemBackup', backupKey, entry)
 
-    mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
     // brokenBefore: the rule's pre-write broken state, derived from the config this snapshot
     // already fetched (no extra hub read). A mutation that needs to know whether IT caused a
     // post-write break (vs the rule being broken beforehand) reads this off the returned backup to
     // steer its error wording, then STRIPS it -- it is a transient internal signal, never surfaced
     // to the caller and deliberately kept off the persisted manifest `entry` (not part of the
     // durable backup record). null when no config was readable (VRB-only snapshot).
-    return [backupKey: backupKey,
-            brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
+    return __bat529StaticBinary_Plus_java_util_Map([backupKey: backupKey,
+            brokenBefore: (config == null ? null : __bat529StaticCall_boolean_1('_rmConfigHasBrokenMarkers', config)),
             baselineReused: false,
-            rollbackScope: "Restoring this baseline returns rule ${ruleId} to its state at ${formatTimestamp(snapshot.timestamp as Long)}."] + entry
+            rollbackScope: "Restoring this baseline returns rule ${ruleId} to its state at ${__bat529StaticCall_java_lang_Object_1('formatTimestamp', snapshot.timestamp as Long)}."], entry)
 }
 
 // Soft delete via /installedapp/delete/<id>. Refuses if the app has
@@ -8302,9 +8366,12 @@ private Map _rmSoftDeleteApp(Integer appId) {
 // Single source of truth for the operation set: the flat enum, the create-arm gate,
 // and the schema-only classifier all read these (a Spock test asserts the enum ==
 // these, so the thin schema can't drift from what the handler accepts).
-def _setRuleCreateHonored() { ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression'] }
-def _setRuleEditOnly() { ['replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions', 'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger', 'modifyAction', 'walkStep', 'settings', 'button'] }
-def _setRuleOperations() { (['create'] + _setRuleCreateHonored() + _setRuleEditOnly() + ['buttonRule', 'guide', 'discover']).unique() }
+@groovy.transform.CompileStatic
+java.util.List _setRuleCreateHonored() { ['addTrigger', 'addTriggers', 'addAction', 'addActions', 'addRequiredExpression'] }
+@groovy.transform.CompileStatic
+java.util.List _setRuleEditOnly() { ['replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions', 'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger', 'modifyAction', 'walkStep', 'settings', 'button'] }
+@groovy.transform.CompileStatic
+def _setRuleOperations() { (['create'] + __bat529StaticCall_java_util_List_0('_setRuleCreateHonored') + __bat529StaticCall_java_util_List_0('_setRuleEditOnly') + ['buttonRule', 'guide', 'discover']).unique() }
 
 // The thin flat-mode tool (description + inputSchema), substituted for hub_set_rule
 // in getToolDefinitions()'s useGateways==false branch.
@@ -8330,27 +8397,28 @@ def _setRuleFlatTool() {
 // discover op, or a probe = any operation call without confirm:true). Lets these
 // through the Write master when writes are disabled, and bypasses the gateway
 // required-param pre-check. confirm:true (an actual write) is NEVER schema-only.
+@groovy.transform.CompileStatic
 def _isSetRuleSchemaOnlyCall(args) {
     if (!(args instanceof Map)) return false
     // Envelope (self-gateway) form decides FIRST and mirrors _setRuleFromEnvelope exactly:
     // a guide/discover op or any call without confirm:true is schema-only; a confirm:true
     // envelope EXECUTES and is never schema-only -- a stray top-level guide/discover flag
     // must NOT mask it, or a write could slip past the Write master when writes are off.
-    if (args.operation != null) {
-        def op = args.operation.toString()
-        return (op == 'guide' || op == 'discover' || args.confirm != true)
+    if (__bat529StaticProperty_java_lang_Object(args, 'operation') != null) {
+        def op = __bat529StaticProperty_java_lang_Object(args, 'operation').toString()
+        return (op == 'guide' || op == 'discover' || __bat529StaticProperty_java_lang_Object(args, 'confirm') != true)
     }
     // Legacy (no-operation) form: toolSetRule dispatches buttonRule to
     // _createButtonRuleViaController (a REAL write) BEFORE the meta-call shortcuts,
     // and that flow's exclusivity gate does not reject a stray guide flag -- so a
     // guide/discover flag riding a buttonRule call must never read as schema-only
     // (it would bypass the Write master and actually create the button rule).
-    if (args.buttonRule != null) return false
+    if (__bat529StaticProperty_java_lang_Object(args, 'buttonRule') != null) return false
     // Remaining meta flags short-circuit inside the handler with NO mutation (the
     // discover/guide early-returns), so they are genuinely schema-only.
-    if (args.guide == true) return true
-    if (args.addTrigger instanceof Map && args.addTrigger.discover == true) return true
-    if (args.addAction instanceof Map && args.addAction.discover == true) return true
+    if (__bat529StaticProperty_java_lang_Object(args, 'guide') == true) return true
+    if (__bat529StaticProperty_java_lang_Object(args, 'addTrigger') instanceof Map && __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(args, 'addTrigger'), 'discover') == true) return true
+    if (__bat529StaticProperty_java_lang_Object(args, 'addAction') instanceof Map && __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(args, 'addAction'), 'discover') == true) return true
     return false
 }
 
@@ -8364,12 +8432,13 @@ def _isSetRuleSchemaOnlyCall(args) {
 // calls to WRITE paths first -- so a call is schema-only ONLY when it is edit-shaped
 // (appId present, no buttonRule) AND carries a meta flag. A guide flag on a
 // create-shaped call must NOT bypass any gate: the create arm would really execute.
-def _isNativeAppSchemaOnlyCall(args) {
+@groovy.transform.CompileStatic
+java.lang.Boolean _isNativeAppSchemaOnlyCall(args) {
     if (!(args instanceof Map)) return false
-    if (args.appId == null || args.buttonRule != null) return false
-    if (args.guide == true) return true
-    if (args.addTrigger instanceof Map && args.addTrigger.discover == true) return true
-    if (args.addAction instanceof Map && args.addAction.discover == true) return true
+    if (__bat529StaticProperty_java_lang_Object(args, 'appId') == null || __bat529StaticProperty_java_lang_Object(args, 'buttonRule') != null) return false
+    if (__bat529StaticProperty_java_lang_Object(args, 'guide') == true) return true
+    if (__bat529StaticProperty_java_lang_Object(args, 'addTrigger') instanceof Map && __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(args, 'addTrigger'), 'discover') == true) return true
+    if (__bat529StaticProperty_java_lang_Object(args, 'addAction') instanceof Map && __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(args, 'addAction'), 'discover') == true) return true
     return false
 }
 
@@ -9092,10 +9161,11 @@ def _createNativeAppShell(args) {
 // A non-List appState (a shape RM is not expected to emit) is treated as
 // "no locals" but logged as a shape mismatch so a silent zero-locals read of a
 // changed contract is visible rather than mistaken for a genuinely empty rule.
+@groovy.transform.CompileStatic
 private Map _rmReadLocalVarsMap(Integer appId) {
     def status
     try {
-        status = _rmFetchStatusJson(appId)
+        status = __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', appId)
     } catch (Exception e) {
         return [ok: false, vars: [:], error: "${e.class.simpleName}: ${e.message ?: e.toString()}"]
     }
@@ -9108,16 +9178,16 @@ private Map _rmReadLocalVarsMap(Integer appId) {
         // as a genuinely-empty rule, so surface it as ok:false (a read failure) instead, so
         // callers (hub_list_rule_local_variables) report a read error rather than total:0.
         if (appState instanceof Map ? !appState.isEmpty() : true) {
-            def shapeLabel = (appState instanceof Map) ? "a Map" : "a non-List value"
-            mcpLog("warn", "rm-native", "_rmReadLocalVarsMap: app ${appId} statusJson appState is ${shapeLabel} (expected a List of {name,value} entries) -- treating as a read failure; the allLocalVars contract may have changed.")
+            java.lang.String shapeLabel = (appState instanceof Map) ? "a Map" : "a non-List value"
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "_rmReadLocalVarsMap: app ${appId} statusJson appState is ${shapeLabel} (expected a List of {name,value} entries) -- treating as a read failure; the allLocalVars contract may have changed.")
             return [ok: false, vars: [:], error: "statusJson appState was ${shapeLabel}, not the expected List of entries -- cannot read local variables (the allLocalVars contract may have changed)"]
         }
         return [ok: true, vars: [:]]
     }
-    def raw = ((appState ?: [])).find((this.&_bat529Cb_4076886b_192))?.value
+    def raw = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticDgm_find_1_java_lang_Object(((appState ?: [])), (this.&_bat529Cb_4076886b_192)), 'value')
     // A running rule updates lv_<name>; allLocalVars only catches up when the rule's page renders.
-    def live = [:]
-    ((appState ?: [])).each(((this.&_bat529Cb_4076886b_393).curry([live] as Object[])))
+    java.util.Map live = [:]
+    __bat529StaticDgm_each_1_java_lang_Object(((appState ?: [])), ((this.&_bat529Cb_4076886b_393).curry([live] as Object[])))
     return [ok: true, vars: (raw instanceof Map) ? raw : [:], live: live]
 }
 
@@ -9141,6 +9211,7 @@ private Map _rmReadLocalVarsMap(Integer appId) {
 // value: <initial>}
 //
 // Returns [success, name, type, value, settingsApplied, settingsSkipped].
+@groovy.transform.CompileStatic
 private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
     if (!(varSpec instanceof Map)) {
         throw new IllegalArgumentException("addLocalVariable requires a Map spec")
@@ -9150,8 +9221,8 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
     def value = varSpec.value
     if (!name) throw new IllegalArgumentException("addLocalVariable.name is required")
     if (!type) throw new IllegalArgumentException("addLocalVariable.type is required")
-    def validTypes = ["Number", "Decimal", "String", "Boolean", "DateTime"]
-    def typeCanonical = (validTypes).find(((this.&_bat529Cb_4076886b_82).curry([type] as Object[])))
+    java.util.List validTypes = ["Number", "Decimal", "String", "Boolean", "DateTime"]
+    def typeCanonical = __bat529StaticDgm_find_1_java_lang_Object((validTypes), ((this.&_bat529Cb_4076886b_82).curry([type] as Object[])))
     if (!typeCanonical) {
         throw new IllegalArgumentException("addLocalVariable.type '${type}' must be one of: ${validTypes.join(', ')}")
     }
@@ -9159,17 +9230,17 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
         throw new IllegalArgumentException("addLocalVariable.value is required (RM auto-commits the variable when varValue is written)")
     }
 
-    def applied = []
-    def skipped = []
+    java.util.List applied = []
+    java.util.List skipped = []
 
     // Step 1. Click moreVar to open the wizard.
-    _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
+    __bat529StaticCall_java_lang_Object_4('_rmClickAppButton', appId, "moreVar", "moreVar", "selectActions")
 
     // Step 2. Write hbVar (name).
-    _rmWriteSettingOnPage(appId, "selectActions", "hbVar", name, applied, null, skipped)
+    __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "selectActions", "hbVar", name, applied, null, skipped)
 
     // Step 3. Write varType. Schema reveal: after this, varValue appears.
-    _rmWriteSettingOnPage(appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
+    __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
 
     // Step 4. Write varValue. RM auto-commits the variable when this lands.
     // Boolean type expects the literal strings "true"/"false" — Groovy's
@@ -9188,7 +9259,7 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
             }
         }
     }
-    _rmWriteSettingOnPage(appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
+    __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
 
     // Verify via appState.allLocalVars that the variable committed. RM
     // may take a moment to persist after varValue is written, so retry
@@ -9197,16 +9268,16 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
     def attempts = 0
     def lastFetchErr = null
     while (attempts < 3 && !committed) {
-        def lvRead = _rmReadLocalVarsMap(appId)
+        java.util.Map lvRead = __bat529StaticCall_java_util_Map_1('_rmReadLocalVarsMap', appId)
         if (lvRead.ok) {
-            if (lvRead.vars.containsKey(name)) committed = true
+            if (__bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(lvRead, 'vars'), 'containsKey', name)) committed = true
         } else {
             lastFetchErr = lvRead.error
         }
         attempts++
         if (!committed && attempts < 3) {
             // Tickle the page once to nudge RM's persistence cycle.
-            try { _rmFetchConfigJson(appId, "selectActions") }
+            try { __bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', appId, "selectActions") }
             catch (Exception tickleExc) {
                 lastFetchErr = lastFetchErr ?: "${tickleExc.class.simpleName}: ${tickleExc.message ?: tickleExc.toString()}"
             }
@@ -9215,7 +9286,7 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
     if (!committed && lastFetchErr) {
         // The verification channel itself failed every attempt — surface
         // that as the root cause rather than silently blaming type mismatch.
-        mcpLog("warn", "rm-native", "addLocalVariable: post-write verification fetch failed for app ${appId} (var '${name}'): ${lastFetchErr}. Treating as not-committed; the actual write may still have landed.")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "addLocalVariable: post-write verification fetch failed for app ${appId} (var '${name}'): ${lastFetchErr}. Treating as not-committed; the actual write may still have landed.")
     }
     if (!committed) {
         return [
@@ -9433,30 +9504,31 @@ private boolean _rmConfigHasBrokenMarkers(config) {
 // the repairHint / note. varResult is the inner helper's Map (it may itself be a
 // structured success:false + partial:true + repairHints when the commit/verify
 // missed -- those slots ride out unchanged).
+@groovy.transform.CompileStatic
 private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, String opKind) {
     def isAdd = (opKind == "add")
     def updateRuleFailed = false
     def variableNotLive = false
     def updateRuleError = null
-    try { _rmClickAppButton(appId, "updateRule") }
+    try { __bat529StaticCall_java_lang_Object_2('_rmClickAppButton', appId, "updateRule") }
     catch (Exception updateExc) {
         updateRuleFailed = true
         variableNotLive = true
         updateRuleError = updateExc.message
-        mcpLog("warn", "rm-native", "${isAdd ? 'add' : 'remove'}LocalVariable: trailing updateRule click failed for app ${appId} -- ${isAdd ? 'variable' : 'removal'} may not be live: ${updateExc.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "${isAdd ? 'add' : 'remove'}LocalVariable: trailing updateRule click failed for app ${appId} -- ${isAdd ? 'variable' : 'removal'} may not be live: ${updateExc.message}")
     }
     // Brief settle so the post-updateRule health re-fetch reads the recompiled rule
     // state, not the pre-recompile snapshot (a loaded hub can answer ruleBuilderJson
     // before the recompile lands, yielding a transient false broken:true).
-    try { pauseExecution(300) } catch (Exception pe) { mcpLog("debug", "rm-native", "${isAdd ? 'add' : 'remove'}LocalVariable: pre-health-check settle interrupted for app ${appId}: ${pe.class.simpleName}: ${pe.message ?: pe.toString()}") }
-    def health = _rmCheckRuleHealth(appId)
-    def repairHints = []
+    try { __bat529StaticCall_java_lang_Object_1('pauseExecution', 300) } catch (Exception pe) { __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "rm-native", "${isAdd ? 'add' : 'remove'}LocalVariable: pre-health-check settle interrupted for app ${appId}: ${pe.class.simpleName}: ${pe.message ?: pe.toString()}") }
+    java.util.Map health = __bat529StaticCall_java_util_Map_1('_rmCheckRuleHealth', appId)
+    java.util.List repairHints = []
     if (updateRuleFailed) {
         repairHints << (isAdd
             ? "updateRule click was rejected after the local variable committed. The variable is created on the hub but the rule's action map will not pick it up until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
             : "updateRule click was rejected after the local variable was removed. The variable is gone but the rule's action map will not re-evaluate until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails.")
     }
-    def variableShape = isAdd
+    java.util.Map variableShape = isAdd
         ? [name: varResult?.name, type: varResult?.type, value: varResult?.value]
         : [name: varResult?.name, deleted: varResult?.deleted == true]
     // Broken-after-delete (remove path): RM does NOT reliably refuse to delete a referenced
@@ -9482,7 +9554,7 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
     // brokenBefore is an internal wording signal only -- rule-health state does not belong on the
     // backup metadata object the envelope surfaces. Strip it before it can ride out on envelope.backup.
     if (backup instanceof Map) backup.remove("brokenBefore")
-    boolean deleteBrokeRule = (!isAdd) && (varResult?.deleted == true) && (varResult?.success != false) && !_rmHealthGatePass(health)
+    boolean deleteBrokeRule = (!isAdd) && (varResult?.deleted == true) && (varResult?.success != false) && !__bat529StaticCall_boolean_1('_rmHealthGatePass', health)
     String deleteBrokeError = null
     if (deleteBrokeRule) {
         def markerHint = (health.brokenMarkers instanceof List && !health.brokenMarkers.isEmpty()) ? " (${health.brokenMarkers.join(', ')})" : ""
@@ -9513,7 +9585,7 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
             : "Local variable '${varResult?.name}' (${varResult?.type}) NOT added (commit miss -- see repairHints); updateRule ${updateRuleFailed ? 'FAILED -- variable may not be live' : 'fired (add unconfirmed)'}."
     } else if (deleteBrokeRule) {
         // Baseline-aware: only claim the delete broke the rule when it was clean beforehand.
-        def brokeClause = (brokenBefore == false)
+        java.lang.String brokeClause = (brokenBefore == false)
             ? "a reference to it broke the rule"
             : (brokenBefore == true
                 ? "the rule is broken (it was already broken beforehand -- not caused by this delete)"
@@ -9522,8 +9594,8 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
     } else {
         note = "Local variable '${varResult?.name}' ${varResult?.deleted == true ? 'removed' : 'NOT removed (verify miss -- see repairHints)'}; updateRule ${updateRuleFailed ? 'FAILED -- removal may not be live' : (varResult?.deleted == true ? 'fired' : 'fired (removal unconfirmed)')}."
     }
-    def envelope = [
-        success: (varResult?.success != false) && _rmHealthGatePass(health) && !updateRuleFailed,
+    java.util.Map envelope = [
+        success: (varResult?.success != false) && __bat529StaticCall_boolean_1('_rmHealthGatePass', health) && !updateRuleFailed,
         // committed-but-not-clean -> partial:true: on the broken-after-delete path the delete
         // committed (deleted:true) but the rule is not healthy, so the operation is partial.
         partial: (varResult?.partial == true) || updateRuleFailed || deleteBrokeRule,
@@ -9568,6 +9640,7 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
 // predCapabs. actionCancel then exits WITHOUT merging the new slot's state back into
 // the rule, so the clean predCapabs persists. Verified live via probe diag variants Y
 // and Z (2026-05-01/02). DO NOT remove or simplify without re-running full probe matrix.
+@groovy.transform.CompileStatic
 private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
     // Thread a request-scoped page cache so the repeated doActPage reads inside this fixed
     // sequence reuse the page a prior step already fetched/echoed instead of re-GETting it.
@@ -9580,42 +9653,42 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
     Map cache = [:]
 
     // Open a new action slot on selectActions.
-    _rmClickAppButton(appId, "N", "doActN", "selectActions", cache)
+    __bat529StaticCall_java_lang_Object_5('_rmClickAppButton', appId, "N", "doActN", "selectActions", cache)
 
     // Discover the index RM allocated (same pattern as _rmAddAction).
-    def ghostCfg = _rmFetchConfigJson(appId, "doActPage", cache)
-    def ghostSchema = _rmCollectInputSchema(ghostCfg?.configPage)
-    def ghostActTypeField = (ghostSchema?.keySet())?.find((this.&_bat529Cb_4076886b_205))
+    java.util.Map ghostCfg = __bat529StaticCall_java_util_Map_3('_rmFetchConfigJson', appId, "doActPage", cache)
+    java.util.Map ghostSchema = __bat529StaticCall_java_util_Map_1('_rmCollectInputSchema', ghostCfg?.configPage)
+    def ghostActTypeField = __bat529StaticDgm_find_1_Safe_java_lang_Object((ghostSchema?.keySet()), (this.&_bat529Cb_4076886b_205))
     def ghostIdx = 1
     if (ghostActTypeField) {
         def m = (ghostActTypeField.toString() =~ /^actType\.(\d+)$/)
-        if (m.matches()) ghostIdx = m[0][1] as Integer
+        if (m.matches()) ghostIdx = __bat529StaticBinary_GetAt_java_lang_Object(__bat529StaticBinary_GetAt_java_lang_Object(m, 0), 1) as Integer
     }
 
     // Write condActs + getIfThen to trigger RM's ifThen initializer,
     // which re-initializes atomicState.predCapabs with a clean state.
     // actSubType=getIfThen is the minimum required step -- actType=condActs
     // alone does not trigger the clear (Variant Z: condActs alone still broken).
-    def ghostApplied = []
-    def ghostSkipped = []
-    _rmWriteSettingOnPage(appId, "doActPage", "actType.${ghostIdx}", "condActs", ghostApplied, null, ghostSkipped, cache)
+    java.util.List ghostApplied = []
+    java.util.List ghostSkipped = []
+    __bat529StaticCall_java_lang_Object_8('_rmWriteSettingOnPage', appId, "doActPage", "actType.${ghostIdx}", "condActs", ghostApplied, null, ghostSkipped, cache)
     // actType=condActs reveals actSubType via submitOnChange, and that picker's POST echo can
     // lag one render (no actSubType in the returned schema yet -- same class as the STPage
     // cond/oper picker bug). A cache HIT is trusted as "provably current", so caching that
     // lagged echo would make the next write skip as not_in_schema (_rmWriteSettingOnPage:4091)
     // and silently leave predCapabs uncleared. Drop the cache so the actSubType write reads the
     // settled page fresh.
-    _rmCacheInvalidate(cache, appId)
-    _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${ghostIdx}", "getIfThen", ghostApplied, null, ghostSkipped, cache)
-    if ((ghostSkipped).any((this.&_bat529Cb_4076886b_308))) {
-        mcpLog("warn", "rm-native", "${caller}: ghost ifThen actSubType=getIfThen write was SKIPPED not_in_schema (${ghostSkipped}) for app ${appId} -- the actType->actSubType reveal echo lagged past the fresh re-read; predCapabs may NOT be cleared, so a later non-expression action could render under IF(Broken Condition).")
+    __bat529StaticCall_java_lang_Object_2('_rmCacheInvalidate', cache, appId)
+    __bat529StaticCall_java_lang_Object_8('_rmWriteSettingOnPage', appId, "doActPage", "actSubType.${ghostIdx}", "getIfThen", ghostApplied, null, ghostSkipped, cache)
+    if (__bat529StaticDgm_any_1_boolean((ghostSkipped), (this.&_bat529Cb_4076886b_308))) {
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "${caller}: ghost ifThen actSubType=getIfThen write was SKIPPED not_in_schema (${ghostSkipped}) for app ${appId} -- the actType->actSubType reveal echo lagged past the fresh re-read; predCapabs may NOT be cleared, so a later non-expression action could render under IF(Broken Condition).")
     }
 
     // Cancel WITHOUT clicking actionDone. This discards the slot before
     // commit so no action is added to the rule, but the re-initialized
     // predCapabs state (from the getIfThen init) persists.
     // DO NOT replace with actionDone -- that bakes an empty IF() block.
-    _rmClickAppButton(appId, "actionCancel", null, "doActPage", cache)
+    __bat529StaticCall_java_lang_Object_5('_rmClickAppButton', appId, "actionCancel", null, "doActPage", cache)
 
     // Return to selectActions to finalize the cancel, then navigate
     // back to mainPage. Without the mainPage nav, the app's server-side
@@ -9625,14 +9698,14 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
     // missing or not passing validation" on STPage. Without this nav,
     // STPage shows a validation error after addRequiredExpression completes;
     // with it, STPage opens cleanly.
-    def navBack = _rmNavigateToPage(appId, "doActPage", "selectActions", 0, "name", null, cache, null, false, true)
+    java.util.Map navBack = __bat529StaticCall_java_util_Map_10('_rmNavigateToPage', appId, "doActPage", "selectActions", 0, "name", null, cache, null, false, true)
     // A plain name-nav render carries no param-state, so it equals a live selectActions GET;
     // _rmNavigateToPage deliberately doesn't self-store its render, so cache it here for the
     // mainPage nav's version read (drops one more re-GET).
-    if (navBack?.configPage != null) _rmCacheStore(cache, appId, "selectActions", navBack)
-    _rmNavigateToPage(appId, "selectActions", "mainPage", 0, "name", null, cache, null, false, true)
+    if (navBack?.configPage != null) __bat529StaticCall_java_lang_Object_4('_rmCacheStore', cache, appId, "selectActions", navBack)
+    __bat529StaticCall_java_util_Map_10('_rmNavigateToPage', appId, "selectActions", "mainPage", 0, "name", null, cache, null, false, true)
 
-    mcpLog("info", "rm-native", "${caller}: ghost ifThen clear fired for app ${appId} (clears atomicState.predCapabs without adding an action)")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "rm-native", "${caller}: ghost ifThen clear fired for app ${appId} (clears atomicState.predCapabs without adding an action)")
 }
 
 // Just-in-time predCapabs clear. addRequiredExpression Step 4b no longer pays the ~9-round-trip ghost
@@ -9643,27 +9716,29 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
 // action isn't wrapped in IF(**Broken Condition**), then drop the flag so it runs at most once.
 // Best-effort + idempotent: a clean predCapabs re-clears harmlessly, and a failed clear degrades to
 // the pre-deferral worst case (a possible IF(Broken Condition) wrap, surfaced as a warn).
+@groovy.transform.CompileStatic
 private void _rmRunPendingPredCapabsClear(Integer appId) {
-    def pending = _rmPendingPredClearSnapshot()
+    java.util.Map pending = __bat529StaticCall_java_util_Map_0('_rmPendingPredClearSnapshot')
     def observedGeneration = pending.get(appId.toString())
     if (!observedGeneration) return
     try {
-        _rmClearPredCapabsViaGhostIfThen(appId, "addAction (deferred from addRequiredExpression)")
+        __bat529StaticCall_java_lang_Object_2('_rmClearPredCapabsViaGhostIfThen', appId, "addAction (deferred from addRequiredExpression)")
     } catch (Exception e) {
-        mcpLog("warn", "rm-native", "addAction: deferred predCapabs clear (ghost ifThen) failed for app ${appId} (${e.message ?: e.toString()}) -- this action may render under IF(**Broken Condition**); verify rule render or restore backup if needed")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "addAction: deferred predCapabs clear (ghost ifThen) failed for app ${appId} (${e.message ?: e.toString()}) -- this action may render under IF(**Broken Condition**); verify rule render or restore backup if needed")
     }
-    try { _rmDropPredClearPending(appId, observedGeneration) }
+    try { __bat529StaticCall_java_lang_Object_2('_rmDropPredClearPending', appId, observedGeneration) }
     catch (Exception cleanupError) {
-        mcpLog("warn", "rm-native", "addAction: deferred predicate-clear bookkeeping failed for app ${appId}: ${cleanupError.message}; the recovery record is retained for a later attempt")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "addAction: deferred predicate-clear bookkeeping failed for app ${appId}: ${cleanupError.message}; the recovery record is retained for a later attempt")
     }
 }
 
+@groovy.transform.CompileStatic
 void _rmMarkPredClearPending(Integer appId) {
     synchronized (PRED_CLEAR_STORES) {
-        Map pending = _rmPendingPredClearSnapshot()
+        Map pending = __bat529StaticCall_java_util_Map_0('_rmPendingPredClearSnapshot')
         // An inventory fetched before this generation cannot discard this intent.
         pending.put(appId.toString(), java.util.UUID.randomUUID().toString())
-        _rmCommitPredClearPending(pending)
+        __bat529StaticCall_java_lang_Object_1('_rmCommitPredClearPending', pending)
     }
 }
 
@@ -9762,21 +9837,22 @@ private Map _rmRevealedInputOrThrow(Integer appId, String fieldName, String miss
 // describes the operand ("first operand" / "second operand") for error wording. constField is the
 // matching valConst slot name ("valConst.<N>" / "valConst2.<N>"). assertInEnum is passed in so the
 // closure shares the math block's enum-validation/error vocabulary.
+@groovy.transform.CompileStatic
 private void _rmWriteMathOperand(Integer appId, int idx, Object operandValue, String xVarField,
                                  String constField, String roleLabel, Closure assertInEnum,
                                  Object xVarInput, List applied, List skipped) {
-    def constSentinel = "(constant)"
+    java.lang.String constSentinel = "(constant)"
     if (operandValue instanceof Number) {
         assertInEnum(xVarField, xVarInput, constSentinel, roleLabel)
-        _rmWriteSettingOnPage(appId, "doActPage", xVarField, constSentinel, applied, null, skipped)
+        __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "doActPage", xVarField, constSentinel, applied, null, skipped)
         // valConst/valConst2 are numeric VALUE fields -- written verbatim (a decimal like 5.5
         // lands as "5.5"); unlike a device id they must NOT be integer-normalized.
-        _rmRevealedInputOrThrow(appId, constField,
+        __bat529StaticCall_java_util_Map_3('_rmRevealedInputOrThrow', appId, constField,
             "math: ${roleLabel == 'first operand' ? 'first' : 'second'}-constant field '${constField}' was not revealed after selecting (constant) for action ${idx}.")
-        _rmWriteSettingOnPage(appId, "doActPage", constField, operandValue, applied, null, skipped)
+        __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "doActPage", constField, operandValue, applied, null, skipped)
     } else {
         assertInEnum(xVarField, xVarInput, operandValue.toString(), roleLabel)
-        _rmWriteSettingOnPage(appId, "doActPage", xVarField, operandValue.toString(), applied, null, skipped)
+        __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "doActPage", xVarField, operandValue.toString(), applied, null, skipped)
     }
 }
 
@@ -10006,6 +10082,7 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
 }
 
 // Extracted from _rmAddAction to keep it under the JVM's 64KB per-method bytecode limit.
+@groovy.transform.CompileStatic
 private void _rmWriteActionDelayModifier(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
     // Optional Delay? modifier on an action. Verified live:
     //   delayAct.<N> options: ["none", "hrs:min:sec", "variable"]
@@ -10019,22 +10096,23 @@ private void _rmWriteActionDelayModifier(Integer appId, Integer idx, Map actionS
     //     xVarD.<N>     (enum)    Select variable (hub variable name)
     //     randomAct.<N>, cancelAct.<N>
     if (actionSpec.delay instanceof Map && !actionSpec.__delayHandledForWaitRule) {
-        def d = actionSpec.delay as Map
+        java.util.Map d = actionSpec.delay as Map
         if (d.variable != null) {
-            _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "variable", applied, null, skipped)
-            _rmWriteSettingOnPage(appId, "doActPage", "xVarD.${idx}", d.variable, applied, null, skipped)
+            __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "doActPage", "delayAct.${idx}", "variable", applied, null, skipped)
+            __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "doActPage", "xVarD.${idx}", d.variable, applied, null, skipped)
         } else {
-            _rmWriteSettingOnPage(appId, "doActPage", "delayAct.${idx}", "hrs:min:sec", applied, null, skipped)
-            if (d.hours != null)   _rmWriteSettingOnPage(appId, "doActPage", "delayHor.${idx}", d.hours, applied, null, skipped)
-            if (d.minutes != null) _rmWriteSettingOnPage(appId, "doActPage", "delayMin.${idx}", d.minutes, applied, null, skipped)
-            if (d.seconds != null) _rmWriteSettingOnPage(appId, "doActPage", "delaySec.${idx}", d.seconds, applied, null, skipped)
+            __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "doActPage", "delayAct.${idx}", "hrs:min:sec", applied, null, skipped)
+            if (d.hours != null)   __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "doActPage", "delayHor.${idx}", d.hours, applied, null, skipped)
+            if (d.minutes != null) __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "doActPage", "delayMin.${idx}", d.minutes, applied, null, skipped)
+            if (d.seconds != null) __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "doActPage", "delaySec.${idx}", d.seconds, applied, null, skipped)
         }
-        if (d.random != null)     _rmWriteSettingOnPage(appId, "doActPage", "randomAct.${idx}", d.random, applied, null, skipped)
-        if (d.cancelable != null) _rmWriteSettingOnPage(appId, "doActPage", "cancelAct.${idx}", d.cancelable, applied, null, skipped)
+        if (d.random != null)     __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "doActPage", "randomAct.${idx}", d.random, applied, null, skipped)
+        if (d.cancelable != null) __bat529StaticCall_java_lang_Object_7('_rmWriteSettingOnPage', appId, "doActPage", "cancelAct.${idx}", d.cancelable, applied, null, skipped)
     }
 }
 
 // Extracted from _rmAddAction to keep it under the JVM's 64KB per-method bytecode limit.
+@groovy.transform.CompileStatic
 private void _rmWriteRunCommandParams(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
     // runCommand parameters. Live-verified wire sequence (RM 5.1):
     //   For each parameter (including the first):
@@ -10077,17 +10155,18 @@ private void _rmRequireExistingHubFile(Integer appId, Integer idx, String field,
 // re-raised unchanged. Otherwise an IllegalStateException carries the refusal text (minus its
 // "RM is not touched" claim) plus a wizardStuck marker whose recovery starts with actionCancel,
 // because removeAction is refused while the open editor holds state.editAct.
+@groovy.transform.CompileStatic
 private void _rmCancelRefusedActionEditor(Integer appId, Integer idx, Exception refusal,
                                           boolean condWizardOpen = false, String stuckWhat = null) {
     boolean cleaned = false
     try {
-        cleaned = _rmRollbackInFlightAction(appId, idx, condWizardOpen)
+        cleaned = __bat529StaticCall_boolean_3('_rmRollbackInFlightAction', appId, idx, condWizardOpen)
     } catch (Exception rollbackExc) {
-        mcpLog("warn", "rm-native", "_rmCancelRefusedActionEditor: rollback threw for app ${appId} action ${idx} (${rollbackExc.message ?: rollbackExc.toString()})")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "_rmCancelRefusedActionEditor: rollback threw for app ${appId} action ${idx} (${rollbackExc.message ?: rollbackExc.toString()})")
     }
     if (cleaned) throw refusal
     String what = stuckWhat ?: "action ${idx}'s editor or row could not be confirmed removed after the refusal, and the next add can reopen it pre-filled".toString()
-    mcpLog("warn", "rm-native", "_rmCancelRefusedActionEditor: app ${appId}: ${what}")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "_rmCancelRefusedActionEditor: app ${appId}: ${what}")
     throw new IllegalStateException("${(refusal.message ?: refusal.toString()).replace(" RM is not touched.", "")} [wizardStuck -- ${what}; first close the editor with hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true), verify via hub_get_app_config(appId=${appId}), then remove any surviving row with hub_set_rule(removeAction:{index:${idx}}, confirm:true) or restore the pre-write backup]")
 }
 
@@ -11670,6 +11749,7 @@ private String _rmStripNotTouched(String msg) {
     (msg ?: "").replace(" RM is not touched.", "").replace("RM is not touched", "the rule WAS changed")
 }
 
+@groovy.transform.CompileStatic
 private String _rmUseSTLeftOnText() {
     "Required Expression could not be switched back off, so the rule may run ungated -- turn useST off or add an expression."
 }
@@ -12172,9 +12252,10 @@ def lostEntries = __bat529EachReceiver9Result
 }
 
 // Every input field name visible on a config page (e.g. STPage, read for the committed-RE tell).
+@groovy.transform.CompileStatic
 Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache = null) {
-    def cfg = _rmFetchConfigJson(appId, pageName, cache)
-    return (((cfg?.configPage?.sections ?: [])).collectMany((this.&_bat529Cb_4076886b_336))).findAll((this.&_bat529Cb_4076886b_350))as Set
+    java.util.Map cfg = __bat529StaticCall_java_util_Map_3('_rmFetchConfigJson', appId, pageName, cache)
+    return __bat529StaticExpr__rmCollectPageInputNames_0(cfg)
 }
 
 // The list of rule-health problems NEW vs `baselineHealth` -- the attributable-regression
@@ -12353,17 +12434,18 @@ private Map _rmFinalizeRequiredExpressionWrite(Integer appId, Map innerResult, M
 
 // The committed Required Expression tokens (state.eval['0']), or null when ruleBuilderJson cannot
 // be read. A rule without an expression reads as an empty list.
+@groovy.transform.CompileStatic
 private List _rmReadExpressionTokens(Integer appId) {
     def text
-    try { text = hubInternalGet("/app/ruleBuilderJson/${appId}") } catch (Exception e) {
-        mcpLog("warn", "rm-native", "reading the Required Expression of app ${appId} failed: ${e.message}")
+    try { text = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/app/ruleBuilderJson/${appId}") } catch (Exception e) {
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "reading the Required Expression of app ${appId} failed: ${e.message}")
         return null
     }
     if (!text) return null
     def parsed
-    try { parsed = new groovy.json.JsonSlurper().parseText(text) } catch (Exception e) { return null }
+    try { parsed = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', text) } catch (Exception e) { return null }
     if (!(parsed instanceof Map)) return null
-    def toks = (parsed.eval instanceof Map) ? parsed.eval["0"] : null
+    def toks = (__bat529StaticProperty_java_lang_Object(parsed, 'eval') instanceof Map) ? __bat529StaticProperty_java_lang_Object(parsed, 'eval')["0"] : null
     return (toks instanceof List) ? new ArrayList(toks as List) : []
 }
 
@@ -12390,22 +12472,25 @@ private List _rmTokenConditionIds(List toks) {
 
 // Click a token-editor / STPage button and render STPage so the click takes effect. Returns the
 // rendered page.
+@groovy.transform.CompileStatic
 private Map _rmTokClick(Integer appId, String name, String stateAttr, Map cache = null) {
-    _rmClickAppButton(appId, name, stateAttr, "STPage", cache)
-    return _rmFetchConfigJson(appId, "STPage", cache)
+    __bat529StaticCall_java_lang_Object_5('_rmClickAppButton', appId, name, stateAttr, "STPage", cache)
+    return __bat529StaticCall_java_util_Map_3('_rmFetchConfigJson', appId, "STPage", cache)
 }
 
+@groovy.transform.CompileStatic
 private Set _rmPageInputNames(Map cfg) {
-    return ((((cfg?.configPage?.sections ?: [])).collectMany((this.&_bat529Cb_4076886b_241))).collect((this.&_bat529Cb_4076886b_324))).findAll((this.&_bat529Cb_4076886b_342))as Set
+    return __bat529StaticExpr__rmPageInputNames_0(cfg)
 }
 
 // Open the token editor on a rule with a committed Required Expression. Throws when it does not
 // open (nothing in the expression has changed at that point).
+@groovy.transform.CompileStatic
 private void _rmTokEnterEditor(Integer appId, Map cache = null) {
-    _rmTokClick(appId, "editST", "editST", cache)
-    def names = _rmPageInputNames(_rmTokClick(appId, "editToken", "editToken", cache))
+    __bat529StaticCall_java_util_Map_4('_rmTokClick', appId, "editST", "editST", cache)
+    def names = __bat529StaticCall_java_util_Set_1('_rmPageInputNames', __bat529StaticCall_java_util_Map_4('_rmTokClick', appId, "editToken", "editToken", cache))
     // An expression just built through the new-expression selector reopens with an empty insert pending.
-    if (names.contains("cancelInsert")) names = _rmPageInputNames(_rmTokClick(appId, "cancelInsert", "cancelInsert", cache))
+    if (names.contains("cancelInsert")) names = __bat529StaticCall_java_util_Set_1('_rmPageInputNames', __bat529StaticCall_java_util_Map_4('_rmTokClick', appId, "cancelInsert", "cancelInsert", cache))
     if (!names.contains("doneToken")) {
         throw new IllegalStateException("the Required Expression token editor did not open (STPage shows ${names.sort().join(', ')})")
     }
@@ -12413,10 +12498,11 @@ private void _rmTokEnterEditor(Integer appId, Map cache = null) {
 
 // Close the token editor and the Required Expression page: doneToken returns to the expression
 // view, doneST commits it. The caller fires updateRule.
+@groovy.transform.CompileStatic
 private void _rmTokLeaveEditor(Integer appId, Map cache = null) {
-    def names = _rmPageInputNames(_rmFetchConfigJson(appId, "STPage", cache))
-    if (names.contains("doneToken")) _rmTokClick(appId, "doneToken", "doneToken", cache)
-    _rmTokClick(appId, "doneST", "doneST", cache)
+    java.util.Set names = __bat529StaticCall_java_util_Set_1('_rmPageInputNames', __bat529StaticCall_java_util_Map_3('_rmFetchConfigJson', appId, "STPage", cache))
+    if (names.contains("doneToken")) __bat529StaticCall_java_util_Map_4('_rmTokClick', appId, "doneToken", "doneToken", cache)
+    __bat529StaticCall_java_util_Map_4('_rmTokClick', appId, "doneST", "doneST", cache)
 }
 
 // Insert one token at `position` (an insertTok index; the token count appends). For `*` the
@@ -12445,13 +12531,14 @@ private void _rmTokInsert(Integer appId, int position, String value, Closure wri
 // Inside the token editor: drop every token past target.size() (tokens this edit appended,
 // including the blank token a cancelled condition leaves), then report whether the live tokens
 // equal `target`.
+@groovy.transform.CompileStatic
 private boolean _rmTokTrimTo(Integer appId, List target, Map cache = null) {
     for (int guard = 0; guard < 60; guard++) {
-        def live = _rmReadExpressionTokens(appId)
+        java.util.List live = __bat529StaticCall_java_util_List_1('_rmReadExpressionTokens', appId)
         if (live == null) return false
-        if (_rmTokensEqual(live, target)) return true
+        if (__bat529StaticCall_boolean_2('_rmTokensEqual', live, target)) return true
         if (live.size() <= target.size()) return false
-        _rmTokClick(appId, target.size().toString(), "deleteToken", cache)
+        __bat529StaticCall_java_util_Map_4('_rmTokClick', appId, target.size().toString(), "deleteToken", cache)
     }
     return false
 }
@@ -12485,53 +12572,55 @@ List _rmDeleteExpressionConditions(Integer appId, Collection ids) {
 // Set the committed Required Expression to exactly `target` (condition ids already in the rule's
 // pool plus operator / paren tokens), then commit and confirm. Rolls a replace back in place.
 // Returns [restored: Boolean, error: String?].
+@groovy.transform.CompileStatic
 private Map _rmTokSetExpression(Integer appId, List target) {
     // An empty target would delete every token and leave the rule ungated.
     if (!target) return [restored: false, error: "no original tokens were recorded, so nothing was changed"]
-    def cache = [:]
-    def hrefParams = [unUsed: null]
+    java.util.Map cache = [:]
+    java.util.Map hrefParams = [unUsed: null]
     def writeST = { Map params, String key, Object value, String label = null ->
-        _rmWriteSubPageField(appId, "STPage", "mainPage", "name", 0, params, key, value, cache)
+        __bat529StaticCall_java_util_Map_9('_rmWriteSubPageField', appId, "STPage", "mainPage", "name", 0, params, key, value, cache)
     }
     try {
-        def names = _rmPageInputNames(_rmFetchConfigJson(appId, "STPage", cache))
-        if (names.contains("cancelCapab")) names = _rmPageInputNames(_rmTokClick(appId, "cancelCapab", "cancelCapab", cache))
-        if (names.contains("cancelInsert")) names = _rmPageInputNames(_rmTokClick(appId, "cancelInsert", "cancelInsert", cache))
+        def names = __bat529StaticCall_java_util_Set_1('_rmPageInputNames', __bat529StaticCall_java_util_Map_3('_rmFetchConfigJson', appId, "STPage", cache))
+        if (names.contains("cancelCapab")) names = __bat529StaticCall_java_util_Set_1('_rmPageInputNames', __bat529StaticCall_java_util_Map_4('_rmTokClick', appId, "cancelCapab", "cancelCapab", cache))
+        if (names.contains("cancelInsert")) names = __bat529StaticCall_java_util_Set_1('_rmPageInputNames', __bat529StaticCall_java_util_Map_4('_rmTokClick', appId, "cancelInsert", "cancelInsert", cache))
         if (!names.contains("doneToken")) {
-            if (names.contains("editToken")) _rmTokClick(appId, "editToken", "editToken", cache)
-            else _rmTokEnterEditor(appId, cache)
+            if (names.contains("editToken")) __bat529StaticCall_java_util_Map_4('_rmTokClick', appId, "editToken", "editToken", cache)
+            else __bat529StaticCall_java_lang_Object_2('_rmTokEnterEditor', appId, cache)
         }
         // The target goes in front first and only the tokens after it are deleted, so the expression
         // is never empty if a click fails part way.
         (target).eachWithIndex(((this.&_bat529Cb_4076886b_319).curry([appId, cache, hrefParams, writeST] as Object[])))
         for (int guard = 0; guard < 60; guard++) {
-            def live = _rmReadExpressionTokens(appId)
+            def live = __bat529StaticCall_java_util_List_1('_rmReadExpressionTokens', appId)
             if (live == null) throw new IllegalStateException("the rule's expression state could not be read")
             if (live.size() <= target.size()) break
-            _rmTokClick(appId, target.size().toString(), "deleteToken", cache)
+            __bat529StaticCall_java_util_Map_4('_rmTokClick', appId, target.size().toString(), "deleteToken", cache)
         }
-        _rmTokLeaveEditor(appId, cache)
-        _rmClickAppButton(appId, "updateRule")
-        def live = _rmReadExpressionTokens(appId)
-        def committed = _rmIsCommittedRETell(_rmCollectPageInputNames(appId, "STPage"))
-        if (_rmTokensEqual(live, target) && committed) return [restored: true]
+        __bat529StaticCall_java_lang_Object_2('_rmTokLeaveEditor', appId, cache)
+        __bat529StaticCall_java_lang_Object_2('_rmClickAppButton', appId, "updateRule")
+        java.util.List live = __bat529StaticCall_java_util_List_1('_rmReadExpressionTokens', appId)
+        def committed = __bat529StaticCall_boolean_1('_rmIsCommittedRETell', __bat529StaticCall_java_util_Set_2('_rmCollectPageInputNames', appId, "STPage"))
+        if (__bat529StaticCall_boolean_2('_rmTokensEqual', live, target) && committed) return [restored: true]
         return [restored: false, error: "the rule's expression reads ${live} after the rollback (expected ${target})"]
     } catch (Exception e) {
-        mcpLog("error", "rm-native", "Required Expression rollback on app ${appId} failed: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "rm-native", "Required Expression rollback on app ${appId} failed: ${e.message}")
         return [restored: false, error: e.message ?: e.toString()]
     }
 }
 
 // Roll a replaced Required Expression back to `origTokens` and report it in the replace envelope's
 // terms: a failure while switching, a post-commit failure, and the patches[] batch end.
+@groovy.transform.CompileStatic
 private Map _rmRevertRequiredExpression(Integer appId, List origTokens, String errMsg, Map carry = [:]) {
-    def r = _rmTokSetExpression(appId, origTokens)
+    java.util.Map r = __bat529StaticCall_java_util_Map_2('_rmTokSetExpression', appId, origTokens)
     if (r.restored == true) {
-        mcpLog("warn", "rm-native", "replaceRequiredExpression: rolled app ${appId} back to its original Required Expression: ${errMsg}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "replaceRequiredExpression: rolled app ${appId} back to its original Required Expression: ${errMsg}")
         return carry + [requiredExpressionRestored: true, originalPreserved: true,
             error: "${errMsg} The original Required Expression was put back and confirmed."]
     }
-    mcpLog("error", "rm-native", "replaceRequiredExpression: rollback of app ${appId} failed (${r.error}): ${errMsg}")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "rm-native", "replaceRequiredExpression: rollback of app ${appId} failed (${r.error}): ${errMsg}")
     return carry + [requiredExpressionRestored: false, originalPreserved: false, partial: true,
         error: "${errMsg} Putting the original Required Expression back ALSO failed (${r.error}); the rule may be left without its gate. Inspect it with hub_get_app_config(appId=${appId}) and rebuild it with addRequiredExpression if it is gone."]
 }
@@ -12696,14 +12785,15 @@ private List _rmRenderExpression(List toks, Map texts) {
     }
 }
 
+@groovy.transform.CompileStatic
 Map _rmReadRuleState(Integer appId) {
     try {
-        def text = hubInternalGet("/app/ruleBuilderJson/${appId}")
-        def parsed = text ? new groovy.json.JsonSlurper().parseText(text) : null
-        if (!(parsed instanceof Map)) mcpLog("warn", "rm-native", "the state of app ${appId} read as ${text ? 'non-JSON' : 'empty'}")
+        def text = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/app/ruleBuilderJson/${appId}")
+        def parsed = text ? __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', text) : null
+        if (!(parsed instanceof Map)) __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "the state of app ${appId} read as ${text ? 'non-JSON' : 'empty'}")
         return (parsed instanceof Map) ? (parsed as Map) : null
     } catch (Exception e) {
-        mcpLog("warn", "rm-native", "reading the state of app ${appId} failed: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "reading the state of app ${appId} failed: ${e.message}")
         return null
     }
 }
@@ -12961,8 +13051,9 @@ Map _rmRestoreRequiredExpression(Integer appId, Map snapshot) {
 
 // The token sequence a replace spec builds, in order: [cond: Map, condIdx: Integer, path: String]
 // for each condition and [tok: String] for every operator and paren. Validates sub-expression operators.
+@groovy.transform.CompileStatic
 private List _rmRequiredExpressionTokenPlan(List conditions, String operator, List opsList, String path = "conditions") {
-    def plan = []
+    java.util.List plan = []
     (conditions).eachWithIndex(((this.&_bat529Cb_4076886b_433).curry([operator, opsList, path, plan] as Object[])))
     return plan
 }
@@ -13240,16 +13331,17 @@ private String _rmBulkStopError(String stoppedAfter, stopItem) {
 
 // Edit and replace stop envelope. Skipping finalisation is not a rollback: items before the stop stay written, and
 // actions self-bake, so they can already affect an active rule. The pre-operation backup is the rollback handle.
+@groovy.transform.CompileStatic
 private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter, stopItem, Map extra) {
-    def out = [
+    java.util.Map out = [
         success: false,
         partial: true,
         appId: appId,
         backup: backup,
         bulkStoppedAfter: stoppedAfter,
         finalisationNotAttempted: true,
-        error: _rmBulkStopError(stoppedAfter, stopItem),
-        health: (extra?.containsKey("health") ? extra.health : _rmCheckRuleHealth(appId)),
+        error: __bat529StaticCall_java_lang_String_2('_rmBulkStopError', stoppedAfter, stopItem),
+        health: (extra?.containsKey("health") ? extra.health : __bat529StaticCall_java_util_Map_1('_rmCheckRuleHealth', appId)),
         repairHints: ["Stopped fail-closed after ${stoppedAfter}: later items were not attempted and the trailing updateRule was not fired. Items before it remain written and can already affect the rule (actions self-bake). Inspect with hub_get_app_config(appId=${appId}); repair the failed item and add the notAttempted items, or roll back via hub_restore_backup(backupKey='${backup?.backupKey}'). Fire hub_set_rule(button='updateRule') only once the rule is complete.".toString()],
         note: "Stopped after ${stoppedAfter} failed or was partial; finalisation not attempted.".toString()
     ]
@@ -13260,7 +13352,7 @@ private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter,
     if (stuck) {
         out.wizardStuck = true
         def recoveryHint = (stopItem instanceof Map && stopItem.op == "modifyTrigger") ?
-            _rmModifyTriggerWizardRecoveryHint(appId) :
+            __bat529StaticCall_java_lang_String_1('_rmModifyTriggerWizardRecoveryHint', appId) :
             "An item left an editor open (wizardStuck). Close it before any retry: hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for an action, or button='cancelCapab' with the wizard's pageName for a condition. Verify with hub_get_app_config(includeSettings=true), then retry the failed item.".toString()
         out.repairHints = ([recoveryHint] + (out.repairHints as List))
     }
@@ -13274,14 +13366,15 @@ private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter,
 // unprocessed items (minus the internal __reqT0 clock) for the caller to re-issue. The itemsPartial roll-up is a
 // defensive guard should that ordering ever change. Health is intentionally NOT gated: the trailing updateRule is
 // deferred to the resume call, so subscriptions are legitimately not-yet-live at a pause.
+@groovy.transform.CompileStatic
 private Map _bulkPauseResult(Integer appId, Map backup, List triggerResults, List actionResults,
                                   List addTriggersRemaining, List addActionsRemaining) {
     def trigOk = (triggerResults).count((this.&_bat529Cb_4076886b_83))
     def actOk = (actionResults).count((this.&_bat529Cb_4076886b_71))
     def itemsPartial = (trigOk != triggerResults.size()) || (actOk != actionResults.size()) ||
-        (triggerResults).any((this.&_bat529Cb_4076886b_186))||
-        (actionResults).any((this.&_bat529Cb_4076886b_177))
-    def repairHints = []
+        __bat529StaticDgm_any_1_boolean((triggerResults), (this.&_bat529Cb_4076886b_186))||
+        __bat529StaticDgm_any_1_boolean((actionResults), (this.&_bat529Cb_4076886b_177))
+    java.util.List repairHints = []
     if (itemsPartial) {
         repairHints << "One or more committed bulk items failed or reported partial before the time budget paused the batch. Drill into triggers[]/actions[] for per-item settingsSkipped + repairHints; the remaining (unprocessed) items are in addTriggersRemaining/addActionsRemaining."
     }
@@ -13295,8 +13388,8 @@ private Map _bulkPauseResult(Integer appId, Map backup, List triggerResults, Lis
         actions: actionResults,
         triggersCommitted: trigOk,
         actionsCommitted: actOk,
-        addTriggersRemaining: (addTriggersRemaining).collect((this.&_bat529Cb_4076886b_142)),
-        addActionsRemaining: (addActionsRemaining).collect((this.&_bat529Cb_4076886b_132)),
+        addTriggersRemaining: __bat529StaticDgm_collect_1_java_util_List((addTriggersRemaining), (this.&_bat529Cb_4076886b_142)),
+        addActionsRemaining: __bat529StaticDgm_collect_1_java_util_List((addActionsRemaining), (this.&_bat529Cb_4076886b_132)),
         repairHints: repairHints,
         resume: [
             note: "Time budget reached; committed items are written at the settings level (the trailing updateRule is deferred to the resume call). Re-issue the edit (hub_set_rule or hub_set_native_app) with addActions/addTriggers = the remaining items to continue."
@@ -13312,10 +13405,11 @@ private Map _bulkPauseResult(Integer appId, Map backup, List triggerResults, Lis
 // this is resumable work, not a failed item. patchesRemaining is the
 // un-processed work the caller re-issues -- for a mid-op pause the caller prepends the current op
 // rewritten to only its un-processed inner items.
+@groovy.transform.CompileStatic
 private Map _patchesPauseResult(Integer appId, Map backup, List patchResults, List patchesRemaining) {
-    def opPartial = (patchResults).any((this.&_bat529Cb_4076886b_286))
+    def opPartial = __bat529StaticDgm_any_1_boolean((patchResults), (this.&_bat529Cb_4076886b_286))
     return [
-        success: (patchResults).every((this.&_bat529Cb_4076886b_66)),
+        success: __bat529StaticDgm_every_1_boolean((patchResults), (this.&_bat529Cb_4076886b_66)),
         partial: opPartial,
         status: "in_progress",
         appId: appId,
@@ -13384,9 +13478,10 @@ private Map _rmRoundZeroNativeEditRefusal(Map args) {
 // An object value is only meaningful on a device input, where it is the {id: label} map
 // hub_get_app_config returns (_rmBuildSettingsBody sends its ids). Anywhere else it would reach
 // the hub as Groovy's map text and 500, so refuse it before any backup or write. One read-only GET.
+@groovy.transform.CompileStatic
 private void _rmRejectNonDeviceMapSettings(Integer appId, String pageName, Map settingsMap) {
-    def schema = _rmCollectInputSchema(_rmFetchConfigJson(appId, pageName)?.configPage)
-    def bad = ((settingsMap).findAll(((this.&_bat529Cb_4076886b_353).curry([schema] as Object[])))).collect(((this.&_bat529Cb_4076886b_383).curry([schema] as Object[])))
+    java.util.Map schema = __bat529StaticCall_java_util_Map_1('_rmCollectInputSchema', __bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', appId, pageName)?.configPage)
+    def bad = __bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_util_Map((settingsMap), ((this.&_bat529Cb_4076886b_353).curry([schema] as Object[])))), ((this.&_bat529Cb_4076886b_383).curry([schema] as Object[])))
     if (bad) {
         throw new IllegalArgumentException("settings ${bad} were given an object, which only device inputs accept (as the {id: label} map hub_get_app_config returns). Pass a scalar for text/number/bool/enum inputs and a List of options for a multi-select enum.")
     }
@@ -15261,19 +15356,20 @@ def _applyNativeAppEdit(args) {
 //
 // Works on any classic SmartApp instance: RM rules, Room Lighting,
 // Button Controllers, Basic Rules, Notifier, etc.
-def toolDeleteNativeApp(args) {
-    requireDestructiveConfirm(args?.confirm as Boolean)
-    if (args?.appId == null) throw new IllegalArgumentException("appId is required")
-    def appId = normalizeRuleId(args.appId)
-    _requireUnprotectedAppDeletion(appId)
-    def force = args?.force == true
+@groovy.transform.CompileStatic
+java.util.Map toolDeleteNativeApp(args) {
+    __bat529StaticCall_java_lang_Object_1('requireDestructiveConfirm', __bat529StaticProperty_Safe_java_lang_Object(args, 'confirm') as Boolean)
+    if (__bat529StaticProperty_Safe_java_lang_Object(args, 'appId') == null) throw new IllegalArgumentException("appId is required")
+    def appId = __bat529StaticCall_java_lang_Integer_1('normalizeRuleId', __bat529StaticProperty_java_lang_Object(args, 'appId'))
+    __bat529StaticCall_boolean_1('_requireUnprotectedAppDeletion', appId)
+    def force = __bat529StaticProperty_Safe_java_lang_Object(args, 'force') == true
 
-    def backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete")
+    java.util.Map backup = __bat529StaticCall_java_util_Map_2('_rmBackupRuleSnapshot', appId, force ? "pre-forcedelete" : "pre-delete")
 
     try {
         if (force) {
-            _rmForceDeleteApp(appId)
-            _rmDropPredClearPending(appId)   // rule gone -> drop any deferred predCapabs-clear flag
+            __bat529StaticCall_java_util_Map_1('_rmForceDeleteApp', appId)
+            __bat529StaticCall_java_lang_Object_1('_rmDropPredClearPending', appId)   // rule gone -> drop any deferred predCapabs-clear flag
             return [
                 success: true,
                 appId: appId,
@@ -15282,7 +15378,7 @@ def toolDeleteNativeApp(args) {
                 note: "App force-deleted. To restore, call hub_restore_backup with backupKey='${backup.backupKey}' (will recreate an empty app and apply saved settings)."
             ]
         } else {
-            def resp = _rmSoftDeleteApp(appId)
+            java.util.Map resp = __bat529StaticCall_java_util_Map_1('_rmSoftDeleteApp', appId)
             // Soft delete returns {success: bool, message: ...} when it
             // parses. Surface the hub's own message so the user learns
             // why (e.g. "cannot delete — app has child devices").
@@ -15296,7 +15392,7 @@ def toolDeleteNativeApp(args) {
                     note: "Soft delete refused by hub. Pass force=true to override (app's children will also be removed)."
                 ]
             }
-            _rmDropPredClearPending(appId)   // rule gone -> drop any deferred predCapabs-clear flag
+            __bat529StaticCall_java_lang_Object_1('_rmDropPredClearPending', appId)   // rule gone -> drop any deferred predCapabs-clear flag
             return [
                 success: true,
                 appId: appId,
@@ -15396,727 +15492,956 @@ def toolListRuleLocalVariables(args) {
 
 // ==================== PER-TOOL METADATA (issue #209) ====================
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partNativeRM() {
     // Read-only classification for this library's tools (issue #209: per-tool metadata lives
     // with the tool), contributed to the app's getReadOnlyToolNames() aggregator.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_list_rules","hub_get_rule_health","hub_list_rule_local_variables"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_list_rules","hub_get_rule_health","hub_list_rule_local_variables"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partNativeRM() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_set_rule_paused","hub_set_rule_private_boolean","hub_set_app_disabled"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_set_rule_paused","hub_set_rule_private_boolean","hub_set_app_disabled"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partNativeRM() {
     // Human-facing title/summary per tool -- merged into the app's getToolDisplayMeta() aggregator.
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_rules",["m",[["title","List Rule Machine Rules"],["summary","List all Rule Machine rules."]]]],["hub_call_rule",["m",[["title","Trigger Rule Machine Rule"],["summary","Trigger one or more Rule Machine rules, run their actions, or stop them."]]]],["hub_set_rule_paused",["m",[["title","Pause or Resume Rule"],["summary","Pause or resume one or more Rule Machine rules in one call."]]]],["hub_set_rule_private_boolean",["m",[["title","Set Rule Private Boolean"],["summary","Set the private boolean of one or more Rule Machine rules."]]]],["hub_set_rule",["m",[["title","Author Rule Machine Rule"],["summary","Create or edit a Rule Machine rule."]]]],["hub_get_rule_health",["m",[["title","Get Rule Health"],["summary","Read-only health check on any installed app."]]]],["hub_list_rule_local_variables",["m",[["title","List Rule Local Variables"],["summary","Read-only list of a Rule Machine rule\'s local variables."]]]],["hub_set_native_app",["m",[["title","Create or Edit Native App"],["summary","Create or edit a classic native app (Room Lighting, Notifier, etc.)."]]]],["hub_delete_native_app",["m",[["title","Delete Native App"],["summary","Delete a classic native app (auto-snapshot first)."]]]],["hub_set_app_disabled",["m",[["title","Enable or Disable App"],["summary","Enable or disable any installed app without deleting it (reversible)."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_list_rules",["m",[["title","List Rule Machine Rules"],["summary","List all Rule Machine rules."]]]],["hub_call_rule",["m",[["title","Trigger Rule Machine Rule"],["summary","Trigger one or more Rule Machine rules, run their actions, or stop them."]]]],["hub_set_rule_paused",["m",[["title","Pause or Resume Rule"],["summary","Pause or resume one or more Rule Machine rules in one call."]]]],["hub_set_rule_private_boolean",["m",[["title","Set Rule Private Boolean"],["summary","Set the private boolean of one or more Rule Machine rules."]]]],["hub_set_rule",["m",[["title","Author Rule Machine Rule"],["summary","Create or edit a Rule Machine rule."]]]],["hub_get_rule_health",["m",[["title","Get Rule Health"],["summary","Read-only health check on any installed app."]]]],["hub_list_rule_local_variables",["m",[["title","List Rule Local Variables"],["summary","Read-only list of a Rule Machine rule\'s local variables."]]]],["hub_set_native_app",["m",[["title","Create or Edit Native App"],["summary","Create or edit a classic native app (Room Lighting, Notifier, etc.)."]]]],["hub_delete_native_app",["m",[["title","Delete Native App"],["summary","Delete a classic native app (auto-snapshot first)."]]]],["hub_set_app_disabled",["m",[["title","Enable or Disable App"],["summary","Enable or disable any installed app without deleting it (reversible)."]]]]]]'])
 }
 
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_1(def it) { it 
 }
 
-def _bat529Cb_4076886b_2(def it) {it?.name
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_2(def it) {__bat529StaticProperty_Safe_java_lang_Object(it, 'name')
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_3(def wanted, def it) { it == wanted 
 }
 
-def _bat529Cb_4076886b_4(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_4(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_4076886b_5(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_5(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_4076886b_6(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_6(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_7(def varName, def it) { it == varName 
 }
 
-def _bat529Cb_4076886b_8(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_8(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_4076886b_9(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_9(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_4076886b_10(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_10(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_11(def srcVar, def it) { it == srcVar 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_12(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_13(def refDevId, def it) { it == refDevId 
 }
 
-def _bat529Cb_4076886b_14(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_14(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_15(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_16(def it) { it?.toString() 
 }
 
-def _bat529Cb_4076886b_17(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_17(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_18(def rhsVarName, def it) { it == rhsVarName 
 }
 
-def _bat529Cb_4076886b_19(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_19(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
 def _bat529Cb_4076886b_20(def k, def v) { v != null 
 }
 
-def _bat529Cb_4076886b_21(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_21(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_22(def it) { it.toString() 
 }
 
-def _bat529Cb_4076886b_23(def it) { it.condIdx 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_23(def it) { __bat529StaticProperty_java_lang_Object(it, 'condIdx') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_24(def it) { "'${it}'" 
 }
 
 def _bat529Cb_4076886b_25(def k, def v) { v != null 
 }
 
-def _bat529Cb_4076886b_26(def it) { it as Integer 
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_4076886b_26(def it) { it as Integer 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_27(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_28(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_29(def it) { it?.toString() 
 }
 
-def _bat529Cb_4076886b_30(def it) { it as Integer 
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_4076886b_30(def it) { it as Integer 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_31(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_32(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_33(def it) {it
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_34(def it) { it?.toString() 
 }
 
-def _bat529Cb_4076886b_35(def it) { it.startsWith("rCapab_") 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_35(def it) { __bat529StaticReceiverCall_java_lang_Object_1(it, 'startsWith', "rCapab_") 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_36(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_37(def it) { it != null 
 }
 
-def _bat529Cb_4076886b_38(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_38(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
-def _bat529Cb_4076886b_39(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_39(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_40(def it) { it != null 
 }
 
-def _bat529Cb_4076886b_41(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_41(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_42(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_43(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_44(def it) { it?.toString() 
 }
 
-def _bat529Cb_4076886b_45(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_45(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
-def _bat529Cb_4076886b_46(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_46(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
-def _bat529Cb_4076886b_47(def it) { _rmIsThisRuleTarget(it) 
+@groovy.transform.CompileStatic
+boolean _bat529Cb_4076886b_47(def it) { __bat529StaticCall_boolean_1('_rmIsThisRuleTarget', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_48(def it) { it?.toString() 
 }
 
-def _bat529Cb_4076886b_49(def it) { it.success == false 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_49(def it) { __bat529StaticProperty_java_lang_Object(it, 'success') == false 
 }
 
-def _bat529Cb_4076886b_50(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_50(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_4076886b_51(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_51(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_4076886b_52(def it) { it.success == false 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_52(def it) { __bat529StaticProperty_java_lang_Object(it, 'success') == false 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_53(def it) { it?.toString() 
 }
 
-def _bat529Cb_4076886b_54(def it) { it.label ?: "" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_54(def it) { __bat529StaticProperty_java_lang_Object(it, 'label') ?: "" 
 }
 
-def _bat529Cb_4076886b_55(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_55(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_56(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_57(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_58(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_59(def it) { it 
 }
 
-def _bat529Cb_4076886b_60(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_60(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
-def _bat529Cb_4076886b_61(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_61(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_62(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_63(def it) { it.toString() 
 }
 
-def _bat529Cb_4076886b_64(def it) { it?.success != false 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_64(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') != false 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_65(def opVar, def it) { it?.toString() == opVar 
 }
 
-def _bat529Cb_4076886b_66(def it) { it?.success != false 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_66(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') != false 
 }
 
-def _bat529Cb_4076886b_67(def it) { it?.success != false 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_67(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') != false 
 }
 
-def _bat529Cb_4076886b_68(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_68(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
-def _bat529Cb_4076886b_69(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_69(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_70(def it) { it 
 }
 
-def _bat529Cb_4076886b_71(def it) { it?.success != false 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_71(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') != false 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_72(def it) { !(it in ["AND", "OR", "XOR"]) 
 }
 
-def _bat529Cb_4076886b_73(def it) { it?.success != false 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_73(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') != false 
 }
 
-def _bat529Cb_4076886b_74(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_74(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_4076886b_75(def liveOrder, def it) { liveOrder.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_75(def liveOrder, def it) { __bat529StaticReceiverCall_java_lang_Object_1(liveOrder, 'contains', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_76(def it) { it 
 }
 
-def _bat529Cb_4076886b_77(def want, def it) { it.toLowerCase() == want 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_77(def want, def it) { __bat529StaticReceiverCall_java_lang_Object_0(it, 'toLowerCase') == want 
 }
 
-def _bat529Cb_4076886b_78(def cache, def it) { _rmDeviceGone(it, cache) 
+@groovy.transform.CompileStatic
+boolean _bat529Cb_4076886b_78(def cache, def it) { __bat529StaticCall_boolean_2('_rmDeviceGone', it, cache) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_79(def srcVar, def it) { it?.toString() == srcVar 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_80(def it) {it
 }
 
-def _bat529Cb_4076886b_81(def it) { it?.success == true 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_81(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') == true 
 }
 
-def _bat529Cb_4076886b_82(def type, def it) { it.equalsIgnoreCase(type) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_82(def type, def it) { __bat529StaticReceiverCall_java_lang_Object_1(it, 'equalsIgnoreCase', type) 
 }
 
-def _bat529Cb_4076886b_83(def it) { it?.success != false 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_83(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') != false 
 }
 
-def _bat529Cb_4076886b_84(def it) { it?.success != false 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_84(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') != false 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_85(def it) { it?.toString() 
 }
 
-def _bat529Cb_4076886b_86(def it) { it.trim() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_86(def it) { __bat529StaticReceiverCall_java_lang_Object_0(it, 'trim') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_87(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_88(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_89(def it) { it 
 }
 
-def _bat529Cb_4076886b_90(def args, def it) { args.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_90(def args, def it) { __bat529StaticReceiverCall_java_lang_Object_1(args, 'containsKey', it) 
 }
 
-def _bat529Cb_4076886b_91(def inUse, def it) { !inUse.contains(it.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_91(def inUse, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(inUse, 'contains', it.toString()) 
 }
 
-def _bat529Cb_4076886b_92(def fdAttr, def it) { it?.equalsIgnoreCase(fdAttr) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_92(def fdAttr, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_1(it, 'equalsIgnoreCase', fdAttr) 
 }
 
-def _bat529Cb_4076886b_93(def wantOrder, def it) { wantOrder.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_93(def wantOrder, def it) { __bat529StaticReceiverCall_java_lang_Object_1(wantOrder, 'contains', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_94(def it) { it.toString() 
 }
 
-def _bat529Cb_4076886b_95(def it) { it?.success == true 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_95(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') == true 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_96(def it) { it?.toString() 
 }
 
-def _bat529Cb_4076886b_97(def it) { it?.name?.toString() == "hasAll" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_97(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "hasAll" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_98(def targetVar, def it) { it?.toString() == targetVar 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_99(def it) { it instanceof Map 
 }
 
-def _bat529Cb_4076886b_100(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_100(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
-def _bat529Cb_4076886b_101(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_101(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_102(def it) { it 
 }
 
-def _bat529Cb_4076886b_103(def pm, def it) { pm.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_103(def pm, def it) { __bat529StaticReceiverCall_java_lang_Object_1(pm, 'containsKey', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_104(def it) { it 
 }
 
-def _bat529Cb_4076886b_105(def schema, def it) { schema?.get(it)?.multiple == true 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_105(def schema, def it) { __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticReceiverCall_Safe_java_lang_Object_1(schema, 'get', it), 'multiple') == true 
 }
 
 def _bat529Cb_4076886b_106(def fullMap, def k, def v) { fullMap.put(k, v) 
 }
 
-def _bat529Cb_4076886b_107(def fieldName, def it) { it?.name?.toString() == fieldName 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_107(def fieldName, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == fieldName 
 }
 
-def _bat529Cb_4076886b_108(def it) { it.trim() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_108(def it) { __bat529StaticReceiverCall_java_lang_Object_0(it, 'trim') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_109(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_110(def it) { it.toString() 
 }
 
-def _bat529Cb_4076886b_111(def name, def it) { it?.name == name 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_111(def name, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') == name 
 }
 
-def _bat529Cb_4076886b_112(def pm, def it) { pm.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_112(def pm, def it) { __bat529StaticReceiverCall_java_lang_Object_1(pm, 'containsKey', it) 
 }
 
-def _bat529Cb_4076886b_113(def selectorKey, def it) { it?.key?.toString() == selectorKey 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_113(def selectorKey, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'key')?.toString() == selectorKey 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_114(def it) { it?.toString() 
 }
 
 def _bat529Cb_4076886b_115(def body, def k, def v) { body.put(k, v) 
 }
 
-def _bat529Cb_4076886b_116(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_116(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
-def _bat529Cb_4076886b_117(def selectorKey, def it) { it?.key?.toString() == selectorKey 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_117(def selectorKey, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'key')?.toString() == selectorKey 
 }
 
-def _bat529Cb_4076886b_118(def target, def it) { it.targetPage == target 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_118(def target, def it) { __bat529StaticProperty_java_lang_Object(it, 'targetPage') == target 
 }
 
-def _bat529Cb_4076886b_119(def snapTrigText, def it) { snapTrigText.get(it) ?: it 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_119(def snapTrigText, def it) { __bat529StaticReceiverCall_java_lang_Object_1(snapTrigText, 'get', it) ?: it 
 }
 
-def _bat529Cb_4076886b_120(def xVar3Field, def it) { it?.name?.toString() == xVar3Field 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_120(def xVar3Field, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == xVar3Field 
 }
 
-def _bat529Cb_4076886b_121(def it) { it?.success != false 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_121(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') != false 
 }
 
-def _bat529Cb_4076886b_122(def requestedWriteKey, def it) { it.name == requestedWriteKey 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_122(def requestedWriteKey, def it) { __bat529StaticProperty_java_lang_Object(it, 'name') == requestedWriteKey 
 }
 
-def _bat529Cb_4076886b_123(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_123(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
-def _bat529Cb_4076886b_124(def evCap, def it) { it.toString().equalsIgnoreCase(evCap) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_124(def evCap, def it) { __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticReceiverCall_java_lang_Object_0(it, 'toString'), 'equalsIgnoreCase', evCap) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_125(def it) { it.toString() 
 }
 
-def _bat529Cb_4076886b_126(def it) { it.value?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_126(def it) { __bat529StaticProperty_java_lang_Object(it, 'value')?.toString() 
 }
 
-def _bat529Cb_4076886b_127(def it) { it?.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_127(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_128(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_129(def it) { it 
 }
 
-def _bat529Cb_4076886b_130(def it) { it?.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_130(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() 
 }
 
-def _bat529Cb_4076886b_131(def it) { it?.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_131(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() 
 }
 
-def _bat529Cb_4076886b_132(def it) { _stripInternalClock(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_132(def it) { __bat529StaticCall_java_lang_Object_1('_stripInternalClock', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_133(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_134(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_135(def it) { it 
 }
 
-def _bat529Cb_4076886b_136(def cap, def it) { it.toString().equalsIgnoreCase(cap) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_136(def cap, def it) { __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticReceiverCall_java_lang_Object_0(it, 'toString'), 'equalsIgnoreCase', cap) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_137(def it) { it 
 }
 
-def _bat529Cb_4076886b_138(def valMathOpField, def it) { it?.name?.toString() == valMathOpField 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_138(def valMathOpField, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == valMathOpField 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_139(def it) { it instanceof Map 
 }
 
-def _bat529Cb_4076886b_140(def cap, def it) { it.toString().equalsIgnoreCase(cap) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_140(def cap, def it) { __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticReceiverCall_java_lang_Object_0(it, 'toString'), 'equalsIgnoreCase', cap) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_141(def it) { it 
 }
 
-def _bat529Cb_4076886b_142(def it) { _stripInternalClock(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_142(def it) { __bat529StaticCall_java_lang_Object_1('_stripInternalClock', it) 
 }
 
-def _bat529Cb_4076886b_143(def ccap, def it) { it.toString().equalsIgnoreCase(ccap) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_143(def ccap, def it) { __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticReceiverCall_java_lang_Object_0(it, 'toString'), 'equalsIgnoreCase', ccap) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_144(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_145(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_146(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_147(def it) { it?.toString() ?: "" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_148(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_149(def it) { it?.toString() ?: "" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_150(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_151(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_152(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_153(def it) { it?.toString() ?: "" 
 }
 
-def _bat529Cb_4076886b_154(def it) { it.name == 'hub_set_rule' 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_154(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') == 'hub_set_rule' 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_155(def it) { it 
 }
 
-def _bat529Cb_4076886b_156(def validIds, def it) { !validIds.contains(it?.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_156(def validIds, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(validIds, 'contains', it?.toString()) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_157(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_158(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_159(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_160(def it) { it.toString() 
 }
 
-def _bat529Cb_4076886b_161(def allowed, def it) { !allowed.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_161(def allowed, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(allowed, 'contains', it) 
 }
 
-def _bat529Cb_4076886b_162(def it) { it?.name?.toString()?.startsWith("rCapab_") 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_162(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString()?.startsWith("rCapab_") 
 }
 
-def _bat529Cb_4076886b_163(def it) { it?.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_163(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_164(def it) { it.toString() 
 }
 
-def _bat529Cb_4076886b_165(def it) { it.page 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_165(def it) { __bat529StaticProperty_java_lang_Object(it, 'page') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_166(def it) { it 
 }
 
-def _bat529Cb_4076886b_167(def it) { it?.name?.toString() ==~ /^tCapab-\d+$/ 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_167(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() ==~ /^tCapab-\d+$/ 
 }
 
-def _bat529Cb_4076886b_168(def token, def it) { it.equalsIgnoreCase(token) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_168(def token, def it) { __bat529StaticReceiverCall_java_lang_Object_1(it, 'equalsIgnoreCase', token) 
 }
 
-def _bat529Cb_4076886b_169(def it) { it?.success == false 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_169(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') == false 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_170(def it) { it instanceof Map && it.partial == true 
 }
 
-def _bat529Cb_4076886b_171(def it) { it?.name?.toString()?.startsWith("rCapab_") 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_171(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString()?.startsWith("rCapab_") 
 }
 
-def _bat529Cb_4076886b_172(def idx, def it) { it?.name == "state_${idx}".toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_172(def idx, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') == "state_${idx}".toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_173(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_174(def it) { it instanceof Map && it.partial == true 
 }
 
-def _bat529Cb_4076886b_175(def validValues, def v) { v != null && !validValues.contains(v) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_175(def validValues, def v) { v != null && !__bat529StaticReceiverCall_java_lang_Object_1(validValues, 'contains', v) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_176(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_177(def it) { it instanceof Map && it.partial == true 
 }
 
-def _bat529Cb_4076886b_178(def it) { it?.name?.toString()?.startsWith("rCapab_") 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_178(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString()?.startsWith("rCapab_") 
 }
 
 def _bat529Cb_4076886b_179(def k, def v) { k != "_deferredRERestore" 
 }
 
-def _bat529Cb_4076886b_180(def idx, def it) { it?.name == "state_${idx}".toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_180(def idx, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') == "state_${idx}".toString() 
 }
 
 def _bat529Cb_4076886b_181(def name, def it) { it?.name?.toString()?.equalsIgnoreCase(name) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_182(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_183(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_184(def it) { it instanceof Map && (it.partial == true) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_185(def it) { it instanceof Map && it.partial == true 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_186(def it) { it instanceof Map && it.partial == true 
 }
 
 def _bat529Cb_4076886b_187(def name, def typeKey, def reg) { reg.appName == name 
 }
 
-def _bat529Cb_4076886b_188(def idx, def it) { it?.name == "RelrDev_${idx}".toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_188(def idx, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') == "RelrDev_${idx}".toString() 
 }
 
-def _bat529Cb_4076886b_189(def it) { it?.name?.toString() ==~ /RelrDev_\d+/ 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_189(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() ==~ /RelrDev_\d+/ 
 }
 
 def _bat529Cb_4076886b_190(def bare, def typeKey, def reg) { reg.appName == bare 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_191(def it) { it 
 }
 
-def _bat529Cb_4076886b_192(def it) { it?.name?.toString() == "allLocalVars" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_192(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "allLocalVars" 
 }
 
-def _bat529Cb_4076886b_193(def requestedCap, def it) { it.equalsIgnoreCase(requestedCap) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_193(def requestedCap, def it) { __bat529StaticReceiverCall_java_lang_Object_1(it, 'equalsIgnoreCase', requestedCap) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_194(def it) { it 
 }
 
 def _bat529Cb_4076886b_195(def bare, def typeKey, def reg) { reg.appName == bare 
 }
 
-def _bat529Cb_4076886b_196(def n, def it) { it?.name?.toString() == "tCapab-${n}".toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_196(def n, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "tCapab-${n}".toString() 
 }
 
-def _bat529Cb_4076886b_197(def appId, def cache, def it) { _rmTokClick(appId, "0", "deleteToken", cache) 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_4076886b_197(def appId, def cache, def it) { __bat529StaticCall_java_util_Map_4('_rmTokClick', appId, "0", "deleteToken", cache) 
 }
 
-def _bat529Cb_4076886b_198(def capCanonical, def it) { it.equalsIgnoreCase(capCanonical) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_198(def capCanonical, def it) { __bat529StaticReceiverCall_java_lang_Object_1(it, 'equalsIgnoreCase', capCanonical) 
 }
 
-def _bat529Cb_4076886b_199(def out, def it) { if (it != null) out << it.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_199(def out, def it) { if (it != null) __bat529StaticExpr__bat529Cb_4076886b_199_0(it, out) 
 }
 
-def _bat529Cb_4076886b_200(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_200(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
-def _bat529Cb_4076886b_201(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_201(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
-def _bat529Cb_4076886b_202(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_202(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_203(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_204(def it) { it?.toString()?.toUpperCase() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_205(def it) { it.toString() ==~ /^actType\.\d+$/ 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_206(def it) { it.toString() ==~ /^actType\.\d+$/ 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_207(def it) { it.toString() ==~ /^actType\.\d+$/ 
 }
 
-def _bat529Cb_4076886b_208(def it) { it?.name?.toString() == "editAct" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_208(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "editAct" 
 }
 
-def _bat529Cb_4076886b_209(def it) { it?.name?.toString() == "editAct" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_209(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "editAct" 
 }
 
-def _bat529Cb_4076886b_210(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_210(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
-def _bat529Cb_4076886b_211(def devices, def it) { devices << it.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_211(def devices, def it) { __bat529StaticExpr__bat529Cb_4076886b_211_0(devices, it) 
 }
 
-def _bat529Cb_4076886b_212(def wanted, def it) { it?.toString()?.equalsIgnoreCase(wanted) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_212(def wanted, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_1(__bat529StaticReceiverCall_Safe_java_lang_Object_0(it, 'toString'), 'equalsIgnoreCase', wanted) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_213(def it) { it 
 }
 
-def _bat529Cb_4076886b_214(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_214(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
-def _bat529Cb_4076886b_215(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_215(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_216(def it) { it 
 }
 
-def _bat529Cb_4076886b_217(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_217(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
-def _bat529Cb_4076886b_218(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_218(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_219(def it) { it?.toString()?.toUpperCase() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_220(def it) { it != null && it.toString().trim() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_221(def it) { it?.toString()?.toUpperCase() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_222(def it) { it 
 }
 
-def _bat529Cb_4076886b_223(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_223(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
-def _bat529Cb_4076886b_224(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_224(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
-def _bat529Cb_4076886b_225(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_225(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_226(def it) { it?.toString()?.toUpperCase() 
 }
 
-def _bat529Cb_4076886b_227(def stateKey, def it) { it?.name?.toString() == stateKey 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_227(def stateKey, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == stateKey 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_228(def it) { it instanceof Map 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_229(def it) { it 
 }
 
-def _bat529Cb_4076886b_230(def cIdx, def it) { it?.name?.toString() == "state_${cIdx}".toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_230(def cIdx, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "state_${cIdx}".toString() 
 }
 
-def _bat529Cb_4076886b_231(def it) { _stripInternalClock(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_231(def it) { __bat529StaticCall_java_lang_Object_1('_stripInternalClock', it) 
 }
 
-def _bat529Cb_4076886b_232(def mn, def it) { it?.name?.toString()?.equalsIgnoreCase(mn?.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_232(def mn, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString()?.equalsIgnoreCase(mn?.toString()) 
 }
 
-def _bat529Cb_4076886b_233(def snap, def it) { snap.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_233(def snap, def it) { __bat529StaticReceiverCall_java_lang_Object_1(snap, 'containsKey', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_234(def it) { it?.toString()?.toLowerCase() in ["true", "false"] 
 }
 
-def _bat529Cb_4076886b_235(def it) { it.reason == "comparator_force_written_unverified" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_235(def it) { __bat529StaticProperty_java_lang_Object(it, 'reason') == "comparator_force_written_unverified" 
 }
 
 def _bat529Cb_4076886b_236(def configAppName, def typeKey, def reg) { reg.appName == configAppName 
@@ -16125,112 +16450,147 @@ def _bat529Cb_4076886b_236(def configAppName, def typeKey, def reg) { reg.appNam
 def _bat529Cb_4076886b_237(def configAppName, def typeKey, def reg) { reg.appName == configAppName 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_238(def it) { it instanceof Map && it.name == "eval" 
 }
 
-def _bat529Cb_4076886b_239(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_239(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
-def _bat529Cb_4076886b_240(def cIdx, def it) { it?.name?.toString() == "state_${cIdx}".toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_240(def cIdx, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "state_${cIdx}".toString() 
 }
 
-def _bat529Cb_4076886b_241(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_241(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
-def _bat529Cb_4076886b_242(def it) { _requireUnprotectedAppMutation(it, "change rule runtime") 
+@groovy.transform.CompileStatic
+void _bat529Cb_4076886b_242(def it) { __bat529StaticCall_java_lang_Object_2('_requireUnprotectedAppMutation', it, "change rule runtime") 
 }
 
-def _bat529Cb_4076886b_243(def it) { it.operation in ["write", "click", "navigate", "done"] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_243(def it) { __bat529StaticProperty_java_lang_Object(it, 'operation') in ["write", "click", "navigate", "done"] 
 }
 
-def _bat529Cb_4076886b_244(def it) { _requireUnprotectedAppMutation(it, "change rule runtime") 
+@groovy.transform.CompileStatic
+void _bat529Cb_4076886b_244(def it) { __bat529StaticCall_java_lang_Object_2('_requireUnprotectedAppMutation', it, "change rule runtime") 
 }
 
-def _bat529Cb_4076886b_245(def cIdx, def it) { it?.name?.toString() == "state_${cIdx}".toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_245(def cIdx, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "state_${cIdx}".toString() 
 }
 
-def _bat529Cb_4076886b_246(def mid, def s, def m) { m?.name?.toString() == s && m?.id?.toString() == mid 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_246(def mid, def s, def m) { __bat529StaticProperty_Safe_java_lang_Object(m, 'name')?.toString() == s && __bat529StaticProperty_Safe_java_lang_Object(m, 'id')?.toString() == mid 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_247(def it) { it != null 
 }
 
-def _bat529Cb_4076886b_248(def it) { it?.reason == "periodic_href_unresolved_nonfirst_trigger" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_248(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'reason') == "periodic_href_unresolved_nonfirst_trigger" 
 }
 
-def _bat529Cb_4076886b_249(def it) { [(it?.name?.toString()): it] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_4076886b_249(def it) { [(__bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString()): it] 
 }
 
-def _bat529Cb_4076886b_250(def appId, def rmCache, def it) { _rmTokClick(appId, "0", "deleteToken", rmCache) 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_4076886b_250(def appId, def rmCache, def it) { __bat529StaticCall_java_util_Map_4('_rmTokClick', appId, "0", "deleteToken", rmCache) 
 }
 
-def _bat529Cb_4076886b_251(def capCanonical, def it) { it.equalsIgnoreCase(capCanonical) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_251(def capCanonical, def it) { __bat529StaticReceiverCall_java_lang_Object_1(it, 'equalsIgnoreCase', capCanonical) 
 }
 
-def _bat529Cb_4076886b_252(def cIdx, def it) { it?.name?.toString() == "state_${cIdx}".toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_252(def cIdx, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "state_${cIdx}".toString() 
 }
 
-def _bat529Cb_4076886b_253(def requestedCap, def it) { it.equalsIgnoreCase(requestedCap) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_253(def requestedCap, def it) { __bat529StaticReceiverCall_java_lang_Object_1(it, 'equalsIgnoreCase', requestedCap) 
 }
 
-def _bat529Cb_4076886b_254(def sec) { (sec?.input ?: []) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_254(def sec) { (__bat529StaticProperty_Safe_java_lang_Object(sec, 'input') ?: []) 
 }
 
-def _bat529Cb_4076886b_255(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_255(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
-def _bat529Cb_4076886b_256(def cIdx, def it) { it?.name?.toString() == "RelrDev_${cIdx}".toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_256(def cIdx, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "RelrDev_${cIdx}".toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_257(def it) { it instanceof Map && it.name != null 
 }
 
-def _bat529Cb_4076886b_258(def sec) { (sec?.input ?: []) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_258(def sec) { (__bat529StaticProperty_Safe_java_lang_Object(sec, 'input') ?: []) 
 }
 
-def _bat529Cb_4076886b_259(def snapTrigText, def it) { [index: it, text: snapTrigText.get(it)?.toString()] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_4076886b_259(def snapTrigText, def it) { [index: it, text: __bat529StaticReceiverCall_java_lang_Object_1(snapTrigText, 'get', it)?.toString()] 
 }
 
-def _bat529Cb_4076886b_260(def cIdx, def it) { it?.name?.toString() == "RelrDev_${cIdx}".toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_260(def cIdx, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == "RelrDev_${cIdx}".toString() 
 }
 
-def _bat529Cb_4076886b_261(def varPickerField, def it) { it?.name?.toString() == varPickerField 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_261(def varPickerField, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == varPickerField 
 }
 
-def _bat529Cb_4076886b_262(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_262(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
-def _bat529Cb_4076886b_263(def it) { it?.name == "action" && it?.type == "enum" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_263(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') == "action" && __bat529StaticProperty_Safe_java_lang_Object(it, 'type') == "enum" 
 }
 
-def _bat529Cb_4076886b_264(def sec) { (sec?.input ?: []) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_264(def sec) { (__bat529StaticProperty_Safe_java_lang_Object(sec, 'input') ?: []) 
 }
 
 def _bat529Cb_4076886b_265(def failed, def ruleIds, def r, def i) { if (r?.success != true) failed << ruleIds[i] 
 }
 
-def _bat529Cb_4076886b_266(def requestedCap, def it) { it.equalsIgnoreCase(requestedCap) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_266(def requestedCap, def it) { __bat529StaticReceiverCall_java_lang_Object_1(it, 'equalsIgnoreCase', requestedCap) 
 }
 
-def _bat529Cb_4076886b_267(def capCanonical, def it) { it.equalsIgnoreCase(capCanonical) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_267(def capCanonical, def it) { __bat529StaticReceiverCall_java_lang_Object_1(it, 'equalsIgnoreCase', capCanonical) 
 }
 
-def _bat529Cb_4076886b_268(def it) { it as Integer 
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_4076886b_268(def it) { it as Integer 
 }
 
-def _bat529Cb_4076886b_269(def keep, def it) { !keep.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_269(def keep, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(keep, 'contains', it) 
 }
 
-def _bat529Cb_4076886b_270(def it) { it?.available != null && (it.available as List).isEmpty() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_270(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'available') != null && (__bat529StaticProperty_java_lang_Object(it, 'available') as List).isEmpty() 
 }
 
-def _bat529Cb_4076886b_271(def it) { it?.available != null && (it.available as List).isEmpty() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_271(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'available') != null && (__bat529StaticProperty_java_lang_Object(it, 'available') as List).isEmpty() 
 }
 
-def _bat529Cb_4076886b_272(def it) { _requireUnprotectedAppMutation(it, "set rule private boolean") 
+@groovy.transform.CompileStatic
+void _bat529Cb_4076886b_272(def it) { __bat529StaticCall_java_lang_Object_2('_requireUnprotectedAppMutation', it, "set rule private boolean") 
 }
 
-def _bat529Cb_4076886b_273(def n, def it) { it?.name?.toString()?.matches("modes[A-Za-z]*-${n}".toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_273(def n, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString()?.matches("modes[A-Za-z]*-${n}".toString()) 
 }
 
 def _bat529Cb_4076886b_274(def hrefParams, def writeST, def rk, def rv) { writeST(hrefParams, rk.toString(), rv) 
@@ -16242,6 +16602,7 @@ def _bat529Cb_4076886b_275(def hrefParams, def writeST, def rk, def rv) { writeS
 def _bat529Cb_4076886b_276(def hrefParams, def writeST, def rk, def rv) { writeST(hrefParams, rk.toString(), rv) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_277(def specificHintReasons, def it) { !(it instanceof Map && it.reason in specificHintReasons) 
 }
 
@@ -16254,6 +16615,7 @@ def _bat529Cb_4076886b_279(def hrefParams, def writeST, def rk, def rv) { writeS
 def _bat529Cb_4076886b_280(def hrefParams, def writeST, def rk, def rv) { writeST(hrefParams, rk.toString(), rv) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_281(def specificHintReasons, def it) { !(it instanceof Map && it.reason in specificHintReasons) 
 }
 
@@ -16263,102 +16625,131 @@ def _bat529Cb_4076886b_282(def hrefParams, def writeST, def rk, def rv) { writeS
 def _bat529Cb_4076886b_283(def hrefParams, def writeST, def rk, def rv) { writeST(hrefParams, rk.toString(), rv) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_284(def it) { it instanceof Map && it.key?.toString()?.startsWith("alarm.") 
 }
 
-def _bat529Cb_4076886b_285(def it) { it instanceof Map && !(it.reason in _rmInformationalSkippedReasons()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_285(def it) { it instanceof Map && !(it.reason in __bat529StaticCall_java_util_List_0('_rmInformationalSkippedReasons')) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_286(def it) { it instanceof Map && (it.success == false || it.partial == true) 
 }
 
-def _bat529Cb_4076886b_287(def it) { it.reason == "comparator_not_representable_for_enum_attribute" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_287(def it) { __bat529StaticProperty_java_lang_Object(it, 'reason') == "comparator_not_representable_for_enum_attribute" 
 }
 
-def _bat529Cb_4076886b_288(def it) { [(it?.name?.toString()): it?.value] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_4076886b_288(def it) { [(__bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString()): __bat529StaticProperty_Safe_java_lang_Object(it, 'value')] 
 }
 
-def _bat529Cb_4076886b_289(def it) { [(it?.name?.toString()): it?.value] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_4076886b_289(def it) { [(__bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString()): __bat529StaticProperty_Safe_java_lang_Object(it, 'value')] 
 }
 
-def _bat529Cb_4076886b_290(def liveApps, def treeReadable, def entry) { _rmAnnotateRuleStatus(entry, treeReadable, liveApps) 
+@groovy.transform.CompileStatic
+void _bat529Cb_4076886b_290(def liveApps, def treeReadable, def entry) { __bat529StaticCall_java_lang_Object_3('_rmAnnotateRuleStatus', entry, treeReadable, liveApps) 
 }
 
-def _bat529Cb_4076886b_291(def it) { it as Integer 
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_4076886b_291(def it) { it as Integer 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_292(def tstateName, def it) { it instanceof Map && it.key == tstateName && it.reason == "not_in_schema" 
 }
 
-def _bat529Cb_4076886b_293(def o) { o instanceof Map ? (o.keySet() as List) : [o] 
+@groovy.transform.CompileStatic
+java.util.List _bat529Cb_4076886b_293(def o) { o instanceof Map ? (o.keySet() as List) : [o] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_294(def sec) {
-        (sec?.input ?: [])
+        (__bat529StaticProperty_Safe_java_lang_Object(sec, 'input') ?: [])
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_295(def it) { (it instanceof Map) && (it.success != false) && (it.partial != true) 
 }
 
 def _bat529Cb_4076886b_296(def k, def v) { v 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_297(def it) { (it instanceof Map) && (it.success != false) && (it.partial != true) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_298(def it) { (it instanceof Map) && (it.success != false) && (it.partial != true) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_299(def o) {
         (o instanceof Map ? o.value?.toString() : o?.toString())
     
 }
 
-def _bat529Cb_4076886b_300(def text, def it) { text.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_300(def text, def it) { __bat529StaticReceiverCall_java_lang_Object_1(text, 'contains', it) 
 }
 
-def _bat529Cb_4076886b_301(def wantOrder, def it) { wantOrder.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_301(def wantOrder, def it) { __bat529StaticReceiverCall_java_lang_Object_1(wantOrder, 'contains', it) 
 }
 
-def _bat529Cb_4076886b_302(def it) { [(it?.name?.toString()): it] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_4076886b_302(def it) { [(__bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString()): it] 
 }
 
-def _bat529Cb_4076886b_303(def it) { [(it?.name?.toString()): it] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_4076886b_303(def it) { [(__bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString()): it] 
 }
 
-def _bat529Cb_4076886b_304(def reqToken, def it) { _rmComparatorTokenMatchesOption(reqToken, it) 
+@groovy.transform.CompileStatic
+boolean _bat529Cb_4076886b_304(def reqToken, def it) { __bat529StaticCall_boolean_2('_rmComparatorTokenMatchesOption', reqToken, it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_305(def it) { it instanceof Map && it.reason == "comparator_force_written_unverified" 
 }
 
-def _bat529Cb_4076886b_306(def snap, def it) { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_306(def snap, def it) { if (it instanceof Map && it.name != null) __bat529StaticReceiverCall_java_lang_Object_2(snap, 'put', it.name.toString(), it.value) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_307(def it) { it instanceof Map && it.reason == "comparator_force_written_unverified" 
 }
 
-def _bat529Cb_4076886b_308(def it) { it?.key?.toString()?.startsWith("actSubType") && it?.reason == "not_in_schema" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_308(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'key')?.toString()?.startsWith("actSubType") && __bat529StaticProperty_Safe_java_lang_Object(it, 'reason') == "not_in_schema" 
 }
 
-def _bat529Cb_4076886b_309(def it) { it as Integer 
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_4076886b_309(def it) { it as Integer 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_310(def pattern, def inp) {
-        def n = inp?.name?.toString()
-        n && n.matches(pattern)
+        def n = __bat529StaticProperty_Safe_java_lang_Object(inp, 'name')?.toString()
+        n && __bat529StaticReceiverCall_java_lang_Object_1(n, 'matches', pattern)
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_311(def idx, def inp) {
-            inp?.name?.toString()?.matches("xVar\\d+\\.${idx}")
+            __bat529StaticProperty_Safe_java_lang_Object(inp, 'name')?.toString()?.matches("xVar\\d+\\.${idx}")
         
 }
 
-def _bat529Cb_4076886b_312(def nameToId, def m) { if (m?.name && m?.id != null) nameToId.put(m.name.toString(), m.id.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_312(def nameToId, def m) { if (__bat529StaticProperty_Safe_java_lang_Object(m, 'name') && __bat529StaticProperty_Safe_java_lang_Object(m, 'id') != null) __bat529StaticReceiverCall_java_lang_Object_2(nameToId, 'put', __bat529StaticProperty_java_lang_Object(m, 'name').toString(), __bat529StaticProperty_java_lang_Object(m, 'id').toString()) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_313(def it) { it != null 
 }
 
@@ -16367,9 +16758,11 @@ def _bat529Cb_4076886b_314(def hrefParams, def writeST, def rk, def rv) {
         
 }
 
-def _bat529Cb_4076886b_315(def snapState, def it) { if (it instanceof Map && it.name != null) snapState.put(it.name.toString(), it.value) 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_315(def snapState, def it) { if (it instanceof Map && it.name != null) __bat529StaticReceiverCall_java_lang_Object_2(snapState, 'put', it.name.toString(), it.value) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_316(def it) {
             it instanceof Map && it.containsKey("replaceRequiredExpression")
         
@@ -16380,7 +16773,8 @@ def _bat529Cb_4076886b_317(def writePeriodic, def rk, def rv) {
             
 }
 
-def _bat529Cb_4076886b_318(def it) { it?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_318(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'input') ?: [] 
 }
 
 def _bat529Cb_4076886b_319(def appId, def cache, def hrefParams, def writeST, def tok, def i) { _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) 
@@ -16389,51 +16783,64 @@ def _bat529Cb_4076886b_319(def appId, def cache, def hrefParams, def writeST, de
 def _bat529Cb_4076886b_320(def appId, def cache, def hrefParams, def writeST, def tok, def i) { _rmTokInsert(appId, i, _rmTokenValue(tok), writeST, hrefParams, cache) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_321(def b) { b instanceof Map && (b.element == "paragraph" || b.element == "href") 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_322(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_323(def informationalReasons, def it) {
         it instanceof Map && it.reason != null && !(it.reason in informationalReasons)
     
 }
 
-def _bat529Cb_4076886b_324(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_324(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_325(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_326(def it) { it instanceof Map && it.reason == "comparator_not_representable_for_enum_attribute" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_327(def it) { it instanceof Map && it.reason == "comparator_not_representable_for_enum_attribute" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_328(def b) { b instanceof Map && b.element == "href" && b.page?.toString() == "periodic" 
 }
 
 def _bat529Cb_4076886b_329(def bare, def configAppName, def typeKey, def reg) { reg.appName == configAppName || (bare != null && reg.appName == bare) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_330(def it) {
         it instanceof Map && it.reason == "silent_rejection" && it.value instanceof List
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_331(def sec) {
-                    (sec?.input ?: [])
+                    (__bat529StaticProperty_Safe_java_lang_Object(sec, 'input') ?: [])
                 
 }
 
-def _bat529Cb_4076886b_332(def sec) { sec?.input ?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_332(def sec) { __bat529StaticProperty_Safe_java_lang_Object(sec, 'input') ?: [] 
 }
 
-def _bat529Cb_4076886b_333(def it) { [(it.name?.toString()): it] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_4076886b_333(def it) { [(__bat529StaticProperty_java_lang_Object(it, 'name')?.toString()): it] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_334(def b) { b instanceof Map && (b.element == "paragraph" || b.element == "href") 
 }
 
@@ -16450,9 +16857,11 @@ def _bat529Cb_4076886b_337(def informationalReasons, def it) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_338(def b) { b instanceof Map && (b.element == "paragraph" || b.element == "href") 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_339(def b) { b instanceof Map && (b.element == "paragraph" || b.element == "href") 
 }
 
@@ -16461,44 +16870,55 @@ def _bat529Cb_4076886b_340(def sec) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_341(def pattern, def preNames, def inp) {
-        def n = inp?.name?.toString()
-        n && n.matches(pattern) && !preNames.contains(n)
+        def n = __bat529StaticProperty_Safe_java_lang_Object(inp, 'name')?.toString()
+        n && __bat529StaticReceiverCall_java_lang_Object_1(n, 'matches', pattern) && !__bat529StaticReceiverCall_java_lang_Object_1(preNames, 'contains', n)
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_342(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_343(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_344(def it) { it != null 
 }
 
 def _bat529Cb_4076886b_345(def want, def it) { def n = it.toLowerCase(); (want.length() >= 4 && n.contains(want)) || (n.length() >= 4 && want.contains(n)) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_346(def text) {
-        (["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"]).any(((this.&_bat529Cb_4076886b_300).curry([text] as Object[])))
+        __bat529StaticDgm_any_1_boolean((["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"]), ((this.&_bat529Cb_4076886b_300).curry([text] as Object[])))
     
 }
 
-def _bat529Cb_4076886b_347(def it) { it?.name?.toString()?.startsWith("newToken") 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_347(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString()?.startsWith("newToken") 
 }
 
-def _bat529Cb_4076886b_348(def it) { it.isInteger() ? (it as Integer) : it 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_348(def it) { __bat529StaticReceiverCall_java_lang_Object_0(it, 'isInteger') ? (it as Integer) : it 
 }
 
-def _bat529Cb_4076886b_349(def it) { [(it.name.toString()): it] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_4076886b_349(def it) { [(__bat529StaticProperty_java_lang_Object(it, 'name').toString()): it] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_350(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_351(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_352(def it) {
             !(it?.toString()?.startsWith("structural imbalance in action block nesting"))
         
@@ -16514,6 +16934,7 @@ def _bat529Cb_4076886b_354(def partialActions, def r, def i) {
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_355(def it) { it != null && !it.toString().isInteger() 
 }
 
@@ -16522,7 +16943,8 @@ def _bat529Cb_4076886b_356(def partialTriggers, def r, def i) {
         
 }
 
-def _bat529Cb_4076886b_357(def xVarField, def it) { it?.name?.toString() == xVarField 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_357(def xVarField, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() == xVarField 
 }
 
 def _bat529Cb_4076886b_358(def liveSettings, def settingsMap, def name, def meta) {
@@ -16539,48 +16961,58 @@ def _bat529Cb_4076886b_359(def liveSettings, def settingsMap, def name, def meta
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_360(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_361(def s) {
-        def n = s?.name?.toString()
-        n?.matches(/^tDev\d+$/) && (s?.deviceIdsForDeviceList instanceof List) && s.deviceIdsForDeviceList
+        def n = __bat529StaticProperty_Safe_java_lang_Object(s, 'name')?.toString()
+        n?.matches(/^tDev\d+$/) && (__bat529StaticProperty_Safe_java_lang_Object(s, 'deviceIdsForDeviceList') instanceof List) && __bat529StaticProperty_java_lang_Object(s, 'deviceIdsForDeviceList')
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_362(def informational, def it) { it instanceof Map && it.key && it.reason &&
             !(it.reason in informational) && !it.key.toString().startsWith("isCondTrig.") 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_363(def o) {
-            (o instanceof Map) ? (o.containsKey("value") ? [o.value?.toString()] : (o.keySet()).collect((this.&_bat529Cb_4076886b_34))) : [o?.toString()]
+            (o instanceof Map) ? (o.containsKey("value") ? [o.value?.toString()] : __bat529StaticDgm_collect_1_java_util_List((o.keySet()), (this.&_bat529Cb_4076886b_34))) : [o?.toString()]
         
 }
 
-def _bat529Cb_4076886b_364(def it) { it.description?.toString() ?: "" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_364(def it) { __bat529StaticProperty_java_lang_Object(it, 'description')?.toString() ?: "" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_365(def wanted, def it) { it instanceof Map && it.name?.toString() == wanted 
 }
 
-def _bat529Cb_4076886b_366(def it) { it.description?.toString() ?: "" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_366(def it) { __bat529StaticProperty_java_lang_Object(it, 'description')?.toString() ?: "" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_367(def idToName, def nameSet, def m) {
-        if (m?.id != null && m?.name) {
-            idToName.put(m.id.toString(), m.name.toString())
-            nameSet << m.name.toString()
+        if (__bat529StaticProperty_Safe_java_lang_Object(m, 'id') != null && __bat529StaticProperty_Safe_java_lang_Object(m, 'name')) {
+            __bat529StaticReceiverCall_java_lang_Object_2(idToName, 'put', __bat529StaticProperty_java_lang_Object(m, 'id').toString(), __bat529StaticProperty_java_lang_Object(m, 'name').toString())
+            __bat529StaticExpr__bat529Cb_4076886b_367_6(m, nameSet)
         }
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_368(def v) {
-        (v instanceof List) ? (_rmTokenConditionIds(v as List)).collect((this.&_bat529Cb_4076886b_160)): []
+        (v instanceof List) ? __bat529StaticDgm_collect_1_java_util_List((__bat529StaticCall_java_util_List_1('_rmTokenConditionIds', v as List)), (this.&_bat529Cb_4076886b_160)): []
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_369(def v) {
-        (v instanceof List) ? (_rmTokenConditionIds(v as List)).collect((this.&_bat529Cb_4076886b_158)): []
+        (v instanceof List) ? __bat529StaticDgm_collect_1_java_util_List((__bat529StaticCall_java_util_List_1('_rmTokenConditionIds', v as List)), (this.&_bat529Cb_4076886b_158)): []
     
 }
 
@@ -16589,23 +17021,28 @@ def _bat529Cb_4076886b_370(def fromValues, def k, def meta) {
         
 }
 
-def _bat529Cb_4076886b_371(def it) { it.description?.toString() ?: "" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_371(def it) { __bat529StaticProperty_java_lang_Object(it, 'description')?.toString() ?: "" 
 }
 
-def _bat529Cb_4076886b_372(def it) { it.description?.toString() ?: "" 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_372(def it) { __bat529StaticProperty_java_lang_Object(it, 'description')?.toString() ?: "" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_373(def o) {
                 (o instanceof Map && !(o as Map).isEmpty()) ? (o as Map).keySet().iterator().next()?.toString() : o?.toString()
             
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_374(def it) { it instanceof Map &&
                 (it.reason == "change_comparator_not_representable_for_device_state" || it.reason == "state_change_route_unverified_fetch_failed") 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_375(def c) {
-        (c?.requiredFields instanceof List) && ((c.requiredFields as List)).any((this.&_bat529Cb_4076886b_263))
+        __bat529StaticExpr__bat529Cb_4076886b_375_1(c)
     
 }
 
@@ -16614,24 +17051,28 @@ def _bat529Cb_4076886b_376(def sect) {
             
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_377(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_378(def out, def s) {
-        def n = s?.name?.toString()
+        def n = __bat529StaticProperty_Safe_java_lang_Object(s, 'name')?.toString()
         if (n) {
             def m = (n =~ /^tCapab(\d+)$/)
-            if (m.matches()) out << (m[0][1] as Integer)
+            if (m.matches()) __bat529StaticExpr__bat529Cb_4076886b_378_2(m, out)
         }
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_379(def appId, def failures, def removed, def idx) {
-        try { _rmRemoveTrigger(appId, idx as Integer); removed.triggers << idx }
-        catch (Exception e) { failures << "trigger ${idx} (${e.message})".toString() }
+        try { __bat529StaticCall_java_util_Map_2('_rmRemoveTrigger', appId, idx as Integer); __bat529StaticExpr__bat529Cb_4076886b_379_2(idx, removed) }
+        catch (Exception e) { __bat529StaticExpr__bat529Cb_4076886b_379_1(e, failures, idx) }
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_380(def it) { it != null 
 }
 
@@ -16670,16 +17111,18 @@ def _bat529Cb_4076886b_385(def knownSettings, def schema, def unknownSettings, d
             
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_386(def wanted, def c) {
-        (c?.name?.toString()?.equalsIgnoreCase(wanted)) ||
-        (c?.aliases instanceof List && ((c.aliases as List)).any(((this.&_bat529Cb_4076886b_212).curry([wanted] as Object[]))))
+        __bat529StaticExpr__bat529Cb_4076886b_386_1(c, wanted)
+
     
 }
 
 def _bat529Cb_4076886b_387(def k, def meta) { [(k): meta.defaultValue] 
 }
 
-def _bat529Cb_4076886b_388(def it) { it.name.toString().toLowerCase() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_388(def it) { __bat529StaticProperty_java_lang_Object(it, 'name').toString().toLowerCase() 
 }
 
 def _bat529Cb_4076886b_389(def ids, def id, def entry) {
@@ -16695,9 +17138,10 @@ def _bat529Cb_4076886b_390(def sect) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_391(def entry) {
                 if (!(entry instanceof Map)) return
-                def em = entry as Map
+                java.util.Map em = entry as Map
                 if (em.deviceIds == null && em.deviceId != null) {
                     em.deviceIds = [em.deviceId]
                 }
@@ -16727,98 +17171,109 @@ def _bat529Cb_4076886b_394(def c) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_395(def reRepairHints, def sk) {
-            reRepairHints << _rmNotRepresentableEnumComparatorHint(
-                (sk instanceof Map ? sk.attribute : null), (sk instanceof Map ? sk.value : null))
+            __bat529StaticExpr__bat529Cb_4076886b_395_0(reRepairHints, sk)
+
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_396(def repairHints, def sk) {
-            if (sk.hint) repairHints << sk.hint.toString()
+            if (__bat529StaticProperty_java_lang_Object(sk, 'hint')) __bat529StaticExpr__bat529Cb_4076886b_396_2(repairHints, sk)
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_397(def requestedStem, def input) {
-                def candidateName = input?.name?.toString() ?: ""
+                def candidateName = __bat529StaticProperty_Safe_java_lang_Object(input, 'name')?.toString() ?: ""
                 def candidateMatcher = (candidateName =~ /^(.+[._-])(\d+)$/)
                 candidateMatcher.matches() && candidateMatcher.group(1) == requestedStem
             
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_398(def live, def s) {
-        def n = s?.name?.toString()
+        def n = __bat529StaticProperty_Safe_java_lang_Object(s, 'name')?.toString()
         if (!n) return
         def m = (n =~ /^act(?:Type|SubType)\.(\d+)$/)
         if (!m.matches()) return
-        def idx = (m[0][1] as Integer)
-        if (s?.value?.toString()?.trim()) live.put(idx, true)
+        def idx = (__bat529StaticBinary_GetAt_java_lang_Object(__bat529StaticBinary_GetAt_java_lang_Object(m, 0), 1) as Integer)
+        if (__bat529StaticProperty_Safe_java_lang_Object(s, 'value')?.toString()?.trim()) __bat529StaticReceiverCall_java_lang_Object_2(live, 'put', idx, true)
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_399(def repairHints, def sk) {
-            repairHints << _rmNotRepresentableEnumComparatorHint(
-                (sk instanceof Map ? sk.attribute : null), (sk instanceof Map ? sk.value : null))
+            __bat529StaticExpr__bat529Cb_4076886b_399_0(repairHints, sk)
+
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_400(def out, def seen, def s) {
-        def n = s?.name?.toString()
+        def n = __bat529StaticProperty_Safe_java_lang_Object(s, 'name')?.toString()
         if (n) {
             def m = (n =~ /^act(?:Type|SubType)\.(\d+)$/)
             if (m.matches()) {
-                def idx = (m[0][1] as Integer)
-                if (seen.add(idx)) out << idx
+                def idx = (__bat529StaticBinary_GetAt_java_lang_Object(__bat529StaticBinary_GetAt_java_lang_Object(m, 0), 1) as Integer)
+                if (__bat529StaticReceiverCall_java_lang_Object_1(seen, 'add', idx)) __bat529StaticExpr__bat529Cb_4076886b_400_3(idx, out)
             }
         }
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_401(def item) {
-        if (item.cond != null) {
-            def cap = (item.cond as Map).capability?.toString()?.trim()
+        if (__bat529StaticProperty_java_lang_Object(item, 'cond') != null) {
+            def cap = (__bat529StaticProperty_java_lang_Object(item, 'cond') as Map).capability?.toString()?.trim()
             if (!cap) throw new IllegalArgumentException("replaceRequiredExpression: every condition needs a capability")
-            _rmRejectUnwalkableConditionCapability(cap)
+            __bat529StaticCall_java_lang_Object_1('_rmRejectUnwalkableConditionCapability', cap)
         }
     
 }
 
-def _bat529Cb_4076886b_402(def s) {
-            def n = s?.name?.toString()
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_4076886b_402(def s) {
+            def n = __bat529StaticProperty_Safe_java_lang_Object(s, 'name')?.toString()
             if (!n) return null
             def m = (n =~ /^actSubType\.(\d+)$/)
             if (!m.matches()) return null
-            if (s?.value?.toString() != "getWaitEvents") return null
-            return (m[0][1] as Integer)
+            if (__bat529StaticProperty_Safe_java_lang_Object(s, 'value')?.toString() != "getWaitEvents") return null
+            return (__bat529StaticBinary_GetAt_java_lang_Object(__bat529StaticBinary_GetAt_java_lang_Object(m, 0), 1) as Integer)
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_403(def label, def liveIds, def id) {
-        if (_rmIsThisRuleTarget(id)) return
-        def idInt = _rmCoerceRuleId(id)
-        if (!liveIds.contains(idInt)) {
+        if (__bat529StaticCall_boolean_1('_rmIsThisRuleTarget', id)) return
+        def idInt = __bat529StaticCall_java_lang_Integer_1('_rmCoerceRuleId', id)
+        if (!__bat529StaticReceiverCall_java_lang_Object_1(liveIds, 'contains', idInt)) {
             throw new IllegalArgumentException("${label} target rule id '${id}' does not exist on the hub. Use hub_list_rules to find valid rule ids. RM is not touched.")
         }
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_404(def candidateIdxs, def existing, def inp) {
-            def n = inp?.name?.toString()
+            def n = __bat529StaticProperty_Safe_java_lang_Object(inp, 'name')?.toString()
             if (n) {
                 def m = (n =~ /^tCapab(\d+)$/)
                 if (m.matches()) {
-                    def cn = (m[0][1] as Integer)
-                    if (!existing.contains(cn)) candidateIdxs << cn
+                    def cn = (__bat529StaticBinary_GetAt_java_lang_Object(__bat529StaticBinary_GetAt_java_lang_Object(m, 0), 1) as Integer)
+                    if (!__bat529StaticReceiverCall_java_lang_Object_1(existing, 'contains', cn)) __bat529StaticExpr__bat529Cb_4076886b_404_3(candidateIdxs, cn)
                 }
             }
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_405(def appId, def id) {
         try {
-            _rmClickAppButton(appId, id.toString(), "deleteCon", "selectConditions", null)
-            _rmFetchConfigJson(appId, "selectConditions")
+            __bat529StaticCall_java_lang_Object_5('_rmClickAppButton', appId, id.toString(), "deleteCon", "selectConditions", null)
+            __bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', appId, "selectConditions")
         } catch (Exception e) {
-            mcpLog("warn", "rm-native", "Required Expression edit: removing condition ${id} from app ${appId} failed (${e.message})")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "Required Expression edit: removing condition ${id} from app ${appId} failed (${e.message})")
         }
     
 }
@@ -16830,12 +17285,13 @@ def _bat529Cb_4076886b_406(def sect) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_407(def opts, def o) {
                     if (o instanceof Map && !o.isEmpty()) {
                         def k = o.keySet().iterator().next()
-                        opts << [value: k.toString(), label: o.get(k)?.toString()]
+                        __bat529StaticExpr__bat529Cb_4076886b_407_0(k, o, opts)
                     } else {
-                        opts << [value: o?.toString(), label: o?.toString()]
+                        __bat529StaticExpr__bat529Cb_4076886b_407_1(o, opts)
                     }
                 
 }
@@ -16871,10 +17327,11 @@ def _bat529Cb_4076886b_411(def sect) {
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_412(def label, def id) {
-        if (_rmIsThisRuleTarget(id)) {
-            if (!_rmTargetAllowsThisRule(label)) throw new IllegalArgumentException(_rmThisRuleUnsupportedMessage(label))
-        } else if (_rmCoerceRuleId(id) == null) {
+        if (__bat529StaticCall_boolean_1('_rmIsThisRuleTarget', id)) {
+            if (!__bat529StaticCall_boolean_1('_rmTargetAllowsThisRule', label)) throw new IllegalArgumentException(__bat529StaticCall_java_lang_String_1('_rmThisRuleUnsupportedMessage', label))
+        } else if (__bat529StaticCall_java_lang_Integer_1('_rmCoerceRuleId', id) == null) {
             throw new IllegalArgumentException("${label} target rule id '${id}' is not a valid numeric rule id. Use hub_list_rules to find valid rule ids. RM is not touched.")
         }
     
@@ -16949,15 +17406,16 @@ def _bat529Cb_4076886b_418(def nameToId, def out, def k) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_419(def ids, def id) {
         // _rmCoerceRuleId, not normalizeRuleId: a JSON-number 400.7 would silently
         // TRUNCATE to rule 400 via toInteger() -- and then PASS the existence
         // check below, pausing the wrong rule with full confidence.
-        def n = _rmCoerceRuleId(id)
+        def n = __bat529StaticCall_java_lang_Integer_1('_rmCoerceRuleId', id)
         if (n == null) {
             throw new IllegalArgumentException("ruleId '${id}' is not an integer-valued rule id. Use hub_list_rules to find valid ids.")
         }
-        if (!ids.contains(n)) ids << n
+        if (!__bat529StaticReceiverCall_java_lang_Object_1(ids, 'contains', n)) __bat529StaticExpr__bat529Cb_4076886b_419_1(ids, n)
     
 }
 
@@ -16996,12 +17454,13 @@ def _bat529Cb_4076886b_422(def byName, def sk) {
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_423(def cap, def i, def id) {
                 def idStr = id?.toString()
                 if (!idStr) return
                 def exists = false
                 try {
-                    def resp = hubInternalGet("/device/fullJson/${idStr}")
+                    def resp = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/device/fullJson/${idStr}")
                     exists = (resp != null && resp.toString().length() > 0)
                 } catch (Exception ignored) { exists = false }
                 if (!exists) {
@@ -17045,16 +17504,17 @@ def _bat529Cb_4076886b_427(def cap, def c, def i) {
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_428(def devices, def ids, def recs, def settings, String name) {
         // Condition settings end in _<id> (rDev_3); trigger settings (tDev3) share the digits but not the underscore.
         def m = name =~ /^[A-Za-z]+_(\d+)$/
-        if (!m.matches() || !ids.contains((m[0] as List)[1].toString())) return
-        def rec = recs.get(name)
-        def v = settings.get(name)
+        if (!m.matches() || !__bat529StaticReceiverCall_java_lang_Object_1(ids, 'contains', (m[0] as List)[1].toString())) return
+        def rec = __bat529StaticReceiverCall_java_lang_Object_1(recs, 'get', name)
+        def v = __bat529StaticReceiverCall_java_lang_Object_1(settings, 'get', name)
         // A picker the status read does not list is known by its {id: label} value.
-        if (!(rec ? _isDevicePickerType(rec.type?.toString()) : v instanceof Map)) return
-        def list = (rec?.deviceIdsForDeviceList instanceof List && rec.deviceIdsForDeviceList) ? rec.deviceIdsForDeviceList : _devicePickerIds(v)
-        ((list instanceof List ? list : [])).each(((this.&_bat529Cb_4076886b_211).curry([devices] as Object[])))
+        if (!(rec ? __bat529StaticCall_boolean_1('_isDevicePickerType', __bat529StaticProperty_java_lang_Object(rec, 'type')?.toString()) : v instanceof Map)) return
+        def list = (__bat529StaticProperty_Safe_java_lang_Object(rec, 'deviceIdsForDeviceList') instanceof List && __bat529StaticProperty_java_lang_Object(rec, 'deviceIdsForDeviceList')) ? __bat529StaticProperty_java_lang_Object(rec, 'deviceIdsForDeviceList') : __bat529StaticCall_java_lang_Object_1('_devicePickerIds', v)
+        __bat529StaticDgm_each_1_java_lang_Object(((list instanceof List ? list : [])), ((this.&_bat529Cb_4076886b_211).curry([devices] as Object[])))
     
 }
 
@@ -17099,7 +17559,8 @@ def _bat529Cb_4076886b_430(def label, def spec, def i) {
     
 }
 
-def _bat529Cb_4076886b_431(def it) { !it.isEmpty() 
+@groovy.transform.CompileStatic
+def _bat529Cb_4076886b_431(def it) { !__bat529StaticReceiverCall_java_lang_Object_0(it, 'isEmpty') 
 }
 
 def _bat529Cb_4076886b_432(def appId, def blankedInputs, def currentSettings, def extraSettings, def fullMap, def pageName, def name, def meta) {
@@ -17156,12 +17617,13 @@ def _bat529Cb_4076886b_433(def operator, def opsList, def path, def plan, def c,
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_4076886b_434(def label, def id) {
         def idStr = id?.toString()
         if (!idStr) return
         def exists
         try {
-            def resp = hubInternalGet("/device/fullJson/${idStr}")
+            def resp = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/device/fullJson/${idStr}")
             exists = (resp != null && resp.toString().length() > 0)
         } catch (Exception fetchExc) {
             // Distinguish "device truly missing" (404 / empty body) from
@@ -17174,7 +17636,7 @@ def _bat529Cb_4076886b_434(def label, def id) {
             if (msg.contains("404") || msg.toLowerCase().contains("not found")) {
                 exists = false
             } else {
-                mcpLog("warn", "rm-native", "_rmValidateDeviceIdsExist: ${label} validation fetch for id=${idStr} failed transiently (${msg}) -- skipping validation; the underlying hub call may have errored independent of whether the device exists")
+                __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "_rmValidateDeviceIdsExist: ${label} validation fetch for id=${idStr} failed transiently (${msg}) -- skipping validation; the underlying hub call may have errored independent of whether the device exists")
                 exists = true  // assume valid on transient failure; the actual write will fail loudly if the ID is genuinely bogus
             }
         }

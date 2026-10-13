@@ -168,27 +168,28 @@ private long _fpField(long h, value) {
 }
 
 // Build a flat list of all tools (core + proxied) with gateway attribution
+@groovy.transform.CompileStatic
 private buildToolSearchCorpus(List defs = null) {
-    def gatewayConfig = getGatewayConfig()
-    def proxiedNames = (gatewayConfig.values()).collectMany((this.&_bat529Cb_ac505e8e_11))as Set
+    def gatewayConfig = __bat529StaticCall_java_lang_Object_0('getGatewayConfig')
+    java.util.Set proxiedNames = __bat529StaticExpr_buildToolSearchCorpus_1(gatewayConfig)
     // Strip [[FLAT_TRIM]] marker tokens before BM25 corpus build -- the markers
     // shouldn't show up as searchable tokens, but the wrapped capability lists
     // SHOULD (so hub_search_tools still matches "switch motion contact").
-    def allDefs = applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false)
-    def allDefsMap = (allDefs).collectEntries((this.&_bat529Cb_ac505e8e_9))
+    java.util.List allDefs = __bat529StaticCall_java_util_List_3('applyDescriptionTransform', defs ?: __bat529StaticCall_java_lang_Object_0('getAllToolDefinitions'), false, false)
+    def allDefsMap = __bat529StaticDgm_collectEntries_1_java_util_Map((allDefs), (this.&_bat529Cb_ac505e8e_9))
     // Friendly names join the searchable text: titles add tokens the bare
     // name/description lack (hub_set_rule gains 'author' from "Author Rule
     // Machine Rule" -- its corpus text otherwise only has 'authoring', and
     // the tokenizer does not stem).
-    def displayMeta = getToolDisplayMeta()
+    def displayMeta = __bat529StaticCall_java_lang_Object_0('getToolDisplayMeta')
 
-    def corpus = []
+    java.util.List corpus = []
 
     // Core tools (not behind a gateway)
-    (allDefs).each(((this.&_bat529Cb_ac505e8e_20).curry([corpus, displayMeta, proxiedNames] as Object[])))
+    __bat529StaticDgm_each_1_java_util_List((allDefs), ((this.&_bat529Cb_ac505e8e_20).curry([corpus, displayMeta, proxiedNames] as Object[])))
 
     // Gateway sub-tools (with search hints for synonym matching)
-    (gatewayConfig).each(((this.&_bat529Cb_ac505e8e_22).curry([allDefsMap, corpus, displayMeta] as Object[])))
+    __bat529StaticDgm_each_1_java_lang_Object((gatewayConfig), ((this.&_bat529Cb_ac505e8e_22).curry([allDefsMap, corpus, displayMeta] as Object[])))
 
     return corpus
 }
@@ -419,61 +420,73 @@ private Map _withGuidePage(Map result, content, cursor) {
     return result
 }
 
+@groovy.transform.CompileStatic
 def _getAllToolDefinitions_partDiscovery() {
-    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_tool_guide"],["description","Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool\'s section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent\'s response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (paged via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub\'s own Groovy API documentation instead.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["section",["m",[["type","string"],["description","One section key from the enum. Omit to get the key list plus the first page of the full guide."],["enum",["l",["device_authorization","best_practice_reference","tool_access","hub_admin_write","hub_admin_write_overview","hub_admin_write_destructive","hub_admin_write_radios","hub_admin_write_devices","hub_admin_write_code","hub_admin_write_system","virtual_devices","update_device","rules","backup","file_manager","performance","performance_overview","performance_devices","performance_diagnostics","builtin_app_tools","builtin_app_tools_overview","builtin_app_tools_apps","builtin_app_tools_rules","builtin_app_tools_crud","set_rule_reference","set_rule_reference_overview","set_rule_reference_triggers","set_rule_reference_actions","set_rule_reference_conditions","set_rule_reference_walkstep","set_rule_reference_responses","set_rule_reference_guards","set_rule_create_reference","visual_rule_reference","variables","dashboards","bundles","rooms","slow_ops"]]]]]],["cursor",["m",[["type","string"],["description","Continue a paged payload: pass the prior call\'s nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."]]]],["platform_api_search",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: search the hub\'s Groovy API docs, e.g. \'eventsBetween\'.[[/FLAT_TRIM]]"]]]],["platform_api_page",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_search_tools"],["description","Search all MCP tools by natural language query (BM25 ranking). Searches tool names, friendly titles, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need."],["inputSchema",["m",[["type","object"],["properties",["m",[["query",["m",[["type","string"],["description","Natural language search query (e.g. \'zigbee radio\', \'delete app\', \'memory leak\', \'room management\')"]]]],["maxResults",["m",[["type","integer"],["description","Max results to return. Default: 5."],["default",5]]]]]]],["required",["l",["query"]]]]]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",[["m",[["name","hub_get_tool_guide"],["description","Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool\'s section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent\'s response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (paged via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub\'s own Groovy API documentation instead.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["section",["m",[["type","string"],["description","One section key from the enum. Omit to get the key list plus the first page of the full guide."],["enum",["l",["device_authorization","best_practice_reference","tool_access","hub_admin_write","hub_admin_write_overview","hub_admin_write_destructive","hub_admin_write_radios","hub_admin_write_devices","hub_admin_write_code","hub_admin_write_system","virtual_devices","update_device","rules","backup","file_manager","performance","performance_overview","performance_devices","performance_diagnostics","builtin_app_tools","builtin_app_tools_overview","builtin_app_tools_apps","builtin_app_tools_rules","builtin_app_tools_crud","set_rule_reference","set_rule_reference_overview","set_rule_reference_triggers","set_rule_reference_actions","set_rule_reference_conditions","set_rule_reference_walkstep","set_rule_reference_responses","set_rule_reference_guards","set_rule_create_reference","visual_rule_reference","variables","dashboards","bundles","rooms","slow_ops"]]]]]],["cursor",["m",[["type","string"],["description","Continue a paged payload: pass the prior call\'s nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."]]]],["platform_api_search",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: search the hub\'s Groovy API docs, e.g. \'eventsBetween\'.[[/FLAT_TRIM]]"]]]],["platform_api_page",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_search_tools"],["description","Search all MCP tools by natural language query (BM25 ranking). Searches tool names, friendly titles, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need."],["inputSchema",["m",[["type","object"],["properties",["m",[["query",["m",[["type","string"],["description","Natural language search query (e.g. \'zigbee radio\', \'delete app\', \'memory leak\', \'room management\')"]]]],["maxResults",["m",[["type","integer"],["description","Max results to return. Default: 5."],["default",5]]]]]]],["required",["l",["query"]]]]]]]]]]'])
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partDiscovery() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_get_tool_guide","hub_search_tools"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_get_tool_guide","hub_search_tools"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partDiscovery() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_tool_guide",["m",[["title","Get Tool Guide"],["summary","Deep-reference guide for MCP tool topics, plus search of the hub\'s own Groovy API documentation."]]]],["hub_search_tools",["m",[["title","Search Tools"],["summary","Search all MCP tools by natural-language query."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_get_tool_guide",["m",[["title","Get Tool Guide"],["summary","Deep-reference guide for MCP tool topics, plus search of the hub\'s own Groovy API documentation."]]]],["hub_search_tools",["m",[["title","Search Tools"],["summary","Search all MCP tools by natural-language query."]]]]]]'])
 }
 
 
 def _bat529Cb_ac505e8e_1(def it) { -it.score 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ac505e8e_2(def lname, def it) { it == lname 
 }
 
 def _bat529Cb_ac505e8e_3(def k, def v) { v 
 }
 
-def _bat529Cb_ac505e8e_4(def it) { -(it.score as int) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ac505e8e_4(def it) { -(__bat529StaticProperty_java_lang_Object(it, 'score') as int) 
 }
 
-def _bat529Cb_ac505e8e_5(def text, def it) { text.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ac505e8e_5(def text, def it) { __bat529StaticReceiverCall_java_lang_Object_1(text, 'contains', it) 
 }
 
-def _bat529Cb_ac505e8e_6(def lname, def it) { lname.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ac505e8e_6(def lname, def it) { __bat529StaticReceiverCall_java_lang_Object_1(lname, 'contains', it) 
 }
 
-def _bat529Cb_ac505e8e_7(def pageText, def it) { pageText.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ac505e8e_7(def pageText, def it) { __bat529StaticReceiverCall_java_lang_Object_1(pageText, 'contains', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ac505e8e_8(def it) { it instanceof Map 
 }
 
 def _bat529Cb_ac505e8e_9(def it) { [(it.name): it] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ac505e8e_10(def it) { it 
 }
 
-def _bat529Cb_ac505e8e_11(def it) { it.tools 
+@groovy.transform.CompileStatic
+def _bat529Cb_ac505e8e_11(def it) { __bat529StaticProperty_java_lang_Object(it, 'tools') 
 }
 
 def _bat529Cb_ac505e8e_12(def k, def v) { k != "score" && v != null 
 }
 
-def _bat529Cb_ac505e8e_13(def it) { bm25Tokenize(_bm25DocText(it)) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ac505e8e_13(def it) { __bat529StaticCall_java_lang_Object_1('bm25Tokenize', __bat529StaticCall_java_lang_String_1('_bm25DocText', it)) 
 }
 
 def _bat529Cb_ac505e8e_14(def g, def it) { "${g.title} ${g.summary}".toLowerCase().contains(it) 
@@ -485,7 +498,8 @@ def _bat529Cb_ac505e8e_15(def k, def v) { [(k): v.keySet().toList()]
 def _bat529Cb_ac505e8e_16(def k, def v) { [(k): v.keySet().toList()] 
 }
 
-def _bat529Cb_ac505e8e_17(def h) { (h).findAll((this.&_bat529Cb_ac505e8e_12))
+@groovy.transform.CompileStatic
+def _bat529Cb_ac505e8e_17(def h) { __bat529StaticDgm_findAll_1_java_lang_Object((h), (this.&_bat529Cb_ac505e8e_12))
 }
 
 def _bat529Cb_ac505e8e_18(def seenSearchNames, def visibleCorpus, def r) {
@@ -496,9 +510,10 @@ def _bat529Cb_ac505e8e_18(def seenSearchNames, def visibleCorpus, def r) {
     
 }
 
-def _bat529Cb_ac505e8e_19(def m) {
-        def text = (m.descriptionMarkdown ?: m.summary)?.toString()?.trim()
-        def entry = [kind: m.kind, name: m.name, signature: m.signature, description: text?.take(20000)]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_ac505e8e_19(def m) {
+        def text = (__bat529StaticProperty_java_lang_Object(m, 'descriptionMarkdown') ?: __bat529StaticProperty_java_lang_Object(m, 'summary'))?.toString()?.trim()
+        java.util.Map entry = [kind: __bat529StaticProperty_java_lang_Object(m, 'kind'), name: __bat529StaticProperty_java_lang_Object(m, 'name'), signature: __bat529StaticProperty_java_lang_Object(m, 'signature'), description: text?.take(20000)]
         if (text && text.length() > 20000) entry.descriptionTruncated = true
         entry
     

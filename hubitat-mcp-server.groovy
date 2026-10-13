@@ -642,8 +642,9 @@ def appButtonHandler(btn) {
     }
 }
 
+@groovy.transform.CompileStatic
 def getChildAppById(appId) {
-    return (getChildApps())?.find(((this.&_bat529Cb_ad9a62cb_80).curry([appId] as Object[])))
+    return __bat529StaticDgm_find_1_Safe_java_lang_Object((__bat529StaticCall_java_util_List_0('getChildApps')), ((this.&_bat529Cb_ad9a62cb_80).curry([appId] as Object[])))
 }
 
 // ==================== APP LIFECYCLE ====================
@@ -787,21 +788,23 @@ private Set<String> _protectedAppIds(boolean applyUiSelection = false) {
     }
 }
 
+@groovy.transform.CompileStatic
 private Map _protectedAppChoices() {
-    def selected = _protectedAppIds()
-    def options = [:]
-    def apps = _collectLiveApps()
-    ((apps ?: [:])).each(((this.&_bat529Cb_ad9a62cb_162).curry([options] as Object[])))
-    String selfId = _protectedAppId(app?.id)
-    if (selfId && !options.containsKey(selfId)) options.put(selfId, "${app?.label ?: 'MCP Rule Server'} (ID ${selfId})".toString())
-    (selected).each(((this.&_bat529Cb_ad9a62cb_131).curry([options] as Object[])))
+    java.util.Set selected = __bat529StaticCall_java_util_Set_0('_protectedAppIds')
+    java.util.Map options = [:]
+    java.util.Map apps = __bat529StaticCall_java_util_Map_0('_collectLiveApps')
+    __bat529StaticDgm_each_1_java_util_Map(((apps ?: [:])), ((this.&_bat529Cb_ad9a62cb_162).curry([options] as Object[])))
+    String selfId = __bat529StaticCall_java_lang_String_1('_protectedAppId', __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_app(), 'id'))
+    if (selfId && !options.containsKey(selfId)) options.put(selfId, "${__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_app(), 'label') ?: 'MCP Rule Server'} (ID ${selfId})".toString())
+    __bat529StaticDgm_each_1_java_util_Set((selected), ((this.&_bat529Cb_ad9a62cb_131).curry([options] as Object[])))
     return [options: (options).sort((this.&_bat529Cb_ad9a62cb_107)),
             inventoryUnavailable: apps == null]
 }
 
+@groovy.transform.CompileStatic
 private void _requireUnprotectedAppMutation(Object targetId, String operation, Set<String> protectedIds = null) {
-    String id = _protectedAppId(targetId)
-    if (id && (protectedIds != null ? protectedIds : _protectedAppIds()).contains(id)) {
+    String id = __bat529StaticCall_java_lang_String_1('_protectedAppId', targetId)
+    if (id && (protectedIds != null ? protectedIds : __bat529StaticCall_java_util_Set_0('_protectedAppIds')).contains(id)) {
         throw new IllegalArgumentException("App ${id} is protected: cannot ${operation}. Manage Protected apps on the Advanced page of the MCP server's Hubitat app. Developer Mode does not bypass this protection for generic tools.")
     }
 }
@@ -918,26 +921,28 @@ def initialize() {
     }
 }
 
+@groovy.transform.CompileStatic
 private String _transportStatusLabel(value) {
     return (value != false) ? "<span style='color: green;'>enabled</span>" : "<span style='color: red;'>disabled</span>"
 }
 
 // Saving new code does not call updated(), so the subscriptions, schedules and in-use
 // registrations initialize() owns would otherwise wait for the next Done click.
+@groovy.transform.CompileStatic
 private void _refreshSetupAfterUpdate() {
-    if (SETUP_CURRENT || now() < SETUP_RETRY_AT) return
+    if (SETUP_CURRENT || __bat529StaticCall_long_0('now') < SETUP_RETRY_AT) return
     synchronized (SETUP_REFRESH_LOCK) {
-        if (SETUP_CURRENT || now() < SETUP_RETRY_AT) return
+        if (SETUP_CURRENT || __bat529StaticCall_long_0('now') < SETUP_RETRY_AT) return
         try {
-            if (state.setupVersion == currentVersion()) {
+            if (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'setupVersion') == __bat529StaticCall_java_lang_String_0('currentVersion')) {
                 SETUP_CURRENT = true
                 return
             }
-            mcpLog("info", "server", "Refreshing setup for ${currentVersion()} (was ${state.setupVersion ?: 'unrecorded'})")
-            initialize()
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "server", "Refreshing setup for ${__bat529StaticCall_java_lang_String_0('currentVersion')} (was ${__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'setupVersion') ?: 'unrecorded'})")
+            __bat529StaticCall_java_lang_Object_0('initialize')
         } catch (Exception e) {
-            SETUP_RETRY_AT = now() + 60000L
-            _cleanupError("server", "Setup refresh after an update failed; a request after 60 seconds will retry it: ${_cleanupFailureDetail(e)}")
+            SETUP_RETRY_AT = __bat529StaticCall_long_0('now') + 60000L
+            __bat529StaticCall_java_lang_Object_2('_cleanupError', "server", "Setup refresh after an update failed; a request after 60 seconds will retry it: ${__bat529StaticCall_java_lang_String_1('_cleanupFailureDetail', e)}")
         }
     }
 }
@@ -965,15 +970,17 @@ mappings {
 // Method-constant, not `private static final` (script-scope rejects the field in the
 // Hubitat sandbox). The two response-size guards and toolGetHubLogs derive their
 // thresholds from this with explicit headroom so the cap lives in exactly one place.
-def hubResponseCapBytes() { 131072 }
+@groovy.transform.CompileStatic
+java.lang.Integer hubResponseCapBytes() { 131072 }
 
+@groovy.transform.CompileStatic
 def handleHealth() {
-    if (!_transportEnabled()) {
-        return render(status: 403, contentType: "application/json",
-                      data: groovy.json.JsonOutput.toJson([status: "forbidden", error: _transportDisabledMessage()]))
+    if (!__bat529StaticCall_java_lang_Object_0('_transportEnabled')) {
+        return __bat529StaticCall_render_java_lang_Object_1(status: 403, contentType: "application/json",
+                      data: groovy.json.JsonOutput.toJson([status: "forbidden", error: __bat529StaticCall_java_lang_Object_0('_transportDisabledMessage')]))
     }
-    def ident = serverIdentity()
-    return render(contentType: "application/json", data: groovy.json.JsonOutput.toJson([
+    java.util.Map ident = __bat529StaticCall_java_util_Map_0('serverIdentity')
+    return __bat529StaticCall_render_java_lang_Object_1(contentType: "application/json", data: groovy.json.JsonOutput.toJson([
         status: "ok",
         server: ident.name,
         version: ident.version
@@ -984,10 +991,11 @@ def handleHealth() {
 // streaming is supported (intentional -- SSE is impractical on the Hubitat
 // HEM endpoint). GET returns a JSON-RPC-shaped 405 so a JSON-RPC client sees
 // a coherent error rather than an ad-hoc body.
+@groovy.transform.CompileStatic
 def handleMcpGet() {
-    if (!_transportEnabled()) return _transportDisabledResponse()
-    return render(status: 405, contentType: "application/json",
-                  data: groovy.json.JsonOutput.toJson(jsonRpcError(null, -32600,
+    if (!__bat529StaticCall_java_lang_Object_0('_transportEnabled')) return __bat529StaticCall_java_lang_Object_0('_transportDisabledResponse')
+    return __bat529StaticCall_render_java_lang_Object_1(status: 405, contentType: "application/json",
+                  data: groovy.json.JsonOutput.toJson(__bat529StaticCall_java_util_Map_3('jsonRpcError', null, -32600,
                       "This MCP endpoint is request-response only (POST). SSE/GET streaming is not supported.")))
 }
 
@@ -1205,14 +1213,15 @@ def _requestHeader(String name) {
 // that is exactly the problem -- nothing anywhere said so. hub_get_info surfaces the flag
 // (headerValidation) so a support read shows it without needing the log, and the transition logs at
 // error level once per state change rather than per request.
+@groovy.transform.CompileStatic
 def _noteHeadersReadable(boolean readable) {
-    String appKey = _stateOwnerKey()
+    String appKey = __bat529StaticCall_java_lang_String_0('_stateOwnerKey')
     synchronized (HEADERS_READABLE_SEEN) {
         if (HEADERS_READABLE_SEEN.get(appKey) == readable) return
     }
     try {
-        def prev = state.headersReadable
-        if (prev != readable) state.headersReadable = readable
+        def prev = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'headersReadable')
+        if (prev != readable) __bat529StaticStore__noteHeadersReadable_0(readable)
         synchronized (HEADERS_READABLE_SEEN) { HEADERS_READABLE_SEEN.put(appKey, readable) }
         if (prev == readable) return
         if (readable) {
@@ -1221,10 +1230,10 @@ def _noteHeadersReadable(boolean readable) {
             // also broke every spec that counts buffer entries. hub_get_info.headerValidation is
             // where the healthy state is READ; this log is for the abnormal one.
             if (prev == false) {
-                mcpLog("info", "server", "request.headers is readable again -- Origin validation and modern-era detection are active")
+                __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "server", "request.headers is readable again -- Origin validation and modern-era detection are active")
             }
         } else {
-            mcpLog("error", "server", "request.headers is NOT readable on this firmware -- Origin validation is INACTIVE (the DNS-rebinding check cannot run) and every request is served as legacy-era regardless of its MCP-Protocol-Version header")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "server", "request.headers is NOT readable on this firmware -- Origin validation is INACTIVE (the DNS-rebinding check cannot run) and every request is served as legacy-era regardless of its MCP-Protocol-Version header")
         }
     } catch (Exception ignored) {
         // Never let bookkeeping break request handling.
@@ -1244,13 +1253,14 @@ def _noteHeadersReadable(boolean readable) {
 // a tokenless request never reaches this handler. Meanwhile no shipped version ever origin-checked,
 // so enforcing by default would newly 403 working reverse-proxy and browser-client setups. Opt in
 // via the Advanced toggle; additionalAllowedOrigins feeds the allowlist in BOTH modes.
+@groovy.transform.CompileStatic
 def _originAllowed() {
     try {
-        String origin = _requestHeader("Origin")
+        String origin = __bat529StaticCall_java_lang_Object_1('_requestHeader', "Origin")
         if (!origin) return true
-        String originHost = _originHost(origin)
+        String originHost = __bat529StaticCall_java_lang_String_1('_originHost', origin)
         if (!originHost) return false
-        return _allowedOriginHosts().contains(originHost)
+        return __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticExpr__originAllowed_0(), 'contains', originHost)
     } catch (Exception ignored) {
         return false
     }
@@ -1261,29 +1271,31 @@ def _originAllowed() {
 // defensively from location.hub.localIP (the same source hub_get_info uses; it can be
 // null on some firmware), so an unreadable IP narrows the allowed set to the static
 // entries rather than failing open or throwing.
+@groovy.transform.CompileStatic
 def _allowedOriginHosts() {
-    def allowed = [] + _originStaticHosts()
+    def allowed = [] + __bat529StaticCall_java_util_List_0('_originStaticHosts')
     try {
-        def localIp = location?.hub?.localIP?.toString()
+        def localIp = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_location(), 'hub'), 'localIP')?.toString()
         if (localIp) {
             allowed << localIp.trim().toLowerCase()
         } else {
-            _noteLocalIpForOrigin(false)
+            __bat529StaticCall_java_lang_Object_1('_noteLocalIpForOrigin', false)
         }
     } catch (Exception ignored) {
-        _noteLocalIpForOrigin(false)
+        __bat529StaticCall_java_lang_Object_1('_noteLocalIpForOrigin', false)
     }
-    return allowed + _configuredExtraOriginHosts()
+    return allowed + __bat529StaticCall_java_lang_Object_0('_configuredExtraOriginHosts')
 }
 
 // The additionalAllowedOrigins setting, normalized: split on commas, run each entry through
 // _authorityHost so a pasted "https://host:8443/path" still reduces to its hostname, and drop
 // blanks. Additive only -- deny-by-default is unchanged.
+@groovy.transform.CompileStatic
 def _configuredExtraOriginHosts() {
     try {
-        def raw = settings.additionalAllowedOrigins?.toString()
+        def raw = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'additionalAllowedOrigins')?.toString()
         if (!raw?.trim()) return []
-        return ((raw.split(",")).collect((this.&_bat529Cb_ad9a62cb_147))).findAll((this.&_bat529Cb_ad9a62cb_149))
+        return __bat529StaticDgm_findAll_1_java_lang_Object((__bat529StaticDgm_collect_1_java_util_List((raw.split(",")), (this.&_bat529Cb_ad9a62cb_147))), (this.&_bat529Cb_ad9a62cb_149))
     } catch (Exception ignored) {
         return []
     }
@@ -1292,19 +1304,21 @@ def _configuredExtraOriginHosts() {
 // An unreadable hub LAN IP NARROWS the Origin allowlist -- a LAN browser origin naming the hub by
 // address stops being accepted. That is the safe direction, but silent narrowing is a support
 // mystery ("it worked yesterday"), so say it once.
+@groovy.transform.CompileStatic
 def _noteLocalIpForOrigin(boolean readable) {
     try {
-        if (state.originLocalIpReadable == readable) return
-        state.originLocalIpReadable = readable
+        if (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'originLocalIpReadable') == readable) return
+        __bat529StaticStore__noteLocalIpForOrigin_0(readable)
         if (!readable) {
-            mcpLog("error", "server", "location.hub.localIP is unreadable -- the Origin allowlist is NARROWED to ${_originStaticHosts()}; a browser origin naming this hub by its LAN address will now get a 403")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "server", "location.hub.localIP is unreadable -- the Origin allowlist is NARROWED to ${__bat529StaticCall_java_util_List_0('_originStaticHosts')}; a browser origin naming this hub by its LAN address will now get a 403")
         }
     } catch (Exception ignored) { }
 }
 
 // The static half of the allowlist, named separately so the narrowing log can show exactly what
 // remains without recursing back into _allowedOriginHosts.
-def _originStaticHosts() { ["cloud.hubitat.com", "localhost", "127.0.0.1", "::1"] }
+@groovy.transform.CompileStatic
+java.util.List _originStaticHosts() { ["cloud.hubitat.com", "localhost", "127.0.0.1", "::1"] }
 
 // "http://192.168.1.133:8080" -> "192.168.1.133". Hand-parsed rather than handed to
 // a URI class: the sandbox rejects several java.* class expressions outright, and a
@@ -1344,19 +1358,22 @@ def _authorityHost(String authority) {
 
 // The first revision that defines the mirrored request-metadata headers, the
 // `resultType` result field, and the 400/404 status mappings -- the start of the modern era.
-def modernProtocolVersion() { "2026-07-28" }
+@groovy.transform.CompileStatic
+java.lang.String modernProtocolVersion() { "2026-07-28" }
 
 // Spec terminology: Modern = 2026-07-28 and later, Legacy = 2025-11-25 and earlier.
 // Versions are YYYY-MM-DD, so string order is date order; a non-date value is never modern.
-boolean _modernEraVersion(String v) { v != null && v ==~ /\d{4}-\d{2}-\d{2}/ && v >= modernProtocolVersion() }
+@groovy.transform.CompileStatic
+boolean _modernEraVersion(String v) { v != null && v ==~ /\d{4}-\d{2}-\d{2}/ && v >= __bat529StaticCall_java_lang_String_0('modernProtocolVersion') }
 
 // Era test for the current request, used by the request validation in
 // handleMcpRequest and by jsonRpcResult's resultType stamp. The header VALUE is the
 // switch, not its presence -- the header itself has been required since 2025-06-18.
 // Reads through _requestHeader, so a call from outside a request context (a scheduled
 // handler, a direct unit call) answers false instead of throwing.
-def _modernEraRequest() {
-    return _modernEraVersion(_requestHeader("MCP-Protocol-Version"))
+@groovy.transform.CompileStatic
+boolean _modernEraRequest() {
+    return __bat529StaticCall_boolean_1('_modernEraVersion', __bat529StaticCall_java_lang_Object_1('_requestHeader', "MCP-Protocol-Version"))
 }
 
 // Modern-era (2026-07-28 or later) body + mirrored-header validation. Returns a
@@ -1368,27 +1385,29 @@ def _modernEraRequest() {
 // POST body to be a single JSON-RPC request or notification, so an array is a
 // malformed BODY. -32020 is defined for header/body disagreement and for missing or
 // malformed headers, which is a different fault. HTTP 400 either way.
-def _modernRequestRejection(String headerVersion, requestBody) {
+@groovy.transform.CompileStatic
+java.util.Map _modernRequestRejection(String headerVersion, requestBody) {
     if (requestBody instanceof List) {
-        return jsonRpcError(null, -32600,
+        return __bat529StaticCall_java_util_Map_3('jsonRpcError', null, -32600,
             "Invalid Request: a ${headerVersion} POST body must be a single JSON-RPC message, not a batch array -- the Mcp-Method / Mcp-Name headers describe exactly one message.")
     }
-    return _mirroredHeaderRejection(headerVersion, requestBody)
+    return __bat529StaticCall_java_util_Map_2('_mirroredHeaderRejection', headerVersion, requestBody)
 }
 
 // Compare each mirrored header against the single message it describes. Header
 // NAMES are case-insensitive (handled in _requestHeader) but header VALUES are
 // case-sensitive, so every comparison here is exact.
-def _mirroredHeaderRejection(String headerVersion, msg) {
-    def id = msg?.id
-    String bodyMethod = msg?.method == null ? null : msg.method.toString()
-    String methodHeader = _requestHeader("Mcp-Method")
+@groovy.transform.CompileStatic
+java.util.Map _mirroredHeaderRejection(String headerVersion, msg) {
+    def id = __bat529StaticProperty_Safe_java_lang_Object(msg, 'id')
+    String bodyMethod = __bat529StaticProperty_Safe_java_lang_Object(msg, 'method') == null ? null : __bat529StaticProperty_java_lang_Object(msg, 'method').toString()
+    String methodHeader = __bat529StaticCall_java_lang_Object_1('_requestHeader', "Mcp-Method")
     if (methodHeader == null) {
-        return jsonRpcError(id, -32020,
+        return __bat529StaticCall_java_util_Map_3('jsonRpcError', id, -32020,
             "Header mismatch: the Mcp-Method header is required on ${headerVersion} requests.")
     }
     if (methodHeader != bodyMethod) {
-        return jsonRpcError(id, -32020,
+        return __bat529StaticCall_java_util_Map_3('jsonRpcError', id, -32020,
             "Header mismatch: Mcp-Method header value '${methodHeader}' does not match the body method '${bodyMethod}'.")
     }
     // Mcp-Name mirrors params.name / params.uri and is required only for the methods
@@ -1398,35 +1417,36 @@ def _mirroredHeaderRejection(String headerVersion, msg) {
     // spec defines no body value for it to disagree with.
     String nameField = bodyMethod == "tools/call" ? "name" : (bodyMethod == "resources/read" ? "uri" : null)
     if (nameField != null) {
-        String nameHeader = _requestHeader("Mcp-Name")
+        String nameHeader = __bat529StaticCall_java_lang_Object_1('_requestHeader', "Mcp-Name")
         if (nameHeader == null) {
-            return jsonRpcError(id, -32020,
+            return __bat529StaticCall_java_util_Map_3('jsonRpcError', id, -32020,
                 "Header mismatch: the Mcp-Name header is required on a ${headerVersion} ${bodyMethod} request.")
         }
-        String decodedName = _decodeHeaderValue(nameHeader)
+        String decodedName = __bat529StaticCall_java_lang_Object_1('_decodeHeaderValue', nameHeader)
         if (decodedName == null) {
-            return jsonRpcError(id, -32020,
+            return __bat529StaticCall_java_util_Map_3('jsonRpcError', id, -32020,
                 "Header mismatch: the Mcp-Name header value is a malformed =?base64?...?= sentinel.")
         }
-        def bodyName = msg?.params instanceof Map ? msg.params[nameField] : null
+        def bodyName = __bat529StaticProperty_Safe_java_lang_Object(msg, 'params') instanceof Map ? __bat529StaticProperty_java_lang_Object(msg, 'params')[nameField] : null
         if (decodedName != (bodyName == null ? null : bodyName.toString())) {
-            return jsonRpcError(id, -32020,
+            return __bat529StaticCall_java_util_Map_3('jsonRpcError', id, -32020,
                 "Header mismatch: Mcp-Name header value '${decodedName}' does not match the body params.${nameField} '${bodyName}'.")
         }
     }
     // The header value MUST equal params._meta's protocol version when the body
     // carries one; an absent _meta version is not a mismatch (the header is the
     // authoritative copy and the only REQUIRED one).
-    String metaVersion = _requestMetaProtocolVersion(msg)
+    String metaVersion = __bat529StaticCall_java_lang_Object_1('_requestMetaProtocolVersion', msg)
     if (metaVersion != null && metaVersion != headerVersion) {
-        return jsonRpcError(id, -32020,
+        return __bat529StaticCall_java_util_Map_3('jsonRpcError', id, -32020,
             "Header mismatch: MCP-Protocol-Version header '${headerVersion}' does not match the body params._meta io.modelcontextprotocol/protocolVersion '${metaVersion}'.")
     }
     return null
 }
 
+@groovy.transform.CompileStatic
 def _requestMetaProtocolVersion(msg) {
-    def meta = msg?.params instanceof Map ? msg.params["_meta"] : null
+    def meta = __bat529StaticProperty_Safe_java_lang_Object(msg, 'params') instanceof Map ? __bat529StaticProperty_java_lang_Object(msg, 'params')["_meta"] : null
     if (!(meta instanceof Map)) return null
     def version = meta["io.modelcontextprotocol/protocolVersion"]
     return version == null ? null : version.toString()
@@ -1462,49 +1482,50 @@ def _decodeHeaderValue(String value) {
 // name/version/title are null when that message declared no clientInfo. On a read failure the
 // result carries an `error` key instead, so a caller can say so rather than reporting "no
 // client" as if nobody had connected.
-def mcpClientIdentity() {
+@groovy.transform.CompileStatic
+java.util.Map mcpClientIdentity() {
     try {
-        def body = request.JSON
+        def body = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_request(), 'JSON')
         def messages = (body instanceof List) ? body : [body]
         // A batch is one client on one connection, so the first valid message that names itself
         // speaks for the whole POST; a malformed envelope or a notification names nobody.
-        def valid = (messages).findAll((this.&_bat529Cb_ad9a62cb_38))
+        def valid = __bat529StaticDgm_findAll_1_java_lang_Object((messages), (this.&_bat529Cb_ad9a62cb_38))
         if (!valid) return [client: null]
-        def chosen = (valid).find((this.&_bat529Cb_ad9a62cb_29))?: valid[0]
-        def params = (chosen.params instanceof Map) ? chosen.params : [:]
-        def info = _mcpClientInfoFrom(chosen)
-        String name = info == null ? null : _mcpClientString(info["name"])
-        String version = info == null ? null : _mcpClientString(info["version"])
+        def chosen = __bat529StaticDgm_find_1_java_lang_Object((valid), (this.&_bat529Cb_ad9a62cb_29))?: __bat529StaticBinary_GetAt_java_lang_Object(valid, 0)
+        def params = (__bat529StaticProperty_java_lang_Object(chosen, 'params') instanceof Map) ? __bat529StaticProperty_java_lang_Object(chosen, 'params') : [:]
+        java.util.Map info = __bat529StaticCall_java_util_Map_1('_mcpClientInfoFrom', chosen)
+        String name = info == null ? null : __bat529StaticCall_java_lang_String_1('_mcpClientString', info["name"])
+        String version = info == null ? null : __bat529StaticCall_java_lang_String_1('_mcpClientString', info["version"])
         Map client = [
             name: name,
             version: version,
-            title: info == null ? null : _mcpClientString(info["title"]),
+            title: info == null ? null : __bat529StaticCall_java_lang_String_1('_mcpClientString', info["title"]),
             // wrapper is derived, never carried: the verdict follows the current bridge list.
-            wrapper: _mcpClientIsWrapper(name, version),
+            wrapper: __bat529StaticCall_boolean_2('_mcpClientIsWrapper', name, version),
             protocolVersion: null,
             requestedProtocolVersion: null,
-            era: _modernEraRequest() ? "modern" : "legacy",
-            source: _isCloudRequest() ? "cloud" : "local"
+            era: __bat529StaticCall_boolean_0('_modernEraRequest') ? "modern" : "legacy",
+            source: __bat529StaticCall_java_lang_Object_0('_isCloudRequest') ? "cloud" : "local"
         ]
-        if (chosen.method == "initialize") {
+        if (__bat529StaticProperty_java_lang_Object(chosen, 'method') == "initialize") {
             // initialize no longer exists in the modern revision, so reaching it proves a
             // legacy-era client whatever header a dual-era probe put on it.
             client.era = "legacy"
             def requested = params["protocolVersion"]
-            client.requestedProtocolVersion = _mcpClientString(requested)
-            client.protocolVersion = _mcpClientString(_negotiatedProtocolVersion(requested))
+            client.requestedProtocolVersion = __bat529StaticCall_java_lang_String_1('_mcpClientString', requested)
+            client.protocolVersion = __bat529StaticCall_java_lang_String_1('_mcpClientString', __bat529StaticCall_java_lang_Object_1('_negotiatedProtocolVersion', requested))
         } else {
             // Outside the handshake the header is the only version the request states, so a
             // headerless pre-2025-06-18 client reports none.
-            client.protocolVersion = _requestHeader("MCP-Protocol-Version")
+            client.protocolVersion = __bat529StaticCall_java_lang_Object_1('_requestHeader', "MCP-Protocol-Version")
         }
         return [client: client]
     } catch (Throwable e) {
         // The message can quote the request body (a parse error does), so it is flattened,
         // capped and credential-scrubbed before it reaches the log or a report.
-        String detail = "${e.class.simpleName}: ${_bugReportScrubSecrets(_mcpClientString(e.message))}".toString()
+        String detail = "${e.class.simpleName}: ${__bat529StaticCall_java_lang_String_1('_bugReportScrubSecrets', __bat529StaticCall_java_lang_String_1('_mcpClientString', e.message))}".toString()
         try {
-            mcpLog("warn", "server", "MCP client identity read failed: ${detail}")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "server", "MCP client identity read failed: ${detail}")
         } catch (Throwable ignored) {
         }
         return [client: null, error: detail]
@@ -1513,15 +1534,17 @@ def mcpClientIdentity() {
 
 // Only a well-formed request can name a client: a malformed envelope or a notification is
 // dispatch-rejected, so letting one speak would let noise stand in for a real identity.
+@groovy.transform.CompileStatic
 private boolean _mcpClientValidMessage(msg) {
     if (!(msg instanceof Map)) return false
-    if (msg.jsonrpc != "2.0" || msg.id == null) return false
-    return (msg.method instanceof String) && !((String) msg.method).isEmpty()
+    if (__bat529StaticProperty_java_lang_Object(msg, 'jsonrpc') != "2.0" || __bat529StaticProperty_java_lang_Object(msg, 'id') == null) return false
+    return (__bat529StaticProperty_java_lang_Object(msg, 'method') instanceof String) && !((String) __bat529StaticProperty_java_lang_Object(msg, 'method')).isEmpty()
 }
 
 // Modern clients declare themselves in params._meta; initialize carries the legacy params.clientInfo.
+@groovy.transform.CompileStatic
 private Map _mcpClientInfoFrom(msg) {
-    def params = (msg?.params instanceof Map) ? msg.params : [:]
+    def params = (__bat529StaticProperty_Safe_java_lang_Object(msg, 'params') instanceof Map) ? __bat529StaticProperty_java_lang_Object(msg, 'params') : [:]
     def meta = (params["_meta"] instanceof Map) ? params["_meta"] : [:]
     def info = meta["io.modelcontextprotocol/clientInfo"]
     if (!(info instanceof Map)) info = params["clientInfo"]
@@ -1617,9 +1640,10 @@ def processJsonRpcMessage(msg) {
 // Unwrap the {__preserialized: <json string>} sentinel handleToolsCall emits on the
 // single-message fast path back into a parsed object, so batch members serialize normally
 // and no sentinel key leaks into the batch JSON array. Non-sentinel values pass through.
+@groovy.transform.CompileStatic
 def _unwrapPreserialized(item) {
     if (item instanceof Map && item.containsKey("__preserialized")) {
-        return new groovy.json.JsonSlurper().parseText(item.__preserialized)
+        return __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', item.__preserialized)
     }
     return item
 }
@@ -1633,7 +1657,8 @@ def handleNotification(msg) {
 // clients surface a state-only input_required as a generic client-side error with no
 // body, while the hub keeps running the write. Shipped in server instructions and, in
 // gateway mode, on every continuation-eligible write surface so the model reads it first.
-def _mrtrClientErrorHint() {
+@groovy.transform.CompileStatic
+java.lang.String _mrtrClientErrorHint() {
     return "If a write returns a client-side error with no result body, the hub is still running it or has already finished it. Wait about 15 seconds, then call hub_get_info and check recentWrites for that tool (running, paused_resuming, finished, finished_with_error). Read the target before repeating the call: a repeat is only safe when the write shows as failed or absent and the target shows the change did not land, because repeating a finished write performs it again. See hub_get_tool_guide(section='slow_ops')."
 }
 
@@ -1671,17 +1696,20 @@ def supportedProtocolVersions() {
 // 2026-07-28 or later). `initialize` is a legacy-era method -- 2026-07-28 deleted the
 // handshake in favour of per-request metadata -- so a client that reaches it is speaking
 // the old era by construction and must never be handed a modern version to cache.
+@groovy.transform.CompileStatic
 def initializeProtocolVersions() {
-    (supportedProtocolVersions()).findAll((this.&_bat529Cb_ad9a62cb_79))
+    __bat529StaticDgm_findAll_1_java_util_List((__bat529StaticCall_java_util_List_0('supportedProtocolVersions')), (this.&_bat529Cb_ad9a62cb_79))
 }
 // Newest revision `initialize` will negotiate -- what a client that omits (or
 // requests an unknown, or requests a modern-era) protocolVersion negotiates down to.
-def defaultProtocolVersion() { initializeProtocolVersions()[0] }
+@groovy.transform.CompileStatic
+def defaultProtocolVersion() { __bat529StaticBinary_GetAt_java_lang_Object(__bat529StaticExpr_defaultProtocolVersion_0(), 0) }
 
 // The version initialize answers with for a requested one -- the NEGOTIATED version, never the
 // asked-for one.
+@groovy.transform.CompileStatic
 def _negotiatedProtocolVersion(requested) {
-    return initializeProtocolVersions().contains(requested) ? requested : defaultProtocolVersion()
+    return __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticExpr__negotiatedProtocolVersion_0(), 'contains', requested) ? requested : __bat529StaticCall_java_lang_Object_0('defaultProtocolVersion')
 }
 
 // Freshness hint for the cacheable list results (SEP-2549 CacheableResult:
@@ -1689,51 +1717,55 @@ def _negotiatedProtocolVersion(requested) {
 // settings change (Read/Write masters, gateway mode, per-tool overrides) or the
 // code is redeployed, so 5 minutes buys real caching while still letting a
 // settings edit propagate without a client restart.
-def cacheHintTtlMs() { 300000 }
+@groovy.transform.CompileStatic
+java.lang.Integer cacheHintTtlMs() { 300000 }
 
 // Server identity advertised by initialize, server/discover, and /health. updateAvailable
 // is a non-spec extra this app's own daily update check surfaces to clients; the
 // spec-required name/version pair also rides every result's `_meta` (jsonRpcResult).
-def serverIdentity() {
-    def info = [
+@groovy.transform.CompileStatic
+java.util.Map serverIdentity() {
+    java.util.Map info = [
         name: "hubitat-mcp-rule-server",
-        version: currentVersion()
+        version: __bat529StaticCall_java_lang_String_0('currentVersion')
     ]
-    if (appUpdateAvailable()) {
-        info.updateAvailable = _latestKnownVersion()
+    if (__bat529StaticCall_java_lang_Boolean_0('appUpdateAvailable')) {
+        info.updateAvailable = __bat529StaticCall_java_lang_Object_0('_latestKnownVersion')
     }
     return info
 }
 
-def handleInitialize(msg) {
+@groovy.transform.CompileStatic
+java.util.Map handleInitialize(msg) {
     // Echo the client's requested protocolVersion when it is one initialize may
     // negotiate; otherwise the default. Omitted, unknown, AND modern-era versions all land
     // on the default -- see initializeProtocolVersions() for why modern revisions
     // are not negotiable through this legacy-era handshake.
-    def requested = msg.params?.protocolVersion
-    def negotiated = _negotiatedProtocolVersion(requested)
-    def info = msg.params?.clientInfo
+    def requested = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_java_lang_Object(msg, 'params'), 'protocolVersion')
+    def negotiated = __bat529StaticCall_java_lang_Object_1('_negotiatedProtocolVersion', requested)
+    def info = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_java_lang_Object(msg, 'params'), 'clientInfo')
     // Client-supplied text goes straight into the log line, so it is sanitized the same way the
     // reported identity is -- the requested version included, it comes from the same payload.
     String who = "unknown client"
     if (info instanceof Map) {
-        String clientName = _mcpClientString(info["name"])
-        String clientVersion = _mcpClientString(info["version"])
+        String clientName = __bat529StaticCall_java_lang_String_1('_mcpClientString', info["name"])
+        String clientVersion = __bat529StaticCall_java_lang_String_1('_mcpClientString', info["version"])
         if (clientName) who = clientVersion ? "${clientName} ${clientVersion}" : clientName
     }
-    mcpLog("info", "server", "initialize from ${who}: requested protocolVersion ${_mcpClientString(requested)}, negotiated ${negotiated} (${_isCloudRequest() ? 'cloud' : 'local'})")
-    return jsonRpcResult(msg.id, [
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "server", "initialize from ${who}: requested protocolVersion ${__bat529StaticCall_java_lang_String_1('_mcpClientString', requested)}, negotiated ${negotiated} (${__bat529StaticCall_java_lang_Object_0('_isCloudRequest') ? 'cloud' : 'local'})")
+    return __bat529StaticCall_java_util_Map_2('jsonRpcResult', __bat529StaticProperty_java_lang_Object(msg, 'id'), [
         protocolVersion: negotiated,
-        capabilities: serverCapabilities(),
-        serverInfo: serverIdentity(),
-        instructions: serverInstructions()
+        capabilities: __bat529StaticCall_java_util_Map_0('serverCapabilities'),
+        serverInfo: __bat529StaticCall_java_util_Map_0('serverIdentity'),
+        instructions: __bat529StaticCall_java_lang_Object_0('serverInstructions')
     ])
 }
 
 // Capabilities advertised by initialize and server/discover. resources (issue #366) is
 // stateless read-only: this endpoint is request-response only (no SSE), so subscribe
 // change-notifications are impossible by design and both flags are explicitly false.
-def serverCapabilities() {
+@groovy.transform.CompileStatic
+java.util.Map serverCapabilities() {
     [
         tools: [:],
         resources: [subscribe: false, listChanged: false]
@@ -1746,13 +1778,14 @@ def serverCapabilities() {
 // legacy revisions too -- safe statelessly, since a client sending one as its header is served
 // correctly without the handshake. resultType is explicit (DiscoverResult requires it; discover
 // may arrive headerless as a compat probe) and jsonRpcResult preserves a caller-set value.
-def handleServerDiscover(msg) {
-    return jsonRpcResult(msg.id, [
-        supportedVersions: supportedProtocolVersions(),
-        capabilities: serverCapabilities(),
-        serverInfo: serverIdentity(),
-        instructions: serverInstructions(),
-        ttlMs: cacheHintTtlMs(),
+@groovy.transform.CompileStatic
+java.util.Map handleServerDiscover(msg) {
+    return __bat529StaticCall_java_util_Map_2('jsonRpcResult', __bat529StaticProperty_java_lang_Object(msg, 'id'), [
+        supportedVersions: __bat529StaticCall_java_util_List_0('supportedProtocolVersions'),
+        capabilities: __bat529StaticCall_java_util_Map_0('serverCapabilities'),
+        serverInfo: __bat529StaticCall_java_util_Map_0('serverIdentity'),
+        instructions: __bat529StaticCall_java_lang_Object_0('serverInstructions'),
+        ttlMs: __bat529StaticCall_java_lang_Integer_0('cacheHintTtlMs'),
         cacheScope: "private",
         resultType: "complete"
     ])
@@ -1760,20 +1793,23 @@ def handleServerDiscover(msg) {
 
 // Issue #443: optional digit after "hub" in wire-facing tool names (hub_x -> hub3_x) so
 // several hubs can coexist in one client. Internal names never change.
+@groovy.transform.CompileStatic
 String _hubToolNumber() {
-    if (settings.enableHubToolNumber != true) return null
-    String digit = settings.hubToolNumber?.toString()
+    if (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'enableHubToolNumber') != true) return null
+    String digit = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'hubToolNumber')?.toString()
     return (digit != null && digit ==~ /^[0-9]$/) ? digit : null
 }
 
+@groovy.transform.CompileStatic
 String _externalToolName(String name) {
-    String digit = _hubToolNumber()
+    String digit = __bat529StaticCall_java_lang_String_0('_hubToolNumber')
     return (digit != null && name?.startsWith("hub_")) ? "hub" + digit + name.substring(3) : name
 }
 
 // Plain hub_ names still pass, so a client with a stale cached catalog keeps working.
+@groovy.transform.CompileStatic
 String _internalToolName(String name) {
-    String digit = _hubToolNumber()
+    String digit = __bat529StaticCall_java_lang_String_0('_hubToolNumber')
     return (digit != null && name?.startsWith("hub${digit}_")) ? "hub" + name.substring(4) : name
 }
 
@@ -1797,20 +1833,22 @@ private Map _externalizeToolEntry(Map tool) {
     return result
 }
 
+@groovy.transform.CompileStatic
 private def _normalizeInboundToolName(msg) {
-    if (_hubToolNumber() == null || !(msg.params instanceof Map)) return msg
-    Map params = msg.params as Map
+    if (__bat529StaticCall_java_lang_String_0('_hubToolNumber') == null || !(__bat529StaticProperty_java_lang_Object(msg, 'params') instanceof Map)) return msg
+    Map params = __bat529StaticProperty_java_lang_Object(msg, 'params') as Map
     Map newParams = params
     if (params.name instanceof String) {
-        newParams = newParams + [name: _internalToolName(params.name as String)]
+        newParams = newParams + [name: __bat529StaticCall_java_lang_String_1('_internalToolName', params.name as String)]
     }
-    if (params.arguments instanceof Map && params.arguments.tool instanceof String) {
-        newParams = newParams + [arguments: (params.arguments as Map) + [tool: _internalToolName(params.arguments.tool as String)]]
+    if (params.arguments instanceof Map && __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(params, 'arguments'), 'tool') instanceof String) {
+        newParams = newParams + [arguments: (params.arguments as Map) + [tool: __bat529StaticCall_java_lang_String_1('_internalToolName', __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(params, 'arguments'), 'tool') as String)]]
     }
-    return msg + [params: newParams]
+    return __bat529StaticBinary_Plus_java_lang_Object(msg, [params: newParams])
 }
 
-def handleToolsList(msg) {
+@groovy.transform.CompileStatic
+java.util.Map handleToolsList(msg) {
     // tools/list returns the full catalog in a single response. Pagination was
     // attempted in #180 (page size 50, cursor-based; ported via #190), but in
     // practice many MCP clients -- including Claude.ai's connector -- do NOT
@@ -1828,14 +1866,14 @@ def handleToolsList(msg) {
     // hub_list_apps, hub_list_rules, etc. via _paginateList) is unchanged
     // -- that is opt-in and the size guard's "suggestion" hints already point
     // callers at it when needed.
-    def all = getToolDefinitions()
-    if (_hubToolNumber() != null) all = (all).collect((this.&_bat529Cb_ad9a62cb_42))
+    def all = __bat529StaticCall_java_lang_Object_0('getToolDefinitions')
+    if (__bat529StaticCall_java_lang_String_0('_hubToolNumber') != null) all = __bat529StaticDgm_collect_1_java_util_List((all), (this.&_bat529Cb_ad9a62cb_42))
     // CacheableResult (SEP-2549): tools/list results carry the ttlMs freshness
     // hint plus cacheScope. Scope is "private" -- the endpoint is authenticated by
     // a per-install OAuth token and the catalog it returns is shaped by that
     // install's settings, so a shared intermediary must never serve one install's
     // catalog to another authorization context.
-    return jsonRpcResult(msg.id, [tools: all, ttlMs: cacheHintTtlMs(), cacheScope: "private"])
+    return __bat529StaticCall_java_util_Map_2('jsonRpcResult', __bat529StaticProperty_java_lang_Object(msg, 'id'), [tools: all, ttlMs: __bat529StaticCall_java_lang_Integer_0('cacheHintTtlMs'), cacheScope: "private"])
 }
 
 // ==================== MCP RESOURCES (issue #366) ====================
@@ -1847,7 +1885,8 @@ def handleToolsList(msg) {
 // SEP-2549 cache hints ride unconditionally: the draft-era result schemas REQUIRE
 // ttlMs/cacheScope and the legacy list/read result schemas are passthrough.
 
-def _guideResourceUriPrefix() { "hubitat://guide/" }
+@groovy.transform.CompileStatic
+java.lang.String _guideResourceUriPrefix() { "hubitat://guide/" }
 
 // Each resource group mirrors the VISIBILITY of the tool whose content it serves, via
 // getHiddenToolNames() -- the same source of truth the catalog and search consume ("a
@@ -1859,39 +1898,45 @@ def _guideResourceUriPrefix() { "hubitat://guide/" }
 // hub_list_modes / hub_get_hsm_status. (The best-practice acknowledgment gate is a
 // different, write-only gate and does not apply to resources; a guide resource publishes
 // the same acknowledgment keys as its hub_get_tool_guide section.)
-def _contextResourcesEnabled() { !getHiddenToolNames().contains("hub_list_devices") }
-def _guideResourcesEnabled() { !getHiddenToolNames().contains("hub_get_tool_guide") }
+@groovy.transform.CompileStatic
+def _contextResourcesEnabled() { !__bat529StaticCall_java_util_Set_0('getHiddenToolNames').contains("hub_list_devices") }
+@groovy.transform.CompileStatic
+def _guideResourcesEnabled() { !__bat529StaticCall_java_util_Set_0('getHiddenToolNames').contains("hub_get_tool_guide") }
 
 // Names the gate that hid a mirrored tool, for the -32002 refusal text.
-def _resourceGateCause() {
-    settings.enableRead == false ?
+@groovy.transform.CompileStatic
+java.lang.String _resourceGateCause() {
+    __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'enableRead') == false ?
         "Read tools are disabled in MCP Rule Server settings (Enable Read Tools)" :
         "the mirrored tool is disabled in Advanced settings (Per-tool Overrides)"
 }
 
-def _resourceCatalog() {
-    def entries = []
+@groovy.transform.CompileStatic
+java.util.List _resourceCatalog() {
+    java.util.List entries = []
     // One getHiddenToolNames() computation for both group checks (it rebuilds the
     // gateway config each call; the per-read helpers stay separate for the read paths).
-    def hidden = getHiddenToolNames()
+    java.util.Set hidden = __bat529StaticCall_java_util_Set_0('getHiddenToolNames')
     if (!hidden.contains("hub_list_devices")) {
-        entries << (_bat529EmbeddedCatalogRead(['["m",[["uri","hubitat://context-summary"],["name","context-summary"],["title","Live Context Summary"],["description","One-read plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- \'Label (id, room) - capabilities; attr=value, ...\'. Served from one bulk hub read: attribute values are strings with NO unit suffix; devices the bulk read does not cover are read one by one up to a cap of 20 and the rest are marked \'(state unavailable)\'. Truncates on very large inventories (with an explicit marker). hub_list_devices format=\'context\' is the paginated/filtered form and differs: it reads each page\'s devices natively and appends units to values."],["mimeType","text/plain"]]]']) as Map)
-        entries << (_bat529EmbeddedCatalogRead(['["m",[["uri","hubitat://context"],["name","context"],["title","Live Context (JSON)"],["description","JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values projected through the default context attribute set). Served from one bulk hub read: attribute values are strings (no units, no native number typing); devices the bulk read does not cover are read one by one up to a cap of 20 and the rest carry metadataUnavailable: true. Device records truncate on very large inventories (truncated: true + note). hub_list_devices format=\'context\' is the paginated/filtered form and differs: per-page native reads with unit suffixes."],["mimeType","application/json"]]]']) as Map)
+        entries << (__bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["uri","hubitat://context-summary"],["name","context-summary"],["title","Live Context Summary"],["description","One-read plain-text house snapshot: current mode (+ HSM when available) and one line per MCP-visible device -- \'Label (id, room) - capabilities; attr=value, ...\'. Served from one bulk hub read: attribute values are strings with NO unit suffix; devices the bulk read does not cover are read one by one up to a cap of 20 and the rest are marked \'(state unavailable)\'. Truncates on very large inventories (with an explicit marker). hub_list_devices format=\'context\' is the paginated/filtered form and differs: it reads each page\'s devices natively and appends units to values."],["mimeType","text/plain"]]]']) as Map)
+        entries << (__bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["uri","hubitat://context"],["name","context"],["title","Live Context (JSON)"],["description","JSON twin of the context summary: currentMode, hsmStatus (when available), modes, rooms[] with deviceIds, and one compact record per MCP-visible device (id, label, room, capabilities, attribute values projected through the default context attribute set). Served from one bulk hub read: attribute values are strings (no units, no native number typing); devices the bulk read does not cover are read one by one up to a cap of 20 and the rest carry metadataUnavailable: true. Device records truncate on very large inventories (truncated: true + note). hub_list_devices format=\'context\' is the paginated/filtered form and differs: per-page native reads with unit suffixes."],["mimeType","application/json"]]]']) as Map)
     }
     if (!hidden.contains("hub_get_tool_guide")) {
-        (getToolGuideSections()).each(((this.&_bat529Cb_ad9a62cb_176).curry([entries] as Object[])))
+        __bat529StaticDgm_each_1_java_util_Map((__bat529StaticCall_java_util_Map_0('getToolGuideSections')), ((this.&_bat529Cb_ad9a62cb_176).curry([entries] as Object[])))
     }
     return entries
 }
 
-def handleResourcesList(msg) {
-    return jsonRpcResult(msg.id, [resources: _resourceCatalog(), ttlMs: cacheHintTtlMs(), cacheScope: "private"])
+@groovy.transform.CompileStatic
+java.util.Map handleResourcesList(msg) {
+    return __bat529StaticCall_java_util_Map_2('jsonRpcResult', __bat529StaticProperty_java_lang_Object(msg, 'id'), [resources: __bat529StaticCall_java_util_List_0('_resourceCatalog'), ttlMs: __bat529StaticCall_java_lang_Integer_0('cacheHintTtlMs'), cacheScope: "private"])
 }
 
 // No URI templates are served; an empty list (not -32601) tells spec-following clients
 // the surface exists and is simply empty.
-def handleResourcesTemplatesList(msg) {
-    return jsonRpcResult(msg.id, [resourceTemplates: [], ttlMs: cacheHintTtlMs(), cacheScope: "private"])
+@groovy.transform.CompileStatic
+java.util.Map handleResourcesTemplatesList(msg) {
+    return __bat529StaticCall_java_util_Map_2('jsonRpcResult', __bat529StaticProperty_java_lang_Object(msg, 'id'), [resourceTemplates: [], ttlMs: __bat529StaticCall_java_lang_Integer_0('cacheHintTtlMs'), cacheScope: "private"])
 }
 
 def handleResourcesRead(msg) {
@@ -2169,15 +2214,16 @@ def handleToolsCall(msg) {
 // A state-only continuation is invisible to anyone reading the hub log unless it is said
 // out loud: a client that cannot render input_required shows a generic error, and the
 // operator's only evidence is here. Info, not debug, so it is on by default.
+@groovy.transform.CompileStatic
 private Map _mrtrPendingResult(String stateId, boolean rejoined = false, leafTool = null, String reason = null) {
     Map pending = [resultType: "input_required", requestState: stateId]
     if (rejoined) pending.rejoined = true
     if (leafTool != null) {
         String leaf = leafTool.toString()
-        boolean write = _mrtrWriteTools().contains(leaf)
-        mcpLog("info", "mrtr", "${leaf}: returned requestState ${stateId}${rejoined ? ' to a rejoined duplicate call' : ''}" +
+        boolean write = __bat529StaticCall_java_util_Set_0('_mrtrWriteTools').contains(leaf)
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "mrtr", "${leaf}: returned requestState ${stateId}${rejoined ? ' to a rejoined duplicate call' : ''}" +
             " (${reason ?: 'work still running'}). The hub keeps working; a continuing client repeats the identical call " +
-            "with that state" + (write ? ", and the server resumes a paused write itself after ~${_mrtrAutoContinueDelaySeconds()}s if none does" : "") +
+            "with that state" + (write ? ", and the server resumes a paused write itself after ~${__bat529StaticCall_java_lang_Integer_0('_mrtrAutoContinueDelaySeconds')}s if none does" : "") +
             ". A client that shows an error instead should read the target before repeating the call.")
     }
     return pending
@@ -2192,9 +2238,10 @@ private def _mrtrMarkRejoined(result, boolean rejoined) {
 // A failed slice may sit on top of committed earlier slices: hand back that ledger and
 // say the failing slice may also have changed the hub, so the caller inspects instead
 // of repeating the whole operation.
+@groovy.transform.CompileStatic
 private Map _mrtrFailureWithLedger(Map rec, leafTool, String error) {
-    def failure = [success: false, isError: true, tool: _externalToolName(leafTool as String), error: error]
-    _mrtrAttachLedger(failure, rec)
+    java.util.Map failure = [success: false, isError: true, tool: __bat529StaticCall_java_lang_String_1('_externalToolName', leafTool as String), error: error]
+    __bat529StaticCall_java_lang_Object_2('_mrtrAttachLedger', failure, rec)
     return failure
 }
 
@@ -2274,24 +2321,28 @@ def handleToolsCallLegacy(msg) {
 // mapped-endpoint property ("local"|"cloud"); any access failure (older firmware,
 // non-request context) reads as local, which selects the LAN budget (inert at its
 // default 0).
+@groovy.transform.CompileStatic
 def _isCloudRequest() {
-    try { return request?.requestSource?.toString() == "cloud" }
+    try { return __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_request(), 'requestSource')?.toString() == "cloud" }
     catch (Exception e) { return false }
 }
 
 // Issue #453: per-transport access toggles. Opt-out, not opt-in: the user already opted in by
 // enabling OAuth in Apps Code, which opens both endpoints. Only an explicit false blocks.
+@groovy.transform.CompileStatic
 def _transportEnabled() {
-    return settings[_isCloudRequest() ? "enableCloudAccess" : "enableLocalAccess"] != false
+    return __bat529StaticBinding_settings()[__bat529StaticCall_java_lang_Object_0('_isCloudRequest') ? "enableCloudAccess" : "enableLocalAccess"] != false
 }
 
+@groovy.transform.CompileStatic
 def _transportDisabledMessage() {
-    return "Forbidden: ${_isCloudRequest() ? 'cloud' : 'local'} access to this MCP server is disabled. Turn it on in the MCP Rule Server app on the hub."
+    return "Forbidden: ${__bat529StaticCall_java_lang_Object_0('_isCloudRequest') ? 'cloud' : 'local'} access to this MCP server is disabled. Turn it on in the MCP Rule Server app on the hub."
 }
 
+@groovy.transform.CompileStatic
 def _transportDisabledResponse() {
-    return render(status: 403, contentType: "application/json",
-                  data: groovy.json.JsonOutput.toJson(jsonRpcError(null, -32600, _transportDisabledMessage())))
+    return __bat529StaticCall_render_java_lang_Object_1(status: 403, contentType: "application/json",
+                  data: groovy.json.JsonOutput.toJson(__bat529StaticCall_java_util_Map_3('jsonRpcError', null, -32600, __bat529StaticCall_java_lang_Object_0('_transportDisabledMessage'))))
 }
 
 // Relay time budget in ms. 0 disables self-budgeting; unset defaults to 6000. The check fires
@@ -2300,15 +2351,17 @@ def _transportDisabledResponse() {
 // overhead. Measured on the e2e MRTR proof: 8000 -> 9.855s max leg (over the 9.5s bound), 7000 ->
 // 8.844s; 6000 lands legs near 8s healthy and ~8.75s throttled.
 // The budget is a setting, never a literal elsewhere -- read it here.
-def _relayBudgetMs() {
-    return _flooredBudgetMs(settings.relayBudgetMs != null ? (settings.relayBudgetMs as Long) : 6000L)
+@groovy.transform.CompileStatic
+long _relayBudgetMs() {
+    return __bat529StaticCall_long_1('_flooredBudgetMs', __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'relayBudgetMs') != null ? (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'relayBudgetMs') as Long) : 6000L)
 }
 
 // LAN time budget in ms. Default 0 = off: LAN has no fixed transport ceiling, so
 // the pause is opt-in for clients whose own request timeout kills slow multi-step
 // writes (set it below that client timeout, leaving room for the floor below).
-def _lanBudgetMs() {
-    return _flooredBudgetMs(settings.lanBudgetMs != null ? (settings.lanBudgetMs as Long) : 0L)
+@groovy.transform.CompileStatic
+long _lanBudgetMs() {
+    return __bat529StaticCall_long_1('_flooredBudgetMs', __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'lanBudgetMs') != null ? (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'lanBudgetMs') as Long) : 0L)
 }
 
 // Positive budgets have a 6000 ms floor on both transports so eight Logs-page observation
@@ -2335,7 +2388,8 @@ def _maxConcurrentWrites() {
 // The leaves that consume the __reqT0 request-start clock: partial-commit and serial-dispatch
 // loops that pause under the budget, and the Logs-page reads that observe their background
 // fetch under it. Only these ever see the key; strict-arg leaves must not.
-def _budgetAwareTools() {
+@groovy.transform.CompileStatic
+java.util.Set _budgetAwareTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
             "hub_import_native_app", "hub_call_device_command",
             "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
@@ -2345,7 +2399,8 @@ def _budgetAwareTools() {
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
 
-def _mrtrWriteTools() {
+@groovy.transform.CompileStatic
+java.util.Set _mrtrWriteTools() {
     return ["hub_set_rule", "hub_set_native_app", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
@@ -2358,86 +2413,93 @@ def _mrtrWriteTools() {
 // count toward the write cap, and store no payload in their terminal record (a replay re-runs
 // the read from its cached snapshot). The leaf itself answers status: "in_progress" while its
 // background fetch is still running. Every member must also be in getReadOnlyToolNames().
-def _mrtrReadTools() {
+@groovy.transform.CompileStatic
+java.util.Set _mrtrReadTools() {
     return ["hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_get_device", "hub_list_devices",
             "hub_get_device_health", "hub_list_libraries"] as Set
 }
 
+@groovy.transform.CompileStatic
 private Set _mrtrDeviceReadTools() { ["hub_get_device", "hub_list_devices", "hub_get_device_health"] as Set }
 
+@groovy.transform.CompileStatic
 private def _executeWithDeviceReadContext(tool, Map args, Map context, boolean bpsChecked = false) {
     Map previous = deviceReadContext
     if (context != null) context.outerTool = tool?.toString()
     deviceReadContext = context
-    try { return executeTool(tool, args, bpsChecked) }
+    try { return __bat529StaticCall_java_lang_Object_3('executeTool', tool, args, bpsChecked) }
     finally { deviceReadContext = previous }
 }
 
 // A read only continues when the request's transport carries a time budget; without one the
 // fetch runs inline and a modern client gets the ordinary single-response shape.
+@groovy.transform.CompileStatic
 def _mrtrReadContinuationActive() {
-    return (_isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()) > 0L
+    return (__bat529StaticCall_java_lang_Object_0('_isCloudRequest') ? __bat529StaticCall_long_0('_relayBudgetMs') : __bat529StaticCall_long_0('_lanBudgetMs')) > 0L
 }
 
+@groovy.transform.CompileStatic
 private Set _mrtrDetachedWorkerTools() {
     return ["hub_set_rule", "hub_set_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
             "hub_manage_virtual_device", "hub_update_device", "hub_restore_backup", "hub_create_backup"] as Set
 }
 
+@groovy.transform.CompileStatic
 def _mrtrEligibleCall(outerToolName, leafToolName, args) {
     String leaf = leafToolName?.toString()
-    boolean eligibleLeaf = _mrtrWriteTools().contains(leaf) ||
-        (_mrtrReadTools().contains(leaf) && _mrtrReadContinuationActive())
+    boolean eligibleLeaf = __bat529StaticCall_java_util_Set_0('_mrtrWriteTools').contains(leaf) ||
+        (__bat529StaticCall_java_util_Set_0('_mrtrReadTools').contains(leaf) && __bat529StaticCall_java_lang_Object_0('_mrtrReadContinuationActive'))
     if (!eligibleLeaf || !(args instanceof Map)) return false
     // A mis-routed gateway call (a leaf outside this gateway's tool set) must refuse
     // through ordinary dispatch, never enter the MRTR path: round zero would reserve
     // an active record that pins a cap slot for its full TTL before the route is
     // ever checked.
     String outer = outerToolName?.toString()
-    if (outer != leaf && (settings.useGateways == false ||
-            !(getGatewayConfig()[outer]?.tools?.contains(leaf)))) return false
-    def leafArgs = _mrtrLeafArguments(outerToolName?.toString(), leaf, args as Map)
+    if (outer != leaf && (__bat529StaticExpr__mrtrEligibleCall_2(leaf, outer)
+)) return false
+    def leafArgs = __bat529StaticCall_java_lang_Object_3('_mrtrLeafArguments', outerToolName?.toString(), leaf, args as Map)
     if (!(leafArgs instanceof Map)) return false
-    if (leaf == "hub_set_rule" && _isSetRuleSchemaOnlyCall(leafArgs)) return false
-    if (leaf == "hub_set_native_app" && _isNativeAppSchemaOnlyCall(leafArgs)) return false
+    if (leaf == "hub_set_rule" && __bat529StaticCall_java_lang_Object_1('_isSetRuleSchemaOnlyCall', leafArgs)) return false
+    if (leaf == "hub_set_native_app" && __bat529StaticCall_java_lang_Boolean_1('_isNativeAppSchemaOnlyCall', leafArgs)) return false
     // hub_delete_item also deletes app/library code. Only the driver branch has
     // live relay-failure evidence and detached-worker coverage; app deletion can
     // target this server and library deletion has different verification semantics.
-    if (leaf == "hub_delete_item") return leafArgs.type?.toString() == "driver"
+    if (leaf == "hub_delete_item") return __bat529StaticProperty_java_lang_Object(leafArgs, 'type')?.toString() == "driver"
     // Only a rule snapshot restore: a hub DB restore reboots the hub, and an app code restore can
     // recompile this server under its own worker.
     if (leaf == "hub_restore_backup") {
-        return (leafArgs.scope == null || leafArgs.scope.toString() == "source") &&
-            leafArgs.backupKey?.toString()?.startsWith("rm-rule_")
+        return (__bat529StaticProperty_java_lang_Object(leafArgs, 'scope') == null || __bat529StaticProperty_java_lang_Object(leafArgs, 'scope').toString() == "source") &&
+            __bat529StaticProperty_java_lang_Object(leafArgs, 'backupKey')?.toString()?.startsWith("rm-rule_")
     }
     if (leaf == "hub_call_rule") {
-        def ids = leafArgs.ruleId
+        def ids = __bat529StaticProperty_java_lang_Object(leafArgs, 'ruleId')
         def idCount = (ids instanceof List) ? ids.size() : (ids == null ? 0 : 1)
-        return leafArgs.action in ["stop", "start"] && idCount > 1
+        return __bat529StaticProperty_java_lang_Object(leafArgs, 'action') in ["stop", "start"] && idCount > 1
     }
     return true
 }
 
+@groovy.transform.CompileStatic
 private boolean _isActualWriteCall(outerToolName, leafToolName, args) {
     String outer = outerToolName?.toString()
     String leaf = leafToolName?.toString()
     if (!leaf) return false
     // A gateway call with no selected leaf returns its catalog and mutates nothing.
-    if (getGatewayConfig().containsKey(outer) && leaf == outer) return false
+    if (__bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticExpr__isActualWriteCall_0(), 'containsKey', outer) && leaf == outer) return false
 
-    def leafArgs = (args instanceof Map) ? _mrtrLeafArguments(outer, leaf, args as Map) : null
+    def leafArgs = (args instanceof Map) ? __bat529StaticCall_java_lang_Object_3('_mrtrLeafArguments', outer, leaf, args as Map) : null
     def safeArgs = (leafArgs instanceof Map) ? leafArgs : [:]
     // These tools are argument-shaped: annotations classify their normal/default
     // form, while the write cap must classify what this invocation will do.
     if (leaf == "hub_get_metrics") return safeArgs.recordSnapshot == true
     if (leaf == "hub_update_firmware" && safeArgs.statusOnly == true) return false
-    if (getReadOnlyToolNames().contains(leaf)) return false
-    if (_isDeviceReplaceOptionsOnlyCall(leaf, safeArgs)) return false
+    if (__bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticExpr__isActualWriteCall_1(), 'contains', leaf)) return false
+    if (__bat529StaticCall_java_lang_Object_2('_isDeviceReplaceOptionsOnlyCall', leaf, safeArgs)) return false
     if (leaf == "hub_update_package" && safeArgs.dryRun == true) return false
-    if (leaf == "hub_set_rule" && _isSetRuleSchemaOnlyCall(safeArgs)) return false
-    if (leaf == "hub_set_native_app" && _isNativeAppSchemaOnlyCall(safeArgs)) return false
+    if (leaf == "hub_set_rule" && __bat529StaticCall_java_lang_Object_1('_isSetRuleSchemaOnlyCall', safeArgs)) return false
+    if (leaf == "hub_set_native_app" && __bat529StaticCall_java_lang_Boolean_1('_isNativeAppSchemaOnlyCall', safeArgs)) return false
     return true
 }
 
@@ -2449,27 +2511,30 @@ private long _packageDeployRecoveryMs() { 10L * 60L * 1000L }
 // Caller holds WRITE_RESERVATION_LOCK for every helper down to
 // _writeStateCacheInvalidate. The two keys are named literally rather than read
 // dynamically so the durable surface of this cache stays greppable.
+@groovy.transform.CompileStatic
 private def _writeStateDurableRead(String stateKey) {
-    if (stateKey == "mrtrRequests") return atomicState.mrtrRequests
-    return atomicState.packageDeployInFlight
+    if (stateKey == "mrtrRequests") return __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_atomicState(), 'mrtrRequests')
+    return __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_atomicState(), 'packageDeployInFlight')
 }
 
+@groovy.transform.CompileStatic
 private void _writeStateDurableWrite(String stateKey, value) {
-    if (stateKey == "mrtrRequests") atomicState.mrtrRequests = value
-    else atomicState.packageDeployInFlight = value
+    if (stateKey == "mrtrRequests") __bat529StaticStore__writeStateDurableWrite_1(value)
+    else __bat529StaticStore__writeStateDurableWrite_0(value)
 }
 
 // Map-shaped keys, snapshotted detached from the durable value the way a fresh
 // atomicState read returns one. The returned map is the live snapshot: read it
 // freely, but route every mutation through the put/set helpers below so
 // atomicState follows.
+@groovy.transform.CompileStatic
 private Map _writeStateMapLocked(String stateKey) {
     def cached = WRITE_STATE_CACHE[stateKey]
     if (cached instanceof Map) return cached
-    def stored = _writeStateDurableRead(stateKey)
+    def stored = __bat529StaticCall_java_lang_Object_1('_writeStateDurableRead', stateKey)
     Map loaded = [:]
     if (stored instanceof Map) {
-        loaded = _mrtrCopyMap(stored as Map)
+        loaded = __bat529StaticCall_java_util_Map_1('_mrtrCopyMap', stored as Map)
         WRITE_STATE_DURABLE_MAPS.add(stateKey)
     }
     WRITE_STATE_CACHE.put(stateKey, loaded)
@@ -2478,18 +2543,20 @@ private Map _writeStateMapLocked(String stateKey) {
 
 // Whole-value keys, where a null stored value is meaningful and distinct from
 // "not yet snapshotted".
+@groovy.transform.CompileStatic
 private def _writeStateValueLocked(String stateKey) {
     if (WRITE_STATE_CACHE.containsKey(stateKey)) return WRITE_STATE_CACHE[stateKey]
-    def stored = _writeStateDurableRead(stateKey)
-    def snapshot = (stored instanceof Map) ? _mrtrCopyMap(stored as Map) : stored
+    def stored = __bat529StaticCall_java_lang_Object_1('_writeStateDurableRead', stateKey)
+    def snapshot = (stored instanceof Map) ? __bat529StaticCall_java_util_Map_1('_mrtrCopyMap', stored as Map) : stored
     WRITE_STATE_CACHE.put(stateKey, snapshot)
     return snapshot
 }
 
+@groovy.transform.CompileStatic
 private void _writeStateSetLocked(String stateKey, value) {
     WRITE_STATE_CACHE.put(stateKey, value)
     if (value instanceof Map) WRITE_STATE_DURABLE_MAPS.add(stateKey)
-    _writeStateDurableWrite(stateKey, value)
+    __bat529StaticCall_java_lang_Object_2('_writeStateDurableWrite', stateKey, value)
 }
 
 // One entry of a map-shaped key. atomicState.updateMapValue needs a Map already at
@@ -2497,22 +2564,24 @@ private void _writeStateSetLocked(String stateKey, value) {
 // snapshot itself instead. The record is stored by reference: a caller must not
 // mutate it after handing it over, the same contract the durable write already
 // implied.
+@groovy.transform.CompileStatic
 private void _writeStatePutLocked(String stateKey, String entryId, Map rec) {
-    Map cached = _writeStateMapLocked(stateKey)
+    Map cached = __bat529StaticCall_java_util_Map_1('_writeStateMapLocked', stateKey)
     cached.put(entryId, rec)
     if (!WRITE_STATE_DURABLE_MAPS.contains(stateKey)) {
-        _writeStateSetLocked(stateKey, cached)
+        __bat529StaticCall_java_lang_Object_2('_writeStateSetLocked', stateKey, cached)
         return
     }
     try {
-        atomicState.updateMapValue(stateKey, entryId, rec)
+        __bat529StaticReceiverCall_java_lang_Object_3(__bat529StaticBinding_atomicState(), 'updateMapValue', stateKey, entryId, rec)
     } catch (Exception ignored) {
-        _writeStateDurableWrite(stateKey, cached)
+        __bat529StaticCall_java_lang_Object_2('_writeStateDurableWrite', stateKey, cached)
     }
 }
 
 // Reload these two keys from atomicState on next access. Other coordination statics
 // survive this cache-only reset; it does not model a full class reload by itself.
+@groovy.transform.CompileStatic
 private void _writeStateCacheInvalidate() {
     WRITE_STATE_CACHE.clear()
     WRITE_STATE_DURABLE_MAPS.clear()
@@ -2533,23 +2602,24 @@ private boolean _packageMarkerHasTerminalEvidenceLocked(marker) {
 // recovered only after its durable lease expires AND no execution in this
 // loaded app class owns it. Removing it here is atomic with admission/capacity:
 // a delayed old runIn callback then fails its requestId check before any write.
+@groovy.transform.CompileStatic
 private boolean _packageSweepMarkerLocked() {
-    def marker = _writeStateValueLocked("packageDeployInFlight")
+    def marker = __bat529StaticCall_java_lang_Object_1('_writeStateValueLocked', "packageDeployInFlight")
     if (!(marker instanceof Map)) return false
-    String requestId = marker.requestId?.toString()
-    boolean terminal = _packageMarkerHasTerminalEvidenceLocked(marker)
-    boolean structurallyInvalid = !requestId || marker.ref == null || marker.startedAt == null
+    String requestId = __bat529StaticProperty_java_lang_Object(marker, 'requestId')?.toString()
+    boolean terminal = __bat529StaticCall_boolean_1('_packageMarkerHasTerminalEvidenceLocked', marker)
+    boolean structurallyInvalid = !requestId || __bat529StaticProperty_java_lang_Object(marker, 'ref') == null || __bat529StaticProperty_java_lang_Object(marker, 'startedAt') == null
     long expiresAt = 0L
     if (!structurallyInvalid) {
-        expiresAt = marker.expiresAt != null
-            ? (marker.expiresAt as Long)
-            : ((marker.startedAt as Long) + _packageDeployRecoveryMs())
+        expiresAt = __bat529StaticProperty_java_lang_Object(marker, 'expiresAt') != null
+            ? (__bat529StaticProperty_java_lang_Object(marker, 'expiresAt') as Long)
+            : ((__bat529StaticProperty_java_lang_Object(marker, 'startedAt') as Long) + __bat529StaticCall_long_0('_packageDeployRecoveryMs'))
     }
-    boolean expiredAndInactive = !structurallyInvalid && expiresAt <= now() &&
-        !_writeExecutionLiveLocked(requestId)
+    boolean expiredAndInactive = !structurallyInvalid && expiresAt <= __bat529StaticCall_long_0('now') &&
+        !__bat529StaticCall_boolean_1('_writeExecutionLiveLocked', requestId)
     if (!(terminal || structurallyInvalid || expiredAndInactive)) return false
-    _writeStateSetLocked("packageDeployInFlight", null)
-    try { atomicState.remove("packageDeployInFlight") } catch (Exception ignored) { }
+    __bat529StaticCall_java_lang_Object_2('_writeStateSetLocked', "packageDeployInFlight", null)
+    try { __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_atomicState(), 'remove', "packageDeployInFlight") } catch (Exception ignored) { }
     return true
 }
 
@@ -2557,6 +2627,7 @@ private boolean _packageSweepMarkerLocked() {
 // MRTR and package records, in memory for write leases (a class reload drops those
 // outright). Until one fires, only the owning execution's terminal/finally path
 // clears this ID; elapsed wall time alone can never prove a handler stopped running.
+@groovy.transform.CompileStatic
 private boolean _writeExecutionLiveLocked(executionId) {
     return executionId != null && LIVE_WRITE_EXECUTIONS.contains(executionId.toString())
 }
@@ -2569,11 +2640,12 @@ private boolean _writeExecutionLiveLocked(executionId) {
 // the leases this sweep exists to reap -- two strandings at the default cap
 // would then refuse every write until recompile. The stranded live-set id is
 // dropped with its lease.
+@groovy.transform.CompileStatic
 private void _writeSweepRequestsLocked() {
-    long at = now()
-    long graceMs = _writeLeaseMs()
-    def expired = ((WRITE_REQUEST_LEASES).findAll(((this.&_bat529Cb_ad9a62cb_163).curry([at, graceMs] as Object[])))).collect((this.&_bat529Cb_ad9a62cb_167))
-    (expired).each((this.&_bat529Cb_ad9a62cb_127))
+    long at = __bat529StaticCall_long_0('now')
+    long graceMs = __bat529StaticCall_long_0('_writeLeaseMs')
+    def expired = __bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_lang_Object((WRITE_REQUEST_LEASES), ((this.&_bat529Cb_ad9a62cb_163).curry([at, graceMs] as Object[])))), (this.&_bat529Cb_ad9a62cb_167))
+    __bat529StaticDgm_each_1_java_lang_Object((expired), (this.&_bat529Cb_ad9a62cb_127))
 }
 
 private List _activeWritesLocked() {
@@ -2595,10 +2667,11 @@ private List _activeWritesLocked() {
     return (active).sort((this.&_bat529Cb_ad9a62cb_89))
 }
 
+@groovy.transform.CompileStatic
 private Map _writeCapacityRefusalLocked() {
-    int limit = _maxConcurrentWrites()
+    int limit = __bat529StaticExpr__writeCapacityRefusalLocked_0()
     if (limit <= 0) return null
-    def active = _activeWritesLocked()
+    java.util.List active = __bat529StaticCall_java_util_List_0('_activeWritesLocked')
     if (active.size() < limit) return null
     return [
         success: false,
@@ -2610,44 +2683,47 @@ private Map _writeCapacityRefusalLocked() {
     ]
 }
 
-def _activeWrites() {
+@groovy.transform.CompileStatic
+java.util.List _activeWrites() {
     List cleanup = []
     List active
     synchronized (WRITE_RESERVATION_LOCK) {
-        cleanup = _mrtrSweepLocked()
-        _writeSweepRequestsLocked()
-        active = _activeWritesLocked()
+        cleanup = __bat529StaticCall_java_util_List_0('_mrtrSweepLocked')
+        __bat529StaticCall_java_lang_Object_0('_writeSweepRequestsLocked')
+        active = __bat529StaticCall_java_util_List_0('_activeWritesLocked')
     }
-    (cleanup).each((this.&_bat529Cb_ad9a62cb_33))
+    __bat529StaticDgm_each_1_java_util_List((cleanup), (this.&_bat529Cb_ad9a62cb_33))
     return active
 }
 
 // One compound reservation boundary: sweep expired state, evaluate the global
 // cap, and insert the lease while every competing app execution holds the same
 // static mutex. Tool execution happens after this method releases the lock.
-def _writeReserveRequest(toolName, String transport) {
+@groovy.transform.CompileStatic
+java.util.Map _writeReserveRequest(toolName, String transport) {
     List cleanup = []
     Map outcome
     synchronized (WRITE_RESERVATION_LOCK) {
-        cleanup = _mrtrSweepLocked()
-        _writeSweepRequestsLocked()
-        def refusal = _writeCapacityRefusalLocked()
+        cleanup = __bat529StaticCall_java_util_List_0('_mrtrSweepLocked')
+        __bat529StaticCall_java_lang_Object_0('_writeSweepRequestsLocked')
+        java.util.Map refusal = __bat529StaticCall_java_util_Map_0('_writeCapacityRefusalLocked')
         if (refusal != null) {
             outcome = [accepted: false, refusal: refusal]
         } else {
             String leaseId = "write-${java.util.UUID.randomUUID()}".toString()
-            long at = now()
-            def rec = [tool: toolName?.toString(), startedAt: at,
-                       transport: transport ?: "legacy", expiresAt: at + _writeLeaseMs()]
+            long at = __bat529StaticCall_long_0('now')
+            java.util.Map rec = [tool: toolName?.toString(), startedAt: at,
+                       transport: transport ?: "legacy", expiresAt: at + __bat529StaticCall_long_0('_writeLeaseMs')]
             WRITE_REQUEST_LEASES.put(leaseId, rec)
             LIVE_WRITE_EXECUTIONS.add(leaseId)
             outcome = [accepted: true, leaseId: leaseId]
         }
     }
-    (cleanup).each((this.&_bat529Cb_ad9a62cb_35))
+    __bat529StaticDgm_each_1_java_util_List((cleanup), (this.&_bat529Cb_ad9a62cb_35))
     return outcome
 }
 
+@groovy.transform.CompileStatic
 private void _writeReleaseRequest(String leaseId) {
     if (leaseId == null) return
     synchronized (WRITE_RESERVATION_LOCK) {
@@ -2799,8 +2875,10 @@ def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
 // later replay gets "expired requestState" and starts a fresh call instead of a refetch.
 @groovy.transform.CompileStatic
 def _mrtrReadTerminalTtlMs() { _logsJsonSnapshotTtlMs() }
-def _mrtrMaxRecords() { 16 }
-def _mrtrMaxContinuationSlices() { 8 }
+@groovy.transform.CompileStatic
+java.lang.Integer _mrtrMaxRecords() { 16 }
+@groovy.transform.CompileStatic
+java.lang.Integer _mrtrMaxContinuationSlices() { 8 }
 
 // The official SDK's state-only retry delay caps at 250 ms, so a response-only
 // contention loop could spend all ten rounds before an ordinary slow slice
@@ -2812,11 +2890,12 @@ def _mrtrMaxContinuationSlices() { 8 }
 // relay budget plus a lower absolute cap for dispatch/rendering jitter. At the 6000 ms default
 // that is 3000 ms synchronous and 4000 ms detached. Cloud caps are reached at
 // budgets of 8000 ms synchronous and 6500 ms detached; LAN thresholds differ.
+@groovy.transform.CompileStatic
 def _mrtrContentionWaitMs(String leafTool = null) {
-    boolean cloud = _isCloudRequest()
-    boolean detached = _mrtrDetachedWorkerTools().contains(leafTool)
+    boolean cloud = __bat529StaticCall_java_lang_Object_0('_isCloudRequest')
+    boolean detached = __bat529StaticCall_java_util_Set_0('_mrtrDetachedWorkerTools').contains(leafTool)
     long cap = cloud ? (detached ? 4500L : 4000L) : 6000L
-    long budget = cloud ? _relayBudgetMs() : _lanBudgetMs()
+    long budget = cloud ? __bat529StaticCall_long_0('_relayBudgetMs') : __bat529StaticCall_long_0('_lanBudgetMs')
     if (budget <= 0L) return cap
     if (detached) {
         long headroom = cloud ? 2000L : 1500L
@@ -2828,22 +2907,25 @@ def _mrtrContentionWaitMs(String leafTool = null) {
 // A scheduling request also pays claim, scheduler, cloud transit, and render
 // costs. Use a lower cloud cap than the ordinary contention observer to leave
 // room for that overhead while still observing fast-worker completion.
+@groovy.transform.CompileStatic
 def _mrtrScheduleObserveWaitMs(String leafTool = null) {
-    if (!_isCloudRequest()) return _mrtrContentionWaitMs(leafTool)
+    if (!__bat529StaticCall_java_lang_Object_0('_isCloudRequest')) return __bat529StaticCall_java_lang_Object_1('_mrtrContentionWaitMs', leafTool)
     long cap = 3500L
-    long budget = _relayBudgetMs()
+    long budget = __bat529StaticCall_long_0('_relayBudgetMs')
     if (budget <= 0L) return cap
     long headroom = 2000L
     return Math.max(1L, Math.min(cap, budget - headroom))
 }
 
+@groovy.transform.CompileStatic
 private void _mrtrPutLocked(String stateId, Map rec) {
-    _writeStatePutLocked("mrtrRequests", stateId, rec)
-    _mrtrScheduleCleanupLocked((rec.expiresAt ?: now()) as Long)
+    __bat529StaticCall_java_lang_Object_3('_writeStatePutLocked', "mrtrRequests", stateId, rec)
+    __bat529StaticCall_java_lang_Object_1('_mrtrScheduleCleanupLocked', (rec.expiresAt ?: __bat529StaticCall_long_0('now')) as Long)
 }
 
+@groovy.transform.CompileStatic
 private Map _mrtrCleanupScheduleLocked() {
-    String appKey = _stateOwnerKey()
+    String appKey = __bat529StaticCall_java_lang_String_0('_stateOwnerKey')
     Map hint = MRTR_CLEANUP_SCHEDULES.get(appKey) as Map
     if (hint == null) {
         hint = [:]
@@ -2852,12 +2934,13 @@ private Map _mrtrCleanupScheduleLocked() {
     return hint
 }
 
+@groovy.transform.CompileStatic
 private void _mrtrPublishCleanupCheckLocked(Map hint) {
     long nextCheck = 0L
     if (hint.retryAt != null) nextCheck = hint.retryAt as Long
     else if (hint.dueAt != null) nextCheck = (hint.dueAt as Long) + 60000L
     else if (hint.checked == true) nextCheck = Long.MAX_VALUE
-    String appKey = _stateOwnerKey()
+    String appKey = __bat529StaticCall_java_lang_String_0('_stateOwnerKey')
     if (MRTR_CLEANUP_CHECK_AT.get(appKey) != nextCheck) {
         MRTR_CLEANUP_CHECK_AT = MRTR_CLEANUP_CHECK_AT + [(appKey): nextCheck]
     }
@@ -2865,18 +2948,20 @@ private void _mrtrPublishCleanupCheckLocked(Map hint) {
 
 // Expired live owners need no polling: their release path rearms cleanup. A
 // platform-killed owner that skips finally stays protected until class reload.
+@groovy.transform.CompileStatic
 private void _mrtrReleaseExecutionLocked(executionId) {
     if (executionId == null || !LIVE_WRITE_EXECUTIONS.remove(executionId.toString())) return
-    if (_mrtrCleanupScheduleLocked().waitingOnLive == true) {
-        _mrtrScheduleCleanupLocked(now() + 1000L)
+    if (__bat529StaticCall_java_util_Map_0('_mrtrCleanupScheduleLocked').waitingOnLive == true) {
+        __bat529StaticCall_java_lang_Object_1('_mrtrScheduleCleanupLocked', __bat529StaticCall_long_0('now') + 1000L)
     }
 }
 
 // Scheduling errors must not turn an already-durable result into a failed write.
 // A request can retry after backoff; successful scheduling needs no further traffic.
+@groovy.transform.CompileStatic
 private void _mrtrScheduleCleanupLocked(long expiry) {
-    Map hint = _mrtrCleanupScheduleLocked()
-    long at = now()
+    Map hint = __bat529StaticCall_java_util_Map_0('_mrtrCleanupScheduleLocked')
+    long at = __bat529StaticCall_long_0('now')
     if (((hint.retryAt ?: 0L) as Long) > at) return
     long target = Math.max(at + 1000L, expiry)
     int seconds = Math.max(1L, (target - at + 999L).intdiv(1000L)) as Integer
@@ -2884,104 +2969,108 @@ private void _mrtrScheduleCleanupLocked(long expiry) {
     // Compare actual callback deadlines, including the scheduler's whole-second rounding.
     if (hint.dueAt != null && (hint.dueAt as Long) <= dueAt) return
     try {
-        runIn(seconds, "runMrtrCleanup", [overwrite: true])
+        __bat529StaticCall_java_lang_Object_3('runIn', seconds, "runMrtrCleanup", [overwrite: true])
         hint.dueAt = dueAt
         hint.remove("retryAt")
     } catch (Exception scheduleErr) {
         hint.retryAt = at + 60000L
-        _cleanupError("mrtr", "Expiry cleanup scheduling deferred for 60 seconds: ${_cleanupFailureDetail(scheduleErr)}")
+        __bat529StaticCall_java_lang_Object_2('_cleanupError', "mrtr", "Expiry cleanup scheduling deferred for 60 seconds: ${__bat529StaticCall_java_lang_String_1('_cleanupFailureDetail', scheduleErr)}")
     } finally {
-        _mrtrPublishCleanupCheckLocked(hint)
+        __bat529StaticCall_java_lang_Object_1('_mrtrPublishCleanupCheckLocked', hint)
     }
 }
 
 // Scan only on cold bootstrap, scheduled cleanup, or a bounded recovery attempt.
+@groovy.transform.CompileStatic
 private void _mrtrScheduleNextCleanupLocked() {
-    Map hint = _mrtrCleanupScheduleLocked()
-    Map records = _writeStateMapLocked("mrtrRequests")
+    Map hint = __bat529StaticCall_java_util_Map_0('_mrtrCleanupScheduleLocked')
+    Map records = __bat529StaticCall_java_util_Map_1('_writeStateMapLocked', "mrtrRequests")
     hint.checked = true
     hint.remove("waitingOnLive")
     if (records.isEmpty()) {
         hint.remove("retryAt")
         hint.remove("compactRetryAt")
-        _mrtrPublishCleanupCheckLocked(hint)
+        __bat529StaticCall_java_lang_Object_1('_mrtrPublishCleanupCheckLocked', hint)
         return
     }
-    long at = now()
+    long at = __bat529StaticCall_long_0('now')
     long earliest = Long.MAX_VALUE
-    records.each { id, rec ->
+    __bat529StaticDgm_each_1_java_util_Map(records) { id, rec ->
         long expiry = rec instanceof Map ? ((rec.expiresAt ?: at) as Long) : at
-        if (expiry <= at && rec instanceof Map && rec.status == "active" && _writeExecutionLiveLocked(rec.claimId)) {
+        if (expiry <= at && rec instanceof Map && rec.status == "active" && __bat529StaticCall_boolean_1('_writeExecutionLiveLocked', rec.claimId)) {
             hint.waitingOnLive = true
             return
         }
         earliest = Math.min(earliest, expiry)
     }
     if (hint.compactRetryAt != null) earliest = Math.min(earliest, hint.compactRetryAt as Long)
-    if (earliest != Long.MAX_VALUE) _mrtrScheduleCleanupLocked(earliest)
-    _mrtrPublishCleanupCheckLocked(hint)
+    if (earliest != Long.MAX_VALUE) __bat529StaticCall_java_lang_Object_1('_mrtrScheduleCleanupLocked', earliest)
+    __bat529StaticCall_java_lang_Object_1('_mrtrPublishCleanupCheckLocked', hint)
 }
 
+@groovy.transform.CompileStatic
 def _mrtrEnsureCleanupScheduled(boolean reset = false) {
-    String appKey = _stateOwnerKey()
+    String appKey = __bat529StaticCall_java_lang_String_0('_stateOwnerKey')
     def nextCheck = MRTR_CLEANUP_CHECK_AT.get(appKey)
-    if (!reset && nextCheck != null && (nextCheck as Long) > now()) return
+    if (!reset && nextCheck != null && (nextCheck as Long) > __bat529StaticCall_long_0('now')) return
     synchronized (WRITE_RESERVATION_LOCK) {
-        Map hint = _mrtrCleanupScheduleLocked()
+        Map hint = __bat529StaticCall_java_util_Map_0('_mrtrCleanupScheduleLocked')
         if (reset) hint.clear() // initialize() has just unscheduled this app's jobs.
-        long at = now()
+        long at = __bat529StaticCall_long_0('now')
         if (((hint.retryAt ?: 0L) as Long) > at) return
         if (hint.retryAt == null && hint.dueAt != null && (hint.dueAt as Long) + 60000L > at) return
         if (hint.checked == true && hint.dueAt == null && hint.retryAt == null) return
         hint.remove("dueAt")
         try {
-            _mrtrScheduleNextCleanupLocked()
+            __bat529StaticCall_java_lang_Object_0('_mrtrScheduleNextCleanupLocked')
         } catch (Exception loadErr) {
             hint.retryAt = at + 60000L
-            _cleanupError("mrtr", "Expiry cleanup bootstrap deferred for 60 seconds: ${_cleanupFailureDetail(loadErr)}")
+            __bat529StaticCall_java_lang_Object_2('_cleanupError', "mrtr", "Expiry cleanup bootstrap deferred for 60 seconds: ${__bat529StaticCall_java_lang_String_1('_cleanupFailureDetail', loadErr)}")
         } finally {
-            _mrtrPublishCleanupCheckLocked(hint)
+            __bat529StaticCall_java_lang_Object_1('_mrtrPublishCleanupCheckLocked', hint)
         }
     }
 }
 
+@groovy.transform.CompileStatic
 def runMrtrCleanup() {
     List cleanup = []
     synchronized (WRITE_RESERVATION_LOCK) {
-        Map hint = _mrtrCleanupScheduleLocked()
+        Map hint = __bat529StaticCall_java_util_Map_0('_mrtrCleanupScheduleLocked')
         hint.remove("dueAt")
         // An older accepted job can fire after its replacement was rejected. It must
         // rearm survivors even while ordinary requests are backing off that rejection.
         hint.remove("retryAt")
         boolean swept = false
         try {
-            cleanup = _mrtrSweepLocked()
+            cleanup = __bat529StaticCall_java_util_List_0('_mrtrSweepLocked')
             swept = true
         } catch (Exception sweepErr) {
             // Required eviction failures remain errors on reservation/replay paths.
             // Background work has no caller to fail, so preserve records and retry.
-            _mrtrScheduleCleanupLocked(now() + 60000L)
-            _cleanupError("mrtr", "Expiry sweep failed; retrying in 60 seconds: ${_cleanupFailureDetail(sweepErr)}")
+            __bat529StaticCall_java_lang_Object_1('_mrtrScheduleCleanupLocked', __bat529StaticCall_long_0('now') + 60000L)
+            __bat529StaticCall_java_lang_Object_2('_cleanupError', "mrtr", "Expiry sweep failed; retrying in 60 seconds: ${__bat529StaticCall_java_lang_String_1('_cleanupFailureDetail', sweepErr)}")
         }
         if (swept) {
             try {
-                _mrtrScheduleNextCleanupLocked()
+                __bat529StaticCall_java_lang_Object_0('_mrtrScheduleNextCleanupLocked')
             } catch (Exception rescheduleErr) {
-                _mrtrScheduleCleanupLocked(now() + 60000L)
-                _cleanupError("mrtr", "Expiry cleanup rescheduling deferred for 60 seconds: ${_cleanupFailureDetail(rescheduleErr)}")
+                __bat529StaticCall_java_lang_Object_1('_mrtrScheduleCleanupLocked', __bat529StaticCall_long_0('now') + 60000L)
+                __bat529StaticCall_java_lang_Object_2('_cleanupError', "mrtr", "Expiry cleanup rescheduling deferred for 60 seconds: ${__bat529StaticCall_java_lang_String_1('_cleanupFailureDetail', rescheduleErr)}")
             }
         }
-        _mrtrPublishCleanupCheckLocked(hint)
+        __bat529StaticCall_java_lang_Object_1('_mrtrPublishCleanupCheckLocked', hint)
     }
-    (cleanup).each((this.&_bat529Cb_ad9a62cb_180))
+    __bat529StaticDgm_each_1_java_util_List((cleanup), (this.&_bat529Cb_ad9a62cb_180))
 }
 
 // Eviction must be durable before publishing the cache or releasing helper ownership.
+@groovy.transform.CompileStatic
 private void _mrtrSetLocked(Map records) {
     try {
-        _writeStateDurableWrite("mrtrRequests", records)
+        __bat529StaticCall_java_lang_Object_2('_writeStateDurableWrite', "mrtrRequests", records)
     } catch (Exception persistErr) {
-        _writeStateCacheInvalidate()
+        __bat529StaticCall_java_lang_Object_0('_writeStateCacheInvalidate')
         throw persistErr
     }
     WRITE_STATE_CACHE.put("mrtrRequests", records)
@@ -3034,11 +3123,12 @@ private void _mrtrSweepTerminalEvidenceLocked() {
 // record is gone, no longer active, or has moved on to a later claim. An age ceiling could
 // not see that last case. Runs AFTER the record loop so it reads the post-sweep record map.
 // No size cap is needed -- items are 1:1 with claims, which _mrtrMaxRecords already bounds.
+@groovy.transform.CompileStatic
 private void _mrtrSweepWorkItemsLocked() {
     if (MRTR_WORK_ITEMS.isEmpty()) return
-    def stored = _writeStateMapLocked("mrtrRequests")
-    def dead = ((MRTR_WORK_ITEMS).findAll(((this.&_bat529Cb_ad9a62cb_183).curry([stored] as Object[])))).collect((this.&_bat529Cb_ad9a62cb_184))
-    (dead).each((this.&_bat529Cb_ad9a62cb_18))
+    java.util.Map stored = __bat529StaticCall_java_util_Map_1('_writeStateMapLocked', "mrtrRequests")
+    def dead = __bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_lang_Object((MRTR_WORK_ITEMS), ((this.&_bat529Cb_ad9a62cb_183).curry([stored] as Object[])))), (this.&_bat529Cb_ad9a62cb_184))
+    __bat529StaticDgm_each_1_java_lang_Object((dead), (this.&_bat529Cb_ad9a62cb_18))
 }
 
 // Returns expired active records whose external helper resources must be
@@ -3109,7 +3199,8 @@ private Map _mrtrFindActiveLocked(leafTool, Map binding) {
 // Reads and writes each have their own share of the retained-record pool, so a burst of read
 // continuations (several agents polling jobs) can never refuse a write with
 // request_state_capacity, and a backlog of write terminals never blocks a read.
-def _mrtrMaxReadRecords() { 8 }
+@groovy.transform.CompileStatic
+java.lang.Integer _mrtrMaxReadRecords() { 8 }
 
 private boolean _mrtrMakeRoomLocked(boolean readLeaf = false) {
     def stored = _writeStateMapLocked("mrtrRequests")
@@ -3129,14 +3220,15 @@ private boolean _mrtrMakeRoomLocked(boolean readLeaf = false) {
 
 // Duplicate detection, global write capacity, storage capacity, and record
 // creation are one transaction under the static app-wide mutex.
-def _mrtrReserve(outerTool, leafTool, Map binding, String readSnapshotId = null) {
+@groovy.transform.CompileStatic
+java.util.Map _mrtrReserve(outerTool, leafTool, Map binding, String readSnapshotId = null) {
     List cleanup = []
     Map outcome
     synchronized (WRITE_RESERVATION_LOCK) {
-        cleanup = _mrtrSweepLocked()
-        _writeSweepRequestsLocked()
+        cleanup = __bat529StaticCall_java_util_List_0('_mrtrSweepLocked')
+        __bat529StaticCall_java_lang_Object_0('_writeSweepRequestsLocked')
         // Device state can change outside MCP; independent reads must never join an older snapshot.
-        def duplicate = readSnapshotId ? null : _mrtrFindActiveLocked(leafTool, binding)
+        java.util.Map duplicate = readSnapshotId ? null : __bat529StaticCall_java_util_Map_2('_mrtrFindActiveLocked', leafTool, binding)
         if (duplicate != null) {
             // A relay can drop the first request's response after this state was
             // reserved and the write started. Coalesce an exact binding replay onto that
@@ -3144,12 +3236,12 @@ def _mrtrReserve(outerTool, leafTool, Map binding, String readSnapshotId = null)
             // schedule or execute the write twice.
             outcome = [accepted: true, stateId: duplicate.stateId, rejoined: true]
         } else {
-            boolean readLeaf = _mrtrReadTools().contains(leafTool?.toString())
-            def capacityRefusal = readLeaf ? null : _writeCapacityRefusalLocked()
+            boolean readLeaf = __bat529StaticCall_java_util_Set_0('_mrtrReadTools').contains(leafTool?.toString())
+            java.util.Map capacityRefusal = readLeaf ? null : __bat529StaticCall_java_util_Map_0('_writeCapacityRefusalLocked')
             if (capacityRefusal != null) {
                 outcome = [accepted: false, refusal: capacityRefusal]
-            } else if (!_mrtrMakeRoomLocked(readLeaf)) {
-                int limit = readLeaf ? _mrtrMaxReadRecords() : _mrtrMaxRecords()
+            } else if (!__bat529StaticCall_boolean_1('_mrtrMakeRoomLocked', readLeaf)) {
+                int limit = readLeaf ? __bat529StaticCall_java_lang_Integer_0('_mrtrMaxReadRecords') : __bat529StaticCall_java_lang_Integer_0('_mrtrMaxRecords')
                 outcome = [accepted: false, refusal: [
                     success: false, isError: true, status: "request_state_capacity",
                     limit: limit,
@@ -3157,21 +3249,21 @@ def _mrtrReserve(outerTool, leafTool, Map binding, String readSnapshotId = null)
                 ]]
             } else {
                 String stateId = "mrtr-${java.util.UUID.randomUUID()}".toString()
-                long at = now()
-                def rec = [
+                long at = __bat529StaticCall_long_0('now')
+                java.util.Map rec = [
                     schemaVersion: 1, status: "active",
                     outerTool: outerTool?.toString(), leafTool: leafTool?.toString(),
                     argDigest: binding.argDigest,
-                    startedAt: at, updatedAt: at, expiresAt: at + _mrtrActiveTtlMs(),
+                    startedAt: at, updatedAt: at, expiresAt: at + __bat529StaticCall_long_0('_mrtrActiveTtlMs'),
                     rounds: 0, generation: 0
                 ]
                 if (readSnapshotId) rec.readSnapshotId = readSnapshotId
-                _mrtrPutLocked(stateId, rec)
+                __bat529StaticCall_java_lang_Object_2('_mrtrPutLocked', stateId, rec)
                 outcome = [accepted: true, stateId: stateId]
             }
         }
     }
-    (cleanup).each((this.&_bat529Cb_ad9a62cb_32))
+    __bat529StaticDgm_each_1_java_util_List((cleanup), (this.&_bat529Cb_ad9a62cb_32))
     return outcome
 }
 
@@ -3225,25 +3317,26 @@ def _mrtrClaim(String stateId, outerTool, leafTool, Map binding) {
     return outcome
 }
 
+@groovy.transform.CompileStatic
 private Map _mrtrClaimWithWait(String stateId, outerTool, leafTool, Map binding,
                                long requestStartedAt, String waitClass = null) {
-    Map claim = _mrtrClaim(stateId, outerTool, leafTool, binding)
+    Map claim = __bat529StaticCall_java_util_Map_4('_mrtrClaim', stateId, outerTool, leafTool, binding)
     if (claim.outcome != "in_progress") return claim
 
-    long deadline = requestStartedAt + _mrtrContentionWaitMs(waitClass)
-    long remainingBudget = Math.max(0L, deadline - now())
+    long deadline = __bat529StaticBinary_Plus_java_lang_Long(requestStartedAt, __bat529StaticCall_java_lang_Object_1('_mrtrContentionWaitMs', waitClass))
+    long remainingBudget = Math.max(0L, deadline - __bat529StaticCall_long_0('now'))
     while (claim.outcome == "in_progress") {
-        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - now()))
+        long remaining = Math.min(remainingBudget, Math.max(0L, deadline - __bat529StaticCall_long_0('now')))
         if (remaining <= 0L) break
         long sleepMs = Math.min(WORKER_POLL_MS, remaining)
         try {
-            pauseExecution(sleepMs as Long)
+            __bat529StaticCall_java_lang_Object_1('pauseExecution', sleepMs as Long)
         } catch (Exception waitErr) {
-            mcpLog("debug", "mrtr", "Contention wait interrupted: ${waitErr.message}")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "mrtr", "Contention wait interrupted: ${waitErr.message}")
             break
         }
         remainingBudget -= sleepMs
-        claim = _mrtrClaim(stateId, outerTool, leafTool, binding)
+        claim = __bat529StaticCall_java_util_Map_4('_mrtrClaim', stateId, outerTool, leafTool, binding)
     }
     return claim
 }
@@ -3292,77 +3385,78 @@ private Map _mrtrObserveScheduled(String stateId, Map claim, long requestStarted
     }
 }
 
+@groovy.transform.CompileStatic
 private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map rec) {
     if (!(result instanceof Map)) return null
-    if (result.__mrtrContinue instanceof Map) {
-        return [kind: result.__mrtrContinue.kind,
-                checkpoint: result.__mrtrContinue.checkpoint,
+    if (__bat529StaticProperty_java_lang_Object(result, '__mrtrContinue') instanceof Map) {
+        return [kind: __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(result, '__mrtrContinue'), 'kind'),
+                checkpoint: __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(result, '__mrtrContinue'), 'checkpoint'),
                 // Every phase after the first reads only the checkpoint, so the stored
                 // arguments exist to let the server run the next phase itself when no
                 // client request does. The (potentially very large) import JSON is
                 // dropped: it is consumed by the first phase and never read again.
-                nextArguments: _mrtrCheckpointArguments(executionArgs)]
+                nextArguments: __bat529StaticCall_java_util_Map_1('_mrtrCheckpointArguments', executionArgs)]
     }
-    def leafArgs = _mrtrLeafArguments(rec.outerTool?.toString(), rec.leafTool?.toString(), executionArgs)
+    def leafArgs = __bat529StaticCall_java_lang_Object_3('_mrtrLeafArguments', rec.outerTool?.toString(), rec.leafTool?.toString(), executionArgs)
     if (!(leafArgs instanceof Map)) return null
-    def nextLeaf = _mrtrCopyMap(leafArgs as Map)
+    java.util.Map nextLeaf = __bat529StaticCall_java_util_Map_1('_mrtrCopyMap', leafArgs as Map)
     // Never persist this round's budget clock: the gateway's __reqT0 injection is
     // present-value-preserving, so a stale stamp here would make every later round
     // evaluate round 1's exhausted budget and pause after minimal progress.
     nextLeaf.remove("__reqT0")
     String kind = null
 
-    if (leafTool == "hub_call_rule" && result.remainingRuleIds instanceof List
-            && !result.remainingRuleIds.isEmpty()) {
-        def retryIds = []
-        if (result.failedRuleIds instanceof List) retryIds.addAll(result.failedRuleIds)
-        retryIds.addAll(result.remainingRuleIds)
+    if (leafTool == "hub_call_rule" && __bat529StaticProperty_java_lang_Object(result, 'remainingRuleIds') instanceof List
+            && !__bat529StaticProperty_java_lang_Object(result, 'remainingRuleIds').isEmpty()) {
+        java.util.List retryIds = []
+        if (__bat529StaticProperty_java_lang_Object(result, 'failedRuleIds') instanceof List) retryIds.addAll(__bat529StaticProperty_java_lang_Object(result, 'failedRuleIds'))
+        retryIds.addAll(__bat529StaticProperty_java_lang_Object(result, 'remainingRuleIds'))
         nextLeaf.ruleId = retryIds.unique()
         kind = "call_rule"
-    } else if (leafTool in ["hub_set_rule", "hub_set_native_app"] && result.status == "in_progress") {
-        if (result.stepsRemaining instanceof List && !result.stepsRemaining.isEmpty()) {
+    } else if (leafTool in ["hub_set_rule", "hub_set_native_app"] && __bat529StaticProperty_java_lang_Object(result, 'status') == "in_progress") {
+        if (__bat529StaticProperty_java_lang_Object(result, 'stepsRemaining') instanceof List && !__bat529StaticProperty_java_lang_Object(result, 'stepsRemaining').isEmpty()) {
             if (nextLeaf.operation?.toString() == "walkStep") {
-                def spec = (nextLeaf.args instanceof Map) ? _mrtrCopyMap(nextLeaf.args as Map) : [:]
-                spec.steps = result.stepsRemaining
-                if (result.page != null) spec.page = result.page
+                def spec = (nextLeaf.args instanceof Map) ? __bat529StaticCall_java_util_Map_1('_mrtrCopyMap', nextLeaf.args as Map) : [:]
+                spec.steps = __bat529StaticProperty_java_lang_Object(result, 'stepsRemaining')
+                if (__bat529StaticProperty_java_lang_Object(result, 'page') != null) spec.page = __bat529StaticProperty_java_lang_Object(result, 'page')
                 nextLeaf.args = spec
             } else {
-                def spec = (nextLeaf.walkStep instanceof Map) ? _mrtrCopyMap(nextLeaf.walkStep as Map) : [:]
-                spec.steps = result.stepsRemaining
-                if (result.page != null) spec.page = result.page
+                java.util.Map spec = (nextLeaf.walkStep instanceof Map) ? __bat529StaticCall_java_util_Map_1('_mrtrCopyMap', nextLeaf.walkStep as Map) : [:]
+                spec.steps = __bat529StaticProperty_java_lang_Object(result, 'stepsRemaining')
+                if (__bat529StaticProperty_java_lang_Object(result, 'page') != null) spec.page = __bat529StaticProperty_java_lang_Object(result, 'page')
                 nextLeaf.walkStep = spec
             }
             kind = "walk_steps"
-        } else if ((result.addTriggersRemaining instanceof List && !result.addTriggersRemaining.isEmpty())
-                || (result.addActionsRemaining instanceof List && !result.addActionsRemaining.isEmpty())) {
+        } else if ((__bat529StaticProperty_java_lang_Object(result, 'addTriggersRemaining') instanceof List && !__bat529StaticProperty_java_lang_Object(result, 'addTriggersRemaining').isEmpty())
+                || (__bat529StaticProperty_java_lang_Object(result, 'addActionsRemaining') instanceof List && !__bat529StaticProperty_java_lang_Object(result, 'addActionsRemaining').isEmpty())) {
             if (nextLeaf.operation?.toString() in ["addTriggers", "addActions"]) {
                 nextLeaf.args = nextLeaf.operation == "addTriggers"
-                    ? (result.addTriggersRemaining ?: []) : (result.addActionsRemaining ?: [])
+                    ? (__bat529StaticProperty_java_lang_Object(result, 'addTriggersRemaining') ?: []) : (__bat529StaticProperty_java_lang_Object(result, 'addActionsRemaining') ?: [])
             } else {
-                nextLeaf.addTriggers = result.addTriggersRemaining ?: []
-                nextLeaf.addActions = result.addActionsRemaining ?: []
+                nextLeaf.addTriggers = __bat529StaticProperty_java_lang_Object(result, 'addTriggersRemaining') ?: []
+                nextLeaf.addActions = __bat529StaticProperty_java_lang_Object(result, 'addActionsRemaining') ?: []
             }
             kind = "bulk_edit"
-        } else if (result.patchesRemaining instanceof List && !result.patchesRemaining.isEmpty()) {
-            if (nextLeaf.operation?.toString() == "patches") nextLeaf.args = result.patchesRemaining
-            else nextLeaf.patches = result.patchesRemaining
+        } else if (__bat529StaticProperty_java_lang_Object(result, 'patchesRemaining') instanceof List && !__bat529StaticProperty_java_lang_Object(result, 'patchesRemaining').isEmpty()) {
+            if (nextLeaf.operation?.toString() == "patches") nextLeaf.args = __bat529StaticProperty_java_lang_Object(result, 'patchesRemaining')
+            else nextLeaf.patches = __bat529StaticProperty_java_lang_Object(result, 'patchesRemaining')
             kind = "patches"
         }
-    } else if (leafTool == "hub_create_driver" && result.status == "in_progress" &&
-            result.installsRemaining instanceof List && !result.installsRemaining.isEmpty()) {
-        nextLeaf.installs = result.installsRemaining
+    } else if (leafTool == "hub_create_driver" && __bat529StaticProperty_java_lang_Object(result, 'status') == "in_progress" &&
+            __bat529StaticProperty_java_lang_Object(result, 'installsRemaining') instanceof List && !__bat529StaticProperty_java_lang_Object(result, 'installsRemaining').isEmpty()) {
+        nextLeaf.installs = __bat529StaticProperty_java_lang_Object(result, 'installsRemaining')
         kind = "driver_installs"
-    } else if (leafTool == "hub_update_driver" && result.status == "in_progress" &&
-            result.updatesRemaining instanceof List && !result.updatesRemaining.isEmpty()) {
-        nextLeaf.updates = result.updatesRemaining
+    } else if (leafTool == "hub_update_driver" && __bat529StaticProperty_java_lang_Object(result, 'status') == "in_progress" &&
+            __bat529StaticProperty_java_lang_Object(result, 'updatesRemaining') instanceof List && !__bat529StaticProperty_java_lang_Object(result, 'updatesRemaining').isEmpty()) {
+        nextLeaf.updates = __bat529StaticProperty_java_lang_Object(result, 'updatesRemaining')
         kind = "driver_updates"
-    } else if ((_mrtrReadTools().contains(leafTool) || leafTool == "hub_delete_debug_logs")
-            && result.status == "in_progress") {
+    } else if ((__bat529StaticCall_java_util_Set_0('_mrtrReadTools').contains(leafTool) || leafTool == "hub_delete_debug_logs")
+            && __bat529StaticProperty_java_lang_Object(result, 'status') == "in_progress") {
         // The background fetch is still running; the next leg re-runs the identical read.
         kind = "slow_read"
     }
     if (kind == null) return null
-    return [kind: kind, nextArguments: _mrtrWithLeafArguments(rec, executionArgs, nextLeaf)]
+    return [kind: kind, nextArguments: __bat529StaticCall_java_util_Map_3('_mrtrWithLeafArguments', rec, executionArgs, nextLeaf)]
 }
 
 private Map _mrtrOwnedRecordLocked(String stateId, Map claim) {
@@ -3883,17 +3977,19 @@ private void _mrtrNoteIfUnstorable(Map result, boolean stored) {
         "so repeating the requestState returns an expired-state error rather than this outcome.").toString()
 }
 
-def _mrtrAutoContinueDelaySeconds() { 5 }
+@groovy.transform.CompileStatic
+java.lang.Integer _mrtrAutoContinueDelaySeconds() { 5 }
 
 // What a client that could not render a continuation most needs to know: whether its
 // write is still running, waiting for the server's own continuation, finished, or failed.
 // Records outlive completion by ten minutes, so this covers the recent past, newest first.
+@groovy.transform.CompileStatic
 def _mrtrRecentOperations(int limit = 10) {
     Map stored
-    synchronized (WRITE_RESERVATION_LOCK) { stored = [:] + _writeStateMapLocked("mrtrRequests") }
-    Set writes = _mrtrWriteTools()
+    synchronized (WRITE_RESERVATION_LOCK) { stored = [:] + __bat529StaticCall_java_util_Map_1('_writeStateMapLocked', "mrtrRequests") }
+    Set writes = __bat529StaticCall_java_util_Set_0('_mrtrWriteTools')
     List rows = []
-    (stored).each(((this.&_bat529Cb_ad9a62cb_187).curry([rows, writes] as Object[])))
+    __bat529StaticDgm_each_1_java_util_Map((stored), ((this.&_bat529Cb_ad9a62cb_187).curry([rows, writes] as Object[])))
     (rows).sort((this.&_bat529Cb_ad9a62cb_109))
     return rows.take(limit)
 }
@@ -3902,6 +3998,7 @@ def _mrtrRecentOperations(int limit = 10) {
 // client never send one, which would leave the remainder unrun until the record expires,
 // so the server resumes the work itself once a continuing client has had time to. A
 // client request that arrives first claims the generation and this job finds nothing.
+@groovy.transform.CompileStatic
 private void _mrtrScheduleAutoContinue(String stateId, Map rec) {
     // Every checkpoint stores its next arguments; a record without them is malformed and
     // a job for it would only log that it found nothing to run.
@@ -3912,105 +4009,107 @@ private void _mrtrScheduleAutoContinue(String stateId, Map rec) {
     Map job = [stateId: stateId, generation: rec.generation]
     for (int attempt = 0; attempt < 2; attempt++) {
         try {
-            runIn(_mrtrAutoContinueDelaySeconds() * (attempt + 1), "runMrtrAutoContinue",
+            __bat529StaticCall_java_lang_Object_3('runIn', __bat529StaticCall_java_lang_Integer_0('_mrtrAutoContinueDelaySeconds') * (attempt + 1), "runMrtrAutoContinue",
                 [overwrite: false, data: job])
             return
         } catch (Exception scheduleErr) {
-            mcpLog("warn", "mrtr",
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "mrtr",
                 "Could not schedule server-side continuation for ${rec.leafTool} (attempt ${attempt + 1}): ${scheduleErr.message}")
         }
     }
     // Both attempts failed: the record stays active and a client continuation can still
     // resume it, but nothing on the hub will now do it unprompted.
-    mcpLog("error", "mrtr",
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "mrtr",
         "Server-side continuation of ${rec.leafTool} is not scheduled; the checkpoint waits for a client requestState until it expires")
 }
 
+@groovy.transform.CompileStatic
 def runMrtrAutoContinue(Map job = [:]) {
     String stateId = job?.stateId?.toString()
     def generationRaw = job?.generation
     Integer generation = (generationRaw instanceof Number) ? generationRaw.intValue() : null
     if (!stateId || generation == null) {
-        mcpLog("warn", "mrtr", "Server-side continuation job carried no usable stateId/generation: ${job}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "mrtr", "Server-side continuation job carried no usable stateId/generation: ${job}")
         return
     }
     Map rec
     synchronized (WRITE_RESERVATION_LOCK) {
-        def stored = _writeStateMapLocked("mrtrRequests")
+        java.util.Map stored = __bat529StaticCall_java_util_Map_1('_writeStateMapLocked', "mrtrRequests")
         rec = (stored.get(stateId) instanceof Map) ? ([:] + (stored.get(stateId) as Map)) : null
     }
     // Only an unclaimed record still sitting at the checkpointed generation needs help. A
     // client that claimed or advanced it is the documented no-op; a record that is gone,
     // expired or has nothing left to run means the remainder will never run, so say so.
     if (rec == null) {
-        mcpLog("warn", "mrtr", "Server-side continuation found no record for ${stateId}; the checkpoint was swept")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "mrtr", "Server-side continuation found no record for ${stateId}; the checkpoint was swept")
         return
     }
     String leaf = rec.leafTool?.toString()
     if (rec.status != "active") {
-        mcpLog("debug", "mrtr", "Server-side continuation of ${leaf} skipped: record is ${rec.status}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "mrtr", "Server-side continuation of ${leaf} skipped: record is ${rec.status}")
         return
     }
     if (rec.claimId != null || ((rec.generation ?: 0) as Integer) != generation) {
-        mcpLog("debug", "mrtr", "Server-side continuation of ${leaf} skipped: a client request resumed generation ${generation}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "mrtr", "Server-side continuation of ${leaf} skipped: a client request resumed generation ${generation}")
         return
     }
     if (!(rec.nextArguments instanceof Map)) {
-        mcpLog("warn", "mrtr", "Server-side continuation of ${leaf} skipped: the checkpoint holds no next arguments")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "mrtr", "Server-side continuation of ${leaf} skipped: the checkpoint holds no next arguments")
         return
     }
-    if (rec.expiresAt != null && (rec.expiresAt as Long) <= now()) {
-        mcpLog("warn", "mrtr", "Server-side continuation of ${leaf} skipped: the record expired unresumed at generation ${generation}")
+    if (rec.expiresAt != null && (rec.expiresAt as Long) <= __bat529StaticCall_long_0('now')) {
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "mrtr", "Server-side continuation of ${leaf} skipped: the record expired unresumed at generation ${generation}")
         return
     }
     Map binding = [outerTool: rec.outerTool?.toString(), leafTool: leaf, argDigest: rec.argDigest?.toString()]
     Map claim
     try {
-        claim = _mrtrClaim(stateId, rec.outerTool, leaf, binding) as Map
+        claim = __bat529StaticCall_java_util_Map_4('_mrtrClaim', stateId, rec.outerTool, leaf, binding) as Map
     } catch (IllegalArgumentException gone) {
-        mcpLog("warn", "mrtr", "Server-side continuation of ${leaf} could not claim its record: ${gone.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "mrtr", "Server-side continuation of ${leaf} could not claim its record: ${gone.message}")
         return
     }
     if (claim.outcome != "claimed") {
-        mcpLog("debug", "mrtr", "Server-side continuation of ${leaf} skipped: claim outcome ${claim.outcome}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "mrtr", "Server-side continuation of ${leaf} skipped: claim outcome ${claim.outcome}")
         return
     }
     rec = claim.record as Map
-    Map executionArgs = _mrtrCopyMap(rec.nextArguments as Map)
-    mcpLog("info", "mrtr", "Server-side continuation of ${leaf} at generation ${generation}: no client request resumed it")
+    Map executionArgs = __bat529StaticCall_java_util_Map_1('_mrtrCopyMap', rec.nextArguments as Map)
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "mrtr", "Server-side continuation of ${leaf} at generation ${generation}: no client request resumed it")
     try {
-        _mrtrValidateAccess(rec.outerTool, leaf, executionArgs, false)
-        if (_mrtrDetachedWorkerTools().contains(leaf)) {
-            _mrtrScheduleSlice(stateId, rec, claim, executionArgs)
+        __bat529StaticCall_java_lang_Object_4('_mrtrValidateAccess', rec.outerTool, leaf, executionArgs, false)
+        if (__bat529StaticCall_java_util_Set_0('_mrtrDetachedWorkerTools').contains(leaf)) {
+            __bat529StaticCall_java_util_Map_4('_mrtrScheduleSlice', stateId, rec, claim, executionArgs)
             return
         }
-        def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
-        _mrtrLogBackgroundCommit(stateId, rec, _mrtrCommitSlice(stateId, rec, claim, executionArgs, result))
+        def result = __bat529StaticCall_java_lang_Object_3('_mrtrExecuteSlice', stateId, rec, executionArgs)
+        __bat529StaticCall_java_lang_Object_3('_mrtrLogBackgroundCommit', stateId, rec, __bat529StaticCall_java_util_Map_5('_mrtrCommitSlice', stateId, rec, claim, executionArgs, result))
     } catch (IllegalArgumentException e) {
         // No caller receives this refusal, so the stored terminal is its only channel: an
         // abandoned record would tell the next client request "expired" and lose the ledger.
-        mcpLog("warn", "mrtr", "Server-side continuation of ${leaf} refused: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "mrtr", "Server-side continuation of ${leaf} refused: ${e.message}")
         String reason = e.message?.trim() ? e.message : "${leaf} refused the continuation without a reason".toString()
-        def refusal = _mrtrFailureWithLedger(rec, leaf, reason)
-        _mrtrCleanupRecord(rec)
-        _mrtrStoreTerminalOrLog(stateId, rec, claim, refusal, leaf)
+        java.util.Map refusal = __bat529StaticCall_java_util_Map_3('_mrtrFailureWithLedger', rec, leaf, reason)
+        __bat529StaticCall_java_lang_Object_1('_mrtrCleanupRecord', rec)
+        __bat529StaticCall_java_lang_Object_5('_mrtrStoreTerminalOrLog', stateId, rec, claim, refusal, leaf)
     } catch (Exception e) {
-        mcpLog("error", "mrtr", "Server-side continuation of ${leaf} failed: ${e.message}")
-        def failure = _mrtrFailureWithLedger(rec, leaf, "Tool error: ${e.message}".toString())
-        _mrtrCleanupRecord(rec)
-        _mrtrStoreTerminalOrLog(stateId, rec, claim, failure, leaf)
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "mrtr", "Server-side continuation of ${leaf} failed: ${e.message}")
+        java.util.Map failure = __bat529StaticCall_java_util_Map_3('_mrtrFailureWithLedger', rec, leaf, "Tool error: ${e.message}".toString())
+        __bat529StaticCall_java_lang_Object_1('_mrtrCleanupRecord', rec)
+        __bat529StaticCall_java_lang_Object_5('_mrtrStoreTerminalOrLog', stateId, rec, claim, failure, leaf)
     }
 }
 
 // A slice that ran with no request waiting on it finished or paused unseen. One info line
 // says which, so an operator whose client showed an error can see the write did land.
+@groovy.transform.CompileStatic
 private void _mrtrLogBackgroundCommit(String stateId, Map rec, Map completion) {
     String leaf = rec?.leafTool?.toString()
     if (completion?.outcome == "continued") {
-        mcpLog("info", "mrtr", "${leaf}: background slice paused with work remaining (requestState ${stateId}); " +
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "mrtr", "${leaf}: background slice paused with work remaining (requestState ${stateId}); " +
             "a continuing client or the server's own continuation runs the next slice")
     } else if (completion?.outcome == "terminal") {
-        mcpLog(completion.isError == true ? "warn" : "info", "mrtr",
+        __bat529StaticCall_java_lang_Object_3('mcpLog', completion.isError == true ? "warn" : "info", "mrtr",
             "${leaf}: finished in the background (${completion.isError == true ? 'with an error' : 'ok'}); " +
             "the result is retained for requestState ${stateId} and any waiting or later identical call receives it")
     }
@@ -4018,9 +4117,10 @@ private void _mrtrLogBackgroundCommit(String stateId, Map rec, Map completion) {
 
 // The detached and server-side paths have no caller to hand a failure to; if the record
 // was lost as well, the hub log is the only place the failure can still be found.
+@groovy.transform.CompileStatic
 private void _mrtrStoreTerminalOrLog(String stateId, Map rec, Map claim, Map failure, leafTool) {
-    if (!_mrtrStoreTerminal(stateId, rec, claim, failure, true)) {
-        mcpLog("error", "mrtr", "${leafTool} failure could not be stored for its requestState; a continuation " +
+    if (!__bat529StaticCall_boolean_5('_mrtrStoreTerminal', stateId, rec, claim, failure, true)) {
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "mrtr", "${leafTool} failure could not be stored for its requestState; a continuation " +
             "will report expiry instead: ${failure.error ?: failure.__deviceValidation}")
     }
 }
@@ -4054,19 +4154,21 @@ private void _mrtrAbandon(String stateId, Map originalRec, Map claim, String rea
     if (cleanup != null) _mrtrCleanupRecord(cleanup)
 }
 
+@groovy.transform.CompileStatic
 private def _mrtrExecuteSlice(String stateId, Map rec, Map executionArgs) {
     String leaf = rec.leafTool?.toString()
-    if (leaf == "hub_clone_native_app") return _mrtrCloneNativeAppSlice(rec, executionArgs)
-    if (leaf == "hub_import_native_app") return _mrtrImportNativeAppSlice(rec, executionArgs)
+    if (leaf == "hub_clone_native_app") return __bat529StaticCall_java_util_Map_2('_mrtrCloneNativeAppSlice', rec, executionArgs)
+    if (leaf == "hub_import_native_app") return __bat529StaticCall_java_util_Map_2('_mrtrImportNativeAppSlice', rec, executionArgs)
     Map context = rec.readSnapshotId ? [id: rec.readSnapshotId, fresh: false] : null
     // Every caller validated access first; a continuation's stored key may have rotated since.
-    def result = _executeWithDeviceReadContext(rec.outerTool, executionArgs, context, true)
+    def result = __bat529StaticCall_java_lang_Object_4('_executeWithDeviceReadContext', rec.outerTool, executionArgs, context, true)
     // Execution-local provenance bounds terminal retention without adding response fields
     // or copying the snapshot payload into persisted continuation records.
     if (context?.fetchedAt instanceof Number) rec.readSnapshotFetchedAt = context.fetchedAt
     return result
 }
 
+@groovy.transform.CompileStatic
 private Map _mrtrControl(String kind, Map checkpoint) {
     return [__mrtrContinue: [kind: kind, checkpoint: checkpoint]]
 }
@@ -4080,14 +4182,15 @@ private Map _mrtrControl(String kind, Map checkpoint) {
 // The row is built by EXCLUDING the envelope-level keys rather than listing the row's own
 // fields. An allowlist silently drops whatever the leaf adds next -- it already dropped
 // `note`, which is where a no-op stop explains itself -- and nothing would go red.
+@groovy.transform.CompileStatic
 private List _mrtrRuleResultRows(result) {
     if (!(result instanceof Map)) return []
-    if (result.results instanceof List) return result.results as List
-    if (result.ruleId == null) return []
-    def envelopeOnly = ["ruleIds", "remainingRuleIds", "failedRuleIds", "results",
+    if (__bat529StaticProperty_java_lang_Object(result, 'results') instanceof List) return __bat529StaticProperty_java_lang_Object(result, 'results') as List
+    if (__bat529StaticProperty_java_lang_Object(result, 'ruleId') == null) return []
+    java.util.Set envelopeOnly = ["ruleIds", "remainingRuleIds", "failedRuleIds", "results",
                         "partial", "mrtr", "status", "tool", "isError"] as Set
-    def row = ((result as Map)).findAll(((this.&_bat529Cb_ad9a62cb_91).curry([envelopeOnly] as Object[])))
-    row.success = result.success == true
+    def row = __bat529StaticDgm_findAll_1_java_util_Map(((result as Map)), ((this.&_bat529Cb_ad9a62cb_91).curry([envelopeOnly] as Object[])))
+    row.success = __bat529StaticProperty_java_lang_Object(result, 'success') == true
     return [row]
 }
 
@@ -4205,12 +4308,13 @@ private List _mrtrCollapseRuleResults(List entries) {
 // Work items are deliberately NOT removed here: this takes a record SNAPSHOT, and a
 // between-slices snapshot carries no claimId to key one on. Reclamation belongs to
 // _mrtrSweepWorkItemsLocked, which matches claim identity against the live record map.
+@groovy.transform.CompileStatic
 private void _mrtrCleanupRecord(Map rec) {
-    def clonerId = rec?.checkpoint?.clonerAppId
+    def clonerId = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(rec, 'checkpoint'), 'clonerAppId')
     if (clonerId == null) return
-    try { _appClonerCleanup(clonerId as Integer) }
+    try { __bat529StaticCall_boolean_1('_appClonerCleanup', clonerId as Integer) }
     catch (Exception e) {
-        _cleanupError("mrtr", "Could not clean temporary appCloner ${clonerId}: ${_cleanupFailureDetail(e)}")
+        __bat529StaticCall_java_lang_Object_2('_cleanupError', "mrtr", "Could not clean temporary appCloner ${clonerId}: ${__bat529StaticCall_java_lang_String_1('_cleanupFailureDetail', e)}")
     }
 }
 
@@ -4270,32 +4374,33 @@ private Map _toolLogDetails(reactiveToolName, toolName, args, Map extra = [:]) {
     return details + extra
 }
 
+@groovy.transform.CompileStatic
 private def _renderValidationError(id, toolName, reactiveToolName, args, String detail,
                                    boolean rejoined = false, Map rec = null) {
-    if (_isProtocolValidation(detail)) {
-        return jsonRpcError(id, -32602, "Invalid params: ${detail}")
+    if (__bat529StaticCall_boolean_1('_isProtocolValidation', detail)) {
+        return __bat529StaticCall_java_util_Map_3('jsonRpcError', id, -32602, "Invalid params: ${detail}")
     }
     // The guide pointer rides inside the error text. The legacy dispatcher appended it to
     // its -32602 message; the MRTR catch never did, so continuation writes gain it here.
     // A throw with no message gets neither a hint nor a literal "null": there is nothing
     // for the model to act on. A hint failure must never mask the genuine refusal.
     boolean hasDetail = detail?.trim() as boolean
-    String text = hasDetail ? detail : "${_externalToolName(reactiveToolName as String)} rejected the call without a reason"
+    String text = hasDetail ? detail : "${__bat529StaticCall_java_lang_String_1('_externalToolName', reactiveToolName as String)} rejected the call without a reason"
     def hint = null
     if (hasDetail) {
-        try { hint = _reactiveBpsWarning(reactiveToolName, args, detail) }
+        try { hint = __bat529StaticCall_java_lang_Object_3('_reactiveBpsWarning', reactiveToolName, args, detail) }
         catch (Exception bpErr) {
-            mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null,
-                [details: _toolLogDetails(reactiveToolName, toolName, args)])
+            __bat529StaticCall_java_lang_Object_5('mcpLog', "warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}", null,
+                [details: __bat529StaticCall_java_util_Map_3('_toolLogDetails', reactiveToolName, toolName, args)])
         }
     }
-    def failure = [success: false, isError: true, tool: _externalToolName(reactiveToolName as String),
+    java.util.Map failure = [success: false, isError: true, tool: __bat529StaticCall_java_lang_String_1('_externalToolName', reactiveToolName as String),
                    error: hint ? "${text} ${hint}".toString() : text, __validation: true]
     // A refusal on a later slice sits on top of committed work; hand that ledger back
     // exactly as a runtime failure would, so the caller does not repeat the whole batch.
-    _mrtrAttachLedger(failure, rec)
-    return _renderToolResult(id, toolName, reactiveToolName, args,
-        _mrtrMarkRejoined(failure, rejoined), true)
+    __bat529StaticCall_java_lang_Object_2('_mrtrAttachLedger', failure, rec)
+    return __bat529StaticCall_java_lang_Object_6('_renderToolResult', id, toolName, reactiveToolName, args,
+        __bat529StaticCall_java_lang_Object_2('_mrtrMarkRejoined', failure, rejoined), true)
 }
 
 private def _renderToolResult(id, toolName, reactiveToolName, args, result, boolean isErrorOverride = false) {
@@ -4399,34 +4504,38 @@ private def _redactAccessTokens(value) {
 // budget for this request's source -- relayBudgetMs over the cloud relay,
 // lanBudgetMs (default 0 = off) on LAN. With the LAN knob unset, LAN behaviour is
 // byte-identical to the pre-budget shape.
+@groovy.transform.CompileStatic
 def _timeBudgetExceeded(Long t0) {
     if (t0 == null) return false
-    Long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    Long budget = __bat529StaticCall_java_lang_Object_0('_isCloudRequest') ? __bat529StaticCall_long_0('_relayBudgetMs') : __bat529StaticCall_long_0('_lanBudgetMs')
     if (budget <= 0) return false
-    return (now() - t0) >= budget
+    return (__bat529StaticCall_long_0('now') - t0) >= budget
 }
 
-def _mrtrWorkerSliceBudgetMs() { 120000L }
+@groovy.transform.CompileStatic
+java.lang.Long _mrtrWorkerSliceBudgetMs() { 120000L }
 
 // Only restart-safe batch boundaries use the worker clock. Inner wizard calls keep
 // the request clock absent so a pause cannot split a destructive operation in half.
+@groovy.transform.CompileStatic
 def _resumableBudgetExceeded(Long requestT0) {
     if (mrtrWorkerSliceStartedAt != null) {
-        return now() - mrtrWorkerSliceStartedAt >= _mrtrWorkerSliceBudgetMs()
+        return __bat529StaticCall_long_0('now') - mrtrWorkerSliceStartedAt >= __bat529StaticCall_java_lang_Long_0('_mrtrWorkerSliceBudgetMs')
     }
-    return _timeBudgetExceeded(requestT0)
+    return __bat529StaticCall_java_lang_Object_1('_timeBudgetExceeded', requestT0)
 }
 
 // Returned in place of the real result when handleToolsCall trips the size guard. Shape
 // is the wire contract for the response_too_large case; keep the field names stable.
-def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) {
+@groovy.transform.CompileStatic
+java.util.Map _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) {
     return [
         response_too_large: true,
         truncated: true,
         estimatedBytes: actualBytes,
         sizeLimitBytes: limitBytes,
-        tool: _externalToolName(toolName),
-        suggestion: _responseTooLargeSuggestion(toolName)
+        tool: __bat529StaticCall_java_lang_String_1('_externalToolName', toolName),
+        suggestion: __bat529StaticCall_java_lang_String_1('_responseTooLargeSuggestion', toolName)
     ]
 }
 
@@ -4502,9 +4611,10 @@ def _parseListCursor(cursor, int totalSize, String toolName) {
 // Compose cursor decoding + subList + nextCursor into one place so each paginated tool
 // is a single call. cursor=null returns the whole list with no nextCursor (the opt-in
 // contract: callers who didn't ask for pagination get the legacy shape).
-def _paginateList(List fullList, cursor, int pageSize, String toolName) {
+@groovy.transform.CompileStatic
+java.util.Map _paginateList(List fullList, cursor, int pageSize, String toolName) {
     if (cursor == null) return [page: fullList, nextCursor: null]
-    int start = _parseListCursor(cursor, fullList.size(), toolName)
+    int start = __bat529StaticCall_java_lang_Integer_3('_parseListCursor', cursor, fullList.size(), toolName)
     int end = Math.min(start + pageSize, fullList.size())
     return [page: fullList.subList(start, end), nextCursor: end < fullList.size() ? end.toString() : null]
 }
@@ -4514,6 +4624,7 @@ def _paginateList(List fullList, cursor, int pageSize, String toolName) {
 // Each gateway: call with no args → catalog of tool schemas; call with tool + args → execute.
 // Modeled after ha-mcp PR #637 (category gateway proxy pattern).
 
+@groovy.transform.CompileStatic
 private def _toolMetadataGet(String key) {
     synchronized (TOOL_METADATA_CACHE) { return TOOL_METADATA_CACHE.get(key) }
 }
@@ -4526,14 +4637,16 @@ private def _immutableToolMetadata(value) {
     return value
 }
 
+@groovy.transform.CompileStatic
 private def _toolMetadataPut(String key, value) {
-    def immutable = _immutableToolMetadata(value)
+    def immutable = __bat529StaticCall_java_lang_Object_1('_immutableToolMetadata', value)
     synchronized (TOOL_METADATA_CACHE) {
         if (!TOOL_METADATA_CACHE.containsKey(key)) TOOL_METADATA_CACHE.put(key, immutable)
         return TOOL_METADATA_CACHE.get(key)
     }
 }
 
+@groovy.transform.CompileStatic
 def _invalidateToolMetadata() {
     synchronized (TOOL_METADATA_CACHE) { TOOL_METADATA_CACHE.clear() }
 }
@@ -4556,20 +4669,21 @@ private void _cleanupError(String component, String message) {
     }
 }
 
+@groovy.transform.CompileStatic
 def _cleanupRetiredToolState() {
-    String appKey = _stateOwnerKey()
+    String appKey = __bat529StaticCall_java_lang_String_0('_stateOwnerKey')
     synchronized (RETIRED_TOOL_STATE_CLEANED) {
         if (RETIRED_TOOL_STATE_CLEANED.contains(appKey)) return
         def retryAt = RETIRED_TOOL_STATE_RETRY_AT.get(appKey)
-        if (retryAt != null && (retryAt as Long) > now()) return
+        if (retryAt != null && (retryAt as Long) > __bat529StaticCall_long_0('now')) return
         try {
             if (true) {
-def __bat529EachReceiver5 = (['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
+java.util.List __bat529EachReceiver5 = (['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
              'toolSearchCorpusFingerprint', 'requiredParamsByTool',
              'requiredParamsByToolFingerprint'])
 for (def key in __bat529EachReceiver5) {
-                if (atomicState.containsKey(key)) atomicState.remove(key)
-                if (state.containsKey(key)) state.remove(key)
+                if (__bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_atomicState(), 'containsKey', key)) __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_atomicState(), 'remove', key)
+                if (__bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_state(), 'containsKey', key)) __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_state(), 'remove', key)
             
 }
 __bat529EachReceiver5
@@ -4577,8 +4691,8 @@ __bat529EachReceiver5
             RETIRED_TOOL_STATE_CLEANED.add(appKey)
             RETIRED_TOOL_STATE_RETRY_AT.remove(appKey)
         } catch (Exception e) {
-            RETIRED_TOOL_STATE_RETRY_AT.put(appKey, now() + 60000L)
-            _cleanupError("server", "Retired tool metadata cleanup deferred for 60 seconds: ${_cleanupFailureDetail(e)}")
+            RETIRED_TOOL_STATE_RETRY_AT.put(appKey, __bat529StaticCall_long_0('now') + 60000L)
+            __bat529StaticCall_java_lang_Object_2('_cleanupError', "server", "Retired tool metadata cleanup deferred for 60 seconds: ${__bat529StaticCall_java_lang_String_1('_cleanupFailureDetail', e)}")
         }
     }
 }
@@ -4624,9 +4738,10 @@ def getGatewayConfig() {
 // (Pre-#113 the "readonly" trigger was the Built-in App toggle; with that toggle
 // removed it is the Read master -- if the client can read at all, it can read existing
 // custom rules.) Consumed by getHiddenToolNames(), executeTool, and toolSearchTools.
-def getCustomEngineMode() {
-    if (settings.enableCustomRuleEngine == true) return "full"
-    return (settings.enableRead != false) ? "readonly" : "off"
+@groovy.transform.CompileStatic
+java.lang.String getCustomEngineMode() {
+    if (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'enableCustomRuleEngine') == true) return "full"
+    return (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'enableRead') != false) ? "readonly" : "off"
 }
 
 // #114 effective deny set: explicitly-disabled tools UNION every tool of each
@@ -4687,39 +4802,41 @@ __bat529EachReceiver7
 // meaningful (and only safe to expose) during dev work with the toggle on. Returned as
 // String names; getHiddenToolNames folds them into `hide` when settings.enableDeveloperMode
 // is falsy.
+@groovy.transform.CompileStatic
 def getDeveloperModeOnlyToolNames() {
-    def cached = _toolMetadataGet("getDeveloperModeOnlyToolNames")
+    def cached = __bat529StaticCall_java_lang_Object_1('_toolMetadataGet', "getDeveloperModeOnlyToolNames")
     if (cached != null) return cached
-    def built = ([
+    java.util.Set built = ([
     ]
-        + _developerModeOnlyToolNames_partSelfAdmin()
+        + __bat529StaticCall_java_lang_Object_0('_developerModeOnlyToolNames_partSelfAdmin')
     ) as Set
-    return _toolMetadataPut("getDeveloperModeOnlyToolNames", built)
+    return __bat529StaticCall_java_lang_Object_2('_toolMetadataPut', "getDeveloperModeOnlyToolNames", built)
 }
 
+@groovy.transform.CompileStatic
 def getReadOnlyToolNames() {
-    def cached = _toolMetadataGet("getReadOnlyToolNames")
+    def cached = __bat529StaticCall_java_lang_Object_1('_toolMetadataGet', "getReadOnlyToolNames")
     if (cached != null) return cached
-    def built = ([
+    java.util.Set built = ([
     ]
-        + _readOnlyToolNames_partNativeRM()
-        + _readOnlyToolNames_partRooms()
-        + _readOnlyToolNames_partBundles()
-        + _readOnlyToolNames_partVisualRules()
-        + _readOnlyToolNames_partFiles()
-        + _readOnlyToolNames_partItemBackups()
-        + _readOnlyToolNames_partDebugLogging()
-        + _readOnlyToolNames_partDiagnostics()
-        + _readOnlyToolNames_partSystem()
-        + _readOnlyToolNames_partDevices()
-        + _readOnlyToolNames_partVariables()
-        + _readOnlyToolNames_partCustomRules()
-        + _readOnlyToolNames_partCodeManagement()
-        + _readOnlyToolNames_partHpm()
-        + _readOnlyToolNames_partDiscovery()
-        + _readOnlyToolNames_partDashboards()
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partNativeRM')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partRooms')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partBundles')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partVisualRules')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partFiles')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partItemBackups')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDebugLogging')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDiagnostics')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partSystem')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDevices')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partVariables')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partCustomRules')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partCodeManagement')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partHpm')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDiscovery')
+        + __bat529StaticCall_java_lang_Object_0('_readOnlyToolNames_partDashboards')
     ) as Set
-    return _toolMetadataPut("getReadOnlyToolNames", built)
+    return __bat529StaticCall_java_lang_Object_2('_toolMetadataPut', "getReadOnlyToolNames", built)
 }
 
 // Write tools that are SAFE TO RETRY with identical args (MCP `idempotentHint`):
@@ -4746,29 +4863,30 @@ def getReadOnlyToolNames() {
 //     are NOT -- a retry re-fires the action.
 //   * hub_set_rule / hub_set_native_app are upserts whose no-appId mode
 //     CREATES -- classified non-idempotent for that mode.
+@groovy.transform.CompileStatic
 def getIdempotentWriteToolNames() {
-    def cached = _toolMetadataGet("getIdempotentWriteToolNames")
+    def cached = __bat529StaticCall_java_lang_Object_1('_toolMetadataGet', "getIdempotentWriteToolNames")
     if (cached != null) return cached
-    def built = ([
+    java.util.Set built = ([
     ]
-        + _idempotentWriteToolNames_partNativeRM()
-        + _idempotentWriteToolNames_partRooms()
-        + _idempotentWriteToolNames_partBundles()
-        + _idempotentWriteToolNames_partVisualRules()
-        + _idempotentWriteToolNames_partFiles()
-        + _idempotentWriteToolNames_partItemBackups()
-        + _idempotentWriteToolNames_partDebugLogging()
-        + _idempotentWriteToolNames_partDiagnostics()
-        + _idempotentWriteToolNames_partSystem()
-        + _idempotentWriteToolNames_partDevices()
-        + _idempotentWriteToolNames_partVariables()
-        + _idempotentWriteToolNames_partCustomRules()
-        + _idempotentWriteToolNames_partCodeManagement()
-        + _idempotentWriteToolNames_partSelfAdmin()
-        + _idempotentWriteToolNames_partAppCloner()
-        + _idempotentWriteToolNames_partDashboards()
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partNativeRM')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partRooms')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partBundles')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partVisualRules')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partFiles')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partItemBackups')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partDebugLogging')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partDiagnostics')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partSystem')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partDevices')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partVariables')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partCustomRules')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partCodeManagement')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partSelfAdmin')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partAppCloner')
+        + __bat529StaticCall_java_lang_Object_0('_idempotentWriteToolNames_partDashboards')
     ) as Set
-    return _toolMetadataPut("getIdempotentWriteToolNames", built)
+    return __bat529StaticCall_java_lang_Object_2('_toolMetadataPut', "getIdempotentWriteToolNames", built)
 }
 
 // The COMPLETE idempotent surface consumed by the annotation helpers: every
@@ -4776,10 +4894,11 @@ def getIdempotentWriteToolNames() {
 // alongside the other classification sets. Optional telemetry side effects of
 // read tools (e.g. hub_get_metrics' recordSnapshot CSV trend row) are by
 // maintainer decision NOT writes and do not break the read classification.
+@groovy.transform.CompileStatic
 def getIdempotentToolNames() {
-    def cached = _toolMetadataGet("getIdempotentToolNames")
+    def cached = __bat529StaticCall_java_lang_Object_1('_toolMetadataGet', "getIdempotentToolNames")
     if (cached != null) return cached
-    return _toolMetadataPut("getIdempotentToolNames", getReadOnlyToolNames() + getIdempotentWriteToolNames())
+    return __bat529StaticCall_java_lang_Object_2('_toolMetadataPut', "getIdempotentToolNames", __bat529StaticBinary_Plus_java_lang_Object(__bat529StaticExpr_getIdempotentToolNames_0(), __bat529StaticCall_java_lang_Object_0('getIdempotentWriteToolNames')))
 }
 
 // Tools that reach BEYOND the hub to the open internet (MCP `openWorldHint`):
@@ -4787,19 +4906,20 @@ def getIdempotentToolNames() {
 // modes where the HUB fetches an arbitrary URL. Everything else is
 // closed-world -- the hub, its devices, and its radios ARE the system, and
 // hub-local HTTP endpoints (/hub2/*, File Manager) do not leave it.
+@groovy.transform.CompileStatic
 def getOpenWorldToolNames() {
-    def cached = _toolMetadataGet("getOpenWorldToolNames")
+    def cached = __bat529StaticCall_java_lang_Object_1('_toolMetadataGet', "getOpenWorldToolNames")
     if (cached != null) return cached
-    def built = ([
+    java.util.Set built = ([
     ]
-        + _openWorldToolNames_partBundles()
-        + _openWorldToolNames_partDiagnostics()
-        + _openWorldToolNames_partSystem()
-        + _openWorldToolNames_partCodeManagement()
-        + _openWorldToolNames_partSelfAdmin()
-        + _openWorldToolNames_partItemBackups()
+        + __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partBundles')
+        + __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partDiagnostics')
+        + __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partSystem')
+        + __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partCodeManagement')
+        + __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partSelfAdmin')
+        + __bat529StaticCall_java_lang_Object_0('_openWorldToolNames_partItemBackups')
     ) as Set
-    return _toolMetadataPut("getOpenWorldToolNames", built)
+    return __bat529StaticCall_java_lang_Object_2('_toolMetadataPut', "getOpenWorldToolNames", built)
 }
 
 // Human-facing display metadata for every leaf tool AND every gateway:
@@ -4811,40 +4931,41 @@ def getOpenWorldToolNames() {
 // Summaries are deliberately NOT the LLM-facing tool descriptions -- those
 // stay in the tool definitions; these are for humans scanning a settings UI.
 // Completeness (every tool + gateway covered, no stale entries) is spec-guarded.
+@groovy.transform.CompileStatic
 def getToolDisplayMeta() {
-    def cached = _toolMetadataGet("getToolDisplayMeta")
+    def cached = __bat529StaticCall_java_lang_Object_1('_toolMetadataGet', "getToolDisplayMeta")
     if (cached != null) return cached
     // Every extracted library contributes its own tools' entries via
     // _toolDisplayMeta_part<Name>() (issue #209: per-tool metadata lives with the tool);
     // this file keeps only the gateway entries (gateway membership is cross-domain
     // and lives in getGatewayConfig).
-    def meta = [:]
+    java.util.Map meta = [:]
     if (true) {
-def __bat529EachReceiver8 = ([_toolDisplayMeta_partNativeRM(),
-     _toolDisplayMeta_partRooms(),
-     _toolDisplayMeta_partBundles(),
-     _toolDisplayMeta_partVisualRules(),
-     _toolDisplayMeta_partFiles(),
-     _toolDisplayMeta_partItemBackups(),
-     _toolDisplayMeta_partDebugLogging(),
-     _toolDisplayMeta_partDiagnostics(),
-     _toolDisplayMeta_partSystem(),
-     _toolDisplayMeta_partDevices(),
-     _toolDisplayMeta_partVirtualDevices(),
-     _toolDisplayMeta_partVariables(),
-     _toolDisplayMeta_partCustomRules(),
-     _toolDisplayMeta_partCodeManagement(),
-     _toolDisplayMeta_partHpm(),
-     _toolDisplayMeta_partSelfAdmin(),
-     _toolDisplayMeta_partAppCloner(),
-     _toolDisplayMeta_partDiscovery(),
-     _toolDisplayMeta_partDashboards()])
-for (def it in __bat529EachReceiver8) { meta.putAll(it) 
+java.util.List __bat529EachReceiver8 = ([__bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partNativeRM'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partRooms'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partBundles'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partVisualRules'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partFiles'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partItemBackups'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partDebugLogging'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partDiagnostics'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partSystem'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partDevices'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partVirtualDevices'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partVariables'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partCustomRules'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partCodeManagement'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partHpm'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partSelfAdmin'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partAppCloner'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partDiscovery'),
+     __bat529StaticCall_java_lang_Object_0('_toolDisplayMeta_partDashboards')])
+for (def it in __bat529EachReceiver8) { __bat529StaticReceiverCall_java_lang_Object_1(meta, 'putAll', it) 
 }
 __bat529EachReceiver8
 } else { null }
-    meta.putAll((_bat529EmbeddedCatalogRead(['["m",[["hub_read_apps_code",["m",[["title","Read Apps and Code"],["summary","Read-only: apps, drivers, libraries, source code, backups, and HPM packages."]]]],["hub_read_devices",["m",[["title","Read Devices"],["summary","Read-only device queries: list, details, attributes, events."]]]],["hub_read_diagnostics",["m",[["title","Read Diagnostics"],["summary","Read-only diagnostics: logs, performance, memory, radios, device health."]]]],["hub_read_files",["m",[["title","Read Files"],["summary","Read-only File Manager access: list and read files."]]]],["hub_read_rooms",["m",[["title","Read Rooms"],["summary","Read-only room queries: list rooms and room details."]]]],["hub_read_rules",["m",[["title","Read Rules"],["summary","Read-only rule introspection: custom rules, Rule Machine rules, Visual Rules, rule health."]]]],["hub_read_variables",["m",[["title","Read Variables"],["summary","Read-only hub-variable queries: list, get, recent changes."]]]],["hub_read_dashboards",["m",[["title","Read Dashboards"],["summary","Read-only queries for Easy and legacy Hubitat\\u00ae Dashboards: list and view config."]]]],["hub_manage_custom_rules",["m",[["title","Manage Custom Rules"],["summary","Create, update, delete, test, export, import, and clone custom-engine rules."]]]],["hub_manage_devices",["m",[["title","Manage Devices"],["summary","Control devices and update device properties, plus device queries."]]]],["hub_manage_variables",["m",[["title","Manage Variables"],["summary","Create, set, and delete hub variables and their connectors."]]]],["hub_manage_rooms",["m",[["title","Manage Rooms"],["summary","Create, rename, and delete rooms."]]]],["hub_manage_destructive_ops",["m",[["title","Manage Destructive Ops"],["summary","Reboot or shut down the hub, or permanently delete devices."]]]],["hub_manage_backup",["m",[["title","Manage Backups"],["summary","List, restore, and delete hub-database backups, and restore code backups (create + schedule is the core hub_create_backup)."]]]],["hub_manage_code",["m",[["title","Manage Code"],["summary","Install, update, and delete apps, drivers, libraries, and code bundles."]]]],["hub_manage_logs",["m",[["title","Manage Logs"],["summary","Read hub logs and performance stats; clear MCP debug logs and set log level."]]]],["hub_manage_diagnostics",["m",[["title","Manage Diagnostics"],["summary","Diagnostics plus maintenance actions: GC and state snapshots."]]]],["hub_manage_radio",["m",[["title","Manage Radio"],["summary","Configure and operate the Z-Wave, Zigbee, and Matter radios: repair, inclusion, exclusion, channels."]]]],["hub_manage_files",["m",[["title","Manage Files"],["summary","List, read, write, and delete File Manager files."]]]],["hub_manage_rule_machine",["m",[["title","Manage Rule Machine"],["summary","Author, trigger, pause, inspect, and delete Visual Rules Builder and Rule Machine rules."]]]],["hub_manage_native_rules_and_apps",["m",[["title","Manage Native Rules and Apps"],["summary","Runtime control of Rule Machine rules plus create, edit, clone, export, import, and delete classic native apps."]]]],["hub_manage_mcp",["m",[["title","Manage MCP Server"],["summary","Self-administer the MCP app\'s own settings (Developer Mode)."]]]],["hub_manage_dashboards",["m",[["title","Manage Dashboards"],["summary","List, view, create, update, delete, and clone Easy and legacy Hubitat\\u00ae Dashboards."]]]]]]']) as Map))
-    return _toolMetadataPut("getToolDisplayMeta", meta)
+    meta.putAll((__bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_read_apps_code",["m",[["title","Read Apps and Code"],["summary","Read-only: apps, drivers, libraries, source code, backups, and HPM packages."]]]],["hub_read_devices",["m",[["title","Read Devices"],["summary","Read-only device queries: list, details, attributes, events."]]]],["hub_read_diagnostics",["m",[["title","Read Diagnostics"],["summary","Read-only diagnostics: logs, performance, memory, radios, device health."]]]],["hub_read_files",["m",[["title","Read Files"],["summary","Read-only File Manager access: list and read files."]]]],["hub_read_rooms",["m",[["title","Read Rooms"],["summary","Read-only room queries: list rooms and room details."]]]],["hub_read_rules",["m",[["title","Read Rules"],["summary","Read-only rule introspection: custom rules, Rule Machine rules, Visual Rules, rule health."]]]],["hub_read_variables",["m",[["title","Read Variables"],["summary","Read-only hub-variable queries: list, get, recent changes."]]]],["hub_read_dashboards",["m",[["title","Read Dashboards"],["summary","Read-only queries for Easy and legacy Hubitat\\u00ae Dashboards: list and view config."]]]],["hub_manage_custom_rules",["m",[["title","Manage Custom Rules"],["summary","Create, update, delete, test, export, import, and clone custom-engine rules."]]]],["hub_manage_devices",["m",[["title","Manage Devices"],["summary","Control devices and update device properties, plus device queries."]]]],["hub_manage_variables",["m",[["title","Manage Variables"],["summary","Create, set, and delete hub variables and their connectors."]]]],["hub_manage_rooms",["m",[["title","Manage Rooms"],["summary","Create, rename, and delete rooms."]]]],["hub_manage_destructive_ops",["m",[["title","Manage Destructive Ops"],["summary","Reboot or shut down the hub, or permanently delete devices."]]]],["hub_manage_backup",["m",[["title","Manage Backups"],["summary","List, restore, and delete hub-database backups, and restore code backups (create + schedule is the core hub_create_backup)."]]]],["hub_manage_code",["m",[["title","Manage Code"],["summary","Install, update, and delete apps, drivers, libraries, and code bundles."]]]],["hub_manage_logs",["m",[["title","Manage Logs"],["summary","Read hub logs and performance stats; clear MCP debug logs and set log level."]]]],["hub_manage_diagnostics",["m",[["title","Manage Diagnostics"],["summary","Diagnostics plus maintenance actions: GC and state snapshots."]]]],["hub_manage_radio",["m",[["title","Manage Radio"],["summary","Configure and operate the Z-Wave, Zigbee, and Matter radios: repair, inclusion, exclusion, channels."]]]],["hub_manage_files",["m",[["title","Manage Files"],["summary","List, read, write, and delete File Manager files."]]]],["hub_manage_rule_machine",["m",[["title","Manage Rule Machine"],["summary","Author, trigger, pause, inspect, and delete Visual Rules Builder and Rule Machine rules."]]]],["hub_manage_native_rules_and_apps",["m",[["title","Manage Native Rules and Apps"],["summary","Runtime control of Rule Machine rules plus create, edit, clone, export, import, and delete classic native apps."]]]],["hub_manage_mcp",["m",[["title","Manage MCP Server"],["summary","Self-administer the MCP app\'s own settings (Developer Mode)."]]]],["hub_manage_dashboards",["m",[["title","Manage Dashboards"],["summary","List, view, create, update, delete, and clone Easy and legacy Hubitat\\u00ae Dashboards."]]]]]]']) as Map))
+    return __bat529StaticCall_java_lang_Object_2('_toolMetadataPut', "getToolDisplayMeta", meta)
 }
 
 // Returns the MCP `annotations` map for a leaf tool name. readOnlyHint,
@@ -4856,10 +4977,11 @@ __bat529EachReceiver8
 // new wire surface cannot silently ship incomplete annotations by forgetting
 // an argument; the friendly name rides along as `annotations.title` (the
 // field claude.ai and other MCP clients render in place of the bare name).
-def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta, Set idempotentNames, Set openWorldNames) {
+@groovy.transform.CompileStatic
+java.util.Map annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta, Set idempotentNames, Set openWorldNames) {
     def isReadOnly = readOnlyNames.contains(toolName)
-    def ann = [:]
-    def title = displayMeta?.get(toolName)?.title
+    java.util.Map ann = [:]
+    def title = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticReceiverCall_Safe_java_lang_Object_1(displayMeta, 'get', toolName), 'title')
     if (title) {
         ann.title = title as String
     }
@@ -5109,31 +5231,35 @@ def stripFlatTrim(String text, boolean dropContent) {
 }
 
 // guideFirst=false only for the search corpus, so the shared sentence does not skew BM25 ranking.
-def applyDescriptionTransform(List tools, boolean dropContent, boolean guideFirst = true) {
-    (tools).each(((this.&_bat529Cb_ad9a62cb_177).curry([dropContent, guideFirst] as Object[])))
+@groovy.transform.CompileStatic
+java.util.List applyDescriptionTransform(List tools, boolean dropContent, boolean guideFirst = true) {
+    __bat529StaticDgm_each_1_java_util_List((tools), ((this.&_bat529Cb_ad9a62cb_177).curry([dropContent, guideFirst] as Object[])))
     return tools
 }
 
-def guideFirstSentence() {
+@groovy.transform.CompileStatic
+java.lang.String guideFirstSentence() {
     return "MUST call hub_get_tool_guide first."
 }
 
 // A gateway counts as a write surface when any listed sub-tool writes; visibleSubTools narrows it.
+@groovy.transform.CompileStatic
 boolean _isWriteSurface(String name, visibleSubTools = null) {
     if (!name) return false
-    Set readOnly = getReadOnlyToolNames()
-    def gateway = getGatewayConfig().get(name)
+    Set readOnly = __bat529StaticExpr__isWriteSurface_0()
+    def gateway = __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticExpr__isWriteSurface_1(), 'get', name)
     if (gateway != null) {
-        List subTools = (visibleSubTools instanceof List) ? visibleSubTools : gateway.tools
-        return (subTools).any(((this.&_bat529Cb_ad9a62cb_17).curry([readOnly] as Object[])))
+        List subTools = __bat529StaticExpr__isWriteSurface_3(gateway, visibleSubTools)
+        return __bat529StaticDgm_any_1_boolean((subTools), ((this.&_bat529Cb_ad9a62cb_17).curry([readOnly] as Object[])))
     }
     return !readOnly.contains(name)
 }
 
 // Idempotent: lists that pass through the transform twice keep a single sentence.
+@groovy.transform.CompileStatic
 String _withGuideFirst(String name, String description, visibleSubTools = null) {
-    String sentence = guideFirstSentence()
-    if (description == null || description.startsWith(sentence) || !_isWriteSurface(name, visibleSubTools)) return description
+    String sentence = __bat529StaticCall_java_lang_String_0('guideFirstSentence')
+    if (description == null || description.startsWith(sentence) || !__bat529StaticCall_boolean_2('_isWriteSurface', name, visibleSubTools)) return description
     return "${sentence} ${description}".toString()
 }
 
@@ -5178,28 +5304,29 @@ private String _visibleGatewayIntro(String gatewayName, Map gatewayConfig, Set h
 // useGateways=false additionally flattens the catalog (every tool individually) and
 // hides hub_search_tools, whose only purpose is finding gateway-hidden tools. Null/unset
 // useGateways preserves gateway behavior so existing installs are unaffected on update.
+@groovy.transform.CompileStatic
 def getToolDefinitions() {
     // Single source of truth for hidden tools: the two universal masters, the
     // legacy custom-engine mode, and the #114 advanced overrides. Drives BOTH
     // flat-mode base-tool filtering AND gateway-mode sub-tool catalog filtering
     // (see visibleSubTools below); toolSearchTools consumes the same set so the
     // catalog and the search corpus cannot drift.
-    def hideByName = getHiddenToolNames()
+    java.util.Set hideByName = __bat529StaticCall_java_util_Set_0('getHiddenToolNames')
 
     // Hoist annotation source-of-truth once per call.
-    def readOnlyNames = getReadOnlyToolNames()
-    def displayMeta = getToolDisplayMeta()
-    def idempotentNames = getIdempotentToolNames()
-    def openWorldNames = getOpenWorldToolNames()
+    def readOnlyNames = __bat529StaticCall_java_lang_Object_0('getReadOnlyToolNames')
+    def displayMeta = __bat529StaticCall_java_lang_Object_0('getToolDisplayMeta')
+    def idempotentNames = __bat529StaticCall_java_lang_Object_0('getIdempotentToolNames')
+    def openWorldNames = __bat529StaticCall_java_lang_Object_0('getOpenWorldToolNames')
 
     // Flat mode: every tool advertised individually under its real name; hub_search_tools
     // is dropped because it only helps navigate gateway-hidden tools.
-    if (settings.useGateways == false) {
-        def all = getAllToolDefinitions()
-        def filtered = (all).findAll(((this.&_bat529Cb_ad9a62cb_102).curry([hideByName] as Object[])))
+    if (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'useGateways') == false) {
+        def all = __bat529StaticCall_java_lang_Object_0('getAllToolDefinitions')
+        def filtered = __bat529StaticDgm_findAll_1_java_lang_Object((all), ((this.&_bat529Cb_ad9a62cb_102).curry([hideByName] as Object[])))
         // Loud guard: if hub_search_tools is ever renamed/removed, the prose ("hub_search_tools is
         // hidden in flat mode") becomes a lie and the filter silently no-ops. Fail visibly.
-        if (!(all).any((this.&_bat529Cb_ad9a62cb_20))) {
+        if (!__bat529StaticDgm_any_1_boolean((all), (this.&_bat529Cb_ad9a62cb_20))) {
             throw new IllegalStateException(
                 "Flat-mode filter expected to drop 'hub_search_tools' but it was not found in " +
                 "getAllToolDefinitions(). Update getToolDefinitions() if the tool was renamed."
@@ -5209,30 +5336,30 @@ def getToolDefinitions() {
         // [[FLAT_TRIM]] markers to recover headroom under the hub's 124,000-byte cap. The
         // same cap is why the client-error hint is not appended to flat leaf descriptions:
         // it rides in the server instructions here, while gateway mode carries it inline.
-        def transformed = applyDescriptionTransform(filtered, true)
-        return (transformed).collect(((this.&_bat529Cb_ad9a62cb_188).curry([displayMeta, idempotentNames, openWorldNames, readOnlyNames] as Object[])))
+        def transformed = __bat529StaticCall_java_util_List_2('applyDescriptionTransform', filtered, true)
+        return __bat529StaticDgm_collect_1_java_util_List((transformed), ((this.&_bat529Cb_ad9a62cb_188).curry([displayMeta, idempotentNames, openWorldNames, readOnlyNames] as Object[])))
     }
 
-    def gatewayConfig = getGatewayConfig()
-    def proxiedNames = (gatewayConfig.values()).collectMany((this.&_bat529Cb_ad9a62cb_40))as Set
+    def gatewayConfig = __bat529StaticCall_java_lang_Object_0('getGatewayConfig')
+    java.util.Set proxiedNames = __bat529StaticExpr_getToolDefinitions_4(gatewayConfig)
 
     // Base tools: all tools NOT behind a gateway, minus any hidden by toggles.
-    def baseTools = (getAllToolDefinitions()).findAll(((this.&_bat529Cb_ad9a62cb_123).curry([hideByName, proxiedNames] as Object[])))
+    def baseTools = __bat529StaticDgm_findAll_1_java_lang_Object((__bat529StaticCall_java_lang_Object_0('getAllToolDefinitions')), ((this.&_bat529Cb_ad9a62cb_123).curry([hideByName, proxiedNames] as Object[])))
 
     // Gateway tools: one tool per gateway, with sub-tool list filtered through
     // the same hideByName the base-tool path uses. Sharing the filter means a
     // toggle that hides a tool hides it on every surface (base + gateway sub-tool
     // + flat-mode entry) with no chance of the two lists drifting. If a gateway
     // ends up with zero remaining sub-tools, drop the gateway entry entirely.
-    def gatewayTools = (gatewayConfig).collectMany(((this.&_bat529Cb_ad9a62cb_189).curry([displayMeta, gatewayConfig, hideByName, idempotentNames, openWorldNames, readOnlyNames] as Object[])))
+    def gatewayTools = __bat529StaticReceiverCall_java_lang_Object_1((gatewayConfig), 'collectMany', ((this.&_bat529Cb_ad9a62cb_189).curry([displayMeta, gatewayConfig, hideByName, idempotentNames, openWorldNames, readOnlyNames] as Object[])))
 
     // Gateway-mode tools/list returns the gateway entries (short prose + sub-tool
     // summaries) plus any base tools. The transform strips [[FLAT_TRIM]] marker
     // tokens (base-tool descriptions carry them) and prefixes write surfaces with
     // the guide-first sentence.
-    def transformed = applyDescriptionTransform(baseTools + gatewayTools, false)
-    Set writeLeaves = _mrtrWriteTools()
-    return (transformed).collect(((this.&_bat529Cb_ad9a62cb_186).curry([displayMeta, gatewayConfig, idempotentNames, openWorldNames, readOnlyNames, writeLeaves] as Object[])))
+    java.util.List transformed = __bat529StaticCall_java_util_List_2('applyDescriptionTransform', __bat529StaticBinary_Plus_java_lang_Object(baseTools, gatewayTools), false)
+    Set writeLeaves = __bat529StaticCall_java_util_Set_0('_mrtrWriteTools')
+    return __bat529StaticDgm_collect_1_java_util_List((transformed), ((this.&_bat529Cb_ad9a62cb_186).curry([displayMeta, gatewayConfig, idempotentNames, openWorldNames, readOnlyNames, writeLeaves] as Object[])))
 }
 
 @groovy.transform.CompileStatic
@@ -5250,17 +5377,19 @@ def getAllToolDefinitions() {
 }
 
 // Only names and required parameter lists are shared; raw definitions stay mutable per call.
+@groovy.transform.CompileStatic
 private Map _toolCatalogIndexes() {
-    def cached = _toolMetadataGet("catalogIndexes")
+    def cached = __bat529StaticCall_java_lang_Object_1('_toolMetadataGet', "catalogIndexes")
     if (cached != null) return cached as Map
-    def required = [:]
-    def names = [] as Set
-    (getAllToolDefinitions()).each(((this.&_bat529Cb_ad9a62cb_161).curry([names, required] as Object[])))
-    return _toolMetadataPut("catalogIndexes", [required: required, names: names]) as Map
+    java.util.Map required = [:]
+    java.util.Set names = [] as Set
+    __bat529StaticDgm_each_1_java_lang_Object((__bat529StaticCall_java_lang_Object_0('getAllToolDefinitions')), ((this.&_bat529Cb_ad9a62cb_161).curry([names, required] as Object[])))
+    return __bat529StaticCall_java_lang_Object_2('_toolMetadataPut', "catalogIndexes", [required: required, names: names]) as Map
 }
 
+@groovy.transform.CompileStatic
 def requiredParamsByTool() {
-    return _toolCatalogIndexes().required
+    return __bat529StaticCall_java_util_Map_0('_toolCatalogIndexes').required
 }
 
 // hub_call_device_replace(list_options: true) short-circuits to a candidate READ before any
@@ -5674,23 +5803,25 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
 // Helper method for child apps to get variable values. Issue #92: switched
 // to the modern getGlobalVar API so this sees every hub variable, not just
 // connector-exposed ones.
+@groovy.transform.CompileStatic
 def getVariableValue(name) {
     try {
-        def hubVar = getGlobalVar(name)
-        if (hubVar != null) return hubVar.value
+        def hubVar = __bat529StaticCall_java_lang_Object_1('getGlobalVar', name)
+        if (hubVar != null) return __bat529StaticProperty_java_lang_Object(hubVar, 'value')
     } catch (Exception e) {
         // Hub variable lookup failed — fall through to rule_engine namespace.
         // Logged at DEBUG so investigators can tell whether the lookup
         // genuinely missed (no such variable) or errored for some other reason.
-        mcpLog("debug", "hub-vars", "getVariableValue: hub lookup for '${name}' threw ${e.class.simpleName}: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-vars", "getVariableValue: hub lookup for '${name}' threw ${e.class.simpleName}: ${e.message}")
     }
-    return state.ruleVariables?.get(name)
+    return __bat529StaticReceiverCall_Safe_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'ruleVariables'), 'get', name)
 }
 
 // Helper method for child apps to set rule-scoped variables
+@groovy.transform.CompileStatic
 def setRuleVariable(name, value) {
-    if (!state.ruleVariables) state.ruleVariables = [:]
-    state.ruleVariables.put(name, value)
+    if (!__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'ruleVariables')) __bat529StaticStore_setRuleVariable_0()
+    __bat529StaticReceiverCall_java_lang_Object_2(__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'ruleVariables'), 'put', name, value)
     return value
 }
 
@@ -5699,12 +5830,14 @@ def setRuleVariable(name, value) {
 
 // Valid comparison operators for triggers and conditions
 // Accepts both symbolic ("==","!=") and word ("equals","not_equals") forms
-def getValidOperators() {
+@groovy.transform.CompileStatic
+java.util.List getValidOperators() {
     return ["==", "!=", ">", "<", ">=", "<=", "equals", "not_equals"]
 }
 
 // Normalize operator to the word form used by the runtime evaluator
 // Accepts both "==" and "equals" (and "!=" / "not_equals")
+@groovy.transform.CompileStatic
 def normalizeOperator(operator) {
     if (operator == null) return null
     switch (operator) {
@@ -5785,30 +5918,35 @@ def normalizeActionOperators(action) {
 }
 
 // Valid button actions
-def getValidButtonActions() {
+@groovy.transform.CompileStatic
+java.util.List getValidButtonActions() {
     return ["pushed", "held", "doubleTapped", "released"]
 }
 
 // Maximum duration in seconds (2 hours)
-def getMaxDurationSeconds() {
+@groovy.transform.CompileStatic
+java.lang.Integer getMaxDurationSeconds() {
     return 7200
 }
 
 // Validate time format HH:mm
+@groovy.transform.CompileStatic
 def isValidTimeFormat(timeStr) {
     if (!timeStr) return false
-    def pattern = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/
+    java.lang.String pattern = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/
     return timeStr ==~ pattern
 }
 
 // Validate and normalize operator field
+@groovy.transform.CompileStatic
 def validateOperator(operator, context) {
-    if (operator != null && !getValidOperators().contains(operator)) {
-        throw new IllegalArgumentException("${context}: Invalid operator '${operator}'. Valid operators: ${getValidOperators().join(', ')}")
+    if (operator != null && !__bat529StaticCall_java_util_List_0('getValidOperators').contains(operator)) {
+        throw new IllegalArgumentException("${context}: Invalid operator '${operator}'. Valid operators: ${__bat529StaticCall_java_util_List_0('getValidOperators').join(', ')}")
     }
 }
 
 // Validate duration field
+@groovy.transform.CompileStatic
 def validateDuration(duration, context) {
     if (duration != null) {
         def durationValue
@@ -5820,16 +5958,17 @@ def validateDuration(duration, context) {
         if (durationValue < 0) {
             throw new IllegalArgumentException("${context}: Duration cannot be negative")
         }
-        if (durationValue > getMaxDurationSeconds()) {
-            throw new IllegalArgumentException("${context}: Duration cannot exceed ${getMaxDurationSeconds()} seconds (2 hours). Provided: ${durationValue} seconds")
+        if (durationValue > __bat529StaticCall_java_lang_Integer_0('getMaxDurationSeconds')) {
+            throw new IllegalArgumentException("${context}: Duration cannot exceed ${__bat529StaticCall_java_lang_Integer_0('getMaxDurationSeconds')} seconds (2 hours). Provided: ${durationValue} seconds")
         }
     }
 }
 
 // Validate button action field
+@groovy.transform.CompileStatic
 def validateButtonAction(action, context) {
-    if (action != null && !getValidButtonActions().contains(action)) {
-        throw new IllegalArgumentException("${context}: Invalid button action '${action}'. Valid actions: ${getValidButtonActions().join(', ')}")
+    if (action != null && !__bat529StaticCall_java_util_List_0('getValidButtonActions').contains(action)) {
+        throw new IllegalArgumentException("${context}: Invalid button action '${action}'. Valid actions: ${__bat529StaticCall_java_util_List_0('getValidButtonActions').join(', ')}")
     }
 }
 
@@ -6252,15 +6391,17 @@ def findDevice(deviceId) {
 }
 
 // Expose devices to child apps
+@groovy.transform.CompileStatic
 def getSelectedDevices() {
-    return settings.selectedDevices
+    return __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'selectedDevices')
 }
 
 
 // ==================== HUB SECURITY & INTERNAL API HELPERS ====================
 
 // Single source for the hub's internal API base URI (was an 11x-repeated literal).
-def hubBaseUri() { "http://127.0.0.1:8080" }
+@groovy.transform.CompileStatic
+java.lang.String hubBaseUri() { "http://127.0.0.1:8080" }
 
 @groovy.transform.CompileStatic
 def _firmwareAtLeast(fw, String target) {
@@ -6285,8 +6426,10 @@ def _firmwareAtLeast(fw, String target) {
 
 // Timeout rationale: reads are fast localhost fetches; writes (native-RM wizard steps,
 // large app/driver/library save+compile) can legitimately take minutes.
-def hubReadTimeoutSec() { 30 }
-def hubWriteTimeoutSec() { 420 }
+@groovy.transform.CompileStatic
+java.lang.Integer hubReadTimeoutSec() { 30 }
+@groovy.transform.CompileStatic
+java.lang.Integer hubWriteTimeoutSec() { 420 }
 
 // /hub2/devicesList nests child devices under their parent's `children`, and wraps each record
 // as {key, data:{id,name,...}, children:[...]}. Retain identity plus the per-node activity, room,
@@ -6328,6 +6471,7 @@ private List _flattenHub2DeviceTree(nodes, List acc = null) {
     return acc
 }
 
+@groovy.transform.CompileStatic
 def _parseSinceArg(since) {
     if (since instanceof Number) {
         return new Date(since.toLong())
@@ -6338,7 +6482,7 @@ def _parseSinceArg(since) {
     // Z means UTC -- swap it for the equivalent numeric offset so the offset-bearing
     // formats below interpret the wall-clock as UTC rather than hub-local.
     if (s.endsWith("Z")) s = s.substring(0, s.length() - 1) + "+0000"
-    def formats = [
+    java.util.List formats = [
         "yyyy-MM-dd'T'HH:mm:ss.SSSZ",   // canonical round-trip: 2026-06-23T10:00:00.000-0600
         "yyyy-MM-dd'T'HH:mm:ssZ",       // no millis, offset:    2026-06-23T10:00:00-0600
         // Colon-bearing offsets (2026-06-23T10:00:00-06:00) -- the XXX form
@@ -6365,7 +6509,8 @@ def _parseSinceArg(since) {
 // /hub/details/json all 302 a LAN browser to /login while returning real data through
 // hubInternal*. The exact firmware that introduced the exemption is unknown, so the gate sits
 // at a version we have actually tested rather than the earliest that might work.
-def hubSecurityRetiredFw() { "2.5.0" }
+@groovy.transform.CompileStatic
+java.lang.String hubSecurityRetiredFw() { "2.5.0" }
 
 // Blank/unreadable firmware must NOT count as modern here: _firmwareAtLeast assumes modern for a
 // blank string, which would wipe a working install's credentials on a hub we could not identify.
@@ -6386,31 +6531,33 @@ private boolean _hubSecurityObsolete() {
     return _firmwareAtLeast(fw, hubSecurityRetiredFw())
 }
 
+@groovy.transform.CompileStatic
 private boolean _hubFirmwareReadable() {
     try {
-        return location?.hub?.firmwareVersionString?.toString()?.trim() as boolean
+        return __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_location(), 'hub'), 'firmwareVersionString')?.toString()?.trim() as boolean
     } catch (Exception e) {
-        mcpLog("debug", "hub-admin", "Hub Security: firmware version unreadable (${e.class.simpleName}): ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-admin", "Hub Security: firmware version unreadable (${e.class.simpleName}): ${e.message}")
         return false
     }
 }
 
 // Request-path entry: settles once per class load, so warm requests read neither state nor firmware.
 // An unreadable firmware or a failed shed stays unsettled and is retried at most once a minute.
+@groovy.transform.CompileStatic
 private void _retireHubSecuritySettingsOnce() {
-    String appKey = _stateOwnerKey()
+    String appKey = __bat529StaticCall_java_lang_String_0('_stateOwnerKey')
     synchronized (HUB_SECURITY_CHECKED) {
         if (HUB_SECURITY_CHECKED.contains(appKey)) return
         def retryAt = HUB_SECURITY_RETRY_AT.get(appKey)
-        if (retryAt != null && (retryAt as Long) > now()) return
+        if (retryAt != null && (retryAt as Long) > __bat529StaticCall_long_0('now')) return
     }
-    boolean settled = _retireHubSecuritySettings()
+    boolean settled = __bat529StaticCall_boolean_0('_retireHubSecuritySettings')
     synchronized (HUB_SECURITY_CHECKED) {
         if (settled) {
             HUB_SECURITY_CHECKED.add(appKey)
             HUB_SECURITY_RETRY_AT.remove(appKey)
         } else {
-            HUB_SECURITY_RETRY_AT.put(appKey, now() + 60000L)
+            HUB_SECURITY_RETRY_AT.put(appKey, __bat529StaticCall_long_0('now') + 60000L)
         }
     }
 }
@@ -6418,31 +6565,32 @@ private void _retireHubSecuritySettingsOnce() {
 // Also reached from MCP requests, not only updated(): updated() fires on a manual save, so a hub
 // whose package or firmware crossed the cutoff and whose page is never opened would keep the dead
 // credentials on disk. Returns true once settled: shed, or below the cutoff on a readable firmware.
+@groovy.transform.CompileStatic
 private boolean _retireHubSecuritySettings() {
-    if (state.hubSecurityRetired == true) return true
+    if (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'hubSecurityRetired') == true) return true
     // Below the cutoff the answer is final only when the firmware was readable (_hubSecurityObsolete
     // already announced an unreadable one).
-    if (!_hubSecurityObsolete()) return _hubFirmwareReadable()
-    boolean had = (settings.hubSecurityEnabled == true) || settings.hubSecurityUser || settings.hubSecurityPassword
+    if (!__bat529StaticCall_boolean_0('_hubSecurityObsolete')) return __bat529StaticCall_boolean_0('_hubFirmwareReadable')
+    boolean had = (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'hubSecurityEnabled') == true) || __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'hubSecurityUser') || __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'hubSecurityPassword')
     try {
         // Credentials first: a partial failure then errs toward "secrets gone, toggle still on"
         // rather than "toggle off, password still on disk".
-        app.removeSetting("hubSecurityUser")
-        app.removeSetting("hubSecurityPassword")
-        app.updateSetting("hubSecurityEnabled", [type: "bool", value: false])
-        atomicState.remove("hubSecurityCookie")
-        atomicState.remove("hubSecurityCookieExpiry")
-        state.hubSecurityRetired = true
+        __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_app(), 'removeSetting', "hubSecurityUser")
+        __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_app(), 'removeSetting', "hubSecurityPassword")
+        __bat529StaticReceiverCall_java_lang_Object_2(__bat529StaticBinding_app(), 'updateSetting', "hubSecurityEnabled", [type: "bool", value: false])
+        __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_atomicState(), 'remove', "hubSecurityCookie")
+        __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinding_atomicState(), 'remove', "hubSecurityCookieExpiry")
+        __bat529StaticStore__retireHubSecuritySettings_0()
     } catch (Exception e) {
         // This rides the request path; a cosmetic shed must never fail the request it arrived on.
-        _cleanupError("hub-admin", "Hub Security credential shed failed; stored credentials may remain on disk (they are inert on firmware ${hubSecurityRetiredFw()}+): ${_cleanupFailureDetail(e)}")
+        __bat529StaticCall_java_lang_Object_2('_cleanupError', "hub-admin", "Hub Security credential shed failed; stored credentials may remain on disk (they are inert on firmware ${__bat529StaticCall_java_lang_String_0('hubSecurityRetiredFw')}+): ${__bat529StaticCall_java_lang_String_1('_cleanupFailureDetail', e)}")
         return false
     }
     if (had) {
         // warn, not info: an irreversible deletion the user did not ask for. The default log level
         // is "error", so even this can be filtered out -- hub_get_info.hubSecurityRetired and the
         // bug report carry the durable, level-independent record.
-        mcpLog("warn", "hub-admin", "Hub Security credentials retired on firmware ${hubSecurityRetiredFw()}+ (an app's loopback requests are exempt from hub login; the stored credentials were unused)")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "Hub Security credentials retired on firmware ${__bat529StaticCall_java_lang_String_0('hubSecurityRetiredFw')}+ (an app's loopback requests are exempt from hub login; the stored credentials were unused)")
     }
     return true
 }
@@ -6497,26 +6645,28 @@ def getHubSecurityCookie() {
  * time on the test classpath. Kept separate because reading a status off an exception is the
  * fiddly part and any exception-path status check belongs here rather than re-deriving it.
  */
+@groovy.transform.CompileStatic
 private Integer _httpStatusOf(Exception e) {
     def resp = null
-    try { resp = e.response } catch (Exception ignore) { resp = null }
-    try { return resp?.status as Integer } catch (Exception ignore) { return null }
+    try { resp = __bat529StaticProperty_java_lang_Object(e, 'response') } catch (Exception ignore) { resp = null }
+    try { return __bat529StaticProperty_Safe_java_lang_Object(resp, 'status') as Integer } catch (Exception ignore) { return null }
 }
 
 /**
  * Check if an exception indicates an auth failure that should be retried with a fresh cookie.
  * If so, clears the cached cookie and returns true.
  */
+@groovy.transform.CompileStatic
 private boolean shouldRetryWithFreshCookie(Exception e, boolean isRetry) {
-    if (isRetry || !settings.hubSecurityEnabled) return false
+    if (isRetry || !__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'hubSecurityEnabled')) return false
     // Prefer the HTTP status the exception carries; fall back to a message substring only
     // when no status is available.
-    Integer status = _httpStatusOf(e)
+    Integer status = __bat529StaticCall_java_lang_Integer_1('_httpStatusOf', e)
     boolean authFail = (status == 401 || status == 403) ||
         (status == null && (e.message?.contains("401") || e.message?.contains("403") || e.message?.contains("Unauthorized")))
     if (authFail) {
-        atomicState.hubSecurityCookie = null
-        atomicState.hubSecurityCookieExpiry = null
+        __bat529StaticStore_shouldRetryWithFreshCookie_1()
+        __bat529StaticStore_shouldRetryWithFreshCookie_0()
         return true
     }
     return false
@@ -6530,11 +6680,12 @@ private boolean shouldRetryWithFreshCookie(Exception e, boolean isRetry) {
  * as a real body. A genuine Reader/stream read failure (socket reset mid-stream, gzip CRC,
  * decode error) propagates so the caller can re-throw rather than swallow junk.
  */
+@groovy.transform.CompileStatic
 private String _readRespText(resp) {
-    def d = resp?.data
+    def d = __bat529StaticProperty_Safe_java_lang_Object(resp, 'data')
     if (d == null) return null
     if (d instanceof CharSequence) return d.toString()
-    return d.text  // Reader/InputStream -- may throw on a mid-stream read failure
+    return __bat529StaticProperty_java_lang_String(d, 'text')  // Reader/InputStream -- may throw on a mid-stream read failure
 }
 
 // Redact secret query values from a path before it is written to a log line. Kept as a BACKSTOP:
@@ -6658,12 +6809,13 @@ private _hubRequest(String method, String path, Map opts = [:]) {
 // hub log. A completed request whose duration meets the relay budget is also logged at warn
 // regardless of caller: no relay-bound caller can answer synchronously on top of it, so the
 // endpoint is named here before some client sees the 502.
+@groovy.transform.CompileStatic
 private void _hubRtLog(String method, String path, long elapsedMs, String outcome) {
-    String redacted = _redactSecretsInPath(path)
-    mcpLog("debug", "hub-admin", "[hubrt] ${method} ${redacted} (${elapsedMs}ms${outcome == 'ok' ? '' : ', ' + outcome})")
-    long budget = _relayBudgetMs()
+    String redacted = __bat529StaticCall_java_lang_String_1('_redactSecretsInPath', path)
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-admin", "[hubrt] ${method} ${redacted} (${elapsedMs}ms${outcome == 'ok' ? '' : ', ' + outcome})")
+    long budget = __bat529StaticCall_long_0('_relayBudgetMs')
     if (budget > 0L && elapsedMs >= budget) {
-        mcpLog("warn", "hub-admin", "[hubrt] slow internal ${method} ${redacted} took ${elapsedMs}ms (${outcome}), at or over the ${budget}ms cloud-relay budget -- a request that waits on it synchronously cannot be answered over the relay (see hub_get_tool_guide(section='slow_ops'))")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "[hubrt] slow internal ${method} ${redacted} took ${elapsedMs}ms (${outcome}), at or over the ${budget}ms cloud-relay budget -- a request that waits on it synchronously cannot be answered over the relay (see hub_get_tool_guide(section='slow_ops'))")
     }
 }
 
@@ -6672,8 +6824,9 @@ private void _hubRtLog(String method, String path, long elapsedMs, String outcom
  * Automatically includes Hub Security cookie if configured.
  * Returns the response body as text.
  */
+@groovy.transform.CompileStatic
 def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
-    _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', isRetry: isRetry])
+    __bat529StaticCall_java_lang_Object_3('_hubRequest', 'GET', path, [query: query, timeout: timeout, returnShape: 'text', isRetry: isRetry])
 }
 
 // One reader for /hub2/hubMeshJson: parses it ONCE and returns the whole Map (or null when the
@@ -6682,14 +6835,15 @@ def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRe
 // read-back attempt fetches once instead of once per section. Generic cross-domain helper (devices +
 // variables) -- lives in main per the helper-placement rule. toolGetHubMesh does NOT use it: that tool
 // needs distinct per-failure-mode error text and keeps its own read.
+@groovy.transform.CompileStatic
 private Map _meshJson() {
     try {
-        def raw = hubInternalGet("/hub2/hubMeshJson")
-        if (!raw?.trim()) return null
-        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        def raw = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/hub2/hubMeshJson")
+        if (!__bat529StaticReceiverCall_Safe_java_lang_Object_0(raw, 'trim')) return null
+        def parsed = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', raw)
         return (parsed instanceof Map) ? parsed : null
     } catch (Exception e) {
-        mcpLog("warn", "server", "Could not read Hub Mesh JSON (/hub2/hubMeshJson): ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "server", "Could not read Hub Mesh JSON (/hub2/hubMeshJson): ${e.message}")
         return null
     }
 }
@@ -6708,9 +6862,10 @@ private Map _meshJson() {
  * groovyx.net.http.HttpResponseException by name — that class isn't on the
  * Spock test classpath, and naming it would NCDFE at parse time.
  */
+@groovy.transform.CompileStatic
 def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     // followRedirects:false + handle3xx so the 302 Location header (new-child id) is readable.
-    _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'struct',
+    __bat529StaticCall_java_lang_Object_3('_hubRequest', 'GET', path, [query: query, timeout: timeout, returnShape: 'struct',
                               followRedirects: false, handle3xx: true, isRetry: isRetry])
 }
 
@@ -6854,19 +7009,20 @@ private String _fetchSourceFromUrl(urlArg) {
  * trusted-CA-signed connection is the floor; self-signed or MITM-d URLs
  * fail the handshake.
  */
+@groovy.transform.CompileStatic
 private Map _httpFetchUrl(String url) {
     def status = null
     def body = null
     def contentType = null
     def readError = null
-    httpGet([
+    __bat529StaticCall_java_lang_Object_2('httpGet', [
         uri: url,
         textParser: true,
         timeout: 60
     ]) { resp ->
-        status = resp.status
-        contentType = resp.headers?.'Content-Type'?.toString()
-        try { body = resp.data.text }
+        status = __bat529StaticProperty_java_lang_Object(resp, 'status')
+        contentType = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_java_lang_Object(resp, 'headers'), 'Content-Type')?.toString()
+        try { body = __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(resp, 'data'), 'text') }
         catch (Exception readErr) { readError = readErr }
     }
     if (readError != null) {
@@ -6883,8 +7039,9 @@ private Map _httpFetchUrl(String url) {
  * Automatically includes Hub Security cookie if configured.
  * Returns the response body as text.
  */
+@groovy.transform.CompileStatic
 def hubInternalPost(String path, Map body = null, int timeout = 30, boolean isRetry = false) {
-    _hubRequest('POST', path, [body: body, timeout: timeout, returnShape: 'text', isRetry: isRetry])
+    __bat529StaticCall_java_lang_Object_3('_hubRequest', 'POST', path, [body: body, timeout: timeout, returnShape: 'text', isRetry: isRetry])
 }
 
 /**
@@ -6894,8 +7051,9 @@ def hubInternalPost(String path, Map body = null, int timeout = 30, boolean isRe
  * inside JSON values). Caller is responsible for URL-encoding keys/values
  * themselves; this method passes the body string straight through.
  */
+@groovy.transform.CompileStatic
 def hubInternalPostFormRaw(String path, String encodedBody, int timeout = 420, boolean isRetry = false) {
-    _hubRequest('POST', path, [body: encodedBody, timeout: timeout,
+    __bat529StaticCall_java_lang_Object_3('_hubRequest', 'POST', path, [body: encodedBody, timeout: timeout,
                               requestContentType: "application/x-www-form-urlencoded", keepAlive: true,
                               returnShape: 'struct', isRetry: isRetry])
 }
@@ -6905,11 +7063,12 @@ def hubInternalPostFormRaw(String path, String encodedBody, int timeout = 420, b
  * (/installedapp/* settings submits, button clicks, lifecycle fires) and other endpoints
  * that require application/x-www-form-urlencoded.
  */
+@groovy.transform.CompileStatic
 def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetry = false) {
-    def resp = _hubRequest('POST', path, [body: body, timeout: timeout,
+    def resp = __bat529StaticCall_java_lang_Object_3('_hubRequest', 'POST', path, [body: body, timeout: timeout,
                               requestContentType: "application/x-www-form-urlencoded", keepAlive: true,
                               returnShape: 'struct', isRetry: isRetry])
-    if (path == "/installedapp/update/json" || path == "/installedapp/btn") _rmNoteHubBreadcrumbs(body?.id, resp)
+    if (path == "/installedapp/update/json" || path == "/installedapp/btn") __bat529StaticCall_java_lang_Object_2('_rmNoteHubBreadcrumbs', body?.id, resp)
     return resp
 }
 
@@ -6946,8 +7105,9 @@ private void _rmNoteHubBreadcrumbs(appId, resp) {
 // instanceof rather than getClass() (reflection is blocked in the Hubitat sandbox), so the
 // label is a small fixed vocabulary -- enough to tell a caller "you passed a number/boolean
 // where a string was required" without naming the exact JVM class.
+@groovy.transform.CompileStatic
 private String _describeValueForError(v) {
-    def typeLabel = (v == null) ? "null"
+    java.lang.String typeLabel = (v == null) ? "null"
         : (v instanceof String)  ? "string"
         : (v instanceof Boolean) ? "boolean"
         : (v instanceof Number)  ? "number"
@@ -6981,16 +7141,17 @@ private String _rmPageBreadcrumbs(appId, String page, String fallback) {
  * login page) -- callers must not conflate the last two: an empty body can be a legitimate
  * dropped-response signature, a non-JSON body never is.
  */
+@groovy.transform.CompileStatic
 def hubInternalPostJson(String path, String jsonBody, int timeout = 420, boolean isRetry = false, Map query = null) {
-    def bodyText = _hubRequest('POST', path, [body: jsonBody, timeout: timeout,
+    def bodyText = __bat529StaticCall_java_lang_Object_3('_hubRequest', 'POST', path, [body: jsonBody, timeout: timeout,
                               requestContentType: "application/json", keepAlive: true,
                               returnShape: 'text', isRetry: isRetry, query: query])
     if (bodyText) {
         try {
-            return new groovy.json.JsonSlurper().parseText(bodyText)
+            return __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', bodyText)
         } catch (Exception parseErr) {
-            def detail = path == '/device/preference/save' ? '[preference response redacted]' : bodyText.take(200)
-            mcpLog("error", "hub-admin", "hubInternalPostJson ${path}: response not JSON: ${detail}")
+            def detail = path == '/device/preference/save' ? '[preference response redacted]' : __bat529StaticReceiverCall_java_lang_Object_1(bodyText, 'take', 200)
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "hub-admin", "hubInternalPostJson ${path}: response not JSON: ${detail}")
             return [_unparseable: true, message: "hub returned a non-JSON body from ${path}: ${detail}"]
         }
     }
@@ -7059,9 +7220,10 @@ def _bytesPreview(byte[] b) {
 }
 
 // An HTTP response body (byte[] or stream) as a byte[], or null when it yields none.
+@groovy.transform.CompileStatic
 def _bodyBytes(d) {
     def raw = null
-    try { raw = (d instanceof byte[]) ? d : d?.bytes } catch (Exception notBytes) { }
+    try { raw = (d instanceof byte[]) ? d : __bat529StaticProperty_Safe_java_lang_Object(d, 'bytes') } catch (Exception notBytes) { }
     return (raw instanceof byte[]) ? raw : null
 }
 
@@ -7101,18 +7263,19 @@ def _probeUrl(String url, long maxBytes) {
 // reach without the hub login. File Manager files (/local/...) are plain downloads and stay allowed.
 // Only a plain host name or a dotted-quad IPv4 address is read, so no other address spelling can
 // disagree with the HTTP client; redirects and DNS are not followed here, the confirm gates cover them.
+@groovy.transform.CompileStatic
 void _requireBackupUrl(String url, String param) {
     def m = url =~ /(?i)^https?:\/\/([a-z0-9.-]+)(?::\d{1,5})?(\/[^?#]*)?(?:[?#].*)?$/
     if (url.contains("\\") || !m.matches()) {
         throw new IllegalArgumentException("${param} must be an http(s) URL with a host name or IPv4 address (no user info or IPv6 literal), got: ${url}")
     }
     String host = m.group(1).toLowerCase().replaceAll(/\.$/, "")
-    boolean numeric = (host.tokenize(".")).every((this.&_bat529Cb_ad9a62cb_54))
+    boolean numeric = __bat529StaticDgm_every_1_boolean((host.tokenize(".")), (this.&_bat529Cb_ad9a62cb_54))
     if (numeric && !(host ==~ /(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}/)) {
         throw new IllegalArgumentException("${param} must spell an IPv4 address as four decimal parts, got: ${host}")
     }
     boolean self = host == "localhost" || host.endsWith(".localhost") || host.startsWith("127.") || host.startsWith("0.") ||
-        host == location?.hub?.localIP?.toString()
+        host == __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_location(), 'hub'), 'localIP')?.toString()
     String path = m.group(2) ?: ""
     if (self && !(path ==~ /\/local\/[^\/%]+/ && !(path ==~ /\/local\/\.+/))) {
         throw new IllegalArgumentException("${param} points at this hub (${host}); only its File Manager files (/local/...) can be fetched from it.")
@@ -7267,8 +7430,9 @@ def _latestLocalHubBackupEpoch(String kind = "any") {
  * Returns the manifest entry on success, or throws if the source cannot be retrieved
  * or the manifest cannot be published.
  */
+@groovy.transform.CompileStatic
 def backupItemSource(String type, String id) {
-    return _withBackupLock("backup ${type} ${id}") { _backupItemSourceLocked(type, id) }
+    return __bat529StaticCall_java_lang_Object_2('_withBackupLock', "backup ${type} ${id}") { __bat529StaticCall_java_util_Map_2('_backupItemSourceLocked', type, id) }
 }
 
 private Map _backupItemSourceLocked(String type, String id) {
@@ -7312,16 +7476,18 @@ private Map _backupItemSourceLocked(String type, String id) {
     return entry
 }
 
-String _stateOwnerKey() { app?.id?.toString() ?: "unidentified" }
+@groovy.transform.CompileStatic
+String _stateOwnerKey() { __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_app(), 'id')?.toString() ?: "unidentified" }
 
 // Serialize a backup writer on the shared monitor and say so when the wait was
 // long: synchronized has no timeout, and a slow hub call inside another writer
 // would otherwise surface only as this caller's own client timeout.
+@groovy.transform.CompileStatic
 def _withBackupLock(String what, Closure work) {
-    long waitedFrom = now()
+    long waitedFrom = __bat529StaticCall_long_0('now')
     synchronized (ITEM_BACKUP_MANIFESTS) {
-        long waited = now() - waitedFrom
-        if (waited > 1000L) mcpLog("warn", "hub-admin", "'${what}' waited ${waited} ms for the backup lock; the previous holder was '${ITEM_BACKUP_LOCK_STATE.lastHolder ?: 'unknown'}'")
+        long waited = __bat529StaticCall_long_0('now') - waitedFrom
+        if (waited > 1000L) __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "'${what}' waited ${waited} ms for the backup lock; the previous holder was '${ITEM_BACKUP_LOCK_STATE.lastHolder ?: 'unknown'}'")
         boolean outermost = ITEM_BACKUP_LOCK_STATE.holder == null
         if (outermost) ITEM_BACKUP_LOCK_STATE.holder = what
         try {
@@ -7365,10 +7531,11 @@ Map _reusableItemBackup(Map manifest, String key, String label) {
     return existing
 }
 
+@groovy.transform.CompileStatic
 private String _itemBackupFileName(String preferred) {
     // Replacing a published file before committing its new entry destroys rollback
     // material if publication fails. First-time backups keep the familiar filename.
-    if (!(_itemBackupManifest().values()).any(((this.&_bat529Cb_ad9a62cb_98).curry([preferred] as Object[])))) return preferred
+    if (!__bat529StaticDgm_any_1_boolean((__bat529StaticCall_java_util_Map_0('_itemBackupManifest').values()), ((this.&_bat529Cb_ad9a62cb_98).curry([preferred] as Object[])))) return preferred
     int dot = preferred.lastIndexOf('.')
     return preferred.substring(0, dot) + "-${java.util.UUID.randomUUID()}" + preferred.substring(dot)
 }
@@ -7376,26 +7543,28 @@ private String _itemBackupFileName(String preferred) {
 // Reuse is the backup-taking path that never publishes, so an oversized manifest left by an
 // older writer is repaired by republishing the unchanged entry. The repair is
 // best-effort: the reused baseline is valid whether or not the trim persists.
+@groovy.transform.CompileStatic
 void _repairItemBackupRetention(Map manifest, String key, Map entry) {
     if (manifest.size() <= ITEM_BACKUP_RETENTION) return
     try {
-        _publishItemBackup(key, entry)
-        mcpLog("info", "hub-admin", "Trimmed an over-cap backup manifest (${manifest.size()} entries) while reusing the baseline for ${key}; the oldest rollback entries were dropped and their files deleted best-effort")
+        __bat529StaticCall_java_lang_Object_2('_publishItemBackup', key, entry)
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "hub-admin", "Trimmed an over-cap backup manifest (${manifest.size()} entries) while reusing the baseline for ${key}; the oldest rollback entries were dropped and their files deleted best-effort")
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Backup retention repair failed for ${key} (${e.message}); reusing the existing baseline and leaving the manifest over the ${ITEM_BACKUP_RETENTION}-entry cap until a later publication succeeds")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "hub-admin", "Backup retention repair failed for ${key} (${e.message}); reusing the existing baseline and leaving the manifest over the ${ITEM_BACKUP_RETENTION}-entry cap until a later publication succeeds")
     }
 }
 
 // The file was uploaded under a name no committed entry references, so a failed
 // publication would leave it unreferenced in File Manager. Reclaim it, then rethrow.
+@groovy.transform.CompileStatic
 void _publishUploadedItemBackup(String key, Map entry, String protectedKey = null) {
     try {
-        _publishItemBackup(key, entry, protectedKey)
+        __bat529StaticCall_java_lang_Object_3('_publishItemBackup', key, entry, protectedKey)
     } catch (Exception publishError) {
         String fileName = entry.fileName?.toString()
-        mcpLog("error", "hub-admin", "Backup file '${fileName}' was uploaded but its manifest entry could not be published (${publishError.message}); removing the unreferenced file")
-        try { deleteHubFile(fileName) }
-        catch (Exception reclaimError) { mcpLog("error", "hub-admin", "Unreferenced backup file '${fileName}' could not be removed: ${reclaimError.message}; delete it manually from Settings > File Manager") }
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "hub-admin", "Backup file '${fileName}' was uploaded but its manifest entry could not be published (${publishError.message}); removing the unreferenced file")
+        try { __bat529StaticCall_java_lang_Object_1('deleteHubFile', fileName) }
+        catch (Exception reclaimError) { __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "hub-admin", "Unreferenced backup file '${fileName}' could not be removed: ${reclaimError.message}; delete it manually from Settings > File Manager") }
         throw publishError
     }
 }
@@ -7423,14 +7592,15 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
 }
 
 /** Remove manifest records that point at a File Manager file after that file is deleted. */
+@groovy.transform.CompileStatic
 List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
     if (!fileName) return []
     synchronized (ITEM_BACKUP_MANIFESTS) {
-        Map manifest = _itemBackupManifest()
-        List removed = (manifest).findAll(((this.&_bat529Cb_ad9a62cb_138).curry([exactKey, fileName] as Object[]))).keySet().toList()
-        (removed).each(((this.&_bat529Cb_ad9a62cb_13).curry([manifest] as Object[])))
-        if (removed) _commitItemBackupManifest(manifest)
-        return (removed).collect((this.&_bat529Cb_ad9a62cb_7))
+        Map manifest = __bat529StaticCall_java_util_Map_0('_itemBackupManifest')
+        List removed = __bat529StaticDgm_findAll_1_java_util_Map((manifest), ((this.&_bat529Cb_ad9a62cb_138).curry([exactKey, fileName] as Object[]))).keySet().toList()
+        __bat529StaticDgm_each_1_java_util_List((removed), ((this.&_bat529Cb_ad9a62cb_13).curry([manifest] as Object[])))
+        if (removed) __bat529StaticCall_java_lang_Object_1('_commitItemBackupManifest', manifest)
+        return __bat529StaticDgm_collect_1_java_util_List((removed), (this.&_bat529Cb_ad9a62cb_7))
     }
 }
 
@@ -7543,9 +7713,10 @@ void _rmReconcilePredClearPending(def inventory, Map observed) {
 /**
  * Formats an epoch timestamp into a human-readable age string (e.g., "5 minutes ago").
  */
+@groovy.transform.CompileStatic
 def formatAge(Long timestamp) {
     if (!timestamp) return "unknown"
-    def elapsed = now() - timestamp
+    def elapsed = __bat529StaticCall_long_0('now') - timestamp
     if (elapsed < 60000) return "just now"
     def minutes = (elapsed / 60000) as Integer
     if (elapsed < 3600000) return "${minutes} ${minutes == 1 ? 'minute' : 'minutes'} ago"
@@ -7619,8 +7790,9 @@ def initDebugLogs() {
     }
 }
 
+@groovy.transform.CompileStatic
 private Map _debugLogRecord(Map raw, String id) {
-    def entry = [timestamp: raw.timestamp instanceof Number ? raw.timestamp.longValue() : now(),
+    java.util.Map entry = [timestamp: raw.timestamp instanceof Number ? raw.timestamp.longValue() : __bat529StaticCall_long_0('now'),
                  level: raw.level, component: raw.component, message: raw.message?.toString()?.take(500)]
     if (raw.ruleId) entry.ruleId = raw.ruleId
     if (raw.ruleName) entry.ruleName = raw.ruleName
@@ -7684,20 +7856,21 @@ def getDebugLogEntries(Map args = [:]) {
     throw new IllegalStateException(history.error ?: history.note)
 }
 
+@groovy.transform.CompileStatic
 private void _scheduleDebugLogHistory(Map buffer) {
     String fetchId
     String generation
     synchronized (buffer) {
         if (buffer.hydrated) return
         // Allow a full HTTP timeout plus authentication retry before replacing a worker.
-        if (buffer.fetchStartedAt instanceof Number && now() - (buffer.fetchStartedAt as Long) < 90000L) return
+        if (buffer.fetchStartedAt instanceof Number && __bat529StaticCall_long_0('now') - (buffer.fetchStartedAt as Long) < 90000L) return
         fetchId = java.util.UUID.randomUUID().toString()
         generation = buffer.generation
         buffer.fetchId = fetchId
-        buffer.fetchStartedAt = now()
+        buffer.fetchStartedAt = __bat529StaticCall_long_0('now')
     }
     try {
-        runInMillis(WORKER_START_DELAY_MS, "runDebugLogHistoryFetch", [overwrite: false,
+        __bat529StaticCall_java_lang_Object_3('runInMillis', WORKER_START_DELAY_MS, "runDebugLogHistoryFetch", [overwrite: false,
             data: [appId: buffer.appId, generation: generation, fetchId: fetchId]])
     } catch (Exception e) {
         synchronized (buffer) {
@@ -7731,33 +7904,36 @@ def runDebugLogHistoryFetch(Map job = [:]) {
     }
 }
 
+@groovy.transform.CompileStatic
 private List _fetchDebugLogHistory(Map buffer, String generation, String fetchId = null) {
     // Recovery is a reader cost. Logging continues while the scoped hub read runs.
-    def text = hubInternalGet("/logs/past/json", [type: "app", id: buffer.appId], 30)
-    def rows = text ? new groovy.json.JsonSlurper().parseText(text) : null
+    def text = __bat529StaticCall_java_lang_Object_3('hubInternalGet', "/logs/past/json", [type: "app", id: buffer.appId], 30)
+    def rows = text ? __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', text) : null
     if (!(rows instanceof List)) throw new IllegalStateException("Unexpected native log history response")
-    def recovered = [:]
-    (rows).each(((this.&_bat529Cb_ad9a62cb_185).curry([buffer, generation, recovered] as Object[])))
+    java.util.Map recovered = [:]
+    __bat529StaticDgm_each_1_java_lang_Object((rows), ((this.&_bat529Cb_ad9a62cb_185).curry([buffer, generation, recovered] as Object[])))
     synchronized (buffer) {
         // A clear during the HTTP read establishes a new generation; old rows stay excluded.
         if (buffer.generation == generation && (fetchId == null || buffer.fetchId == fetchId)) {
-            (buffer.entries).each(((this.&_bat529Cb_ad9a62cb_41).curry([recovered] as Object[])))
+            __bat529StaticDgm_each_1_java_lang_Object((buffer.entries), ((this.&_bat529Cb_ad9a62cb_41).curry([recovered] as Object[])))
             buffer.entries = []
-            (recovered.values()).each(((this.&_bat529Cb_ad9a62cb_75).curry([buffer] as Object[])))
+            __bat529StaticDgm_each_1_java_lang_Object((recovered.values()), ((this.&_bat529Cb_ad9a62cb_75).curry([buffer] as Object[])))
             buffer.hydrated = true
             buffer.remove("fetchError")
         }
-        return _debugLogSnapshot(buffer)
+        return __bat529StaticCall_java_util_List_1('_debugLogSnapshot', buffer)
     }
 }
 
+@groovy.transform.CompileStatic
 private List _debugLogSnapshot(Map buffer) {
-    return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson((buffer.entries).collect((this.&_bat529Cb_ad9a62cb_11))))
+    return __bat529StaticReceiverCall_java_util_List_1(new groovy.json.JsonSlurper(), 'parseText', groovy.json.JsonOutput.toJson(__bat529StaticDgm_collect_1_java_util_List((buffer.entries), (this.&_bat529Cb_ad9a62cb_11))))
 }
 
-def getDebugLogReadResult(Map args = [:]) {
+@groovy.transform.CompileStatic
+java.util.Map getDebugLogReadResult(Map args = [:]) {
     try {
-        return _getDebugLogHistoryResult(args)
+        return __bat529StaticCall_java_util_Map_1('_getDebugLogHistoryResult', args)
     } catch (Exception e) {
         // Diagnostic consumers can still report independent hub and rule information.
         return [entries: null, retryable: true, error: "MCP log history unavailable: ${e.message ?: e.class.simpleName}".toString()]
@@ -7801,7 +7977,8 @@ def setDebugLogLevel(String level) {
 /**
  * Get available log levels in priority order
  */
-def getLogLevels() {
+@groovy.transform.CompileStatic
+java.util.List getLogLevels() {
     return ["debug", "info", "warn", "error"]
 }
 
@@ -7809,20 +7986,22 @@ def getLogLevels() {
  * Get configured log level threshold
  * Checks settings first (UI), then state (MCP hub_set_log_level), then defaults to "error"
  */
+@groovy.transform.CompileStatic
 def getConfiguredLogLevel() {
     // Settings take priority (can be set via UI)
-    if (settings.mcpLogLevel) return settings.mcpLogLevel
+    if (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'mcpLogLevel')) return __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'mcpLogLevel')
     // Fall back to state (can be set via MCP hub_set_log_level tool)
-    def buffer = initDebugLogs()
-    synchronized (buffer) { return buffer.config.logLevel }
+    def buffer = __bat529StaticCall_java_lang_Object_0('initDebugLogs')
+    synchronized (buffer) { return __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(buffer, 'config'), 'logLevel') }
 }
 
 /**
  * Check if a log level should be recorded based on threshold
  */
+@groovy.transform.CompileStatic
 def shouldLog(level) {
-    def levels = getLogLevels()
-    def currentIndex = levels.indexOf(getConfiguredLogLevel())
+    java.util.List levels = __bat529StaticCall_java_util_List_0('getLogLevels')
+    def currentIndex = levels.indexOf(__bat529StaticCall_java_lang_Object_0('getConfiguredLogLevel'))
     def logIndex = levels.indexOf(level)
     // Fail open on an unrecognized level so a typo'd level is never silently
     // swallowed -- the mcpLog switch default below emits a self-diagnosing warn.
@@ -7833,44 +8012,47 @@ def shouldLog(level) {
 /**
  * Add a log entry to the MCP-accessible debug buffer
  */
+@groovy.transform.CompileStatic
 def mcpLog(String level, String component, String message, String ruleId = null, Map extraData = null) {
-    def buffer = initDebugLogs()
-    if (!shouldLog(level)) return
-    def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
+    def buffer = __bat529StaticCall_java_lang_Object_0('initDebugLogs')
+    if (!__bat529StaticCall_java_lang_Object_1('shouldLog', level)) return
+    java.util.Map raw = [timestamp: __bat529StaticCall_long_0('now'), level: level, component: component, message: message, ruleId: ruleId]
     if (true) {
-def __bat529EachReceiver9 = (["duration", "ruleName", "details", "stackTrace"])
-for (def key in __bat529EachReceiver9) { if (extraData?.get(key)) raw.put(key, extraData.get(key)) 
+java.util.List __bat529EachReceiver9 = (["duration", "ruleName", "details", "stackTrace"])
+for (def key in __bat529EachReceiver9) { if (extraData?.get(key)) __bat529StaticReceiverCall_java_lang_Object_2(raw, 'put', key, extraData.get(key)) 
 }
 __bat529EachReceiver9
 } else { null }
-    def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
+    java.util.Map record = __bat529StaticCall_java_util_Map_2('_debugLogRecord', raw, java.util.UUID.randomUUID().toString())
     synchronized (buffer) {
-        if (level == "error" && settings?.retainReportErrors == true) _retainReportError(raw)
-        _emitNativeDebugLog(buffer, record, message)
-        _appendDebugLogRecord(buffer, record)
+        if (level == "error" && __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_settings(), 'retainReportErrors') == true) __bat529StaticCall_java_lang_Object_1('_retainReportError', raw)
+        __bat529StaticCall_java_lang_Object_3('_emitNativeDebugLog', buffer, record, message)
+        __bat529StaticCall_java_lang_Object_2('_appendDebugLogRecord', buffer, record)
     }
 }
 
 /**
  * Log an error with optional exception details
  */
+@groovy.transform.CompileStatic
 def mcpLogError(String component, String message, Exception e = null, String ruleId = null) {
-    def extraData = [:]
+    java.util.Map extraData = [:]
     if (e) {
         // The failing line first, then the frames (the fallback stack already starts with it).
-        def line = _exceptionWithLine(e)
-        def stack = _exceptionStack(e)
-        extraData.stackTrace = stack.startsWith(line) ? stack : "${line}\n${stack}".toString()
+        def line = __bat529StaticCall_java_lang_Object_1('_exceptionWithLine', e)
+        def stack = __bat529StaticCall_java_lang_Object_1('_exceptionStack', e)
+        extraData.stackTrace = __bat529StaticReceiverCall_java_lang_Object_1(stack, 'startsWith', line) ? stack : "${line}\n${stack}".toString()
     }
-    mcpLog("error", component, message, ruleId, extraData)
+    __bat529StaticCall_java_lang_Object_5('mcpLog', "error", component, message, ruleId, extraData)
 }
 
 // Class name for diagnostics. getClass() is sandbox-blocked; firmware 2.5.2's getObjectClassName
 // is the sanctioned stand-in. Older firmware gets an instanceof label.
+@groovy.transform.CompileStatic
 def _typeName(v) {
     if (v == null) return "null"
     try {
-        def n = getObjectClassName(v)
+        def n = __bat529StaticCall_java_lang_Object_1('getObjectClassName', v)
         if (n) return n.toString().tokenize('.').last()
     } catch (Exception ignored) { }
     if (v instanceof Map) return "Map"
@@ -7898,18 +8080,20 @@ Integer _compareVersions(String a, String b) {
 }
 
 // True only when the hub's firmware is known and older than `version`.
+@groovy.transform.CompileStatic
 boolean _hubFirmwareBefore(String version) {
     def fw = null
-    try { fw = location?.hub?.firmwareVersionString?.toString() } catch (Exception ignored) { }
-    Integer c = _compareVersions(fw, version)
+    try { fw = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_location(), 'hub'), 'firmwareVersionString')?.toString() } catch (Exception ignored) { }
+    Integer c = __bat529StaticCall_java_lang_Integer_2('_compareVersions', fw, version)
     return c != null && c < 0
 }
 
 // "<class>: <message> on line N" -- the platform's getExceptionMessageWithLine (firmware 2.5.2)
 // names the failing line of this app's own source; older firmware gets class and message.
+@groovy.transform.CompileStatic
 def _exceptionWithLine(Throwable e) {
     try {
-        def withLine = getExceptionMessageWithLine(e)
+        def withLine = __bat529StaticCall_java_lang_Object_1('getExceptionMessageWithLine', e)
         if (withLine) return withLine.toString()
     } catch (Exception ignored) { }
     return "${e.class.name}: ${e.message}".toString()
@@ -7917,12 +8101,13 @@ def _exceptionWithLine(Throwable e) {
 
 // The platform's getStackTrace(Throwable) keeps only this app's frames (cut here at 2000 chars);
 // older firmware gets "class: message" and the first five raw JVM frames.
+@groovy.transform.CompileStatic
 def _exceptionStack(Throwable e) {
     try {
-        def trace = getStackTrace(e)
+        def trace = __bat529StaticCall_java_lang_Object_1('getStackTrace', e)
         if (trace) return trace.toString().take(2000)
     } catch (Exception ignored) { }
-    return ("${e.class.name}: ${e.message}\n" + ((e.getStackTrace()?.take(5))?.collect((this.&_bat529Cb_ad9a62cb_57))?.join("\n") ?: "")).toString()
+    return ("${e.class.name}: ${e.message}\n" + (__bat529StaticDgm_collect_1_Safe_java_util_List((e.getStackTrace()?.take(5)), (this.&_bat529Cb_ad9a62cb_57))?.join("\n") ?: "")).toString()
 }
 
 // ==================== ROOM MANAGEMENT ====================
@@ -8004,6 +8189,7 @@ private Integer normalizeRuleId(def ruleId) {
  * hub_delete_native_app with the appId of any existing classic-app instance
  * (read appId via hub_list_apps (scope='instances') + hub_get_app_config).
  */
+@groovy.transform.CompileStatic
 private Map _appTypeRegistry() {
     // Optional `commitButton` field: the page-transition button clicked after a
     // create/edit to commit + re-initialize. Defaults to "updateRule" (RM's
@@ -8011,7 +8197,7 @@ private Map _appTypeRegistry() {
     // apps that have NO commit button -- their inputs auto-commit on change, and
     // clicking a non-existent "updateRule" button poisons the page render with
     // "For input string: updateRule" (verified live on Basic Rule).
-    return (_bat529EmbeddedCatalogRead(['["m",[["rule_machine",["m",[["namespace","hubitat"],["appName","Rule-5.1"],["parentTypeName","Rule Machine"]]]],["button_controller",["m",[["namespace","hubitat"],["appName","Button Controller-5.1"],["parentTypeName","Button Controllers"],["commitButton",null]]]],["groups_scenes",["m",[["namespace","hubitat"],["appName","Group-2.1"],["parentTypeName","Groups and Scenes"],["labelInput","name"]]]],["notifier",["m",[["namespace","hubitat"],["appName","Notifier"],["parentTypeName","Notifications"]]]],["visual_rule",["m",[["namespace","hubitat"],["appName","Visual Rule Builder"],["parentTypeName","Visual Rules Builder"]]]],["basic_rule",["m",[["namespace","hubitat"],["appName","Basic Rule-1.0"],["parentTypeName","Basic Rules"],["commitButton",null]]]],["button_rule",["m",[["namespace","hubitat"],["appName","Button Rule-5.1"],["parentTypeName","Button Controllers"],["commitButton",null]]]],["room_lighting",["m",[["namespace","hubitat"],["appName","Room Lights"],["parentTypeName","Room Lighting"],["commitButton","update"]]]]]]']) as Map)
+    return (__bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["rule_machine",["m",[["namespace","hubitat"],["appName","Rule-5.1"],["parentTypeName","Rule Machine"]]]],["button_controller",["m",[["namespace","hubitat"],["appName","Button Controller-5.1"],["parentTypeName","Button Controllers"],["commitButton",null]]]],["groups_scenes",["m",[["namespace","hubitat"],["appName","Group-2.1"],["parentTypeName","Groups and Scenes"],["labelInput","name"]]]],["notifier",["m",[["namespace","hubitat"],["appName","Notifier"],["parentTypeName","Notifications"]]]],["visual_rule",["m",[["namespace","hubitat"],["appName","Visual Rule Builder"],["parentTypeName","Visual Rules Builder"]]]],["basic_rule",["m",[["namespace","hubitat"],["appName","Basic Rule-1.0"],["parentTypeName","Basic Rules"],["commitButton",null]]]],["button_rule",["m",[["namespace","hubitat"],["appName","Button Rule-5.1"],["parentTypeName","Button Controllers"],["commitButton",null]]]],["room_lighting",["m",[["namespace","hubitat"],["appName","Room Lights"],["parentTypeName","Room Lighting"],["commitButton","update"]]]]]]']) as Map)
 }
 
 /**
@@ -8558,10 +8744,11 @@ private void _rmCacheInvalidate(Map cache, Integer appId) {
 // the browser consumes it; see _rmPagePostResponse), so the next read is a HIT with no
 // verify-GET. pageModel must be a parsed {app, configPage, ...} Map; if null/invalid the
 // app is just invalidated (next read re-fetches live).
+@groovy.transform.CompileStatic
 private void _rmCacheStore(Map cache, Integer appId, String pageName, Map pageModel) {
     if (cache == null) return
     cache.put(appId, [:])
-    if (pageName != null && pageModel != null && pageModel.configPage != null) cache.get(appId).put(pageName, pageModel)
+    if (pageName != null && pageModel != null && pageModel.configPage != null) __bat529StaticReceiverCall_java_lang_Object_2(__bat529StaticReceiverCall_java_lang_Object_1(cache, 'get', appId), 'put', pageName, pageModel)
 }
 
 // Parse the page model the hub returns INLINE from an /installedapp/update/json POST. The
@@ -8744,6 +8931,7 @@ __bat529EachReceiver10
  * UI-built ELSE / ELSE-IF / END-IF / Repeat closer carries actSubType.<N> ALONE (our own wizard
  * writer always writes both).
  */
+@groovy.transform.CompileStatic
 private String _rmActTypeForStructuralSubType(String subType) {
     switch (subType) {
         case "getIfThen":
@@ -8798,8 +8986,9 @@ private List _rmCoerceActionIndices(List raw) {
  * The rule's action indices in display order, straight from the compiled
  * rule. Null when the compiled state is unreadable or carries no list.
  */
+@groovy.transform.CompileStatic
 List _rmOrderedActionIndices(Integer appId) {
-    _rmCoerceActionIndices(_ruleCompiledState(appId)?.actionList)
+    __bat529StaticCall_java_util_List_1('_rmCoerceActionIndices', __bat529StaticCall_java_util_Map_1('_ruleCompiledState', appId)?.actionList)
 }
 
 /**
@@ -8826,10 +9015,11 @@ private TreeSet _rmScannedActionIndices(Map settingsByName) {
  * VALUES always come from settings. excludeIndices (removeAction's pre-flight) skips listed
  * indices so the walker sees the post-deletion state.
  */
+@groovy.transform.CompileStatic
 private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIndices = ([] as Set), List orderedIndices = null) {
-    def indices = (orderedIndices != null) ? orderedIndices : (_rmScannedActionIndices(settingsByName) as List)
-    def sequence = []
-    (indices).each(((this.&_bat529Cb_ad9a62cb_181).curry([excludeIndices, sequence, settingsByName] as Object[])))
+    java.util.List indices = (orderedIndices != null) ? orderedIndices : (__bat529StaticCall_java_lang_Object_1('_rmScannedActionIndices', settingsByName) as List)
+    java.util.List sequence = []
+    __bat529StaticDgm_each_1_java_util_List((indices), ((this.&_bat529Cb_ad9a62cb_181).curry([excludeIndices, sequence, settingsByName] as Object[])))
     sequence
 }
 
@@ -8841,12 +9031,13 @@ private List _rmStructuralSequenceFromSettings(Map settingsByName, Set excludeIn
  * Empty on both keys is vestigial rather than a leftover. Empty when membership is unknown: with
  * no list of the rule's own actions there is no way to tell a leftover from a live row.
  */
+@groovy.transform.CompileStatic
 private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
     if (orderedIndices == null) return []
-    def inRule = orderedIndices as Set
-    def scanned = _rmScannedActionIndices(settingsByName)
-    def out = []
-    (scanned).each(((this.&_bat529Cb_ad9a62cb_182).curry([inRule, out, settingsByName] as Object[])))
+    java.util.Set inRule = orderedIndices as Set
+    def scanned = __bat529StaticCall_java_lang_Object_1('_rmScannedActionIndices', settingsByName)
+    java.util.List out = []
+    __bat529StaticDgm_each_1_java_lang_Object((scanned), ((this.&_bat529Cb_ad9a62cb_182).curry([inRule, out, settingsByName] as Object[])))
     out
 }
 
@@ -8857,9 +9048,10 @@ private List _rmOrphanedActionRows(Map settingsByName, List orderedIndices) {
  * the pre-flight refusal paths in _rmDeleteAction / _rmAddAction). One
  * statusJson GET per call site instead of three back-to-back.
  */
+@groovy.transform.CompileStatic
 private Map _rmFetchSettingsByName(Integer appId) {
-    def status = _rmFetchStatusJson(appId)
-    ((status?.appSettings ?: [])).collectEntries((this.&_bat529Cb_ad9a62cb_97))
+    java.util.Map status = __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', appId)
+    __bat529StaticDgm_collectEntries_1_java_util_Map(((status?.appSettings ?: [])), (this.&_bat529Cb_ad9a62cb_97))
 }
 
 /**
@@ -9172,10 +9364,11 @@ __bat529EachReceiver11
  * name → metadata map. Used to decide which settings need the .type +
  * .multiple sidecar fields.
  */
+@groovy.transform.CompileStatic
 private Map _rmCollectInputSchema(Map configPage) {
-    def schema = [:]
+    java.util.Map schema = [:]
     for (s in (configPage?.sections ?: [])) {
-        for (i in (s?.input ?: [])) {
+        for (i in (__bat529StaticProperty_Safe_java_lang_Object(s, 'input') ?: [])) {
             if (i instanceof Map && i.name) {
                 schema.put(i.name.toString(), [
                     name: i.name.toString(),
@@ -9196,12 +9389,13 @@ private Map _rmCollectInputSchema(Map configPage) {
 
 // The sub-pages a classic configPage links to, in page order: [[page, title], ...]. Links live
 // only in each section's `body` (element "href"); `input` carries no hrefs.
+@groovy.transform.CompileStatic
 private List _rmPageHrefs(Map configPage) {
-    def out = []
+    java.util.List out = []
     for (s in (configPage?.sections ?: [])) {
-        for (b in (s?.body ?: [])) {
+        for (b in (__bat529StaticProperty_Safe_java_lang_Object(s, 'body') ?: [])) {
             if (b instanceof Map && b.element == "href" && b.page) {
-                out << [page: b.page.toString(), title: _uiPlainTitle(b.title)]
+                out << [page: b.page.toString(), title: __bat529StaticCall_java_lang_String_1('_uiPlainTitle', b.title)]
             }
         }
     }
@@ -9222,13 +9416,15 @@ private List _rmPageHrefs(Map configPage) {
 // Disabled inputs are skipped and empty optional values pass, as in the browser. Value writes
 // and app-button clicks are never validated by the UI, so callers apply this to navigation only.
 // Returns [[name, title, problem], ...]; empty when the UI would submit.
+@groovy.transform.CompileStatic
 private List _uiNavigationViolations(Map schema, Map values) {
-    def problems = []
-    (schema)?.each(((this.&_bat529Cb_ad9a62cb_190).curry([problems, values] as Object[])))
+    java.util.List problems = []
+    __bat529StaticDgm_each_1_Safe_java_util_Map((schema), ((this.&_bat529Cb_ad9a62cb_190).curry([problems, values] as Object[])))
     return problems
 }
 
 // The browser's input type=email syntax (WHATWG "valid e-mail address").
+@groovy.transform.CompileStatic
 private String _uiEmailPattern() {
     return '[a-zA-Z0-9.!#\$%&\'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*'
 }
@@ -9268,12 +9464,13 @@ private boolean _isDevicePickerType(type) {
 
 // A device picker value as the id list the update endpoint takes. configure/json renders it as an
 // {id: label} Map, and statusJson can carry it as the List's text ("[728]" or "[728, 730]").
+@groovy.transform.CompileStatic
 private _devicePickerIds(v) {
-    if (v instanceof Map) return (v.keySet()).collect((this.&_bat529Cb_ad9a62cb_14))
+    if (v instanceof Map) return __bat529StaticDgm_collect_1_java_util_List((v.keySet()), (this.&_bat529Cb_ad9a62cb_14))
     if (v instanceof CharSequence) {
         def s = v.toString().trim()
         if (s.startsWith("[") && s.endsWith("]")) {
-            return ((s.substring(1, s.length() - 1).split(",")).collect((this.&_bat529Cb_ad9a62cb_111))).findAll((this.&_bat529Cb_ad9a62cb_119))
+            return __bat529StaticDgm_findAll_1_java_lang_Object((__bat529StaticDgm_collect_1_java_util_List((s.substring(1, s.length() - 1).split(",")), (this.&_bat529Cb_ad9a62cb_111))), (this.&_bat529Cb_ad9a62cb_119))
         }
     }
     return v
@@ -9299,10 +9496,11 @@ private String _uiPlainTitle(title) {
 
 // Throws when Hubitat's UI would refuse this navigation submit (see _uiNavigationViolations).
 // `action` names the submit for the message, e.g. "Done on page 'offMeansPage'".
+@groovy.transform.CompileStatic
 private void _requireUiNavigationValid(Integer appId, String action, Map schema, Map values) {
-    def problems = _uiNavigationViolations(schema, values)
+    java.util.List problems = __bat529StaticCall_java_util_List_2('_uiNavigationViolations', schema, values)
     if (!problems) return
-    def detail = (problems).collect((this.&_bat529Cb_ad9a62cb_82)).join("; ")
+    def detail = __bat529StaticDgm_collect_1_java_util_List((problems), (this.&_bat529Cb_ad9a62cb_82)).join("; ")
     throw new IllegalStateException("Hubitat's app page would refuse ${action} on app ${appId}: ${detail}. " +
         "The UI blocks this submit until these are fixed (required fields are the ones marked *). " +
         "Write the missing values first, or deselect the option that revealed them, then retry.")
@@ -9334,9 +9532,10 @@ private void _requireUiNavigationValid(Integer appId, String action, Map schema,
  * settingsMap values: String/Number/Boolean for scalars; List for
  * multi-value (device-id list for capability, option list for enum).
  */
+@groovy.transform.CompileStatic
 private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
-    def body = [id: appId.toString()]
-    (settingsMap).each(((this.&_bat529Cb_ad9a62cb_192).curry([body, schema] as Object[])))
+    java.util.Map body = [id: appId.toString()]
+    __bat529StaticDgm_each_1_java_util_Map((settingsMap), ((this.&_bat529Cb_ad9a62cb_192).curry([body, schema] as Object[])))
     return body
 }
 
@@ -9355,8 +9554,9 @@ private Map _rmBuildSettingsBody(Integer appId, Map settingsMap, Map schema) {
 // their device pickers live on sub-pages). Device-backed null values are
 // reconstructed as a List of id strings so _rmBuildSettingsBody
 // serializes them as the CSV the form expects.
+@groovy.transform.CompileStatic
 private Map _rmLiveSettingsFromStatus(Map status) {
-    return ((status?.appSettings ?: [])).collectEntries((this.&_bat529Cb_ad9a62cb_175))
+    return __bat529StaticDgm_collectEntries_1_java_util_Map(((status?.appSettings ?: [])), (this.&_bat529Cb_ad9a62cb_175))
 }
 
 /**
@@ -9369,13 +9569,14 @@ private Map _rmLiveSettingsFromStatus(Map status) {
  * Throws IllegalStateException (sandbox-friendly alias for the divergence
  * condition) with a specific message listing the poisoned setting names.
  */
+@groovy.transform.CompileStatic
 private void _rmVerifyMultipleFlags(Integer appId, Map schema, List<String> touchedNames, boolean includeRecoveryAdvice = true) {
-    def status = _rmFetchStatusJson(appId)
-    def live = ((status?.appSettings ?: [])).collectEntries((this.&_bat529Cb_ad9a62cb_115))
-    def poisoned = []
-    (touchedNames).each(((this.&_bat529Cb_ad9a62cb_166).curry([live, poisoned, schema] as Object[])))
+    java.util.Map status = __bat529StaticCall_java_util_Map_1('_rmFetchStatusJson', appId)
+    def live = __bat529StaticDgm_collectEntries_1_java_util_Map(((status?.appSettings ?: [])), (this.&_bat529Cb_ad9a62cb_115))
+    java.util.List poisoned = []
+    __bat529StaticDgm_each_1_java_util_List((touchedNames), ((this.&_bat529Cb_ad9a62cb_166).curry([live, poisoned, schema] as Object[])))
     if (poisoned) {
-        def settingWord = (poisoned.size() == 1) ? "setting" : "settings"
+        java.lang.String settingWord = (poisoned.size() == 1) ? "setting" : "settings"
         throw new IllegalStateException(
             "MarshalFlagDivergenceException: multiple=true flag flipped to false on ${settingWord} ${poisoned} " +
             "for app ${appId}. This corrupts RM's device-list rendering." +
@@ -9405,24 +9606,25 @@ private Map _rmPostSettings(Integer appId, Map body, Map cache = null) {
  * if still divergent after retry — the caller should surface this and
  * suggest hub_restore_backup.
  */
+@groovy.transform.CompileStatic
 Map _rmUpdateAppSettings(Integer appId, Map settingsMap, Map schema = null, Map cache = null) {
     if (schema == null) {
-        schema = _rmCollectInputSchema(_rmFetchConfigJson(appId)?.configPage)
+        schema = __bat529StaticCall_java_util_Map_1('_rmCollectInputSchema', __bat529StaticCall_java_util_Map_1('_rmFetchConfigJson', appId)?.configPage)
     }
-    def body = _rmBuildSettingsBody(appId, settingsMap, schema)
-    def resp = _rmPostSettings(appId, body, cache)
+    java.util.Map body = __bat529StaticCall_java_util_Map_3('_rmBuildSettingsBody', appId, settingsMap, schema)
+    java.util.Map resp = __bat529StaticCall_java_util_Map_3('_rmPostSettings', appId, body, cache)
 
-    def touched = (settingsMap.keySet()).collect((this.&_bat529Cb_ad9a62cb_36))
+    def touched = __bat529StaticDgm_collect_1_java_util_List((settingsMap.keySet()), (this.&_bat529Cb_ad9a62cb_36))
     try {
-        _rmVerifyMultipleFlags(appId, schema, touched)
+        __bat529StaticCall_java_lang_Object_3('_rmVerifyMultipleFlags', appId, schema, touched)
     } catch (IllegalStateException divergence) {
         // Sticky-flag recovery: one forced re-POST with the full group.
         // Verified live to un-poison on the second attempt. The schema
         // already carries the .multiple=true sidecar intent from the
         // initial build, so the same body is correct to resend.
-        mcpLog("warn", "rm-native", "Marshal divergence on app ${appId} -- retrying: ${divergence.message}")
-        _rmPostSettings(appId, body, cache)
-        _rmVerifyMultipleFlags(appId, schema, touched)
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "Marshal divergence on app ${appId} -- retrying: ${divergence.message}")
+        __bat529StaticCall_java_util_Map_3('_rmPostSettings', appId, body, cache)
+        __bat529StaticCall_java_lang_Object_3('_rmVerifyMultipleFlags', appId, schema, touched)
     }
     return resp
 }
@@ -9443,7 +9645,8 @@ private Map _rmForceDeleteApp(Integer appId) {
 }
 
 
-def currentVersion() {
+@groovy.transform.CompileStatic
+java.lang.String currentVersion() {
     return "4.7.1"
 }
 
@@ -9462,17 +9665,19 @@ def hubBpsGuideKey(String section, Long atMs = null) {
 
 // The key may also ride in an opaque `args` object: some clients drop undeclared top-level
 // arguments, and the key is deliberately undeclared (BpsSchemaSizeGuardSpec).
+@groovy.transform.CompileStatic
 def hubBpsKeyFromArgs(args) {
     if (!(args instanceof Map)) return null
-    return args.bestPracticeKey ?: ((args.args instanceof Map) ? args.args.bestPracticeKey : null)
+    return __bat529StaticProperty_java_lang_Object(args, 'bestPracticeKey') ?: ((__bat529StaticProperty_java_lang_Object(args, 'args') instanceof Map) ? __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(args, 'args'), 'bestPracticeKey') : null)
 }
 
 // Current OR previous hour's key (grace so a read just before rotation is not stranded).
+@groovy.transform.CompileStatic
 boolean hubBpsKeyAccepted(String section, value) {
     if (value == null) return false
     String v = value.toString()
-    long t = now() as long
-    return v == hubBpsGuideKey(section, t) || v == hubBpsGuideKey(section, t - 3600000L)
+    long t = __bat529StaticCall_long_0('now') as long
+    return v == __bat529StaticCall_java_lang_Object_2('hubBpsGuideKey', section, t) || v == __bat529StaticCall_java_lang_Object_2('hubBpsGuideKey', section, t - 3600000L)
 }
 
 // Section whose key a write tool must carry.
@@ -9503,27 +9708,29 @@ String _bpsBlockMessage(String section, value) {
 
 // Sections that publish a key: best_practice_reference plus every section a write tool maps to.
 // Off the request path, so it is safe to cache with the other code-derived tool metadata.
+@groovy.transform.CompileStatic
 Set _bpsGatedSections() {
-    def cached = _toolMetadataGet("bpsGatedSections")
+    def cached = __bat529StaticCall_java_lang_Object_1('_toolMetadataGet', "bpsGatedSections")
     if (cached != null) return cached as Set
-    def readOnly = getReadOnlyToolNames()
+    def readOnly = __bat529StaticCall_java_lang_Object_0('getReadOnlyToolNames')
     Set gated = ['best_practice_reference'] as Set
-    (_toolCatalogIndexes().names).each(((this.&_bat529Cb_ad9a62cb_144).curry([gated, readOnly] as Object[])))
-    return _toolMetadataPut("bpsGatedSections", gated) as Set
+    __bat529StaticDgm_each_1_java_lang_Object((__bat529StaticCall_java_util_Map_0('_toolCatalogIndexes').names), ((this.&_bat529Cb_ad9a62cb_144).curry([gated, readOnly] as Object[])))
+    return __bat529StaticCall_java_lang_Object_2('_toolMetadataPut', "bpsGatedSections", gated) as Set
 }
 
 // A guide section as served: the key(s) it publishes on top (its own if gated, its gated parent's
 // if a sub-section, one per gated sub-section if a parent), then the body.
+@groovy.transform.CompileStatic
 String _guideSectionServed(String key, String body) {
-    Set gated = _bpsGatedSections()
-    def registry = getToolGuideSubSections()
+    Set gated = __bat529StaticCall_java_util_Set_0('_bpsGatedSections')
+    java.util.Map registry = __bat529StaticCall_java_util_Map_0('getToolGuideSubSections')
     List lines = []
-    if (gated.contains(key)) lines << "Acknowledgment key: ${hubBpsGuideKey(key)}".toString()
-    def parent = (registry.keySet()).find(((this.&_bat529Cb_ad9a62cb_65).curry([key, registry] as Object[])))
-    if (parent && gated.contains(parent)) lines << "Acknowledgment key (${parent}): ${hubBpsGuideKey(parent as String)}".toString()
+    if (gated.contains(key)) lines << "Acknowledgment key: ${__bat529StaticCall_java_lang_Object_1('hubBpsGuideKey', key)}".toString()
+    def parent = __bat529StaticDgm_find_1_java_lang_Object((registry.keySet()), ((this.&_bat529Cb_ad9a62cb_65).curry([key, registry] as Object[])))
+    if (parent && gated.contains(parent)) lines << "Acknowledgment key (${parent}): ${__bat529StaticCall_java_lang_Object_1('hubBpsGuideKey', parent as String)}".toString()
     def subs = registry[key]
     if (subs instanceof Map) {
-        (subs.keySet()).each(((this.&_bat529Cb_ad9a62cb_142).curry([gated, lines] as Object[])))
+        __bat529StaticDgm_each_1_java_lang_Object((subs.keySet()), ((this.&_bat529Cb_ad9a62cb_142).curry([gated, lines] as Object[])))
     }
     if (!lines) return body
     String dropped = "If your client drops it, put it inside an `args` object on the call instead."
@@ -11403,8 +11610,9 @@ No custom operation-token or deployment-job protocol is exposed. If a non-contin
 // is how 'hub_get_device' already claims hub_get_device_attribute and hub_get_device_health. That is
 // deliberate here, but it means the prefix lists below are not an inventory of what each key serves
 // -- when you add a "### " heading, check which prefix already matches it.
-def getToolGuideSubSections() {
-    return (_bat529EmbeddedCatalogRead(['["m",[["hub_admin_write",["m",[["hub_admin_write_overview",["l",[]]],["hub_admin_write_destructive",["l",["Destructive Write Tools","Tool-Specific Requirements","hub_call_destructive_ops","hub_update_firmware"]]],["hub_admin_write_radios",["l",["hub_call_zwave","hub_set_zwave","hub_call_zigbee","hub_set_zigbee","hub_call_matter"]]],["hub_admin_write_devices",["l",["hub_call_device_command","hub_call_device_swap","hub_call_device_replace","hub_create_device"]]],["hub_admin_write_code",["l",["hub_update_app","hub_create_app","hub_update_package"]]],["hub_admin_write_system",["l",["hub_get_info","hub_list_modes","hub_manage_mode","hub_set_mode_manager","hub_get_hsm_status","hub_set_system_settings","hub_update_mcp_settings","hub_get_hub_mesh","hub_update_hub_mesh","Per-device and per-variable Hub Mesh"]]]]]],["performance",["m",[["performance_overview",["l",[]]],["performance_devices",["l",["hub_list_devices","hub_list_device_events","hub_get_device","hub_get_compatible_devices"]]],["performance_diagnostics",["l",["hub_get_logs","hub_get_radio_details","hub_get_metrics","hub_get_performance_stats","hub_delete_debug_logs","hub_report_issue"]]]]]],["builtin_app_tools",["m",[["builtin_app_tools_overview",["l",[]]],["builtin_app_tools_apps",["l",["hub_read_apps_code","hub_get_app_config","hub_list_apps","hub_list_drivers","hub_list_app_pages","hub_list_hpm_packages","hub_list_device_dependents"]]],["builtin_app_tools_rules",["l",["hub_manage_native_rules_and_apps","hub_call_rule","hub_get_rule_health","hub_list_rule_local_variables"]]],["builtin_app_tools_crud",["l",["Safety model for native CRUD","CRUD workflow example","hub_set_native_app","hub_delete_native_app","hub_clone_native_app","hub_export_native_app","hub_import_native_app"]]]]]],["set_rule_reference",["m",[["set_rule_reference_overview",["l",[]]],["set_rule_reference_triggers",["l",["`addTrigger`","Fail-loud `addTrigger`"]]],["set_rule_reference_actions",["l",["`addAction`","Fail-loud `addAction`"]]],["set_rule_reference_conditions",["l",["`addRequiredExpression`","`replaceRequiredExpression`","Extended per-capability spec shapes","Supported comparison shapes","deviceId vs deviceIds normalization"]]],["set_rule_reference_walkstep",["l",["`walkStep`","Raw `settings`/`button` mode"]]],["set_rule_reference_responses",["l",["Partial-success and trailing-updateRule","Action-mutation defensive recovery"]]],["set_rule_reference_guards",["l",["Did-you-mean on unknown capability names","Comma-joined mode steer","Condition-only rejects"]]]]]]]]']) as Map)
+@groovy.transform.CompileStatic
+java.util.Map getToolGuideSubSections() {
+    return (__bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_admin_write",["m",[["hub_admin_write_overview",["l",[]]],["hub_admin_write_destructive",["l",["Destructive Write Tools","Tool-Specific Requirements","hub_call_destructive_ops","hub_update_firmware"]]],["hub_admin_write_radios",["l",["hub_call_zwave","hub_set_zwave","hub_call_zigbee","hub_set_zigbee","hub_call_matter"]]],["hub_admin_write_devices",["l",["hub_call_device_command","hub_call_device_swap","hub_call_device_replace","hub_create_device"]]],["hub_admin_write_code",["l",["hub_update_app","hub_create_app","hub_update_package"]]],["hub_admin_write_system",["l",["hub_get_info","hub_list_modes","hub_manage_mode","hub_set_mode_manager","hub_get_hsm_status","hub_set_system_settings","hub_update_mcp_settings","hub_get_hub_mesh","hub_update_hub_mesh","Per-device and per-variable Hub Mesh"]]]]]],["performance",["m",[["performance_overview",["l",[]]],["performance_devices",["l",["hub_list_devices","hub_list_device_events","hub_get_device","hub_get_compatible_devices"]]],["performance_diagnostics",["l",["hub_get_logs","hub_get_radio_details","hub_get_metrics","hub_get_performance_stats","hub_delete_debug_logs","hub_report_issue"]]]]]],["builtin_app_tools",["m",[["builtin_app_tools_overview",["l",[]]],["builtin_app_tools_apps",["l",["hub_read_apps_code","hub_get_app_config","hub_list_apps","hub_list_drivers","hub_list_app_pages","hub_list_hpm_packages","hub_list_device_dependents"]]],["builtin_app_tools_rules",["l",["hub_manage_native_rules_and_apps","hub_call_rule","hub_get_rule_health","hub_list_rule_local_variables"]]],["builtin_app_tools_crud",["l",["Safety model for native CRUD","CRUD workflow example","hub_set_native_app","hub_delete_native_app","hub_clone_native_app","hub_export_native_app","hub_import_native_app"]]]]]],["set_rule_reference",["m",[["set_rule_reference_overview",["l",[]]],["set_rule_reference_triggers",["l",["`addTrigger`","Fail-loud `addTrigger`"]]],["set_rule_reference_actions",["l",["`addAction`","Fail-loud `addAction`"]]],["set_rule_reference_conditions",["l",["`addRequiredExpression`","`replaceRequiredExpression`","Extended per-capability spec shapes","Supported comparison shapes","deviceId vs deviceIds normalization"]]],["set_rule_reference_walkstep",["l",["`walkStep`","Raw `settings`/`button` mode"]]],["set_rule_reference_responses",["l",["Partial-success and trailing-updateRule","Action-mutation defensive recovery"]]],["set_rule_reference_guards",["l",["Did-you-mean on unknown capability names","Comma-joined mode steer","Condition-only rejects"]]]]]]]]']) as Map)
 }
 
 // Split a guide section into its "### " blocks. Index 0 is the preamble (everything before the
@@ -11431,7 +11639,8 @@ def guideSectionBlocks(text) {
 // with the response's own fields costs ~5% over the raw markdown, so a 90,000-char page measures
 // ~95 KB against the 120,000-byte guard. Every section fits one page today; the full guide (~188 KB)
 // does not, and never did.
-def guidePageChars() { 90000 }
+@groovy.transform.CompileStatic
+java.lang.Integer guidePageChars() { 90000 }
 
 // Page a guide payload so NO hub_get_tool_guide call can dead-end on the response-size guard: the
 // documented no-section call used to exceed the cap outright, and a size-guard envelope hands the
@@ -11440,17 +11649,18 @@ def guidePageChars() { 90000 }
 // cursor was passed -- an unanswerable call is worse than a first page. Pages break on a line
 // boundary so no markdown line is ever split, and a cursor aimed at a payload that was never paged
 // is rejected rather than silently lopping the head off the caller's section.
-def paginateGuideContent(content, cursor) {
+@groovy.transform.CompileStatic
+java.util.Map paginateGuideContent(content, cursor) {
     String text = (content ?: '').toString()
     int total = text.length()
-    int start = _parseListCursor(cursor, total, "hub_get_tool_guide")
-    if (start > 0 && total <= guidePageChars()) {
+    int start = __bat529StaticCall_java_lang_Integer_3('_parseListCursor', cursor, total, "hub_get_tool_guide")
+    if (start > 0 && total <= __bat529StaticCall_java_lang_Integer_0('guidePageChars')) {
         throw new IllegalArgumentException(
             "cursor ${start} does not belong to this payload: it fits one response (${total} chars) and was never paged, " +
             "so paging from ${start} would silently drop the first ${start} characters. Omit cursor. " +
             "A cursor is only valid for the call that returned it -- the no-section full-guide call.")
     }
-    int end = Math.min(start + guidePageChars(), total)
+    int end = Math.min(start + __bat529StaticCall_java_lang_Integer_0('guidePageChars'), total)
     if (end < total) {
         int nl = text.lastIndexOf("\n", end)
         if (nl > start) end = nl + 1
@@ -11469,13 +11679,14 @@ def paginateGuideContent(content, cursor) {
 // single "\n" per guideSectionBlocks' contract. Returns null rather than empty content when nothing
 // matched (a renamed heading, a misspelled parent key), so the caller answers with the loud
 // unknown-section error instead of a plausible empty success.
-def guideSubSectionLookup(subKey) {
-    def registry = getToolGuideSubSections()
-    def parentKey = (registry.keySet()).find(((this.&_bat529Cb_ad9a62cb_74).curry([registry, subKey] as Object[])))
+@groovy.transform.CompileStatic
+java.util.Map guideSubSectionLookup(subKey) {
+    java.util.Map registry = __bat529StaticCall_java_util_Map_0('getToolGuideSubSections')
+    def parentKey = __bat529StaticDgm_find_1_java_lang_Object((registry.keySet()), ((this.&_bat529Cb_ad9a62cb_74).curry([registry, subKey] as Object[])))
     if (!parentKey) return null
-    def prefixes = registry[parentKey][subKey]
-    def blocks = guideSectionBlocks(getToolGuideSections()[parentKey])
-    def mine = []
+    def prefixes = __bat529StaticBinary_GetAt_java_lang_Object(__bat529StaticBinary_GetAt_java_lang_Object(registry, parentKey), subKey)
+    java.util.List blocks = __bat529StaticCall_java_util_List_1('guideSectionBlocks', __bat529StaticCall_java_util_Map_0('getToolGuideSections')[parentKey])
+    java.util.List mine = []
     (blocks).eachWithIndex(((this.&_bat529Cb_ad9a62cb_165).curry([mine, prefixes] as Object[])))
     if (!mine) return null
     return [parent: parentKey, content: mine.join("\n")]
@@ -11510,247 +11721,327 @@ private Object _bat529EmbeddedCatalogDecode(Object value) {
 }
 
 
-def _bat529Cb_ad9a62cb_1(def it) { it.ruleId 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_1(def it) { __bat529StaticProperty_java_lang_Object(it, 'ruleId') 
 }
 
-def _bat529Cb_ad9a62cb_2(def it) { it as String 
+@groovy.transform.CompileStatic
+java.lang.String _bat529Cb_ad9a62cb_2(def it) { it as String 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_3(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_4(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_5(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_6(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_7(def it) { it.toString() 
 }
 
-def _bat529Cb_ad9a62cb_8(def it) { it.ruleId 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_8(def it) { __bat529StaticProperty_java_lang_Object(it, 'ruleId') 
 }
 
-def _bat529Cb_ad9a62cb_9(def current, def it) { current.remove(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_9(def current, def it) { __bat529StaticReceiverCall_java_lang_Object_1(current, 'remove', it) 
 }
 
-def _bat529Cb_ad9a62cb_10(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_10(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_ad9a62cb_11(def it) { it.entry 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_11(def it) { __bat529StaticProperty_java_lang_Object(it, 'entry') 
 }
 
-def _bat529Cb_ad9a62cb_12(def manifest, def it) { manifest.remove(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_12(def manifest, def it) { __bat529StaticReceiverCall_java_lang_Object_1(manifest, 'remove', it) 
 }
 
-def _bat529Cb_ad9a62cb_13(def manifest, def it) { manifest.remove(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_13(def manifest, def it) { __bat529StaticReceiverCall_java_lang_Object_1(manifest, 'remove', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_14(def it) { it?.toString() 
 }
 
-def _bat529Cb_ad9a62cb_15(def it) { it?.success == false 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_15(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') == false 
 }
 
-def _bat529Cb_ad9a62cb_16(def heading, def it) { heading.startsWith(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_16(def heading, def it) { __bat529StaticReceiverCall_java_lang_Object_1(heading, 'startsWith', it) 
 }
 
-def _bat529Cb_ad9a62cb_17(def readOnly, def it) { !readOnly.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_17(def readOnly, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(readOnly, 'contains', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_18(def it) { MRTR_WORK_ITEMS.remove(it) 
 }
 
-def _bat529Cb_ad9a62cb_19(def hidden, def it) { hidden.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_19(def hidden, def it) { __bat529StaticReceiverCall_java_lang_Object_1(hidden, 'contains', it) 
 }
 
-def _bat529Cb_ad9a62cb_20(def it) { it.name == 'hub_search_tools' 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_20(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') == 'hub_search_tools' 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_21(def it) { it?.toString() 
 }
 
-def _bat529Cb_ad9a62cb_22(def it) { it?.success != false 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_22(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') != false 
 }
 
-def _bat529Cb_ad9a62cb_23(def it) { validateAction(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_23(def it) { __bat529StaticCall_java_lang_Object_1('validateAction', it) 
 }
 
-def _bat529Cb_ad9a62cb_24(def it) { it?.success != false 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_24(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') != false 
 }
 
-def _bat529Cb_ad9a62cb_25(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_25(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_ad9a62cb_26(def hidden, def it) { !hidden.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_26(def hidden, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(hidden, 'contains', it) 
 }
 
-def _bat529Cb_ad9a62cb_27(def it) { validateAction(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_27(def it) { __bat529StaticCall_java_lang_Object_1('validateAction', it) 
 }
 
-def _bat529Cb_ad9a62cb_28(def it) { _mcpClientInfoFrom(it) != null 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_28(def it) { __bat529StaticCall_java_util_Map_1('_mcpClientInfoFrom', it) != null 
 }
 
-def _bat529Cb_ad9a62cb_29(def it) { _mcpClientInfoFrom(it) != null 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_29(def it) { __bat529StaticCall_java_util_Map_1('_mcpClientInfoFrom', it) != null 
 }
 
-def _bat529Cb_ad9a62cb_30(def it) { it.trim() 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_30(def it) { __bat529StaticReceiverCall_java_lang_Object_0(it, 'trim') 
 }
 
-def _bat529Cb_ad9a62cb_31(def safeArgs, def it) { !safeArgs.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_31(def safeArgs, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(safeArgs, 'containsKey', it) 
 }
 
-def _bat529Cb_ad9a62cb_32(def it) { _mrtrCleanupRecord(it as Map) 
+@groovy.transform.CompileStatic
+void _bat529Cb_ad9a62cb_32(def it) { __bat529StaticCall_java_lang_Object_1('_mrtrCleanupRecord', it as Map) 
 }
 
-def _bat529Cb_ad9a62cb_33(def it) { _mrtrCleanupRecord(it as Map) 
+@groovy.transform.CompileStatic
+void _bat529Cb_ad9a62cb_33(def it) { __bat529StaticCall_java_lang_Object_1('_mrtrCleanupRecord', it as Map) 
 }
 
-def _bat529Cb_ad9a62cb_34(def it) { _mrtrCleanupRecord(it as Map) 
+@groovy.transform.CompileStatic
+void _bat529Cb_ad9a62cb_34(def it) { __bat529StaticCall_java_lang_Object_1('_mrtrCleanupRecord', it as Map) 
 }
 
-def _bat529Cb_ad9a62cb_35(def it) { _mrtrCleanupRecord(it as Map) 
+@groovy.transform.CompileStatic
+void _bat529Cb_ad9a62cb_35(def it) { __bat529StaticCall_java_lang_Object_1('_mrtrCleanupRecord', it as Map) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_36(def it) { it.toString() 
 }
 
-def _bat529Cb_ad9a62cb_37(def it) { validateAction(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_37(def it) { __bat529StaticCall_java_lang_Object_1('validateAction', it) 
 }
 
-def _bat529Cb_ad9a62cb_38(def it) { _mcpClientValidMessage(it) 
+@groovy.transform.CompileStatic
+boolean _bat529Cb_ad9a62cb_38(def it) { __bat529StaticCall_boolean_1('_mcpClientValidMessage', it) 
 }
 
-def _bat529Cb_ad9a62cb_39(def it) { it?.success != false 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_39(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') != false 
 }
 
-def _bat529Cb_ad9a62cb_40(def it) { it.tools 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_40(def it) { __bat529StaticProperty_java_lang_Object(it, 'tools') 
 }
 
-def _bat529Cb_ad9a62cb_41(def recovered, def it) { recovered.put(it.id, it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_41(def recovered, def it) { __bat529StaticReceiverCall_java_lang_Object_2(recovered, 'put', __bat529StaticProperty_java_lang_Object(it, 'id'), it) 
 }
 
-def _bat529Cb_ad9a62cb_42(def it) { _externalizeToolEntry(it as Map) 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_ad9a62cb_42(def it) { __bat529StaticCall_java_util_Map_1('_externalizeToolEntry', it as Map) 
 }
 
-def _bat529Cb_ad9a62cb_43(def it) { it.trim() 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_43(def it) { __bat529StaticReceiverCall_java_lang_Object_0(it, 'trim') 
 }
 
-def _bat529Cb_ad9a62cb_44(def hideByName, def it) { !hideByName.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_44(def hideByName, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(hideByName, 'contains', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_45(def it) { it?.toString() 
 }
 
-def _bat529Cb_ad9a62cb_46(def it) { it.value?.status != "active" 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_46(def it) { __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_java_lang_Object(it, 'value'), 'status') != "active" 
 }
 
-def _bat529Cb_ad9a62cb_47(def it) { it.value?.status != "active" 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_47(def it) { __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_java_lang_Object(it, 'value'), 'status') != "active" 
 }
 
-def _bat529Cb_ad9a62cb_48(def it) { it?.success == true 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_48(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') == true 
 }
 
-def _bat529Cb_ad9a62cb_49(def out, def it) { out << (it as String) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_49(def out, def it) { __bat529StaticExpr__bat529Cb_ad9a62cb_49_0(it, out) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_50(def it) { it != null 
 }
 
-def _bat529Cb_ad9a62cb_51(def hidden, def it) { hidden.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_51(def hidden, def it) { __bat529StaticReceiverCall_java_lang_Object_1(hidden, 'contains', it) 
 }
 
-def _bat529Cb_ad9a62cb_52(def it) { _externalToolName(it as String) 
+@groovy.transform.CompileStatic
+java.lang.String _bat529Cb_ad9a62cb_52(def it) { __bat529StaticCall_java_lang_String_1('_externalToolName', it as String) 
 }
 
 def _bat529Cb_ad9a62cb_53(def k, def v) { k != "pausedMidOp" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_54(def it) { it ==~ /0x[0-9a-f]*|\d+/ 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_55(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_56(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_57(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_58(def it) { it != null 
 }
 
-def _bat529Cb_ad9a62cb_59(def it) { normalizeActionOperators(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_59(def it) { __bat529StaticCall_java_lang_Object_1('normalizeActionOperators', it) 
 }
 
-def _bat529Cb_ad9a62cb_60(def it) { it?.fileName?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_60(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'fileName')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_61(def it) { it instanceof Map && it.success == true 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_62(def it) { it?.toString() 
 }
 
-def _bat529Cb_ad9a62cb_63(def it) { it?.fileName?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_63(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'fileName')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_64(def it) { it instanceof Map && it?.id != null 
 }
 
-def _bat529Cb_ad9a62cb_65(def key, def registry, def it) { registry[it].containsKey(key) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_65(def key, def registry, def it) { __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinary_GetAt_java_lang_Object(registry, it), 'containsKey', key) 
 }
 
-def _bat529Cb_ad9a62cb_66(def it) { _externalToolName(it as String) 
+@groovy.transform.CompileStatic
+java.lang.String _bat529Cb_ad9a62cb_66(def it) { __bat529StaticCall_java_lang_String_1('_externalToolName', it as String) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_67(def it) { it != null 
 }
 
-def _bat529Cb_ad9a62cb_68(def it) { normalizeActionOperators(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_68(def it) { __bat529StaticCall_java_lang_Object_1('normalizeActionOperators', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_69(def it) { it?.toString() ?: "" 
 }
 
-def _bat529Cb_ad9a62cb_70(def msg) { processJsonRpcMessage(msg) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_70(def msg) { __bat529StaticCall_java_lang_Object_1('processJsonRpcMessage', msg) 
 }
 
-def _bat529Cb_ad9a62cb_71(def it) { normalizeActionOperators(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_71(def it) { __bat529StaticCall_java_lang_Object_1('normalizeActionOperators', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_72(def it) { it instanceof Map && it.success != true 
 }
 
-def _bat529Cb_ad9a62cb_73(def readOnlyNames, def it) { readOnlyNames.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_73(def readOnlyNames, def it) { __bat529StaticReceiverCall_java_lang_Object_1(readOnlyNames, 'contains', it) 
 }
 
-def _bat529Cb_ad9a62cb_74(def registry, def subKey, def it) { registry[it].containsKey(subKey) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_74(def registry, def subKey, def it) { __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinary_GetAt_java_lang_Object(registry, it), 'containsKey', subKey) 
 }
 
-def _bat529Cb_ad9a62cb_75(def buffer, def it) { _appendDebugLogRecord(buffer, it) 
+@groovy.transform.CompileStatic
+void _bat529Cb_ad9a62cb_75(def buffer, def it) { __bat529StaticCall_java_lang_Object_2('_appendDebugLogRecord', buffer, it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_76(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_77(def key, def protectedKey, def it) { it != key && it != protectedKey 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_78(def it) { it 
 }
 
-def _bat529Cb_ad9a62cb_79(def it) { !_modernEraVersion(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_79(def it) { !__bat529StaticCall_boolean_1('_modernEraVersion', it) 
 }
 
-def _bat529Cb_ad9a62cb_80(def appId, def it) { it.id.toString() == appId?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_80(def appId, def it) { __bat529StaticProperty_java_lang_Object(it, 'id').toString() == appId?.toString() 
 }
 
-def _bat529Cb_ad9a62cb_81(def out, def it) { out << (it as String) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_81(def out, def it) { __bat529StaticExpr__bat529Cb_ad9a62cb_81_0(it, out) 
 }
 
 def _bat529Cb_ad9a62cb_82(def it) { "${it.name} (${it.title}): ${it.problem}" 
@@ -11759,95 +12050,117 @@ def _bat529Cb_ad9a62cb_82(def it) { "${it.name} (${it.title}): ${it.problem}"
 def _bat529Cb_ad9a62cb_83(def wanted, def k, def v) { k?.toString()?.toLowerCase() == wanted 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_84(def it) { it instanceof Map && it.success != true 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_85(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_86(def it) { it != null 
 }
 
-def _bat529Cb_ad9a62cb_87(def gwConfig, def it) { !gwConfig.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_87(def gwConfig, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(gwConfig, 'containsKey', it) 
 }
 
-def _bat529Cb_ad9a62cb_88(def deviceId, def it) { it.id.toString() == deviceId.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_88(def deviceId, def it) { __bat529StaticProperty_java_lang_Object(it, 'id').toString() == deviceId.toString() 
 }
 
 def _bat529Cb_ad9a62cb_89(def a, def b) { (a.startedAt ?: 0L) <=> (b.startedAt ?: 0L) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_90(def it) { it instanceof Map && it.pausedMidOp == true 
 }
 
 def _bat529Cb_ad9a62cb_91(def envelopeOnly, def k, def v) { !envelopeOnly.contains(k?.toString()) 
 }
 
-def _bat529Cb_ad9a62cb_92(def deviceId, def it) { it.id.toString() == deviceId.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_92(def deviceId, def it) { __bat529StaticProperty_java_lang_Object(it, 'id').toString() == deviceId.toString() 
 }
 
 def _bat529Cb_ad9a62cb_93(def fileName, def key, def entry) { entry?.fileName?.toString() == fileName 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_94(def it) { it != null 
 }
 
-def _bat529Cb_ad9a62cb_95(def it) { it?.success == false || it?.partial == true 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_95(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'success') == false || __bat529StaticProperty_Safe_java_lang_Object(it, 'partial') == true 
 }
 
-def _bat529Cb_ad9a62cb_96(def hide, def readOnly, def it) { if (!readOnly.contains(it)) hide << it 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_96(def hide, def readOnly, def it) { if (!__bat529StaticReceiverCall_java_lang_Object_1(readOnly, 'contains', it)) __bat529StaticExpr__bat529Cb_ad9a62cb_96_1(hide, it) 
 }
 
-def _bat529Cb_ad9a62cb_97(def it) { [(it?.name?.toString()): it] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_ad9a62cb_97(def it) { [(__bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString()): it] 
 }
 
-def _bat529Cb_ad9a62cb_98(def preferred, def it) { it?.fileName?.toString() == preferred 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_98(def preferred, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'fileName')?.toString() == preferred 
 }
 
-def _bat529Cb_ad9a62cb_99(def it) { [(it): _externalToolName(it as String)] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_ad9a62cb_99(def it) { [(it): __bat529StaticCall_java_lang_String_1('_externalToolName', it as String)] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_100(def action) {
-        normalizeActionOperators(action)
+        __bat529StaticCall_java_lang_Object_1('normalizeActionOperators', action)
     
 }
 
 def _bat529Cb_ad9a62cb_101(def readLeaf, def readSet, def k, def v) { readSet.contains(v?.leafTool?.toString()) == readLeaf 
 }
 
-def _bat529Cb_ad9a62cb_102(def hideByName, def it) { it.name != 'hub_search_tools' && !hideByName.contains(it.name) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_102(def hideByName, def it) { __bat529StaticProperty_java_lang_Object(it, 'name') != 'hub_search_tools' && !__bat529StaticReceiverCall_java_lang_Object_1(hideByName, 'contains', __bat529StaticProperty_java_lang_Object(it, 'name')) 
 }
 
 def _bat529Cb_ad9a62cb_103(def pending, def previous, def key) { pending.put(key, previous.get(key) + [deletePending: true]) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_104(def it) { it != null 
 }
 
-def _bat529Cb_ad9a62cb_105(def writeLeaves, def it) { writeLeaves.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_105(def writeLeaves, def it) { __bat529StaticReceiverCall_java_lang_Object_1(writeLeaves, 'contains', it) 
 }
 
-def _bat529Cb_ad9a62cb_106(def visibleNames, def it) { visibleNames.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_106(def visibleNames, def it) { __bat529StaticReceiverCall_java_lang_Object_1(visibleNames, 'contains', it) 
 }
 
 def _bat529Cb_ad9a62cb_107(def a, def b) { a.value.toString().compareToIgnoreCase(b.value.toString()) 
 }
 
-def _bat529Cb_ad9a62cb_108(def kept, def it) { kept.remove(it.key) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_108(def kept, def it) { __bat529StaticReceiverCall_java_lang_Object_1(kept, 'remove', __bat529StaticProperty_java_lang_Object(it, 'key')) 
 }
 
 def _bat529Cb_ad9a62cb_109(def a, def b) { ((b.updatedAt ?: 0L) as Long) <=> ((a.updatedAt ?: 0L) as Long) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_110(def durableIds, def it) {
-        !durableIds.contains(it.key)
+        !__bat529StaticReceiverCall_java_lang_Object_1(durableIds, 'contains', __bat529StaticProperty_java_lang_Object(it, 'key'))
     
 }
 
-def _bat529Cb_ad9a62cb_111(def it) { it.trim().replaceAll(/^"|"$/, "") 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_111(def it) { __bat529StaticReceiverCall_java_lang_Object_2(__bat529StaticReceiverCall_java_lang_Object_0(it, 'trim'), 'replaceAll', /^"|"$/, "") 
 }
 
-def _bat529Cb_ad9a62cb_112(def current, def ids, def observed, def it) { !ids.contains(it.toString()) && observed[it] == current[it] 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_112(def current, def ids, def observed, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(ids, 'contains', it.toString()) && __bat529StaticBinary_GetAt_java_lang_Object(observed, it) == __bat529StaticBinary_GetAt_java_lang_Object(current, it) 
 }
 
 def _bat529Cb_ad9a62cb_113(def readClass, def readSet, def it) { readSet.contains(it.value?.leafTool?.toString()) == readClass 
@@ -11856,20 +12169,25 @@ def _bat529Cb_ad9a62cb_113(def readClass, def readSet, def it) { readSet.contain
 def _bat529Cb_ad9a62cb_114(def readLeaf, def readSet, def it) { readSet.contains(it.value?.leafTool?.toString()) == readLeaf 
 }
 
-def _bat529Cb_ad9a62cb_115(def s) {
-        [(s?.name?.toString()): s]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_ad9a62cb_115(def s) {
+        [(__bat529StaticProperty_Safe_java_lang_Object(s, 'name')?.toString()): s]
     
 }
 
-def _bat529Cb_ad9a62cb_116(def key, def manifest, def protectedKey, def it) { it != key && it != protectedKey && manifest[it]?.deletePending 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_116(def key, def manifest, def protectedKey, def it) { it != key && it != protectedKey && __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinary_GetAt_java_lang_Object(manifest, it), 'deletePending') 
 }
 
-def _bat529Cb_ad9a62cb_117(def kept, def it) { kept.remove(it.key) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_117(def kept, def it) { __bat529StaticReceiverCall_java_lang_Object_1(kept, 'remove', __bat529StaticProperty_java_lang_Object(it, 'key')) 
 }
 
-def _bat529Cb_ad9a62cb_118(def retainedFiles, def it) { it && !retainedFiles.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_118(def retainedFiles, def it) { it && !__bat529StaticReceiverCall_java_lang_Object_1(retainedFiles, 'contains', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_119(def it) { it 
 }
 
@@ -11884,8 +12202,9 @@ def _bat529Cb_ad9a62cb_121(def config, def toolName) {
 def _bat529Cb_ad9a62cb_122(def it) { [(it.name): it] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_123(def hideByName, def proxiedNames, def it) {
-        !proxiedNames.contains(it.name) && !hideByName.contains(it.name)
+        !__bat529StaticReceiverCall_java_lang_Object_1(proxiedNames, 'contains', __bat529StaticProperty_java_lang_Object(it, 'name')) && !__bat529StaticReceiverCall_java_lang_Object_1(hideByName, 'contains', __bat529StaticProperty_java_lang_Object(it, 'name'))
     
 }
 
@@ -11894,8 +12213,9 @@ def _bat529Cb_ad9a62cb_124(def gwConfig, def out, def gw) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_125(def it) {
-        MRTR_TERMINAL_EVIDENCE.remove(it.key)
+        MRTR_TERMINAL_EVIDENCE.remove(__bat529StaticProperty_java_lang_Object(it, 'key'))
     
 }
 
@@ -11904,13 +12224,15 @@ def _bat529Cb_ad9a62cb_126(def numbered, def row, def index) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_127(def k) {
         WRITE_REQUEST_LEASES.remove(k)
         LIVE_WRITE_EXECUTIONS.remove(k?.toString())
     
 }
 
-def _bat529Cb_ad9a62cb_128(def it) { _unwrapPreserialized(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_128(def it) { __bat529StaticCall_java_lang_Object_1('_unwrapPreserialized', it) 
 }
 
 def _bat529Cb_ad9a62cb_129(def key, def entry) {
@@ -11918,11 +12240,13 @@ def _bat529Cb_ad9a62cb_129(def key, def entry) {
     
 }
 
-def _bat529Cb_ad9a62cb_130(def manifest, def it) { manifest.remove(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_130(def manifest, def it) { __bat529StaticReceiverCall_java_lang_Object_1(manifest, 'remove', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_131(def options, def id) {
-        if (!options.containsKey(id)) options.put(id, "Unavailable app (ID ${id})".toString())
+        if (!__bat529StaticReceiverCall_java_lang_Object_1(options, 'containsKey', id)) __bat529StaticReceiverCall_java_lang_Object_2(options, 'put', id, "Unavailable app (ID ${id})".toString())
     
 }
 
@@ -11931,6 +12255,7 @@ def _bat529Cb_ad9a62cb_132(def trigger) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_133(def b) { b instanceof Map && (b.element == "paragraph" || b.element == "href") 
 }
 
@@ -11939,14 +12264,17 @@ def _bat529Cb_ad9a62cb_134(def condition) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_135(def it) {
                     !it?.toString()?.startsWith("Drive stopped at step ")
                 
 }
 
-def _bat529Cb_ad9a62cb_136(def data, def record, def key) { if (data.containsKey(key)) record.put(key, data.get(key)) 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_136(def data, def record, def key) { if (__bat529StaticReceiverCall_java_lang_Object_1(data, 'containsKey', key)) __bat529StaticReceiverCall_java_lang_Object_2(record, 'put', key, __bat529StaticReceiverCall_java_lang_Object_1(data, 'get', key)) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_137(def it) { it?.toString() 
 }
 
@@ -11955,8 +12283,9 @@ def _bat529Cb_ad9a62cb_138(def exactKey, def fileName, def key, def entry) {
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_139(def name) {
-        try { removeInUseGlobalVar(name) } catch (Exception e) { /* idempotent */ }
+        try { __bat529StaticCall_java_lang_Object_1('removeInUseGlobalVar', name) } catch (Exception e) { /* idempotent */ }
     
 }
 
@@ -11968,36 +12297,42 @@ def _bat529Cb_ad9a62cb_140(def key, def entry) {
 def _bat529Cb_ad9a62cb_141(def manifest, def a, def b) { (manifest[a]?.timestamp ?: 0L) <=> (manifest[b]?.timestamp ?: 0L) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_142(def gated, def lines, def sub) {
-            if (gated.contains(sub)) lines << "Acknowledgment key (${sub}): ${hubBpsGuideKey(sub as String)}".toString()
+            if (__bat529StaticReceiverCall_java_lang_Object_1(gated, 'contains', sub)) __bat529StaticExpr__bat529Cb_ad9a62cb_142_1(lines, sub)
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_143(def devId) {
-                    if (!findDevice(devId)) throw new IllegalArgumentException("Device not found: ${devId}")
+                    if (!__bat529StaticCall_java_lang_Object_1('findDevice', devId)) throw new IllegalArgumentException("Device not found: ${devId}")
                 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_144(def gated, def readOnly, def name) {
-        def section = readOnly.contains(name) ? null : _guideSectionForTool(name)
-        if (section) gated << section
+        java.lang.String section = __bat529StaticReceiverCall_java_lang_Object_1(readOnly, 'contains', name) ? null : __bat529StaticCall_java_lang_String_1('_guideSectionForTool', name)
+        if (section) __bat529StaticExpr__bat529Cb_ad9a62cb_144_1(gated, section)
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_145(def result, def row, def it) {
-                if (result.containsKey(it)) row.put(it, result.get(it))
+                if (__bat529StaticReceiverCall_java_lang_Object_1(result, 'containsKey', it)) __bat529StaticReceiverCall_java_lang_Object_2(row, 'put', it, __bat529StaticReceiverCall_java_lang_Object_1(result, 'get', it))
             
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_146(def brokenMarkers, def text, def marker) {
-                    if (text.contains(marker)) brokenMarkers << marker
+                    if (__bat529StaticReceiverCall_java_lang_Object_1(text, 'contains', marker)) __bat529StaticExpr__bat529Cb_ad9a62cb_146_1(brokenMarkers, marker)
                 
 }
 
-def _bat529Cb_ad9a62cb_147(def entry) {
-            def e = entry?.trim()
+@groovy.transform.CompileStatic
+java.lang.String _bat529Cb_ad9a62cb_147(def entry) {
+            def e = __bat529StaticReceiverCall_Safe_java_lang_Object_0(entry, 'trim')
             if (!e) return null
-            e.contains("://") ? _originHost(e) : _authorityHost(e)
+            __bat529StaticReceiverCall_java_lang_Object_1(e, 'contains', "://") ? __bat529StaticCall_java_lang_String_1('_originHost', e) : __bat529StaticCall_java_lang_String_1('_authorityHost', e)
         
 }
 
@@ -12007,22 +12342,27 @@ def _bat529Cb_ad9a62cb_148(def at, def entry) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_149(def it) { it 
 }
 
-def _bat529Cb_ad9a62cb_150(def it) { it.description?.toString() ?: "" 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_150(def it) { __bat529StaticProperty_java_lang_Object(it, 'description')?.toString() ?: "" 
 }
 
-def _bat529Cb_ad9a62cb_151(def it) { it.key 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_151(def it) { __bat529StaticProperty_java_lang_Object(it, 'key') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_152(def row) {
-                (row instanceof Map && row.containsKey("pausedMidOp")) ? ((row as Map)).findAll((this.&_bat529Cb_ad9a62cb_53)): row
+                (row instanceof Map && row.containsKey("pausedMidOp")) ? __bat529StaticDgm_findAll_1_java_util_Map(((row as Map)), (this.&_bat529Cb_ad9a62cb_53)): row
             
 }
 
-def _bat529Cb_ad9a62cb_153(def displayMeta, def readOnlyNames, def toolName) {
-        [(toolName): overrideOptionLabel(toolName, displayMeta[toolName], readOnlyNames.contains(toolName))]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_ad9a62cb_153(def displayMeta, def readOnlyNames, def toolName) {
+        [(toolName): __bat529StaticCall_java_lang_Object_3('overrideOptionLabel', toolName, __bat529StaticBinary_GetAt_java_lang_Object(displayMeta, toolName), __bat529StaticReceiverCall_java_lang_Object_1(readOnlyNames, 'contains', toolName))]
     
 }
 
@@ -12039,8 +12379,9 @@ def _bat529Cb_ad9a62cb_155(def a, def b) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_156(def brokenMarkers, def text) {
-                (["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"]).each(((this.&_bat529Cb_ad9a62cb_146).curry([brokenMarkers, text] as Object[])))
+                __bat529StaticDgm_each_1_java_util_List((["**Broken Trigger**", "**Broken Action**", "**Broken Condition**"]), ((this.&_bat529Cb_ad9a62cb_146).curry([brokenMarkers, text] as Object[])))
             
 }
 
@@ -12051,12 +12392,14 @@ def _bat529Cb_ad9a62cb_157(def a, def b) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_158(def it) { MRTR_TERMINAL_EVIDENCE.remove(it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_159(def gatewayConfig, def hidden, def reference) {
-            def referencedGateway = gatewayConfig.get(reference)
-            referencedGateway ? (referencedGateway.tools).any(((this.&_bat529Cb_ad9a62cb_51).curry([hidden] as Object[]))): hidden.contains(reference)
+            def referencedGateway = __bat529StaticReceiverCall_java_lang_Object_1(gatewayConfig, 'get', reference)
+            __bat529StaticExpr__bat529Cb_ad9a62cb_159_1(hidden, reference, referencedGateway)
         
 }
 
@@ -12067,11 +12410,12 @@ def _bat529Cb_ad9a62cb_160(def validDays, def day) {
             
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_161(def names, def required, def tool) {
-        String name = tool.name as String
-        names << name
-        def req = tool?.inputSchema?.required
-        if (req instanceof List && !req.isEmpty()) required.put(name, (req).collect((this.&_bat529Cb_ad9a62cb_2)))
+        String name = __bat529StaticProperty_java_lang_Object(tool, 'name') as String
+        __bat529StaticExpr__bat529Cb_ad9a62cb_161_1(name, names)
+        def req = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(tool, 'inputSchema'), 'required')
+        if (req instanceof List && !req.isEmpty()) __bat529StaticReceiverCall_java_lang_Object_2(required, 'put', name, __bat529StaticDgm_collect_1_java_util_List((req), (this.&_bat529Cb_ad9a62cb_2)))
     
 }
 
@@ -12109,18 +12453,20 @@ def _bat529Cb_ad9a62cb_165(def mine, def prefixes, def block, def idx) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_166(def live, def poisoned, def schema, def name) {
-        def declared = schema?."${name}"
-        if (declared?.multiple == true) {
-            def rec = live?."${name}"
-            if (rec != null && rec.multiple != true) {
-                poisoned << name
+        def declared = __bat529StaticExpr__bat529Cb_ad9a62cb_166_0(name, schema)
+        if (__bat529StaticProperty_Safe_java_lang_Object(declared, 'multiple') == true) {
+            def rec = __bat529StaticExpr__bat529Cb_ad9a62cb_166_2(live, name)
+            if (rec != null && __bat529StaticProperty_java_lang_Object(rec, 'multiple') != true) {
+                __bat529StaticExpr__bat529Cb_ad9a62cb_166_4(name, poisoned)
             }
         }
     
 }
 
-def _bat529Cb_ad9a62cb_167(def it) { it.key 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_167(def it) { __bat529StaticProperty_java_lang_Object(it, 'key') 
 }
 
 def _bat529Cb_ad9a62cb_168(def active, def at, def leaseId, def rec) {
@@ -12141,10 +12487,11 @@ def _bat529Cb_ad9a62cb_169(def multipleFlagPoison, def settingsByName, def name,
             
 }
 
-def _bat529Cb_ad9a62cb_170(def defMap, def displayMeta, def name) {
-                def d = defMap[name]
-                def entry = [name: _externalToolName(name as String), description: d?.description, inputSchema: d?.inputSchema]
-                def title = displayMeta[name]?.title
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_ad9a62cb_170(def defMap, def displayMeta, def name) {
+                def d = __bat529StaticBinary_GetAt_java_lang_Object(defMap, name)
+                java.util.Map entry = [name: __bat529StaticCall_java_lang_String_1('_externalToolName', name as String), description: __bat529StaticProperty_Safe_java_lang_Object(d, 'description'), inputSchema: __bat529StaticProperty_Safe_java_lang_Object(d, 'inputSchema')]
+                def title = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinary_GetAt_java_lang_Object(displayMeta, name), 'title')
                 if (title) entry.title = title as String
                 entry
             
@@ -12159,9 +12506,10 @@ def _bat529Cb_ad9a62cb_171(def required, def pName, def pDef) {
             
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_172(def file) {
-            try { deleteHubFile(file) }
-            catch (Exception e) { mcpLog("error", "hub-admin", "Backup manifest committed but old file '${file}' could not be deleted: ${e.message}; no backup references it, remove it from Settings > File Manager if it is still present") }
+            try { __bat529StaticCall_java_lang_Object_1('deleteHubFile', file) }
+            catch (Exception e) { __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "hub-admin", "Backup manifest committed but old file '${file}' could not be deleted: ${e.message}; no backup references it, remove it from Settings > File Manager if it is still present") }
         
 }
 
@@ -12172,12 +12520,13 @@ def _bat529Cb_ad9a62cb_173(def sect) {
             
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_174(def active, def at, def rec) {
         if (rec instanceof Map && rec.status == "active" &&
-                !_mrtrReadTools().contains(rec.leafTool?.toString()) &&
-                (_writeExecutionLiveLocked(rec.claimId) ||
-                 (rec.expiresAt != null && (rec.expiresAt as Long) > at))) {
-            active << [tool: rec.leafTool, startedAt: rec.startedAt, transport: "mrtr"]
+                !__bat529StaticCall_java_util_Set_0('_mrtrReadTools').contains(rec.leafTool?.toString()) &&
+                (__bat529StaticCall_boolean_1('_writeExecutionLiveLocked', rec.claimId) ||
+                 (rec.expiresAt != null && __bat529StaticBinary_Greater_java_lang_Object(rec.expiresAt as Long, at)))) {
+            __bat529StaticExpr__bat529Cb_ad9a62cb_174_1(active, rec)
         }
     
 }
@@ -12240,37 +12589,40 @@ def _bat529Cb_ad9a62cb_179(def kept, def readSet, boolean readClass) {
     
 }
 
-def _bat529Cb_ad9a62cb_180(Map expired) {
+@groovy.transform.CompileStatic
+void _bat529Cb_ad9a62cb_180(Map expired) {
         // Only an active record reaches here, and only when nothing was executing it: the
         // client never continued and the server's own continuation did not run it either.
         if (expired.nextArguments instanceof Map || expired.checkpoint instanceof Map) {
             int committed = ((expired.rounds ?: 0) as Integer)
-            mcpLog("warn", "mrtr", "${expired.leafTool}: requestState ${expired.stateId ?: '?'} expired without being resumed; " +
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "mrtr", "${expired.leafTool}: requestState ${expired.stateId ?: '?'} expired without being resumed; " +
                 "${committed} slice(s) had committed and the remaining work did not run. Inspect the target before repeating.")
         }
-        _mrtrCleanupRecord(expired)
+        __bat529StaticCall_java_lang_Object_1('_mrtrCleanupRecord', expired)
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_181(def excludeIndices, def sequence, def settingsByName, def idx) {
-        if (excludeIndices.contains(idx)) return
-        def aType = _rmActionSettingText(settingsByName, "actType", idx)
-        def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
+        if (__bat529StaticReceiverCall_java_lang_Object_1(excludeIndices, 'contains', idx)) return
+        def aType = __bat529StaticCall_java_lang_String_3('_rmActionSettingText', settingsByName, "actType", idx)
+        java.lang.String sType = __bat529StaticCall_java_lang_String_3('_rmActionSettingText', settingsByName, "actSubType", idx)
         // RM's UI writes no actType on ELSE / ELSE-IF / END-IF -- infer it or the walker sees a leaf.
-        if (aType == null && sType != null) aType = _rmActTypeForStructuralSubType(sType)
-        def entry = [idx: idx, actType: aType, actSubType: sType]
+        if (aType == null && sType != null) aType = __bat529StaticCall_java_lang_String_1('_rmActTypeForStructuralSubType', sType)
+        java.util.Map entry = [idx: idx, actType: aType, actSubType: sType]
         // The reverse half-pair is an add-action half-commit, not a leaf; mark it for the walker.
         if (aType in ["condActs", "repeatActs"] && sType == null) entry.partial = true
-        sequence << entry
+        __bat529StaticExpr__bat529Cb_ad9a62cb_181_1(entry, sequence)
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_182(def inRule, def out, def settingsByName, def idx) {
-        if (inRule.contains(idx)) return
-        def aType = _rmActionSettingText(settingsByName, "actType", idx)
-        def sType = _rmActionSettingText(settingsByName, "actSubType", idx)
+        if (__bat529StaticReceiverCall_java_lang_Object_1(inRule, 'contains', idx)) return
+        java.lang.String aType = __bat529StaticCall_java_lang_String_3('_rmActionSettingText', settingsByName, "actType", idx)
+        java.lang.String sType = __bat529StaticCall_java_lang_String_3('_rmActionSettingText', settingsByName, "actSubType", idx)
         if (aType == null && sType == null) return
-        out << ("action ${idx} (actType=${aType ?: 'none'}, actSubType=${sType ?: 'none'}) is present in settings but is NOT one of the rule's actions \u2014 leftover state from an interrupted write or a removed action. It does not run and does not affect block structure; the next add may REUSE index ${idx} (RM reopens a never-closed action editor pre-filled with these leftover fields) rather than allocate above it \u2014 remove the row first if a clean slot matters.".toString())
+        __bat529StaticExpr__bat529Cb_ad9a62cb_182_1(aType, idx, out, sType)
     
 }
 
@@ -12289,7 +12641,8 @@ def _bat529Cb_ad9a62cb_183(def stored, def k, def v) {
     
 }
 
-def _bat529Cb_ad9a62cb_184(def it) { it.key 
+@groovy.transform.CompileStatic
+def _bat529Cb_ad9a62cb_184(def it) { __bat529StaticProperty_java_lang_Object(it, 'key') 
 }
 
 def _bat529Cb_ad9a62cb_185(def buffer, def generation, def recovered, def row) {
@@ -12313,18 +12666,19 @@ def _bat529Cb_ad9a62cb_185(def buffer, def generation, def recovered, def row) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_186(def displayMeta, def gatewayConfig, def idempotentNames, def openWorldNames, def readOnlyNames, def writeLeaves, def tool) {
-        String name = tool.name as String
+        String name = __bat529StaticProperty_java_lang_Object(tool, 'name') as String
         // The enum is visibleSubTools (hideByName already applied), not config.tools:
         // a gateway whose write leaves are all toggled off advertises no write surface.
-        boolean hinted = writeLeaves.contains(name) ||
-            (gatewayConfig.containsKey(name) &&
-                ((tool.inputSchema?.properties?.tool?.enum ?: [])).any(((this.&_bat529Cb_ad9a62cb_105).curry([writeLeaves] as Object[]))))
-        def withHint = hinted ? _withMrtrClientErrorHint(tool) : tool
+        boolean hinted = __bat529StaticReceiverCall_java_lang_Object_1(writeLeaves, 'contains', name) ||
+            (__bat529StaticExpr__bat529Cb_ad9a62cb_186_3(gatewayConfig, name, tool, writeLeaves)
+)
+        def withHint = hinted ? __bat529StaticCall_java_util_Map_1('_withMrtrClientErrorHint', tool) : tool
         // Gateways already carry complete annotations from above. Check readOnlyHint,
         // not just the map: a leaf with only a title still needs its canonical hints.
-        if (withHint.annotations?.containsKey('readOnlyHint')) return withHint
-        withHint + [annotations: (withHint.annotations ?: [:]) + annotationsForLeaf(name, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
+        if (__bat529StaticReceiverCall_Safe_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(withHint, 'annotations'), 'containsKey', 'readOnlyHint')) return withHint
+        __bat529StaticBinary_Plus_java_lang_Object(withHint, [annotations: __bat529StaticBinary_Plus_java_lang_Object(__bat529StaticProperty_java_lang_Object(withHint, 'annotations') ?: [:], __bat529StaticCall_java_util_Map_5('annotationsForLeaf', name, readOnlyNames, displayMeta, idempotentNames, openWorldNames))])
     
 }
 
@@ -12353,6 +12707,7 @@ def _bat529Cb_ad9a62cb_187(def rows, def writes, def k, def v) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_ad9a62cb_188(def displayMeta, def idempotentNames, def openWorldNames, def readOnlyNames, def tool) {
             def base = tool
             // hub_set_rule self-gateway: in flat mode its 25-param fat inputSchema is the
@@ -12360,17 +12715,17 @@ def _bat529Cb_ad9a62cb_188(def displayMeta, def idempotentNames, def openWorldNa
             // {operation,args} selector (the agent probes for an operation's real schema
             // on demand -- see toolSetRule's envelope normalizer). Gateway mode keeps the
             // fat schema (already lazily disclosed by its gateway).
-            if (base.name == 'hub_set_rule') {
+            if (__bat529StaticProperty_java_lang_Object(base, 'name') == 'hub_set_rule') {
                 // The selector REPLACES the schema that applyDescriptionTransform already
                 // walked, so it has to be stripped itself -- otherwise every trim
                 // marker in the selector's own descriptions ships raw in the flat catalog
                 // (caught by the flat-mode no-leak specs, and it is the flat wire an LLM
                 // actually reads).
                 // The name lets the transform classify the selector as the write tool it fronts.
-                def flatTool = applyDescriptionTransform([_setRuleFlatTool() + [name: base.name]], true)[0]
-                base = base + [description: flatTool.description, inputSchema: flatTool.inputSchema]
+                def flatTool = __bat529StaticCall_java_util_List_2('applyDescriptionTransform', [__bat529StaticCall_java_util_Map_0('_setRuleFlatTool') + [name: __bat529StaticProperty_java_lang_Object(base, 'name')]], true)[0]
+                base = __bat529StaticBinary_Plus_java_lang_Object(base, [description: __bat529StaticProperty_java_lang_Object(flatTool, 'description'), inputSchema: __bat529StaticProperty_java_lang_Object(flatTool, 'inputSchema')])
             }
-            base + [annotations: annotationsForLeaf(tool.name as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)]
+            __bat529StaticBinary_Plus_java_lang_Object(base, [annotations: __bat529StaticCall_java_util_Map_5('annotationsForLeaf', __bat529StaticProperty_java_lang_Object(tool, 'name') as String, readOnlyNames, displayMeta, idempotentNames, openWorldNames)])
         
 }
 
@@ -12712,4 +13067,1010 @@ def _bat529Cb_ad9a62cb_192(def body, def schema, List __bat529Tuple) {
     if (__bat529Tuple == null || __bat529Tuple.size() != 2)
         throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
     return _bat529Cb_ad9a62cb_192(body, schema, *__bat529Tuple)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticBinary_GetAt_java_lang_Object(Object left, Object right) {
+    return left[right]
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticBinary_GreaterEqual_java_lang_Object(Object left, Object right) {
+    return left >= right
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticBinary_Greater_java_lang_Object(Object left, Object right) {
+    return left > right
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticBinary_LessEqual_java_lang_Object(Object left, Object right) {
+    return left <= right
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticBinary_Less_java_lang_Object(Object left, Object right) {
+    return left < right
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Long __bat529StaticBinary_Plus_java_lang_Long(Object left, Object right) {
+    return (java.lang.Long) (left + right)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticBinary_Plus_java_lang_Object(Object left, Object right) {
+    return left + right
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticBinary_Plus_java_util_Map(Object left, Object right) {
+    return (java.util.Map) (left + right)
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticBinding_app() {
+    return app
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticBinding_atomicState() {
+    return atomicState
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticBinding_location() {
+    return location
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticBinding_request() {
+    return request
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticBinding_settings() {
+    return settings
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticBinding_state() {
+    return state
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticCall__rmEmptyHealthVerdict_java_util_Map_1(Object p0) {
+    return (java.util.Map) (_rmEmptyHealthVerdict(p0))
+}
+
+@groovy.transform.CompileDynamic
+private boolean __bat529StaticCall_boolean_0(String target) {
+    return (boolean) (this."${target}"())
+}
+
+@groovy.transform.CompileDynamic
+private boolean __bat529StaticCall_boolean_1(String target, Object p0) {
+    return (boolean) (this."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private boolean __bat529StaticCall_boolean_2(String target, Object p0, Object p1) {
+    return (boolean) (this."${target}"(p0, p1))
+}
+
+@groovy.transform.CompileDynamic
+private boolean __bat529StaticCall_boolean_3(String target, Object p0, Object p1, Object p2) {
+    return (boolean) (this."${target}"(p0, p1, p2))
+}
+
+@groovy.transform.CompileDynamic
+private boolean __bat529StaticCall_boolean_5(String target, Object p0, Object p1, Object p2, Object p3, Object p4) {
+    return (boolean) (this."${target}"(p0, p1, p2, p3, p4))
+}
+
+@groovy.transform.CompileDynamic
+private int __bat529StaticCall_int_0(String target) {
+    return (int) (this."${target}"())
+}
+
+@groovy.transform.CompileDynamic
+private int __bat529StaticCall_int_1(String target, Object p0) {
+    return (int) (this."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private int __bat529StaticCall_int_2(String target, Object p0, Object p1) {
+    return (int) (this."${target}"(p0, p1))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Boolean __bat529StaticCall_java_lang_Boolean_0(String target) {
+    return (java.lang.Boolean) (this."${target}"())
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Boolean __bat529StaticCall_java_lang_Boolean_1(String target, Object p0) {
+    return (java.lang.Boolean) (this."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Boolean __bat529StaticCall_java_lang_Boolean_2(String target, Object p0, Object p1) {
+    return (java.lang.Boolean) (this."${target}"(p0, p1))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Boolean __bat529StaticCall_java_lang_Boolean_3(String target, Object p0, Object p1, Object p2) {
+    return (java.lang.Boolean) (this."${target}"(p0, p1, p2))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Integer __bat529StaticCall_java_lang_Integer_0(String target) {
+    return (java.lang.Integer) (this."${target}"())
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Integer __bat529StaticCall_java_lang_Integer_1(String target, Object p0) {
+    return (java.lang.Integer) (this."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Integer __bat529StaticCall_java_lang_Integer_2(String target, Object p0, Object p1) {
+    return (java.lang.Integer) (this."${target}"(p0, p1))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Integer __bat529StaticCall_java_lang_Integer_3(String target, Object p0, Object p1, Object p2) {
+    return (java.lang.Integer) (this."${target}"(p0, p1, p2))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Long __bat529StaticCall_java_lang_Long_0(String target) {
+    return (java.lang.Long) (this."${target}"())
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Long __bat529StaticCall_java_lang_Long_1(String target, Object p0) {
+    return (java.lang.Long) (this."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticCall_java_lang_Object_0(String target) {
+    return this."${target}"()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticCall_java_lang_Object_1(String target, Object p0) {
+    return this."${target}"(p0)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticCall_java_lang_Object_2(String target, Object p0, Object p1) {
+    return this."${target}"(p0, p1)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticCall_java_lang_Object_3(String target, Object p0, Object p1, Object p2) {
+    return this."${target}"(p0, p1, p2)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticCall_java_lang_Object_4(String target, Object p0, Object p1, Object p2, Object p3) {
+    return this."${target}"(p0, p1, p2, p3)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticCall_java_lang_Object_5(String target, Object p0, Object p1, Object p2, Object p3, Object p4) {
+    return this."${target}"(p0, p1, p2, p3, p4)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticCall_java_lang_Object_6(String target, Object p0, Object p1, Object p2, Object p3, Object p4, Object p5) {
+    return this."${target}"(p0, p1, p2, p3, p4, p5)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticCall_java_lang_Object_7(String target, Object p0, Object p1, Object p2, Object p3, Object p4, Object p5, Object p6) {
+    return this."${target}"(p0, p1, p2, p3, p4, p5, p6)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticCall_java_lang_Object_8(String target, Object p0, Object p1, Object p2, Object p3, Object p4, Object p5, Object p6, Object p7) {
+    return this."${target}"(p0, p1, p2, p3, p4, p5, p6, p7)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.String __bat529StaticCall_java_lang_String_0(String target) {
+    return (java.lang.String) (this."${target}"())
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.String __bat529StaticCall_java_lang_String_1(String target, Object p0) {
+    return (java.lang.String) (this."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.String __bat529StaticCall_java_lang_String_2(String target, Object p0, Object p1) {
+    return (java.lang.String) (this."${target}"(p0, p1))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.String __bat529StaticCall_java_lang_String_3(String target, Object p0, Object p1, Object p2) {
+    return (java.lang.String) (this."${target}"(p0, p1, p2))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticCall_java_util_List_0(String target) {
+    return (java.util.List) (this."${target}"())
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticCall_java_util_List_1(String target, Object p0) {
+    return (java.util.List) (this."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticCall_java_util_List_2(String target, Object p0, Object p1) {
+    return (java.util.List) (this."${target}"(p0, p1))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticCall_java_util_List_3(String target, Object p0, Object p1, Object p2) {
+    return (java.util.List) (this."${target}"(p0, p1, p2))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticCall_java_util_List_6(String target, Object p0, Object p1, Object p2, Object p3, Object p4, Object p5) {
+    return (java.util.List) (this."${target}"(p0, p1, p2, p3, p4, p5))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticCall_java_util_Map_0(String target) {
+    return (java.util.Map) (this."${target}"())
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticCall_java_util_Map_1(String target, Object p0) {
+    return (java.util.Map) (this."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticCall_java_util_Map_10(String target, Object p0, Object p1, Object p2, Object p3, Object p4, Object p5, Object p6, Object p7, Object p8, Object p9) {
+    return (java.util.Map) (this."${target}"(p0, p1, p2, p3, p4, p5, p6, p7, p8, p9))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticCall_java_util_Map_2(String target, Object p0, Object p1) {
+    return (java.util.Map) (this."${target}"(p0, p1))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticCall_java_util_Map_3(String target, Object p0, Object p1, Object p2) {
+    return (java.util.Map) (this."${target}"(p0, p1, p2))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticCall_java_util_Map_4(String target, Object p0, Object p1, Object p2, Object p3) {
+    return (java.util.Map) (this."${target}"(p0, p1, p2, p3))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticCall_java_util_Map_5(String target, Object p0, Object p1, Object p2, Object p3, Object p4) {
+    return (java.util.Map) (this."${target}"(p0, p1, p2, p3, p4))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticCall_java_util_Map_6(String target, Object p0, Object p1, Object p2, Object p3, Object p4, Object p5) {
+    return (java.util.Map) (this."${target}"(p0, p1, p2, p3, p4, p5))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticCall_java_util_Map_9(String target, Object p0, Object p1, Object p2, Object p3, Object p4, Object p5, Object p6, Object p7, Object p8) {
+    return (java.util.Map) (this."${target}"(p0, p1, p2, p3, p4, p5, p6, p7, p8))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Set __bat529StaticCall_java_util_Set_0(String target) {
+    return (java.util.Set) (this."${target}"())
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Set __bat529StaticCall_java_util_Set_1(String target, Object p0) {
+    return (java.util.Set) (this."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Set __bat529StaticCall_java_util_Set_2(String target, Object p0, Object p1) {
+    return (java.util.Set) (this."${target}"(p0, p1))
+}
+
+@groovy.transform.CompileDynamic
+private long __bat529StaticCall_long_0(String target) {
+    return (long) (this."${target}"())
+}
+
+@groovy.transform.CompileDynamic
+private long __bat529StaticCall_long_1(String target, Object p0) {
+    return (long) (this."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticCall_render_java_lang_Object_1(Object p0) {
+    return render(p0)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticCall_sendLocationEvent_java_lang_Object_1(Object p0) {
+    return sendLocationEvent(p0)
+}
+
+@groovy.transform.CompileDynamic
+private boolean __bat529StaticDgm_any_1_boolean(Object receiver, Object p0) {
+    return (boolean) (receiver.any(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticDgm_collectEntries_1_java_util_Map(Object receiver, Object p0) {
+    return (java.util.Map) (receiver.collectEntries(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticDgm_collect_1_Safe_java_util_List(Object receiver, Object p0) {
+    return (java.util.List) (receiver?.collect(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticDgm_collect_1_java_util_List(Object receiver, Object p0) {
+    return (java.util.List) (receiver.collect(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticDgm_each_1_Safe_java_util_Map(Object receiver, Object p0) {
+    return (java.util.Map) (receiver?.each(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticDgm_each_1_java_lang_Object(Object receiver, Object p0) {
+    return receiver.each(p0)
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticDgm_each_1_java_util_List(Object receiver, Object p0) {
+    return (java.util.List) (receiver.each(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticDgm_each_1_java_util_Map(Object receiver, Object p0) {
+    return (java.util.Map) (receiver.each(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Set __bat529StaticDgm_each_1_java_util_Set(Object receiver, Object p0) {
+    return (java.util.Set) (receiver.each(p0))
+}
+
+@groovy.transform.CompileDynamic
+private boolean __bat529StaticDgm_every_1_boolean(Object receiver, Object p0) {
+    return (boolean) (receiver.every(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticDgm_findAll_1_Safe_java_lang_Object(Object receiver, Object p0) {
+    return receiver?.findAll(p0)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticDgm_findAll_1_java_lang_Object(Object receiver, Object p0) {
+    return receiver.findAll(p0)
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticDgm_findAll_1_java_util_List(Object receiver, Object p0) {
+    return (java.util.List) (receiver.findAll(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticDgm_findAll_1_java_util_Map(Object receiver, Object p0) {
+    return (java.util.Map) (receiver.findAll(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticDgm_find_0_java_lang_Object(Object receiver) {
+    return receiver.find()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticDgm_find_1_Safe_java_lang_Object(Object receiver, Object p0) {
+    return receiver?.find(p0)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticDgm_find_1_java_lang_Object(Object receiver, Object p0) {
+    return receiver.find(p0)
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticExpr__appClonerCappedStaging_0(Object cp) {
+    return (java.util.Map) ((cp.baseResult instanceof Map) ? ([:] + cp.baseResult) : [:])
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__appClonerExtractJsonFromResponse_1(Object key, Object section) {
+    return section?."${key}"
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_112d3686_10_1(Object installedDriverCodeIds, Object typeId) {
+    return installedDriverCodeIds << typeId
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_112d3686_2_0(Object it, Object workQueue) {
+    return workQueue << it
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_112d3686_3_0(Object it, Object workQueue) {
+    return workQueue << it
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_112d3686_9_1(Object installedAppCodeIds, Object typeId) {
+    return installedAppCodeIds << typeId
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_13cb0dba_17_1(Object requestedIds, Object s) {
+    return requestedIds << s
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_15d0a4c9_180_0(Object d) {
+    return (d.capabilities)?.collect((this.&_bat529Cb_15d0a4c9_106))?: []
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_15d0a4c9_188_1(Object it) {
+    return it._nativeReadError || (it._nativeUnavailableCollections)?.any((this.&_bat529Cb_15d0a4c9_154))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_15d0a4c9_192_2(Object c, Object commands) {
+    return commands << [name: c.name, arguments: _fullJsonCommandArgs(c)]
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_15d0a4c9_220_1(Object deviceId, Object row) {
+    return row.usedBy instanceof List && (row.usedBy).any(((this.&_bat529Cb_15d0a4c9_204).curry([deviceId] as Object[])))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_15d0a4c9_228_6(Object d, Object r, Object roomIndex) {
+    return roomIndex.get(r) << d.id.toString()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_15d0a4c9_230_3(Object an, Object attrParts, Object st, Object unit) {
+    return attrParts << "${an}=${st.value}${unit ?: ''}"
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_15d0a4c9_233_1(Object field, Object row) {
+    return field.options << [value: "${row.hubId}-${row.deviceId}".toString(),
+                            label: row.label ?: row.name ?: row.deviceId.toString(), disabled: _deviceFlag(row.linkedLocally)]
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_15d0a4c9_245_1(Object brandF, Object r) {
+    return brandF && !((r?.brand ?: "").toString().toLowerCase().contains(brandF))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_15d0a4c9_245_3(Object protoF, Object r) {
+    return protoF && !((r?.protocol ?: "").toString().toLowerCase().contains(protoF))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_15d0a4c9_245_5(Object r, Object typeF) {
+    return typeF && !((r?.deviceType ?: "").toString().toLowerCase().contains(typeF))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_1fa286f7_12_2(Object ids, Object r) {
+    return ids << r.id.toString()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_1fa286f7_13_2(Object ids, Object r) {
+    return ids << r.id.toString()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_221baae5_25_3(Object deviceUsage, Object id, Object section) {
+    return deviceUsage.get(id) << section
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_298d4999_25_0(Object tid, Object warnings) {
+    return warnings << "removeTileIds: no tile with id ${tid} (already removed?); skipped."
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_298d4999_26_4(Object cd, Object out) {
+    return out << [id: cd.id?.toString(), name: cd.name, type: "easy"]
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_298d4999_27_5(Object cd, Object out) {
+    return out << [id: cd.id?.toString(), name: cd.name, type: "legacy"]
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_3ac884d1_22_0(Object enrich, Object t, Object types) {
+    return types << _projectAppType(t, false, enrich)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_3ac884d1_23_0(Object enrich, Object t, Object types) {
+    return types << _projectAppType(t, true, enrich)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_3ac884d1_30_6(Object bucket, Object d, Object nm, Object projected) {
+    return projected << [id: d?.id?.toString(), name: nm, namespace: d?.namespace, bucket: bucket]
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_199_0(Object it, Object out) {
+    return out << it.toString()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_211_0(Object devices, Object it) {
+    return devices << it.toString()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_367_6(Object m, Object nameSet) {
+    return nameSet << m.name.toString()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_375_1(Object c) {
+    return (c?.requiredFields instanceof List) && ((c.requiredFields as List)).any((this.&_bat529Cb_4076886b_263))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_378_2(Object m, Object out) {
+    return out << (m[0][1] as Integer)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_379_1(Object e, Object failures, Object idx) {
+    return failures << "trigger ${idx} (${e.message})".toString()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_379_2(Object idx, Object removed) {
+    return removed.triggers << idx
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_386_1(Object c, Object wanted) {
+    return (c?.name?.toString()?.equalsIgnoreCase(wanted)) ||
+        (c?.aliases instanceof List && ((c.aliases as List)).any(((this.&_bat529Cb_4076886b_212).curry([wanted] as Object[]))))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_395_0(Object reRepairHints, Object sk) {
+    return reRepairHints << _rmNotRepresentableEnumComparatorHint(
+                (sk instanceof Map ? sk.attribute : null), (sk instanceof Map ? sk.value : null))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_396_2(Object repairHints, Object sk) {
+    return repairHints << sk.hint.toString()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_399_0(Object repairHints, Object sk) {
+    return repairHints << _rmNotRepresentableEnumComparatorHint(
+                (sk instanceof Map ? sk.attribute : null), (sk instanceof Map ? sk.value : null))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_400_3(Object idx, Object out) {
+    return out << idx
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_404_3(Object candidateIdxs, Object cn) {
+    return candidateIdxs << cn
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_407_0(Object k, Object o, Object opts) {
+    return opts << [value: k.toString(), label: o.get(k)?.toString()]
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_407_1(Object o, Object opts) {
+    return opts << [value: o?.toString(), label: o?.toString()]
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_4076886b_419_1(Object ids, Object n) {
+    return ids << n
+}
+
+@groovy.transform.CompileDynamic
+private long __bat529StaticExpr__bat529Cb_7399a956_40_6(Object last, Object nowMs) {
+    return (long) ((long) ((nowMs - last) / 60000L))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_142_1(Object lines, Object sub) {
+    return lines << "Acknowledgment key (${sub}): ${hubBpsGuideKey(sub as String)}".toString()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_144_1(Object gated, Object section) {
+    return gated << section
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_146_1(Object brokenMarkers, Object marker) {
+    return brokenMarkers << marker
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_159_1(Object hidden, Object reference, Object referencedGateway) {
+    return referencedGateway ? (referencedGateway.tools).any(((this.&_bat529Cb_ad9a62cb_51).curry([hidden] as Object[]))): hidden.contains(reference)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_161_1(Object name, Object names) {
+    return names << name
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_166_0(Object name, Object schema) {
+    return schema?."${name}"
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_166_2(Object live, Object name) {
+    return live?."${name}"
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_166_4(Object name, Object poisoned) {
+    return poisoned << name
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_174_1(Object active, Object rec) {
+    return active << [tool: rec.leafTool, startedAt: rec.startedAt, transport: "mrtr"]
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_181_1(Object entry, Object sequence) {
+    return sequence << entry
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_182_1(Object aType, Object idx, Object out, Object sType) {
+    return out << ("action ${idx} (actType=${aType ?: 'none'}, actSubType=${sType ?: 'none'}) is present in settings but is NOT one of the rule's actions \u2014 leftover state from an interrupted write or a removed action. It does not run and does not affect block structure; the next add may REUSE index ${idx} (RM reopens a never-closed action editor pre-filled with these leftover fields) rather than allocate above it \u2014 remove the row first if a clean slot matters.".toString())
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_186_3(Object gatewayConfig, Object name, Object tool, Object writeLeaves) {
+    return gatewayConfig.containsKey(name) &&
+                ((tool.inputSchema?.properties?.tool?.enum ?: [])).any(((this.&_bat529Cb_ad9a62cb_105).curry([writeLeaves] as Object[])))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_49_0(Object it, Object out) {
+    return out << (it as String)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_81_0(Object it, Object out) {
+    return out << (it as String)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_ad9a62cb_96_1(Object hide, Object it) {
+    return hide << it
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_b8585dac_23_1(Object currentVars, Object varName) {
+    return currentVars << varName
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_b8585dac_26_3(Object child, Object consumers) {
+    return consumers << [id: child.id, label: child.label]
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_c0a86baf_30_0(Object it, Object names) {
+    return names << _vrb2TypeKey(_vrb2Where("condition"), it.type.toString())
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_c0a86baf_35_0(Object errors, Object tid, Object triggerMergeId) {
+    return errors << "Trigger node '${tid}' must connect to the triggerMerge node '${triggerMergeId}'."
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_c0a86baf_36_0(Object cond, Object out) {
+    return out << [where: _vrb2Where("condition"), id: cond.id?.toString(), type: cond.type?.toString()]
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__bat529Cb_dbfd46be_32_1(Object cid, Object queue) {
+    return queue << cid.toInteger()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.String __bat529StaticExpr__bat529Cb_f7f9d965_5_1(Object it) {
+    return (java.lang.String) (_filesFoldCase(it?.name))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticExpr__deviceConfigurationEditableFields_0(Object fj) {
+    return (java.util.Map) ((fj?.device instanceof Map) ? fj.device : [:])
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticExpr__fullJsonCommandNames_0(Object cmds) {
+    return (java.util.List) ((cmds instanceof List) ? ((cmds).collect((this.&_bat529Cb_15d0a4c9_10))).findAll((this.&_bat529Cb_15d0a4c9_78)): [])
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__getDeviceFromFullJson_1(Object d) {
+    return (d.capabilities instanceof List) ? (d.capabilities).collect((this.&_bat529Cb_15d0a4c9_117)): []
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__isActualWriteCall_0() {
+    return getGatewayConfig()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__isActualWriteCall_1() {
+    return getReadOnlyToolNames()
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Set __bat529StaticExpr__isWriteSurface_0() {
+    return (java.util.Set) (getReadOnlyToolNames())
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__isWriteSurface_1() {
+    return getGatewayConfig()
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticExpr__isWriteSurface_3(Object gateway, Object visibleSubTools) {
+    return (java.util.List) ((visibleSubTools instanceof List) ? visibleSubTools : gateway.tools)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__mrtrEligibleCall_2(Object leaf, Object outer) {
+    return settings.useGateways == false ||
+            !(getGatewayConfig()[outer]?.tools?.contains(leaf))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__negotiatedProtocolVersion_0() {
+    return initializeProtocolVersions()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__originAllowed_0() {
+    return _allowedOriginHosts()
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticExpr__postBypassDeviceModel_0(Object deviceId, Object errors, Object fieldOverrides) {
+    return (java.util.Map) (_postDeviceConfigurationForm(deviceId, fieldOverrides, errors))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__radioPost_0(Object body, Object path) {
+    return hubInternalPostForm(path, body)
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticExpr__rmBackupBeforeEdit_0(Object reason, Object reused, Object ruleId) {
+    return (java.util.Map) (reused ?: _rmBackupRuleSnapshot(ruleId, reason))
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__rmBadModeIds_0(Object hasPicker, Object pickerIds) {
+    return hasPicker ? pickerIds : (((location?.modes ?: [])).collect((this.&_bat529Cb_4076886b_130))).findAll((this.&_bat529Cb_4076886b_213))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Set __bat529StaticExpr__rmCollectPageInputNames_0(Object cfg) {
+    return (java.util.Set) ((((cfg?.configPage?.sections ?: [])).collectMany((this.&_bat529Cb_4076886b_336))).findAll((this.&_bat529Cb_4076886b_350))as Set)
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Set __bat529StaticExpr__rmPageInputNames_0(Object cfg) {
+    return (java.util.Set) (((((cfg?.configPage?.sections ?: [])).collectMany((this.&_bat529Cb_4076886b_241))).collect((this.&_bat529Cb_4076886b_324))).findAll((this.&_bat529Cb_4076886b_342))as Set)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__snapshotBypassDeviceState_1(Object deviceId, Object errOut) {
+    return errOut << "fullJson currentStates unavailable for ${deviceId}"
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr__snapshotBypassDeviceState_2(Object detail, Object errOut) {
+    return errOut << detail
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Integer __bat529StaticExpr__writeCapacityRefusalLocked_0() {
+    return (java.lang.Integer) (_maxConcurrentWrites())
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Set __bat529StaticExpr_buildToolSearchCorpus_1(Object gatewayConfig) {
+    return (java.util.Set) ((gatewayConfig.values()).collectMany((this.&_bat529Cb_ac505e8e_11))as Set)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr_defaultProtocolVersion_0() {
+    return initializeProtocolVersions()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticExpr_getIdempotentToolNames_0() {
+    return getReadOnlyToolNames()
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Set __bat529StaticExpr_getToolDefinitions_4(Object gatewayConfig) {
+    return (java.util.Set) ((gatewayConfig.values()).collectMany((this.&_bat529Cb_ad9a62cb_40))as Set)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Integer __bat529StaticExpr_saveCapturedState_1() {
+    return (java.lang.Integer) (getMaxCapturedStates())
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticProperty_Safe_java_lang_Object(Object receiver, String key) {
+    return receiver?."${key}"
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticProperty_Safe_java_util_Map(Object receiver, String key) {
+    return (java.util.Map) (receiver?."${key}")
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Integer __bat529StaticProperty_java_lang_Integer(Object receiver, String key) {
+    return (java.lang.Integer) (receiver."${key}")
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticProperty_java_lang_Object(Object receiver, String key) {
+    return receiver."${key}"
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.String __bat529StaticProperty_java_lang_String(Object receiver, String key) {
+    return (java.lang.String) (receiver."${key}")
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticProperty_java_util_List(Object receiver, String key) {
+    return (java.util.List) (receiver."${key}")
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticProperty_java_util_Map(Object receiver, String key) {
+    return (java.util.Map) (receiver."${key}")
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticReceiverCall_Safe_java_lang_Object_0(Object receiver, String target) {
+    return receiver?."${target}"()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticReceiverCall_Safe_java_lang_Object_1(Object receiver, String target, Object p0) {
+    return receiver?."${target}"(p0)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticReceiverCall_java_lang_Object_0(Object receiver, String target) {
+    return receiver."${target}"()
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticReceiverCall_java_lang_Object_1(Object receiver, String target, Object p0) {
+    return receiver."${target}"(p0)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticReceiverCall_java_lang_Object_2(Object receiver, String target, Object p0, Object p1) {
+    return receiver."${target}"(p0, p1)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.Object __bat529StaticReceiverCall_java_lang_Object_3(Object receiver, String target, Object p0, Object p1, Object p2) {
+    return receiver."${target}"(p0, p1, p2)
+}
+
+@groovy.transform.CompileDynamic
+private java.lang.String __bat529StaticReceiverCall_java_lang_String_1(Object receiver, String target, Object p0) {
+    return (java.lang.String) (receiver."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticReceiverCall_java_util_List_0(Object receiver, String target) {
+    return (java.util.List) (receiver."${target}"())
+}
+
+@groovy.transform.CompileDynamic
+private java.util.List __bat529StaticReceiverCall_java_util_List_1(Object receiver, String target, Object p0) {
+    return (java.util.List) (receiver."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private java.util.Map __bat529StaticReceiverCall_java_util_Map_1(Object receiver, String target, Object p0) {
+    return (java.util.Map) (receiver."${target}"(p0))
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticStore__noteHeadersReadable_0(Object readable) {
+    return state.headersReadable = readable
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticStore__noteLocalIpForOrigin_0(Object readable) {
+    return state.originLocalIpReadable = readable
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticStore__retireHubSecuritySettings_0() {
+    return state.hubSecurityRetired = true
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticStore__setVariableValueLeg_0() {
+    return state.ruleVariables = [:]
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticStore__writeStateDurableWrite_0(Object value) {
+    return atomicState.packageDeployInFlight = value
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticStore__writeStateDurableWrite_1(Object value) {
+    return atomicState.mrtrRequests = value
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticStore_setRuleVariable_0() {
+    return state.ruleVariables = [:]
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticStore_shouldRetryWithFreshCookie_0() {
+    return atomicState.hubSecurityCookieExpiry = null
+}
+
+@groovy.transform.CompileDynamic
+private Object __bat529StaticStore_shouldRetryWithFreshCookie_1() {
+    return atomicState.hubSecurityCookie = null
 }

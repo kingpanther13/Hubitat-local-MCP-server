@@ -137,25 +137,26 @@ def handleHubVariableEvent(evt) {
     atomicState.variableHistory = history
 }
 
-def toolGetVariableHistory(args) {
-    def history = atomicState.variableHistory ?: []
+@groovy.transform.CompileStatic
+java.util.Map toolGetVariableHistory(args) {
+    def history = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_atomicState(), 'variableHistory') ?: []
     def filtered = history
-    if (args?.name) {
-        def n = args.name.toString()
-        filtered = (filtered).findAll(((this.&_bat529Cb_b8585dac_1).curry([n] as Object[])))
+    if (__bat529StaticProperty_Safe_java_lang_Object(args, 'name')) {
+        def n = __bat529StaticProperty_java_lang_Object(args, 'name').toString()
+        filtered = __bat529StaticDgm_findAll_1_java_lang_Object((filtered), ((this.&_bat529Cb_b8585dac_1).curry([n] as Object[])))
     }
-    if (args?.sinceMs != null) {
-        def since = args.sinceMs as Long
-        filtered = (filtered).findAll(((this.&_bat529Cb_b8585dac_8).curry([since] as Object[])))
+    if (__bat529StaticProperty_Safe_java_lang_Object(args, 'sinceMs') != null) {
+        def since = __bat529StaticProperty_java_lang_Object(args, 'sinceMs') as Long
+        filtered = __bat529StaticDgm_findAll_1_java_lang_Object((filtered), ((this.&_bat529Cb_b8585dac_8).curry([since] as Object[])))
     }
-    def limit = (args?.limit != null) ? (args.limit as Integer) : 50
+    def limit = (__bat529StaticProperty_Safe_java_lang_Object(args, 'limit') != null) ? (__bat529StaticProperty_java_lang_Object(args, 'limit') as Integer) : 50
     if (limit < 1) limit = 1
     // Most-recent first; cap at limit.
-    def recent = filtered.reverse().take(limit)
+    def recent = __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticReceiverCall_java_lang_Object_0(filtered, 'reverse'), 'take', limit)
     return [
         entries: recent,
-        total: recent.size(),
-        bufferSize: history.size(),
+        total: __bat529StaticReceiverCall_java_lang_Object_0(recent, 'size'),
+        bufferSize: __bat529StaticReceiverCall_java_lang_Object_0(history, 'size'),
         bufferCap: 200
     ]
 }
@@ -273,6 +274,7 @@ private void _attachHubVarDependents(Map found, String name) {
 // blank names. Reproduced here so the create tool fails fast with a clean
 // error before we touch the wizard. Returned via getters because the
 // Hubitat sandbox rejects `private static final` at script scope.
+@groovy.transform.CompileStatic
 private List getHubVarForbiddenChars() {
     return ["'", '"', '\\', '~', '[', ':', ']', '<', '>']
 }
@@ -285,19 +287,22 @@ private List getHubVarForbiddenChars() {
 // of truth -- a typo or drift would silently fall back to the legacy flat
 // error shape and lose the data-loss-protection contract. Leading space is
 // intentional: stripping " [asyncCommitLikely]" removes the separator too.
+@groovy.transform.CompileStatic
 private String getAsyncCommitMarker() {
     return " [asyncCommitLikely]"
 }
 
+@groovy.transform.CompileStatic
 private List getHubVarTypes() {
     return ["Number", "Decimal", "String", "Boolean", "DateTime"]
 }
 
+@groovy.transform.CompileStatic
 private void _validateHubVarName(String name) {
     if (!name?.trim()) {
         throw new IllegalArgumentException("Variable name is required")
     }
-    def bad = (getHubVarForbiddenChars()).findAll(((this.&_bat529Cb_b8585dac_12).curry([name] as Object[])))
+    def bad = __bat529StaticDgm_findAll_1_java_util_List((__bat529StaticCall_java_util_List_0('getHubVarForbiddenChars')), ((this.&_bat529Cb_b8585dac_12).curry([name] as Object[])))
     if (bad) {
         throw new IllegalArgumentException(
             "Variable name '${name}' contains forbidden character(s): ${bad.join(' ')}. " +
@@ -305,9 +310,10 @@ private void _validateHubVarName(String name) {
     }
 }
 
+@groovy.transform.CompileStatic
 private String _validateHubVarType(String type) {
-    def types = getHubVarTypes()
-    def match = (types).find(((this.&_bat529Cb_b8585dac_5).curry([type] as Object[])))
+    java.util.List types = __bat529StaticCall_java_util_List_0('getHubVarTypes')
+    def match = __bat529StaticDgm_find_1_java_lang_Object((types), ((this.&_bat529Cb_b8585dac_5).curry([type] as Object[])))
     if (!match) {
         throw new IllegalArgumentException(
             "Variable type '${type}' is invalid. Must be one of: ${types.join(', ')}")
@@ -321,12 +327,13 @@ private String _validateHubVarType(String type) {
 // reliably primes it; a single bare GET does not.
 //
 // Non-private so test specs can override via script.metaClass.
+@groovy.transform.CompileStatic
 def _primeHubVarsWizard(Integer appId, String context) {
     try {
-        hubInternalGet("/installedapp/configure/json/${appId}")
-        hubInternalGet("/installedapp/statusJson/${appId}")
+        __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/installedapp/configure/json/${appId}")
+        __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/installedapp/statusJson/${appId}")
     } catch (Exception e) {
-        mcpLog("debug", "hub-vars", "${context}: _primeHubVarsWizard for ${appId} threw ${e.class.simpleName}: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-vars", "${context}: _primeHubVarsWizard for ${appId} threw ${e.class.simpleName}: ${e.message}")
     }
 }
 
@@ -694,11 +701,12 @@ private void _validateInitialValue(String name, String type, value) {
 
 // Names of the inputs the Hub Variables form shows now, or null when the page cannot be read.
 // Non-private so specs can stub it.
-def _hubVarsFormFields(Integer appId) {
+@groovy.transform.CompileStatic
+java.util.Set _hubVarsFormFields(Integer appId) {
     try {
-        return (_rmCollectInputSchema(_rmFetchConfigJson(appId, "hubVar")?.configPage) ?: [:]).keySet() as Set
+        return (__bat529StaticCall_java_util_Map_1('_rmCollectInputSchema', __bat529StaticCall_java_util_Map_2('_rmFetchConfigJson', appId, "hubVar")?.configPage) ?: [:]).keySet() as Set
     } catch (Exception e) {
-        mcpLog("debug", "hub-vars", "_hubVarsFormFields(${appId}) could not read the form: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-vars", "_hubVarsFormFields(${appId}) could not read the form: ${e.message}")
         return null
     }
 }
@@ -706,15 +714,16 @@ def _hubVarsFormFields(Integer appId) {
 // Hub Variables button clicks land asynchronously (live: a read right after the click can still show
 // the old form, and the change appears a moment later). Wait for the form to show the click's effect,
 // clicking once more if it never does. A form that cannot be read counts as landed.
+@groovy.transform.CompileStatic
 private boolean _hubVarsClickAndWait(Integer appId, String button, String stateAttribute, Closure landed) {
     for (int attempt = 0; attempt < 2; attempt++) {
-        _rmClickAppButton(appId, button, stateAttribute, "hubVar")
+        __bat529StaticCall_java_lang_Object_4('_rmClickAppButton', appId, button, stateAttribute, "hubVar")
         for (int poll = 0; poll < 12; poll++) {
-            def fields = _hubVarsFormFields(appId)
+            java.util.Set fields = __bat529StaticCall_java_util_Set_1('_hubVarsFormFields', appId)
             if (fields == null || landed(fields)) return true
-            try { pauseExecution(250) } catch (Exception ignored) { }
+            try { __bat529StaticCall_java_lang_Object_1('pauseExecution', 250) } catch (Exception ignored) { }
         }
-        _primeHubVarsWizard(appId, "hub vars ${button} retry")
+        __bat529StaticCall_java_lang_Object_2('_primeHubVarsWizard', appId, "hub vars ${button} retry")
     }
     return false
 }
@@ -1144,26 +1153,28 @@ def toolSetVariable(Map args) {
 // false when the variable doesn't exist (Hubitat will not auto-create vars from setGlobalVar --
 // creation requires the Hub Variables UI or our toolCreateVariable tool). Falling back to the
 // rule_engine namespace on false OR exception preserves the legacy behavior callers depend on.
+@groovy.transform.CompileStatic
 private Map _setVariableValueLeg(name, value) {
     try {
-        if (setGlobalVar(name, value)) {
+        if (__bat529StaticCall_java_lang_Object_2('setGlobalVar', name, value)) {
             return [success: true, name: name, value: value, source: "hub"]
         }
     } catch (Exception e) {
-        mcpLog("debug", "hub-vars", "setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "debug", "hub-vars", "setGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
-    if (!state.ruleVariables) state.ruleVariables = [:]
-    state.ruleVariables.put(name, value)
+    if (!__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'ruleVariables')) __bat529StaticStore__setVariableValueLeg_0()
+    __bat529StaticReceiverCall_java_lang_Object_2(__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'ruleVariables'), 'put', name, value)
     return [success: true, name: name, value: value, source: "rule_engine"]
 }
 
 // Returns the NAMES of hub variables shared INTO the mesh (sharedHubVariables[].name), off the single
 // _meshJson() snapshot. Null when the mesh JSON is unreadable or the section is missing/misshaped --
 // callers treat null as "unreadable".
+@groovy.transform.CompileStatic
 private List _meshSharedHubVarNames() {
-    def j = _meshJson()
+    java.util.Map j = __bat529StaticCall_java_util_Map_0('_meshJson')
     if (!(j?.sharedHubVariables instanceof List)) return null
-    return (j.sharedHubVariables).collect((this.&_bat529Cb_b8585dac_10))
+    return __bat529StaticDgm_collect_1_java_util_List((j.sharedHubVariables), (this.&_bat529Cb_b8585dac_10))
 }
 
 def toolDeleteHubVariable(args) {
@@ -1363,24 +1374,26 @@ def toolDeleteHubVariable(args) {
 //   "notInUse"   - the plain <td>var</td> row is present (registered, no consumers)
 //   "unreadable" - appId/var missing, the GET threw, or the page body was empty
 //   "notListed"  - the page read fine but names neither marker (the variable is not on the page)
+@groovy.transform.CompileStatic
 String _hubVarPlatformInUseStatus(Integer hubVarsAppId, String varName) {
     if (hubVarsAppId == null || !varName) return "unreadable"
     def text
-    try { text = hubInternalGet("/installedapp/configure/json/${hubVarsAppId}")?.toString() }
+    try { text = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/installedapp/configure/json/${hubVarsAppId}")?.toString() }
     catch (Exception e) { return "unreadable" }
     if (!text) return "unreadable"
     def escaped = varName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "&#39;").replace('"', "&quot;")
     def forms = [varName, escaped].unique()
-    if (forms.any { text.contains("Show In Use Apps for ${it}'".toString()) }) return "inUse"
-    if (forms.any { text.contains("<td>${it}</td>".toString()) }) return "notInUse"
+    if (__bat529StaticDgm_any_1_boolean(forms) { text.contains("Show In Use Apps for ${it}'".toString()) }) return "inUse"
+    if (__bat529StaticDgm_any_1_boolean(forms) { text.contains("<td>${it}</td>".toString()) }) return "notInUse"
     return "notListed"
 }
 
 // Whether the Hub Variables page marks this variable as in use. Thin Boolean wrapper over
 // _hubVarPlatformInUseStatus: true (in use), false (listed but not in use), null (unreadable OR not
 // listed -- both collapse to "unknown" for callers that only need the tri-state).
+@groovy.transform.CompileStatic
 Boolean _hubVarPlatformInUse(Integer hubVarsAppId, String varName) {
-    switch (_hubVarPlatformInUseStatus(hubVarsAppId, varName)) {
+    switch (__bat529StaticCall_java_lang_String_2('_hubVarPlatformInUseStatus', hubVarsAppId, varName)) {
         case "inUse": return true
         case "notInUse": return false
         default: return null
@@ -1508,27 +1521,31 @@ def _getAllToolDefinitions_partVariables() {
     return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_variables"],["description","List all hub variables and rule-engine variables.[[FLAT_TRIM]] Includes every type, even ones without connectors.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["Number","Decimal","String","Boolean","DateTime"]]],["description","[[FLAT_TRIM]]Optional: only hub variables of this type.[[/FLAT_TRIM]]"]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor for the hubVariables list.[[FLAT_TRIM]] Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_get_variable"],["description","Get one variable\'s current value by name; includeDependents=true also lists the apps referencing a hub variable.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables; use hub_list_variables to enumerate. includeDependents reads the hub\'s in-use registry by clicking the Settings > Hub Variables wizard reveal, returning appsUsing as {id, label} plus coverageNote \\u2014 apps that never register their use (e.g. webCoRE) are not covered, and a failed registry read is reported via dependentsError without failing the call. See hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Exact variable name to look up, e.g. \\"vacationMode\\". Case-sensitive."]]]],["includeDependents",["m",[["type","boolean"],["description","Opt-in: also list the apps that reference this hub variable.[[FLAT_TRIM]] Returns appsUsing + coverageNote; clicks the Hub Variables wizard reveal, so off by default.[[/FLAT_TRIM]]"],["default",false]]]]]]],["required",["l",["name"]]]]]]]],["m",[["name","hub_set_variable"],["description","Set an existing variable\'s value[[FLAT_TRIM]], or add to a Number/Decimal hub variable with increment[[/FLAT_TRIM]]. For hub variables, value type must match the variable\'s declared type.[[FLAT_TRIM]] Falls back to the rule_engine namespace when no hub variable matches. Creating new hub variables requires hub_create_variable \\u2014 Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both \\u2014 see hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Variable name"]]]],["value",["m",[["type","string"],["description","Variable value (string, number, or boolean as string).[[FLAT_TRIM]] Optional when mesh_shared is given.[[/FLAT_TRIM]]"]]]],["increment",["m",[["type","number"],["description","[[FLAT_TRIM]]Add this amount atomically to a Number/Decimal hub variable (instead of value; send alone).[[/FLAT_TRIM]]"]]]],["mesh_shared",["m",[["type","boolean"],["description","Hub Mesh: share/unshare this hub variable.[[FLAT_TRIM]] true shares into the mesh, false unshares; hub variables only; may accompany value or stand alone.[[/FLAT_TRIM]]"]]]]]]],["required",["l",["name"]]]]]]]],["m",[["name","hub_create_variable"],["description","Create a new hub variable[[FLAT_TRIM]] (global variable visible to apps and Rule Machine)[[/FLAT_TRIM]], one at a time or several in one call.[[FLAT_TRIM]] Single form: name + type + value. Or LINK a variable a peer hub shares over Hub Mesh: mesh_source_hub_id + mesh_source_name from hub_get_hub_mesh availableLinkedHubVariables[], instead of name/type/value/variables; see hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","New variable name, e.g. \\"vacationMode\\".[[FLAT_TRIM]] Omit when using variables or the Hub Mesh link form.[[/FLAT_TRIM]]"]]]],["type",["m",[["type","string"],["enum",["l",["Number","Decimal","String","Boolean","DateTime"]]],["description","Variable type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"]]]],["value",["m",[["description","Initial value, must match the type.[[FLAT_TRIM]] DateTime uses hub-local time, e.g. 2026-02-04T14:00 or {date,time}; offsets are ignored and seconds/fractions discarded. Omit when using variables.[[/FLAT_TRIM]]"]]]],["mesh_source_hub_id",["m",[["type","string"],["description","Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with mesh_source_name, not name/type/value.[[/FLAT_TRIM]]"]]]],["mesh_source_name",["m",[["type","string"],["description","Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"]]]],["variables",["m",[["type","array"],["description","Bulk form: several variables in one call."],["items",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","New variable name"]]]],["type",["m",[["type","string"],["enum",["l",["Number","Decimal","String","Boolean","DateTime"]]],["description","Variable type"]]]],["value",["m",[["description","Initial value, must match the type"]]]]]]],["required",["l",["name","type","value"]]]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to perform the creation"]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_delete_variable"],["description","Permanently delete a variable (DESTRUCTIVE \\u2014 no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\\n\\n**Reference safety:** for a hub variable the tool first reads the hub\'s own in-use registry (what Settings > Hub Variables shows in orange, covering Rule Machine and other registering apps) and refuses when it is in use or when the registry cannot be read. It also scans this server\'s child rules for the name, quoted or as a %name% substitution. Apps that never register use, such as webCoRE pistons, are not covered (see `coverageNote`). To proceed anyway, pass `force=true` after acknowledging the breakage; `brokenConsumers` then lists the affected child rules.\\n\\nThe consumer scan makes this call slow; if the transport drops, verify whether the variable still exists before retrying.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Variable name to delete"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to confirm the deletion"]]]],["force",["m",[["type","boolean"],["description","OPTIONAL: must be true to proceed when the hub reports the variable in use, the in-use registry cannot be read, or a child rule references it. Without force, the tool refuses and says why."]]]]]]],["required",["l",["name","confirm"]]]]]]]],["m",[["name","hub_create_connector"],["description","Create a virtual-device connector for an existing hub variable[[FLAT_TRIM]] so apps that only consume devices can read/write it. No-op if a connector already exists; see hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Existing hub-variable name"]]]],["connectorType",["m",[["type","string"],["description","Optional connector type for Number/Decimal vars (e.g. \'Dimmer\', \'Variable\'); defaults to \'Variable\'.[[FLAT_TRIM]] Other options: \'Volume\', \'ColorTemp\', \'Humidity\', \'Illuminance\'. Ignored for vars that don\'t show a chooser.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true"]]]]]]],["required",["l",["name","confirm"]]]]]]]],["m",[["name","hub_delete_connector"],["description","Delete the connector device backing a hub variable. DESTRUCTIVE and not undoable. confirm=true required.[[FLAT_TRIM]] The connector device is removed, but the hub variable itself and its value are unchanged. No-op if the variable has no connector; see hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Hub-variable name whose connector device to remove, e.g. \\"vacationMode\\""]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to perform the deletion"]]]]]]],["required",["l",["name","confirm"]]]]]]]],["m",[["name","hub_list_variable_changes"],["description","List recent hub-variable change events captured by the MCP app\'s location-event subscription, most-recent first.[[FLAT_TRIM]] Use this to audit or debug what changed a variable and when, without polling hub_get_variable. The buffer holds at most the 200 most recent changes (oldest dropped) and survives app and hub restarts, but it is not a complete history \\u2014 an empty or partial result does NOT mean the variable never changed. For the hub\'s separately retained location-event history call hub_list_device_events with no deviceId (location-event mode).[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Optional: filter to changes for this variable name only, e.g. \\"vacationMode\\".[[FLAT_TRIM]] Omit to include all variables.[[/FLAT_TRIM]]"]]]],["sinceMs",["m",[["type","integer"],["description","Optional: only return changes whose timestamp >= this epoch-millis value, e.g. 1717459200000"]]]],["limit",["m",[["type","integer"],["description","Optional: max entries to return (default 50)"]]]]]]]]]]]]]]'])
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partVariables() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_list_variables","hub_get_variable","hub_list_variable_changes"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_list_variables","hub_get_variable","hub_list_variable_changes"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partVariables() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_delete_variable","hub_create_connector","hub_delete_connector"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_delete_variable","hub_create_connector","hub_delete_connector"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partVariables() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_variables",["m",[["title","List Variables"],["summary","List hub and rule-engine variables, optionally only hub variables of one type."]]]],["hub_get_variable",["m",[["title","Get Variable"],["summary","Get a variable\'s value and metadata (optionally the apps that reference it)."]]]],["hub_set_variable",["m",[["title","Set Variable"],["summary","Set an existing variable\'s value or atomically add to a numeric hub variable."]]]],["hub_create_variable",["m",[["title","Create Variable"],["summary","Create a new hub variable."]]]],["hub_delete_variable",["m",[["title","Delete Variable"],["summary","Permanently delete a hub variable and any connector it has."]]]],["hub_create_connector",["m",[["title","Create Variable Connector"],["summary","Create a virtual-device connector for a hub variable."]]]],["hub_delete_connector",["m",[["title","Delete Variable Connector"],["summary","Remove a hub variable\'s connector device."]]]],["hub_list_variable_changes",["m",[["title","List Variable Changes"],["summary","Recent hub-variable changes from the retained 200-entry history."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_list_variables",["m",[["title","List Variables"],["summary","List hub and rule-engine variables, optionally only hub variables of one type."]]]],["hub_get_variable",["m",[["title","Get Variable"],["summary","Get a variable\'s value and metadata (optionally the apps that reference it)."]]]],["hub_set_variable",["m",[["title","Set Variable"],["summary","Set an existing variable\'s value or atomically add to a numeric hub variable."]]]],["hub_create_variable",["m",[["title","Create Variable"],["summary","Create a new hub variable."]]]],["hub_delete_variable",["m",[["title","Delete Variable"],["summary","Permanently delete a hub variable and any connector it has."]]]],["hub_create_connector",["m",[["title","Create Variable Connector"],["summary","Create a virtual-device connector for a hub variable."]]]],["hub_delete_connector",["m",[["title","Delete Variable Connector"],["summary","Remove a hub variable\'s connector device."]]]],["hub_list_variable_changes",["m",[["title","List Variable Changes"],["summary","Recent hub-variable changes from the retained 200-entry history."]]]]]]'])
 }
 
 
-def _bat529Cb_b8585dac_1(def n, def it) { it?.name == n 
+@groovy.transform.CompileStatic
+def _bat529Cb_b8585dac_1(def n, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') == n 
 }
 
 def _bat529Cb_b8585dac_2(def it) { "id=${it.id}" 
@@ -1537,49 +1554,61 @@ def _bat529Cb_b8585dac_2(def it) { "id=${it.id}"
 def _bat529Cb_b8585dac_3(def it) { "id=${it.id}" 
 }
 
-def _bat529Cb_b8585dac_4(def html, def it) { html.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_b8585dac_4(def html, def it) { __bat529StaticReceiverCall_java_lang_Object_1(html, 'contains', it) 
 }
 
-def _bat529Cb_b8585dac_5(def type, def it) { it.equalsIgnoreCase(type) 
+@groovy.transform.CompileStatic
+def _bat529Cb_b8585dac_5(def type, def it) { __bat529StaticReceiverCall_java_lang_Object_1(it, 'equalsIgnoreCase', type) 
 }
 
-def _bat529Cb_b8585dac_6(def serialized, def it) { serialized?.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_b8585dac_6(def serialized, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_1(serialized, 'contains', it) 
 }
 
 def _bat529Cb_b8585dac_7(def it) { "${it.label} (id=${it.id})" 
 }
 
-def _bat529Cb_b8585dac_8(def since, def it) { (it?.timestamp ?: 0L) >= since 
+@groovy.transform.CompileStatic
+def _bat529Cb_b8585dac_8(def since, def it) { __bat529StaticBinary_GreaterEqual_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(it, 'timestamp') ?: 0L, since) 
 }
 
 def _bat529Cb_b8585dac_9(def varName, def k, def v) { k != varName 
 }
 
-def _bat529Cb_b8585dac_10(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_b8585dac_10(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_b8585dac_11(def it) { it?.toString() ?: "" 
 }
 
-def _bat529Cb_b8585dac_12(def name, def c) { name.contains(c) 
+@groovy.transform.CompileStatic
+def _bat529Cb_b8585dac_12(def name, def c) { __bat529StaticReceiverCall_java_lang_Object_1(name, 'contains', c) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_b8585dac_13(def varName, def it) { it instanceof Map && it.name?.toString() == varName 
 }
 
-def _bat529Cb_b8585dac_14(def hubType, def it) { it.type?.toString()?.toLowerCase() == hubType 
+@groovy.transform.CompileStatic
+def _bat529Cb_b8585dac_14(def hubType, def it) { __bat529StaticProperty_java_lang_Object(it, 'type')?.toString()?.toLowerCase() == hubType 
 }
 
-def _bat529Cb_b8585dac_15(def meshHubId, def meshName, def it) { it.hubId?.toString() == meshHubId && it.name?.toString() == meshName 
+@groovy.transform.CompileStatic
+def _bat529Cb_b8585dac_15(def meshHubId, def meshName, def it) { __bat529StaticProperty_java_lang_Object(it, 'hubId')?.toString() == meshHubId && __bat529StaticProperty_java_lang_Object(it, 'name')?.toString() == meshName 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_b8585dac_16(def it) { it instanceof Map && it.description != null 
 }
 
 def _bat529Cb_b8585dac_17(def it) { "<b>${it}</b> is in use by these apps".toString() 
 }
 
-def _bat529Cb_b8585dac_18(def meshHubId, def meshName, def it) { it.hubId?.toString() == meshHubId && it.name?.toString() == meshName 
+@groovy.transform.CompileStatic
+def _bat529Cb_b8585dac_18(def meshHubId, def meshName, def it) { __bat529StaticProperty_java_lang_Object(it, 'hubId')?.toString() == meshHubId && __bat529StaticProperty_java_lang_Object(it, 'name')?.toString() == meshName 
 }
 
 def _bat529Cb_b8585dac_19(def name, def value) {
@@ -1592,17 +1621,20 @@ def _bat529Cb_b8585dac_20(def name, def value) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_b8585dac_21(def meshHubId, def meshName, def it) {
-            it?.sourceVarName?.toString() == meshName && it?.sourceHubId?.toString() == meshHubId 
+            __bat529StaticProperty_Safe_java_lang_Object(it, 'sourceVarName')?.toString() == meshName && __bat529StaticProperty_Safe_java_lang_Object(it, 'sourceHubId')?.toString() == meshHubId 
 }
 
-def _bat529Cb_b8585dac_22(def it) { it.description.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_b8585dac_22(def it) { __bat529StaticProperty_java_lang_Object(it, 'description').toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_b8585dac_23(def currentVars, def serialized, def varName) {
                         // Match a whole JSON value so temp cannot match temperature.
                         def needle = "\"${varName}\""
-                        if (serialized?.contains(needle)) currentVars << varName
+                        if (__bat529StaticReceiverCall_Safe_java_lang_Object_1(serialized, 'contains', needle)) __bat529StaticExpr__bat529Cb_b8585dac_23_1(currentVars, varName)
                     
 }
 
@@ -1625,13 +1657,14 @@ def _bat529Cb_b8585dac_25(def sect) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_b8585dac_26(def consumers, def needles, def child) {
             def ruleData = null
-            try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
+            try { ruleData = __bat529StaticReceiverCall_java_lang_Object_0(child, 'getRuleData') } catch (Exception e) { /* not an MCP rule child */ }
             if (ruleData) {
                 def serialized = groovy.json.JsonOutput.toJson(ruleData)
-                if ((needles).any(((this.&_bat529Cb_b8585dac_6).curry([serialized] as Object[])))) {
-                    consumers << [id: child.id, label: child.label]
+                if (__bat529StaticDgm_any_1_boolean((needles), ((this.&_bat529Cb_b8585dac_6).curry([serialized] as Object[])))) {
+                    __bat529StaticExpr__bat529Cb_b8585dac_26_3(child, consumers)
                 }
             }
         

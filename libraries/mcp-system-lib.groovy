@@ -5,17 +5,18 @@ library(name: "McpSystemLib", namespace: "mcp", author: "kingpanther13", descrip
 // neither is in hub.data or any /hub/advanced/* metric. The availability check is cloud-driven
 // (cloud.hubitat.com); the hub caches the result here so it is readable locally. Defensive: returns
 // null on any fetch/parse failure so callers degrade gracefully (older firmware may not serve it).
+@groovy.transform.CompileStatic
 def _getHub2HubData() {
     try {
-        def raw = hubInternalGet("/hub2/hubData")
+        def raw = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/hub2/hubData")
         if (!raw) return null
-        def parsed = new groovy.json.JsonSlurper().parseText(raw)
+        def parsed = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', raw)
         return (parsed instanceof Map) ? parsed : null
     } catch (Exception e) {
         // warn, not debug: the default log threshold is "error", so a debug line would be invisible --
         // and a /hub2/hubData fetch/parse failure (transient 5xx, auth hiccup, or a firmware that
         // changed the JSON shape) is exactly the cause an operator needs when platformUpdate degrades.
-        mcpLog("warn", "server", "_getHub2HubData read/parse failed: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "server", "_getHub2HubData read/parse failed: ${e.message}")
         return null
     }
 }
@@ -636,6 +637,7 @@ private _applyNetworkConfig(network, List applied) {
 
 // Validate an optional lat/long arg: coerce a string to a number and bound the range (-> isError validation result on a
 // bad value), so an out-of-range coordinate is rejected before it reaches the hub.
+@groovy.transform.CompileStatic
 private _validateCoordinate(String key, Map args, Number lo, Number hi) {
     if (!args.containsKey(key)) return
     def v = args.get(key)
@@ -644,7 +646,7 @@ private _validateCoordinate(String key, Map args, Number lo, Number hi) {
             throw new IllegalArgumentException("${key} must be a number, got: ${args.get(key)}")
         }
     }
-    if (!(v instanceof Number) || v < lo || v > hi) {
+    if (!(v instanceof Number) || __bat529StaticBinary_Less_java_lang_Object(v, lo) || __bat529StaticBinary_Greater_java_lang_Object(v, hi)) {
         throw new IllegalArgumentException("${key} must be a number between ${lo} and ${hi}, got: ${args.get(key)}")
     }
     args.put(key, v)   // write back the coerced number so the /location/update payload sends a number, not a string
@@ -659,11 +661,13 @@ private _validateCoordinate(String key, Map args, Number lo, Number hi) {
 
 // Null-safe list passthrough: firmware variations omit whole sections of
 // /hub2/hubMeshJson, and a null would be indistinguishable from "none shared".
+@groovy.transform.CompileStatic
 private List _meshList(v) {
     return (v instanceof List) ? v : []
 }
 
 // The allowed full-sync intervals the hub's own picker offers (seconds; 0 = Never).
+@groovy.transform.CompileStatic
 private List _meshRefreshIntervals() {
     return [0, 120, 300, 3600]
 }
@@ -1052,8 +1056,9 @@ def toolManageMode(args) {
     }
 }
 
+@groovy.transform.CompileStatic
 private _modePost(String path, Map body) {
-    return hubInternalPostJson(path, groovy.json.JsonOutput.toJson(body))
+    return __bat529StaticCall_java_lang_Object_2('hubInternalPostJson', path, groovy.json.JsonOutput.toJson(body))
 }
 
 @groovy.transform.CompileStatic
@@ -1151,9 +1156,10 @@ def toolSetModeManager(args) {
     return result
 }
 
-def toolGetHsmStatus() {
-    def hsmStatus = location.hsmStatus
-    def hsmAlerts = location.hsmAlert
+@groovy.transform.CompileStatic
+java.util.Map toolGetHsmStatus() {
+    def hsmStatus = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_location(), 'hsmStatus')
+    def hsmAlerts = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_location(), 'hsmAlert')
 
     return [
         status: hsmStatus,
@@ -1261,15 +1267,16 @@ private Map _readHubNetworkSettings() {
     ]
 }
 
-def toolSetHsm(armCommand) {
-    def validCommands = ["armAway", "armHome", "armNight", "disarm"]
+@groovy.transform.CompileStatic
+java.util.Map toolSetHsm(armCommand) {
+    java.util.List validCommands = ["armAway", "armHome", "armNight", "disarm"]
     if (!validCommands.contains(armCommand)) {
         throw new IllegalArgumentException("Invalid HSM arm command: ${armCommand}. Valid commands: ${validCommands}")
     }
 
     // Capture current status BEFORE sending the change event
-    def previousStatus = location.hsmStatus ?: "unknown"
-    sendLocationEvent(name: "hsmSetArm", value: armCommand)
+    def previousStatus = __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_location(), 'hsmStatus') ?: "unknown"
+    __bat529StaticCall_sendLocationEvent_java_lang_Object_1(name: "hsmSetArm", value: armCommand)
 
     return [
         success: true,
@@ -1282,22 +1289,23 @@ def toolSetHsm(armCommand) {
 // (issue #259 item #1: the whole hub-DB backup domain — create/list/restore/delete/schedule/upload
 // — is consolidated there under the hub_manage_backup gateway).
 
-def toolRebootHub(args) {
-    requireDestructiveConfirm(args.confirm)
+@groovy.transform.CompileStatic
+java.util.Map toolRebootHub(args) {
+    __bat529StaticCall_java_lang_Object_1('requireDestructiveConfirm', __bat529StaticProperty_java_lang_Object(args, 'confirm'))
 
-    mcpLog("warn", "hub-admin", "Hub reboot initiated by MCP")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "Hub reboot initiated by MCP")
 
     try {
-        def responseText = hubInternalPost("/hub/reboot")
+        def responseText = __bat529StaticCall_java_lang_Object_1('hubInternalPost', "/hub/reboot")
         return [
             success: true,
             message: "Hub reboot initiated. The hub will be unreachable for 1-3 minutes.",
-            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            lastBackup: __bat529StaticCall_java_lang_Object_1('formatTimestamp', __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'lastBackupTimestamp')),
             warning: "All automations and device communications will stop during reboot. The hub will restart automatically.",
-            response: responseText?.take(500)
+            response: __bat529StaticReceiverCall_Safe_java_lang_Object_1(responseText, 'take', 500)
         ]
     } catch (Exception e) {
-        mcpLogError("hub-admin", "Hub reboot failed", e)
+        __bat529StaticCall_java_lang_Object_3('mcpLogError', "hub-admin", "Hub reboot failed", e)
         return [
             success: false,
             error: "Reboot failed: ${e.message}",
@@ -1306,22 +1314,23 @@ def toolRebootHub(args) {
     }
 }
 
-def toolShutdownHub(args) {
-    requireDestructiveConfirm(args.confirm)
+@groovy.transform.CompileStatic
+java.util.Map toolShutdownHub(args) {
+    __bat529StaticCall_java_lang_Object_1('requireDestructiveConfirm', __bat529StaticProperty_java_lang_Object(args, 'confirm'))
 
-    mcpLog("warn", "hub-admin", "Hub SHUTDOWN initiated by MCP -- hub will NOT restart automatically")
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "Hub SHUTDOWN initiated by MCP -- hub will NOT restart automatically")
 
     try {
-        def responseText = hubInternalPost("/hub/shutdown")
+        def responseText = __bat529StaticCall_java_lang_Object_1('hubInternalPost', "/hub/shutdown")
         return [
             success: true,
             message: "Hub shutdown initiated. The hub will power off and will NOT restart automatically.",
-            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            lastBackup: __bat529StaticCall_java_lang_Object_1('formatTimestamp', __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'lastBackupTimestamp')),
             warning: "The hub is powering down. To restart, you must physically unplug and replug the hub power cable. ALL smart home functionality will stop until the hub is manually restarted.",
-            response: responseText?.take(500)
+            response: __bat529StaticReceiverCall_Safe_java_lang_Object_1(responseText, 'take', 500)
         ]
     } catch (Exception e) {
-        mcpLogError("hub-admin", "Hub shutdown failed", e)
+        __bat529StaticCall_java_lang_Object_3('mcpLogError', "hub-admin", "Hub shutdown failed", e)
         return [
             success: false,
             error: "Shutdown failed: ${e.message}",
@@ -1330,7 +1339,8 @@ def toolShutdownHub(args) {
     }
 }
 
-def isNewerVersion(String remote, String local) {
+@groovy.transform.CompileStatic
+java.lang.Boolean isNewerVersion(String remote, String local) {
     // Null guard: callers may pass null when the remote manifest fetch
     // returns no version field. Treat as "not newer" so update prompts
     // are suppressed rather than NPE-crashing the version-check path.
@@ -1341,26 +1351,26 @@ def isNewerVersion(String remote, String local) {
     // means users stop getting update prompts without knowing why.
     def semverPattern = ~/^\d+\.\d+\.\d+$/
     if (!(remote ==~ semverPattern)) {
-        mcpLog("warn", "server", "Remote version not strict semver: '${remote}' -- skipping comparison")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "server", "Remote version not strict semver: '${remote}' -- skipping comparison")
         return false
     }
     if (!(local ==~ semverPattern)) {
-        mcpLog("warn", "server", "Local version not strict semver: '${local}' -- skipping comparison")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "server", "Local version not strict semver: '${local}' -- skipping comparison")
         return false
     }
     try {
-        def remoteParts = (remote.tokenize('.')).collect((this.&_bat529Cb_523e098a_7))
-        def localParts = (local.tokenize('.')).collect((this.&_bat529Cb_523e098a_6))
+        def remoteParts = __bat529StaticDgm_collect_1_java_util_List((remote.tokenize('.')), (this.&_bat529Cb_523e098a_7))
+        def localParts = __bat529StaticDgm_collect_1_java_util_List((local.tokenize('.')), (this.&_bat529Cb_523e098a_6))
         def maxLen = Math.max(remoteParts.size(), localParts.size())
         for (int i = 0; i < maxLen; i++) {
             def r = i < remoteParts.size() ? remoteParts[i] : 0
             def l = i < localParts.size() ? localParts[i] : 0
-            if (r > l) return true
-            if (r < l) return false
+            if (__bat529StaticBinary_Greater_java_lang_Object(r, l)) return true
+            if (__bat529StaticBinary_Less_java_lang_Object(r, l)) return false
         }
         return false
     } catch (Exception e) {
-        mcpLog("warn", "server", "Version comparison failed: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "server", "Version comparison failed: ${e.message}")
         return false
     }
 }
@@ -1369,16 +1379,18 @@ def isNewerVersion(String remote, String local) {
 // can't go stale after an upgrade (a boolean stays true until the next async check overwrites it, so
 // a hub already on the newest release would read "update available: <older>"). isNewerVersion
 // null-guards and rejects non-semver, so the "check in progress" sentinel compares as not-newer.
-def appUpdateAvailable() {
-    return isNewerVersion(_latestKnownVersion(), currentVersion())
+@groovy.transform.CompileStatic
+java.lang.Boolean appUpdateAvailable() {
+    return __bat529StaticCall_java_lang_Boolean_2('isNewerVersion', __bat529StaticCall_java_lang_Object_0('_latestKnownVersion'), __bat529StaticCall_java_lang_String_0('currentVersion'))
 }
 
+@groovy.transform.CompileStatic
 def _latestKnownVersion() {
-    String appKey = _stateOwnerKey()
+    String appKey = __bat529StaticCall_java_lang_String_0('_stateOwnerKey')
     synchronized (LATEST_VERSION_SEEN) {
         if (LATEST_VERSION_SEEN.containsKey(appKey)) return LATEST_VERSION_SEEN.get(appKey)
     }
-    def latest = state.updateCheck?.latestVersion
+    def latest = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'updateCheck'), 'latestVersion')
     // A response handled since the state read above wins over this possibly older snapshot.
     synchronized (LATEST_VERSION_SEEN) {
         if (!LATEST_VERSION_SEEN.containsKey(appKey)) LATEST_VERSION_SEEN.put(appKey, latest)
@@ -1406,17 +1418,18 @@ def checkForUpdate() {
 // Returns true when the async request was scheduled, false when asynchttpGet threw before scheduling
 // it -- the boolean lets a caller surface an honest checkInProgress rather than claim a refresh that
 // isn't actually pending.
-def doUpdateCheck() {
+@groovy.transform.CompileStatic
+java.lang.Boolean doUpdateCheck() {
     try {
-        def params = [
+        java.util.Map params = [
             uri: "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/packageManifest.json",
             contentType: "application/json",
             timeout: 30
         ]
-        asynchttpGet("handleUpdateCheckResponse", params)
+        __bat529StaticCall_java_lang_Object_2('asynchttpGet', "handleUpdateCheckResponse", params)
         return true
     } catch (Exception e) {
-        mcpLog("warn", "server", "Failed to initiate version check: ${e.message}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "server", "Failed to initiate version check: ${e.message}")
         return false
     }
 }
@@ -1464,12 +1477,13 @@ def handleUpdateCheckResponse(resp, data) {
 // endpoints (/hub/cloud/updatePlatform downloads + installs; the hub reboots itself when the install
 // completes). statusOnly polls /hub/cloud/checkUpdateStatus without applying. The pending-update read
 // lives in hub_get_info (platformUpdate); this tool also runs the live /hub/cloud/checkForUpdate.
-def toolUpdateFirmware(args) {
-    if (args?.statusOnly == true) {
+@groovy.transform.CompileStatic
+java.util.Map toolUpdateFirmware(args) {
+    if (__bat529StaticProperty_Safe_java_lang_Object(args, 'statusOnly') == true) {
         try {
-            def st = hubInternalGet("/hub/cloud/checkUpdateStatus", null, 30)
-            def parsed = st?.take(200)
-            try { if (st) parsed = new groovy.json.JsonSlurper().parseText(st) } catch (Exception ignore) { }
+            def st = __bat529StaticCall_java_lang_Object_3('hubInternalGet', "/hub/cloud/checkUpdateStatus", null, 30)
+            def parsed = __bat529StaticReceiverCall_Safe_java_lang_Object_1(st, 'take', 200)
+            try { if (st) parsed = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', st) } catch (Exception ignore) { }
             return [
                 success: true,
                 statusOnly: true,
@@ -1477,26 +1491,26 @@ def toolUpdateFirmware(args) {
                 note: "Install progress (status is IDLE when none is running). The endpoint goes dark during the reboot; confirm the new firmwareVersion via hub_get_info afterwards."
             ]
         } catch (Exception e) {
-            mcpLogError("hub-admin", "Firmware update status poll failed", e)
+            __bat529StaticCall_java_lang_Object_3('mcpLogError', "hub-admin", "Firmware update status poll failed", e)
             return [success: false, error: "Update status poll failed: ${e.message}", note: "Check Hub Security credentials."]
         }
     }
 
-    requireDestructiveConfirm(args.confirm)
-    mcpLog("warn", "hub-admin", "Hub firmware update initiated by MCP (install + self-reboot)")
+    __bat529StaticCall_java_lang_Object_1('requireDestructiveConfirm', __bat529StaticProperty_java_lang_Object(args, 'confirm'))
+    __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "hub-admin", "Hub firmware update initiated by MCP (install + self-reboot)")
     try {
-        def check = _parseFirmwareCheck(hubInternalGet("/hub/cloud/checkForUpdate", null, 60))
-        def resp = hubInternalGet("/hub/cloud/updatePlatform", null, 60)
+        java.util.Map check = __bat529StaticCall_java_util_Map_1('_parseFirmwareCheck', __bat529StaticCall_java_lang_Object_3('hubInternalGet', "/hub/cloud/checkForUpdate", null, 60))
+        def resp = __bat529StaticCall_java_lang_Object_3('hubInternalGet', "/hub/cloud/updatePlatform", null, 60)
         return [
             success: true,
             message: "Firmware update initiated. The hub downloads and installs the pending update, then reboots itself (5-10 minutes total).",
             available: check,
-            lastBackup: formatTimestamp(state.lastBackupTimestamp),
+            lastBackup: __bat529StaticCall_java_lang_Object_1('formatTimestamp', __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_state(), 'lastBackupTimestamp')),
             warning: "All automations and device communications stop during the install and reboot. Poll progress with hub_update_firmware(statusOnly=true); confirm the new version via hub_get_info afterwards.",
-            response: resp?.take(500)
+            response: __bat529StaticReceiverCall_Safe_java_lang_Object_1(resp, 'take', 500)
         ]
     } catch (Exception e) {
-        mcpLogError("hub-admin", "Hub firmware update failed", e)
+        __bat529StaticCall_java_lang_Object_3('mcpLogError', "hub-admin", "Hub firmware update failed", e)
         return [
             success: false,
             error: "Firmware update failed: ${e.message}",
@@ -1554,81 +1568,100 @@ def _getAllToolDefinitions_partSystem() {
     ]
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partSystem() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_get_info","hub_list_modes","hub_get_hsm_status","hub_get_hub_mesh"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_get_info","hub_list_modes","hub_get_hsm_status","hub_get_hub_mesh"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partSystem() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_set_hsm","hub_set_mode_manager","hub_update_hub_mesh"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_set_hsm","hub_set_mode_manager","hub_update_hub_mesh"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _openWorldToolNames_partSystem() {
     // Tools in this library that reach BEYOND the hub to the open internet (MCP
     // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_get_info","hub_update_firmware"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_get_info","hub_update_firmware"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partSystem() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_info",["m",[["title","Get Hub Info"],["summary","Comprehensive hub info: hardware, health, firmware/platform-update status, network, and MCP stats."]]]],["hub_list_modes",["m",[["title","List Modes"],["summary","List the hub\'s location modes, the active one, and Mode Manager state."]]]],["hub_manage_mode",["m",[["title","Manage Modes"],["summary","Create, rename, delete, or activate a hub location mode."]]]],["hub_set_mode_manager",["m",[["title","Set Mode Manager"],["summary","Pick the Mode Manager and update its per-mode conditions."]]]],["hub_get_hsm_status",["m",[["title","Get HSM Status"],["summary","Get the current Hubitat Safety Monitor arm status."]]]],["hub_set_hsm",["m",[["title","Set HSM Arm Mode"],["summary","Arm or disarm Hubitat Safety Monitor."]]]],["hub_set_system_settings",["m",[["title","Set System Settings"],["summary","Set hub name, time zone, location, zip, temperature scale, dark mode, network config, or dismiss a hub alert."]]]],["hub_get_hub_mesh",["m",[["title","Get Hub Mesh"],["summary","Read Hub Mesh config: enabled state, peer hubs, shared and linked devices/variables, sync interval."]]]],["hub_update_hub_mesh",["m",[["title","Update Hub Mesh"],["summary","Enable/disable Hub Mesh, set the sync interval, follow a peer\'s modes, or store a peer\'s mesh token."]]]],["hub_update_firmware",["m",[["title","Update Hub Firmware"],["summary","Install the hub\'s pending platform/firmware update (downloads, installs, and reboots the hub)."]]]],["hub_reboot",["m",[["title","Reboot Hub"],["summary","Reboot the hub (1-3 minutes of downtime)."]]]],["hub_shutdown",["m",[["title","Shut Down Hub"],["summary","Power the hub off; a physical restart is required afterwards."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_get_info",["m",[["title","Get Hub Info"],["summary","Comprehensive hub info: hardware, health, firmware/platform-update status, network, and MCP stats."]]]],["hub_list_modes",["m",[["title","List Modes"],["summary","List the hub\'s location modes, the active one, and Mode Manager state."]]]],["hub_manage_mode",["m",[["title","Manage Modes"],["summary","Create, rename, delete, or activate a hub location mode."]]]],["hub_set_mode_manager",["m",[["title","Set Mode Manager"],["summary","Pick the Mode Manager and update its per-mode conditions."]]]],["hub_get_hsm_status",["m",[["title","Get HSM Status"],["summary","Get the current Hubitat Safety Monitor arm status."]]]],["hub_set_hsm",["m",[["title","Set HSM Arm Mode"],["summary","Arm or disarm Hubitat Safety Monitor."]]]],["hub_set_system_settings",["m",[["title","Set System Settings"],["summary","Set hub name, time zone, location, zip, temperature scale, dark mode, network config, or dismiss a hub alert."]]]],["hub_get_hub_mesh",["m",[["title","Get Hub Mesh"],["summary","Read Hub Mesh config: enabled state, peer hubs, shared and linked devices/variables, sync interval."]]]],["hub_update_hub_mesh",["m",[["title","Update Hub Mesh"],["summary","Enable/disable Hub Mesh, set the sync interval, follow a peer\'s modes, or store a peer\'s mesh token."]]]],["hub_update_firmware",["m",[["title","Update Hub Firmware"],["summary","Install the hub\'s pending platform/firmware update (downloads, installs, and reboots the hub)."]]]],["hub_reboot",["m",[["title","Reboot Hub"],["summary","Reboot the hub (1-3 minutes of downtime)."]]]],["hub_shutdown",["m",[["title","Shut Down Hub"],["summary","Power the hub off; a physical restart is required afterwards."]]]]]]'])
 }
 
 
+@groovy.transform.CompileStatic
 def _bat529Cb_523e098a_1(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_523e098a_2(def it) { it 
 }
 
-def _bat529Cb_523e098a_3(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_523e098a_3(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_523e098a_4(def it) { it.key.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_523e098a_4(def it) { __bat529StaticProperty_java_lang_Object(it, 'key').toString() 
 }
 
 def _bat529Cb_523e098a_5(def k, def v) { v == true 
 }
 
-def _bat529Cb_523e098a_6(def it) { it as int 
+@groovy.transform.CompileStatic
+int _bat529Cb_523e098a_6(def it) { it as int 
 }
 
-def _bat529Cb_523e098a_7(def it) { it as int 
+@groovy.transform.CompileStatic
+int _bat529Cb_523e098a_7(def it) { it as int 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_523e098a_8(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_523e098a_9(def known, def it) { !(it in known) 
 }
 
-def _bat529Cb_523e098a_10(def modeName, def it) { it.name.equalsIgnoreCase(modeName) 
+@groovy.transform.CompileStatic
+def _bat529Cb_523e098a_10(def modeName, def it) { __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(it, 'name'), 'equalsIgnoreCase', modeName) 
 }
 
-def _bat529Cb_523e098a_11(def it) { [id: it.id.toString(), name: it.name] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_523e098a_11(def it) { [id: __bat529StaticProperty_java_lang_Object(it, 'id').toString(), name: __bat529StaticProperty_java_lang_Object(it, 'name')] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_523e098a_12(def it) { it instanceof Map && it.key 
 }
 
 def _bat529Cb_523e098a_13(def k, def v) { k.toString() 
 }
 
-def _bat529Cb_523e098a_14(def it) { [id: it?.id?.toString(), name: it?.name, icon: it?.icon] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_523e098a_14(def it) { [id: __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString(), name: __bat529StaticProperty_Safe_java_lang_Object(it, 'name'), icon: __bat529StaticProperty_Safe_java_lang_Object(it, 'icon')] 
 }
 
-def _bat529Cb_523e098a_15(def s, def it) { it?.id?.toString() == s || it?.name?.equalsIgnoreCase(s) 
+@groovy.transform.CompileStatic
+def _bat529Cb_523e098a_15(def s, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString() == s || __bat529StaticReceiverCall_Safe_java_lang_Object_1(__bat529StaticProperty_Safe_java_lang_Object(it, 'name'), 'equalsIgnoreCase', s) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_523e098a_16(def it) { it instanceof Map && it.key == "PLATFORM_UPDATE_AVAILABLE" 
 }
 
-def _bat529Cb_523e098a_17(def it) { [key: it.key, message: it.message, version: it.version, dismissible: it.dismissible == true] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_523e098a_17(def it) { [key: __bat529StaticProperty_java_lang_Object(it, 'key'), message: __bat529StaticProperty_java_lang_Object(it, 'message'), version: __bat529StaticProperty_java_lang_Object(it, 'version'), dismissible: __bat529StaticProperty_java_lang_Object(it, 'dismissible') == true] 
 }
 
 def _bat529Cb_523e098a_5(List __bat529Tuple) {

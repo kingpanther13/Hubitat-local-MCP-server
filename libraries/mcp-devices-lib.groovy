@@ -422,22 +422,25 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     return result
 }
 
+@groovy.transform.CompileStatic
 private Boolean isDeviceDisabled(device) {
-    return device.disabled == true || device.disabled?.toString()?.toLowerCase() == "true" ||
-        device.status?.toString()?.toLowerCase() == "disabled"
+    return __bat529StaticProperty_java_lang_Object(device, 'disabled') == true || __bat529StaticProperty_java_lang_Object(device, 'disabled')?.toString()?.toLowerCase() == "true" ||
+        __bat529StaticProperty_java_lang_Object(device, 'status')?.toString()?.toLowerCase() == "disabled"
 }
 
+@groovy.transform.CompileStatic
 private String safeDni(device) {
     try {
-        return device.deviceNetworkId?.toString()
+        return __bat529StaticProperty_java_lang_Object(device, 'deviceNetworkId')?.toString()
     } catch (Exception ignore) {
         return null
     }
 }
 
+@groovy.transform.CompileStatic
 private String safeParentDeviceId(device) {
     try {
-        return device.parentDeviceId?.toString()
+        return __bat529StaticProperty_java_lang_Object(device, 'parentDeviceId')?.toString()
     } catch (Exception ignore) {
         return null
     }
@@ -465,6 +468,7 @@ private Date safeLastActivity(device) {
     return parsed
 }
 
+@groovy.transform.CompileStatic
 private String formatLastActivity(Date d) {
     if (d == null) return null
     try {
@@ -477,6 +481,7 @@ private String formatLastActivity(Date d) {
 // Type/format validity for the issue-#366 state-filter args, shared by toolListDevices
 // (before its scope='all' route) and the filter='virtual' route in the dispatch case --
 // every path must reject a malformed value with a validation refusal instead of silently ignoring it.
+@groovy.transform.CompileStatic
 def _validateListDeviceStateArgTypes(roomFilter, onlyOn, changedSince, attributeNames, format) {
     if (roomFilter != null && !(roomFilter instanceof String)) {
         throw new IllegalArgumentException("roomFilter must be a string")
@@ -484,13 +489,13 @@ def _validateListDeviceStateArgTypes(roomFilter, onlyOn, changedSince, attribute
     if (onlyOn != null && !(onlyOn instanceof Boolean)) {
         throw new IllegalArgumentException("onlyOn must be a boolean")
     }
-    if (attributeNames != null && (!(attributeNames instanceof List) || (attributeNames).any((this.&_bat529Cb_15d0a4c9_67)))) {
+    if (attributeNames != null && (!(attributeNames instanceof List) || __bat529StaticDgm_any_1_boolean((attributeNames), (this.&_bat529Cb_15d0a4c9_67)))) {
         throw new IllegalArgumentException("attributeNames must be an array of attribute-name strings")
     }
     if (format && !["summary", "detailed", "ids", "context"].contains(format)) {
         throw new IllegalArgumentException("Invalid format '${format}'. Must be one of: summary, detailed, ids, context")
     }
-    if (changedSince != null && _parseSinceArg(changedSince) == null) {
+    if (changedSince != null && __bat529StaticCall_java_lang_Object_1('_parseSinceArg', changedSince) == null) {
         throw new IllegalArgumentException("Unparseable changedSince '${changedSince}'. Pass epoch milliseconds or ISO-8601 with a numeric offset (e.g. 2026-06-23T10:00:00-0600 or -06:00; trailing Z accepted).")
     }
 }
@@ -498,6 +503,7 @@ def _validateListDeviceStateArgTypes(roomFilter, onlyOn, changedSince, attribute
 // Default attribute set for format='context' lines when the caller passes no attributeNames.
 // The common state-bearing attributes an LLM needs to answer "what's going on in the house";
 // a device reports only the ones it has, so unused entries cost nothing per device.
+@groovy.transform.CompileStatic
 private List _contextAttributeNames() {
     ["switch", "level", "motion", "contact", "presence", "lock", "temperature", "humidity",
      "illuminance", "battery", "power", "energy", "thermostatMode", "thermostatOperatingState",
@@ -507,9 +513,10 @@ private List _contextAttributeNames() {
 // The "Mode:" (+ optional "HSM:") header lines every context-format result leads with;
 // each call site appends its own "Devices: N of M" line. A null mode renders as
 // "unknown" -- the literal "Mode: null" would read as a mode named null.
+@groovy.transform.CompileStatic
 private List _contextHeaderLines() {
-    def header = ["Mode: ${location.mode ?: 'unknown'}".toString()]
-    def hsm = _safeHsmStatus()
+    java.util.List header = ["Mode: ${__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_location(), 'mode') ?: 'unknown'}".toString()]
+    java.lang.String hsm = __bat529StaticCall_java_lang_String_0('_safeHsmStatus')
     if (hsm) header << "HSM: ${hsm}".toString()
     return header
 }
@@ -542,9 +549,10 @@ private String _contextDeviceLine(device, List attrNames) {
 
 // location.hsmStatus is a dynamic property (not on every firmware's Location model) --
 // absent/unreadable degrades to "no HSM line" rather than throwing.
+@groovy.transform.CompileStatic
 private String _safeHsmStatus() {
     try {
-        return location.hsmStatus?.toString()
+        return __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_location(), 'hsmStatus')?.toString()
     } catch (Exception ignore) {
         return null
     }
@@ -580,8 +588,9 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
     return byId.values() as List
 }
 
+@groovy.transform.CompileStatic
 private void _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false) {
-    (records).each(((this.&_bat529Cb_15d0a4c9_252).curry([allowPartial, requiredCollections] as Object[])))
+    __bat529StaticDgm_each_1_java_util_List((records), ((this.&_bat529Cb_15d0a4c9_252).curry([allowPartial, requiredCollections] as Object[])))
 }
 
 // Seed identity, room, activity, disabled flag and current states for a whole population from
@@ -593,12 +602,13 @@ private void _hydrateNativeInventory(List records, List requiredCollections, boo
 // tree does not list are left unseeded (the caller decides whether to fetch them one by one).
 // Returns false when the bulk read itself failed -- nothing was seeded and the caller must
 // fall back or report.
+@groovy.transform.CompileStatic
 private boolean _seedNativeInventoryFromTree(List records, Map inventory = null) {
-    if (inventory == null) inventory = _fetchAllHubDeviceRecords("device", "native bulk device read")
+    if (inventory == null) inventory = __bat529StaticCall_java_util_Map_2('_fetchAllHubDeviceRecords', "device", "native bulk device read")
     if (inventory?.failure || !(inventory?.records instanceof List)) return false
-    def byId = [:]
-    (inventory.records).each(((this.&_bat529Cb_15d0a4c9_172).curry([byId] as Object[])))
-    (records).each(((this.&_bat529Cb_15d0a4c9_250).curry([byId] as Object[])))
+    java.util.Map byId = [:]
+    __bat529StaticDgm_each_1_java_lang_Object((inventory.records), ((this.&_bat529Cb_15d0a4c9_172).curry([byId] as Object[])))
+    __bat529StaticDgm_each_1_java_util_List((records), ((this.&_bat529Cb_15d0a4c9_250).curry([byId] as Object[])))
     return true
 }
 
@@ -610,7 +620,8 @@ private boolean _seedNativeInventoryFromTree(List records, Map inventory = null)
 // (escaped output is pure ASCII, so envelope chars == wire bytes). Budgeting the
 // escaped form is what keeps a CJK/emoji-labelled inventory under the 124,000-byte
 // wire guard, not just an ASCII one; 80,000 leaves ample envelope headroom.
-def _contextResourceByteBudget() { 80000 }
+@groovy.transform.CompileStatic
+java.lang.Integer _contextResourceByteBudget() { 80000 }
 
 // The cost of `s` once embedded in the serialized envelope: its JSON-escaped length
 // minus the surrounding quotes JsonOutput adds.
@@ -623,7 +634,8 @@ private int _escapedLen(String s) { s == null ? 0 : groovy.json.JsonOutput.toJso
 // device the bulk read does not cover falls back to a per-device fullJson read, capped here so
 // a degraded hub bounds the per-device HTTP cost instead of scaling it with the inventory;
 // devices past the cap are reported with their state unavailable.
-def _contextResourcePerDeviceFetchCap() { 20 }
+@groovy.transform.CompileStatic
+java.lang.Integer _contextResourcePerDeviceFetchCap() { 20 }
 
 // Load the whole MCP-visible population for a context resource: the bulk tree seeds every
 // device it lists; the remainder (or everything, when the bulk read failed) is fetched one by
@@ -656,26 +668,27 @@ private int _loadContextResourcePopulation(List records, Map inventory = null) {
 // cursor pagination, truncated at the resource byte budget with an explicit pointer at
 // the paginated tool form. Values come from the bulk tree (string form, no unit suffix);
 // the paginated tool form reads fullJson per page and carries units.
+@groovy.transform.CompileStatic
 def _buildContextSummaryText() {
     def records
-    def meta = [:]
-    try { records = _mcpVisibleDevices(null, meta) }
+    java.util.Map meta = [:]
+    try { records = __bat529StaticCall_java_util_List_2('_mcpVisibleDevices', null, meta) }
     catch (IllegalStateException e) { return "Context unavailable: ${e.message}".toString() }
-    _loadContextResourcePopulation(records, meta.inventory as Map)
-    def attrNames = _contextAttributeNames()
-    def lines = []
+    __bat529StaticCall_int_2('_loadContextResourcePopulation', records, meta.inventory as Map)
+    java.util.List attrNames = __bat529StaticCall_java_util_List_0('_contextAttributeNames')
+    java.util.List lines = []
     int used = 0
     for (record in records) {
-        def line = _contextDeviceLine(record, attrNames)
+        java.lang.String line = __bat529StaticCall_java_lang_String_2('_contextDeviceLine', record, attrNames)
         lines << line
-        used += _escapedLen(line) + 2
-        if (used > _contextResourceByteBudget()) break
+        used += __bat529StaticCall_int_1('_escapedLen', line) + 2
+        if (used > __bat529StaticCall_java_lang_Integer_0('_contextResourceByteBudget')) break
     }
-    def header = _contextHeaderLines()
+    java.util.List header = __bat529StaticCall_java_util_List_0('_contextHeaderLines')
     header << "Devices: ${Math.min(lines.size(), records.size())} of ${records.size()}".toString()
     if (meta.idsComplete == false) header << "Inventory incomplete: ${meta.partialNote}".toString()
     if (!records) header << "No devices selected for MCP access and no MCP-managed virtual devices"
-    return _truncateContextText((header + lines).join("\n"), records.size())
+    return __bat529StaticCall_java_lang_String_2('_truncateContextText', (header + lines).join("\n"), records.size())
 }
 
 private String _truncateContextText(String text, int totalDevices) {
@@ -1127,15 +1140,17 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
 // use native endpoints too; the toggle changes authorization only.
 
 // True when the operator enabled the device-allowlist bypass. Default OFF (null/unset == off).
+@groovy.transform.CompileStatic
 private boolean _bypassEnabled() {
-    return settings.bypassDeviceAllowlist == true
+    return __bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'bypassDeviceAllowlist') == true
 }
 
 // Selection grants access; native HTTP execution does not grant it implicitly.
+@groovy.transform.CompileStatic
 private boolean _requireDeviceToolAccess(deviceId) {
-    _validateNativeDeviceId(deviceId)
-    boolean listed = findDevice(deviceId) != null
-    if (!listed && !_bypassEnabled()) {
+    __bat529StaticCall_java_lang_Object_1('_validateNativeDeviceId', deviceId)
+    boolean listed = __bat529StaticCall_java_lang_Object_1('findDevice', deviceId) != null
+    if (!listed && !__bat529StaticCall_boolean_0('_bypassEnabled')) {
         throw new IllegalArgumentException("Device not found: ${deviceId}")
     }
     return listed
@@ -1185,10 +1200,11 @@ private Map _fetchDeviceFullJson(deviceId) {
 //   [ok:true]                          -> matches wantDisabled
 //   [ok:false, fetchFailed:true]       -> read-back fetch failed (could not confirm)
 //   [ok:false, actualDisabled:<bool>]  -> confirmed mismatch (flip did not land)
+@groovy.transform.CompileStatic
 private Map _confirmDisabledFlip(deviceId, boolean wantDisabled) {
-    def fj = _fetchDeviceFullJson(deviceId)
+    java.util.Map fj = __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
     if (fj?.device == null) return [ok: false, fetchFailed: true]
-    def raw = fj.device.disabled
+    def raw = __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(fj, 'device'), 'disabled')
     if (!(raw instanceof Boolean) && !(raw instanceof CharSequence && raw.toString() in ['true', 'false'])) {
         return [ok: false, fetchFailed: true]
     }
@@ -1217,26 +1233,28 @@ private List _fetchBypassDeviceEvents(deviceId) {
 
 // The display label for a fullJson device (label, else name, else "Device <id>"). Single source
 // for the bypass paths so the fallback label is consistent everywhere.
+@groovy.transform.CompileStatic
 private String _bypassDeviceLabel(Map fj, deviceId) {
-    return fj?.device?.label ?: fj?.device?.name ?: "Device ${deviceId}".toString()
+    return __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(fj, 'device'), 'label') ?: __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(fj, 'device'), 'name') ?: "Device ${deviceId}".toString()
 }
 
 // Map one /device/eventsJson row (description <- descriptionText; the ISO date string passes
 // through). Single source for both the recent-N (toolGetDeviceEvents) and the windowed
 // (_deviceHistoryBypass) branches. type/producedBy/triggered are added only when the hub supplies them.
+@groovy.transform.CompileStatic
 private Map _mapBypassEventRow(evt) {
-    def row = [
-        name: evt.name,
-        value: evt.value,
-        unit: evt.unit,
-        description: evt.descriptionText,
-        date: evt.date,
-        isStateChange: evt.isStateChange
+    java.util.Map row = [
+        name: __bat529StaticProperty_java_lang_Object(evt, 'name'),
+        value: __bat529StaticProperty_java_lang_Object(evt, 'value'),
+        unit: __bat529StaticProperty_java_lang_Object(evt, 'unit'),
+        description: __bat529StaticProperty_java_lang_Object(evt, 'descriptionText'),
+        date: __bat529StaticProperty_java_lang_Object(evt, 'date'),
+        isStateChange: __bat529StaticProperty_java_lang_Object(evt, 'isStateChange')
     ]
-    if (evt.type != null) row.type = evt.type
-    def producedBy = _parseEventProducer(evt.producedBy)
+    if (__bat529StaticProperty_java_lang_Object(evt, 'type') != null) row.type = __bat529StaticProperty_java_lang_Object(evt, 'type')
+    java.util.Map producedBy = __bat529StaticCall_java_util_Map_1('_parseEventProducer', __bat529StaticProperty_java_lang_Object(evt, 'producedBy'))
     if (producedBy) row.producedBy = producedBy
-    def triggered = _parseEventTriggered(evt.triggered)
+    java.util.List triggered = __bat529StaticCall_java_util_List_1('_parseEventTriggered', __bat529StaticProperty_java_lang_Object(evt, 'triggered'))
     if (triggered) row.triggered = triggered
     return row
 }
@@ -1291,24 +1309,27 @@ private List _parseEventTriggered(html) {
 // list -- what the bypass paths validate a requested attribute against. NOTE: fullJson lists only
 // attributes that have REPORTED a value, so a declared-but-not-yet-reported attribute is absent
 // here -- bypass attribute discovery is limited to reported attributes.
+@groovy.transform.CompileStatic
 private List _fullJsonAttributeNames(Map fullJson) {
-    def cs = fullJson?.device?.currentStates
+    def cs = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(fullJson, 'device'), 'currentStates')
     return (cs instanceof Map) ? new ArrayList(cs.keySet()) : []
 }
 
 // The command names a fullJson device exposes. Top-level `commands` is an array of
 // {capability, name, arguments, parameters, relatedAttribute}; its names are the supported-command
 // set the bypass send-command path validates against.
+@groovy.transform.CompileStatic
 private List _fullJsonCommandNames(Map fullJson) {
     def cmds = fullJson?.commands
-    return (cmds instanceof List) ? ((cmds).collect((this.&_bat529Cb_15d0a4c9_10))).findAll((this.&_bat529Cb_15d0a4c9_78)): []
+    return __bat529StaticExpr__fullJsonCommandNames_0(cmds)
 }
 
+@groovy.transform.CompileStatic
 private List _unavailableNativeDeviceCollections(Map fullJson, List required = ['currentStates', 'capabilities', 'commands']) {
     // An empty native collection is valid; an absent or malformed collection cannot prove emptiness.
-    def values = [currentStates: fullJson?.device?.currentStates,
-                  capabilities: fullJson?.device?.capabilities, commands: fullJson?.commands]
-    return (required).findAll(((this.&_bat529Cb_15d0a4c9_194).curry([values] as Object[])))
+    java.util.Map values = [currentStates: __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(fullJson, 'device'), 'currentStates'),
+                  capabilities: __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(fullJson, 'device'), 'capabilities'), commands: fullJson?.commands]
+    return __bat529StaticDgm_findAll_1_java_util_List((required), ((this.&_bat529Cb_15d0a4c9_194).curry([values] as Object[])))
 }
 
 private Map _normalizeDevicePreferenceValue(raw, String type, boolean multiple = false) {
@@ -1347,26 +1368,27 @@ private Map _normalizeDevicePreferenceValue(raw, String type, boolean multiple =
 }
 
 // Definitions and stored values are siblings of device in the current native response.
+@groovy.transform.CompileStatic
 private Map _readDevicePreferenceModel(Map fullJson) {
     def definitions = fullJson?.get('settings')
     if (!(definitions instanceof List)) {
         return [status: 'unavailable', source: 'settings', entries: [],
                 reason: 'Native device details did not contain a recognized top-level settings array.']
     }
-    def model = [status: 'complete', source: 'settings', entries: [], writeSafe: true]
-    def inputs = [:]
-    def duplicates = []
+    java.util.Map model = [status: 'complete', source: 'settings', entries: [], writeSafe: true]
+    java.util.Map inputs = [:]
+    java.util.List duplicates = []
     def rawInputs = fullJson.get('inputValues')
     if (rawInputs != null && !(rawInputs instanceof List)) {
         model.writeSafe = false
         model.status = 'partial'
         model.reason = 'Native inputValues is not a recognized array; stored values may be incomplete.'
     } else {
-        ((rawInputs ?: [])).each(((this.&_bat529Cb_15d0a4c9_238).curry([duplicates, inputs, model] as Object[])))
+        __bat529StaticDgm_each_1_java_lang_Object(((rawInputs ?: [])), ((this.&_bat529Cb_15d0a4c9_238).curry([duplicates, inputs, model] as Object[])))
     }
-    def names = []
-    (definitions).each(((this.&_bat529Cb_15d0a4c9_256).curry([duplicates, inputs, model, names] as Object[])))
-    if (duplicates || (inputs.keySet()).any(((this.&_bat529Cb_15d0a4c9_80).curry([names] as Object[])))) {
+    java.util.List names = []
+    __bat529StaticDgm_each_1_java_lang_Object((definitions), ((this.&_bat529Cb_15d0a4c9_256).curry([duplicates, inputs, model, names] as Object[])))
+    if (duplicates || __bat529StaticDgm_any_1_boolean((inputs.keySet()), ((this.&_bat529Cb_15d0a4c9_80).curry([names] as Object[])))) {
         if (duplicates) model.writeSafe = false
         model.status = 'partial'
         model.reason = 'Native inputValues contains duplicate or undeclared preference names.'
@@ -1408,6 +1430,7 @@ private _deviceConfigurationPublicValue(value, key = '') {
 // common home-automation brands, keyed by the integer id. Runtime data in a helper -- it does
 // not touch the flat tool-catalog budget. An unlisted id resolves to null (no name invented).
 // Returned via a getter because the Hubitat sandbox rejects `private static final` at script scope.
+@groovy.transform.CompileStatic
 private Map getZwaveManufacturers() {
     return [
         0x0000: 'Silicon Labs', 0x000C: 'HomeSeer', 0x001D: 'Leviton', 0x0039: 'Honeywell',
@@ -1481,50 +1504,52 @@ private Map _deviceConfigurationProjection(Map source, List keys) {
     return result
 }
 
+@groovy.transform.CompileStatic
 private List _deviceConfigurationFieldDefinitions() {
-    return (_bat529EmbeddedCatalogRead(['["l",[["m",[["name","label"],["type","string"]]],["m",[["name","name"],["type","string"]]],["m",[["name","deviceNetworkId"],["type","string"],["requiresConfirmation",true]]],["m",[["name","room"],["type","string"]]],["m",[["name","enabled"],["type","boolean"]]],["m",[["name","dataValues"],["type","object"]]],["m",[["name","preferences"],["type","object"]]],["m",[["name","showOnHome"],["type","boolean"]]],["m",[["name","defaultCurrentState"],["type","string"]]],["m",[["name","tags"],["type","array"],["items",["m",[["type","string"]]]]]],["m",[["name","deviceTypeId"],["type","integer"],["requiresConfirmation",true]]],["m",[["name","zigbeeId"],["type","string"],["requiresConfirmation",true]]],["m",[["name","notes"],["type","string"]]],["m",[["name","defaultIcon"],["type","string"]]],["m",[["name","maxEvents"],["type","integer"],["minimum",1],["maximum",2000]]],["m",[["name","maxStates"],["type","integer"],["minimum",1],["maximum",2000]]],["m",[["name","spammyThreshold"],["type","integer"],["minimum",100],["maximum",2000]]],["m",[["name","dashboardIds"],["type","array"],["items",["m",[["type","integer"]]]],["requiresConfirmation",true]]],["m",[["name","meshEnabled"],["type","boolean"],["requiresConfirmation",true]]],["m",[["name","retryEnabled"],["type","boolean"]]],["m",[["name","meshFullSync"],["type","boolean"],["requiresConfirmation",true]]],["m",[["name","homeKitEnabled"],["type","boolean"],["requiresConfirmation",true]]],["m",[["name","amazonAlexaEnabled"],["type","boolean"],["requiresConfirmation",true]]],["m",[["name","googleHomeEnabled"],["type","boolean"],["requiresConfirmation",true]]]]]']) as List)
+    return (__bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",[["m",[["name","label"],["type","string"]]],["m",[["name","name"],["type","string"]]],["m",[["name","deviceNetworkId"],["type","string"],["requiresConfirmation",true]]],["m",[["name","room"],["type","string"]]],["m",[["name","enabled"],["type","boolean"]]],["m",[["name","dataValues"],["type","object"]]],["m",[["name","preferences"],["type","object"]]],["m",[["name","showOnHome"],["type","boolean"]]],["m",[["name","defaultCurrentState"],["type","string"]]],["m",[["name","tags"],["type","array"],["items",["m",[["type","string"]]]]]],["m",[["name","deviceTypeId"],["type","integer"],["requiresConfirmation",true]]],["m",[["name","zigbeeId"],["type","string"],["requiresConfirmation",true]]],["m",[["name","notes"],["type","string"]]],["m",[["name","defaultIcon"],["type","string"]]],["m",[["name","maxEvents"],["type","integer"],["minimum",1],["maximum",2000]]],["m",[["name","maxStates"],["type","integer"],["minimum",1],["maximum",2000]]],["m",[["name","spammyThreshold"],["type","integer"],["minimum",100],["maximum",2000]]],["m",[["name","dashboardIds"],["type","array"],["items",["m",[["type","integer"]]]],["requiresConfirmation",true]]],["m",[["name","meshEnabled"],["type","boolean"],["requiresConfirmation",true]]],["m",[["name","retryEnabled"],["type","boolean"]]],["m",[["name","meshFullSync"],["type","boolean"],["requiresConfirmation",true]]],["m",[["name","homeKitEnabled"],["type","boolean"],["requiresConfirmation",true]]],["m",[["name","amazonAlexaEnabled"],["type","boolean"],["requiresConfirmation",true]]],["m",[["name","googleHomeEnabled"],["type","boolean"],["requiresConfirmation",true]]]]]']) as List)
 }
 
+@groovy.transform.CompileStatic
 private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
-    Map d = (fj?.device instanceof Map) ? fj.device : [:]
-    def values = _deviceConfigurationProjection(d, ['label', 'name', 'deviceNetworkId', 'showOnHome',
+    Map d = __bat529StaticExpr__deviceConfigurationEditableFields_0(fj)
+    java.util.Map values = __bat529StaticCall_java_util_Map_2('_deviceConfigurationProjection', d, ['label', 'name', 'deviceNetworkId', 'showOnHome',
         'defaultCurrentState', 'deviceTypeId', 'zigbeeId', 'notes', 'defaultIcon', 'maxEvents', 'maxStates',
         'spammyThreshold', 'meshEnabled', 'retryEnabled', 'meshFullSync'])
     if (d.containsKey('roomName')) values.room = d.roomName
     if (d.containsKey('disabled')) {
-        def disabled = _normalizeDevicePreferenceValue(d.disabled, 'bool')
+        java.util.Map disabled = __bat529StaticCall_java_util_Map_2('_normalizeDevicePreferenceValue', d.disabled, 'bool')
         if (disabled.valid && disabled.value != null) values.enabled = !disabled.value
     }
-    if (d.containsKey('data')) values.dataValues = _deviceConfigurationPublicValue(d.data)
+    if (d.containsKey('data')) values.dataValues = __bat529StaticCall_java_lang_Object_1('_deviceConfigurationPublicValue', d.data)
     if (d.containsKey('tags')) {
-        values.tags = _normalizedDeviceTags(d.tags)
+        values.tags = __bat529StaticCall_java_util_List_1('_normalizedDeviceTags', d.tags)
     }
-    if (fj?.dashboards instanceof List) values.dashboardIds = ((fj.dashboards).findAll((this.&_bat529Cb_15d0a4c9_62))).collect((this.&_bat529Cb_15d0a4c9_119))
+    if (fj?.dashboards instanceof List) values.dashboardIds = __bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_lang_Object((fj.dashboards), (this.&_bat529Cb_15d0a4c9_62))), (this.&_bat529Cb_15d0a4c9_119))
     if (true) {
-def __bat529EachReceiver1 = (['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'])
+java.util.List __bat529EachReceiver1 = (['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'])
 for (def key in __bat529EachReceiver1) {
         if (fj?.containsKey(key)) values.put(key, fj.get(key))
     
 }
 __bat529EachReceiver1
 } else { null }
-    def applicable = [
-        label: !_deviceFlag(d.linkedAndDisabled),
-        name: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
-        deviceNetworkId: (!_deviceFlag(d.isComponent) || _deviceFlag(d.linkedDevice)) && !_deviceFlag(d.linkedLocally),
+    java.util.Map applicable = [
+        label: !__bat529StaticCall_boolean_1('_deviceFlag', d.linkedAndDisabled),
+        name: !__bat529StaticCall_boolean_1('_deviceFlag', d.isComponent) && !__bat529StaticCall_boolean_1('_deviceFlag', d.linkedDevice),
+        deviceNetworkId: (!__bat529StaticCall_boolean_1('_deviceFlag', d.isComponent) || __bat529StaticCall_boolean_1('_deviceFlag', d.linkedDevice)) && !__bat529StaticCall_boolean_1('_deviceFlag', d.linkedLocally),
         dataValues: true,
-        deviceTypeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
-        zigbeeId: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice) && d.zigbeeId instanceof String && !d.zigbeeId.isEmpty(),
-        dashboardIds: _deviceFlag(fj?.hasDashboards),
-        meshEnabled: _deviceFlag(d.meshSelectionEnabled),
-        retryEnabled: _deviceFlag(fj?.commandRetrySelectionEnabled) || _deviceFlag(d.retryAvailable),
-        meshFullSync: _deviceFlag(d.linkedDevice) && _deviceFlag(fj?.hubMeshRefreshEnabled),
-        homeKitEnabled: _deviceFlag(fj?.homeKitSelectionEnabled),
-        amazonAlexaEnabled: _deviceFlag(fj?.amazonAlexaInstalled) && _deviceFlag(fj?.amazonAlexaSupported),
-        googleHomeEnabled: _deviceFlag(fj?.googleHomeInstalled) && _deviceFlag(fj?.googleHomeSupported)
+        deviceTypeId: !__bat529StaticCall_boolean_1('_deviceFlag', d.isComponent) && !__bat529StaticCall_boolean_1('_deviceFlag', d.linkedDevice),
+        zigbeeId: !__bat529StaticCall_boolean_1('_deviceFlag', d.isComponent) && !__bat529StaticCall_boolean_1('_deviceFlag', d.linkedDevice) && d.zigbeeId instanceof String && !d.zigbeeId.isEmpty(),
+        dashboardIds: __bat529StaticCall_boolean_1('_deviceFlag', fj?.hasDashboards),
+        meshEnabled: __bat529StaticCall_boolean_1('_deviceFlag', d.meshSelectionEnabled),
+        retryEnabled: __bat529StaticCall_boolean_1('_deviceFlag', fj?.commandRetrySelectionEnabled) || __bat529StaticCall_boolean_1('_deviceFlag', d.retryAvailable),
+        meshFullSync: __bat529StaticCall_boolean_1('_deviceFlag', d.linkedDevice) && __bat529StaticCall_boolean_1('_deviceFlag', fj?.hubMeshRefreshEnabled),
+        homeKitEnabled: __bat529StaticCall_boolean_1('_deviceFlag', fj?.homeKitSelectionEnabled),
+        amazonAlexaEnabled: __bat529StaticCall_boolean_1('_deviceFlag', fj?.amazonAlexaInstalled) && __bat529StaticCall_boolean_1('_deviceFlag', fj?.amazonAlexaSupported),
+        googleHomeEnabled: __bat529StaticCall_boolean_1('_deviceFlag', fj?.googleHomeInstalled) && __bat529StaticCall_boolean_1('_deviceFlag', fj?.googleHomeSupported)
     ]
-    def fields = _deviceConfigurationFieldDefinitions()
-    (fields).each(((this.&_bat529Cb_15d0a4c9_257).curry([applicable, d, fj, preferences, values] as Object[])))
+    java.util.List fields = __bat529StaticCall_java_util_List_0('_deviceConfigurationFieldDefinitions')
+    __bat529StaticDgm_each_1_java_util_List((fields), ((this.&_bat529Cb_15d0a4c9_257).curry([applicable, d, fj, preferences, values] as Object[])))
     return fields
 }
 
@@ -1590,26 +1615,29 @@ private Map _deviceConfigurationResult(deviceId, Map identity, Map fj, fields = 
 
 // Read one attribute's current value from a fullJson device model (currentStates keyed by name).
 // Returns the String value or null when the attribute has not reported.
+@groovy.transform.CompileStatic
 private _nativeDeviceStateValue(entry) {
     if (!(entry instanceof Map)) return entry
-    if (entry.dataType?.toString()?.toUpperCase() == 'NUMBER') {
-        if (entry.numberValue instanceof Number) return entry.numberValue
-        def numeric = _parseBigDecimalOrNull(entry.value)
+    if (__bat529StaticProperty_java_lang_Object(entry, 'dataType')?.toString()?.toUpperCase() == 'NUMBER') {
+        if (__bat529StaticProperty_java_lang_Object(entry, 'numberValue') instanceof Number) return __bat529StaticProperty_java_lang_Object(entry, 'numberValue')
+        def numeric = __bat529StaticCall_java_lang_Object_1('_parseBigDecimalOrNull', __bat529StaticProperty_java_lang_Object(entry, 'value'))
         if (numeric != null) return numeric
     }
-    return entry.value
+    return __bat529StaticProperty_java_lang_Object(entry, 'value')
 }
 
+@groovy.transform.CompileStatic
 private _readBypassAttrValueFrom(Map fullJson, attribute) {
-    def st = fullJson?.device?.currentStates
+    def st = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(fullJson, 'device'), 'currentStates')
     if (!(st instanceof Map)) return null
-    def entry = st.get(attribute)
-    return _nativeDeviceStateValue(entry)
+    def entry = __bat529StaticReceiverCall_java_lang_Object_1(st, 'get', attribute)
+    return __bat529StaticCall_java_lang_Object_1('_nativeDeviceStateValue', entry)
 }
 
 // Re-fetch fullJson so each poll observes fresh native state.
+@groovy.transform.CompileStatic
 private _readBypassAttrValue(deviceId, attribute) {
-    return _readBypassAttrValueFrom(_fetchDeviceFullJson(deviceId), attribute)
+    return __bat529StaticCall_java_lang_Object_2('_readBypassAttrValueFrom', __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId), attribute)
 }
 
 @groovy.transform.CompileStatic
@@ -1629,24 +1657,25 @@ private List _nativeReportedDeviceAttributes(Map d) {
 }
 
 // Preserve the summary shape using reported native states and native command definitions.
+@groovy.transform.CompileStatic
 private Map _getDeviceFromFullJson(deviceId, Map fj) {
-    def unavailable = _unavailableNativeDeviceCollections(fj)
+    java.util.List unavailable = __bat529StaticCall_java_util_List_1('_unavailableNativeDeviceCollections', fj)
     if (unavailable) {
         throw new IllegalStateException("Native device collections are unavailable for device ${deviceId}: ${unavailable.join(', ')}.")
     }
     def d = fj.device
-    def commands = []
+    java.util.List commands = []
     if (fj.commands instanceof List) {
-        (fj.commands).each(((this.&_bat529Cb_15d0a4c9_192).curry([commands] as Object[])))
+        __bat529StaticDgm_each_1_java_lang_Object((fj.commands), ((this.&_bat529Cb_15d0a4c9_192).curry([commands] as Object[])))
     }
-    def caps = (d.capabilities instanceof List) ? (d.capabilities).collect((this.&_bat529Cb_15d0a4c9_117)): []
+    def caps = __bat529StaticExpr__getDeviceFromFullJson_1(d)
     return [
         id: deviceId.toString(),
-        name: d.name,
-        label: d.label ?: d.name,
-        room: d.roomName,
+        name: __bat529StaticProperty_java_lang_Object(d, 'name'),
+        label: __bat529StaticProperty_java_lang_Object(d, 'label') ?: __bat529StaticProperty_java_lang_Object(d, 'name'),
+        room: __bat529StaticProperty_java_lang_Object(d, 'roomName'),
         capabilities: caps,
-        attributes: _nativeReportedDeviceAttributes(d),
+        attributes: __bat529StaticCall_java_util_List_1('_nativeReportedDeviceAttributes', d),
         commands: commands
     ]
 }
@@ -1664,6 +1693,7 @@ private _fullJsonCommandArgs(c) {
     return null
 }
 
+@groovy.transform.CompileStatic
 private List _deviceDetailSections() {
     return ['configuration', 'identity', 'attributes', 'commands', 'data', 'state', 'relationships', 'jobs', 'integrations', 'metadata']
 }
@@ -1692,38 +1722,40 @@ private Map _deviceDetailReadStatus(String section, Map fj, Map d, value, device
     return status
 }
 
+@groovy.transform.CompileStatic
 private List _deviceDetailFieldNames(String section, value) {
     if (value instanceof Map) {
         def names = value.keySet().toList()
         if (section == 'attributes' && value.currentStates instanceof Map) names.addAll(value.currentStates.keySet())
-        if (section == 'attributes' && value.declaredAttributes instanceof List) names.addAll((value.declaredAttributes).collect((this.&_bat529Cb_15d0a4c9_57)))
-        return (names).findAll((this.&_bat529Cb_15d0a4c9_15)).unique()
+        if (section == 'attributes' && value.declaredAttributes instanceof List) names.addAll(__bat529StaticDgm_collect_1_java_util_List((value.declaredAttributes), (this.&_bat529Cb_15d0a4c9_57)))
+        return __bat529StaticReceiverCall_java_util_List_0(__bat529StaticDgm_findAll_1_java_lang_Object((names), (this.&_bat529Cb_15d0a4c9_15)), 'unique')
     }
     if (value instanceof List) {
-        def names = []
+        java.util.List names = []
         (value).eachWithIndex(((this.&_bat529Cb_15d0a4c9_122).curry([names] as Object[])))
         return names
     }
     return []
 }
 
+@groovy.transform.CompileStatic
 private _deviceDetailSelectedFields(String section, value, List fields) {
     if (value instanceof Map) {
-        def selected = _deviceConfigurationProjection(value, fields)
+        def selected = __bat529StaticCall_java_util_Map_2('_deviceConfigurationProjection', value, fields)
         if (section == 'attributes') {
             if (value.currentStates instanceof Map && !fields.contains('currentStates')) {
-                def states = _deviceConfigurationProjection(value.currentStates, fields)
+                java.util.Map states = __bat529StaticCall_java_util_Map_2('_deviceConfigurationProjection', value.currentStates, fields)
                 if (states) selected.currentStates = states
             }
             if (value.declaredAttributes instanceof List && !fields.contains('declaredAttributes')) {
-                def attributes = (value.declaredAttributes).findAll(((this.&_bat529Cb_15d0a4c9_114).curry([fields] as Object[])))
+                def attributes = __bat529StaticDgm_findAll_1_java_lang_Object((value.declaredAttributes), ((this.&_bat529Cb_15d0a4c9_114).curry([fields] as Object[])))
                 if (attributes) selected.declaredAttributes = attributes
             }
         }
         return selected
     }
     if (value instanceof List) {
-        def selected = []
+        java.util.List selected = []
         (value).eachWithIndex(((this.&_bat529Cb_15d0a4c9_167).curry([fields, selected] as Object[])))
         return selected
     }
@@ -1755,8 +1787,9 @@ private Map _deviceReadFragment(Map snapshot, String token, int start) {
             note: 'Concatenate content fragments in order, then parse the joined JSON. Repeat with nextCursor and unchanged arguments within five minutes; fields=[] discovers smaller selections.']
 }
 
+@groovy.transform.CompileStatic
 private String _deviceReadSelection(deviceId, String mode, sections, fields) {
-    return _mrtrSha256(groovy.json.JsonOutput.toJson([app?.id?.toString(), deviceId.toString(), mode, sections, fields]))
+    return __bat529StaticCall_java_lang_String_1('_mrtrSha256', groovy.json.JsonOutput.toJson([__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticBinding_app(), 'id')?.toString(), deviceId.toString(), mode, sections, fields]))
 }
 
 private Map _deviceReadContinuation(String cursor, String selection) {
@@ -1861,12 +1894,13 @@ def toolGetDevice(deviceId, mode = 'summary', sections = null, fields = null, cu
 
 }
 
-def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = null, reqT0 = null, includeState = true) {
+@groovy.transform.CompileStatic
+java.util.Map toolSendCommand(deviceId, command, parameters, waitFor = null, commands = null, reqT0 = null, includeState = true) {
     // Batch form: one call carrying several {deviceId, command, parameters?} entries. A parameter
     // rather than a second tool, and mutually exclusive with the single-device arguments, which is
     // the same shape hub_get_device_attribute already uses for deviceId vs deviceIds.
     if (commands != null) {
-        def conflicting = []
+        java.util.List conflicting = []
         if (deviceId != null) conflicting << "deviceId"
         if (command != null) conflicting << "command"
         // A top-level parameters with commands would otherwise be SILENTLY dropped -- the batch
@@ -1878,7 +1912,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
         if (waitFor != null) {
             throw new IllegalArgumentException("waitFor is not supported with commands: it blocks a hub thread per device. Send the batch, then confirm the whole set in one call with hub_get_device_attribute using deviceIds + mode")
         }
-        return _sendCommandBatch(commands, reqT0)
+        return __bat529StaticCall_java_util_Map_2('_sendCommandBatch', commands, reqT0)
     }
 
     if (deviceId == null) throw new IllegalArgumentException("deviceId is required (or pass a commands array to send several at once)")
@@ -1886,22 +1920,22 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
 
     // Canonicalize BEFORE resolution: a fractional or non-scalar id must fail validation here,
     // not spend a bypass fullJson fetch on a value that can never name a device.
-    def canonicalId = _canonicalDeviceIdArg(deviceId)
+    def canonicalId = __bat529StaticCall_java_lang_Object_1('_canonicalDeviceIdArg', deviceId)
     if (canonicalId == null) {
-        throw new IllegalArgumentException("deviceId must be a non-empty string or integral number (got: ${_describeValueForError(deviceId)})")
+        throw new IllegalArgumentException("deviceId must be a non-empty string or integral number (got: ${__bat529StaticCall_java_lang_String_1('_describeValueForError', deviceId)})")
     }
     deviceId = canonicalId
 
 
-    _requireDeviceToolAccess(deviceId)
-    def fullJson = _fetchDeviceFullJson(deviceId)
-    if (!(fullJson?.device instanceof Map) || _unavailableNativeDeviceCollections(fullJson, ['commands'])) {
+    __bat529StaticCall_boolean_1('_requireDeviceToolAccess', deviceId)
+    java.util.Map fullJson = __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
+    if (!(fullJson?.device instanceof Map) || __bat529StaticCall_java_util_List_2('_unavailableNativeDeviceCollections', fullJson, ['commands'])) {
         return [success: false, isError: true, deviceId: deviceId,
                 error: "Device command metadata fetch failed (/device/fullJson/${deviceId})".toString(),
                 note: "The native device metadata could not be read; no command was sent. Verify the device exists and retry."]
     }
-    def deviceLabel = _bypassDeviceLabel(fullJson, deviceId)
-    def supportedCommands = _fullJsonCommandNames(fullJson)
+    java.lang.String deviceLabel = __bat529StaticCall_java_lang_String_2('_bypassDeviceLabel', fullJson, deviceId)
+    java.util.List supportedCommands = __bat529StaticCall_java_util_List_1('_fullJsonCommandNames', fullJson)
     if (!supportedCommands?.contains(command)) {
         throw new IllegalArgumentException("Device ${deviceLabel} does not support command: ${command}. Available: ${supportedCommands}")
     }
@@ -1911,16 +1945,16 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     // only, so a declared-but-unreported attribute cannot be told from a typo and rejecting it
     // would block a legitimate command. A mistyped name therefore fires the command and then
     // times out with neverReported -- do not restore a pre-fire attribute-existence check here.
-    def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) : null
+    java.util.Map pollArgs = (waitFor != null) ? __bat529StaticCall_java_util_Map_3('_buildWaitForPollArgs', deviceId, deviceLabel, waitFor) : null
     if (parameters instanceof String && !parameters.trim()) parameters = null
-    if (parameters && parameters.size() > 0) {
-        def declaration = (fullJson.commands)?.find(((this.&_bat529Cb_15d0a4c9_71).curry([command] as Object[])))
-        parameters = normalizeCommandParams(parameters, _commandParamTypes(declaration))
+    if (parameters && __bat529StaticBinary_Greater_java_lang_Object(__bat529StaticReceiverCall_java_lang_Object_0(parameters, 'size'), 0)) {
+        def declaration = __bat529StaticDgm_find_1_Safe_java_lang_Object((fullJson.commands), ((this.&_bat529Cb_15d0a4c9_71).curry([command] as Object[])))
+        parameters = __bat529StaticCall_java_lang_Object_2('normalizeCommandParams', parameters, __bat529StaticCall_java_util_List_1('_commandParamTypes', declaration))
     }
-    def fireErr = _fireBypassCommand(deviceId, command, (parameters && parameters.size() > 0) ? parameters : [], fullJson)
+    java.util.Map fireErr = __bat529StaticCall_java_util_Map_4('_fireBypassCommand', deviceId, command, (parameters && __bat529StaticBinary_Greater_java_lang_Object(__bat529StaticReceiverCall_java_lang_Object_0(parameters, 'size'), 0)) ? parameters : [], fullJson)
     if (fireErr != null) return fireErr
 
-    def result = [
+    java.util.Map result = [
         success: true,
         device: deviceLabel,
         command: command,
@@ -1931,12 +1965,12 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
         // Poll before taking the post-dispatch snapshot; immediate native reads may
         // show either the prior or resulting value. Record convergence separately
         // because polling can time out or fail.
-        def waitForBlock = [
+        java.util.Map waitForBlock = [
             attribute: pollArgs.attribute,
             expected : (pollArgs.containsKey("expectedValues") ? pollArgs.expectedValues : pollArgs.expectedValue)
         ]
         try {
-            def poll = toolPollUntilAttribute(pollArgs)
+            java.util.Map poll = __bat529StaticCall_java_util_Map_1('toolPollUntilAttribute', pollArgs)
             waitForBlock.converged  = poll.success == true
             waitForBlock.finalValue = poll.finalValue
             // poll.polledCount is intentionally NOT surfaced into the waitFor block: elapsedMs
@@ -1966,7 +2000,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
             def cls = e.class.simpleName
             // Log at error: a warn is below Hubitat's default log level and returns before
             // writing, so this degraded-path failure would land in neither buffer nor hub log.
-            mcpLog("error", "send-command", "waitFor poll failed for ${deviceLabel}: ${cls}: ${e.message ?: '(no message)'}")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "send-command", "waitFor poll failed for ${deviceLabel}: ${cls}: ${e.message ?: '(no message)'}")
             waitForBlock.converged  = false
             waitForBlock.finalValue = null
             waitForBlock.error      = "waitFor poll failed: ${cls}: ${e.message ?: '(no message)'}".toString()
@@ -1985,10 +2019,10 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     // prior or resulting value; waitFor.converged reports whether polling confirmed it.
     // Null is the read-back FAILURE sentinel (distinct from empty [:]); surface why so the agent
     // can tell a failed confirmation read apart from a device with no readable attributes.
-    def stateErr = []
+    java.util.List stateErr = []
     // def snap = bypass ? _snapshotBypassDeviceState(deviceId, deviceLabel, stateErr)
     //                   : _snapshotDeviceState(device, deviceLabel, stateErr)
-    def snap = _snapshotBypassDeviceState(deviceId, deviceLabel, stateErr)
+    java.util.Map snap = __bat529StaticCall_java_util_Map_3('_snapshotBypassDeviceState', deviceId, deviceLabel, stateErr)
     if (snap == null) {
         // Genuine read-back failure: state is empty AND stateError says why, so the agent
         // distinguishes this from a device that legitimately has no readable attributes
@@ -2310,11 +2344,12 @@ private _runMethodDeviceId(deviceId) {
 
 // Build the runmethod args list ([{type, value}, ...]) from the normalized parameter values,
 // typing each positionally from the command's declared parameters in fullJson, else inferring.
+@groovy.transform.CompileStatic
 private List _buildRunMethodArgs(command, List params, Map fullJson) {
     if (!params) return []
-    def cmdDef = (fullJson?.commands instanceof List) ? (fullJson.commands).find(((this.&_bat529Cb_15d0a4c9_70).curry([command] as Object[]))): null
-    def declaredTypes = _commandParamTypes(cmdDef)
-    def out = []
+    def cmdDef = (fullJson?.commands instanceof List) ? __bat529StaticDgm_find_1_java_lang_Object((fullJson.commands), ((this.&_bat529Cb_15d0a4c9_70).curry([command] as Object[]))): null
+    java.util.List declaredTypes = __bat529StaticCall_java_util_List_1('_commandParamTypes', cmdDef)
+    java.util.List out = []
     (params).eachWithIndex(((this.&_bat529Cb_15d0a4c9_211).curry([declaredTypes, out] as Object[])))
     return out
 }
@@ -2333,6 +2368,7 @@ private List _commandParamTypes(cmdDef) {
 
 // Fallback runmethod arg type when the command declares none: a Map/List value is a
 // JSON_OBJECT (e.g. setColor), a Number is a NUMBER, everything else a STRING.
+@groovy.transform.CompileStatic
 private String _inferRunMethodArgType(v) {
     if (v instanceof Map || v instanceof List) return "JSON_OBJECT"
     if (v instanceof Number) return "NUMBER"
@@ -2342,22 +2378,23 @@ private String _inferRunMethodArgType(v) {
 // Compact native current-state snapshot for a device command response, preserving
 // _snapshotDeviceState's {attr: {value, timestamp}} shape but sourced from /device/fullJson
 // currentStates. Returns null (the read-back FAILURE sentinel) when fullJson is unavailable.
+@groovy.transform.CompileStatic
 private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
     try {
-        def fj = _fetchDeviceFullJson(deviceId)
-        def cs = fj?.device?.currentStates
+        java.util.Map fj = __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
+        def cs = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(fj, 'device'), 'currentStates')
         if (!(cs instanceof Map)) {
-            mcpLog("error", "send-command", "native: fullJson currentStates unavailable for device ${deviceId}")
-            if (errOut != null) errOut << "fullJson currentStates unavailable for ${deviceId}"
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "send-command", "native: fullJson currentStates unavailable for device ${deviceId}")
+            if (errOut != null) __bat529StaticExpr__snapshotBypassDeviceState_1(deviceId, errOut)
             return null
         }
-        def snapshot = [:]
-        (cs).each(((this.&_bat529Cb_15d0a4c9_224).curry([snapshot] as Object[])))
+        java.util.Map snapshot = [:]
+        __bat529StaticDgm_each_1_java_lang_Object((cs), ((this.&_bat529Cb_15d0a4c9_224).curry([snapshot] as Object[])))
         return snapshot
     } catch (Throwable t) {
         def detail = "${t.class.simpleName}: ${t.message ?: '(no message)'}".toString()
-        mcpLog("error", "send-command", "Failed to snapshot native device state for ${deviceLabel}: ${detail}")
-        if (errOut != null) errOut << detail
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "send-command", "Failed to snapshot native device state for ${deviceLabel}: ${detail}")
+        if (errOut != null) __bat529StaticExpr__snapshotBypassDeviceState_2(detail, errOut)
         return null
     }
 }
@@ -2365,13 +2402,14 @@ private Map _snapshotBypassDeviceState(deviceId, deviceLabel, errOut = null) {
 // Normalize a fullJson currentState date (an ISO-8601 String) to the snapshot's
 // "yyyy-MM-dd HH:mm:ss" form for parity with the listed-device snapshot, falling back to the
 // raw string when it does not parse. null in -> null out (no event timestamp).
+@groovy.transform.CompileStatic
 private String _formatBypassStateDate(rawDate) {
     if (rawDate == null) return null
     def s = rawDate.toString()
-    def parsed = _parseSinceArg(s)
+    def parsed = __bat529StaticCall_java_lang_Object_1('_parseSinceArg', s)
     if (parsed == null) return s
     try {
-        return parsed.format("yyyy-MM-dd HH:mm:ss")
+        return __bat529StaticReceiverCall_java_lang_String_1(parsed, 'format', "yyyy-MM-dd HH:mm:ss")
     } catch (Throwable t) {
         return s
     }
@@ -2425,19 +2463,21 @@ def normalizeCommandParams(params, List declaredTypes = []) {
     return convertParamElements([s], declaredTypes)
 }
 
+@groovy.transform.CompileStatic
 def convertParamElements(List params, List declaredTypes = []) {
-    return (params.withIndex()).collect(((this.&_bat529Cb_15d0a4c9_246).curry([declaredTypes] as Object[])))
+    return __bat529StaticDgm_collect_1_java_util_List((params.withIndex()), ((this.&_bat529Cb_15d0a4c9_246).curry([declaredTypes] as Object[])))
 }
 
-def toolGetDeviceEvents(deviceId, limit) {
-    if (limit == null || limit < 1) limit = 10
-    _requireDeviceToolAccess(deviceId)
-    def full = _fetchDeviceFullJson(deviceId)
+@groovy.transform.CompileStatic
+java.util.Map toolGetDeviceEvents(deviceId, limit) {
+    if (limit == null || __bat529StaticBinary_Less_java_lang_Object(limit, 1)) limit = 10
+    __bat529StaticCall_boolean_1('_requireDeviceToolAccess', deviceId)
+    java.util.Map full = __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
     if (!(full?.device instanceof Map)) return [success: false, isError: true, error: "Device metadata fetch failed (/device/fullJson/${deviceId})", note: 'Check native device details and retry.']
-    def label = _bypassDeviceLabel(full, deviceId)
-    def rows = _fetchBypassDeviceEvents(deviceId)
+    java.lang.String label = __bat529StaticCall_java_lang_String_2('_bypassDeviceLabel', full, deviceId)
+    java.util.List rows = __bat529StaticCall_java_util_List_1('_fetchBypassDeviceEvents', deviceId)
     if (rows == null) return [success: false, isError: true, error: "Device event history fetch failed (/device/eventsJson/${deviceId})", device: label, note: 'Check the native device Events page and retry.']
-    def events = (rows.take(limit as Integer)).collect((this.&_bat529Cb_15d0a4c9_116))
+    def events = __bat529StaticDgm_collect_1_java_util_List((rows.take(limit as Integer)), (this.&_bat529Cb_15d0a4c9_116))
     return [device: label, events: events, count: events.size()]
 }
 
@@ -2468,24 +2508,25 @@ def toolGetAttribute(deviceId, attribute) {
 // between = numeric, a null/non-numeric value never matches); numeric is true only when THIS value
 // parsed as a number under a numeric comparator (false for eq/ne), letting the caller latch the
 // per-device sawNumeric signal.
-def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow, betweenHigh) {
+@groovy.transform.CompileStatic
+java.util.List _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow, betweenHigh) {
     if (comparator == "eq" || comparator == "ne") {
-        def inSet = matchSet.contains(value?.toString()) ||
-            (value instanceof Number && (matchSet).any(((this.&_bat529Cb_15d0a4c9_177).curry([value] as Object[])))) ||
-            (value instanceof String && value.isNumber() && (matchSet).any(((this.&_bat529Cb_15d0a4c9_174).curry([value] as Object[]))))
+        def inSet = __bat529StaticReceiverCall_java_lang_Object_1(matchSet, 'contains', value?.toString()) ||
+            (value instanceof Number && __bat529StaticDgm_any_1_boolean((matchSet), ((this.&_bat529Cb_15d0a4c9_177).curry([value] as Object[])))) ||
+            (value instanceof String && value.isNumber() && __bat529StaticDgm_any_1_boolean((matchSet), ((this.&_bat529Cb_15d0a4c9_174).curry([value] as Object[]))))
         def matched = (comparator == "eq") ? inSet : (value != null && !inSet)
         return [matched, false]
     }
-    def num = _parseBigDecimalOrNull(value)
+    def num = __bat529StaticCall_java_lang_Object_1('_parseBigDecimalOrNull', value)
     if (num == null) {
         return [false, false]   // null/non-numeric never satisfies a numeric comparator
     }
     def matched
-    if (comparator == "gt")            matched = num >  numericThreshold
-    else if (comparator == "gte")      matched = num >= numericThreshold
-    else if (comparator == "lt")       matched = num <  numericThreshold
-    else if (comparator == "lte")      matched = num <= numericThreshold
-    else if (comparator == "between")  matched = (num >= betweenLow && num <= betweenHigh)
+    if (comparator == "gt")            matched = __bat529StaticBinary_Greater_java_lang_Object(num, numericThreshold)
+    else if (comparator == "gte")      matched = __bat529StaticBinary_GreaterEqual_java_lang_Object(num, numericThreshold)
+    else if (comparator == "lt")       matched = __bat529StaticBinary_Less_java_lang_Object(num, numericThreshold)
+    else if (comparator == "lte")      matched = __bat529StaticBinary_LessEqual_java_lang_Object(num, numericThreshold)
+    else if (comparator == "between")  matched = (__bat529StaticBinary_GreaterEqual_java_lang_Object(num, betweenLow) && __bat529StaticBinary_LessEqual_java_lang_Object(num, betweenHigh))
     else throw new IllegalArgumentException("Unsupported comparator: ${comparator}")
     return [matched, true]
 }
@@ -2916,21 +2957,23 @@ def toolPollUntilAttribute(args) {
 // WINDOW CLAMP: the final tick is the exception. Math.min(interval, remaining) can return LESS
 // than the floor when less than the floor remains in the poll window, because the window has
 // to win -- the floor bounds cadence between ticks, not how long the last sleep is.
+@groovy.transform.CompileStatic
 private Integer _pollSleepMs(pollIntervalMs, remainingMs, tickElapsedMs) {
     long requested = pollIntervalMs as Long
     long floor = (long) Math.ceil(requested / 2.0d)
     long interval = Math.max(requested - (tickElapsedMs as Long), floor)
-    long remaining = remainingMs > 0 ? (remainingMs as Long) : interval
+    long remaining = __bat529StaticBinary_Greater_java_lang_Object(remainingMs, 0) ? (remainingMs as Long) : interval
     return Math.min(interval, remaining) as Integer
 }
 
 // Consume the first native response once, then fetch a fresh current-state sample per tick.
+@groovy.transform.CompileStatic
 private _readPollValue(dev, deviceId, attribute) {
-    def full = dev instanceof Map && dev.containsKey('initial') ? dev.remove('initial') : _fetchDeviceFullJson(deviceId)
-    if (!(full?.device instanceof Map) || !(full.device.currentStates instanceof Map)) {
+    def full = dev instanceof Map && dev.containsKey('initial') ? dev.remove('initial') : __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
+    if (!(__bat529StaticProperty_Safe_java_lang_Object(full, 'device') instanceof Map) || !(__bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(full, 'device'), 'currentStates') instanceof Map)) {
         throw new RuntimeException("Native current states unavailable for device ${deviceId}")
     }
-    return _readBypassAttrValueFrom(full, attribute)
+    return __bat529StaticCall_java_lang_Object_2('_readBypassAttrValueFrom', full, attribute)
 }
 
 // Multi-device poll: await the mode predicate (any/all) across devices, the SAME condition
@@ -3360,11 +3403,13 @@ private Map _devicePreferencePanePayload(deviceId, Map overrides = [:], List pre
     return payload
 }
 
+@groovy.transform.CompileStatic
 private List _deviceExtendedFormProperties() {
     return ["deviceTypeId", "zigbeeId", "notes", "maxEvents", "maxStates", "spammyThreshold",
         "defaultIcon", "dashboardIds", "meshEnabled", "retryEnabled", "meshFullSync"]
 }
 
+@groovy.transform.CompileStatic
 private Map _deviceAssistantProperties() {
     return [homeKitEnabled: "homeKit", amazonAlexaEnabled: "amazonAlexa", googleHomeEnabled: "googleHome"]
 }
@@ -3521,22 +3566,24 @@ __bat529EachReceiver2
     return [args: args, fullJson: full]
 }
 
+@groovy.transform.CompileStatic
 private void _verifyDevicePreferenceWrites(deviceId, Map preferences, List changes, List errors) {
-    def full = _fetchDeviceFullJson(deviceId)
+    java.util.Map full = __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
     if (!(full?.device instanceof Map)) {
-        (preferences).each(((this.&_bat529Cb_15d0a4c9_216).curry([errors] as Object[])))
+        __bat529StaticDgm_each_1_java_util_Map((preferences), ((this.&_bat529Cb_15d0a4c9_216).curry([errors] as Object[])))
         return
     }
-    def model = _readDevicePreferenceModel(full)
-    (preferences).each(((this.&_bat529Cb_15d0a4c9_195).curry([changes, deviceId, errors, model] as Object[])))
+    java.util.Map model = __bat529StaticCall_java_util_Map_1('_readDevicePreferenceModel', full)
+    __bat529StaticDgm_each_1_java_util_Map((preferences), ((this.&_bat529Cb_15d0a4c9_195).curry([changes, deviceId, errors, model] as Object[])))
 }
 
+@groovy.transform.CompileStatic
 private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, List changes, List errors, Map model = null) {
     if (model == null) {
-        _verifyDevicePreferenceWrites(deviceId, [(name): setting], changes, errors)
+        __bat529StaticCall_java_lang_Object_4('_verifyDevicePreferenceWrites', deviceId, [(name): setting], changes, errors)
         return
     }
-    def entry = _lookupDevicePreference(model, name)
+    java.util.Map entry = __bat529StaticCall_java_util_Map_2('_lookupDevicePreference', model, name)
     if (model.writeSafe != true || entry == null || entry.valueStatus in ["unknown", "invalid"]) {
         errors << [property: "preference.${name}", stage: "verify", status: entry?.valueStatus == "invalid" ? "invalid" : "unavailable", error: "Update accepted but could not confirm the preference -- saved-value storage is unavailable or invalid."]
         return
@@ -3546,14 +3593,15 @@ private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, Li
     boolean matches = setting.clear == true ? (!entry.valuePresent && entry.valueStatus == 'unset') :
         (entry.valuePresent && entry.valueStatus == 'stored' && actual == expected)
     if (matches) {
-        changes << [property: "preference.${name}", newValue: _devicePreferenceIsSecret(entry) ? [type: entry.type, value: "[REDACTED]"] : setting]
+        changes << [property: "preference.${name}", newValue: __bat529StaticCall_boolean_1('_devicePreferenceIsSecret', entry) ? [type: entry.type, value: "[REDACTED]"] : setting]
     } else {
         errors << [property: "preference.${name}", stage: "verify", status: "mismatch", error: "Update accepted but the preference read back as a different saved value. Inspect configuration and retry; no driver command was invoked."]
     }
 }
 
+@groovy.transform.CompileStatic
 private void _applyNativeDeviceDataValues(deviceId, Map values, List changes, List errors) {
-    (values).each(((this.&_bat529Cb_15d0a4c9_248).curry([changes, deviceId, errors] as Object[])))
+    __bat529StaticDgm_each_1_java_util_Map((values), ((this.&_bat529Cb_15d0a4c9_248).curry([changes, deviceId, errors] as Object[])))
 }
 
 private void _applyDevicePreferencePatch(deviceId, Map preferences, List changes, List errors) {
@@ -3646,20 +3694,21 @@ private void _applyExtendedDeviceUpdate(Map args, deviceId, Map full, List chang
     (["showOnHome", "defaultCurrentState"]).each(((this.&_bat529Cb_15d0a4c9_253).curry([args, changes, deviceId, errors] as Object[])))
 }
 
-def toolUpdateDevice(args) {
-    def deviceId = _canonicalDeviceIdArg(args.deviceId)
+@groovy.transform.CompileStatic
+java.util.Map toolUpdateDevice(args) {
+    def deviceId = __bat529StaticCall_java_lang_Object_1('_canonicalDeviceIdArg', __bat529StaticProperty_java_lang_Object(args, 'deviceId'))
     if (deviceId == null) throw new IllegalArgumentException("deviceId is required")
-    if (settings.enableWrite == false) {
+    if (__bat529StaticProperty_java_lang_Object(__bat529StaticBinding_settings(), 'enableWrite') == false) {
         throw new IllegalArgumentException("Requires 'Enable Write Tools' to be turned on in MCP Rule Server app settings")
     }
-    _requireDeviceToolAccess(deviceId)
-    def full = _fetchDeviceFullJson(deviceId)
+    __bat529StaticCall_boolean_1('_requireDeviceToolAccess', deviceId)
+    java.util.Map full = __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
     if (!(full?.device instanceof Map)) {
         return [success: false, isError: true, error: "Unable to read /device/fullJson before updating device ${deviceId}; no update sent.",
                 note: "Read hub_get_device(mode='configuration') and retry when native device details are available."]
     }
-    def prepared = _prepareDeviceUpdatePatch(args, deviceId, full)
-    return _toolUpdateDeviceNative(prepared.args, deviceId, prepared.fullJson)
+    java.util.Map prepared = __bat529StaticCall_java_util_Map_3('_prepareDeviceUpdatePatch', args, deviceId, full)
+    return __bat529StaticCall_java_util_Map_3('_toolUpdateDeviceNative', prepared.args, deviceId, prepared.fullJson)
 
 }
 
@@ -3864,26 +3913,28 @@ private Map _assertRoomExistsForBypass(room) {
 
 // Read the model afresh so a prior write in the same call is not reverted by the full form.
 // The shared encoder preserves nullable metadata according to the native field's semantics.
+@groovy.transform.CompileStatic
 private Map _postBypassDeviceModel(deviceId, Map fieldOverrides, List errors = null) {
-    return _postDeviceConfigurationForm(deviceId, fieldOverrides, errors)?.device
+    return __bat529StaticProperty_Safe_java_util_Map(__bat529StaticExpr__postBypassDeviceModel_0(deviceId, errors, fieldOverrides), 'device')
 }
 
+@groovy.transform.CompileStatic
 private void _requireCompleteDeviceFormSource(Map full, deviceId) {
     if (!(full?.device instanceof Map)) throw new RuntimeException("Incomplete /device/fullJson preservation source: missing device model; no form update sent")
     def d = full.device
     // All three current-firmware captures contain these keys, including nullable fields.
-    def required = (_bat529EmbeddedCatalogRead(['["l",["id","version","controllerType","name","label","zigbeeId","maxEvents","maxStates","spammyThreshold","deviceNetworkId","deviceTypeId","deviceTypeReadableType","roomId","meshEnabled","retryEnabled","meshFullSync","locationId","hubId","groupId","tags","defaultIcon","notes"]]']) as List)
-    def __bat529EachReceiver3 = (required)
-def __bat529EachReceiver3Result = []
-for (def it in __bat529EachReceiver3) {if (!d.containsKey(it) ) __bat529EachReceiver3Result.add(it)
+    java.util.List required = (__bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["id","version","controllerType","name","label","zigbeeId","maxEvents","maxStates","spammyThreshold","deviceNetworkId","deviceTypeId","deviceTypeReadableType","roomId","meshEnabled","retryEnabled","meshFullSync","locationId","hubId","groupId","tags","defaultIcon","notes"]]']) as List)
+    java.util.List __bat529EachReceiver3 = (required)
+java.util.List __bat529EachReceiver3Result = []
+for (def it in __bat529EachReceiver3) {if (!__bat529StaticReceiverCall_java_lang_Object_1(d, 'containsKey', it) ) __bat529EachReceiver3Result.add(it)
 }
-def missing = __bat529EachReceiver3Result
+java.util.List missing = __bat529EachReceiver3Result
     if (missing) throw new RuntimeException("Incomplete /device/fullJson preservation source: missing device fields ${missing.join(', ')}; no form update sent")
-    if (d.id == null || d.id.toString() != deviceId.toString()) throw new RuntimeException("Invalid /device/fullJson preservation source: device id does not match; no form update sent")
-    if (d.version == null) throw new RuntimeException("Incomplete /device/fullJson preservation source: version is unavailable; no form update sent")
+    if (__bat529StaticProperty_java_lang_Object(d, 'id') == null || __bat529StaticProperty_java_lang_Object(d, 'id').toString() != deviceId.toString()) throw new RuntimeException("Invalid /device/fullJson preservation source: device id does not match; no form update sent")
+    if (__bat529StaticProperty_java_lang_Object(d, 'version') == null) throw new RuntimeException("Incomplete /device/fullJson preservation source: version is unavailable; no form update sent")
     if (!(full.get("homeKitEnabled") instanceof Boolean)) throw new RuntimeException("Incomplete /device/fullJson preservation source: homeKitEnabled is unavailable or invalid; no form update sent")
     def dashboards = full.get("dashboards")
-    if (!(dashboards instanceof List) || (dashboards).any((this.&_bat529Cb_15d0a4c9_225))) {
+    if (!(dashboards instanceof List) || __bat529StaticDgm_any_1_boolean((dashboards), (this.&_bat529Cb_15d0a4c9_225))) {
         throw new RuntimeException("Incomplete /device/fullJson preservation source: dashboards assignments are unavailable or invalid; no form update sent")
     }
 }
@@ -3895,26 +3946,27 @@ private List _normalizedDeviceTags(value) {
     return ((tags).collect((this.&_bat529Cb_15d0a4c9_13))).findAll((this.&_bat529Cb_15d0a4c9_47))
 }
 
+@groovy.transform.CompileStatic
 private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides) {
-    _requireCompleteDeviceFormSource(fj, deviceId)
+    __bat529StaticCall_java_lang_Object_2('_requireCompleteDeviceFormSource', fj, deviceId)
     def d = fj.device
-    def dashIds = (((fj.dashboards ?: [])).findAll((this.&_bat529Cb_15d0a4c9_63))).collect((this.&_bat529Cb_15d0a4c9_129))
-    def model = [
-        name: d.name, label: d.label, zigbeeId: d.zigbeeId,
-        maxEvents: d.maxEvents, maxStates: d.maxStates, spammyThreshold: d.spammyThreshold,
-        deviceNetworkId: d.deviceNetworkId, deviceTypeId: d.deviceTypeId,
-        deviceTypeReadableType: d.deviceTypeReadableType, roomId: d.roomId,
-        meshEnabled: d.meshEnabled, retryEnabled: d.retryEnabled, meshFullSync: d.meshFullSync,
-        homeKitEnabled: fj.homeKitEnabled, locationId: d.locationId, hubId: d.hubId,
-        groupId: d.groupId, dashboardIds: dashIds, tags: d.tags,
-        defaultIcon: d.defaultIcon, notes: d.notes
+    def dashIds = __bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_lang_Object(((fj.dashboards ?: [])), (this.&_bat529Cb_15d0a4c9_63))), (this.&_bat529Cb_15d0a4c9_129))
+    java.util.Map model = [
+        name: __bat529StaticProperty_java_lang_Object(d, 'name'), label: __bat529StaticProperty_java_lang_Object(d, 'label'), zigbeeId: __bat529StaticProperty_java_lang_Object(d, 'zigbeeId'),
+        maxEvents: __bat529StaticProperty_java_lang_Object(d, 'maxEvents'), maxStates: __bat529StaticProperty_java_lang_Object(d, 'maxStates'), spammyThreshold: __bat529StaticProperty_java_lang_Object(d, 'spammyThreshold'),
+        deviceNetworkId: __bat529StaticProperty_java_lang_Object(d, 'deviceNetworkId'), deviceTypeId: __bat529StaticProperty_java_lang_Object(d, 'deviceTypeId'),
+        deviceTypeReadableType: __bat529StaticProperty_java_lang_Object(d, 'deviceTypeReadableType'), roomId: __bat529StaticProperty_java_lang_Object(d, 'roomId'),
+        meshEnabled: __bat529StaticProperty_java_lang_Object(d, 'meshEnabled'), retryEnabled: __bat529StaticProperty_java_lang_Object(d, 'retryEnabled'), meshFullSync: __bat529StaticProperty_java_lang_Object(d, 'meshFullSync'),
+        homeKitEnabled: fj.homeKitEnabled, locationId: __bat529StaticProperty_java_lang_Object(d, 'locationId'), hubId: __bat529StaticProperty_java_lang_Object(d, 'hubId'),
+        groupId: __bat529StaticProperty_java_lang_Object(d, 'groupId'), dashboardIds: dashIds, tags: __bat529StaticProperty_java_lang_Object(d, 'tags'),
+        defaultIcon: __bat529StaticProperty_java_lang_Object(d, 'defaultIcon'), notes: __bat529StaticProperty_java_lang_Object(d, 'notes')
     ]
-    if (d.id != null) { model.id = d.id; model.version = d.version; model.controllerType = d.controllerType }
+    if (__bat529StaticProperty_java_lang_Object(d, 'id') != null) { model.id = __bat529StaticProperty_java_lang_Object(d, 'id'); model.version = __bat529StaticProperty_java_lang_Object(d, 'version'); model.controllerType = __bat529StaticProperty_java_lang_Object(d, 'controllerType') }
     if (fieldOverrides) model.putAll(fieldOverrides)
     // Native readback verifies omission preserves null for these fields; blanks change stored values.
     // Apply overrides first so explicit empty-string clears and roomId=0 remain in the form.
     if (true) {
-def __bat529EachReceiver4 = (["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"])
+java.util.List __bat529EachReceiver4 = (["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"])
 for (def key in __bat529EachReceiver4) {
         if (model.get(key) == null) model.remove(key)
     
@@ -3924,29 +3976,30 @@ __bat529EachReceiver4
     def enc = { v ->
         if (v == true) return "on"
         if (v == null) return ""
-        if (v instanceof List) return (v).collect((this.&_bat529Cb_15d0a4c9_14)).join(",")
+        if (v instanceof List) return __bat529StaticDgm_collect_1_java_util_List((v), (this.&_bat529Cb_15d0a4c9_14)).join(",")
         return v.toString()
     }
-    return (model).collect(((this.&_bat529Cb_15d0a4c9_191).curry([enc] as Object[]))).join("&")
+    return __bat529StaticDgm_collect_1_java_util_List((model), ((this.&_bat529Cb_15d0a4c9_191).curry([enc] as Object[]))).join("&")
 }
 
+@groovy.transform.CompileStatic
 private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides, List errors = null) {
-    def recoveryErrors = errors == null ? [] : errors
-    def fj = _fetchDeviceFullJson(deviceId)
+    java.util.List recoveryErrors = errors == null ? [] : errors
+    java.util.Map fj = __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
     if (fj?.device == null) {
         throw new RuntimeException("Could not read the device model from /device/fullJson to rebuild the /device/update form; native device id ${deviceId} was unavailable or could not be verified")
     }
-    def body = _deviceConfigurationFormBody(deviceId, fj, fieldOverrides)
-    hubInternalPostFormRaw("/device/update", body)
-    def updated = _fetchDeviceFullJson(deviceId)
+    java.lang.String body = __bat529StaticCall_java_lang_String_3('_deviceConfigurationFormBody', deviceId, fj, fieldOverrides)
+    __bat529StaticCall_java_lang_Object_2('hubInternalPostFormRaw', "/device/update", body)
+    def updated = __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
     if (!(updated?.device instanceof Map)) return updated
-    def restore = [:]
+    java.util.Map restore = [:]
     if (true) {
-def __bat529EachReceiver5 = (["label", "name", "deviceNetworkId"])
+java.util.List __bat529EachReceiver5 = (["label", "name", "deviceNetworkId"])
 for (def property in __bat529EachReceiver5) {
-        def original = fj.device.get(property)
+        def original = __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(fj, 'device'), 'get', property)
         boolean intentionalClear = fieldOverrides.containsKey(property) && !fieldOverrides.get(property)
-        if (original && !intentionalClear && updated.device.containsKey(property) && !updated.device.get(property)) {
+        if (original && !intentionalClear && __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(updated, 'device'), 'containsKey', property) && !__bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(updated, 'device'), 'get', property)) {
             restore.put(property, original)
         }
     
@@ -3956,18 +4009,18 @@ __bat529EachReceiver5
     if (restore) {
         // Restore known identity once while carrying changes already confirmed in the fresh model.
         try {
-            def fresh = _fetchDeviceFullJson(deviceId)
-            def restoreBody = _deviceConfigurationFormBody(deviceId, fresh, restore)
-            hubInternalPostFormRaw("/device/update", restoreBody)
+            java.util.Map fresh = __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
+            java.lang.String restoreBody = __bat529StaticCall_java_lang_String_3('_deviceConfigurationFormBody', deviceId, fresh, restore)
+            __bat529StaticCall_java_lang_Object_2('hubInternalPostFormRaw', "/device/update", restoreBody)
         } catch (Exception recoveryError) {
             // The hub may have accepted the recovery despite a lost acknowledgement.
-            mcpLog("error", "device", "Native identity restoration failed for device ${deviceId}: ${recoveryError.message}")
+            __bat529StaticCall_java_lang_Object_3('mcpLog', "error", "device", "Native identity restoration failed for device ${deviceId}: ${recoveryError.message}")
         }
-        def recovered = _fetchDeviceFullJson(deviceId)
+        java.util.Map recovered = __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
         if (recovered?.device instanceof Map) updated = recovered
-        (restore).each(((this.&_bat529Cb_15d0a4c9_236).curry([recovered, recoveryErrors] as Object[])))
+        __bat529StaticDgm_each_1_java_util_Map((restore), ((this.&_bat529Cb_15d0a4c9_236).curry([recovered, recoveryErrors] as Object[])))
     }
-    if (errors == null && recoveryErrors) throw new RuntimeException((recoveryErrors).collect((this.&_bat529Cb_15d0a4c9_23)).join(' '))
+    if (errors == null && recoveryErrors) throw new RuntimeException(__bat529StaticDgm_collect_1_java_util_List((recoveryErrors), (this.&_bat529Cb_15d0a4c9_23)).join(' '))
     return updated
 }
 
@@ -4295,21 +4348,22 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     ]
 }
 
-def toolGetCompatibleDevices(args) {
+@groovy.transform.CompileStatic
+java.util.Map toolGetCompatibleDevices(args) {
     // Hubitat's static "Compatible Devices" catalog (GET /hub/compatibleDevices): brands +
     // models with pairing/exclude/factory-reset instructions and the Hubitat driver each
     // maps to. ~1MB full, so this filters + paginates + projects -- never the whole blast.
-    def cursor = args?.cursor
-    def includeInstructions = (args?.includeInstructions == true)
-    def q = args?.query?.toString()?.toLowerCase()
-    def brandF = args?.brand?.toString()?.toLowerCase()
-    def protoF = args?.protocol?.toString()?.toLowerCase()
-    def typeF = args?.deviceType?.toString()?.toLowerCase()
+    def cursor = __bat529StaticProperty_Safe_java_lang_Object(args, 'cursor')
+    def includeInstructions = (__bat529StaticProperty_Safe_java_lang_Object(args, 'includeInstructions') == true)
+    def q = __bat529StaticProperty_Safe_java_lang_Object(args, 'query')?.toString()?.toLowerCase()
+    def brandF = __bat529StaticProperty_Safe_java_lang_Object(args, 'brand')?.toString()?.toLowerCase()
+    def protoF = __bat529StaticProperty_Safe_java_lang_Object(args, 'protocol')?.toString()?.toLowerCase()
+    def typeF = __bat529StaticProperty_Safe_java_lang_Object(args, 'deviceType')?.toString()?.toLowerCase()
 
     def list
     try {
-        def txt = hubInternalGet("/hub/compatibleDevices", null, 30)
-        list = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+        def txt = __bat529StaticCall_java_lang_Object_3('hubInternalGet', "/hub/compatibleDevices", null, 30)
+        list = txt ? __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', txt) : null
     } catch (Exception e) {
         return [success: false, error: "Could not read /hub/compatibleDevices: ${e.message}",
                 note: "This is Hubitat's static compatibility catalog; it needs hub connectivity."]
@@ -4328,29 +4382,29 @@ def toolGetCompatibleDevices(args) {
             .replace("&amp;", "&")
             .replaceAll(/\s+/, " ").trim()
     }
-    def matched = (list).findAll(((this.&_bat529Cb_15d0a4c9_245).curry([brandF, protoF, q, typeF] as Object[])))
+    def matched = __bat529StaticDgm_findAll_1_java_lang_Object((list), ((this.&_bat529Cb_15d0a4c9_245).curry([brandF, protoF, q, typeF] as Object[])))
     def project = { r ->
-        def m = [brand: r?.brand, name: r?.name, deviceType: r?.deviceType, productNumber: r?.productNumber,
-                 protocol: r?.protocol, driverName: r?.driverName, deviceTypeId: r?.deviceTypeId, id: r?.id]
+        def m = [brand: __bat529StaticProperty_Safe_java_lang_Object(r, 'brand'), name: __bat529StaticProperty_Safe_java_lang_Object(r, 'name'), deviceType: __bat529StaticProperty_Safe_java_lang_Object(r, 'deviceType'), productNumber: __bat529StaticProperty_Safe_java_lang_Object(r, 'productNumber'),
+                 protocol: __bat529StaticProperty_Safe_java_lang_Object(r, 'protocol'), driverName: __bat529StaticProperty_Safe_java_lang_Object(r, 'driverName'), deviceTypeId: __bat529StaticProperty_Safe_java_lang_Object(r, 'deviceTypeId'), id: __bat529StaticProperty_Safe_java_lang_Object(r, 'id')]
         if (includeInstructions) {
-            m.joinInstructions = stripHtml(r?.joinInstructions)
-            m.excludeInstructions = stripHtml(r?.excludeInstructions)
-            m.factoryResetInstructions = stripHtml(r?.factoryResetInstructions)
-            m.additionalHardware = r?.additionalHardware
-            m.notes = r?.notes
+            m.joinInstructions = stripHtml(__bat529StaticProperty_Safe_java_lang_Object(r, 'joinInstructions'))
+            m.excludeInstructions = stripHtml(__bat529StaticProperty_Safe_java_lang_Object(r, 'excludeInstructions'))
+            m.factoryResetInstructions = stripHtml(__bat529StaticProperty_Safe_java_lang_Object(r, 'factoryResetInstructions'))
+            m.additionalHardware = __bat529StaticProperty_Safe_java_lang_Object(r, 'additionalHardware')
+            m.notes = __bat529StaticProperty_Safe_java_lang_Object(r, 'notes')
         } else {
-            m.hasInstructions = (r?.joinInstructions || r?.excludeInstructions || r?.factoryResetInstructions) ? true : false
+            m.hasInstructions = (__bat529StaticProperty_Safe_java_lang_Object(r, 'joinInstructions') || __bat529StaticProperty_Safe_java_lang_Object(r, 'excludeInstructions') || __bat529StaticProperty_Safe_java_lang_Object(r, 'factoryResetInstructions')) ? true : false
         }
         return m
     }
 
     def pageSize = includeInstructions ? 12 : 40
     def effCursor = (cursor == null) ? "" : cursor
-    def paged = _paginateList(matched, effCursor, pageSize, "hub_get_compatible_devices")
-    def result = [success: true, total: matched.size(), count: paged.page.size(),
-                  devices: paged.page.collect(project)]
+    java.util.Map paged = __bat529StaticCall_java_util_Map_4('_paginateList', matched, effCursor, pageSize, "hub_get_compatible_devices")
+    java.util.Map result = [success: true, total: __bat529StaticReceiverCall_java_lang_Object_0(matched, 'size'), count: __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(paged, 'page'), 'size'),
+                  devices: __bat529StaticDgm_collect_1_java_util_List(paged.page, project)]
     if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
-    if (matched.isEmpty()) {
+    if (__bat529StaticReceiverCall_java_lang_Object_0(matched, 'isEmpty')) {
         result.note = "No compatible-device records matched. Loosen the brand/protocol/deviceType/query filter."
     } else if (paged.nextCursor != null) {
         result.note = "Page of ${result.count} of ${result.total} matches. Iterate nextCursor, or narrow the filter. Set includeInstructions=true for pairing/reset steps."
@@ -4881,9 +4935,10 @@ private String _deviceSwapIdentityOutcome(Map fromBefore, Map toBefore, Map from
 
 // Raw input descriptor lookup on a configure/json page. _rmCollectInputSchema
 // drops `options`, which the compatibility check needs.
+@groovy.transform.CompileStatic
 private Map _deviceSwapFindInput(Map cfg, String name) {
-    for (s in (cfg?.configPage?.sections ?: [])) {
-        for (i in (s?.input ?: [])) {
+    for (s in (__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(cfg, 'configPage'), 'sections') ?: [])) {
+        for (i in (__bat529StaticProperty_Safe_java_lang_Object(s, 'input') ?: [])) {
             if (i instanceof Map && i.name?.toString() == name) return i
         }
     }
@@ -4911,10 +4966,11 @@ private List _deviceSwapEnumOptions(Map input) {
 
 // All type:button inputs on the page except the Cancel button (closeApp).
 // After both pickers are set the hub reveals exactly one swap-action button.
+@groovy.transform.CompileStatic
 private List _deviceSwapActionButtons(Map cfg) {
-    def names = []
-    for (s in (cfg?.configPage?.sections ?: [])) {
-        for (i in (s?.input ?: [])) {
+    java.util.List names = []
+    for (s in (__bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(cfg, 'configPage'), 'sections') ?: [])) {
+        for (i in (__bat529StaticProperty_Safe_java_lang_Object(s, 'input') ?: [])) {
             if (i instanceof Map && i.type?.toString() == "button" && i.name && i.name.toString() != "closeApp") {
                 names << i.name.toString()
             }
@@ -4927,15 +4983,16 @@ private List _deviceSwapActionButtons(Map cfg) {
 // reap a pending (installed:false) instance -- verified live on fw 2.5.0.143; only
 // /installedapp/delete/<id> does. Never throws: cleanup runs on failure paths where
 // the original error must win.
+@groovy.transform.CompileStatic
 private boolean _deviceSwapCleanup(Integer appId) {
     try {
-        hubInternalGetRaw("/installedapp/delete/${appId}")
-        mcpLog("info", "device-swap", "Transient Swap Device instance ${appId} deleted")
+        __bat529StaticCall_java_lang_Object_1('hubInternalGetRaw', "/installedapp/delete/${appId}")
+        __bat529StaticCall_java_lang_Object_3('mcpLog', "info", "device-swap", "Transient Swap Device instance ${appId} deleted")
         return true
     } catch (Exception e) {
         // error (not warn) so the orphan-leak case is queryable at the default error-only MCP log level.
         // Not harmless: rendering a leftover instance's page performs the swap again.
-        mcpLogError("device-swap", "Delete of Swap Device instance ${appId} failed -- opening it in the hub UI would swap the devices again", e)
+        __bat529StaticCall_java_lang_Object_3('mcpLogError', "device-swap", "Delete of Swap Device instance ${appId} failed -- opening it in the hub UI would swap the devices again", e)
         return false
     }
 }
@@ -4974,312 +5031,406 @@ def _getAllToolDefinitions_partDevices() {
     ]
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partDevices() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_list_devices","hub_get_device","hub_get_device_attribute","hub_list_device_events","hub_get_compatible_devices"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_list_devices","hub_get_device","hub_get_device_attribute","hub_list_device_events","hub_get_compatible_devices"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partDevices() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_update_device","hub_delete_device"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_update_device","hub_delete_device"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partDevices() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_devices",["m",[["title","List Devices"],["summary","List accessible devices with filtering, pagination, and field projection."]]]],["hub_get_device",["m",[["title","Get Device Details"],["summary","Inspect a device summary, configuration and preferences, or detailed information by section."]]]],["hub_get_device_attribute",["m",[["title","Get Device Attribute"],["summary","Read one attribute value, optionally waiting until it matches an expected value."]]]],["hub_list_device_events",["m",[["title","List Device Events"],["summary","Recent events for a device or app, or location events when neither is given."]]]],["hub_call_device_command",["m",[["title","Send Device Command"],["summary","Send a command like on, off, or setLevel to one device, or up to 20 in one call."]]]],["hub_call_device_swap",["m",[["title","Swap Device"],["summary","Exchange two devices\' identities so the apps on one run on the other\'s hardware."]]]],["hub_call_device_replace",["m",[["title","Replace Device Hardware"],["summary","Re-point a device to replacement hardware, keeping its id and all references."]]]],["hub_update_device",["m",[["title","Update Device Properties"],["summary","Update applicable device identity, preferences, display, driver, history limits, or integration assignments."]]]],["hub_create_device",["m",[["title","Create Device From Driver"],["summary","Create a device from a driver-type id, or link a device shared by a peer hub over Hub Mesh."]]]],["hub_get_compatible_devices",["m",[["title","Search Compatible Devices"],["summary","Search Hubitat\'s compatible-device catalog for models and pairing/reset instructions."]]]],["hub_delete_device",["m",[["title","Delete Device"],["summary","Permanently delete a device from the hub (no undo)."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_list_devices",["m",[["title","List Devices"],["summary","List accessible devices with filtering, pagination, and field projection."]]]],["hub_get_device",["m",[["title","Get Device Details"],["summary","Inspect a device summary, configuration and preferences, or detailed information by section."]]]],["hub_get_device_attribute",["m",[["title","Get Device Attribute"],["summary","Read one attribute value, optionally waiting until it matches an expected value."]]]],["hub_list_device_events",["m",[["title","List Device Events"],["summary","Recent events for a device or app, or location events when neither is given."]]]],["hub_call_device_command",["m",[["title","Send Device Command"],["summary","Send a command like on, off, or setLevel to one device, or up to 20 in one call."]]]],["hub_call_device_swap",["m",[["title","Swap Device"],["summary","Exchange two devices\' identities so the apps on one run on the other\'s hardware."]]]],["hub_call_device_replace",["m",[["title","Replace Device Hardware"],["summary","Re-point a device to replacement hardware, keeping its id and all references."]]]],["hub_update_device",["m",[["title","Update Device Properties"],["summary","Update applicable device identity, preferences, display, driver, history limits, or integration assignments."]]]],["hub_create_device",["m",[["title","Create Device From Driver"],["summary","Create a device from a driver-type id, or link a device shared by a peer hub over Hub Mesh."]]]],["hub_get_compatible_devices",["m",[["title","Search Compatible Devices"],["summary","Search Hubitat\'s compatible-device catalog for models and pairing/reset instructions."]]]],["hub_delete_device",["m",[["title","Delete Device"],["summary","Permanently delete a device from the hub (no undo)."]]]]]]'])
 }
 
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_1(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_2(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_3(def it) { null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_4(def it) { null 
 }
 
-def _bat529Cb_15d0a4c9_5(def it) { false 
+@groovy.transform.CompileStatic
+java.lang.Boolean _bat529Cb_15d0a4c9_5(def it) { false 
 }
 
-def _bat529Cb_15d0a4c9_6(def it) { false 
+@groovy.transform.CompileStatic
+java.lang.Boolean _bat529Cb_15d0a4c9_6(def it) { false 
 }
 
-def _bat529Cb_15d0a4c9_7(def it) { false 
+@groovy.transform.CompileStatic
+java.lang.Boolean _bat529Cb_15d0a4c9_7(def it) { false 
 }
 
-def _bat529Cb_15d0a4c9_8(def it) { false 
+@groovy.transform.CompileStatic
+java.lang.Boolean _bat529Cb_15d0a4c9_8(def it) { false 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_9(def it) { it 
 }
 
-def _bat529Cb_15d0a4c9_10(def it) { it?.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_10(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_15d0a4c9_11(def it) { false 
+@groovy.transform.CompileStatic
+java.lang.Boolean _bat529Cb_15d0a4c9_11(def it) { false 
 }
 
-def _bat529Cb_15d0a4c9_12(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_12(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_15d0a4c9_13(def it) { it.trim() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_13(def it) { __bat529StaticReceiverCall_java_lang_Object_0(it, 'trim') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_14(def it) { it?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_15(def it) { it != null 
 }
 
-def _bat529Cb_15d0a4c9_16(def toId, def it) { it.id == toId 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_16(def toId, def it) { __bat529StaticProperty_java_lang_Object(it, 'id') == toId 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_17(def it) { it?.toString() 
 }
 
-def _bat529Cb_15d0a4c9_18(def it) { it.trim() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_18(def it) { __bat529StaticReceiverCall_java_lang_Object_0(it, 'trim') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_19(def it) { it.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_20(def it) { it?.toString() 
 }
 
-def _bat529Cb_15d0a4c9_21(def it) { !it.contains("; ") 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_21(def it) { !__bat529StaticReceiverCall_java_lang_Object_1(it, 'contains', "; ") 
 }
 
-def _bat529Cb_15d0a4c9_22(def it) { it.key == "newDev" 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_22(def it) { __bat529StaticProperty_java_lang_Object(it, 'key') == "newDev" 
 }
 
-def _bat529Cb_15d0a4c9_23(def it) { it.error 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_23(def it) { __bat529StaticProperty_java_lang_Object(it, 'error') 
 }
 
-def _bat529Cb_15d0a4c9_24(def it) { it.error 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_24(def it) { __bat529StaticProperty_java_lang_Object(it, 'error') 
 }
 
-def _bat529Cb_15d0a4c9_25(def it) { it.key == "oldDev" 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_25(def it) { __bat529StaticProperty_java_lang_Object(it, 'key') == "oldDev" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_26(def it) { !(it instanceof Map) 
 }
 
-def _bat529Cb_15d0a4c9_27(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_27(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_15d0a4c9_28(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_28(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_15d0a4c9_29(def it) { it.trim() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_29(def it) { __bat529StaticReceiverCall_java_lang_Object_0(it, 'trim') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_30(def it) { it?.toString() 
 }
 
-def _bat529Cb_15d0a4c9_31(def it) { it.id?.isInteger() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_31(def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(it, 'id'), 'isInteger') 
 }
 
-def _bat529Cb_15d0a4c9_32(def it) { it.mcpAuthorized 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_32(def it) { __bat529StaticProperty_java_lang_Object(it, 'mcpAuthorized') 
 }
 
-def _bat529Cb_15d0a4c9_33(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_33(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_34(def it) { !(it instanceof String) 
 }
 
-def _bat529Cb_15d0a4c9_35(def fromId, def it) { it.id == fromId 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_35(def fromId, def it) { __bat529StaticProperty_java_lang_Object(it, 'id') == fromId 
 }
 
-def _bat529Cb_15d0a4c9_36(def it) { it.success == false 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_36(def it) { __bat529StaticProperty_java_lang_Object(it, 'success') == false 
 }
 
-def _bat529Cb_15d0a4c9_37(def args, def it) { args.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_37(def args, def it) { __bat529StaticReceiverCall_java_lang_Object_1(args, 'containsKey', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_38(def it) { !(it instanceof String) 
 }
 
-def _bat529Cb_15d0a4c9_39(def it) { it.metadataUnavailable 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_39(def it) { __bat529StaticProperty_java_lang_Object(it, 'metadataUnavailable') 
 }
 
 def _bat529Cb_15d0a4c9_40(def listedLabel, def it) { !listedLabel(it) 
 }
 
-def _bat529Cb_15d0a4c9_41(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_41(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_15d0a4c9_42(def it) { it.id.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_42(def it) { __bat529StaticProperty_java_lang_Object(it, 'id').toString() 
 }
 
-def _bat529Cb_15d0a4c9_43(def it) { it.success == false 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_43(def it) { __bat529StaticProperty_java_lang_Object(it, 'success') == false 
 }
 
-def _bat529Cb_15d0a4c9_44(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_44(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_15d0a4c9_45(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_45(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_15d0a4c9_46(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_46(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_47(def it) { it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_48(def it) { it.toString() 
 }
 
-def _bat529Cb_15d0a4c9_49(def args, def it) { args.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_49(def args, def it) { __bat529StaticReceiverCall_java_lang_Object_1(args, 'containsKey', it) 
 }
 
-def _bat529Cb_15d0a4c9_50(def it) { it.id as Integer 
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_15d0a4c9_50(def it) { __bat529StaticProperty_java_lang_Object(it, 'id') as Integer 
 }
 
-def _bat529Cb_15d0a4c9_51(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_51(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_52(def it) { it.toString() 
 }
 
-def _bat529Cb_15d0a4c9_53(def it) { it.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_53(def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_54(def it) { it.toString() 
 }
 
-def _bat529Cb_15d0a4c9_55(def detailFields, def it) { detailFields.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_55(def detailFields, def it) { __bat529StaticReceiverCall_java_lang_Object_1(detailFields, 'contains', it) 
 }
 
-def _bat529Cb_15d0a4c9_56(def args, def it) { args.remove(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_56(def args, def it) { __bat529StaticReceiverCall_java_lang_Object_1(args, 'remove', it) 
 }
 
-def _bat529Cb_15d0a4c9_57(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_57(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_15d0a4c9_58(def bySrc, def k) { bySrc[0].containsKey(k) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_58(def bySrc, def k) { __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticBinary_GetAt_java_lang_Object(bySrc, 0), 'containsKey', k) 
 }
 
-def _bat529Cb_15d0a4c9_59(def it) { it.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_59(def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() 
 }
 
-def _bat529Cb_15d0a4c9_60(def it) { it.name == "switch" 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_60(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') == "switch" 
 }
 
-def _bat529Cb_15d0a4c9_61(def it) { it.capabilities instanceof List 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_61(def it) { __bat529StaticProperty_java_lang_Object(it, 'capabilities') instanceof List 
 }
 
-def _bat529Cb_15d0a4c9_62(def it) { it.selected == true 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_62(def it) { __bat529StaticProperty_java_lang_Object(it, 'selected') == true 
 }
 
-def _bat529Cb_15d0a4c9_63(def it) { it?.selected 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_63(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'selected') 
 }
 
-def _bat529Cb_15d0a4c9_64(def deviceId, def it) { it.id?.toString() == deviceId 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_64(def deviceId, def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() == deviceId 
 }
 
-def _bat529Cb_15d0a4c9_65(def attr, def it) { it.name == attr 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_65(def attr, def it) { __bat529StaticProperty_java_lang_Object(it, 'name') == attr 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_66(def it) { !(it in ["id", "mcpManaged"]) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_67(def it) { !(it instanceof String) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_68(def it) { it 
 }
 
 def _bat529Cb_15d0a4c9_69(def k, def v) { k != 'id' && k != 'label' 
 }
 
-def _bat529Cb_15d0a4c9_70(def command, def it) { it?.name == command 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_70(def command, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') == command 
 }
 
-def _bat529Cb_15d0a4c9_71(def command, def it) { it?.name == command 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_71(def command, def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name') == command 
 }
 
-def _bat529Cb_15d0a4c9_72(def rootKeys, def it) { !rootKeys.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_72(def rootKeys, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(rootKeys, 'contains', it) 
 }
 
-def _bat529Cb_15d0a4c9_73(def rootKeys, def it) { !rootKeys.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_73(def rootKeys, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(rootKeys, 'contains', it) 
 }
 
-def _bat529Cb_15d0a4c9_74(def deviceId, def it) { it.id?.toString() == deviceId 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_74(def deviceId, def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() == deviceId 
 }
 
-def _bat529Cb_15d0a4c9_75(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_75(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
-def _bat529Cb_15d0a4c9_76(def it) { it?.name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_76(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'name')?.toString() 
 }
 
 def _bat529Cb_15d0a4c9_77(def it) { !(it instanceof Map) || it.id == null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_78(def it) { it != null 
 }
 
-def _bat529Cb_15d0a4c9_79(def deviceId, def it) { it.deviceId?.toString() == deviceId 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_79(def deviceId, def it) { __bat529StaticProperty_java_lang_Object(it, 'deviceId')?.toString() == deviceId 
 }
 
-def _bat529Cb_15d0a4c9_80(def names, def key) { !names.contains(key) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_80(def names, def key) { !__bat529StaticReceiverCall_java_lang_Object_1(names, 'contains', key) 
 }
 
 def _bat529Cb_15d0a4c9_81(def k, def c) { c > 1 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_82(def it) { it 
 }
 
-def _bat529Cb_15d0a4c9_83(def args, def it) { args.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_83(def args, def it) { __bat529StaticReceiverCall_java_lang_Object_1(args, 'containsKey', it) 
 }
 
-def _bat529Cb_15d0a4c9_84(def args, def it) { args.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_84(def args, def it) { __bat529StaticReceiverCall_java_lang_Object_1(args, 'containsKey', it) 
 }
 
-def _bat529Cb_15d0a4c9_85(def it) { !it.containsKey("capabilities") 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_85(def it) { !__bat529StaticReceiverCall_java_lang_Object_1(it, 'containsKey', "capabilities") 
 }
 
 def _bat529Cb_15d0a4c9_86(def spineIds, def key, def rec) { !spineIds.contains(key) 
 }
 
-def _bat529Cb_15d0a4c9_87(def name, def it) { it.name == name?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_87(def name, def it) { __bat529StaticProperty_java_lang_Object(it, 'name') == name?.toString() 
 }
 
-def _bat529Cb_15d0a4c9_88(def it) { it.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_88(def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() 
 }
 
-def _bat529Cb_15d0a4c9_89(def before, def it) { !before.contains(it.id?.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_89(def before, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(before, 'contains', __bat529StaticProperty_java_lang_Object(it, 'id')?.toString()) 
 }
 
-def _bat529Cb_15d0a4c9_90(def cf, def c) { c?.toLowerCase() == cf 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_90(def cf, def c) { __bat529StaticReceiverCall_Safe_java_lang_Object_0(c, 'toLowerCase') == cf 
 }
 
-def _bat529Cb_15d0a4c9_91(def it) { it._nativeRoomUnavailable == true 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_91(def it) { __bat529StaticProperty_java_lang_Object(it, '_nativeRoomUnavailable') == true 
 }
 
-def _bat529Cb_15d0a4c9_92(def allowed, def it) { !allowed.contains(it.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_92(def allowed, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(allowed, 'contains', it.toString()) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_93(def it) { it in ["id", "mcpManaged", "label"] 
 }
 
-def _bat529Cb_15d0a4c9_94(def fields, def it) { fields.contains(it.name) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_94(def fields, def it) { __bat529StaticReceiverCall_java_lang_Object_1(fields, 'contains', __bat529StaticProperty_java_lang_Object(it, 'name')) 
 }
 
-def _bat529Cb_15d0a4c9_95(def it) { _deviceFlag(it.selected) 
+@groovy.transform.CompileStatic
+boolean _bat529Cb_15d0a4c9_95(def it) { __bat529StaticCall_boolean_1('_deviceFlag', __bat529StaticProperty_java_lang_Object(it, 'selected')) 
 }
 
-def _bat529Cb_15d0a4c9_96(def deviceKeys, def it) { !deviceKeys.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_96(def deviceKeys, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(deviceKeys, 'contains', it) 
 }
 
 def _bat529Cb_15d0a4c9_97(def it) { "${it.name} (ID: ${it.id})" 
@@ -5288,67 +5439,87 @@ def _bat529Cb_15d0a4c9_97(def it) { "${it.name} (ID: ${it.id})"
 def _bat529Cb_15d0a4c9_98(def payload, def key, def value) { payload.put(key, value) 
 }
 
-def _bat529Cb_15d0a4c9_99(def it) { [name: it] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_99(def it) { [name: it] 
 }
 
-def _bat529Cb_15d0a4c9_100(def it) { [name: it] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_100(def it) { [name: it] 
 }
 
-def _bat529Cb_15d0a4c9_101(def known, def it) { !known.contains(it.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_101(def known, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(known, 'contains', it.toString()) 
 }
 
-def _bat529Cb_15d0a4c9_102(def meshHubId, def it) { it.sourceHubId?.toString() == meshHubId 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_102(def meshHubId, def it) { __bat529StaticProperty_java_lang_Object(it, 'sourceHubId')?.toString() == meshHubId 
 }
 
-def _bat529Cb_15d0a4c9_103(def fields, def it) { fields.contains(it.name) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_103(def fields, def it) { __bat529StaticReceiverCall_java_lang_Object_1(fields, 'contains', __bat529StaticProperty_java_lang_Object(it, 'name')) 
 }
 
 
-def _bat529Cb_15d0a4c9_105(def cap) { cap.name?.toLowerCase() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_105(def cap) { __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(cap, 'name'), 'toLowerCase') 
 }
 
-def _bat529Cb_15d0a4c9_106(def cap) { cap.name?.toLowerCase() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_106(def cap) { __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(cap, 'name'), 'toLowerCase') 
 }
 
-def _bat529Cb_15d0a4c9_107(def it) { it.content.length() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_107(def it) { __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(it, 'content'), 'length') 
 }
 
-def _bat529Cb_15d0a4c9_108(def it) { it.content.length() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_108(def it) { __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(it, 'content'), 'length') 
 }
 
-def _bat529Cb_15d0a4c9_109(def args, def targets, def it) { targets.put(it, args.remove(it)) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_109(def args, def targets, def it) { __bat529StaticReceiverCall_java_lang_Object_2(targets, 'put', it, __bat529StaticReceiverCall_java_lang_Object_1(args, 'remove', it)) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_110(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_111(def it) { it != null 
 }
 
-def _bat529Cb_15d0a4c9_112(def cf, def cap) { cap.name?.toLowerCase() == cf 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_112(def cf, def cap) { __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(cap, 'name'), 'toLowerCase') == cf 
 }
 
 def _bat529Cb_15d0a4c9_113(def it) { !(it instanceof String) || it.contains(",") 
 }
 
-def _bat529Cb_15d0a4c9_114(def fields, def it) { fields.contains(it.name) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_114(def fields, def it) { __bat529StaticReceiverCall_java_lang_Object_1(fields, 'contains', __bat529StaticProperty_java_lang_Object(it, 'name')) 
 }
 
-def _bat529Cb_15d0a4c9_115(def unreadable, def it) { !unreadable.contains(it.id.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_115(def unreadable, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(unreadable, 'contains', __bat529StaticProperty_java_lang_Object(it, 'id').toString()) 
 }
 
-def _bat529Cb_15d0a4c9_116(def it) { _mapBypassEventRow(it) 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_116(def it) { __bat529StaticCall_java_util_Map_1('_mapBypassEventRow', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_117(def it) { (it instanceof Map) ? it.name : it 
 }
 
-def _bat529Cb_15d0a4c9_118(def attrNames, def d) { _contextDeviceLine(d, attrNames) 
+@groovy.transform.CompileStatic
+java.lang.String _bat529Cb_15d0a4c9_118(def attrNames, def d) { __bat529StaticCall_java_lang_String_2('_contextDeviceLine', d, attrNames) 
 }
 
-def _bat529Cb_15d0a4c9_119(def it) { it.id 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_119(def it) { __bat529StaticProperty_java_lang_Object(it, 'id') 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_120(def it) { it instanceof Map && it.key != null 
 }
 
@@ -5358,79 +5529,102 @@ def _bat529Cb_15d0a4c9_121(def it) { !(it instanceof Map) || it.id == null
 def _bat529Cb_15d0a4c9_122(def names, def row, def index) { names << index.toString() 
 }
 
-def _bat529Cb_15d0a4c9_123(def it) { it.deviceId 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_123(def it) { __bat529StaticProperty_java_lang_Object(it, 'deviceId') 
 }
 
-def _bat529Cb_15d0a4c9_124(def a) { [name: "arg", type: a?.toString()] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_124(def a) { [name: "arg", type: a?.toString()] 
 }
 
-def _bat529Cb_15d0a4c9_125(def args, def it) { args.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_125(def args, def it) { __bat529StaticReceiverCall_java_lang_Object_1(args, 'containsKey', it) 
 }
 
-def _bat529Cb_15d0a4c9_126(def rec, def it) { rec._nativeUnavailableCollections?.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_126(def rec, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(rec, '_nativeUnavailableCollections'), 'contains', it) 
 }
 
-def _bat529Cb_15d0a4c9_127(def rec, def it) { rec._nativeUnavailableCollections?.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_127(def rec, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(rec, '_nativeUnavailableCollections'), 'contains', it) 
 }
 
-def _bat529Cb_15d0a4c9_128(def it) { it.id as Integer 
+@groovy.transform.CompileStatic
+java.lang.Integer _bat529Cb_15d0a4c9_128(def it) { __bat529StaticProperty_java_lang_Object(it, 'id') as Integer 
 }
 
-def _bat529Cb_15d0a4c9_129(def it) { it?.id 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_129(def it) { __bat529StaticProperty_Safe_java_lang_Object(it, 'id') 
 }
 
-def _bat529Cb_15d0a4c9_130(def args, def it) { args.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_130(def args, def it) { __bat529StaticReceiverCall_java_lang_Object_1(args, 'containsKey', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_131(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_132(def it) { it != null 
 }
 
-def _bat529Cb_15d0a4c9_133(def args, def it) { args.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_133(def args, def it) { __bat529StaticReceiverCall_java_lang_Object_1(args, 'containsKey', it) 
 }
 
 def _bat529Cb_15d0a4c9_134(def listedLabel, def it) { it._nativeLoaded != true && !listedLabel(it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_135(def it) { it instanceof String && it 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_136(def it) { !(it in ['type', 'value', 'clear', 'multiple']) 
 }
 
-def _bat529Cb_15d0a4c9_137(def st) { [name: st.name, value: st.value] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_137(def st) { [name: __bat529StaticProperty_java_lang_Object(st, 'name'), value: __bat529StaticProperty_java_lang_Object(st, 'value')] 
 }
 
-def _bat529Cb_15d0a4c9_138(def d) { d.roomName?.toString()?.toLowerCase() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_138(def d) { __bat529StaticProperty_java_lang_Object(d, 'roomName')?.toString()?.toLowerCase() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_139(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_140(def it) { it != null 
 }
 
 def _bat529Cb_15d0a4c9_141(def lf, def it) { (it.label ?: "").toString().toLowerCase().contains(lf) 
 }
 
-def _bat529Cb_15d0a4c9_142(def meshDeviceId, def r, def k) { r.containsKey(k) && r[k]?.toString() == meshDeviceId 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_142(def meshDeviceId, def r, def k) { __bat529StaticReceiverCall_java_lang_Object_1(r, 'containsKey', k) && __bat529StaticBinary_GetAt_java_lang_Object(r, k)?.toString() == meshDeviceId 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_143(def it) { !(it in ['deviceId', 'bestPracticeKey', 'confirm']) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_144(def meshHubId, def it) { it instanceof Map && it.sourceHubId?.toString() == meshHubId 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_145(def it) { it != null 
 }
 
-def _bat529Cb_15d0a4c9_146(def device, def it) { device._nativeUnavailableCollections?.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_146(def device, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(device, '_nativeUnavailableCollections'), 'contains', it) 
 }
 
-def _bat529Cb_15d0a4c9_147(def allowedIds, def it) { it instanceof Map && allowedIds.contains(it.id?.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_147(def allowedIds, def it) { it instanceof Map && __bat529StaticReceiverCall_java_lang_Object_1(allowedIds, 'contains', it.id?.toString()) 
 }
 
 def _bat529Cb_15d0a4c9_148(def cf, def dev) { (dev.capabilities).any(((this.&_bat529Cb_15d0a4c9_90).curry([cf] as Object[])))
@@ -5445,72 +5639,92 @@ def _bat529Cb_15d0a4c9_150(def d) { if (d._nativeReadError) d._nativeRoomUnavail
 def _bat529Cb_15d0a4c9_151(def k, def v) { !(k instanceof String) || !(v instanceof String) 
 }
 
-def _bat529Cb_15d0a4c9_152(def it) { !(it instanceof String) || !_deviceDetailSections().contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_152(def it) { !(it instanceof String) || !__bat529StaticCall_java_util_List_0('_deviceDetailSections').contains(it) 
 }
 
-def _bat529Cb_15d0a4c9_153(def record, def it) { record._nativeUnavailableCollections.contains(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_153(def record, def it) { __bat529StaticReceiverCall_java_lang_Object_1(__bat529StaticProperty_java_lang_Object(record, '_nativeUnavailableCollections'), 'contains', it) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_154(def it) { it in ['currentStates', 'capabilities'] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_155(def selfId, def it) { it instanceof Map && it.id?.toString() == selfId 
 }
 
-def _bat529Cb_15d0a4c9_156(def it) { it.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_156(def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() 
 }
 
-def _bat529Cb_15d0a4c9_157(def it) { now() - (it.value.at as Long) >= 300000L 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_157(def it) { __bat529StaticCall_long_0('now') - (__bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(it, 'value'), 'at') as Long) >= 300000L 
 }
 
-def _bat529Cb_15d0a4c9_158(def it) { it.id?.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_158(def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() 
 }
 
-def _bat529Cb_15d0a4c9_159(def room, def it) { it.name?.toString()?.toLowerCase() == room?.toString()?.toLowerCase() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_159(def room, def it) { __bat529StaticProperty_java_lang_Object(it, 'name')?.toString()?.toLowerCase() == room?.toString()?.toLowerCase() 
 }
 
-def _bat529Cb_15d0a4c9_160(def fresh, def it) { fresh.containsKey(it) && fresh.get(it) instanceof Boolean 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_160(def fresh, def it) { __bat529StaticReceiverCall_java_lang_Object_1(fresh, 'containsKey', it) && __bat529StaticReceiverCall_java_lang_Object_1(fresh, 'get', it) instanceof Boolean 
 }
 
 def _bat529Cb_15d0a4c9_161(def fresh, def payload, def property, def integration) { payload.put(property, fresh.get(property)) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_162(def a) { (a instanceof Map) ? a.type?.toString() : a?.toString() 
 }
 
-def _bat529Cb_15d0a4c9_163(def authorizedIds, def d) { if (d instanceof Map && d.id != null) authorizedIds.add(d.id.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_163(def authorizedIds, def d) { if (d instanceof Map && d.id != null) __bat529StaticReceiverCall_java_lang_Object_1(authorizedIds, 'add', d.id.toString()) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_164(def p) { (p instanceof Map) ? p.type?.toString() : p?.toString() 
 }
 
-def _bat529Cb_15d0a4c9_165(def it) { it.stateUnavailable || it.capabilitiesUnavailable || it.metadataUnavailable 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_165(def it) { __bat529StaticProperty_java_lang_Object(it, 'stateUnavailable') || __bat529StaticProperty_java_lang_Object(it, 'capabilitiesUnavailable') || __bat529StaticProperty_java_lang_Object(it, 'metadataUnavailable') 
 }
 
-def _bat529Cb_15d0a4c9_166(def meshDeviceId, def meshHubId, def it) { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_166(def meshDeviceId, def meshHubId, def it) { __bat529StaticProperty_java_lang_Object(it, 'hubId')?.toString() == meshHubId && __bat529StaticProperty_java_lang_Object(it, 'deviceId')?.toString() == meshDeviceId 
 }
 
 def _bat529Cb_15d0a4c9_167(def fields, def selected, def row, def index) { if (fields.contains(index.toString())) selected << row 
 }
 
-def _bat529Cb_15d0a4c9_168(def it) { [id: it?.id?.toString(), name: it?.name, deviceTypes: it?.deviceTypes] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_168(def it) { [id: __bat529StaticProperty_Safe_java_lang_Object(it, 'id')?.toString(), name: __bat529StaticProperty_Safe_java_lang_Object(it, 'name'), deviceTypes: __bat529StaticProperty_Safe_java_lang_Object(it, 'deviceTypes')] 
 }
 
-def _bat529Cb_15d0a4c9_169(def devKeys, def meshDeviceId, def r) { (devKeys).any(((this.&_bat529Cb_15d0a4c9_142).curry([meshDeviceId, r] as Object[])))
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_169(def devKeys, def meshDeviceId, def r) { __bat529StaticDgm_any_1_boolean((devKeys), ((this.&_bat529Cb_15d0a4c9_142).curry([meshDeviceId, r] as Object[])))
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_170(def it) { it != null 
 }
 
-def _bat529Cb_15d0a4c9_171(def meshDeviceId, def meshHubId, def it) { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_171(def meshDeviceId, def meshHubId, def it) { __bat529StaticProperty_java_lang_Object(it, 'hubId')?.toString() == meshHubId && __bat529StaticProperty_java_lang_Object(it, 'deviceId')?.toString() == meshDeviceId 
 }
 
-def _bat529Cb_15d0a4c9_172(def byId, def r) { if (r instanceof Map && r.id != null) byId.put(r.id.toString(), r) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_172(def byId, def r) { if (r instanceof Map && r.id != null) __bat529StaticReceiverCall_java_lang_Object_2(byId, 'put', r.id.toString(), r) 
 }
 
 def _bat529Cb_15d0a4c9_173(def d) { (d.currentStates)?.find((this.&_bat529Cb_15d0a4c9_60))?.value?.toString() == "on" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_174(def value, def it) { it instanceof String && it.isNumber() && (it as BigDecimal) == (value as BigDecimal) 
 }
 
@@ -5520,19 +5734,23 @@ def _bat529Cb_15d0a4c9_175(def e, def errors, def property, def wanted) { errors
 def _bat529Cb_15d0a4c9_176(def e, def errors, def property, def wanted) { errors << [property: property, error: e.message ?: e.toString()] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_177(def value, def it) { it instanceof String && it.isNumber() && (it as BigDecimal) == (value as BigDecimal) 
 }
 
 def _bat529Cb_15d0a4c9_178(def args, def it) { !_deviceFlag(it.linkedLocally) && "${it.hubId}-${it.deviceId}" == args.deviceNetworkId 
 }
 
-def _bat529Cb_15d0a4c9_179(def authorizedIds, def it) { def cid = it.id?.toString(); if (cid != null) authorizedIds.add(cid) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_179(def authorizedIds, def it) { def cid = __bat529StaticProperty_java_lang_Object(it, 'id')?.toString(); if (cid != null) __bat529StaticReceiverCall_java_lang_Object_1(authorizedIds, 'add', cid) 
 }
 
-def _bat529Cb_15d0a4c9_180(def d) { (d.capabilities)?.collect((this.&_bat529Cb_15d0a4c9_106))?: [] 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_180(def d) { __bat529StaticExpr__bat529Cb_15d0a4c9_180_0(d) 
 }
 
-def _bat529Cb_15d0a4c9_181(def args, def it) { args.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_181(def args, def it) { __bat529StaticReceiverCall_java_lang_Object_1(args, 'containsKey', it) 
 }
 
 def _bat529Cb_15d0a4c9_182(def cf, def d) {
@@ -5540,10 +5758,12 @@ def _bat529Cb_15d0a4c9_182(def cf, def d) {
         
 }
 
-def _bat529Cb_15d0a4c9_183(def byId, def d) { byId.put(d.id.toString(), [id: d.id.toString(), _nativeFilterLabel: d.label]) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_183(def byId, def d) { __bat529StaticReceiverCall_java_lang_Object_2(byId, 'put', __bat529StaticProperty_java_lang_Object(d, 'id').toString(), [id: __bat529StaticProperty_java_lang_Object(d, 'id').toString(), _nativeFilterLabel: __bat529StaticProperty_java_lang_Object(d, 'label')]) 
 }
 
-def _bat529Cb_15d0a4c9_184(def args, def it) { args.containsKey(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_184(def args, def it) { __bat529StaticReceiverCall_java_lang_Object_1(args, 'containsKey', it) 
 }
 
 def _bat529Cb_15d0a4c9_185(def copy, def name, def k, def v) {
@@ -5552,36 +5772,44 @@ def _bat529Cb_15d0a4c9_185(def copy, def name, def k, def v) {
     
 }
 
-def _bat529Cb_15d0a4c9_186(def it) { it.key 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_186(def it) { __bat529StaticProperty_java_lang_Object(it, 'key') 
 }
 
-def _bat529Cb_15d0a4c9_187(def d, def row) { row instanceof Map && row.name == d.deviceTypeName && row.namespace == d.deviceTypeNamespace 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_187(def d, def row) { row instanceof Map && row.name == __bat529StaticProperty_java_lang_Object(d, 'deviceTypeName') && row.namespace == __bat529StaticProperty_java_lang_Object(d, 'deviceTypeNamespace') 
 }
 
-def _bat529Cb_15d0a4c9_188(def it) { it._nativeReadError || (it._nativeUnavailableCollections)?.any((this.&_bat529Cb_15d0a4c9_154))
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_188(def it) { __bat529StaticExpr__bat529Cb_15d0a4c9_188_1(it)
 }
 
-def _bat529Cb_15d0a4c9_189(def it) { !(it instanceof Number) || it < 1 || new BigDecimal(it.toString()).stripTrailingZeros().scale() > 0 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_189(def it) { !(it instanceof Number) || __bat529StaticBinary_Less_java_lang_Object(it, 1) || new BigDecimal(it.toString()).stripTrailingZeros().scale() > 0 
 }
 
-def _bat529Cb_15d0a4c9_190(def it) { it[1] == null || (it[1].dni == null && it[1].createTime == null) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_190(def it) { __bat529StaticBinary_GetAt_java_lang_Object(it, 1) == null || (__bat529StaticProperty_java_lang_Object(__bat529StaticBinary_GetAt_java_lang_Object(it, 1), 'dni') == null && __bat529StaticProperty_java_lang_Object(__bat529StaticBinary_GetAt_java_lang_Object(it, 1), 'createTime') == null) 
 }
 
 def _bat529Cb_15d0a4c9_191(def enc, def k, def v) { "${java.net.URLEncoder.encode(k.toString(), 'UTF-8')}=${java.net.URLEncoder.encode(enc(v), 'UTF-8')}" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_192(def commands, def c) {
-            if (c?.name != null) commands << [name: c.name, arguments: _fullJsonCommandArgs(c)]
+            if (__bat529StaticProperty_Safe_java_lang_Object(c, 'name') != null) __bat529StaticExpr__bat529Cb_15d0a4c9_192_2(c, commands)
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_193(def states, def st) {
-            if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
+            if (__bat529StaticProperty_Safe_java_lang_Object(st, 'name') != null && __bat529StaticProperty_java_lang_Object(st, 'value') != null) __bat529StaticReceiverCall_java_lang_Object_2(states, 'put', __bat529StaticProperty_java_lang_Object(st, 'name').toString(), st)
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_194(def values, def key) {
-        key == 'currentStates' ? !(values.get(key) instanceof Map) : !(values.get(key) instanceof List)
+        key == 'currentStates' ? !(__bat529StaticReceiverCall_java_lang_Object_1(values, 'get', key) instanceof Map) : !(__bat529StaticReceiverCall_java_lang_Object_1(values, 'get', key) instanceof List)
     
 }
 
@@ -5590,29 +5818,35 @@ def _bat529Cb_15d0a4c9_195(def changes, def deviceId, def errors, def model, def
     
 }
 
-def _bat529Cb_15d0a4c9_196(def it) { [name: it.key.toString(), value: it.value, unit: null] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_196(def it) { [name: __bat529StaticProperty_java_lang_Object(it, 'key').toString(), value: __bat529StaticProperty_java_lang_Object(it, 'value'), unit: null] 
 }
 
-def _bat529Cb_15d0a4c9_197(def it) { it[0] 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_197(def it) { __bat529StaticBinary_GetAt_java_lang_Object(it, 0) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_198(def required, def rec) {
-            rec._nativeReadError == true || (required).any(((this.&_bat529Cb_15d0a4c9_126).curry([rec] as Object[])))
+            __bat529StaticProperty_java_lang_Object(rec, '_nativeReadError') == true || __bat529StaticDgm_any_1_boolean((required), ((this.&_bat529Cb_15d0a4c9_126).curry([rec] as Object[])))
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_199(def c) {
-        (c instanceof CharSequence) ? c.toString() : (c?.name?.toString() ?: c?.toString())
+        (c instanceof CharSequence) ? c.toString() : (__bat529StaticProperty_Safe_java_lang_Object(c, 'name')?.toString() ?: c?.toString())
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_200(def entry, def row, def key) {
-            if (row.containsKey(key)) entry.put(key, row.get(key))
+            if (__bat529StaticReceiverCall_java_lang_Object_1(row, 'containsKey', key)) __bat529StaticReceiverCall_java_lang_Object_2(entry, 'put', key, __bat529StaticReceiverCall_java_lang_Object_1(row, 'get', key))
         
 }
 
-def _bat529Cb_15d0a4c9_201(def st) {
-                    [name: st.name, value: st.value == null ? null : st.value.toString(), unit: null]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_201(def st) {
+                    [name: __bat529StaticProperty_java_lang_Object(st, 'name'), value: __bat529StaticProperty_java_lang_Object(st, 'value') == null ? null : __bat529StaticProperty_java_lang_Object(st, 'value').toString(), unit: null]
                 
 }
 
@@ -5621,6 +5855,7 @@ def _bat529Cb_15d0a4c9_202(def name, def ids) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_203(def it) { DEVICE_READ_SNAPSHOTS.remove(it) 
 }
 
@@ -5629,28 +5864,34 @@ def _bat529Cb_15d0a4c9_204(def deviceId, def use) {
                 
 }
 
-def _bat529Cb_15d0a4c9_205(def args, def d, def it) { it.id?.toString() == args.deviceTypeId.toString() && ((it.type != "dep" && it.category != "Hidden") || it.id?.toString() == d.deviceTypeId?.toString()) 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_205(def args, def d, def it) { __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() == __bat529StaticProperty_java_lang_Object(args, 'deviceTypeId').toString() && ((__bat529StaticProperty_java_lang_Object(it, 'type') != "dep" && __bat529StaticProperty_java_lang_Object(it, 'category') != "Hidden") || __bat529StaticProperty_java_lang_Object(it, 'id')?.toString() == __bat529StaticProperty_java_lang_Object(d, 'deviceTypeId')?.toString()) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_206(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_207(def lf, def d) {
-            def lbl = (d.label ?: d._nativeFilterLabel ?: d.name)?.toString()?.toLowerCase()
-            lbl != null && lbl.contains(lf)
+            def lbl = (__bat529StaticProperty_java_lang_Object(d, 'label') ?: __bat529StaticProperty_java_lang_Object(d, '_nativeFilterLabel') ?: __bat529StaticProperty_java_lang_Object(d, 'name'))?.toString()?.toLowerCase()
+            lbl != null && __bat529StaticReceiverCall_java_lang_Object_1(lbl, 'contains', lf)
         
 }
 
-def _bat529Cb_15d0a4c9_208(def it) { it.id.toString() 
+@groovy.transform.CompileStatic
+def _bat529Cb_15d0a4c9_208(def it) { __bat529StaticProperty_java_lang_Object(it, 'id').toString() 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_209(def args, def field) {
-        if (args.containsKey(field) && !(args.get(field) instanceof Boolean)) throw new IllegalArgumentException("${field} must be a boolean")
+        if (__bat529StaticReceiverCall_java_lang_Object_1(args, 'containsKey', field) && !(__bat529StaticReceiverCall_java_lang_Object_1(args, 'get', field) instanceof Boolean)) throw new IllegalArgumentException("${field} must be a boolean")
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_210(def byId, def d) {
-        if (d?.id != null) byId.put(d.id.toString(), [id: d.id.toString()])
+        if (__bat529StaticProperty_Safe_java_lang_Object(d, 'id') != null) __bat529StaticReceiverCall_java_lang_Object_2(byId, 'put', __bat529StaticProperty_java_lang_Object(d, 'id').toString(), [id: __bat529StaticProperty_java_lang_Object(d, 'id').toString()])
     
 }
 
@@ -5660,8 +5901,9 @@ def _bat529Cb_15d0a4c9_211(def declaredTypes, def out, def v, def i) {
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_212(def r, def record, def key) {
-            if (r.containsKey(key)) record.put(key == 'lastActivity' ? 'lastActivityTime' : key, r.get(key))
+            if (__bat529StaticReceiverCall_java_lang_Object_1(r, 'containsKey', key)) __bat529StaticReceiverCall_java_lang_Object_2(record, 'put', key == 'lastActivity' ? 'lastActivityTime' : key, __bat529StaticReceiverCall_java_lang_Object_1(r, 'get', key))
         
 }
 
@@ -5671,14 +5913,16 @@ def _bat529Cb_15d0a4c9_213(def states, def name, def st) {
             
 }
 
-def _bat529Cb_15d0a4c9_214(def p) {
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_214(def p) {
             (p instanceof Map) ? [name: (p.name ?: "arg"), type: (p.type ?: "unknown")?.toString()]
                                : [name: p?.toString(), type: "unknown"]
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_215(def args, def key) {
-        def v = args[key]
+        def v = __bat529StaticBinary_GetAt_java_lang_Object(args, key)
         (v instanceof Map || v instanceof List) ? "${key}(${v.size()})".toString() : key.toString()
     
 }
@@ -5709,8 +5953,9 @@ def _bat529Cb_15d0a4c9_219(def v, def i) {
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_220(def deviceId, def row) {
-                row.usedBy instanceof List && (row.usedBy).any(((this.&_bat529Cb_15d0a4c9_204).curry([deviceId] as Object[])))
+                __bat529StaticExpr__bat529Cb_15d0a4c9_220_1(deviceId, row)
             
 }
 
@@ -5752,18 +5997,20 @@ def _bat529Cb_15d0a4c9_226(def args, def assistantAvailable, def property, def i
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_227(def labelOnly, def required, def rec) {
-            if (rec._nativeLoaded == true) return false
-            if (labelOnly && rec._nativeFilterLabel instanceof String && rec._nativeFilterLabel) return false
-            rec._nativeSeeded != true || (required).any(((this.&_bat529Cb_15d0a4c9_127).curry([rec] as Object[])))
+            if (__bat529StaticProperty_java_lang_Object(rec, '_nativeLoaded') == true) return false
+            if (labelOnly && __bat529StaticProperty_java_lang_Object(rec, '_nativeFilterLabel') instanceof String && __bat529StaticProperty_java_lang_Object(rec, '_nativeFilterLabel')) return false
+            __bat529StaticProperty_java_lang_Object(rec, '_nativeSeeded') != true || __bat529StaticDgm_any_1_boolean((required), ((this.&_bat529Cb_15d0a4c9_127).curry([rec] as Object[])))
         
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_228(def roomIndex, def d) {
         // A null key keeps unknown membership distinct even from a room named "Room unavailable".
-        def r = d._nativeRoomUnavailable ? null : (d.roomName?.toString() ?: "No room")
-        if (!roomIndex.containsKey(r)) roomIndex.put(r, [])
-        roomIndex.get(r) << d.id.toString()
+        def r = __bat529StaticProperty_java_lang_Object(d, '_nativeRoomUnavailable') ? null : (__bat529StaticProperty_java_lang_Object(d, 'roomName')?.toString() ?: "No room")
+        if (!__bat529StaticReceiverCall_java_lang_Object_1(roomIndex, 'containsKey', r)) __bat529StaticReceiverCall_java_lang_Object_2(roomIndex, 'put', r, [])
+        __bat529StaticExpr__bat529Cb_15d0a4c9_228_6(d, r, roomIndex)
     
 }
 
@@ -5774,13 +6021,14 @@ def _bat529Cb_15d0a4c9_229(def name, def setting) {
             
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_230(def attrParts, def states, def an) {
-        def st = states.get(an)
+        def st = __bat529StaticReceiverCall_java_lang_Object_1(states, 'get', an)
         if (st != null) {
             def unit = null
             // Per-attribute micro-read; a failure only drops the unit suffix, so no log.
-            try { unit = st.unit } catch (Exception ignore) {}
-            attrParts << "${an}=${st.value}${unit ?: ''}"
+            try { unit = __bat529StaticProperty_java_lang_Object(st, 'unit') } catch (Exception ignore) {}
+            __bat529StaticExpr__bat529Cb_15d0a4c9_230_3(an, attrParts, st, unit)
         }
     
 }
@@ -5803,22 +6051,24 @@ def _bat529Cb_15d0a4c9_232(def row) {
                 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_233(def field, def row) {
                     if (row instanceof Map && row.hubId != null && row.deviceId != null) {
-                        field.options << [value: "${row.hubId}-${row.deviceId}".toString(),
-                            label: row.label ?: row.name ?: row.deviceId.toString(), disabled: _deviceFlag(row.linkedLocally)]
+                        __bat529StaticExpr__bat529Cb_15d0a4c9_233_1(field, row)
+
                     }
                 
 }
 
-def _bat529Cb_15d0a4c9_234(def deviceIdList, def deviceLabels, def finalValue, def matched, def sawReadError, def i) {
-                    def entry = [
-                        deviceId  : deviceIdList[i],
-                        device    : deviceLabels[i],
-                        finalValue: finalValue[i],
-                        matched   : matched[i]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_234(def deviceIdList, def deviceLabels, def finalValue, def matched, def sawReadError, def i) {
+                    java.util.Map entry = [
+                        deviceId  : __bat529StaticBinary_GetAt_java_lang_Object(deviceIdList, i),
+                        device    : __bat529StaticBinary_GetAt_java_lang_Object(deviceLabels, i),
+                        finalValue: __bat529StaticBinary_GetAt_java_lang_Object(finalValue, i),
+                        matched   : __bat529StaticBinary_GetAt_java_lang_Object(matched, i)
                     ]
-                    if (sawReadError[i]) entry.readError = true
+                    if (__bat529StaticBinary_GetAt_java_lang_Object(sawReadError, i)) entry.readError = true
                     entry
                 
 }
@@ -5841,9 +6091,10 @@ def _bat529Cb_15d0a4c9_236(def recovered, def recoveryErrors, def property, def 
         
 }
 
-def _bat529Cb_15d0a4c9_237(def linkedDevice, def model, def it) {
-                def entry = _publicDevicePreference(it)
-                entry.writable = !linkedDevice && model.writeSafe == true && entry.writable
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_237(def linkedDevice, def model, def it) {
+                java.util.Map entry = __bat529StaticCall_java_util_Map_1('_publicDevicePreference', it)
+                entry.writable = !linkedDevice && __bat529StaticProperty_java_lang_Object(model, 'writeSafe') == true && entry.writable
                 if (linkedDevice) {
                     entry.applicable = false
                     entry.reason = 'Driver preferences cannot be saved on a linked device; edit the source device.'
@@ -5865,12 +6116,13 @@ def _bat529Cb_15d0a4c9_238(def duplicates, def inputs, def model, def row) {
         
 }
 
-def _bat529Cb_15d0a4c9_239(def authorizedIds, def capsById, def unavailableCapabilityIds, def d) {
-        def idStr = d.id?.toString()
-        def caps = (d.capabilities instanceof List) ? _capabilityNames(d.capabilities)
-                                                   : (idStr != null ? (capsById.get(idStr) ?: []) : [])
-        def record = [id: idStr, label: d.label, capabilities: caps, mcpAuthorized: idStr != null && authorizedIds.contains(idStr)]
-        if (unavailableCapabilityIds.contains(idStr)) record.capabilitiesUnavailable = true
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_239(def authorizedIds, def capsById, def unavailableCapabilityIds, def d) {
+        def idStr = __bat529StaticProperty_java_lang_Object(d, 'id')?.toString()
+        def caps = (__bat529StaticProperty_java_lang_Object(d, 'capabilities') instanceof List) ? __bat529StaticCall_java_util_List_1('_capabilityNames', __bat529StaticProperty_java_lang_Object(d, 'capabilities'))
+                                                   : (idStr != null ? (__bat529StaticReceiverCall_java_lang_Object_1(capsById, 'get', idStr) ?: []) : [])
+        java.util.Map record = [id: idStr, label: __bat529StaticProperty_java_lang_Object(d, 'label'), capabilities: caps, mcpAuthorized: idStr != null && __bat529StaticReceiverCall_java_lang_Object_1(authorizedIds, 'contains', idStr)]
+        if (__bat529StaticReceiverCall_java_lang_Object_1(unavailableCapabilityIds, 'contains', idStr)) record.capabilitiesUnavailable = true
         record
     
 }
@@ -5903,16 +6155,17 @@ def _bat529Cb_15d0a4c9_242(def errors, def response, def name, def setting) {
                 
 }
 
-def _bat529Cb_15d0a4c9_243(def deviceIdList, def deviceLabels, def finalValue, def matched, def sawReadError, def i) {
-                        def entry = [
-                            deviceId  : deviceIdList[i],
-                            device    : deviceLabels[i],
-                            finalValue: finalValue[i],
-                            matched   : matched[i]
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_15d0a4c9_243(def deviceIdList, def deviceLabels, def finalValue, def matched, def sawReadError, def i) {
+                        java.util.Map entry = [
+                            deviceId  : __bat529StaticBinary_GetAt_java_lang_Object(deviceIdList, i),
+                            device    : __bat529StaticBinary_GetAt_java_lang_Object(deviceLabels, i),
+                            finalValue: __bat529StaticBinary_GetAt_java_lang_Object(finalValue, i),
+                            matched   : __bat529StaticBinary_GetAt_java_lang_Object(matched, i)
                         ]
                         // A read fault on this device did not block aggregate convergence, but
                         // its value was unreliable at least once -- surface it.
-                        if (sawReadError[i]) entry.readError = true
+                        if (__bat529StaticBinary_GetAt_java_lang_Object(sawReadError, i)) entry.readError = true
                         entry
                     
 }
@@ -5923,14 +6176,15 @@ def _bat529Cb_15d0a4c9_244(def d, def fj, def problems, def scope, def definitio
     
 }
 
-def _bat529Cb_15d0a4c9_245(def brandF, def protoF, def q, def typeF, def r) {
-        if (brandF && !((r?.brand ?: "").toString().toLowerCase().contains(brandF))) return false
-        if (protoF && !((r?.protocol ?: "").toString().toLowerCase().contains(protoF))) return false
-        if (typeF && !((r?.deviceType ?: "").toString().toLowerCase().contains(typeF))) return false
+@groovy.transform.CompileStatic
+java.lang.Boolean _bat529Cb_15d0a4c9_245(def brandF, def protoF, def q, def typeF, def r) {
+        if (__bat529StaticExpr__bat529Cb_15d0a4c9_245_1(brandF, r)) return false
+        if (__bat529StaticExpr__bat529Cb_15d0a4c9_245_3(protoF, r)) return false
+        if (__bat529StaticExpr__bat529Cb_15d0a4c9_245_5(r, typeF)) return false
         if (q) {
             // ?: '' on each field so a null doesn't interpolate the literal "null" into the haystack.
-            def hay = "${r?.brand ?: ''} ${r?.name ?: ''} ${r?.productNumber ?: ''} ${r?.deviceType ?: ''} ${r?.driverName ?: ''}".toLowerCase()
-            if (!hay.contains(q)) return false
+            def hay = "${__bat529StaticProperty_Safe_java_lang_Object(r, 'brand') ?: ''} ${__bat529StaticProperty_Safe_java_lang_Object(r, 'name') ?: ''} ${__bat529StaticProperty_Safe_java_lang_Object(r, 'productNumber') ?: ''} ${__bat529StaticProperty_Safe_java_lang_Object(r, 'deviceType') ?: ''} ${__bat529StaticProperty_Safe_java_lang_Object(r, 'driverName') ?: ''}".toLowerCase()
+            if (!__bat529StaticReceiverCall_java_lang_Object_1(hay, 'contains', q)) return false
         }
         return true
     

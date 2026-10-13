@@ -1,14 +1,15 @@
 library(name: "McpCustomRulesLib", namespace: "mcp", author: "kingpanther13", description: "Legacy custom-rule engine parent-side tool implementations (get/create/update/delete/test/export/import/clone custom rules) for the MCP Rule Server; #include'd by the main app. Gateway entries and dispatch cases stay in the app; tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
-def toolListRules(args = null) {
-    def childApps = getChildApps()
-    def rules = ((childApps)?.collect((this.&_bat529Cb_221baae5_28)))?.findAll((this.&_bat529Cb_221baae5_30))?: []
+@groovy.transform.CompileStatic
+java.util.Map toolListRules(args = null) {
+    def childApps = __bat529StaticCall_java_util_List_0('getChildApps')
+    def rules = __bat529StaticDgm_findAll_1_Safe_java_lang_Object(((childApps)?.collect((this.&_bat529Cb_221baae5_28))), (this.&_bat529Cb_221baae5_30))?: []
 
-    def cursor = args?.cursor
-    def paged = _paginateList(rules, cursor, 50, "hub_get_custom_rule")
-    def result = [rules: paged.page, count: paged.page.size()]
+    def cursor = __bat529StaticProperty_Safe_java_lang_Object(args, 'cursor')
+    java.util.Map paged = __bat529StaticCall_java_util_Map_4('_paginateList', rules, cursor, 50, "hub_get_custom_rule")
+    java.util.Map result = [rules: paged.page, count: __bat529StaticReceiverCall_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(paged, 'page'), 'size')]
     if (cursor != null) {
-        result.total = rules.size()
+        result.total = __bat529StaticReceiverCall_java_lang_Object_0(rules, 'size')
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
     return result
@@ -279,16 +280,17 @@ def toolDeleteRule(args) {
     return result
 }
 
+@groovy.transform.CompileStatic
 def toolTestRule(ruleId) {
-    def childApp = getChildAppById(ruleId)
+    def childApp = __bat529StaticCall_java_lang_Object_1('getChildAppById', ruleId)
     if (!childApp) {
-        def redirect = findRuleAppRedirect(ruleId, "test")
+        java.lang.String redirect = __bat529StaticCall_java_lang_String_2('findRuleAppRedirect', ruleId, "test")
         def msg = "Rule not found: ${ruleId}"
         if (redirect) msg += ". ${redirect}"
         throw new IllegalArgumentException(msg)
     }
 
-    return childApp.testRuleFromParent()
+    return __bat529StaticReceiverCall_java_lang_Object_0(childApp, 'testRuleFromParent')
 }
 
 private String findRuleAppRedirect(ruleId, String verb) {
@@ -689,124 +691,152 @@ def _getAllToolDefinitions_partCustomRules() {
     return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_custom_rule"],["description","Read MCP custom-engine automation rules. Omit ruleId to LIST all rules (summaries; supports cursor pagination). Provide ruleId for one rule\'s full detail. Add detailed=true (requires ruleId) for comprehensive diagnostics (config + execution history + recent logs + errors).[[FLAT_TRIM]] When the Custom Rule Engine toggle is OFF this operates read-only -- you can list/inspect existing custom rules, but create/modify/delete are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via hub_manage_native_rules_and_apps.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","Rule ID. Omit to list all rules; provide for one rule\'s detail."]]]],["detailed",["m",[["type","boolean"],["description","Requires ruleId; returns diagnostics instead of plain rule data. Rejected if set without a ruleId."],["default",false]]]],["cursor",["m",[["type","string"],["description","List mode only (ruleId omitted): pagination cursor. Pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_create_custom_rule"],["description","*** LEGACY (MCP sandbox engine): for \\"create a Rule Machine rule\\" / \\"Hubitat rule\\" / anything the user wants visible in Hubitat\'s RM UI, use hub_manage_rule_machine hub_set_rule instead. ***\\n\\nCreate a new automation rule (MCP sandbox engine). The custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat\'s RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. Call `hub_get_tool_guide(section=\'rules\')` for the trigger/condition/action type lists, per-type fields, structure, syntax, and examples.\\n\\nVerify rule after creation."],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Rule name, e.g. \\"Porch light at sunset\\""]]]],["description",["m",[["type","string"],["description","Optional human-readable rule description"]]]],["enabled",["m",[["type","boolean"],["description","Enable rule immediately on creation"],["default",true]]]],["testRule",["m",[["type","boolean"],["description","Mark as test rule - will NOT be backed up on deletion."],["default",false]]]],["triggers",["m",[["type","array"],["items",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["device_event","button_event","time","sunrise","sunset","sun","periodic","mode_change","hsm_change"]]]]]]]]]]]],["description","Trigger objects (at least one required), each a {type, ...} object.[[FLAT_TRIM]] The `type` enum lists the kinds; sunrise/sunset/sun are shortcuts for a time trigger.[[/FLAT_TRIM]]"]]]],["conditions",["m",[["type","array"],["items",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["device_state","device_was","time_range","mode","variable","days_of_week","sun_position","hsm_status","presence","lock","thermostat_mode","thermostat_state","illuminance","power"]]]]]]]]]]]],["description","Optional condition objects gating the actions, each {type, ...}."]]]],["conditionLogic",["m",[["type","string"],["enum",["l",["all","any"]]],["description","How to combine multiple conditions: \'all\' = AND, \'any\' = OR."],["default","all"]]]],["actions",["m",[["type","array"],["items",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["device_command","toggle_device","activate_scene","set_variable","set_local_variable","set_mode","set_hsm","delay","if_then_else","cancel_delayed","repeat","stop","log","set_level","set_color","set_color_temperature","lock","unlock","capture_state","restore_state","send_notification","set_thermostat","http_request","speak","comment","set_valve","set_fan_speed","set_shade","variable_math"]]]]]]]]]]]],["description","Action objects to run when triggered (at least one required), each {type, ...}."]]]]]]],["required",["l",["name","triggers","actions"]]]]]]]],["m",[["name","hub_update_custom_rule"],["description","Update an existing MCP custom-engine rule in place; only the fields you supply are changed (use enabled=true/false to enable/disable). Replacing triggers/conditions/actions overwrites the whole array, not a merge; see hub_get_tool_guide(section=\'rules\') for valid types and structure."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","ID of the rule to update (from hub_get_custom_rule)"]]]],["name",["m",[["type","string"],["description","New rule name"]]]],["description",["m",[["type","string"],["description","New rule description"]]]],["enabled",["m",[["type","boolean"],["description","Enable (true) or disable (false) the rule"]]]],["testRule",["m",[["type","boolean"],["description","Mark as test rule - will NOT be backed up on deletion"]]]],["triggers",["m",[["type","array"],["description","Replacement trigger objects (overwrites ALL triggers)"]]]],["conditions",["m",[["type","array"],["description","Replacement condition objects (overwrites ALL conditions)"]]]],["conditionLogic",["m",[["type","string"],["enum",["l",["all","any"]]],["description","How to combine conditions: \'all\' = AND, \'any\' = OR"]]]],["actions",["m",[["type","array"],["description","Replacement action objects (overwrites ALL actions)"]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_delete_custom_rule"],["description","DESTRUCTIVE: Permanently delete an MCP custom-engine rule. Automatically saves a backup to File Manager before deletion.[[FLAT_TRIM]] Backup filename pattern: mcp_rule_backup_*.json. Rules marked testRule=true skip backup automatically.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","Rule ID"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Set to true to confirm deletion."]]]],["skipBackupCheck",["m",[["type","boolean"],["description","Force skip backup even for non-test rules."]]]]]]],["required",["l",["ruleId","confirm"]]]]]]]],["m",[["name","hub_test_custom_rule"],["description","Dry-run an MCP custom-engine rule: evaluate its conditions against current device/hub state and report whether it would fire, WITHOUT executing any actions."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","ID of the custom rule to dry-run (from hub_get_custom_rule)"]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_export_custom_rule"],["description","Export a custom rule to JSON and save it to the hub File Manager for backup or sharing."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","Rule ID to export"]]]],["saveAs",["m",[["type","string"],["description","File Manager filename to write the export JSON to (\\".json\\" appended if missing). Omit to use a generated name based on the rule."]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_import_custom_rule"],["description","Import a custom rule from exported JSON (produced by hub_export_custom_rule), creating a NEW rule with a fresh ruleId (it does not overwrite an existing rule)."],["inputSchema",["m",[["type","object"],["properties",["m",[["exportData",["m",[["type","object"],["description","The full export JSON object from hub_export_custom_rule"]]]],["name",["m",[["type","string"],["description","Override the rule name (optional)"]]]],["deviceMapping",["m",[["type","object"],["description","Map old device IDs to new ones: {\\"old_id\\": \\"new_id\\"} (optional)"]]]]]]],["required",["l",["exportData"]]]]]]]],["m",[["name","hub_clone_custom_rule"],["description","Duplicate an existing MCP custom-engine rule into a new, independent rule with its own ruleId.[[FLAT_TRIM]] Same triggers/conditions/actions and device references as the source.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","Rule ID to clone"]]]],["name",["m",[["type","string"],["description","Name for the clone (defaults to \'Copy of <original>\')"]]]]]]],["required",["l",["ruleId"]]]]]]]]]]'])
 }
 
+@groovy.transform.CompileStatic
 def _readOnlyToolNames_partCustomRules() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_get_custom_rule","hub_test_custom_rule"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_get_custom_rule","hub_test_custom_rule"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partCustomRules() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return _bat529EmbeddedCatalogRead(['["l",["hub_update_custom_rule","hub_delete_custom_rule"]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_update_custom_rule","hub_delete_custom_rule"]]'])
 }
 
+@groovy.transform.CompileStatic
 def _toolDisplayMeta_partCustomRules() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_custom_rule",["m",[["title","Get Custom Rule"],["summary","List custom-engine rules or get one rule\'s details and diagnostics."]]]],["hub_create_custom_rule",["m",[["title","Create Custom Rule"],["summary","Create a new custom-engine automation rule."]]]],["hub_update_custom_rule",["m",[["title","Update Custom Rule"],["summary","Update a custom-engine rule\'s triggers, conditions, actions, or enabled state."]]]],["hub_delete_custom_rule",["m",[["title","Delete Custom Rule"],["summary","Permanently delete a custom-engine rule (auto-backs up first)."]]]],["hub_test_custom_rule",["m",[["title","Test Custom Rule"],["summary","Dry-run a custom-engine rule without executing its actions."]]]],["hub_export_custom_rule",["m",[["title","Export Custom Rule"],["summary","Export a custom-engine rule to JSON in the hub File Manager."]]]],["hub_import_custom_rule",["m",[["title","Import Custom Rule"],["summary","Import a custom-engine rule from exported JSON as a new rule."]]]],["hub_clone_custom_rule",["m",[["title","Clone Custom Rule"],["summary","Clone an existing custom-engine rule (the copy starts disabled)."]]]]]]'])
+    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_get_custom_rule",["m",[["title","Get Custom Rule"],["summary","List custom-engine rules or get one rule\'s details and diagnostics."]]]],["hub_create_custom_rule",["m",[["title","Create Custom Rule"],["summary","Create a new custom-engine automation rule."]]]],["hub_update_custom_rule",["m",[["title","Update Custom Rule"],["summary","Update a custom-engine rule\'s triggers, conditions, actions, or enabled state."]]]],["hub_delete_custom_rule",["m",[["title","Delete Custom Rule"],["summary","Permanently delete a custom-engine rule (auto-backs up first)."]]]],["hub_test_custom_rule",["m",[["title","Test Custom Rule"],["summary","Dry-run a custom-engine rule without executing its actions."]]]],["hub_export_custom_rule",["m",[["title","Export Custom Rule"],["summary","Export a custom-engine rule to JSON in the hub File Manager."]]]],["hub_import_custom_rule",["m",[["title","Import Custom Rule"],["summary","Import a custom-engine rule from exported JSON as a new rule."]]]],["hub_clone_custom_rule",["m",[["title","Clone Custom Rule"],["summary","Clone an existing custom-engine rule (the copy starts disabled)."]]]]]]'])
 }
 
 
-def _bat529Cb_221baae5_1(def it) { validateAction(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_221baae5_1(def it) { __bat529StaticCall_java_lang_Object_1('validateAction', it) 
 }
 
-def _bat529Cb_221baae5_2(def it) { it.level == "error" 
+@groovy.transform.CompileStatic
+def _bat529Cb_221baae5_2(def it) { __bat529StaticProperty_java_lang_Object(it, 'level') == "error" 
 }
 
-def _bat529Cb_221baae5_3(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_221baae5_3(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_221baae5_4(def it) { it.name 
+@groovy.transform.CompileStatic
+def _bat529Cb_221baae5_4(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
 }
 
-def _bat529Cb_221baae5_5(def it) { validateTrigger(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_221baae5_5(def it) { __bat529StaticCall_java_lang_Object_1('validateTrigger', it) 
 }
 
-def _bat529Cb_221baae5_6(def it) { validateCondition(it) 
+@groovy.transform.CompileStatic
+def _bat529Cb_221baae5_6(def it) { __bat529StaticCall_java_lang_Object_1('validateCondition', it) 
 }
 
-def _bat529Cb_221baae5_7(def ruleId, def it) { it.ruleId == ruleId 
+@groovy.transform.CompileStatic
+def _bat529Cb_221baae5_7(def ruleId, def it) { __bat529StaticProperty_java_lang_Object(it, 'ruleId') == ruleId 
 }
 
-def _bat529Cb_221baae5_8(def trigger) { normalizeTrigger(trigger) 
+@groovy.transform.CompileStatic
+def _bat529Cb_221baae5_8(def trigger) { __bat529StaticCall_java_lang_Object_1('normalizeTrigger', trigger) 
 }
 
-def _bat529Cb_221baae5_9(def trigger) { normalizeTrigger(trigger) 
+@groovy.transform.CompileStatic
+def _bat529Cb_221baae5_9(def trigger) { __bat529StaticCall_java_lang_Object_1('normalizeTrigger', trigger) 
 }
 
-def _bat529Cb_221baae5_10(def appTypeNameLower, def frag) { appTypeNameLower.contains(frag) 
+@groovy.transform.CompileStatic
+def _bat529Cb_221baae5_10(def appTypeNameLower, def frag) { __bat529StaticReceiverCall_java_lang_Object_1(appTypeNameLower, 'contains', frag) 
 }
 
-def _bat529Cb_221baae5_11(def appTypeNameLower, def frag) { appTypeNameLower.contains(frag) 
+@groovy.transform.CompileStatic
+def _bat529Cb_221baae5_11(def appTypeNameLower, def frag) { __bat529StaticReceiverCall_java_lang_Object_1(appTypeNameLower, 'contains', frag) 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_221baae5_12(def action) {
-        validateAction(action)
+        __bat529StaticCall_java_lang_Object_1('validateAction', action)
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_221baae5_13(def it) { it != "enabled" && it != "ruleId" 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_221baae5_14(def trigger) {
-        validateTrigger(trigger)
+        __bat529StaticCall_java_lang_Object_1('validateTrigger', trigger)
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_221baae5_15(def condition) {
-        validateCondition(condition)
+        __bat529StaticCall_java_lang_Object_1('validateCondition', condition)
     
 }
 
-def _bat529Cb_221baae5_16(def deviceUsage, def action) {
-        collectDeviceIds(action, "actions", deviceUsage)
+@groovy.transform.CompileStatic
+void _bat529Cb_221baae5_16(def deviceUsage, def action) {
+        __bat529StaticCall_java_lang_Object_3('collectDeviceIds', action, "actions", deviceUsage)
     
 }
 
-def _bat529Cb_221baae5_17(def it) { [time: formatTimestamp(it.timestamp), level: it.level, message: it.message] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_221baae5_17(def it) { [time: __bat529StaticCall_java_lang_Object_1('formatTimestamp', __bat529StaticProperty_java_lang_Object(it, 'timestamp')), level: __bat529StaticProperty_java_lang_Object(it, 'level'), message: __bat529StaticProperty_java_lang_Object(it, 'message')] 
 }
 
-def _bat529Cb_221baae5_18(def deviceUsage, def trigger) {
-        collectDeviceIds(trigger, "triggers", deviceUsage)
+@groovy.transform.CompileStatic
+void _bat529Cb_221baae5_18(def deviceUsage, def trigger) {
+        __bat529StaticCall_java_lang_Object_3('collectDeviceIds', trigger, "triggers", deviceUsage)
     
 }
 
-def _bat529Cb_221baae5_19(def deviceUsage, def section, def cond) {
-            collectDeviceIds(cond, section, deviceUsage)
+@groovy.transform.CompileStatic
+void _bat529Cb_221baae5_19(def deviceUsage, def section, def cond) {
+            __bat529StaticCall_java_lang_Object_3('collectDeviceIds', cond, section, deviceUsage)
         
 }
 
-def _bat529Cb_221baae5_20(def deviceUsage, def section, def action) {
-            collectDeviceIds(action, section, deviceUsage)
+@groovy.transform.CompileStatic
+void _bat529Cb_221baae5_20(def deviceUsage, def section, def action) {
+            __bat529StaticCall_java_lang_Object_3('collectDeviceIds', action, section, deviceUsage)
         
 }
 
-def _bat529Cb_221baae5_21(def deviceUsage, def section, def action) {
-            collectDeviceIds(action, section, deviceUsage)
+@groovy.transform.CompileStatic
+void _bat529Cb_221baae5_21(def deviceUsage, def section, def action) {
+            __bat529StaticCall_java_lang_Object_3('collectDeviceIds', action, section, deviceUsage)
         
 }
 
-def _bat529Cb_221baae5_22(def deviceUsage, def section, def action) {
-            collectDeviceIds(action, section, deviceUsage)
+@groovy.transform.CompileStatic
+void _bat529Cb_221baae5_22(def deviceUsage, def section, def action) {
+            __bat529StaticCall_java_lang_Object_3('collectDeviceIds', action, section, deviceUsage)
         
 }
 
-def _bat529Cb_221baae5_23(def deviceUsage, def condition) {
-        collectDeviceIds(condition, "conditions", deviceUsage)
+@groovy.transform.CompileStatic
+void _bat529Cb_221baae5_23(def deviceUsage, def condition) {
+        __bat529StaticCall_java_lang_Object_3('collectDeviceIds', condition, "conditions", deviceUsage)
     
 }
 
-def _bat529Cb_221baae5_24(def it) { [time: formatTimestamp(it.timestamp), message: it.message, stackTrace: it.stackTrace] 
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_221baae5_24(def it) { [time: __bat529StaticCall_java_lang_Object_1('formatTimestamp', __bat529StaticProperty_java_lang_Object(it, 'timestamp')), message: __bat529StaticProperty_java_lang_Object(it, 'message'), stackTrace: __bat529StaticProperty_java_lang_Object(it, 'stackTrace')] 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_221baae5_25(def deviceUsage, def section, def did) {
             def id = did.toString()
-            if (!deviceUsage.containsKey(id)) {
-                deviceUsage.put(id, new LinkedHashSet())
+            if (!__bat529StaticReceiverCall_java_lang_Object_1(deviceUsage, 'containsKey', id)) {
+                __bat529StaticReceiverCall_java_lang_Object_2(deviceUsage, 'put', id, new LinkedHashSet())
             }
-            deviceUsage.get(id) << section
+            __bat529StaticExpr__bat529Cb_221baae5_25_3(deviceUsage, id, section)
         
 }
 
@@ -830,45 +860,49 @@ def _bat529Cb_221baae5_26(def manifest, def deviceId, def sections) {
     
 }
 
-def _bat529Cb_221baae5_27(def childApp) {
-        def ruleData = childApp.getRuleData()
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_221baae5_27(def childApp) {
+        def ruleData = __bat529StaticReceiverCall_java_lang_Object_0(childApp, 'getRuleData')
         if (!ruleData) return null  // Skip rules that return null data
         [
-            id: ruleData.id,
-            name: ruleData.name,
-            description: ruleData.description,
-            enabled: ruleData.enabled,
-            triggerCount: ruleData.triggers?.size() ?: 0,
-            conditionCount: ruleData.conditions?.size() ?: 0,
-            actionCount: ruleData.actions?.size() ?: 0,
-            lastTriggered: ruleData.lastTriggered,
-            executionCount: ruleData.executionCount ?: 0,
+            id: __bat529StaticProperty_java_lang_Object(ruleData, 'id'),
+            name: __bat529StaticProperty_java_lang_Object(ruleData, 'name'),
+            description: __bat529StaticProperty_java_lang_Object(ruleData, 'description'),
+            enabled: __bat529StaticProperty_java_lang_Object(ruleData, 'enabled'),
+            triggerCount: __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(ruleData, 'triggers'), 'size') ?: 0,
+            conditionCount: __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(ruleData, 'conditions'), 'size') ?: 0,
+            actionCount: __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(ruleData, 'actions'), 'size') ?: 0,
+            lastTriggered: __bat529StaticProperty_java_lang_Object(ruleData, 'lastTriggered'),
+            executionCount: __bat529StaticProperty_java_lang_Object(ruleData, 'executionCount') ?: 0,
             source: "mcp_custom_engine"
         ]
     
 }
 
-def _bat529Cb_221baae5_28(def childApp) {
-        def ruleData = childApp.getRuleData()
+@groovy.transform.CompileStatic
+java.util.Map _bat529Cb_221baae5_28(def childApp) {
+        def ruleData = __bat529StaticReceiverCall_java_lang_Object_0(childApp, 'getRuleData')
         if (!ruleData) return null  // Skip rules that return null data
         [
-            id: ruleData.id,
-            name: ruleData.name,
-            description: ruleData.description,
-            enabled: ruleData.enabled,
-            triggerCount: ruleData.triggers?.size() ?: 0,
-            conditionCount: ruleData.conditions?.size() ?: 0,
-            actionCount: ruleData.actions?.size() ?: 0,
-            lastTriggered: ruleData.lastTriggered,
-            executionCount: ruleData.executionCount ?: 0,
+            id: __bat529StaticProperty_java_lang_Object(ruleData, 'id'),
+            name: __bat529StaticProperty_java_lang_Object(ruleData, 'name'),
+            description: __bat529StaticProperty_java_lang_Object(ruleData, 'description'),
+            enabled: __bat529StaticProperty_java_lang_Object(ruleData, 'enabled'),
+            triggerCount: __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(ruleData, 'triggers'), 'size') ?: 0,
+            conditionCount: __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(ruleData, 'conditions'), 'size') ?: 0,
+            actionCount: __bat529StaticReceiverCall_Safe_java_lang_Object_0(__bat529StaticProperty_java_lang_Object(ruleData, 'actions'), 'size') ?: 0,
+            lastTriggered: __bat529StaticProperty_java_lang_Object(ruleData, 'lastTriggered'),
+            executionCount: __bat529StaticProperty_java_lang_Object(ruleData, 'executionCount') ?: 0,
             source: "mcp_custom_engine"
         ]
     
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_221baae5_29(def it) { it != null 
 }
 
+@groovy.transform.CompileStatic
 def _bat529Cb_221baae5_30(def it) { it != null 
 }
 
