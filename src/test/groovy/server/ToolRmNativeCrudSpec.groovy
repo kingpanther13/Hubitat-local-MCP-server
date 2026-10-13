@@ -1,5 +1,7 @@
 package server
 
+import spock.lang.IgnoreIf
+
 import support.RMUtilsMock
 import support.TestLocation
 import support.ToolSpecBase
@@ -23380,6 +23382,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("hub_manage_native_rules_and_apps")
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "hub_search_tools filters write custom_* tools in readonly mode"() {
         // Engine OFF + Read master ON => readonly mode. hub_search_tools must not
         // surface write/structural custom_* tools (create/delete/export/import/clone)
@@ -23406,6 +23409,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.totalToolsSearched < script.buildToolSearchCorpus().size()
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "hub_search_tools filters all custom_* tools in off mode"() {
         // Engine OFF + Read master OFF => off mode. hub_search_tools must not surface
         // ANY custom_* tools -- the full set of 8 must be excluded from scoring.

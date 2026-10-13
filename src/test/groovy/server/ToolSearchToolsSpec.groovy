@@ -1,5 +1,7 @@
 package server
 
+import spock.lang.IgnoreIf
+
 import support.ToolSpecBase
 import support.TestChildApp
 import spock.lang.Unroll
@@ -27,6 +29,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         settingsMap.enableCustomRuleEngine = true
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "search_tools returns a well-formed ranked result list (sorted descending, deduped)"() {
         given:
         searchEnabled()
@@ -43,6 +46,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         rel == rel.sort { -it }
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "advanced-disabled tools are excluded from hub_search_tools results (#114)"() {
         given:
         searchEnabled()
@@ -56,6 +60,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
     }
 
     @Unroll
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "a warm search applies #setting visibility to gateway introductions without changing its cached corpus"() {
         given:
         searchEnabled()
@@ -85,6 +90,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         'disabled_tools' | ['hub_call_device_command']
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "an unrelated visibility override retains rich room introductions in search and tools list"() {
         given:
         searchEnabled()
@@ -101,6 +107,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         room.description.endsWith('[' + (gateway.description.split('\\n\\n')[0] - (script.guideFirstSentence() + ' ')) + ']')
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "the corpus + tokens are built once into the class static -- never atomicState -- and a second identical query is served from it"() {
         given:
         searchEnabled()
@@ -130,6 +137,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         second.results == first.results
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "the first search on an upgraded hub sheds the persisted index an older build left in atomicState"() {
         given: 'the legacy keys are present, as they are on every hub that ran the previous build'
         searchEnabled()
@@ -150,6 +158,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         !atomicStateMap.containsKey('toolSearchCorpusVersion')
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "a toggle flip hides the right tools per-request without rebuilding the shared full-corpus token cache"() {
         given: 'a clean cache with the custom rule engine ON'
         searchEnabled()
@@ -184,6 +193,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         offResult.totalToolsSearched < onResult.totalToolsSearched
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "a query semantically anchors to the right corpus entry (proves token<->corpus alignment)"() {
         given:
         searchEnabled()
@@ -197,6 +207,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         roomHit.relevance > 0
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "totalToolsSearched counts DISTINCT tools, not multi-gateway corpus rows"() {
         given: 'a clean cache so the corpus is freshly built'
         searchEnabled()
@@ -220,6 +231,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         result.totalToolsSearched < visibleRows.size()
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "disabling a multi-gateway tool drops totalToolsSearched by exactly one (count is post-dedup, not per-row)"() {
         given: 'hub_get_device lives in BOTH hub_read_devices and hub_manage_devices -- two corpus rows'
         searchEnabled()
@@ -239,7 +251,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
     def "updated() invalidates the in-JVM BM25 index, the legacy atomicState entries, and the gateway requiredParams memo in lockstep"() {
         given: 'populated caches and a no-op initialize so updated() does not hit platform APIs'
         script.requiredParamsByTool()
-        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).putAll([fingerprint: 'fp-test', corpus: [[name: 'x']], tokens: [['x']]])
+        if (!searchRemovedExperiment()) (scriptStaticField('TOOL_SEARCH_INDEX') as Map).putAll([fingerprint: 'fp-test', corpus: [[name: 'x']], tokens: [['x']]])
         atomicStateMap.toolSearchCorpus = [[name: 'x', description: 'd']]
         atomicStateMap.toolSearchTokens = [['x']]
         atomicStateMap.toolSearchCorpusVersion = 'v-test'
@@ -253,7 +265,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
 
         then: 'all derived caches are cleared (rebuilt lazily on next use)'
         (scriptStaticField('TOOL_METADATA_CACHE') as Map).isEmpty()
-        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).isEmpty()
+        searchRemovedExperiment() || (scriptStaticField('TOOL_SEARCH_INDEX') as Map).isEmpty()
         atomicStateMap.toolSearchCorpus == null
         atomicStateMap.toolSearchTokens == null
         atomicStateMap.toolSearchCorpusVersion == null
@@ -288,20 +300,21 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         String listFilesTitle = script.getToolDisplayMeta()['hub_list_files']?.title ?: ''
         String listFilesParams = script.getAllToolDefinitions()
             .find { it.name == 'hub_list_files' }?.inputSchema?.properties?.keySet()?.join(' ') ?: ''
-        script.getGatewayConfig().findAll { _, gw -> gw?.summaries?.containsKey('hub_list_files') }
+        searchRemovedExperiment() || script.getGatewayConfig().findAll { _, gw -> gw?.summaries?.containsKey('hub_list_files') }
             .every { gwName, gw ->
                 !("hub_list_files ${listFilesTitle} ${gw.summaries.hub_list_files ?: ''} "
                   + "${gw.description ?: ''} ${listFilesParams}").toLowerCase().contains('substring')
             }
 
         and: 'so searchHints is the only field the token can come from'
-        script.getGatewayConfig().any { _, gw ->
+        searchRemovedExperiment() || script.getGatewayConfig().any { _, gw ->
             (gw?.searchHints?.hub_list_files ?: '').toLowerCase().contains('substring')
         }
-        script.toolSearchTools([query: 'substring', maxResults: 10])
+        searchRemovedExperiment() || script.toolSearchTools([query: 'substring', maxResults: 10])
             .results*.tool.contains('hub_list_files')
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "the fingerprint memo is actually populated by a search"() {
         given: 'TOOL_SEARCH_CORPUS_FP is the only non-final @Field static and the only bare-identifier WRITE to an app field from library text. If that assignment ever resolved to the script Binding instead of the field, every other gate stays green and the sole symptom is a permanently cold path re-walking the catalog on every call'
         searchEnabled()
@@ -316,6 +329,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         scriptStaticField('TOOL_SEARCH_CORPUS_FP') == script.toolSearchCorpusFingerprint()
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "the BM25 map key is NAMESPACED, not the bare token"() {
         // The lint pins that every df/tf subscript goes through _bm25Key; nothing pinned what
         // _bm25Key RETURNS. Making it `return token` passes the lint and the search tests alike,
@@ -327,6 +341,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         script._bm25Key('switch') == 't_switch'
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "the corpus fingerprint actually discriminates -- a content change moves it"() {
         given: 'the sibling requiredParams memo ships this exact guard, because every other fingerprint test passes just as well against a function that returns a constant'
         searchEnabled()
@@ -393,6 +408,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
     // The catalog contributes the real token 'fields', which historically broke
     // sandbox subscript scoring. Keep that token present and its search useful.
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "the live corpus contains the sandbox-reserved token that broke raw-key scoring"() {
         when:
         def corpus = script.buildToolSearchCorpus(null)
@@ -402,6 +418,7 @@ class ToolSearchToolsSpec extends ToolSpecBase {
         tokens.contains('fields')
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "a query for a sandbox-reserved token still ranks its tool"() {
         when:
         def result = script.toolSearchTools([query: 'fields', maxResults: 25])

@@ -1,5 +1,7 @@
 package server
 
+import spock.lang.IgnoreIf
+
 import groovy.json.JsonOutput
 import support.ToolSpecBase
 
@@ -330,6 +332,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         lonelyCloseKeep == 'before  tail with no open'
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "hub_search_tools BM25 corpus contains no marker tokens in any top-level description"() {
         given:
         enableEveryToggle()

@@ -569,11 +569,12 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 118
+        names.size() == (searchRemovedExperiment() ? 117 : 118)
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk
-        names.contains('hub_search_tools')   // last chunk
+        names.contains('hub_get_tool_guide') // last chunk remains in both variants
+        names.contains('hub_search_tools') == !searchRemovedExperiment()
     }
 
     @Unroll

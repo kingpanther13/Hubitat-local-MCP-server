@@ -52,6 +52,15 @@ if hasattr(sys.stderr, "reconfigure"):
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
+
+def search_removed_experiment_enabled() -> bool:
+    marker = REPO_ROOT / 'experiments/compile-static/search-removed.enabled'
+    if not marker.is_file():
+        return False
+    if marker.read_text(encoding='utf-8').strip() != 'BAT529_SEARCH_REMOVED':
+        raise ValueError('Invalid complete-search-removal experiment marker')
+    return True
+
 # Glob the whole libraries/ dir (not a hardcoded list) so every library module the app
 # #includes is sandbox-scanned automatically -- when real code (e.g. the RM tools) moves into
 # its own library file under the issue #209 modularization, the lint covers it with no edit here.
@@ -1274,6 +1283,12 @@ def check_tool_counts() -> list[dict]:
         )
         return findings
 
+    if search_removed_experiment_enabled():
+        # Reference docs describe the preserved ordinary catalog; this variant removes one core leaf.
+        canonical = dict(canonical)
+        for kind in ('total', 'core', 'tools_list'):
+            canonical[kind] += 1
+
     for doc_path in DOC_FILES_FOR_COUNTS:
         if not doc_path.exists():
             continue
@@ -1511,6 +1526,8 @@ def check_tool_name_consistency() -> list[dict]:
         return findings
 
     valid_names = canonical["tool_names"] | canonical["gateway_names"] | TOOL_NAME_ALLOWLIST
+    if search_removed_experiment_enabled():
+        valid_names = valid_names | {'hub_search_tools'}
 
     for doc_path in DOC_FILES_FOR_TOOL_NAMES:
         if not doc_path.exists():
@@ -4618,6 +4635,8 @@ def check_bm25_key_subscripts() -> list[dict]:
     with no such guard, so a test cannot fail on a bare token key; only a source-level rule can
     hold this invariant. Checked at the DERIVATION: a subscript variable assigned from anything
     but _bm25Key(...) fails, as does a literal subscript, as does a body with no _bm25Key call."""
+    if search_removed_experiment_enabled():
+        return check_complete_search_removal()
     findings: list[dict] = []
     lib = REPO_ROOT / "libraries" / "mcp-discovery-lib.groovy"
     if not lib.is_file():
@@ -4668,6 +4687,28 @@ def check_bm25_key_subscripts() -> list[dict]:
         flag(0, f"`{name}` subscripts df/tf but is never assigned from _bm25Key(...) in bm25Score -- a raw corpus token as a map key trips the platform's SandboxSubscriptGuard.")
     if "_bm25Key(" not in body:
         flag(0, "bm25Score never calls _bm25Key -- the sandbox-safe key namespacing has been removed.")
+    return findings
+
+
+def check_complete_search_removal() -> list[dict]:
+    """The explicit timing variant removes the entire feature; all ordinary builds still require BM25."""
+    sources = [(REPO_ROOT / 'hubitat-mcp-server.groovy').read_text(encoding='utf-8')]
+    sources.extend(path.read_text(encoding='utf-8') for path in sorted((REPO_ROOT / 'libraries').glob('*.groovy')))
+    raw = '\n'.join(sources)
+    code = strip_comments_and_strings(raw)
+    findings = []
+    removed = ('toolSearchTools', 'bm25Score', 'bm25Tokenize', '_bm25Key', '_bm25DocText', '_fpField',
+               'buildToolSearchCorpus', 'toolSearchCorpusFingerprint', 'TOOL_SEARCH_INDEX', 'TOOL_SEARCH_CORPUS_FP',
+               'searchHints')
+    for name in removed:
+        if re.search(r'\b' + re.escape(name) + r'\b', code):
+            findings.append({'file': 'hubitat-mcp-server.groovy', 'line': 1, 'severity': 'error',
+                             'rule': 'search-removal-experiment', 'source': '',
+                             'message': 'Complete-search-removal variant retains feature code/data: ' + name})
+    if 'hub_search_tools' in _catalog_metadata_source(raw):
+        findings.append({'file': 'hubitat-mcp-server.groovy', 'line': 1, 'severity': 'error',
+                         'rule': 'search-removal-experiment', 'source': '',
+                         'message': 'Removed search tool remains in source, dispatch, or embedded metadata'})
     return findings
 
 

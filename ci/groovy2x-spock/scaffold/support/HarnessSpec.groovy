@@ -39,6 +39,7 @@ import spock.lang.Specification
  * as the root variant and is exercised against the same specs.
  */
 abstract class HarnessSpec extends Specification {
+    protected boolean searchRemovedExperiment() { Boolean.getBoolean('experiment.searchRemoved') }
     private static HubitatAppScript SHARED_SCRIPT
     private static final Object COMPILE_LOCK = new Object()
     private static final java.lang.reflect.Field API_FIELD = {
@@ -266,7 +267,12 @@ abstract class HarnessSpec extends Specification {
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).clear()
         (scriptStaticField('MRTR_CLEANUP_SCHEDULES') as Map).clear()
         (scriptStaticField('MRTR_CLEANUP_CHECK_AT') as Map).clear()
-        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
+        if (searchRemovedExperiment()) {
+            assert !script.getClass().declaredFields*.name.intersect(['TOOL_SEARCH_INDEX', 'TOOL_SEARCH_CORPUS_FP'])
+            assert !script.getClass().declaredMethods*.name.contains('toolSearchTools')
+        } else {
+            (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
+        }
         (scriptStaticField('TOOL_METADATA_CACHE') as Map).clear()
         (scriptStaticField('RETIRED_TOOL_STATE_CLEANED') as Set).clear()
         (scriptStaticField('HUB_SECURITY_CHECKED') as Set).clear()
@@ -289,9 +295,11 @@ abstract class HarnessSpec extends Specification {
         // The corpus fingerprint memo is a scalar, so it needs a set rather than a clear.
         // A leftover value would make a later spec's search read a warm key for a catalog
         // that spec had already changed.
-        def corpusFpField = script.getClass().getDeclaredField('TOOL_SEARCH_CORPUS_FP')
-        corpusFpField.accessible = true
-        corpusFpField.set(null, null)
+        if (!searchRemovedExperiment()) {
+            def corpusFpField = script.getClass().getDeclaredField('TOOL_SEARCH_CORPUS_FP')
+            corpusFpField.accessible = true
+            corpusFpField.set(null, null)
+        }
         // Match the primary harness: ordinary specs skip setup, and retry clocks cannot leak.
         def setupField = script.getClass().getDeclaredField('SETUP_CURRENT')
         setupField.accessible = true

@@ -190,7 +190,7 @@ class IncludeResolverSpec extends Specification {
         def out = IncludeResolver.resolve(src, realLibs)
 
         then:
-        out.contains("def ${markerImpl}")
+        out.contains("def ${markerImpl == 'toolSearchTools' && Boolean.getBoolean('experiment.searchRemoved') ? 'toolGetToolGuide' : markerImpl}")
         out.contains("def _getAllToolDefinitions_part${part}")
         out.contains("def _toolDisplayMeta_part${part}")
         !(out =~ /(?m)^\s*#include\b/)

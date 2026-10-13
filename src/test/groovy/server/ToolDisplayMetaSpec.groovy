@@ -1,5 +1,7 @@
 package server
 
+import spock.lang.IgnoreIf
+
 import support.ToolSpecBase
 
 /**
@@ -138,6 +140,7 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
             'hub_mystery_tool — hub_mystery_tool [write]'
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "search corpus entries carry titles so friendly phrasing is searchable"() {
         given: 'a clean cache'
         settingsMap.useGateways = true
@@ -161,6 +164,7 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens[idx].contains('author')
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "a pre-title persisted corpus (deployed-over previous version) is ignored and shed on the first search"() {
         // On a live hub this change lands on an atomicState corpus written by a previous build
         // (entries have no title key). The index now lives in the class static, so the persisted
@@ -190,6 +194,7 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
         result.results.find { it.tool == 'hub_list_rooms' }?.title == 'List Rooms'
     }
 
+    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "a same-shape cached corpus whose content drifted is rebuilt on the first search (content fingerprint)"() {
         // Shape-identical caches (same keys, stale titles or search hints) are invisible
         // to the shape check; the content fingerprint written alongside the cache is what

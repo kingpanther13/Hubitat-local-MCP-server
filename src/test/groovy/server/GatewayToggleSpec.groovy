@@ -33,7 +33,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         and: 'flat (always top-level) tools still appear'
         names.contains('hub_get_info')
         names.contains('hub_get_hsm_status')
-        names.contains('hub_search_tools')
+        names.contains('hub_search_tools') == !searchRemovedExperiment()
     }
 
     def "default (null) and explicit useGateways=true produce identical tool lists"() {

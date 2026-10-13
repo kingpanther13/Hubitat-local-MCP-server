@@ -141,6 +141,11 @@ test {
     // The sandbox loads `new File('hubitat-mcp-server.groovy')` / rule.groovy by RELATIVE path, so
     // the forked test JVM must run from the repo root, not this isolated project dir.
     workingDir = repoRoot
+    def searchRemovedFlag = new File(repoRoot, 'experiments/compile-static/search-removed.enabled')
+    if (searchRemovedFlag.isFile()) {
+        assert searchRemovedFlag.getText('UTF-8').trim() == 'BAT529_SEARCH_REMOVED'
+        systemProperty 'experiment.searchRemoved', 'true'
+    }
     // Keep specs single-threaded. RMUtilsMock / NetworkUtilsMock inject static metaclass methods on
     // hubitat.helper.RMUtils / .NetworkUtils — concurrent install/uninstall would race. (The
     // CURRENT_FEATURE static hand-off in the lane HarnessSpec/RuleHarnessSpec also depends on this.)

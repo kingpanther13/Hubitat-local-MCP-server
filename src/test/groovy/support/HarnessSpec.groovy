@@ -83,6 +83,7 @@ import spock.lang.Specification
  * change.
  */
 abstract class HarnessSpec extends Specification {
+    protected boolean searchRemovedExperiment() { Boolean.getBoolean('experiment.searchRemoved') }
     // Per-JVM cache for the compiled script. sandbox.run() (parse + AST
     // + compile) is multi-second on the large server file and used to
     // fire once per spec class — amortising it across every subclass
@@ -333,7 +334,12 @@ abstract class HarnessSpec extends Specification {
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).clear()
         (scriptStaticField('MRTR_CLEANUP_SCHEDULES') as Map).clear()
         (scriptStaticField('MRTR_CLEANUP_CHECK_AT') as Map).clear()
-        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
+        if (searchRemovedExperiment()) {
+            assert !script.getClass().declaredFields*.name.intersect(['TOOL_SEARCH_INDEX', 'TOOL_SEARCH_CORPUS_FP'])
+            assert !script.getClass().declaredMethods*.name.contains('toolSearchTools')
+        } else {
+            (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
+        }
         (scriptStaticField('TOOL_METADATA_CACHE') as Map).clear()
         (scriptStaticField('RETIRED_TOOL_STATE_CLEANED') as Set).clear()
         (scriptStaticField('HUB_SECURITY_CHECKED') as Set).clear()
@@ -356,9 +362,11 @@ abstract class HarnessSpec extends Specification {
         // The corpus fingerprint memo is a scalar, so it needs a set rather than a clear.
         // A leftover value would make a later spec's search read a warm key for a catalog
         // that spec had already changed.
-        def corpusFpField = script.getClass().getDeclaredField('TOOL_SEARCH_CORPUS_FP')
-        corpusFpField.accessible = true
-        corpusFpField.set(null, null)
+        if (!searchRemovedExperiment()) {
+            def corpusFpField = script.getClass().getDeclaredField('TOOL_SEARCH_CORPUS_FP')
+            corpusFpField.accessible = true
+            corpusFpField.set(null, null)
+        }
         // Specs start with setup current, so dispatch does not run initialize(); the setup-refresh
         // specs clear it themselves.
         def setupField = script.getClass().getDeclaredField('SETUP_CURRENT')

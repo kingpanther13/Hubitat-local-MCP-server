@@ -2,9 +2,11 @@ package server
 
 import groovy.json.JsonOutput
 import spock.lang.Shared
+import spock.lang.IgnoreIf
 import spock.lang.Unroll
 import support.HarnessSpec
 
+@IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
 class CompileStaticBm25ParitySpec extends HarnessSpec {
     @Shared private Object originalScore
 
