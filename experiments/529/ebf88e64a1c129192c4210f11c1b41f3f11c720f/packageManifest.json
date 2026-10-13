@@ -1,0 +1,27 @@
+{
+  "packageName": "BAT529 MCP Rule Server Static",
+  "author": "kingpanther13",
+  "version": "0.0.1",
+  "minimumHEVersion": "2.5.2",
+  "releaseNotes": "Throwaway compile-static timing experiment; isolated app identity.",
+  "apps": [
+    {
+      "id": "932b85ca-c9e3-4f21-9e89-532d818ad529",
+      "name": "BAT529 MCP Rule Server Static",
+      "namespace": "codex.bat529",
+      "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/experiments/529/ebf88e64a1c129192c4210f11c1b41f3f11c720f/hubitat-mcp-server.groovy",
+      "required": true,
+      "oauth": true,
+      "primary": true
+    },
+    {
+      "id": "318579bf-7591-43e5-a14c-5cd7bdaca529",
+      "name": "BAT529 MCP Rule Static",
+      "namespace": "codex.bat529",
+      "location": "https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/bundle-artifacts/experiments/529/ebf88e64a1c129192c4210f11c1b41f3f11c720f/hubitat-mcp-rule.groovy",
+      "required": true,
+      "oauth": false,
+      "primary": false
+    }
+  ]
+}
