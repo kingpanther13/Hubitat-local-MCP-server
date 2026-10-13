@@ -9,6 +9,7 @@ CHUNKS = re.compile(
     r"(?:\s*,\s*'(?:\\.|[^'\\])*')*)\s*\]\s*\)",
     re.S,
 )
+CAST_CHUNKS = re.compile(r"\(\s*" + CHUNKS.pattern + r"\s+as\s+(?:Map|List)\s*\)", re.S)
 QUOTED = re.compile(r"'(?:\\.|[^'\\])*'", re.S)
 
 
@@ -85,4 +86,4 @@ def expand_embedded_catalogs(source: str) -> str:
             raise ValueError("Embedded catalog root must be a Map or List")
         return _literal(graph)
 
-    return CHUNKS.sub(expand_call, source)
+    return CHUNKS.sub(expand_call, CAST_CHUNKS.sub(expand_call, source))

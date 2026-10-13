@@ -1827,6 +1827,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
             return findings
         src = server.read_text(encoding="utf-8", errors="replace")
 
+    src = _catalog_metadata_source(src)
     # 1. Extract every section key from getToolGuideSections().
     #    Match lines like `        device_authorization: '''## Device Authorization (CRITICAL)`
     sections_block_match = re.search(
