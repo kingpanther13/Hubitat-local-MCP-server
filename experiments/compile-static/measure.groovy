@@ -19,6 +19,11 @@ File app = new File(root, 'hubitat-mcp-server.groovy')
 String current = resolver.resolveFile(app)
 String annotation = '@groovy.transform.CompileStatic'
 String baseline = current.replaceAll(/(?m)^\s*@groovy\.transform\.CompileStatic\s*\r?\n/, '')
+// Stock 2.4 accepts these, but the existing typed harness fails static checking under 2.5/3.0.
+Map compilerExclusions = [
+    _logsJsonTable: 'Groovy 2.5/3.0 loses List narrowing after the table.any closure; return table is inferred as Object',
+    _radioRefused: 'Groovy 2.5/3.0 does not narrow resp to Map on the right side of a negated instanceof OR'
+]
 
 Map helpers = [
     overrideOptionLabel: [['hub_test', [title: 'Example', summary: 'Example summary.'], true], ['hub_test', [:], false], ['hub_test', null, true]],
@@ -94,6 +99,12 @@ candidates.each { method ->
     String dynamic = "class Candidate {\n${body}\n}"
     String statically = "class Candidate {\n${annotation}\n${body}\n}"
     Map record = [method: method.name, line: method.lineNumber]
+    if (compilerExclusions.containsKey(method.name)) {
+        record.status = 'harness-compiler-excluded'
+        record.reason = compilerExclusions[method.name]
+        results << record
+        return
+    }
     boolean catalog = method.parameters.length == 0 && method.name ==~ /_(getAllToolDefinitions|readOnlyToolNames|idempotentWriteToolNames|openWorldToolNames|developerModeOnlyToolNames|toolDisplayMeta)_part\w+/
     // Standalone compilation rejects undeclared platform bindings and cross-method calls.
     // Explicitly exclude dynamic hooks and nondeterministic runtime APIs even when typed.

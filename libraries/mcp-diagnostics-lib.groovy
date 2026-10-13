@@ -1059,7 +1059,6 @@ private List _logsJsonTrimStats(statsList) {
 
 // A present table that is not an array, or a table row that is not an object, is a changed
 // contract and must fail loudly rather than be reported as an empty hub.
-@groovy.transform.CompileStatic
 private List _logsJsonTable(Map data, String key) {
     def table = data[key]
     if (table == null) return []
@@ -2404,7 +2403,6 @@ private void _zwValidateNetworkKeys(Map keys, List known, String label) {
 
 // A radio write the hub did not confirm. strict: only success:true counts (how the UI reads the
 // firmware writes). Otherwise an explicit failure, an error, or an answer that is not JSON.
-@groovy.transform.CompileStatic
 private boolean _radioRefused(resp, boolean strict = false) {
     if (strict) return !(resp instanceof Map) || resp.success != true
     if (resp instanceof Map) return resp.success == false || resp.error || resp._unparseable
