@@ -1033,7 +1033,7 @@ def _bat529Cb_298d4999_30(def probe, def tiles, def warnings, def spec) {
             def tid = _requireTileId(spec.id, "updateTiles")
             def tile = (tiles).find(((this.&_bat529Cb_298d4999_5).curry([tid] as Object[])))
             if (tile == null) {
-                throw new IllegalArgumentException("updateTiles: no tile with id ${tid}. Existing tile ids: $(tiles).collect((this.&_bat529Cb_298d4999_1)).")
+                throw new IllegalArgumentException("updateTiles: no tile with id ${tid}. Existing tile ids: ${(tiles).collect((this.&_bat529Cb_298d4999_1))}.")
             }
             (spec).each(((this.&_bat529Cb_298d4999_16).curry([tile] as Object[])))
             _warnUnauthorizedTileDevice(tile, probe, warnings)
@@ -11089,7 +11089,9 @@ def toolPollUntilAttribute(args) {
     if (!(args.attribute instanceof String) || !args.attribute) {
         throw new IllegalArgumentException("attribute is required and must be a non-empty string")
     }
-    (deviceIdList).each((this.&_bat529Cb_15d0a4c9_104))
+    for (def did : deviceIdList) {
+        _requireDeviceToolAccess(did)
+    }
     def validModes = ["any", "all"]
     if (args.containsKey("mode") && args.mode == null) {
         throw new IllegalArgumentException("mode must not be null (omit the arg to use the default \"all\")")
@@ -13202,8 +13204,6 @@ def _bat529Cb_15d0a4c9_101(def known, def it) { !known.contains(it.toString())
 def _bat529Cb_15d0a4c9_102(def meshHubId, def it) { it.sourceHubId?.toString() == meshHubId
 }
 def _bat529Cb_15d0a4c9_103(def fields, def it) { fields.contains(it.name)
-}
-def _bat529Cb_15d0a4c9_104(def did) { _requireDeviceToolAccess(did)
 }
 def _bat529Cb_15d0a4c9_105(def cap) { cap.name?.toLowerCase()
 }
@@ -25771,7 +25771,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
             writtenValue = ((writtenValue as Map).keySet()).collect((this.&_bat529Cb_4076886b_152))
         }
         if (!schemaInput) {
-            opResult.warning = "Field '${writtenKey}' not in current schema for page '${page}'. Available: $(beforeSchema.inputs).collect((this.&_bat529Cb_4076886b_51)). The write will be attempted but the hub may silently drop it."
+            opResult.warning = "Field '${writtenKey}' not in current schema for page '${page}'. Available: ${(beforeSchema.inputs).collect((this.&_bat529Cb_4076886b_51))}. The write will be attempted but the hub may silently drop it."
         }
         if (validateEnum && schemaInput?.options) {
             def validValues = (schemaInput.options).collect((this.&_bat529Cb_4076886b_126))
@@ -26871,7 +26871,7 @@ def _createNativeAppShell(args) {
             ],
             health: health,
             note: (triggerSpecs || actionSpecs || reSpec != null) ?
-                "Created ${appType} app (id=${newId}) with $(triggerResults).count((this.&_bat529Cb_4076886b_95))/${triggerSpecs.size()} triggers + $(actionResults).count((this.&_bat529Cb_4076886b_81))/${actionSpecs.size()} actions${reSpec != null ? " + Required Expression (${reFailed ? "failed" : (rePartial ? "partial" : "applied")})" : ""} FULLY committed${partialTriggers || partialActions || reFailed || rePartial ? " (some partial -- see partialTriggers/partialActions/requiredExpression for repair)" : ""}. updateRule fired to commit each section${reSpec != null ? (reResult?.updateRuleFailed ? " but the Required Expression re-init updateRule was REJECTED -- the expression may not be live (see requiredExpression.updateRuleError)" : " (including a trailing updateRule after the Required Expression so it is live)") : ""}." :
+                "Created ${appType} app (id=${newId}) with ${(triggerResults).count((this.&_bat529Cb_4076886b_95))}/${triggerSpecs.size()} triggers + ${(actionResults).count((this.&_bat529Cb_4076886b_81))}/${actionSpecs.size()} actions${reSpec != null ? " + Required Expression (${reFailed ? "failed" : (rePartial ? "partial" : "applied")})" : ""} FULLY committed${partialTriggers || partialActions || reFailed || rePartial ? " (some partial -- see partialTriggers/partialActions/requiredExpression for repair)" : ""}. updateRule fired to commit each section${reSpec != null ? (reResult?.updateRuleFailed ? " but the Required Expression re-init updateRule was REJECTED -- the expression may not be live (see requiredExpression.updateRuleError)" : " (including a trailing updateRule after the Required Expression so it is live)") : ""}." :
                 "Empty ${appType} app created (id=${newId}). Use hub_set_rule (RM rules) or hub_set_native_app (other classic apps) to populate, or hub_get_app_config to inspect."
         ]
         if (appType == "rule_machine") {
