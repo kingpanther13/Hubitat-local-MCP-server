@@ -2563,7 +2563,9 @@ def toolPollUntilAttribute(args) {
         throw new IllegalArgumentException("attribute is required and must be a non-empty string")
     }
 
-    (deviceIdList).each((this.&_bat529Cb_15d0a4c9_104))
+    for (def did : deviceIdList) {
+        _requireDeviceToolAccess(did)
+    }
 
     // 2b. Validate mode (any/all over deviceIds). Only meaningful with deviceIds; default "all"
     //     (converge when EVERY device matches). "any" converges on the first device to match.
@@ -5301,8 +5303,6 @@ def _bat529Cb_15d0a4c9_102(def meshHubId, def it) { it.sourceHubId?.toString() =
 def _bat529Cb_15d0a4c9_103(def fields, def it) { fields.contains(it.name) 
 }
 
-def _bat529Cb_15d0a4c9_104(def did) { _requireDeviceToolAccess(did) 
-}
 
 def _bat529Cb_15d0a4c9_105(def cap) { cap.name?.toLowerCase() 
 }

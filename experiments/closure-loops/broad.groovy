@@ -74,6 +74,21 @@ class BroadCallbackExtractor {
         return (arrow.start as int) + 2
     }
 
+    static List callSpan(String source, MethodCallExpression call, Class spans, Map pairs) {
+        List range = spans.span(source, call)
+        int start = range[0], end = range[1]
+        // Groovy 2.4 can position a GString value's call on the enclosing
+        // interpolation braces. Those delimiters belong to the GString.
+        if (start > 0 && source.charAt(start - 1) == '$' && source.charAt(start) == '{' &&
+                pairs.containsKey(start)) {
+            int interpolationEnd = pairs.get(start)
+            if (end > interpolationEnd) throw new IllegalStateException('Call crosses GString boundary')
+            start++
+            if (end == interpolationEnd) end--
+        }
+        return [start, end]
+    }
+
     // Replacements may nest. Include only the outermost child in each segment:
     // its generated helper already contains its own lowered descendants.
     static String render(String source, int start, int end, List replacements) {
@@ -288,7 +303,7 @@ class BroadCallbackExtractor {
             grouped.get(candidate.call) << candidate
         }
         List groups = grouped.collect { call, callbacks ->
-            [call: call, callbacks: callbacks, range: spans.span(source, call)]
+            [call: call, callbacks: callbacks, range: callSpan(source, call, spans, pairs)]
         }.sort { a, b -> (a.range[1] - a.range[0]) <=> (b.range[1] - b.range[0]) }
         List edits = [], callbackInventory = [], helpers = [], helperInventory = []
         String tag = sha(name.getBytes('UTF-8')).substring(0, 8)

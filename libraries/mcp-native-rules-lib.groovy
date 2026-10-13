@@ -7282,7 +7282,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
         }
         // Validate against schema if asked.
         if (!schemaInput) {
-            opResult.warning = "Field '${writtenKey}' not in current schema for page '${page}'. Available: $(beforeSchema.inputs).collect((this.&_bat529Cb_4076886b_51)). The write will be attempted but the hub may silently drop it."
+            opResult.warning = "Field '${writtenKey}' not in current schema for page '${page}'. Available: ${(beforeSchema.inputs).collect((this.&_bat529Cb_4076886b_51))}. The write will be attempted but the hub may silently drop it."
         }
         if (validateEnum && schemaInput?.options) {
             def validValues = (schemaInput.options).collect((this.&_bat529Cb_4076886b_126))
@@ -9011,7 +9011,7 @@ def _createNativeAppShell(args) {
             ],
             health: health,
             note: (triggerSpecs || actionSpecs || reSpec != null) ?
-                "Created ${appType} app (id=${newId}) with $(triggerResults).count((this.&_bat529Cb_4076886b_95))/${triggerSpecs.size()} triggers + $(actionResults).count((this.&_bat529Cb_4076886b_81))/${actionSpecs.size()} actions${reSpec != null ? " + Required Expression (${reFailed ? "failed" : (rePartial ? "partial" : "applied")})" : ""} FULLY committed${partialTriggers || partialActions || reFailed || rePartial ? " (some partial -- see partialTriggers/partialActions/requiredExpression for repair)" : ""}. updateRule fired to commit each section${reSpec != null ? (reResult?.updateRuleFailed ? " but the Required Expression re-init updateRule was REJECTED -- the expression may not be live (see requiredExpression.updateRuleError)" : " (including a trailing updateRule after the Required Expression so it is live)") : ""}." :
+                "Created ${appType} app (id=${newId}) with ${(triggerResults).count((this.&_bat529Cb_4076886b_95))}/${triggerSpecs.size()} triggers + ${(actionResults).count((this.&_bat529Cb_4076886b_81))}/${actionSpecs.size()} actions${reSpec != null ? " + Required Expression (${reFailed ? "failed" : (rePartial ? "partial" : "applied")})" : ""} FULLY committed${partialTriggers || partialActions || reFailed || rePartial ? " (some partial -- see partialTriggers/partialActions/requiredExpression for repair)" : ""}. updateRule fired to commit each section${reSpec != null ? (reResult?.updateRuleFailed ? " but the Required Expression re-init updateRule was REJECTED -- the expression may not be live (see requiredExpression.updateRuleError)" : " (including a trailing updateRule after the Required Expression so it is live)") : ""}." :
                 "Empty ${appType} app created (id=${newId}). Use hub_set_rule (RM rules) or hub_set_native_app (other classic apps) to populate, or hub_get_app_config to inspect."
         ]
         // For RM rules the app id IS the rule id -- the ruleId-taking downstream tools (hub_call_rule,

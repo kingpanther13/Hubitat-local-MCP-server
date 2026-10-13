@@ -1194,7 +1194,7 @@ def _bat529Cb_298d4999_30(def probe, def tiles, def warnings, def spec) {
             def tid = _requireTileId(spec.id, "updateTiles")
             def tile = (tiles).find(((this.&_bat529Cb_298d4999_5).curry([tid] as Object[])))
             if (tile == null) {
-                throw new IllegalArgumentException("updateTiles: no tile with id ${tid}. Existing tile ids: $(tiles).collect((this.&_bat529Cb_298d4999_1)).")
+                throw new IllegalArgumentException("updateTiles: no tile with id ${tid}. Existing tile ids: ${(tiles).collect((this.&_bat529Cb_298d4999_1))}.")
             }
             (spec).each(((this.&_bat529Cb_298d4999_16).curry([tile] as Object[])))
             _warnUnauthorizedTileDevice(tile, probe, warnings)
