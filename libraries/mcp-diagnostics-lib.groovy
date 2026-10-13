@@ -152,6 +152,7 @@ private _radioGet(String path, Map query = null) {
 // Non-throwing read variant: a hub fault becomes an {error} map instead of
 // propagating, so one bad include (an absent radio or older firmware) does not
 // fail the whole hub_get_radio_details read -- the miss stays visible per-include.
+@groovy.transform.CompileStatic
 private _radioGetSafe(String path, Map query = null) {
     try { return _radioGet(path, query) }
     catch (IllegalStateException guardErr) {
@@ -394,6 +395,7 @@ private Map _parseHubLogLine(String line) {
 
 // Scoped snapshots live only long enough for a continuation or terminal replay. Bound
 // simultaneous snapshots, never their content; retain continuation snapshots until replay expires.
+@groovy.transform.CompileStatic
 def _nativeLogSnapshot(Map query, Map args) {
     if (!_mrtrReadContinuationActive()) {
         return [state: "ready", text: hubInternalGet("/logs/past/json", query, 30)]
@@ -1037,6 +1039,7 @@ def _logsJsonObserveWaitMs() {
     return Math.max(1L, Math.min(cap, budget - 1500L))
 }
 
+@groovy.transform.CompileStatic
 def _logsJsonUsesBackgroundFetch() { _mrtrReadContinuationActive() }
 
 private List _logsJsonTrimStats(statsList) {
@@ -2354,6 +2357,7 @@ def toolCallZwave(args) {
 }
 
 // Shared result for the firmware-service and batch flashes: the hub answers {success, message}.
+@groovy.transform.CompileStatic
 private Map _zwFirmwareStartResult(String action, resp, nodeId) {
     if (_radioRefused(resp, true)) {
         return [success: false, target: "zwave", action: action, error: "The hub did not start the firmware update: ${_radioReason(resp)}",
@@ -2716,6 +2720,7 @@ def toolCallDestructiveOps(args) {
 
 // target=network: disconnect the hub's WiFi or Ethernet link. GET endpoints RE'd from
 // resources/hub2-source/vue-hub2.min.js. Confirm-gated by the caller; a structured error on failure.
+@groovy.transform.CompileStatic
 private _destructiveNetworkOp(String action) {
     def path
     switch (action) {
@@ -2742,6 +2747,7 @@ private _destructiveNetworkOp(String action) {
 
 // target=cloud: disable or enable the hub's cloud controller. Disabling severs Alexa/Google, cloud
 // dashboards, firmware updates, and subscription features. GET endpoints RE'd from vue-hub2.min.js.
+@groovy.transform.CompileStatic
 private _destructiveCloudOp(String action) {
     def path
     switch (action) {
@@ -2915,6 +2921,7 @@ def toolListCapturedStates(args = null) {
 // hub_delete_captured_state: stateId present -> delete that one; omitted -> delete all
 // (no-ID = delete all, per the verb vocabulary). Accepts either an args map or a
 // raw stateId for backward-compatible internal calls.
+@groovy.transform.CompileStatic
 def toolDeleteCapturedState(args) {
     def stateId = (args instanceof Map) ? args.stateId : args
     return stateId ? deleteCapturedState(stateId) : clearAllCapturedStates()

@@ -294,6 +294,7 @@ private Integer _appClonerDiscoverNewChild(Integer parentAppId, Set<String> preC
     return null
 }
 
+@groovy.transform.CompileStatic
 private boolean _appClonerCleanup(Integer clonerAppId) {
     if (clonerAppId == null) return false
     try {
@@ -772,6 +773,7 @@ private void _appClonerFinishStaging(Map result, Integer newAppId, Map outcome) 
     }
 }
 
+@groovy.transform.CompileStatic
 private void _appClonerApplyStageDisabled(Map result, Integer newAppId, Long reqT0 = null) {
     Map plan = _appClonerStagePlan(newAppId)
     Map outcome = _appClonerDisableTargets(plan.targets as List, reqT0, [], plan.failures as List)
@@ -822,6 +824,7 @@ private Map _rmReadBackupSnapshot(Map entry) {
 // Hubitat's App Cloner export of an app, kept in its backup so a restore can bring back app
 // state (triggers, actions, IF conditions) that a settings replay cannot. A rule with a Required
 // Expression is never exported (the cloner renders nothing for it).
+@groovy.transform.CompileStatic
 Map _rmNativeExportForBackup(Integer appId) {
     try {
         return [json: _appClonerExportJson(appId).json]
@@ -1012,6 +1015,7 @@ String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
 
 // Record on the backup entry the app a native restore created (and whether it is meant to stay
 // disabled), so a retry returns it instead of importing again.
+@groovy.transform.CompileStatic
 void _rmRecordNativeRestore(String backupKey, Integer newId, boolean keepDisabled = false) {
     if (!backupKey) return
     try {

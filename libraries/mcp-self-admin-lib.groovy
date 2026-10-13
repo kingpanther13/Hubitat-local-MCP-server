@@ -445,6 +445,7 @@ def _bundleArtifactUrlForRef(location, String base, String ref) {
 // publish workflow) instead of downloading the artifact just to check existence. Returns
 // the byte count it records, or null when there is no artifact: a 404 (throws), an HTML
 // error page, or any non-integer body.
+@groovy.transform.CompileStatic
 def _artifactSizeMarker(String artifactUrl) {
     try {
         def r = _httpFetchUrl("${artifactUrl}.size")
@@ -459,6 +460,7 @@ def _artifactSizeMarker(String artifactUrl) {
     }
 }
 
+@groovy.transform.CompileStatic
 def _bundleArtifactExists(String artifactUrl) {
     return _artifactSizeMarker(artifactUrl) != null
 }
@@ -960,6 +962,7 @@ private Map _planPackageBundles(List manifestBundles, String base, String ref, S
 // records. Only ref=main may fall back to the manifest's literal location (the same
 // branches/main build HPM serves); any other ref without its own artifact would install
 // main's code, so it is refused.
+@groovy.transform.CompileStatic
 private Map _planAppArtifact(String name, String location, String artifactUrl, String ref) {
     def bytes = _artifactSizeMarker(artifactUrl)
     if (bytes != null) return [url: artifactUrl, source: "bundle-artifacts", expectedBytes: bytes]

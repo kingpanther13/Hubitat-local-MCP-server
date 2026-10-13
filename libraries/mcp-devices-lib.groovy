@@ -538,6 +538,7 @@ private String formatLastActivity(Date d) {
 // Type/format validity for the issue-#366 state-filter args, shared by toolListDevices
 // (before its scope='all' route) and the filter='virtual' route in the dispatch case --
 // every path must reject a malformed value with a validation refusal instead of silently ignoring it.
+@groovy.transform.CompileStatic
 def _validateListDeviceStateArgTypes(roomFilter, onlyOn, changedSince, attributeNames, format) {
     if (roomFilter != null && !(roomFilter instanceof String)) {
         throw new IllegalArgumentException("roomFilter must be a string")
@@ -1279,6 +1280,7 @@ private boolean _bypassEnabled() {
 }
 
 // Selection grants access; native HTTP execution does not grant it implicitly.
+@groovy.transform.CompileStatic
 private boolean _requireDeviceToolAccess(deviceId) {
     _validateNativeDeviceId(deviceId)
     boolean listed = findDevice(deviceId) != null
@@ -1893,6 +1895,7 @@ private _readBypassAttrValueFrom(Map fullJson, attribute) {
 }
 
 // Re-fetch fullJson so each poll observes fresh native state.
+@groovy.transform.CompileStatic
 private _readBypassAttrValue(deviceId, attribute) {
     return _readBypassAttrValueFrom(_fetchDeviceFullJson(deviceId), attribute)
 }
@@ -4062,6 +4065,7 @@ private void _verifyDevicePreferenceWrites(deviceId, Map preferences, List chang
     }
 }
 
+@groovy.transform.CompileStatic
 private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, List changes, List errors, Map model = null) {
     if (model == null) {
         _verifyDevicePreferenceWrites(deviceId, [(name): setting], changes, errors)
@@ -5559,6 +5563,7 @@ private List _deviceSwapActionButtons(Map cfg) {
 // reap a pending (installed:false) instance -- verified live on fw 2.5.0.143; only
 // /installedapp/delete/<id> does. Never throws: cleanup runs on failure paths where
 // the original error must win.
+@groovy.transform.CompileStatic
 private boolean _deviceSwapCleanup(Integer appId) {
     try {
         hubInternalGetRaw("/installedapp/delete/${appId}")

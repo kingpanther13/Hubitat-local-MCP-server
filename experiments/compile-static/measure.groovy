@@ -75,7 +75,7 @@ shape = { value ->
     if (value == null) return null
     if (value instanceof Map) return [type: value.getClass().name, entries: value.collect { k, v -> [shape(k), shape(v)] }]
     if (value instanceof Collection) return [type: value.getClass().name, values: value.collect { shape(it) }]
-    if (value instanceof GString) return [type: value.getClass().name.replaceAll(/Candidate.*?\$_/, 'Candidate\$_'), text: value.toString()]
+    if (value instanceof GString) return [type: value.getClass().name.replaceAll('Candidate.*?\\$_', 'Candidate\\$_'), text: value.toString()]
     return [type: value.getClass().name, value: value]
 }
 def invoke = { instance, method, List params ->
