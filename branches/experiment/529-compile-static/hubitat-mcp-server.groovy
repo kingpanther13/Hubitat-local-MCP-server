@@ -269,10 +269,14 @@ private Map _dashboardConfigFromApp(String id) {
         def s = parsed?.settings
         if (!(s instanceof Map)) return null
         def out = [id: id, name: parsed?.app?.label, type: "easy"]
-        ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
-         "showNavigation", "showTutorial"].each { k ->
+        if (true) {
+def __bat529EachReceiver1 = (["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
+         "showNavigation", "showTutorial"])
+for (def k in __bat529EachReceiver1) {
             if (s.containsKey(k)) out.put(k, s.get(k)?.toString() == "true")
-        }
+}
+__bat529EachReceiver1
+} else { null }
         if (s.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(s.navigationSelection)
         if (s.devicesPicked instanceof Map) out.deviceIds = s.devicesPicked.keySet().collect { it.toString() }
         if (s.dashboardPin && s.dashboardPin.toString() != "null") out.dashboardPin = s.dashboardPin
@@ -482,7 +486,11 @@ def toolUpdateDashboard(args) {
     if (probe.legacy == true) {
         return _updateLegacyDashboard(updateId, probe, args)
     }
-    def legacyOnlyArgs = ["layout", "setOptions", "addTiles", "updateTiles", "removeTileIds"].findAll { args.get(it) != null }
+    def __bat529EachReceiver2 = (["layout", "setOptions", "addTiles", "updateTiles", "removeTileIds"])
+def __bat529EachReceiver2Result = []
+for (def it in __bat529EachReceiver2) {if (args.get(it) != null ) __bat529EachReceiver2Result.add(it)
+}
+def legacyOnlyArgs = __bat529EachReceiver2Result
     if (legacyOnlyArgs) {
         throw new IllegalArgumentException("${legacyOnlyArgs.join(', ')} appl${legacyOnlyArgs.size() == 1 ? 'ies' : 'y'} only to legacy Hubitat® Dashboards; dashboard ${updateId} is an Easy Dashboard. Easy updates replace the config wholesale: pass name, deviceIds, and options (read hub_get_dashboard first).")
     }
@@ -523,7 +531,11 @@ def toolUpdateDashboard(args) {
     }
 }
 private Map _updateLegacyDashboard(String id, Map probe, Map args) {
-    def granular = ["setOptions", "addTiles", "updateTiles", "removeTileIds"].findAll { args.get(it) != null }
+    def __bat529EachReceiver3 = (["setOptions", "addTiles", "updateTiles", "removeTileIds"])
+def __bat529EachReceiver3Result = []
+for (def it in __bat529EachReceiver3) {if (args.get(it) != null ) __bat529EachReceiver3Result.add(it)
+}
+def granular = __bat529EachReceiver3Result
     def hasWholesale = args.layout != null
     def hasName = args.name?.toString()?.trim()
     def hasDevices = args.deviceIds != null
@@ -776,10 +788,14 @@ def toolCloneDashboard(args) {
                 note: "Retry; if it persists, read it with hub_get_dashboard and recreate via hub_create_dashboard."]
     }
     def opts = [:]
-    ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit", "showNavigation",
-     "showTutorial", "theme", "navigationSelection", "dashboardPin", "hsmPin"].each { k ->
+    if (true) {
+def __bat529EachReceiver4 = (["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit", "showNavigation",
+     "showTutorial", "theme", "navigationSelection", "dashboardPin", "hsmPin"])
+for (def k in __bat529EachReceiver4) {
         if (src.containsKey(k)) opts.put(k, src.get(k))
-    }
+}
+__bat529EachReceiver4
+} else { null }
     def created = toolCreateDashboard([name: "${src.name ?: 'Dashboard'} (copy)", deviceIds: (src.deviceIds ?: []), options: opts])
     if (created instanceof Map && created.success == true) {
         return [success: true, sourceId: sourceId, newId: created.id,
@@ -831,10 +847,14 @@ private Map _summarizeDashboard(raw) {
         name: raw.name,
         type: raw.version?.toString()?.startsWith("1") ? "legacy" : "easy"
     ]
-    ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
-     "showNavigation", "showTutorial", "theme"].each { k ->
+    if (true) {
+def __bat529EachReceiver5 = (["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
+     "showNavigation", "showTutorial", "theme"])
+for (def k in __bat529EachReceiver5) {
         if (raw.containsKey(k)) out.put(k, raw.get(k))
-    }
+}
+__bat529EachReceiver5
+} else { null }
     if (raw.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(raw.navigationSelection)
     if (raw.containsKey("deviceIds")) out.deviceIds = _normalizeDeviceIdList(raw.deviceIds)
     if (_dashboardRealValue(raw.dashboardPin)) out.dashboardPin = raw.dashboardPin
@@ -2825,9 +2845,13 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
             def failed = [success: false, appId: appId, error: "Hub rejected the graph save: ${saved.errorMessage}",
                           validationErrors: saved.validationErrors, activated: false,
                           note: created ? _vrbTryCleanupShell(appId) : "The rule's previous definition is untouched."]
-            ["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"].each { k ->
+            if (true) {
+def __bat529EachReceiver1 = (["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"])
+for (def k in __bat529EachReceiver1) {
                 if (saved.containsKey(k)) failed[k] = saved[k]
-            }
+}
+__bat529EachReceiver1
+} else { null }
             return failed
         }
         savedMeta = saved
@@ -4056,7 +4080,11 @@ private Map _toolRestoreSourceBackup(args) {
     }
     boolean isSelfRestore = false
     if (entry.type == "app") {
-        def selfIds = [app?.id?.toString(), _resolveSelfAppClassId()?.toString()].findAll { it != null }
+        def __bat529EachReceiver1 = ([app?.id?.toString(), _resolveSelfAppClassId()?.toString()])
+def __bat529EachReceiver1Result = []
+for (def it in __bat529EachReceiver1) {if (it != null ) __bat529EachReceiver1Result.add(it)
+}
+def selfIds = __bat529EachReceiver1Result
         isSelfRestore = selfIds.contains(entry.id?.toString())
     }
     try {
@@ -5078,9 +5106,13 @@ void _retainReportError(Map entry) {
                         component: scrub(entry.component, 80), message: scrub(entry.message, 500)]
         if (entry.ruleId) retained.ruleId = scrub(entry.ruleId, 80)
         def details = [:]
-        ["tool", "appId"].each { key ->
+        if (true) {
+def __bat529EachReceiver1 = (["tool", "appId"])
+for (def key in __bat529EachReceiver1) {
             if (entry.details?.get(key)) details[key] = scrub(entry.details[key], 120)
-        }
+}
+__bat529EachReceiver1
+} else { null }
         if (details) retained.details = details
         def previous = atomicState.reportErrors instanceof List ? atomicState.reportErrors : []
         atomicState.reportErrors = (previous + [retained]).takeRight(10)
@@ -6184,7 +6216,11 @@ def toolGetHubLogs(args) {
     def incompatible = mode == "hub" ? ["component", "ruleId"] :
         mode == "mcp" ? ["source", "appId", "deviceId", "pattern", "patterns", "patternMode", "since", "until"] :
         ["component", "ruleId", "source", "appId", "deviceId", "pattern", "patterns", "patternMode", "since", "until", "level", "limit", "cursor"]
-    def supplied = incompatible.findAll { args[it] != null }
+    def __bat529EachReceiver1 = (incompatible)
+def __bat529EachReceiver1Result = []
+for (def it in __bat529EachReceiver1) {if (args[it] != null ) __bat529EachReceiver1Result.add(it)
+}
+def supplied = __bat529EachReceiver1Result
     if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${mode}'")
     if (mode == "mcp") return toolGetDebugLogs(args)
     if (mode == "status") return toolGetLoggingStatus(args)
@@ -6383,7 +6419,11 @@ def toolGetHubLogs(args) {
             sdf.setLenient(false)
             sdf
         }
-    def hubLogIsoFmts = logTimeFmts.findAll { it.contains("Z") && !it.contains("'Z'") }
+    def __bat529EachReceiver2 = (logTimeFmts)
+def __bat529EachReceiver2Result = []
+for (def it in __bat529EachReceiver2) {if (it.contains("Z") && !it.contains("'Z'") ) __bat529EachReceiver2Result.add(it)
+}
+def hubLogIsoFmts = __bat529EachReceiver2Result
     def hubLogLocalSdfs = hubLogSdfs.collect { utcParser ->
         def parser = new java.text.SimpleDateFormat(utcParser.toPattern())
         parser.setTimeZone(location?.timeZone ?: TimeZone.getTimeZone("UTC"))
@@ -8445,10 +8485,14 @@ private Map _hubSubscriptions() {
     }
     if (!(raw instanceof Map)) return [error: "/hub/subscriptions/json returned an unexpected shape."]
     def out = [:]
-    ["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"].each { k ->
+    if (true) {
+def __bat529EachReceiver1 = (["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"])
+for (def k in __bat529EachReceiver1) {
         def v = raw[k]
         if (v instanceof Map) out[k] = [active: v.isActive == true, pendingCancellation: v.pendingCancellation == true, endsAt: v.end_ts, trialAvailable: v.trialAvailable == true]
-    }
+}
+__bat529EachReceiver1
+} else { null }
     out.fullLocalBackupSupported = raw.fullLocalBackupSupported
     out.hasAvailableTrial = raw.hasAvailableTrial
     out.loaded = raw.loaded
@@ -8741,7 +8785,11 @@ private _validateNetworkArgs(network) {
             throw new IllegalArgumentException("network.ipMode must be 'dhcp' or 'static', got: ${network.ipMode}")
         }
         if (mode == "static") {
-            def missing = ["address", "netmask", "gateway"].findAll { !network.get(it) }
+            def __bat529EachReceiver2 = (["address", "netmask", "gateway"])
+def __bat529EachReceiver2Result = []
+for (def it in __bat529EachReceiver2) {if (!network.get(it) ) __bat529EachReceiver2Result.add(it)
+}
+def missing = __bat529EachReceiver2Result
             if (missing) throw new IllegalArgumentException("network.ipMode='static' requires ${missing.join(', ')} (address, netmask, gateway are all required for a static IP).")
         }
     }
@@ -10987,9 +11035,13 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
         values.tags = _normalizedDeviceTags(d.tags)
     }
     if (fj?.dashboards instanceof List) values.dashboardIds = fj.dashboards.findAll { it.selected == true }.collect { it.id }
-    ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'].each { key ->
+    if (true) {
+def __bat529EachReceiver1 = (['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'])
+for (def key in __bat529EachReceiver1) {
         if (fj?.containsKey(key)) values.put(key, fj.get(key))
-    }
+}
+__bat529EachReceiver1
+} else { null }
     def applicable = [
         label: !_deviceFlag(d.linkedAndDisabled),
         name: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
@@ -12676,9 +12728,13 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
     def allowed = ["deviceId", "bestPracticeKey", "label", "name", "deviceNetworkId", "room", "enabled", "dataValues", "preferences", "showOnHome", "defaultCurrentState", "tags", "confirm"] + _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()
     if (args.keySet().any { !allowed.contains(it.toString()) }) throw new IllegalArgumentException("Unknown device update property; read hub_get_device(mode='configuration') for supported fields")
     def stringFields = ["label", "name", "deviceNetworkId", "room", "defaultCurrentState", "zigbeeId", "notes", "defaultIcon"]
-    stringFields.each { field ->
+    if (true) {
+def __bat529EachReceiver2 = (stringFields)
+for (def field in __bat529EachReceiver2) {
         if (args.containsKey(field) && !(args.get(field) instanceof String)) throw new IllegalArgumentException("${field} must be a string")
-    }
+}
+__bat529EachReceiver2
+} else { null }
     def booleanFields = ["enabled", "showOnHome", "meshEnabled", "retryEnabled", "meshFullSync", "confirm"] + _deviceAssistantProperties().keySet().toList()
     booleanFields.each { field ->
         if (args.containsKey(field) && !(args.get(field) instanceof Boolean)) throw new IllegalArgumentException("${field} must be a boolean")
@@ -13200,7 +13256,11 @@ private void _requireCompleteDeviceFormSource(Map full, deviceId) {
     def required = ["id", "version", "controllerType", "name", "label", "zigbeeId", "maxEvents", "maxStates",
         "spammyThreshold", "deviceNetworkId", "deviceTypeId", "deviceTypeReadableType", "roomId",
         "meshEnabled", "retryEnabled", "meshFullSync", "locationId", "hubId", "groupId", "tags", "defaultIcon", "notes"]
-    def missing = required.findAll { !d.containsKey(it) }
+    def __bat529EachReceiver3 = (required)
+def __bat529EachReceiver3Result = []
+for (def it in __bat529EachReceiver3) {if (!d.containsKey(it) ) __bat529EachReceiver3Result.add(it)
+}
+def missing = __bat529EachReceiver3Result
     if (missing) throw new RuntimeException("Incomplete /device/fullJson preservation source: missing device fields ${missing.join(', ')}; no form update sent")
     if (d.id == null || d.id.toString() != deviceId.toString()) throw new RuntimeException("Invalid /device/fullJson preservation source: device id does not match; no form update sent")
     if (d.version == null) throw new RuntimeException("Incomplete /device/fullJson preservation source: version is unavailable; no form update sent")
@@ -13236,9 +13296,13 @@ private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides
     ]
     if (d.id != null) { model.id = d.id; model.version = d.version; model.controllerType = d.controllerType }
     if (fieldOverrides) model.putAll(fieldOverrides)
-    ["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"].each { key ->
+    if (true) {
+def __bat529EachReceiver4 = (["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"])
+for (def key in __bat529EachReceiver4) {
         if (model.get(key) == null) model.remove(key)
-    }
+}
+__bat529EachReceiver4
+} else { null }
     def enc = { v ->
         if (v == true) return "on"
         if (v == null) return ""
@@ -13258,13 +13322,17 @@ private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides, List erro
     def updated = _fetchDeviceFullJson(deviceId)
     if (!(updated?.device instanceof Map)) return updated
     def restore = [:]
-    ["label", "name", "deviceNetworkId"].each { property ->
+    if (true) {
+def __bat529EachReceiver5 = (["label", "name", "deviceNetworkId"])
+for (def property in __bat529EachReceiver5) {
         def original = fj.device.get(property)
         boolean intentionalClear = fieldOverrides.containsKey(property) && !fieldOverrides.get(property)
         if (original && !intentionalClear && updated.device.containsKey(property) && !updated.device.get(property)) {
             restore.put(property, original)
         }
-    }
+}
+__bat529EachReceiver5
+} else { null }
     if (restore) {
         try {
             def fresh = _fetchDeviceFullJson(deviceId)
@@ -13299,7 +13367,11 @@ def toolCreateDevice(args) {
             throw new IllegalArgumentException(
                 "Provide EITHER deviceTypeId (driver-based create) OR mesh_source_hub_id + mesh_source_device_id (Hub Mesh link) -- not both.")
         }
-        def createOnly = ["label"].findAll { args.get(it) != null && args.get(it).toString().trim() != "" }
+        def __bat529EachReceiver6 = (["label"])
+def __bat529EachReceiver6Result = []
+for (def it in __bat529EachReceiver6) {if (args.get(it) != null && args.get(it).toString().trim() != "" ) __bat529EachReceiver6Result.add(it)
+}
+def createOnly = __bat529EachReceiver6Result
         if (createOnly) {
             throw new IllegalArgumentException(
                 "${createOnly.join(', ')} cannot be set when linking a Hub Mesh device -- a linked proxy mirrors the peer's source device. Drop it and pass only mesh_source_hub_id + mesh_source_device_id.")
@@ -14475,11 +14547,15 @@ def toolCreateVirtualDevice(args) {
     def dataChanges = []
     def dataErrors = []
     _applyNativeDeviceDataValues(deviceId, [mcpDriverNamespace: namespace], dataChanges, dataErrors)
-    dataErrors.each { failure ->
+    if (true) {
+def __bat529EachReceiver1 = (dataErrors)
+for (def failure in __bat529EachReceiver1) {
         def warning = "mcpDriverNamespace: ${failure.error}".toString()
         warnings << warning
         mcpLog("warn", "device", "Device ${deviceId} was created, but ${warning}")
-    }
+}
+__bat529EachReceiver1
+} else { null }
     def deviceInfo = [id: deviceId, deviceNetworkId: dni, driverNamespace: namespace,
         driverType: typeName, typeName: typeName]
     try {
@@ -15292,7 +15368,11 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
     if (dtValue != null) {
         def dtCfg = _rmFetchConfigJson(appId, "hubVar")
         def dtSchema = _rmCollectInputSchema(dtCfg?.configPage)
-        def missing = ["varDate", "varTime"].findAll { !dtSchema?.containsKey(it) }
+        def __bat529EachReceiver1 = (["varDate", "varTime"])
+def __bat529EachReceiver1Result = []
+for (def it in __bat529EachReceiver1) {if (!dtSchema?.containsKey(it) ) __bat529EachReceiver1Result.add(it)
+}
+def missing = __bat529EachReceiver1Result
         if (missing) {
             throw new IllegalStateException("hub_create_variable: the Hub Variables form did not offer ${missing.join(' and ')} for DateTime variable '${name}', so it was not created.")
         }
@@ -20180,7 +20260,11 @@ private Map _validateMcpDeviceScope(scopeValue) {
             return [success: false, isError: true, error: "Unexpected ${inventory.source} response; cannot validate selectedDevices.", note: "Hub firmware may have changed the endpoint contract; nothing was changed."]
         }
         def hubDeviceIds = (inventory.records.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
-        def unknown = requestedIds.findAll { !hubDeviceIds.contains(it) }
+        def __bat529EachReceiver1 = (requestedIds)
+def __bat529EachReceiver1Result = []
+for (def it in __bat529EachReceiver1) {if (!hubDeviceIds.contains(it) ) __bat529EachReceiver1Result.add(it)
+}
+def unknown = __bat529EachReceiver1Result
         if (inventory.idsComplete == false && mode == "add") {
             unknown = unknown.findAll { !currentSet.contains(it) }
         }
@@ -22916,7 +23000,11 @@ private Map _rmRuleIdListArg(Object raw) {
         def valid = _rmValidRuleIds()
         if (valid != null) {
             verified = true
-            def unknown = ids.findAll { !valid.contains(it) }
+            def __bat529EachReceiver1 = (ids)
+def __bat529EachReceiver1Result = []
+for (def it in __bat529EachReceiver1) {if (!valid.contains(it) ) __bat529EachReceiver1Result.add(it)
+}
+def unknown = __bat529EachReceiver1Result
             if (unknown) {
                 throw new IllegalArgumentException("ruleId array contains id(s) that are not existing RM rules: ${unknown.join(', ')}. Nothing was dispatched. Verify ids via hub_list_rules and re-issue the batch.")
             }
@@ -27299,7 +27387,12 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         }
     }
     def uniqueApplied = []
-    applied.each { key -> if (!uniqueApplied.contains(key)) uniqueApplied << key }
+    if (true) {
+def __bat529EachReceiver2 = (applied)
+for (def key in __bat529EachReceiver2) { if (!uniqueApplied.contains(key)) uniqueApplied << key
+}
+__bat529EachReceiver2
+} else { null }
     return [
         success: !err && !applied.isEmpty(),
         partial: partial,
@@ -28312,7 +28405,12 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
         detectedAppType = exactKey ?: bareKey ?: detectedAppType
     }
     if (config?.app?.appType instanceof Map) {
-        ["oauthClientId", "oauthClientSecret", "encryptedPassword", "sourcePassword"].each { config.app.appType.remove(it) }
+        if (true) {
+def __bat529EachReceiver3 = (["oauthClientId", "oauthClientSecret", "encryptedPassword", "sourcePassword"])
+for (def it in __bat529EachReceiver3) { config.app.appType.remove(it)
+}
+__bat529EachReceiver3
+} else { null }
     }
     def snapshot = [
         schemaVersion: 1,
@@ -28571,16 +28669,24 @@ def toolSetRule(args) {
             throw new IllegalArgumentException("hub_set_rule CREATE (no appId) only bundles ${CREATE_HONORED.sort().join(', ')}; ${droppedOnCreate.join(', ')} ${droppedOnCreate.size() == 1 ? 'is an' : 'are'} edit-only operation${droppedOnCreate.size() == 1 ? '' : 's'} that require${droppedOnCreate.size() == 1 ? 's' : ''} an existing rule. Create the rule first (with name + any bundled triggers/actions/addRequiredExpression), then re-call hub_set_rule with the returned appId to apply ${droppedOnCreate.join(', ')}.")
         }
         if (args instanceof Map) {
-            ['addTrigger', 'addAction', 'addRequiredExpression'].each { k ->
+            if (true) {
+def __bat529EachReceiver4 = (['addTrigger', 'addAction', 'addRequiredExpression'])
+for (def k in __bat529EachReceiver4) {
                 if (args.containsKey(k) && args[k] != null && !(args[k] instanceof Map)) {
                     throw new IllegalArgumentException("hub_set_rule create: '${k}' must be an object (a single spec, e.g. {capability: ...}); it was a non-object that would be silently dropped. Use the plural '${k}s' for a list of specs.")
                 }
-            }
-            ['addTriggers', 'addActions'].each { k ->
+}
+__bat529EachReceiver4
+} else { null }
+            if (true) {
+def __bat529EachReceiver5 = (['addTriggers', 'addActions'])
+for (def k in __bat529EachReceiver5) {
                 if (args.containsKey(k) && args[k] != null && !(args[k] instanceof List)) {
                     throw new IllegalArgumentException("hub_set_rule create: '${k}' must be an array of spec objects; it was a non-array that would be silently dropped. Use the singular '${k.replaceAll(/s$/, '')}' for a single spec.")
                 }
-            }
+}
+__bat529EachReceiver5
+} else { null }
         }
         def createArgs = [appType: "rule_machine", name: args?.name, confirm: args?.confirm] as LinkedHashMap
         if (args?.__reqT0 != null) createArgs.__reqT0 = args.__reqT0
@@ -28608,12 +28714,14 @@ def toolSetNativeApp(args) {
         return _createButtonRuleViaController(args)
     }
     if (args?.appId == null) {
-        def droppedOnCreate = ['addTrigger', 'addTriggers', 'addAction', 'addActions',
+        def __bat529EachReceiver6 = (['addTrigger', 'addTriggers', 'addAction', 'addActions',
                                'addRequiredExpression', 'replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions',
                                'removeAction', 'clearActions', 'moveAction', 'removeTrigger',
-                               'modifyTrigger', 'modifyAction', 'walkStep', 'settings', 'button'].findAll {
-            args instanceof Map && args.containsKey(it)
-        }
+                               'modifyTrigger', 'modifyAction', 'walkStep', 'settings', 'button'])
+def __bat529EachReceiver6Result = []
+for (def it in __bat529EachReceiver6) {if (args instanceof Map && args.containsKey(it)) __bat529EachReceiver6Result.add(it)
+}
+def droppedOnCreate = __bat529EachReceiver6Result
         if (droppedOnCreate) {
             throw new IllegalArgumentException("hub_set_native_app CREATE (no appId) does not honor ${droppedOnCreate.join(', ')} -- ${droppedOnCreate.size() == 1 ? 'it requires' : 'they require'} an existing app. Create the app first (appType + name), then re-call with the returned appId; for Rule Machine authoring sugar on create, use hub_set_rule.")
         }
@@ -28627,12 +28735,14 @@ def _createButtonRuleViaController(args) {
     if (!(br instanceof Map)) {
         throw new IllegalArgumentException("buttonRule must be an object: {controllerId, buttonNumber, event}")
     }
-    def bundledExtras = ['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute',
+    def __bat529EachReceiver7 = (['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute',
                          'walkStep', 'addTrigger', 'addTriggers', 'addAction', 'addActions',
                          'addRequiredExpression', 'replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions',
-                         'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger', 'modifyAction'].findAll {
-        args instanceof Map && args.containsKey(it)
-    }
+                         'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger', 'modifyAction'])
+def __bat529EachReceiver7Result = []
+for (def it in __bat529EachReceiver7) {if (args instanceof Map && args.containsKey(it)) __bat529EachReceiver7Result.add(it)
+}
+def bundledExtras = __bat529EachReceiver7Result
     if (bundledExtras) {
         throw new IllegalArgumentException("buttonRule is exclusive -- ${bundledExtras.join(', ')} would be silently ignored. Create the button rule first, then apply edits in a follow-up call using the returned buttonRuleId as appId.")
     }
@@ -30602,12 +30712,18 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec) {
         it instanceof Map && it.reason != null && !(it.reason in informationalReasons)
     }
     if (hasDegradation) {
-        def degEntries = skipped.findAll {
-            it instanceof Map && it.reason != null && !(it.reason in informationalReasons)
-        }
+        def __bat529EachReceiver8 = (skipped)
+def __bat529EachReceiver8Result = []
+for (def it in __bat529EachReceiver8) {if (it instanceof Map && it.reason != null && !(it.reason in informationalReasons)) __bat529EachReceiver8Result.add(it)
+}
+def degEntries = __bat529EachReceiver8Result
         def forceWrittenKeys = degEntries.findAll { it.reason == "comparator_force_written_unverified" }*.key.findAll { it != null }
         def specificHintReasons = ["comparator_force_written_unverified", "comparator_not_representable_for_enum_attribute"]
-        def lostEntries = degEntries.findAll { !(it.reason in specificHintReasons) }
+        def __bat529EachReceiver9 = (degEntries)
+def __bat529EachReceiver9Result = []
+for (def it in __bat529EachReceiver9) {if (!(it.reason in specificHintReasons) ) __bat529EachReceiver9Result.add(it)
+}
+def lostEntries = __bat529EachReceiver9Result
         def reRepairHints = []
         if (!lostEntries.isEmpty()) {
             def uniqueCondIdxs = lostEntries.collect { it.condIdx }.findAll { it != null }.unique().size()
@@ -34746,10 +34862,20 @@ private def _mrtrLeafArguments(String outerTool, String leafTool, Map outerArgs)
 @groovy.transform.CompileStatic
 private Map _mrtrCheckpointArguments(Map executionArgs) {
     Map next = _mrtrCopyMap(executionArgs ?: [:])
-    ["__reqT0", "jsonContent"].each { next.remove(it) }
+    if (true) {
+def __bat529EachReceiver1 = (["__reqT0", "jsonContent"])
+for (def it in __bat529EachReceiver1) { next.remove(it)
+}
+__bat529EachReceiver1
+} else { null }
     if (next.args instanceof Map) {
         Map leaf = _mrtrCopyMap(next.args as Map)
-        ["__reqT0", "jsonContent"].each { leaf.remove(it) }
+        if (true) {
+def __bat529EachReceiver2 = (["__reqT0", "jsonContent"])
+for (def it in __bat529EachReceiver2) { leaf.remove(it)
+}
+__bat529EachReceiver2
+} else { null }
         next.args = leaf
     }
     return next
@@ -35452,11 +35578,15 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                     "operation."
             }
             if (continuation.kind in ["bulk_edit", "patches", "walk_steps", "driver_installs", "driver_updates"]) {
-                ["appId", "page", "operation", "stepsRemaining", "addTriggersRemaining",
+                if (true) {
+def __bat529EachReceiver3 = (["appId", "page", "operation", "stepsRemaining", "addTriggersRemaining",
                  "addActionsRemaining", "patchesRemaining", "installsRemaining", "updatesRemaining",
-                 "backup", "repairHints", "resume"].each { key ->
+                 "backup", "repairHints", "resume"])
+for (def key in __bat529EachReceiver3) {
                     if (result.containsKey(key)) capped.put(key, result.get(key))
-                }
+}
+__bat529EachReceiver3
+} else { null }
                 capped.note = "aggregate records completed work. Inspect the remaining-work fields " +
                     "and resume guidance before submitting a new call with only that remainder. " +
                     "This requestState now replays the terminal continuation_limit result."
@@ -35620,7 +35750,12 @@ private String _mrtrShiftIndex(String text, String token, int offset) {
 private void _mrtrRewriteStopRefs(node, Closure fix) {
     if (node instanceof Map) {
         Map m = node as Map
-        ["bulkStoppedAfter", "error", "note"].each { k -> if (m[k] instanceof CharSequence) m[k] = fix(m[k].toString()) }
+        if (true) {
+def __bat529EachReceiver4 = (["bulkStoppedAfter", "error", "note"])
+for (def k in __bat529EachReceiver4) { if (m[k] instanceof CharSequence) m[k] = fix(m[k].toString())
+}
+__bat529EachReceiver4
+} else { null }
         if (m.repairHints instanceof List) m.repairHints = (m.repairHints as List).collect { it instanceof CharSequence ? fix(it.toString()) : it }
         ["triggers", "actions", "patches", "patchResults", "results", "addedResults"].each { k ->
             if (m[k] instanceof List) (m[k] as List).each { _mrtrRewriteStopRefs(it, fix) }
@@ -36298,12 +36433,16 @@ def _cleanupRetiredToolState() {
         def retryAt = RETIRED_TOOL_STATE_RETRY_AT.get(appKey)
         if (retryAt != null && (retryAt as Long) > now()) return
         try {
-            ['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
+            if (true) {
+def __bat529EachReceiver5 = (['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
              'toolSearchCorpusFingerprint', 'requiredParamsByTool',
-             'requiredParamsByToolFingerprint'].each { key ->
+             'requiredParamsByToolFingerprint'])
+for (def key in __bat529EachReceiver5) {
                 if (atomicState.containsKey(key)) atomicState.remove(key)
                 if (state.containsKey(key)) state.remove(key)
-            }
+}
+__bat529EachReceiver5
+} else { null }
             RETIRED_TOOL_STATE_CLEANED.add(appKey)
             RETIRED_TOOL_STATE_RETRY_AT.remove(appKey)
         } catch (Exception e) {
@@ -36807,9 +36946,19 @@ def getHiddenToolNames() {
     }
     def mode = getCustomEngineMode()
     if (mode == "off") {
-        ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each { hide << it }
+        if (true) {
+def __bat529EachReceiver6 = (["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"])
+for (def it in __bat529EachReceiver6) { hide << it
+}
+__bat529EachReceiver6
+} else { null }
     } else if (mode == "readonly") {
-        ["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each { hide << it }
+        if (true) {
+def __bat529EachReceiver7 = (["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"])
+for (def it in __bat529EachReceiver7) { hide << it
+}
+__bat529EachReceiver7
+} else { null }
     }
     if (!settings.enableDeveloperMode) {
         hide.addAll(getDeveloperModeOnlyToolNames())
@@ -36897,7 +37046,8 @@ def getToolDisplayMeta() {
     def cached = _toolMetadataGet("getToolDisplayMeta")
     if (cached != null) return cached
     def meta = [:]
-    [_toolDisplayMeta_partNativeRM(),
+    if (true) {
+def __bat529EachReceiver8 = ([_toolDisplayMeta_partNativeRM(),
      _toolDisplayMeta_partRooms(),
      _toolDisplayMeta_partBundles(),
      _toolDisplayMeta_partVisualRules(),
@@ -36915,7 +37065,11 @@ def getToolDisplayMeta() {
      _toolDisplayMeta_partSelfAdmin(),
      _toolDisplayMeta_partAppCloner(),
      _toolDisplayMeta_partDiscovery(),
-     _toolDisplayMeta_partDashboards()].each { meta.putAll(it) }
+     _toolDisplayMeta_partDashboards()])
+for (def it in __bat529EachReceiver8) { meta.putAll(it)
+}
+__bat529EachReceiver8
+} else { null }
     meta.putAll([
         hub_read_apps_code: [title: "Read Apps and Code", summary: "Read-only: apps, drivers, libraries, source code, backups, and HPM packages."],
         hub_read_devices: [title: "Read Devices", summary: "Read-only device queries: list, details, attributes, events."],
@@ -39077,7 +39231,12 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     def buffer = initDebugLogs()
     if (!shouldLog(level)) return
     def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
-    ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
+    if (true) {
+def __bat529EachReceiver9 = (["duration", "ruleName", "details", "stackTrace"])
+for (def key in __bat529EachReceiver9) { if (extraData?.get(key)) raw[key] = extraData[key]
+}
+__bat529EachReceiver9
+} else { null }
     def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
     synchronized (buffer) {
         if (level == "error" && settings?.retainReportErrors == true) _retainReportError(raw)
@@ -39566,11 +39725,15 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
             }
         }
     }
-    stack.each { open ->
+    if (true) {
+def __bat529EachReceiver10 = (stack)
+for (def open in __bat529EachReceiver10) {
         def label = open.kind == "if" ? "IF" : "Repeat"
         def closer = open.kind == "if" ? "END-IF" : "End-Repeat"
         issues << ("action ${open.openIdx} (${label}) opened a block that was never closed — rule is missing an ${closer}".toString())
-    }
+}
+__bat529EachReceiver10
+} else { null }
     issues
 }
 private String _rmActTypeForStructuralSubType(String subType) {
@@ -39797,7 +39960,12 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
         }
     }
     def brokenMarkerCounts = [:]
-    brokenMarkers.each { m -> brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
+    if (true) {
+def __bat529EachReceiver11 = (brokenMarkers)
+for (def m in __bat529EachReceiver11) { brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1)
+}
+__bat529EachReceiver11
+} else { null }
     def result = [
         ok: issues.isEmpty() && broken != true && validationErrors.isEmpty(),
         unreadable: sourcesUsed.isEmpty(),
