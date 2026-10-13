@@ -2848,275 +2848,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
 // confirm/backup required. Content is sourced from the inline capability-family
 // reference in the hub_set_rule tool description.
 private Map _rmTriggerSchemaForDiscover() {
-    return [
-        discriminator: "capability",
-        note: "Pass the chosen capability name (case-insensitive) as addTrigger.capability in the real call.",
-        conditionFields: [
-            [name: "not", type: "Boolean", description: "Applies inside a CONDITION list only (addTrigger.condition, addRequiredExpression.conditions[], addAction expression conditions[]) -- NOT the trigger row itself. not:true negates the condition (e.g. Time NOT between, mode is NOT Night, does-not-contain via not:true + comparator:'*contains*')."]
-        ],
-        capabilities: [
-            [
-                name: "Switch",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Switch device IDs"],
-                    [name: "state", type: "enum", values: ["on", "off"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean", description: "Require ALL selected devices to match (vs. any one)"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?} -- only fire after state has held this long"],
-                    [name: "conditional", type: "Boolean", description: "Make this a conditional trigger (sets isCondTrig)"],
-                    [name: "condition", type: "Map", description: "Inline conditional-trigger gate -- same per-condition shape as addRequiredExpression conditions[]"],
-                    [name: "rawSettings", type: "Map", description: "Escape hatch for fields not yet mapped"]
-                ]
-            ],
-            [
-                name: "Motion",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Motion sensor device IDs"],
-                    [name: "state", type: "enum", values: ["active", "inactive"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean", description: "Require ALL selected devices to match"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Contact",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Contact sensor device IDs"],
-                    [name: "state", type: "enum", values: ["open", "closed"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Lock",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Lock device IDs"],
-                    [name: "state", type: "enum", values: ["locked", "unlocked"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Presence",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Presence sensor device IDs"],
-                    [name: "state", type: "enum", values: ["present", "not present"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Garage",
-                family: "device-state",
-                aliases: ["Door", "Valve", "Window Shade"],
-                notes: "Also covers Door, Valve, Window Shade -- pass any of these names as capability; use appropriate state values for each device type.",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "state", type: "enum", values: ["open", "closed"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Power source",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "state", type: "enum", values: ["battery", "dc", "mains", "unknown"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Temperature",
-                family: "numeric",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number", description: "Temperature threshold (omit for *changed*)"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Humidity",
-                family: "numeric",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Battery",
-                family: "numeric",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Illuminance",
-                family: "numeric",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Power",
-                family: "numeric",
-                notes: "Also covers Energy, CO2, Dimmer level, Thermostat setpoints.",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Button",
-                family: "button",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Button-capable device IDs"],
-                    [name: "buttonNumber", type: "Integer"],
-                    [name: "state", type: "enum", values: ["pushed", "held", "doubleTapped", "released"]]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Custom Attribute",
-                family: "custom-attribute",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "attribute", type: "String", description: "The attribute name on the device"],
-                    [name: "comparator", type: "enum", values: ["=", "≠ (or !=)", "<", ">", "<=", ">=", "*changed*", "*contains*"], description: "Numeric attributes use =/</>/etc.; a free-valued (String) attribute also offers '*contains*' (substring match, written verbatim -- keep the asterisks). There is NO 'does not contain': express negation with not:true + '*contains*'."],
-                    [name: "value", type: "String or Number", description: "Comparison value (the substring for '*contains*'; omit for '*changed*')."]
-                ],
-                optionalFields: [
-                    [name: "not", type: "Boolean", description: "Negate the condition (e.g. not:true + comparator:'*contains*' == does-not-contain)."],
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Certain Time (and optional date)",
-                family: "time",
-                requiredFields: [
-                    [name: "time", type: "enum", values: ["A specific time", "Sunrise", "Sunset"]]
-                ],
-                optionalFields: [
-                    [name: "atTime", type: "String", description: "ISO 8601 datetime (e.g. '2026-04-28T08:00:00') -- required when time='A specific time'; omit for Sunrise/Sunset. Simple forms without timezone use hub local tz."],
-                    [name: "offset", type: "Integer", description: "Minutes offset for Sunrise/Sunset -- omit when time='A specific time'"]
-                ],
-                notes: "atTime is conditionally required: only when time='A specific time'. offset is only applicable for Sunrise/Sunset."
-            ],
-            [
-                name: "Periodic Schedule",
-                family: "time",
-                requiredFields: [
-                    [name: "periodic", type: "Map", description: "{frequency, everyN?, startingTime?, weekdaysOnly?, selectedHours?, selectedMinutes?, selectedDaysOfMonth?, daysOfWeek?, dayOfWeek?, dayOfMonth?, everyNMonths?, months?, weekOfMonth?, minutesOffset?, cronString?, rawSettings?}"]
-                ],
-                notes: "frequency values: 'Seconds', 'Minutes', 'Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly', 'Cron String'. everyN is REQUIRED even when =1 for Daily's 'every N days' mode -- omitting it renders 'null'; Hourly accepts everyN OR selectedHours. For Seconds and Minutes, everyN is a restricted enum -- one of [1,2,3,4,5,6,10,12,15,20,30] and must be a whole number (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5; anything outside the set fails). Seconds exposes ONLY the count enum -- no toggle and no startingTime. For Hourly-everyN, pass startingTime too -- omitting it renders a cosmetic trailing 'starting at ' blank. Monthly has TWO mutually-exclusive modes: by-day (dayOfMonth + everyNMonths) and nth-weekday (weekOfMonth + dayOfWeek + everyNMonths) -- passing both dayOfMonth and weekOfMonth is rejected. Monthly by-day needs BOTH dayOfMonth AND everyNMonths or it renders 'null'. Monthly 'specific months' ('on day N of selected months') is NOT yet supported (an order-sensitive third sub-mode) -- use rawSettings if needed. Yearly is ALWAYS nth-weekday: weekOfMonth + dayOfWeek + months (single month) -- because RM 5.1 exposes no by-day calendar-day field for Yearly, only the nth-weekday picker; the month alone never completes. A Periodic Schedule spec with no periodic map is rejected up front (success=false, naming the stray keys) rather than committing a phantom '?' row. The helper walks the periodic sub-page automatically.",
-                periodicShape: [
-                    frequency: "Seconds | Minutes | Hourly | Daily | Weekly | Monthly | Yearly | Cron String",
-                    everyN: "Integer -- 'every N <unit>' mode (Seconds/Minutes/Hourly/Daily). REQUIRED even when =1 for Daily's 'every N days' mode (omitting renders null); Hourly accepts everyN OR selectedHours. For Seconds/Minutes restricted to a whole number in [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5).",
-                    startingTime: "HH:mm -- start time (Hourly/Daily/Weekly/Monthly/Yearly; Seconds has none). For Hourly-everyN, pass it -- omitting renders a cosmetic trailing 'starting at ' blank.",
-                    weekdaysOnly: "Boolean -- Daily only",
-                    selectedHours: "List<Integer> -- Hourly only, alternative to everyN",
-                    selectedMinutes: "List<Integer> -- Minutes only, 'at specific minutes' mode, alternative to everyN",
-                    selectedDaysOfMonth: "List<Integer> -- Daily only, alternative to everyN/weekdays",
-                    daysOfWeek: "List<String> -- Weekly only, MULTI day-of-week (e.g. ['Monday','Friday'])",
-                    dayOfWeek: "String -- Monthly/Yearly nth-weekday mode, SINGLE day-of-week (e.g. 'Monday'). Distinct from Weekly's daysOfWeek (multi).",
-                    dayOfMonth: "Integer -- Monthly by-day 'on day number' (pair with everyNMonths; mutually exclusive with weekOfMonth)",
-                    everyNMonths: "Integer -- 'of every N months' (Monthly, both modes; free integer)",
-                    months: "String -- Yearly only; the single nth-weekday month (e.g. 'December'). Yearly exposes a single-month picker. (Monthly does NOT take months -- its specific-months sub-mode is unsupported.)",
-                    weekOfMonth: "String -- Monthly/Yearly nth-weekday 'in the week of month' (First | Second | Third | Fourth | Last). Its presence selects nth-weekday mode.",
-                    minutesOffset: "Integer -- Hourly only, when not using everyN",
-                    cronString: "String -- Cron String mode (e.g. '0 * * * *')",
-                    rawSettings: "Map -- escape hatch for periodic-page fields not yet mapped"
-                ]
-            ],
-            [
-                name: "Mode",
-                family: "hub-state",
-                requiredFields: [
-                    [name: "state", type: "String or List<String>", description: "Mode name(s) that trigger the rule (e.g. 'Night' or ['Away', 'Night']). Names are resolved to IDs via location.modes -- must match existing hub modes (case-insensitive). Use hub_list_modes to list available modes and their IDs. Required unless modeIds is provided."]
-                ],
-                optionalFields: [
-                    [name: "modeIds", type: "List<String or Integer>", description: "Mode IDs directly (alternative to state). Use when you already have the ID from hub_list_modes. E.g. ['3'] or ['3', '5']. When provided, state is not required."]
-                ],
-                notes: "No deviceIds required. Triggers when hub mode becomes any of the listed modes. IMPORTANT: internally writes modesX<N> (not tstate<N>) -- passing only rawSettings with tstate will produce a broken trigger."
-            ],
-            [
-                name: "Variable",
-                family: "variable",
-                requiredFields: [
-                    [name: "variable", type: "String", description: "Hub variable name. Use hub_list_variables to discover."]
-                ],
-                optionalFields: [
-                    [name: "comparator", type: "enum", values: ["=", "!= (or ≠)", "<", ">", "<=", ">=", "in", "*contains*", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"], description: "Default: *changed*. ASCII '!=' / '<>' map to Unicode '≠'. '*contains*' (substring match, written verbatim -- keep the asterisks) is for a free-valued (String) variable; a numeric variable uses =/</>/etc. instead."],
-                    [name: "value", type: "Number or String", description: "Comparison value (the substring for '*contains*'; omit for the *changed* family)"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map", description: "Inline conditional gate. For 'Variable A changed ONLY IF A != B': {capability: 'Variable', variable: 'A', comparator: '!=', compareToVariable: 'B'}. condition fields: capability, variable, comparator, value | compareToVariable, not?, rawSettings?."],
-                    [name: "rawSettings", type: "Map", description: "Escape hatch -- '@N' token in field names is replaced with the trigger index (e.g. {'xVar@N': 'myVar'})."]
-                ],
-                notes: "No deviceIds. Fires on hub-variable change. Conditional Variable triggers use condition.compareToVariable for 'A vs B' comparisons."
-            ]
-        ]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["m",[["discriminator","capability"],["note","Pass the chosen capability name (case-insensitive) as addTrigger.capability in the real call."],["conditionFields",["l",[["m",[["name","not"],["type","Boolean"],["description","Applies inside a CONDITION list only (addTrigger.condition, addRequiredExpression.conditions[], addAction expression conditions[]) -- NOT the trigger row itself. not:true negates the condition (e.g. Time NOT between, mode is NOT Night, does-not-contain via not:true + comparator:\'*contains*\')."]]]]]],["capabilities",["l",[["m",[["name","Switch"],["family","device-state"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"],["description","Switch device IDs"]]],["m",[["name","state"],["type","enum"],["values",["l",["on","off"]]],["description","Trigger condition"]]]]]],["optionalFields",["l",[["m",[["name","allOfThese"],["type","Boolean"],["description","Require ALL selected devices to match (vs. any one)"]]],["m",[["name","andStays"],["type","Map"],["description","{hours?, minutes?, seconds?} -- only fire after state has held this long"]]],["m",[["name","conditional"],["type","Boolean"],["description","Make this a conditional trigger (sets isCondTrig)"]]],["m",[["name","condition"],["type","Map"],["description","Inline conditional-trigger gate -- same per-condition shape as addRequiredExpression conditions[]"]]],["m",[["name","rawSettings"],["type","Map"],["description","Escape hatch for fields not yet mapped"]]]]]]]],["m",[["name","Motion"],["family","device-state"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"],["description","Motion sensor device IDs"]]],["m",[["name","state"],["type","enum"],["values",["l",["active","inactive"]]],["description","Trigger condition"]]]]]],["optionalFields",["l",[["m",[["name","allOfThese"],["type","Boolean"],["description","Require ALL selected devices to match"]]],["m",[["name","andStays"],["type","Map"],["description","{hours?, minutes?, seconds?}"]]],["m",[["name","conditional"],["type","Boolean"]]],["m",[["name","condition"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Contact"],["family","device-state"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"],["description","Contact sensor device IDs"]]],["m",[["name","state"],["type","enum"],["values",["l",["open","closed"]]],["description","Trigger condition"]]]]]],["optionalFields",["l",[["m",[["name","allOfThese"],["type","Boolean"]]],["m",[["name","andStays"],["type","Map"],["description","{hours?, minutes?, seconds?}"]]],["m",[["name","conditional"],["type","Boolean"]]],["m",[["name","condition"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Lock"],["family","device-state"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"],["description","Lock device IDs"]]],["m",[["name","state"],["type","enum"],["values",["l",["locked","unlocked"]]],["description","Trigger condition"]]]]]],["optionalFields",["l",[["m",[["name","allOfThese"],["type","Boolean"]]],["m",[["name","andStays"],["type","Map"],["description","{hours?, minutes?, seconds?}"]]],["m",[["name","conditional"],["type","Boolean"]]],["m",[["name","condition"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Presence"],["family","device-state"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"],["description","Presence sensor device IDs"]]],["m",[["name","state"],["type","enum"],["values",["l",["present","not present"]]],["description","Trigger condition"]]]]]],["optionalFields",["l",[["m",[["name","allOfThese"],["type","Boolean"]]],["m",[["name","andStays"],["type","Map"],["description","{hours?, minutes?, seconds?}"]]],["m",[["name","conditional"],["type","Boolean"]]],["m",[["name","condition"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Garage"],["family","device-state"],["aliases",["l",["Door","Valve","Window Shade"]]],["notes","Also covers Door, Valve, Window Shade -- pass any of these names as capability; use appropriate state values for each device type."],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"]]],["m",[["name","state"],["type","enum"],["values",["l",["open","closed"]]],["description","Trigger condition"]]]]]],["optionalFields",["l",[["m",[["name","allOfThese"],["type","Boolean"]]],["m",[["name","andStays"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Power source"],["family","device-state"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"]]],["m",[["name","state"],["type","enum"],["values",["l",["battery","dc","mains","unknown"]]],["description","Trigger condition"]]]]]],["optionalFields",["l",[["m",[["name","allOfThese"],["type","Boolean"]]],["m",[["name","andStays"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Temperature"],["family","numeric"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"]]],["m",[["name","comparator"],["type","enum"],["values",["l",["=","<",">","<=",">=","*changed*"]]]]],["m",[["name","value"],["type","Number"],["description","Temperature threshold (omit for *changed*)"]]]]]],["optionalFields",["l",[["m",[["name","andStays"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Humidity"],["family","numeric"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"]]],["m",[["name","comparator"],["type","enum"],["values",["l",["=","<",">","<=",">=","*changed*"]]]]],["m",[["name","value"],["type","Number"]]]]]],["optionalFields",["l",[["m",[["name","andStays"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Battery"],["family","numeric"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"]]],["m",[["name","comparator"],["type","enum"],["values",["l",["=","<",">","<=",">=","*changed*"]]]]],["m",[["name","value"],["type","Number"]]]]]],["optionalFields",["l",[["m",[["name","andStays"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Illuminance"],["family","numeric"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"]]],["m",[["name","comparator"],["type","enum"],["values",["l",["=","<",">","<=",">=","*changed*"]]]]],["m",[["name","value"],["type","Number"]]]]]],["optionalFields",["l",[["m",[["name","andStays"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Power"],["family","numeric"],["notes","Also covers Energy, CO2, Dimmer level, Thermostat setpoints."],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"]]],["m",[["name","comparator"],["type","enum"],["values",["l",["=","<",">","<=",">=","*changed*"]]]]],["m",[["name","value"],["type","Number"]]]]]],["optionalFields",["l",[["m",[["name","andStays"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Button"],["family","button"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"],["description","Button-capable device IDs"]]],["m",[["name","buttonNumber"],["type","Integer"]]],["m",[["name","state"],["type","enum"],["values",["l",["pushed","held","doubleTapped","released"]]]]]]]],["optionalFields",["l",[["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Custom Attribute"],["family","custom-attribute"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"]]],["m",[["name","attribute"],["type","String"],["description","The attribute name on the device"]]],["m",[["name","comparator"],["type","enum"],["values",["l",["=","\\u2260 (or !=)","<",">","<=",">=","*changed*","*contains*"]]],["description","Numeric attributes use =/</>/etc.; a free-valued (String) attribute also offers \'*contains*\' (substring match, written verbatim -- keep the asterisks). There is NO \'does not contain\': express negation with not:true + \'*contains*\'."]]],["m",[["name","value"],["type","String or Number"],["description","Comparison value (the substring for \'*contains*\'; omit for \'*changed*\')."]]]]]],["optionalFields",["l",[["m",[["name","not"],["type","Boolean"],["description","Negate the condition (e.g. not:true + comparator:\'*contains*\' == does-not-contain)."]]],["m",[["name","andStays"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]],["m",[["name","Certain Time (and optional date)"],["family","time"],["requiredFields",["l",[["m",[["name","time"],["type","enum"],["values",["l",["A specific time","Sunrise","Sunset"]]]]]]]],["optionalFields",["l",[["m",[["name","atTime"],["type","String"],["description","ISO 8601 datetime (e.g. \'2026-04-28T08:00:00\') -- required when time=\'A specific time\'; omit for Sunrise/Sunset. Simple forms without timezone use hub local tz."]]],["m",[["name","offset"],["type","Integer"],["description","Minutes offset for Sunrise/Sunset -- omit when time=\'A specific time\'"]]]]]],["notes","atTime is conditionally required: only when time=\'A specific time\'. offset is only applicable for Sunrise/Sunset."]]],["m",[["name","Periodic Schedule"],["family","time"],["requiredFields",["l",[["m",[["name","periodic"],["type","Map"],["description","{frequency, everyN?, startingTime?, weekdaysOnly?, selectedHours?, selectedMinutes?, selectedDaysOfMonth?, daysOfWeek?, dayOfWeek?, dayOfMonth?, everyNMonths?, months?, weekOfMonth?, minutesOffset?, cronString?, rawSettings?}"]]]]]],["notes","frequency values: \'Seconds\', \'Minutes\', \'Hourly\', \'Daily\', \'Weekly\', \'Monthly\', \'Yearly\', \'Cron String\'. everyN is REQUIRED even when =1 for Daily\'s \'every N days\' mode -- omitting it renders \'null\'; Hourly accepts everyN OR selectedHours. For Seconds and Minutes, everyN is a restricted enum -- one of [1,2,3,4,5,6,10,12,15,20,30] and must be a whole number (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5; anything outside the set fails). Seconds exposes ONLY the count enum -- no toggle and no startingTime. For Hourly-everyN, pass startingTime too -- omitting it renders a cosmetic trailing \'starting at \' blank. Monthly has TWO mutually-exclusive modes: by-day (dayOfMonth + everyNMonths) and nth-weekday (weekOfMonth + dayOfWeek + everyNMonths) -- passing both dayOfMonth and weekOfMonth is rejected. Monthly by-day needs BOTH dayOfMonth AND everyNMonths or it renders \'null\'. Monthly \'specific months\' (\'on day N of selected months\') is NOT yet supported (an order-sensitive third sub-mode) -- use rawSettings if needed. Yearly is ALWAYS nth-weekday: weekOfMonth + dayOfWeek + months (single month) -- because RM 5.1 exposes no by-day calendar-day field for Yearly, only the nth-weekday picker; the month alone never completes. A Periodic Schedule spec with no periodic map is rejected up front (success=false, naming the stray keys) rather than committing a phantom \'?\' row. The helper walks the periodic sub-page automatically."],["periodicShape",["m",[["frequency","Seconds | Minutes | Hourly | Daily | Weekly | Monthly | Yearly | Cron String"],["everyN","Integer -- \'every N <unit>\' mode (Seconds/Minutes/Hourly/Daily). REQUIRED even when =1 for Daily\'s \'every N days\' mode (omitting renders null); Hourly accepts everyN OR selectedHours. For Seconds/Minutes restricted to a whole number in [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5)."],["startingTime","HH:mm -- start time (Hourly/Daily/Weekly/Monthly/Yearly; Seconds has none). For Hourly-everyN, pass it -- omitting renders a cosmetic trailing \'starting at \' blank."],["weekdaysOnly","Boolean -- Daily only"],["selectedHours","List<Integer> -- Hourly only, alternative to everyN"],["selectedMinutes","List<Integer> -- Minutes only, \'at specific minutes\' mode, alternative to everyN"],["selectedDaysOfMonth","List<Integer> -- Daily only, alternative to everyN/weekdays"],["daysOfWeek","List<String> -- Weekly only, MULTI day-of-week (e.g. [\'Monday\',\'Friday\'])"],["dayOfWeek","String -- Monthly/Yearly nth-weekday mode, SINGLE day-of-week (e.g. \'Monday\'). Distinct from Weekly\'s daysOfWeek (multi)."],["dayOfMonth","Integer -- Monthly by-day \'on day number\' (pair with everyNMonths; mutually exclusive with weekOfMonth)"],["everyNMonths","Integer -- \'of every N months\' (Monthly, both modes; free integer)"],["months","String -- Yearly only; the single nth-weekday month (e.g. \'December\'). Yearly exposes a single-month picker. (Monthly does NOT take months -- its specific-months sub-mode is unsupported.)"],["weekOfMonth","String -- Monthly/Yearly nth-weekday \'in the week of month\' (First | Second | Third | Fourth | Last). Its presence selects nth-weekday mode."],["minutesOffset","Integer -- Hourly only, when not using everyN"],["cronString","String -- Cron String mode (e.g. \'0 * * * *\')"],["rawSettings","Map -- escape hatch for periodic-page fields not yet mapped"]]]]]],["m",[["name","Mode"],["family","hub-state"],["requiredFields",["l",[["m",[["name","state"],["type","String or List<String>"],["description","Mode name(s) that trigger the rule (e.g. \'Night\' or [\'Away\', \'Night\']). Names are resolved to IDs via location.modes -- must match existing hub modes (case-insensitive). Use hub_list_modes to list available modes and their IDs. Required unless modeIds is provided."]]]]]],["optionalFields",["l",[["m",[["name","modeIds"],["type","List<String or Integer>"],["description","Mode IDs directly (alternative to state). Use when you already have the ID from hub_list_modes. E.g. [\'3\'] or [\'3\', \'5\']. When provided, state is not required."]]]]]],["notes","No deviceIds required. Triggers when hub mode becomes any of the listed modes. IMPORTANT: internally writes modesX<N> (not tstate<N>) -- passing only rawSettings with tstate will produce a broken trigger."]]],["m",[["name","Variable"],["family","variable"],["requiredFields",["l",[["m",[["name","variable"],["type","String"],["description","Hub variable name. Use hub_list_variables to discover."]]]]]],["optionalFields",["l",[["m",[["name","comparator"],["type","enum"],["values",["l",["=","!= (or \\u2260)","<",">","<=",">=","in","*contains*","*changed*","*increased*","*decreased*","*increased by over*","*decreased by over*"]]],["description","Default: *changed*. ASCII \'!=\' / \'<>\' map to Unicode \'\\u2260\'. \'*contains*\' (substring match, written verbatim -- keep the asterisks) is for a free-valued (String) variable; a numeric variable uses =/</>/etc. instead."]]],["m",[["name","value"],["type","Number or String"],["description","Comparison value (the substring for \'*contains*\'; omit for the *changed* family)"]]],["m",[["name","conditional"],["type","Boolean"]]],["m",[["name","condition"],["type","Map"],["description","Inline conditional gate. For \'Variable A changed ONLY IF A != B\': {capability: \'Variable\', variable: \'A\', comparator: \'!=\', compareToVariable: \'B\'}. condition fields: capability, variable, comparator, value | compareToVariable, not?, rawSettings?."]]],["m",[["name","rawSettings"],["type","Map"],["description","Escape hatch -- \'@N\' token in field names is replaced with the trigger index (e.g. {\'xVar@N\': \'myVar\'})."]]]]]],["notes","No deviceIds. Fires on hub-variable change. Conditional Variable triggers use condition.compareToVariable for \'A vs B\' comparisons."]]]]]]]]']) as Map)
 }
 
 // Return a structured schema Map describing every supported addAction capability.
@@ -3128,119 +2860,13 @@ private Map _rmActionSchemaForDiscover() {
     return [
         discriminator: "capability",
         note: "Pass the chosen capability name (case-insensitive) as addAction.capability in the real call. 'action' is required for multi-variant capabilities (switch, dimmer, etc.); optional or absent for single-variant ones (log, mode, delay, etc.).",
-        conditionFields: [
-            [name: "not", type: "Boolean", description: "Applies inside an expression CONDITION list (addAction expression conditions[] for ifThen/elseIf/repeatWhile/waitExpression, and addRequiredExpression.conditions[]). not:true negates the condition (e.g. Time NOT between, mode is NOT Night, does-not-contain via not:true + comparator:'*contains*')."]
-        ],
+        conditionFields: (_bat529EmbeddedCatalogRead(['["l",[["m",[["name","not"],["type","Boolean"],["description","Applies inside an expression CONDITION list (addAction expression conditions[] for ifThen/elseIf/repeatWhile/waitExpression, and addRequiredExpression.conditions[]). not:true negates the condition (e.g. Time NOT between, mode is NOT Night, does-not-contain via not:true + comparator:\'*contains*\')."]]]]]']) as List),
         capabilities: [
-            [
-                name: "switch",
-                family: "device",
-                actions: ["on", "off", "toggle", "flash", "setPerMode", "choosePerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["on", "off", "toggle", "flash", "setPerMode", "choosePerMode"]],
-                    [name: "deviceIds", type: "List<Integer>", description: "Required for on/off/toggle/flash/setPerMode/choosePerMode"]
-                ],
-                optionalFields: [
-                    [name: "perMode", type: "Map", description: "For setPerMode: {modeIdOrName: 'on'|'off', ...}. For choosePerMode: {modeIdOrName: {on: [devIds], off: [devIds]}, ...}"],
-                    [name: "onlyOn", type: "Boolean", description: "For on/off: RM's 'command only switches that are on?' toggle -- writes optSwitch. When true, the command is sent ONLY to switches currently ON: action='off' turns off just the on switches (skips already-off ones); action='on' re-sends on only to already-on switches (a no-op refresh)."],
-                    [name: "delay", type: "Map", description: "{hours?, minutes?, seconds?, cancelable?}"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                notes: "flash starts a flash schedule; use capability='runCommand' with command='flashOff' to stop it. onlyOn applies to on/off only.",
-                conditionalRequired: [
-                    setPerMode: "perMode",
-                    choosePerMode: "perMode"
-                ]
-            ],
-            [
-                name: "dimmer",
-                family: "device",
-                actions: ["setLevel", "toggle", "adjust", "fade", "stopFade", "startRaiseLower", "stopChanging", "setLevelPerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["setLevel", "toggle", "adjust", "fade", "stopFade", "startRaiseLower", "stopChanging", "setLevelPerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "level", type: "Integer", description: "0-100, required for setLevel/toggle"],
-                    [name: "adjustBy", type: "Integer", description: "-100..100, required for adjust"],
-                    [name: "fadeSeconds", type: "Integer", description: "Optional for setLevel/toggle/adjust"],
-                    [name: "targetLevel", type: "Integer", description: "Required for fade"],
-                    [name: "minutes", type: "Integer", description: "Required for fade"],
-                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Optional for fade and startRaiseLower -- defaults to lower (verified live: the action bakes without it)"],
-                    [name: "intervalSeconds", type: "Integer", description: "Optional for fade"],
-                    [name: "perMode", type: "Map", description: "For setLevelPerMode: {modeIdOrName: level, ...}"],
-                    [name: "levelVariable", type: "String", description: "Hub variable name -- use instead of level for variable-sourced setLevel"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setLevel: "level (or levelVariable for a variable-sourced level)",
-                    toggle: "level (the on-level used when toggling from off)",
-                    adjust: "adjustBy",
-                    fade: "targetLevel + minutes",
-                    setLevelPerMode: "perMode"
-                ]
-            ],
-            [
-                name: "color",
-                family: "device",
-                notes: "RGBW bulbs.",
-                actions: ["setColor", "toggleColor", "setColorPerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["setColor", "toggleColor", "setColorPerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "colorName", type: "String", description: "Color name (e.g. 'Red') -- required for setColor (or supply a custom HSV color via rawSettings) and for toggleColor"],
-                    [name: "level", type: "Integer", description: "0-100, required for toggleColor"],
-                    [name: "perMode", type: "Map", description: "For setColorPerMode: {modeIdOrName: {color: 'Red', level: 70}, ...}"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setColor: "colorName (or a custom HSV color via rawSettings)",
-                    toggleColor: "colorName + level",
-                    setColorPerMode: "perMode"
-                ]
-            ],
-            [
-                name: "colorTemp",
-                family: "device",
-                actions: ["setColorTemp", "toggleColorTemp", "fadeColorTemp", "stopColorTempFade", "setColorTempPerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["setColorTemp", "toggleColorTemp", "fadeColorTemp", "stopColorTempFade", "setColorTempPerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "kelvin", type: "Integer", description: "Color temperature in Kelvin -- required for setColorTemp and toggleColorTemp"],
-                    [name: "targetKelvin", type: "Integer", description: "Target color temperature in Kelvin -- required for fadeColorTemp (NOT 'kelvin')"],
-                    [name: "level", type: "Integer"],
-                    [name: "minutes", type: "Integer", description: "Required for fadeColorTemp"],
-                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Optional for fadeColorTemp -- defaults to lower"],
-                    [name: "perMode", type: "Map", description: "For setColorTempPerMode: {modeIdOrName: {kelvin: 2700, level: 70}, ...}"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setColorTemp: "kelvin",
-                    toggleColorTemp: "kelvin",
-                    fadeColorTemp: "targetKelvin + minutes",
-                    setColorTempPerMode: "perMode"
-                ]
-            ],
-            [
-                name: "lock",
-                family: "device",
-                actions: ["lock", "unlock"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["lock", "unlock"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
+            (_bat529EmbeddedCatalogRead(['["m",[["name","switch"],["family","device"],["actions",["l",["on","off","toggle","flash","setPerMode","choosePerMode"]]],["requiredFields",["l",[["m",[["name","action"],["type","enum"],["values",["l",["on","off","toggle","flash","setPerMode","choosePerMode"]]]]],["m",[["name","deviceIds"],["type","List<Integer>"],["description","Required for on/off/toggle/flash/setPerMode/choosePerMode"]]]]]],["optionalFields",["l",[["m",[["name","perMode"],["type","Map"],["description","For setPerMode: {modeIdOrName: \'on\'|\'off\', ...}. For choosePerMode: {modeIdOrName: {on: [devIds], off: [devIds]}, ...}"]]],["m",[["name","onlyOn"],["type","Boolean"],["description","For on/off: RM\'s \'command only switches that are on?\' toggle -- writes optSwitch. When true, the command is sent ONLY to switches currently ON: action=\'off\' turns off just the on switches (skips already-off ones); action=\'on\' re-sends on only to already-on switches (a no-op refresh)."]]],["m",[["name","delay"],["type","Map"],["description","{hours?, minutes?, seconds?, cancelable?}"]]],["m",[["name","rawSettings"],["type","Map"]]]]]],["notes","flash starts a flash schedule; use capability=\'runCommand\' with command=\'flashOff\' to stop it. onlyOn applies to on/off only."],["conditionalRequired",["m",[["setPerMode","perMode"],["choosePerMode","perMode"]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","dimmer"],["family","device"],["actions",["l",["setLevel","toggle","adjust","fade","stopFade","startRaiseLower","stopChanging","setLevelPerMode"]]],["requiredFields",["l",[["m",[["name","action"],["type","enum"],["values",["l",["setLevel","toggle","adjust","fade","stopFade","startRaiseLower","stopChanging","setLevelPerMode"]]]]],["m",[["name","deviceIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","level"],["type","Integer"],["description","0-100, required for setLevel/toggle"]]],["m",[["name","adjustBy"],["type","Integer"],["description","-100..100, required for adjust"]]],["m",[["name","fadeSeconds"],["type","Integer"],["description","Optional for setLevel/toggle/adjust"]]],["m",[["name","targetLevel"],["type","Integer"],["description","Required for fade"]]],["m",[["name","minutes"],["type","Integer"],["description","Required for fade"]]],["m",[["name","direction"],["type","enum"],["values",["l",["raise","lower"]]],["description","Optional for fade and startRaiseLower -- defaults to lower (verified live: the action bakes without it)"]]],["m",[["name","intervalSeconds"],["type","Integer"],["description","Optional for fade"]]],["m",[["name","perMode"],["type","Map"],["description","For setLevelPerMode: {modeIdOrName: level, ...}"]]],["m",[["name","levelVariable"],["type","String"],["description","Hub variable name -- use instead of level for variable-sourced setLevel"]]],["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]],["conditionalRequired",["m",[["setLevel","level (or levelVariable for a variable-sourced level)"],["toggle","level (the on-level used when toggling from off)"],["adjust","adjustBy"],["fade","targetLevel + minutes"],["setLevelPerMode","perMode"]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","color"],["family","device"],["notes","RGBW bulbs."],["actions",["l",["setColor","toggleColor","setColorPerMode"]]],["requiredFields",["l",[["m",[["name","action"],["type","enum"],["values",["l",["setColor","toggleColor","setColorPerMode"]]]]],["m",[["name","deviceIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","colorName"],["type","String"],["description","Color name (e.g. \'Red\') -- required for setColor (or supply a custom HSV color via rawSettings) and for toggleColor"]]],["m",[["name","level"],["type","Integer"],["description","0-100, required for toggleColor"]]],["m",[["name","perMode"],["type","Map"],["description","For setColorPerMode: {modeIdOrName: {color: \'Red\', level: 70}, ...}"]]],["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]],["conditionalRequired",["m",[["setColor","colorName (or a custom HSV color via rawSettings)"],["toggleColor","colorName + level"],["setColorPerMode","perMode"]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","colorTemp"],["family","device"],["actions",["l",["setColorTemp","toggleColorTemp","fadeColorTemp","stopColorTempFade","setColorTempPerMode"]]],["requiredFields",["l",[["m",[["name","action"],["type","enum"],["values",["l",["setColorTemp","toggleColorTemp","fadeColorTemp","stopColorTempFade","setColorTempPerMode"]]]]],["m",[["name","deviceIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","kelvin"],["type","Integer"],["description","Color temperature in Kelvin -- required for setColorTemp and toggleColorTemp"]]],["m",[["name","targetKelvin"],["type","Integer"],["description","Target color temperature in Kelvin -- required for fadeColorTemp (NOT \'kelvin\')"]]],["m",[["name","level"],["type","Integer"]]],["m",[["name","minutes"],["type","Integer"],["description","Required for fadeColorTemp"]]],["m",[["name","direction"],["type","enum"],["values",["l",["raise","lower"]]],["description","Optional for fadeColorTemp -- defaults to lower"]]],["m",[["name","perMode"],["type","Map"],["description","For setColorTempPerMode: {modeIdOrName: {kelvin: 2700, level: 70}, ...}"]]],["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]],["conditionalRequired",["m",[["setColorTemp","kelvin"],["toggleColorTemp","kelvin"],["fadeColorTemp","targetKelvin + minutes"],["setColorTempPerMode","perMode"]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","lock"],["family","device"],["actions",["l",["lock","unlock"]]],["requiredFields",["l",[["m",[["name","action"],["type","enum"],["values",["l",["lock","unlock"]]]]],["m",[["name","deviceIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
             [
                 name: "hsm",
                 family: "hub",
@@ -3253,138 +2879,14 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "rawSettings", type: "Map"]
                 ]
             ],
-            [
-                name: "thermostat",
-                family: "device",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "action", type: "String"],
-                    [name: "mode", type: "String"],
-                    [name: "fanMode", type: "String"],
-                    [name: "heatingSetpoint", type: "Number"],
-                    [name: "coolingSetpoint", type: "Number"],
-                    [name: "adjustHeating", type: "Number"],
-                    [name: "adjustCooling", type: "Number"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                notes: "Requires at least one setting (mode / fanMode / heatingSetpoint / adjustHeating / coolingSetpoint / adjustCooling) -- a thermostat action with deviceIds but no setting does not bake."
-            ],
-            [
-                name: "shade",
-                family: "device",
-                actions: ["open", "close", "stop", "setPosition"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["open", "close", "stop", "setPosition"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "position", type: "Integer", description: "0-100, required for setPosition"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setPosition: "position"
-                ]
-            ],
-            [
-                name: "fan",
-                family: "device",
-                actions: ["setSpeed", "cycle"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["setSpeed", "cycle"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "speed", type: "String", description: "low/med/high/auto/etc., required for setSpeed"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setSpeed: "speed"
-                ]
-            ],
-            [
-                name: "button",
-                family: "device",
-                actions: ["push", "pushPerMode", "choosePerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["push", "pushPerMode", "choosePerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "buttonNumber", type: "Integer", description: "Required for push and choosePerMode (pushPerMode carries the per-mode button numbers inside perMode)"],
-                    [name: "perMode", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    push: "buttonNumber",
-                    pushPerMode: "perMode",
-                    choosePerMode: "perMode + buttonNumber"
-                ]
-            ],
-            [
-                name: "runCommand",
-                family: "device",
-                notes: "Calls any device-driver command not exposed by higher-level capability mappings (e.g. flashOff, custom verbs).",
-                requiredFields: [
-                    [name: "command", type: "String", description: "Driver command name (e.g. 'flashOff', 'refresh', 'setLevel')"],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "capabilityFilter", type: "String", description: "Default 'Switch'"],
-                    [name: "parameters", type: "List", description: "Parameter list. Each entry is {type, value} for a literal (e.g. {type: 'number', value: 75}) or {type, variable} for a hub-variable-sourced value (e.g. {type: 'number', variable: 'myVar'}). Type is lowercase: 'number', 'decimal', or 'string'. Variable-sourced params wire via uVar<P>/xVar<P> -- see docs/rm_wire_format.md for the wire sequence. Fails loud if the hub does not reveal the xVar<P> enum after enabling variable mode (returns success=false with a descriptive error)."],
-                    [name: "useLastEventDevice", type: "Boolean"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "mode",
-                family: "hub",
-                requiredFields: [],
-                optionalFields: [
-                    [name: "modeId", type: "Integer", description: "Mode ID -- provide this OR modeName (not both). When modeName is given, it is resolved to its ID before submission; unknown names fail fast with the valid mode list. Degenerate: if location.modes is empty, the error lists '(none -- hub returned no modes; verify hub state via hub_list_modes)'."],
-                    [name: "modeName", type: "String", description: "Mode name (case-insensitive) -- provide this OR modeId (not both). Resolved to mode ID automatically. Use hub_list_modes to confirm available names."]
-                ],
-                notes: "Exactly one of modeId or modeName is required at call time."
-            ],
-            [
-                name: "setVariable",
-                family: "hub",
-                notes: "Set a hub variable to a constant, copy it from another hub variable, read it from a device attribute, or compute it with structured variable math. Also accepted as capability='variable'. Exactly ONE source mode (value | sourceVariable | fromDevice | math) per action.",
-                requiredFields: [
-                    [name: "variable", type: "String", description: "Hub variable name to write (the target). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state."]
-                ],
-                optionalFields: [
-                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the write otherwise -- RM renders numOp/valNumber only for numeric targets). String, boolean, and datetime targets are not supported via 'value'; copy a String target with 'sourceVariable', or set Boolean/DateTime via rawSettings."],
-                    [name: "numOp", type: "String", description: "Only with 'value': 'number' (default) sets the variable to value; 'add number' adds value to its current value. Any other numOp, or numOp without 'value', is rejected before the write."],
-                    [name: "sourceVariable", type: "String", description: "Hub variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. Works for Number, Decimal and String targets (a String target uses RM's valStringOp='Copy variable' picker instead of numOp=variable); a Boolean or DateTime target is refused before any write. Schema-gated: the source-variable field is only revealed by RM after that selector is written; fails loud (success=false) if the hub does not reveal it. See docs/rm_wire_format.md for the wire sequence."],
-                    [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable. Maps to numOp='device attribute'.[[FLAT_TRIM]] RM does not offer the device-attribute source for String/Boolean/DateTime variables (rejected with success=false before the hub write). deviceId may be ANY hub device (RM's device picker spans all hub devices, not just the MCP-selected set); it is validated only as a positive integer id, not against the MCP device set. The device picker and the attribute enum are schema-gated and revealed in sequence (deviceId reveals an attribute enum FILTERED to that device's live attributes); fails loud (success=false) if the device picker is not revealed. An attribute not in the device's filtered enum is rejected with success=false and the device's available-attribute list. See docs/rm_wire_format.md for the wire sequence.[[/FLAT_TRIM]]"],
-                    [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable -- RM does not offer the variable-math source for String/Boolean/DateTime variables (rejected with success=false before the hub write). Maps to numOp='variable math'. A Number operand becomes a constant; a String operand is treated as a hub variable name. Binary operators (+ - * / %) require 'right'; unary operators (negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees) reject 'right'. Operand fields are schema-gated and revealed in sequence; fails loud (success=false) if a required field is not revealed. See docs/rm_wire_format.md for the wire sequence."],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "setLocalVariable",
-                family: "hub",
-                notes: "Set a rule-LOCAL variable (distinct from setVariable, which targets hub globals). Same source modes and wire path as setVariable; the only difference is that the target name is validated against the rule's local variables (state.allLocalVars). Use this -- not setVariable -- when a local and a hub variable share a name and you mean the local. Exactly ONE source mode (value | sourceVariable | fromDevice | math) per action.",
-                requiredFields: [
-                    [name: "variable", type: "String", description: "Local variable name to write (the target). Must be an existing local variable on this rule (create one first via hub_set_rule addLocalVariable) -- an unknown name is rejected before the hub write to prevent silent broken-action state."]
-                ],
-                optionalFields: [
-                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. String, boolean, and datetime local-variable targets are not supported via 'value'; copy a String target with 'sourceVariable', or set Boolean/DateTime via rawSettings."],
-                    [name: "numOp", type: "String", description: "Only with 'value': 'number' (default) sets the variable to value; 'add number' adds value to its current value. Same rules as setVariable's numOp."],
-                    [name: "sourceVariable", type: "String", description: "Variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. RM's source picker spans BOTH local and hub variables, so the source may be either; validated against the live revealed enum (fails loud, success=false, if the hub does not reveal it). Number, Decimal and String targets are supported; Boolean and DateTime targets are refused before any action row is written. See docs/rm_wire_format.md for the wire sequence."],
-                    [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same wire and validation as setVariable's fromDevice."],
-                    [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same operator set and wire as setVariable's math; operand variables may be local or hub (validated against the live revealed enum)."],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
+            (_bat529EmbeddedCatalogRead(['["m",[["name","thermostat"],["family","device"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","action"],["type","String"]]],["m",[["name","mode"],["type","String"]]],["m",[["name","fanMode"],["type","String"]]],["m",[["name","heatingSetpoint"],["type","Number"]]],["m",[["name","coolingSetpoint"],["type","Number"]]],["m",[["name","adjustHeating"],["type","Number"]]],["m",[["name","adjustCooling"],["type","Number"]]],["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]],["notes","Requires at least one setting (mode / fanMode / heatingSetpoint / adjustHeating / coolingSetpoint / adjustCooling) -- a thermostat action with deviceIds but no setting does not bake."]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","shade"],["family","device"],["actions",["l",["open","close","stop","setPosition"]]],["requiredFields",["l",[["m",[["name","action"],["type","enum"],["values",["l",["open","close","stop","setPosition"]]]]],["m",[["name","deviceIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","position"],["type","Integer"],["description","0-100, required for setPosition"]]],["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]],["conditionalRequired",["m",[["setPosition","position"]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","fan"],["family","device"],["actions",["l",["setSpeed","cycle"]]],["requiredFields",["l",[["m",[["name","action"],["type","enum"],["values",["l",["setSpeed","cycle"]]]]],["m",[["name","deviceIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","speed"],["type","String"],["description","low/med/high/auto/etc., required for setSpeed"]]],["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]],["conditionalRequired",["m",[["setSpeed","speed"]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","button"],["family","device"],["actions",["l",["push","pushPerMode","choosePerMode"]]],["requiredFields",["l",[["m",[["name","action"],["type","enum"],["values",["l",["push","pushPerMode","choosePerMode"]]]]],["m",[["name","deviceIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","buttonNumber"],["type","Integer"],["description","Required for push and choosePerMode (pushPerMode carries the per-mode button numbers inside perMode)"]]],["m",[["name","perMode"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]],["conditionalRequired",["m",[["push","buttonNumber"],["pushPerMode","perMode"],["choosePerMode","perMode + buttonNumber"]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","runCommand"],["family","device"],["notes","Calls any device-driver command not exposed by higher-level capability mappings (e.g. flashOff, custom verbs)."],["requiredFields",["l",[["m",[["name","command"],["type","String"],["description","Driver command name (e.g. \'flashOff\', \'refresh\', \'setLevel\')"]]],["m",[["name","deviceIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","capabilityFilter"],["type","String"],["description","Default \'Switch\'"]]],["m",[["name","parameters"],["type","List"],["description","Parameter list. Each entry is {type, value} for a literal (e.g. {type: \'number\', value: 75}) or {type, variable} for a hub-variable-sourced value (e.g. {type: \'number\', variable: \'myVar\'}). Type is lowercase: \'number\', \'decimal\', or \'string\'. Variable-sourced params wire via uVar<P>/xVar<P> -- see docs/rm_wire_format.md for the wire sequence. Fails loud if the hub does not reveal the xVar<P> enum after enabling variable mode (returns success=false with a descriptive error)."]]],["m",[["name","useLastEventDevice"],["type","Boolean"]]],["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","mode"],["family","hub"],["requiredFields",["l",[]]],["optionalFields",["l",[["m",[["name","modeId"],["type","Integer"],["description","Mode ID -- provide this OR modeName (not both). When modeName is given, it is resolved to its ID before submission; unknown names fail fast with the valid mode list. Degenerate: if location.modes is empty, the error lists \'(none -- hub returned no modes; verify hub state via hub_list_modes)\'."]]],["m",[["name","modeName"],["type","String"],["description","Mode name (case-insensitive) -- provide this OR modeId (not both). Resolved to mode ID automatically. Use hub_list_modes to confirm available names."]]]]]],["notes","Exactly one of modeId or modeName is required at call time."]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","setVariable"],["family","hub"],["notes","Set a hub variable to a constant, copy it from another hub variable, read it from a device attribute, or compute it with structured variable math. Also accepted as capability=\'variable\'. Exactly ONE source mode (value | sourceVariable | fromDevice | math) per action."],["requiredFields",["l",[["m",[["name","variable"],["type","String"],["description","Hub variable name to write (the target). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state."]]]]]],["optionalFields",["l",[["m",[["name","value"],["type","Number"],["description","Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the write otherwise -- RM renders numOp/valNumber only for numeric targets). String, boolean, and datetime targets are not supported via \'value\'; copy a String target with \'sourceVariable\', or set Boolean/DateTime via rawSettings."]]],["m",[["name","numOp"],["type","String"],["description","Only with \'value\': \'number\' (default) sets the variable to value; \'add number\' adds value to its current value. Any other numOp, or numOp without \'value\', is rejected before the write."]]],["m",[["name","sourceVariable"],["type","String"],["description","Hub variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. Works for Number, Decimal and String targets (a String target uses RM\'s valStringOp=\'Copy variable\' picker instead of numOp=variable); a Boolean or DateTime target is refused before any write. Schema-gated: the source-variable field is only revealed by RM after that selector is written; fails loud (success=false) if the hub does not reveal it. See docs/rm_wire_format.md for the wire sequence."]]],["m",[["name","fromDevice"],["type","Map"],["description","Read the value from a device attribute: {deviceId: <Integer>, attribute: \'<name>\'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable. Maps to numOp=\'device attribute\'.[[FLAT_TRIM]] RM does not offer the device-attribute source for String/Boolean/DateTime variables (rejected with success=false before the hub write). deviceId may be ANY hub device (RM\'s device picker spans all hub devices, not just the MCP-selected set); it is validated only as a positive integer id, not against the MCP device set. The device picker and the attribute enum are schema-gated and revealed in sequence (deviceId reveals an attribute enum FILTERED to that device\'s live attributes); fails loud (success=false) if the device picker is not revealed. An attribute not in the device\'s filtered enum is rejected with success=false and the device\'s available-attribute list. See docs/rm_wire_format.md for the wire sequence.[[/FLAT_TRIM]]"]]],["m",[["name","math"],["type","Map"],["description","Compute the value with structured variable math: {left: <varName|Number>, op: \'<operator>\', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable -- RM does not offer the variable-math source for String/Boolean/DateTime variables (rejected with success=false before the hub write). Maps to numOp=\'variable math\'. A Number operand becomes a constant; a String operand is treated as a hub variable name. Binary operators (+ - * / %) require \'right\'; unary operators (negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees) reject \'right\'. Operand fields are schema-gated and revealed in sequence; fails loud (success=false) if a required field is not revealed. See docs/rm_wire_format.md for the wire sequence."]]],["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","setLocalVariable"],["family","hub"],["notes","Set a rule-LOCAL variable (distinct from setVariable, which targets hub globals). Same source modes and wire path as setVariable; the only difference is that the target name is validated against the rule\'s local variables (state.allLocalVars). Use this -- not setVariable -- when a local and a hub variable share a name and you mean the local. Exactly ONE source mode (value | sourceVariable | fromDevice | math) per action."],["requiredFields",["l",[["m",[["name","variable"],["type","String"],["description","Local variable name to write (the target). Must be an existing local variable on this rule (create one first via hub_set_rule addLocalVariable) -- an unknown name is rejected before the hub write to prevent silent broken-action state."]]]]]],["optionalFields",["l",[["m",[["name","value"],["type","Number"],["description","Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. String, boolean, and datetime local-variable targets are not supported via \'value\'; copy a String target with \'sourceVariable\', or set Boolean/DateTime via rawSettings."]]],["m",[["name","numOp"],["type","String"],["description","Only with \'value\': \'number\' (default) sets the variable to value; \'add number\' adds value to its current value. Same rules as setVariable\'s numOp."]]],["m",[["name","sourceVariable"],["type","String"],["description","Variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. RM\'s source picker spans BOTH local and hub variables, so the source may be either; validated against the live revealed enum (fails loud, success=false, if the hub does not reveal it). Number, Decimal and String targets are supported; Boolean and DateTime targets are refused before any action row is written. See docs/rm_wire_format.md for the wire sequence."]]],["m",[["name","fromDevice"],["type","Map"],["description","Read the value from a device attribute: {deviceId: <Integer>, attribute: \'<name>\'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same wire and validation as setVariable\'s fromDevice."]]],["m",[["name","math"],["type","Map"],["description","Compute the value with structured variable math: {left: <varName|Number>, op: \'<operator>\', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same operator set and wire as setVariable\'s math; operand variables may be local or hub (validated against the live revealed enum)."]]],["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
             [
                 name: "log",
                 family: "messaging",
@@ -3396,18 +2898,7 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "rawSettings", type: "Map"]
                 ]
             ],
-            [
-                name: "notification",
-                family: "messaging",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Notification device IDs"],
-                    [name: "message", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
+            (_bat529EmbeddedCatalogRead(['["m",[["name","notification"],["family","messaging"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"],["description","Notification device IDs"]]],["m",[["name","message"],["type","String"]]]]]],["optionalFields",["l",[["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
             [
                 name: "httpGet",
                 family: "messaging",
@@ -3419,19 +2910,7 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "rawSettings", type: "Map"]
                 ]
             ],
-            [
-                name: "httpPost",
-                family: "messaging",
-                requiredFields: [
-                    [name: "url", type: "String"],
-                    [name: "body", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "contentType", type: "String"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
+            (_bat529EmbeddedCatalogRead(['["m",[["name","httpPost"],["family","messaging"],["requiredFields",["l",[["m",[["name","url"],["type","String"]]],["m",[["name","body"],["type","String"]]]]]],["optionalFields",["l",[["m",[["name","contentType"],["type","String"]]],["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
             [
                 name: "ping",
                 family: "messaging",
@@ -3442,43 +2921,9 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "rawSettings", type: "Map"]
                 ]
             ],
-            [
-                name: "volume",
-                family: "media",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "level", type: "Integer", description: "Volume level 0-100"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "mute",
-                family: "media",
-                actions: ["mute", "unmute"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["mute", "unmute"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "chime",
-                family: "media",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "playStop", type: "String"],
-                    [name: "soundNumber", type: "Integer"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
+            (_bat529EmbeddedCatalogRead(['["m",[["name","volume"],["family","media"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"]]],["m",[["name","level"],["type","Integer"],["description","Volume level 0-100"]]]]]],["optionalFields",["l",[["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","mute"],["family","media"],["actions",["l",["mute","unmute"]]],["requiredFields",["l",[["m",[["name","action"],["type","enum"],["values",["l",["mute","unmute"]]]]],["m",[["name","deviceIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","delay"],["type","Map"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","chime"],["family","media"],["requiredFields",["l",[["m",[["name","deviceIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","playStop"],["type","String"]]],["m",[["name","soundNumber"],["type","Integer"]]],["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
             [
                 name: "siren",
                 family: "media",
@@ -3490,17 +2935,7 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "rawSettings", type: "Map"]
                 ]
             ],
-            [
-                name: "privateBoolean",
-                family: "rules",
-                requiredFields: [
-                    [name: "ruleIds", type: "List<Integer | \"*\">", description: "\"*\" is RM's this-rule target and may stand alone or sit beside numeric rule ids"],
-                    [name: "value", type: "Boolean"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
+            (_bat529EmbeddedCatalogRead(['["m",[["name","privateBoolean"],["family","rules"],["requiredFields",["l",[["m",[["name","ruleIds"],["type","List<Integer | \\"*\\">"],["description","\\"*\\" is RM\'s this-rule target and may stand alone or sit beside numeric rule ids"]]],["m",[["name","value"],["type","Boolean"]]]]]],["optionalFields",["l",[["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
             [
                 name: "runRule",
                 family: "rules",
@@ -3521,18 +2956,7 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "rawSettings", type: "Map"]
                 ]
             ],
-            [
-                name: "pauseRule",
-                family: "rules",
-                actions: ["pause", "resume"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["pause", "resume"]],
-                    [name: "ruleIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
+            (_bat529EmbeddedCatalogRead(['["m",[["name","pauseRule"],["family","rules"],["actions",["l",["pause","resume"]]],["requiredFields",["l",[["m",[["name","action"],["type","enum"],["values",["l",["pause","resume"]]]]],["m",[["name","ruleIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
             [
                 name: "capture",
                 family: "device-control",
@@ -3572,42 +2996,9 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "rawSettings", type: "Map"]
                 ]
             ],
-            [
-                name: "disableDevice",
-                family: "device-control",
-                actions: ["disable", "enable"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["disable", "enable"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "delay",
-                family: "flow",
-                notes: "Pause execution for a fixed or variable duration.",
-                requiredFields: [],
-                optionalFields: [
-                    [name: "hours", type: "Integer"],
-                    [name: "minutes", type: "Integer"],
-                    [name: "seconds", type: "Integer"],
-                    [name: "cancelable", type: "Boolean"],
-                    [name: "random", type: "Boolean"],
-                    [name: "variable", type: "String", description: "Hub variable name -- use instead of hours/minutes/seconds for variable-sourced delay"]
-                ]
-            ],
-            [
-                name: "delayPerMode",
-                family: "flow",
-                requiredFields: [
-                    [name: "perMode", type: "Map", description: "{modeIdOrName: {hours?, minutes?, seconds?}, ...}"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
+            (_bat529EmbeddedCatalogRead(['["m",[["name","disableDevice"],["family","device-control"],["actions",["l",["disable","enable"]]],["requiredFields",["l",[["m",[["name","action"],["type","enum"],["values",["l",["disable","enable"]]]]],["m",[["name","deviceIds"],["type","List<Integer>"]]]]]],["optionalFields",["l",[["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","delay"],["family","flow"],["notes","Pause execution for a fixed or variable duration."],["requiredFields",["l",[]]],["optionalFields",["l",[["m",[["name","hours"],["type","Integer"]]],["m",[["name","minutes"],["type","Integer"]]],["m",[["name","seconds"],["type","Integer"]]],["m",[["name","cancelable"],["type","Boolean"]]],["m",[["name","random"],["type","Boolean"]]],["m",[["name","variable"],["type","String"],["description","Hub variable name -- use instead of hours/minutes/seconds for variable-sourced delay"]]]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","delayPerMode"],["family","flow"],["requiredFields",["l",[["m",[["name","perMode"],["type","Map"],["description","{modeIdOrName: {hours?, minutes?, seconds?}, ...}"]]]]]],["optionalFields",["l",[["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
             [
                 name: "cancelDelay",
                 family: "flow",
@@ -3630,19 +3021,7 @@ private Map _rmActionSchemaForDiscover() {
                 ],
                 optionalFields: []
             ],
-            [
-                name: "repeat",
-                family: "flow",
-                requiredFields: [
-                    [name: "hours", type: "Integer", description: "At least one of hours/minutes/seconds required"],
-                    [name: "minutes", type: "Integer"],
-                    [name: "seconds", type: "Integer"]
-                ],
-                optionalFields: [
-                    [name: "times", type: "Integer"],
-                    [name: "stoppable", type: "Boolean"]
-                ]
-            ],
+            (_bat529EmbeddedCatalogRead(['["m",[["name","repeat"],["family","flow"],["requiredFields",["l",[["m",[["name","hours"],["type","Integer"],["description","At least one of hours/minutes/seconds required"]]],["m",[["name","minutes"],["type","Integer"]]],["m",[["name","seconds"],["type","Integer"]]]]]],["optionalFields",["l",[["m",[["name","times"],["type","Integer"]]],["m",[["name","stoppable"],["type","Boolean"]]]]]]]]']) as Map),
             [
                 name: "stopRepeat",
                 family: "flow",
@@ -3650,52 +3029,10 @@ private Map _rmActionSchemaForDiscover() {
                 requiredFields: [],
                 optionalFields: []
             ],
-            [
-                name: "repeatWhile",
-                family: "flow",
-                requiredFields: [
-                    [name: "expression", type: "Map", description: "{conditions: [...], operator?: 'AND'|'OR'|'XOR', operators?: [...]}"]
-                ],
-                optionalFields: [
-                    [name: "hours", type: "Integer"],
-                    [name: "minutes", type: "Integer"],
-                    [name: "seconds", type: "Integer"],
-                    [name: "times", type: "Integer"],
-                    [name: "stoppable", type: "Boolean"]
-                ]
-            ],
-            [
-                name: "waitExpression",
-                family: "flow",
-                requiredFields: [
-                    [name: "expression", type: "Map", description: "{conditions: [...], operator?, operators?}"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "useDuration", type: "Boolean"]
-                ]
-            ],
-            [
-                name: "waitEvents",
-                family: "flow",
-                requiredFields: [
-                    [name: "events", type: "List<Map>", description: "Each: {capability, deviceIds, state, andStays?}. andStays is either true (wait until the state has held, zero extra duration; an empty map {} is equivalent) OR {hours?, minutes?, seconds?} to require it hold that long (writes SHours-/SMins-/SSecs-<N>). Mode event: {capability:'Mode', state:<mode name or list of names>} or {capability:'Mode', modeIds:[...]} -- deviceIds is rejected on a Mode event; the mode value is written to the mode picker, not tstate."]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "ifThen",
-                family: "flow",
-                notes: "Opens an IF block. Close with capability='endIf'. Use 'elseIf'/'else' for branches.",
-                requiredFields: [
-                    [name: "expression", type: "Map", description: "{conditions: [...], operator?, operators?}"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
+            (_bat529EmbeddedCatalogRead(['["m",[["name","repeatWhile"],["family","flow"],["requiredFields",["l",[["m",[["name","expression"],["type","Map"],["description","{conditions: [...], operator?: \'AND\'|\'OR\'|\'XOR\', operators?: [...]}"]]]]]],["optionalFields",["l",[["m",[["name","hours"],["type","Integer"]]],["m",[["name","minutes"],["type","Integer"]]],["m",[["name","seconds"],["type","Integer"]]],["m",[["name","times"],["type","Integer"]]],["m",[["name","stoppable"],["type","Boolean"]]]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","waitExpression"],["family","flow"],["requiredFields",["l",[["m",[["name","expression"],["type","Map"],["description","{conditions: [...], operator?, operators?}"]]]]]],["optionalFields",["l",[["m",[["name","delay"],["type","Map"],["description","{hours?, minutes?, seconds?}"]]],["m",[["name","useDuration"],["type","Boolean"]]]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","waitEvents"],["family","flow"],["requiredFields",["l",[["m",[["name","events"],["type","List<Map>"],["description","Each: {capability, deviceIds, state, andStays?}. andStays is either true (wait until the state has held, zero extra duration; an empty map {} is equivalent) OR {hours?, minutes?, seconds?} to require it hold that long (writes SHours-/SMins-/SSecs-<N>). Mode event: {capability:\'Mode\', state:<mode name or list of names>} or {capability:\'Mode\', modeIds:[...]} -- deviceIds is rejected on a Mode event; the mode value is written to the mode picker, not tstate."]]]]]],["optionalFields",["l",[["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
+            (_bat529EmbeddedCatalogRead(['["m",[["name","ifThen"],["family","flow"],["notes","Opens an IF block. Close with capability=\'endIf\'. Use \'elseIf\'/\'else\' for branches."],["requiredFields",["l",[["m",[["name","expression"],["type","Map"],["description","{conditions: [...], operator?, operators?}"]]]]]],["optionalFields",["l",[["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
             [
                 name: "elseIf",
                 family: "flow",
@@ -3732,18 +3069,7 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "rawSettings", type: "Map"]
                 ]
             ],
-            [
-                name: "fileAppend",
-                family: "file",
-                notes: "File must already exist.",
-                requiredFields: [
-                    [name: "fileName", type: "String"],
-                    [name: "content", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
+            (_bat529EmbeddedCatalogRead(['["m",[["name","fileAppend"],["family","file"],["notes","File must already exist."],["requiredFields",["l",[["m",[["name","fileName"],["type","String"]]],["m",[["name","content"],["type","String"]]]]]],["optionalFields",["l",[["m",[["name","rawSettings"],["type","Map"]]]]]]]]']) as Map),
             [
                 name: "fileDelete",
                 family: "file",
@@ -3907,11 +3233,7 @@ Boolean _rmIsAppDisabled(Integer appId) {
 @groovy.transform.CompileStatic
 private String _rmEditOpLabel(Map args) {
     if (args == null) return "edit"
-    def first = ["button", "addTrigger", "addAction", "addActions", "addTriggers",
-                 "addRequiredExpression", "replaceRequiredExpression", "addLocalVariable",
-                 "removeLocalVariable", "removeAction", "clearActions", "replaceActions",
-                 "moveAction", "removeTrigger", "modifyTrigger", "modifyAction", "walkStep",
-                 "patches", "settings"].find { args[it] != null }
+    def first = (_bat529EmbeddedCatalogRead(['["l",["button","addTrigger","addAction","addActions","addTriggers","addRequiredExpression","replaceRequiredExpression","addLocalVariable","removeLocalVariable","removeAction","clearActions","replaceActions","moveAction","removeTrigger","modifyTrigger","modifyAction","walkStep","patches","settings"]]']) as List).find { args[it] != null }
     return first ?: "edit"
 }
 
@@ -4299,12 +3621,7 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
 // refuses loudly instead of being silently converted. Other action shapes
 // refuse toward removeAction + addAction.
 private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long reqT0 = null) {
-    def reverse = [
-        getRuleActions:       [capability: "runRule",        listField: "ruleAct",   typeField: "runRuleType"],
-        getStopActions:       [capability: "cancelTimers",   listField: "stopAct",   typeField: "stopRuleType"],
-        getPauseResumeRules:  [capability: "pauseRule",      listField: "pauseRule", typeField: "pauseRuleType"],
-        getSetPrivateBoolean: [capability: "privateBoolean", listField: "privateT",  typeField: "pvRuleType"]
-    ]
+    def reverse = (_bat529EmbeddedCatalogRead(['["m",[["getRuleActions",["m",[["capability","runRule"],["listField","ruleAct"],["typeField","runRuleType"]]]],["getStopActions",["m",[["capability","cancelTimers"],["listField","stopAct"],["typeField","stopRuleType"]]]],["getPauseResumeRules",["m",[["capability","pauseRule"],["listField","pauseRule"],["typeField","pauseRuleType"]]]],["getSetPrivateBoolean",["m",[["capability","privateBoolean"],["listField","privateT"],["typeField","pvRuleType"]]]]]]']) as Map)
     def cfg = _rmFetchConfigJson(appId)
     def committedSettings = (cfg?.settings instanceof Map) ? (cfg.settings as Map) : [:]
     // Guard reads use String-coerced subscript keys (parsed-JSON maps carry
@@ -6194,24 +5511,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actSubType = "getDefinedAction"
         if (!actionSpec.command) throw new IllegalArgumentException("runCommand requires 'command' (the device driver method name)")
         // Friendly names → Hubitat capability class keys
-        def friendlyToKey = [
-            "switch": "Switch", "Switch": "Switch",
-            "dimmer": "SwitchLevel", "Dimmer": "SwitchLevel", "switchLevel": "SwitchLevel", "SwitchLevel": "SwitchLevel", "Switch Level": "SwitchLevel",
-            "color": "ColorControl", "Color": "ColorControl", "ColorControl": "ColorControl",
-            "colorTemp": "ColorTemperature", "ColorTemperature": "ColorTemperature", "Color Temperature": "ColorTemperature",
-            "lock": "Lock", "Lock": "Lock",
-            "button": "PushableButton", "Button": "PushableButton", "PushableButton": "PushableButton",
-            "shade": "WindowShade", "WindowShade": "WindowShade", "Window Shade": "WindowShade",
-            "blind": "WindowBlind", "WindowBlind": "WindowBlind", "Window Blind": "WindowBlind",
-            "fan": "FanControl", "FanControl": "FanControl", "Fan Control": "FanControl",
-            "music": "MusicPlayer", "MusicPlayer": "MusicPlayer", "Music Player": "MusicPlayer",
-            "garage": "GarageDoorControl", "GarageDoorControl": "GarageDoorControl", "Garage door": "GarageDoorControl",
-            "door": "DoorControl", "DoorControl": "DoorControl",
-            "valve": "Valve", "Valve": "Valve",
-            "thermostat": "Thermostat", "Thermostat": "Thermostat",
-            "tone": "Tone", "Tone": "Tone",
-            "speech": "SpeechSynthesis", "SpeechSynthesis": "SpeechSynthesis"
-        ]
+        def friendlyToKey = (_bat529EmbeddedCatalogRead(['["m",[["switch","Switch"],["Switch","Switch"],["dimmer","SwitchLevel"],["Dimmer","SwitchLevel"],["switchLevel","SwitchLevel"],["SwitchLevel","SwitchLevel"],["Switch Level","SwitchLevel"],["color","ColorControl"],["Color","ColorControl"],["ColorControl","ColorControl"],["colorTemp","ColorTemperature"],["ColorTemperature","ColorTemperature"],["Color Temperature","ColorTemperature"],["lock","Lock"],["Lock","Lock"],["button","PushableButton"],["Button","PushableButton"],["PushableButton","PushableButton"],["shade","WindowShade"],["WindowShade","WindowShade"],["Window Shade","WindowShade"],["blind","WindowBlind"],["WindowBlind","WindowBlind"],["Window Blind","WindowBlind"],["fan","FanControl"],["FanControl","FanControl"],["Fan Control","FanControl"],["music","MusicPlayer"],["MusicPlayer","MusicPlayer"],["Music Player","MusicPlayer"],["garage","GarageDoorControl"],["GarageDoorControl","GarageDoorControl"],["Garage door","GarageDoorControl"],["door","DoorControl"],["DoorControl","DoorControl"],["valve","Valve"],["Valve","Valve"],["thermostat","Thermostat"],["Thermostat","Thermostat"],["tone","Tone"],["Tone","Tone"],["speech","SpeechSynthesis"],["SpeechSynthesis","SpeechSynthesis"]]]']) as Map)
         def capFilterRaw = actionSpec.capabilityFilter ?: "Switch"
         def capFilter = friendlyToKey.get(capFilterRaw.toString()) ?: capFilterRaw.toString()
         fields = [
@@ -9413,7 +8713,7 @@ def _setRuleFlatTool() {
             properties: [
                 operation: [type: "string", enum: _setRuleOperations(), description: "What to do. Call WITHOUT confirm to get this operation's argument schema back (argsSchema + usage; no mutation), then call again with args + confirm:true. 'create' = new rule (omit appId); all others edit an existing rule (need appId) except guide/discover/buttonRule, which omit it. On a create, partial bakes are reported via partial/repairHints; full create+repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). 'guide' returns the full capability reference; 'discover' returns the live per-capability field schema (args={kind:'trigger'|'action'})."],
                 appId: [type: "integer", description: "RM rule ID. OMIT for create/guide/discover/buttonRule; PROVIDE for every other (edit) operation (appId is the create-vs-edit switch)."],
-                args: [type: ["object", "array", "boolean"], description: "Arguments for the chosen operation — the exact shape comes from the schema probe (call without confirm first). Most ops take an object; the list ops (addTriggers/addActions/replaceActions/patches) take a bare array and clearActions takes true. For 'create' args holds name + optional addTriggers/addActions/addRequiredExpression. Pass the bare operation payload (e.g. {capability:'switch',...}), not wrapped under the operation name."],
+                args: (_bat529EmbeddedCatalogRead(['["m",[["type",["l",["object","array","boolean"]]],["description","Arguments for the chosen operation \\u2014 the exact shape comes from the schema probe (call without confirm first). Most ops take an object; the list ops (addTriggers/addActions/replaceActions/patches) take a bare array and clearActions takes true. For \'create\' args holds name + optional addTriggers/addActions/addRequiredExpression. Pass the bare operation payload (e.g. {capability:\'switch\',...}), not wrapped under the operation name."]]]']) as Map),
                 confirm: [type: "boolean", description: "Set true to APPLY the operation (any write). Omit (or false) to get the schema back instead (a no-mutation probe). Writes also need the Write master + a recent backup."]
             ],
             required: ["operation"]
@@ -13484,7 +12784,7 @@ private Map _rmFinalizeRequiredExpressionWrite(Integer appId, Map innerResult, M
     def reCondCount = innerResult?.conditionIndices?.size() ?: 0
     def repairHints = (innerResult?.repairHints as List) ?: []
     if (updateRuleFailed) {
-        repairHints = repairHints + ["updateRule click was rejected after the expression conditions wrote successfully. The condition slots are baked but the rule will not re-evaluate the gate until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
+        repairHints = repairHints + (_bat529EmbeddedCatalogRead(['["l",["updateRule click was rejected after the expression conditions wrote successfully. The condition slots are baked but the rule will not re-evaluate the gate until updateRule fires. Retry hub_set_rule(button=\'updateRule\', confirm=true), or restore via backup if the retry also fails."]]']) as List)
     }
 
     // Rollback window (replace only): a rejected trailing updateRule OR a replace-introduced
@@ -15533,7 +14833,7 @@ def _applyNativeAppEdit(args) {
         }
         def trigRepairHints = (trigResult?.repairHints as List) ?: []
         if (updateRuleFailed) {
-            trigRepairHints = trigRepairHints + ["updateRule click was rejected after the trigger row committed. The trigger settings are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
+            trigRepairHints = trigRepairHints + (_bat529EmbeddedCatalogRead(['["l",["updateRule click was rejected after the trigger row committed. The trigger settings are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button=\'updateRule\', confirm=true), or restore via backup if the retry also fails."]]']) as List)
         }
         return [
             success: (trigResult?.success != false) && !updateRuleFailed,

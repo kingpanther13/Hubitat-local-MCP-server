@@ -46,15 +46,7 @@ private _listSourceItemBackups(args) {
     def manifest = _itemBackupManifest()
 
     if (manifest.isEmpty()) {
-        return [
-            backups: [],
-            count: 0,
-            total: 0,
-            message: "No item backups exist yet. Backups are created automatically when you use hub_update_app, hub_update_driver, hub_update_library, or hub_delete_item.",
-            maxBackups: 20,
-            storage: "Backups are stored as .groovy files in the hub's File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager.",
-            howToRestore: "Use 'hub_get_backup' to retrieve source code, then 'hub_restore_backup' to restore (apps/drivers). For deleted apps or drivers, use 'hub_create_app' or 'hub_create_driver' with the backup source. For deleted libraries, use 'hub_create_library' with the backup source."
-        ]
+        return (_bat529EmbeddedCatalogRead(['["m",[["backups",["l",[]]],["count",0],["total",0],["message","No item backups exist yet. Backups are created automatically when you use hub_update_app, hub_update_driver, hub_update_library, or hub_delete_item."],["maxBackups",20],["storage","Backups are stored as .groovy files in the hub\'s File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager."],["howToRestore","Use \'hub_get_backup\' to retrieve source code, then \'hub_restore_backup\' to restore (apps/drivers). For deleted apps or drivers, use \'hub_create_app\' or \'hub_create_driver\' with the backup source. For deleted libraries, use \'hub_create_library\' with the backup source."]]]']) as Map)
     }
 
     def backupList = manifest.collect { key, entry ->
@@ -813,8 +805,7 @@ private _setHubBackupSchedule(Map schedule) {
     int cloudNow = ((cur.cloudBackupFrequency ?: 0) as Integer)
     int cloudAfter = ((cloudFreq ?: 0) as Integer)
     if ((cloudNow > 0 || cloudAfter > 0) && !schedule.containsKey("cloudBackupPassword")) {
-        return [success: false, error: "Cloud backup is enabled but cloudBackupPassword was not provided.",
-                note: "Changing the schedule replaces the cloud-backup password, which the hub does not expose for read-back. Pass cloudBackupPassword (the current cloud-backup encryption password) to keep cloud backups working, or pass cloudBackupFrequency=0 to turn cloud backup off."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Cloud backup is enabled but cloudBackupPassword was not provided."],["note","Changing the schedule replaces the cloud-backup password, which the hub does not expose for read-back. Pass cloudBackupPassword (the current cloud-backup encryption password) to keep cloud backups working, or pass cloudBackupFrequency=0 to turn cloud backup off."]]]']) as Map)
     }
     def body = [
         localBackupFrequency: localFreq,
@@ -970,9 +961,7 @@ private Map _createFullLocalBackup(boolean scheduleUpdated, networkBackup) {
     def out = [full: true, scheduleUpdated: scheduleUpdated]
     if (networkBackup) out.networkBackup = networkBackup
     if (!confirmed) {
-        return out + [success: false, confirmed: false,
-                error: "The full backup was requested but no new full backup appeared within ~60s.",
-                note: "A full backup with many File Manager files can take minutes. Check hub_list_backups(scope='hub_local') for a fullBackup:true entry before relying on it; a hub refusal shows in hub_get_logs(mode='mcp'). The 24h destructive-confirm gate was not stamped."]
+        return out + (_bat529EmbeddedCatalogRead(['["m",[["success",false],["confirmed",false],["error","The full backup was requested but no new full backup appeared within ~60s."],["note","A full backup with many File Manager files can take minutes. Check hub_list_backups(scope=\'hub_local\') for a fullBackup:true entry before relying on it; a hub refusal shows in hub_get_logs(mode=\'mcp\'). The 24h destructive-confirm gate was not stamped."]]]']) as Map)
     }
     def stamp = now()
     state.lastBackupTimestamp = stamp
@@ -1370,9 +1359,7 @@ private _restoreUploadedBackup(Map args) {
         return _restoreRequestFailed("hub-db", "hub_uploaded", e)
     }
     if (parsed instanceof Map && parsed.success == true) {
-        return [success: true, type: "hub-db", location: "hub_uploaded",
-                message: "Uploaded backup accepted — the hub is rebooting now to restore it.",
-                note: "Re-check hub reachability after the reboot; the database is being replaced from the uploaded backup."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",true],["type","hub-db"],["location","hub_uploaded"],["message","Uploaded backup accepted \\u2014 the hub is rebooting now to restore it."],["note","Re-check hub reachability after the reboot; the database is being replaced from the uploaded backup."]]]']) as Map)
     }
     return [success: false, type: "hub-db", location: "hub_uploaded",
             error: (parsed instanceof Map) ? (parsed.message ?: parsed.error ?: "restore did not report success") : "unexpected response",

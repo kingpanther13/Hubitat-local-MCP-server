@@ -445,20 +445,11 @@ private List _vrb2TriggerTypes() {
 }
 
 private List _vrb2ConditionTypes() {
-    return ["timeIsBetween", "daysOfWeek", "motionCondition", "contactCondition",
-            "presenceCondition", "accelerationCondition", "waterCondition", "smokeCondition",
-            "coCondition", "temperatureCondition", "humidityCondition", "illuminanceCondition",
-            "powerCondition", "switchCondition", "lockCondition", "thermostatModeCondition",
-            "systemModeCondition"]
+    return (_bat529EmbeddedCatalogRead(['["l",["timeIsBetween","daysOfWeek","motionCondition","contactCondition","presenceCondition","accelerationCondition","waterCondition","smokeCondition","coCondition","temperatureCondition","humidityCondition","illuminanceCondition","powerCondition","switchCondition","lockCondition","thermostatModeCondition","systemModeCondition"]]']) as List)
 }
 
 private List _vrb2ActionTypes() {
-    return ["turnOn", "turnOff", "toggle", "setBrightness", "setColorTemp", "setColor",
-            "setLightEffect", "lock", "unlock", "turnOnAlarm", "turnOffAlarm", "openValve",
-            "closeValve", "openGarageDoor", "closeGarageDoor", "openWindowShade",
-            "closeWindowShade", "pushButton", "sendNotification", "speakNotification",
-            "controlPlayer", "controlThermostat", "setFanSpeed", "setMode", "setModeUnlessAway",
-            "exitAwayMode", "runRule", "wait", "cancelWait", "sample"]
+    return (_bat529EmbeddedCatalogRead(['["l",["turnOn","turnOff","toggle","setBrightness","setColorTemp","setColor","setLightEffect","lock","unlock","turnOnAlarm","turnOffAlarm","openValve","closeValve","openGarageDoor","closeGarageDoor","openWindowShade","closeWindowShade","pushButton","sendNotification","speakNotification","controlPlayer","controlThermostat","setFanSpeed","setMode","setModeUnlessAway","exitAwayMode","runRule","wait","cancelWait","sample"]]']) as List)
 }
 
 @groovy.transform.CompileStatic
@@ -1408,10 +1399,7 @@ private Map _toolSetVisualRuleImpl(args) {
                             note: "Send the full definition together with the new name (hub_set_visual_rule with definition + name), or repair the rule in the Visual Rules Builder UI first."]
                 }
                 if (existing == null) {
-                    existing = [version: 1,
-                                nodes: [[id: "trigger-merge", kind: "merge", type: "triggerMerge", config: [:]],
-                                        [id: "decision", kind: "decision", type: "all", config: [conditions: []]]],
-                                edges: [[from: "trigger-merge", to: "decision", port: "next"]]]
+                    existing = (_bat529EmbeddedCatalogRead(['["m",[["version",1],["nodes",["l",[["m",[["id","trigger-merge"],["kind","merge"],["type","triggerMerge"],["config",["m",[]]]]],["m",[["id","decision"],["kind","decision"],["type","all"],["config",["m",[["conditions",["l",[]]]]]]]]]]],["edges",["l",[["m",[["from","trigger-merge"],["to","decision"],["port","next"]]]]]]]]']) as Map)
                 }
             } else {
                 existing = [whenNodes: detected.data.whenNodes, thenNodes: detected.data.thenNodes, elseNodes: detected.data.elseNodes]

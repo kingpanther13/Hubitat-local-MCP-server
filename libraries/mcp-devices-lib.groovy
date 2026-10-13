@@ -1693,27 +1693,7 @@ private Map _deviceConfigurationProjection(Map source, List keys) {
 }
 
 private List _deviceConfigurationFieldDefinitions() {
-    return [
-        [name: 'label', type: 'string'], [name: 'name', type: 'string'],
-        [name: 'deviceNetworkId', type: 'string', requiresConfirmation: true],
-        [name: 'room', type: 'string'], [name: 'enabled', type: 'boolean'],
-        [name: 'dataValues', type: 'object'], [name: 'preferences', type: 'object'],
-        [name: 'showOnHome', type: 'boolean'], [name: 'defaultCurrentState', type: 'string'],
-        [name: 'tags', type: 'array', items: [type: 'string']],
-        [name: 'deviceTypeId', type: 'integer', requiresConfirmation: true],
-        [name: 'zigbeeId', type: 'string', requiresConfirmation: true],
-        [name: 'notes', type: 'string'], [name: 'defaultIcon', type: 'string'],
-        [name: 'maxEvents', type: 'integer', minimum: 1, maximum: 2000],
-        [name: 'maxStates', type: 'integer', minimum: 1, maximum: 2000],
-        [name: 'spammyThreshold', type: 'integer', minimum: 100, maximum: 2000],
-        [name: 'dashboardIds', type: 'array', items: [type: 'integer'], requiresConfirmation: true],
-        [name: 'meshEnabled', type: 'boolean', requiresConfirmation: true],
-        [name: 'retryEnabled', type: 'boolean'],
-        [name: 'meshFullSync', type: 'boolean', requiresConfirmation: true],
-        [name: 'homeKitEnabled', type: 'boolean', requiresConfirmation: true],
-        [name: 'amazonAlexaEnabled', type: 'boolean', requiresConfirmation: true],
-        [name: 'googleHomeEnabled', type: 'boolean', requiresConfirmation: true]
-    ]
+    return (_bat529EmbeddedCatalogRead(['["l",[["m",[["name","label"],["type","string"]]],["m",[["name","name"],["type","string"]]],["m",[["name","deviceNetworkId"],["type","string"],["requiresConfirmation",true]]],["m",[["name","room"],["type","string"]]],["m",[["name","enabled"],["type","boolean"]]],["m",[["name","dataValues"],["type","object"]]],["m",[["name","preferences"],["type","object"]]],["m",[["name","showOnHome"],["type","boolean"]]],["m",[["name","defaultCurrentState"],["type","string"]]],["m",[["name","tags"],["type","array"],["items",["m",[["type","string"]]]]]],["m",[["name","deviceTypeId"],["type","integer"],["requiresConfirmation",true]]],["m",[["name","zigbeeId"],["type","string"],["requiresConfirmation",true]]],["m",[["name","notes"],["type","string"]]],["m",[["name","defaultIcon"],["type","string"]]],["m",[["name","maxEvents"],["type","integer"],["minimum",1],["maximum",2000]]],["m",[["name","maxStates"],["type","integer"],["minimum",1],["maximum",2000]]],["m",[["name","spammyThreshold"],["type","integer"],["minimum",100],["maximum",2000]]],["m",[["name","dashboardIds"],["type","array"],["items",["m",[["type","integer"]]]],["requiresConfirmation",true]]],["m",[["name","meshEnabled"],["type","boolean"],["requiresConfirmation",true]]],["m",[["name","retryEnabled"],["type","boolean"]]],["m",[["name","meshFullSync"],["type","boolean"],["requiresConfirmation",true]]],["m",[["name","homeKitEnabled"],["type","boolean"],["requiresConfirmation",true]]],["m",[["name","amazonAlexaEnabled"],["type","boolean"],["requiresConfirmation",true]]],["m",[["name","googleHomeEnabled"],["type","boolean"],["requiresConfirmation",true]]]]]']) as List)
 }
 
 private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
@@ -1836,10 +1816,7 @@ private Map _deviceConfigurationDriverSource(Map d, deviceId) {
 
 private Map _deviceConfigurationInfo(Map fj) {
     Map d = fj?.device instanceof Map ? fj.device : [:]
-    def info = _deviceConfigurationProjection(d, ['disabled', 'showOnHome', 'deviceNetworkId', 'roomId', 'roomName',
-        'parentDeviceId', 'parentAppId', 'isComponent', 'linkedDevice', 'lastActivityTime', 'defaultCurrentState',
-        'tags', 'notes', 'maxEvents', 'maxStates', 'spammyThreshold', 'defaultIcon', 'retryEnabled',
-        'meshEnabled', 'meshFullSync', 'createTime', 'updateTime', 'version'])
+    def info = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["disabled","showOnHome","deviceNetworkId","roomId","roomName","parentDeviceId","parentAppId","isComponent","linkedDevice","lastActivityTime","defaultCurrentState","tags","notes","maxEvents","maxStates","spammyThreshold","defaultIcon","retryEnabled","meshEnabled","meshFullSync","createTime","updateTime","version"]]']) as List))
     info.driver = [name: d.deviceTypeName, namespace: d.deviceTypeNamespace, deviceTypeId: d.deviceTypeId,
                    type: d.driverType ?: d.deviceTypeType, readableType: d.deviceTypeReadableType,
                    system: d.systemDeviceType]
@@ -1964,25 +1941,8 @@ private List _deviceDetailSections() {
 }
 
 private Map _deviceDetailSourceCoverage(Map fj) {
-    def rootKeys = ['device', 'settings', 'inputValues', 'commands', 'deviceState', 'scheduledJobs',
-        'parentApp', 'childDevices', 'hasChildren', 'appsUsing', 'appsUsingCount', 'appsUsingForDialog',
-        'appsUsingForDialogMore', 'amazonAlexaEnabled', 'amazonAlexaInstalled', 'amazonAlexaSupported',
-        'googleHomeEnabled', 'googleHomeInstalled', 'googleHomeSupported', 'homeKitEnabled',
-        'homeKitSelectionEnabled', 'dashboards', 'hasDashboards', 'dashboardTypes',
-        'commandRetrySelectionEnabled', 'hubMeshRefreshEnabled', 'showInstructionSearchLink',
-        'extraBreadcrumb', 'virtualFirst', 'tags']
-    def deviceKeys = ['id', 'deviceId', 'name', 'label', 'displayName', 'deviceNetworkId', 'zigbeeId',
-        'lanId', 'endpointId', 'network', 'controllerType', 'roomId', 'roomName', 'roomAssigned',
-        'hubId', 'hubName', 'locationId', 'locationName', 'groupId', 'groupName', 'virtual', 'isComponent',
-        'disabled', 'status', 'orphan', 'createTime', 'updateTime', 'lastActivityTime', 'version',
-        'capabilities', 'currentStates', 'displayAttributes', 'defaultCurrentState', 'data', 'dataJson',
-        'parentDeviceId', 'parentAppId', 'displayAsChild', 'compatibleDeviceId', 'linkedDevice',
-        'linkedAndDisabled', 'linkedLocally', 'meshEnabled', 'meshFullSync', 'meshSelectionEnabled',
-        'retryEnabled', 'retryAvailable', 'homeKitCompatible', 'remoteDeviceUrl', 'ZWave', 'zigbee',
-        'matter', 'bluetooth', 'notes', 'tags', 'maxEvents', 'maxStates', 'spammyThreshold', 'defaultIcon',
-        'icon', 'showOnHome', 'deviceTypeClassLocation', 'deviceTypePopulated', 'deviceTypeSingleThreaded',
-        'deviceTypeReadableType', 'deviceTypeType', 'driverType', 'systemDeviceType', 'deviceTypeId',
-        'deviceTypeName', 'deviceTypeNamespace']
+    def rootKeys = (_bat529EmbeddedCatalogRead(['["l",["device","settings","inputValues","commands","deviceState","scheduledJobs","parentApp","childDevices","hasChildren","appsUsing","appsUsingCount","appsUsingForDialog","appsUsingForDialogMore","amazonAlexaEnabled","amazonAlexaInstalled","amazonAlexaSupported","googleHomeEnabled","googleHomeInstalled","googleHomeSupported","homeKitEnabled","homeKitSelectionEnabled","dashboards","hasDashboards","dashboardTypes","commandRetrySelectionEnabled","hubMeshRefreshEnabled","showInstructionSearchLink","extraBreadcrumb","virtualFirst","tags"]]']) as List)
+    def deviceKeys = (_bat529EmbeddedCatalogRead(['["l",["id","deviceId","name","label","displayName","deviceNetworkId","zigbeeId","lanId","endpointId","network","controllerType","roomId","roomName","roomAssigned","hubId","hubName","locationId","locationName","groupId","groupName","virtual","isComponent","disabled","status","orphan","createTime","updateTime","lastActivityTime","version","capabilities","currentStates","displayAttributes","defaultCurrentState","data","dataJson","parentDeviceId","parentAppId","displayAsChild","compatibleDeviceId","linkedDevice","linkedAndDisabled","linkedLocally","meshEnabled","meshFullSync","meshSelectionEnabled","retryEnabled","retryAvailable","homeKitCompatible","remoteDeviceUrl","ZWave","zigbee","matter","bluetooth","notes","tags","maxEvents","maxStates","spammyThreshold","defaultIcon","icon","showOnHome","deviceTypeClassLocation","deviceTypePopulated","deviceTypeSingleThreaded","deviceTypeReadableType","deviceTypeType","driverType","systemDeviceType","deviceTypeId","deviceTypeName","deviceTypeNamespace"]]']) as List)
     def unknownRoot = fj?.keySet()?.findAll { !rootKeys.contains(it) }?.toList() ?: []
     def unknownDevice = fj?.device instanceof Map ? fj.device.keySet().findAll { !deviceKeys.contains(it) }.toList() : []
     return [status: fj?.device instanceof Map ? (unknownRoot || unknownDevice ? 'partial' : 'complete') : 'unavailable',
@@ -1997,20 +1957,7 @@ private Map _deviceDetailReadStatus(String section, Map fj, Map d, value, device
     if (section == 'configuration') {
         return status + [status: value.preferenceRead.status] + (value.preferenceRead.reason ? [reason: value.preferenceRead.reason] : [:])
     }
-    def contracts = [
-        identity: [device: [id: 'scalar', name: 'scalar', label: 'scalar', deviceTypeId: 'scalar']],
-        attributes: [device: [capabilities: 'list', currentStates: 'map', displayAttributes: 'list', defaultCurrentState: 'scalar']],
-        commands: [root: [commands: 'list']], data: [device: [data: 'map']],
-        state: [root: [deviceState: 'map']], jobs: [root: [scheduledJobs: 'list']],
-        relationships: [root: [parentApp: 'map', childDevices: 'map', hasChildren: 'scalar',
-            appsUsing: 'list', appsUsingCount: 'scalar', appsUsingForDialog: 'list', appsUsingForDialogMore: 'scalar']],
-        integrations: [root: [amazonAlexaEnabled: 'scalar', amazonAlexaInstalled: 'scalar', amazonAlexaSupported: 'scalar',
-            googleHomeEnabled: 'scalar', googleHomeInstalled: 'scalar', googleHomeSupported: 'scalar',
-            homeKitEnabled: 'scalar', homeKitSelectionEnabled: 'scalar', dashboards: 'list', hasDashboards: 'scalar',
-            dashboardTypes: 'list', commandRetrySelectionEnabled: 'scalar', hubMeshRefreshEnabled: 'scalar']],
-        metadata: [device: [notes: 'scalar', tags: 'stringOrList', maxEvents: 'scalar', maxStates: 'scalar',
-            spammyThreshold: 'scalar', defaultIcon: 'scalar', showOnHome: 'scalar']]
-    ]
+    def contracts = (_bat529EmbeddedCatalogRead(['["m",[["identity",["m",[["device",["m",[["id","scalar"],["name","scalar"],["label","scalar"],["deviceTypeId","scalar"]]]]]]],["attributes",["m",[["device",["m",[["capabilities","list"],["currentStates","map"],["displayAttributes","list"],["defaultCurrentState","scalar"]]]]]]],["commands",["m",[["root",["m",[["commands","list"]]]]]]],["data",["m",[["device",["m",[["data","map"]]]]]]],["state",["m",[["root",["m",[["deviceState","map"]]]]]]],["jobs",["m",[["root",["m",[["scheduledJobs","list"]]]]]]],["relationships",["m",[["root",["m",[["parentApp","map"],["childDevices","map"],["hasChildren","scalar"],["appsUsing","list"],["appsUsingCount","scalar"],["appsUsingForDialog","list"],["appsUsingForDialogMore","scalar"]]]]]]],["integrations",["m",[["root",["m",[["amazonAlexaEnabled","scalar"],["amazonAlexaInstalled","scalar"],["amazonAlexaSupported","scalar"],["googleHomeEnabled","scalar"],["googleHomeInstalled","scalar"],["googleHomeSupported","scalar"],["homeKitEnabled","scalar"],["homeKitSelectionEnabled","scalar"],["dashboards","list"],["hasDashboards","scalar"],["dashboardTypes","list"],["commandRetrySelectionEnabled","scalar"],["hubMeshRefreshEnabled","scalar"]]]]]]],["metadata",["m",[["device",["m",[["notes","scalar"],["tags","stringOrList"],["maxEvents","scalar"],["maxStates","scalar"],["spammyThreshold","scalar"],["defaultIcon","scalar"],["showOnHome","scalar"]]]]]]]]]']) as Map)
     def problems = []
     contracts.get(section)?.each { scope, definitions ->
         Map source = scope == 'device' ? d : fj
@@ -2083,11 +2030,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
                 value = _deviceConfigurationResult(deviceId, identity, fj, fields)
                 break
             case 'identity':
-                value = _deviceConfigurationProjection(d, ['id', 'deviceId', 'name', 'label', 'displayName',
-                    'deviceNetworkId', 'zigbeeId', 'lanId', 'endpointId', 'network', 'controllerType',
-                    'roomId', 'roomName', 'roomAssigned', 'hubId', 'hubName', 'locationId', 'locationName',
-                    'groupId', 'groupName', 'virtual', 'isComponent', 'disabled', 'status', 'orphan',
-                    'createTime', 'updateTime', 'lastActivityTime', 'version'])
+                value = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["id","deviceId","name","label","displayName","deviceNetworkId","zigbeeId","lanId","endpointId","network","controllerType","roomId","roomName","roomAssigned","hubId","hubName","locationId","locationName","groupId","groupName","virtual","isComponent","disabled","status","orphan","createTime","updateTime","lastActivityTime","version"]]']) as List))
                 value.driver = _deviceConfigurationInfo(fj).driver
                 break
             case 'attributes':
@@ -2121,19 +2064,14 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
                 value = _deviceConfigurationPublicValue(fj?.scheduledJobs)
                 break
             case 'integrations':
-                keys = ['amazonAlexaEnabled', 'amazonAlexaInstalled', 'amazonAlexaSupported', 'googleHomeEnabled',
-                    'googleHomeInstalled', 'googleHomeSupported', 'homeKitEnabled', 'homeKitSelectionEnabled',
-                    'dashboards', 'hasDashboards', 'dashboardTypes', 'commandRetrySelectionEnabled', 'hubMeshRefreshEnabled']
+                keys = (_bat529EmbeddedCatalogRead(['["l",["amazonAlexaEnabled","amazonAlexaInstalled","amazonAlexaSupported","googleHomeEnabled","googleHomeInstalled","googleHomeSupported","homeKitEnabled","homeKitSelectionEnabled","dashboards","hasDashboards","dashboardTypes","commandRetrySelectionEnabled","hubMeshRefreshEnabled"]]']) as List)
                 value = _deviceConfigurationProjection(fj, keys)
                 value.device = _deviceConfigurationProjection(d, ['meshEnabled', 'meshFullSync', 'meshSelectionEnabled',
                     'retryEnabled', 'retryAvailable', 'homeKitCompatible', 'remoteDeviceUrl', 'linkedDevice',
                     'linkedAndDisabled', 'linkedLocally', 'ZWave', 'zigbee', 'matter', 'bluetooth'])
                 break
             case 'metadata':
-                value = _deviceConfigurationProjection(d, ['notes', 'tags', 'maxEvents', 'maxStates', 'spammyThreshold',
-                    'defaultIcon', 'icon', 'showOnHome', 'deviceTypeClassLocation', 'deviceTypePopulated',
-                    'deviceTypeSingleThreaded', 'deviceTypeReadableType', 'deviceTypeType', 'driverType',
-                    'systemDeviceType', 'deviceTypeId', 'deviceTypeName', 'deviceTypeNamespace'])
+                value = _deviceConfigurationProjection(d, (_bat529EmbeddedCatalogRead(['["l",["notes","tags","maxEvents","maxStates","spammyThreshold","defaultIcon","icon","showOnHome","deviceTypeClassLocation","deviceTypePopulated","deviceTypeSingleThreaded","deviceTypeReadableType","deviceTypeType","driverType","systemDeviceType","deviceTypeId","deviceTypeName","deviceTypeNamespace"]]']) as List))
                 value.ui = _deviceConfigurationProjection(fj, ['showInstructionSearchLink', 'extraBreadcrumb', 'virtualFirst', 'tags'])
                 break
         }
@@ -4506,9 +4444,7 @@ private void _requireCompleteDeviceFormSource(Map full, deviceId) {
     if (!(full?.device instanceof Map)) throw new RuntimeException("Incomplete /device/fullJson preservation source: missing device model; no form update sent")
     def d = full.device
     // All three current-firmware captures contain these keys, including nullable fields.
-    def required = ["id", "version", "controllerType", "name", "label", "zigbeeId", "maxEvents", "maxStates",
-        "spammyThreshold", "deviceNetworkId", "deviceTypeId", "deviceTypeReadableType", "roomId",
-        "meshEnabled", "retryEnabled", "meshFullSync", "locationId", "hubId", "groupId", "tags", "defaultIcon", "notes"]
+    def required = (_bat529EmbeddedCatalogRead(['["l",["id","version","controllerType","name","label","zigbeeId","maxEvents","maxStates","spammyThreshold","deviceNetworkId","deviceTypeId","deviceTypeReadableType","roomId","meshEnabled","retryEnabled","meshFullSync","locationId","hubId","groupId","tags","defaultIcon","notes"]]']) as List)
     def __bat529EachReceiver3 = (required)
 def __bat529EachReceiver3Result = []
 for (def it in __bat529EachReceiver3) {if (!d.containsKey(it) ) __bat529EachReceiver3Result.add(it)
@@ -5286,9 +5222,7 @@ def toolCallDeviceSwap(args) {
 
     def appId = _resolveDirectAppId("swapDevice")
     if (appId == null) {
-        return [success: false,
-                error: "Could not open the built-in Swap Device tool (direct/swapDevice did not resolve to an app instance).",
-                note: "Likely causes: the firmware does not expose the direct/swapDevice alias, the redirect chain shape changed, or the hub auto-followed an absolute Location (200 with no Location header). A hub-admin warn log entry summarizes which; hub_set_log_level(level=info) captures per-hop detail on retry. Verify Settings > Swap Apps Device exists in the hub UI, then retry. Nothing was swapped."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Could not open the built-in Swap Device tool (direct/swapDevice did not resolve to an app instance)."],["note","Likely causes: the firmware does not expose the direct/swapDevice alias, the redirect chain shape changed, or the hub auto-followed an absolute Location (200 with no Location header). A hub-admin warn log entry summarizes which; hub_set_log_level(level=info) captures per-hop detail on retry. Verify Settings > Swap Apps Device exists in the hub UI, then retry. Nothing was swapped."]]]']) as Map)
     }
     mcpLog("info", "device-swap", "Swap Device transient instance ${appId} opened")
 
@@ -5384,9 +5318,7 @@ def toolCallDeviceSwap(args) {
             return r
         }
         if (outcome == "unchanged") {
-            return leftover([success: false, verified: true,
-                    error: "The Swap Device action was clicked but neither device changed identity -- nothing was swapped.",
-                    note: "Both devices kept their own label and network id. Check that both still exist and are compatible (hub_get_device), then retry."])
+            return leftover((_bat529EmbeddedCatalogRead(['["m",[["success",false],["verified",true],["error","The Swap Device action was clicked but neither device changed identity -- nothing was swapped."],["note","Both devices kept their own label and network id. Check that both still exist and are compatible (hub_get_device), then retry."]]]']) as Map))
         }
         if (outcome != "exchanged") {
             return leftover([success: false, verified: false,
@@ -5604,36 +5536,7 @@ private boolean _deviceSwapCleanup(Integer appId) {
 def _getAllToolDefinitions_partDevices() {
     return [
         // Device Tools
-        [
-            name: "hub_list_devices",
-            description: """List all devices available to MCP with current states. format='context' returns a token-cheap plain-text house snapshot (mode + one line per device)[[FLAT_TRIM]] -- the best first call for broad "what's going on / what's in this house" questions[[/FLAT_TRIM]].
-
-DEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don't silently fall back to existing devices.
-
-[[FLAT_TRIM]]
-Use detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.
-[[/FLAT_TRIM]]
-Call `hub_get_tool_guide(section='performance_devices')` for response-shape details, filter/projection semantics, and field-name reference.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    detailed: [type: "boolean", description: "Include native device details (capabilities, reported attributes, commands).[[FLAT_TRIM]] WARNING: Resource-intensive for large device counts. Unset or cleared attributes may be absent.[[/FLAT_TRIM]]"],
-                    offset: [type: "integer", description: "Start from device at this index (0-based). Use for pagination.", default: 0],
-                    limit: [type: "integer", description: "Maximum number of devices to return.[[FLAT_TRIM]] Recommended: 20-30 for detailed=true, higher values may slow hub.[[/FLAT_TRIM]]", default: 0],
-                    filter: [type: "string", description: "Server-side filter (applied before pagination). 'all' (default) | 'enabled' | 'disabled' | 'stale:<hours>' | 'virtual'[[FLAT_TRIM]] (this MCP app's own virtual devices; use to find their IDs/DNIs)[[/FLAT_TRIM]]."],
-                    labelFilter: [type: "string", description: "Case-insensitive substring match against device label; falls back to name for devices without a label set."],
-                    capabilityFilter: [type: "string", description: "Case-insensitive exact match against capability name. Capability names are camelCase (e.g. 'ColorControl')."],
-                    roomFilter: [type: "string", description: "Case-insensitive exact match against the device's assigned room name."],
-                    onlyOn: [type: "boolean", description: "true = only devices whose switch currently reads 'on'.[[FLAT_TRIM]] \"What's on right now\" in one call; false is a no-op.[[/FLAT_TRIM]]"],
-                    changedSince: [type: ["string", "integer"], description: "Only devices with activity at/after this timestamp: epoch ms, or ISO-8601 with a numeric offset (e.g. 2026-06-23T10:00:00Z; -0600 and -06:00 both accepted -- offset-less or date-only forms are rejected).[[FLAT_TRIM]] A returned lastActivity value round-trips. Inverse of filter='stale:<hours>'; devices with no readable lastActivity are excluded. Epoch-ms input echoes back as canonical ISO.[[/FLAT_TRIM]]"],
-                    attributeNames: [type: "array", items: [type: "string"], description: "format='context' only (rejected on other formats): which attributes to show per device line[[FLAT_TRIM]], replacing the default set. Empty array = the default set[[/FLAT_TRIM]]."],
-                    format: [type: "string", enum: ["summary", "detailed", "ids", "context"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands. 'ids' = flat array of device ID integers (cheapest, ignores fields arg). 'context' = plain-text house snapshot in `summary`[[FLAT_TRIM]] (mode + 'Label (id, room) - capabilities; attr=value' lines; page size 50 unless limit set; ignores fields arg)[[/FLAT_TRIM]]."],
-                    fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section='performance_devices')` for valid field names and projection semantics."],
-                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor."],
-                    scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = selected devices plus MCP-owned children, or all devices with bypass enabled[[FLAT_TRIM]] (full detail/currentStates)[[/FLAT_TRIM]]. 'all' = EVERY device on the hub, each tagged with current effective access as mcpAuthorized true/false."]
-                ]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_list_devices"],["description","List all devices available to MCP with current states. format=\'context\' returns a token-cheap plain-text house snapshot (mode + one line per device)[[FLAT_TRIM]] -- the best first call for broad \\"what\'s going on / what\'s in this house\\" questions[[/FLAT_TRIM]].\\n\\nDEVICE AUTHORIZATION: Exact name match -> use directly. No exact match -> suggest similar, ASK USER before using. NEVER control unconfirmed devices (HVAC/locks risk). Report tool failures; don\'t silently fall back to existing devices.\\n\\n[[FLAT_TRIM]]\\nUse detailed=false for discovery; detailed=true with limit=20-30. Sequential calls only.\\n[[/FLAT_TRIM]]\\nCall `hub_get_tool_guide(section=\'performance_devices\')` for response-shape details, filter/projection semantics, and field-name reference."],["inputSchema",["m",[["type","object"],["properties",["m",[["detailed",["m",[["type","boolean"],["description","Include native device details (capabilities, reported attributes, commands).[[FLAT_TRIM]] WARNING: Resource-intensive for large device counts. Unset or cleared attributes may be absent.[[/FLAT_TRIM]]"]]]],["offset",["m",[["type","integer"],["description","Start from device at this index (0-based). Use for pagination."],["default",0]]]],["limit",["m",[["type","integer"],["description","Maximum number of devices to return.[[FLAT_TRIM]] Recommended: 20-30 for detailed=true, higher values may slow hub.[[/FLAT_TRIM]]"],["default",0]]]],["filter",["m",[["type","string"],["description","Server-side filter (applied before pagination). \'all\' (default) | \'enabled\' | \'disabled\' | \'stale:<hours>\' | \'virtual\'[[FLAT_TRIM]] (this MCP app\'s own virtual devices; use to find their IDs/DNIs)[[/FLAT_TRIM]]."]]]],["labelFilter",["m",[["type","string"],["description","Case-insensitive substring match against device label; falls back to name for devices without a label set."]]]],["capabilityFilter",["m",[["type","string"],["description","Case-insensitive exact match against capability name. Capability names are camelCase (e.g. \'ColorControl\')."]]]],["roomFilter",["m",[["type","string"],["description","Case-insensitive exact match against the device\'s assigned room name."]]]],["onlyOn",["m",[["type","boolean"],["description","true = only devices whose switch currently reads \'on\'.[[FLAT_TRIM]] \\"What\'s on right now\\" in one call; false is a no-op.[[/FLAT_TRIM]]"]]]],["changedSince",["m",[["type",["l",["string","integer"]]],["description","Only devices with activity at/after this timestamp: epoch ms, or ISO-8601 with a numeric offset (e.g. 2026-06-23T10:00:00Z; -0600 and -06:00 both accepted -- offset-less or date-only forms are rejected).[[FLAT_TRIM]] A returned lastActivity value round-trips. Inverse of filter=\'stale:<hours>\'; devices with no readable lastActivity are excluded. Epoch-ms input echoes back as canonical ISO.[[/FLAT_TRIM]]"]]]],["attributeNames",["m",[["type","array"],["items",["m",[["type","string"]]]],["description","format=\'context\' only (rejected on other formats): which attributes to show per device line[[FLAT_TRIM]], replacing the default set. Empty array = the default set[[/FLAT_TRIM]]."]]]],["format",["m",[["type","string"],["enum",["l",["summary","detailed","ids","context"]]],["description","Response shape. \'summary\' (default) = standard fields + currentStates. \'detailed\' = capabilities/attributes/commands. \'ids\' = flat array of device ID integers (cheapest, ignores fields arg). \'context\' = plain-text house snapshot in `summary`[[FLAT_TRIM]] (mode + \'Label (id, room) - capabilities; attr=value\' lines; page size 50 unless limit set; ignores fields arg)[[/FLAT_TRIM]]."]]]],["fields",["m",[["type","array"],["items",["m",[["type","string"]]]],["description","Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section=\'performance_devices\')` for valid field names and projection semantics."]]]],["cursor",["m",[["type","string"],["description","Opt-in opaque cursor (alias to offset). Pass \\"\\" for the first page (page size 50 when limit is unset), then iterate nextCursor."]]]],["scope",["m",[["type","string"],["enum",["l",["authorized","all"]]],["description","Which devices to list. \'authorized\' (default) = selected devices plus MCP-owned children, or all devices with bypass enabled[[FLAT_TRIM]] (full detail/currentStates)[[/FLAT_TRIM]]. \'all\' = EVERY device on the hub, each tagged with current effective access as mcpAuthorized true/false."]]]]]]]]]]]]']) as Map),
         [
             name: "hub_get_device",
             description: """Inspect one device. Default summary gives capabilities, current attributes and commands. Use mode='configuration' before updates[[FLAT_TRIM]] to discover editable fields, saved preferences, types/defaults/options and driver information; mode='details' exposes configuration and other device information by section[[/FLAT_TRIM]].[[FLAT_TRIM]] Read status distinguishes unavailable information from unset values.[[/FLAT_TRIM]]""",
@@ -5641,228 +5544,25 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
                 type: "object",
                 properties: [
                     deviceId: [type: "string", description: "Device ID from hub_list_devices, e.g. \"42\""],
-                    mode: [type: "string", enum: ["summary", "configuration", "details"], default: "summary",
-                           description: "summary: concise capabilities/attributes/commands; configuration: valid editable fields and preference definitions/current values; details: all available information in selectable sections."],
+                    mode: (_bat529EmbeddedCatalogRead(['["m",[["type","string"],["enum",["l",["summary","configuration","details"]]],["default","summary"],["description","summary: concise capabilities/attributes/commands; configuration: valid editable fields and preference definitions/current values; details: all available information in selectable sections."]]]']) as Map),
                     sections: [type: "array", items: [type: "string", enum: _deviceDetailSections()],
                                description: "details mode only: non-empty section selection. Omit for all sections.[[FLAT_TRIM]] Large histories remain reachable through read-tool references.[[/FLAT_TRIM]]"],
-                    fields: [type: "array", items: [type: "string"], description: "configuration/details only: omit for all values, [] for availableFields name discovery, or select exact field/preference names.[[FLAT_TRIM]] For commands/jobs use row indices from availableFields; attributes also accepts individual attribute names.[[/FLAT_TRIM]]"],
+                    fields: (_bat529EmbeddedCatalogRead(['["m",[["type","array"],["items",["m",[["type","string"]]]],["description","configuration/details only: omit for all values, [] for availableFields name discovery, or select exact field/preference names.[[FLAT_TRIM]] For commands/jobs use row indices from availableFields; attributes also accepts individual attribute names.[[/FLAT_TRIM]]"]]]']) as Map),
                     cursor: [type: "string", description: "Oversized reads return contentFormat=json-fragment and nextCursor. Repeat with unchanged arguments within five minutes, concatenate content, then parse JSON.[[FLAT_TRIM]] Expired/evicted snapshots require restarting. Prefer fields/sections for smaller reads.[[/FLAT_TRIM]]"]
                 ],
                 required: ["deviceId"]
             ]
         ],
-        [
-            name: "hub_get_device_attribute",
-            description: """Get a device attribute's current value, or block-poll until it reaches an expected value.
-
-[[FLAT_TRIM]]
-One-shot read by default (deviceId + attribute). Provide expectedValue or expectedValues (exactly one) to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: ["string", "integer"], description: "Device ID from hub_list_devices."],
-                    deviceIds: [type: "array", items: [type: ["string", "integer"]], description: "Array of device IDs for a multi-device poll (mutually exclusive with deviceId; max 20)."],
-                    mode: [type: "string", enum: ["any", "all"], description: "Multi-device aggregate.", default: "all"],
-                    attribute: [type: "string", description: "Attribute name."],
-                    expectedValue: [type: "string", description: "If set, block-poll until currentValue matches per comparator (enables poll mode). Single value, e.g. \"72\".[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"],
-                    expectedValues: [type: "array", items: [type: "string"], description: "If set, block-poll until currentValue matches per comparator (enables poll mode). For between, two numeric bounds [low, high].[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"],
-                    comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator. Default eq (value in the expected set).", default: "eq"],
-                    stableForMs: [type: "integer", description: "Debounce: the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match).", default: 0, minimum: 0],
-                    timeoutMs: [type: "integer", description: "Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues — passing a timeout without one is rejected.", default: 5000, minimum: 100, maximum: 60000],
-                    pollIntervalMs: [type: "integer", description: "Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] Target cadence: each tick's native read latency is subtracted from the sleep, down to a floor of half the interval, so slow reads space ticks by the reads plus that floor; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it. (hub_call_device_command's waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]", default: 200, minimum: 50, maximum: 5000]
-                ],
-                required: ["attribute"]
-            ]
-        ],
-        [
-            name: "hub_call_device_command",
-            description: """Send a command (e.g. on, off, setLevel) to one device, or to SEVERAL at once via `commands`. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead.
-
-For more than one device pass `commands` (max 20) rather than calling this repeatedly: one round trip instead of N.[[FLAT_TRIM]] Entries are independent -- one failing entry does not stop the others; check results[] for per-entry success. Confirm a batch with hub_get_device_attribute's deviceIds form. The round trip, not the hub actuating the device, is most of the wall-clock time, so this is the biggest win available on a multi-device intent; mixed devices and mixed commands go in one batch. For a set commanded repeatedly a group or scene is better still - one device to command, with the hub fanning out; `commands` is for the ad-hoc set nobody defined in advance.[[/FLAT_TRIM]]
-
-If no exact device match: suggest similar devices and get user confirmation before sending any command.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: ["string", "integer"], description: "Device ID from hub_list_devices - must be confirmed by user if not an exact match.[[FLAT_TRIM]] Omit when using commands.[[/FLAT_TRIM]]"],
-                    command: [type: "string", description: "Command name, e.g. \"setLevel\". Must be one of the device's supported commands (see hub_get_device).[[FLAT_TRIM]] Omit when using commands.[[/FLAT_TRIM]]"],
-
-                    // The nested item descriptions are terse by design: the three fields are
-                    // described in full at the top level, and restating them here doubled this
-                    // tool's schema bytes against the flat catalog's ~124KB cap.
-                    commands: [
-                        type: "array",
-                        description: "Several devices in ONE call. Mutually exclusive with deviceId/command; no waitFor. Entries return no state snapshot. A bad entry is reported in its own results[] slot while the rest still go; malformed input is rejected before anything is sent.[[FLAT_TRIM]] Entries are sent in the order given.[[/FLAT_TRIM]]",
-                        minItems: 1,
-                        maxItems: 20,
-                        items: [
-                            type: "object",
-                            properties: [
-                                deviceId: [type: ["string", "integer"], description: "As deviceId above"],
-                                command: [type: "string", description: "As command above"],
-                                parameters: [type: "array", description: "As parameters above", items: [type: "string"]]
-                            ],
-                            required: ["deviceId", "command"]
-                        ]
-                    ],
-                    parameters: [type: "array", description: "Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\"75\"] for setLevel[[FLAT_TRIM]] or [\"#FF0000\"] for setColor[[/FLAT_TRIM]].", items: [type: "string"]],
-                    waitFor: [type: "object", description: "Optional: after firing the command, block-poll an attribute for an expected value; check waitFor.converged to confirm the resulting state.[[FLAT_TRIM]] The native `state` snapshot is read after dispatch and any poll. Without waitFor it is an immediate read that may show the prior or resulting value.[[/FLAT_TRIM]]", properties: [
-                        attribute: [type: "string", description: "Attribute to poll until it converges, e.g. \"switch\". NOT checked before the command fires (native metadata lists reported attributes only): a name the device never reports times out with neverReported after the command has already executed."],
-                        expectedValue: [type: "string", description: "Awaited value: eq/ne in-set, or gt/gte/lt/lte numeric threshold."],
-                        expectedValues: [type: "array", items: [type: "string"], description: "Awaited set: eq/ne value list (OR), or between's two bounds [low, high]."],
-                        comparator: [type: "string", enum: ["eq", "ne", "gt", "gte", "lt", "lte", "between"], description: "Match operator, as on hub_get_device_attribute. Default eq.", default: "eq"],
-                        stableForMs: [type: "integer", description: "Debounce ms; match must hold this long before converging. Default 0, < timeoutMs.", default: 0, minimum: 0],
-                        timeoutMs: [type: "integer", description: "Max wait in MILLISECONDS. Default 5000, min 100, max 30000. BLOCKS a hub thread for the full timeout, so keep it tight.", default: 5000, minimum: 100, maximum: 30000],
-                        pollIntervalMs: [type: "integer", description: "Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] Target cadence: read latency is subtracted from the sleep down to a floor of half the interval; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it.[[/FLAT_TRIM]]", default: 250, minimum: 50, maximum: 5000]
-                    ], required: ["attribute"]]
-                ]
-
-                // No `required` array: the two forms require different arguments (deviceId+command,
-                // or commands), which JSON Schema cannot express here without oneOf. Enforced at
-                // runtime instead, with a message naming the conflict.
-            ]
-        ],
-        [
-            name: "hub_list_device_events",
-            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location.
-
-[[FLAT_TRIM]]
-Default: most-recent events for a device (deviceId + optional limit). Device events include producedBy (the app, rule, or device that caused it) and triggered (the apps it fired) when the hub records them -- use attribute 'command-on' etc. to see who sent a command.
-[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: ["string", "integer"], description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."],
-                    appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted). Mutually exclusive with deviceId."],
-                    hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events.[[FLAT_TRIM]] Ignored when since is given.[[/FLAT_TRIM]]"],
-                    until: [type: ["string", "integer"], description: "[[FLAT_TRIM]]Optional window end (inclusive), same formats as since.[[/FLAT_TRIM]]"],
-                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp; ISO-8601 with a numeric offset (-0600 or -06:00; e.g. 2026-06-23T10:00:00.000-0600) or epoch milliseconds.[[FLAT_TRIM]] This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
-                    attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
-                    limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500).[[FLAT_TRIM]] Higher values may slow hub.[[/FLAT_TRIM]]", default: 10]
-                ]
-            ]
-        ],
-        [
-            name: "hub_update_device",
-            description: """Update device configuration and driver preferences. Read hub_get_device(mode='configuration') first for current values, valid options, and availability.
-
-Only modify devices user explicitly requested. Pre-flight: read configuration, choose the exact patch, obtain the update_device guide key.[[FLAT_TRIM]] Writes require Write master.[[/FLAT_TRIM]] Identity, driver, dashboard, mesh and assistant changes additionally require confirm=true and a backup less than 24 hours old. Saved preferences do not invoke device commands. Per-property changes/errors report partial success; inspect readback before retrying.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: "string", description: "The device ID to update (from hub_list_devices or hub_list_devices(filter='virtual'))"],
-                    label: [type: "string", description: "New display label for the device"],
-                    name: [type: "string", description: "New device name"],
-                    deviceNetworkId: [type: "string", description: "New device network ID (must be unique across all hub devices)"],
-                    room: [type: "string", description: "Existing room name (case-insensitive exact match); empty string removes the assignment."],
-                    enabled: [type: "boolean", description: "Set to true to enable or false to disable the device"],
-                    dataValues: [type: "object", description: "Key-value pairs to set in the device's Data section. Example: {\"firmware\": \"1.2.3\", \"model\": \"ABC\"}",
-                        additionalProperties: [type: "string"]],
-                    preferences: [type: "object", description: "Declared driver preferences; discover names/types/options using configuration mode. Use {type,value} or a compatible nonblank bare value. Use {clear:true} to remove an optional saved setting; omit a name to preserve it.[[FLAT_TRIM]] Null, blank strings, empty arrays and clear combined with value are rejected.[[/FLAT_TRIM]] Booleans, numbers and nonempty multiple-enum arrays retain native types.[[FLAT_TRIM]] If configuration reports multiple:null for an unset enum, check its driver declaration or pre-clear metadata and supply {value:...,multiple:true/false}; cardinality is never guessed.[[/FLAT_TRIM]]"],
-                    showOnHome: [type: "boolean", description: "Show this device on the hub Home page.[[FLAT_TRIM]] Also counts it in the quick status-bar summaries (climate/lights/locks/etc.)[[/FLAT_TRIM]]"],
-                    defaultCurrentState: [type: "string", description: "Which attribute appears in the Status column[[FLAT_TRIM]] (Devices/Rooms pages)[[/FLAT_TRIM]], e.g. \"switch\"; \"\" selects None."],
-                    tags: [type: "array", description: "Free-form device tags; REPLACES the full set ([] clears all).", items: [type: "string"]],
-                    deviceTypeId: [type: "integer", minimum: 1, description: "Driver selection ID from configuration driver options. Changes behavior[[FLAT_TRIM]]; requires confirm and recent backup[[/FLAT_TRIM]]."],
-                    zigbeeId: [type: "string", description: "Existing Zigbee device identity; unavailable on components or linked devices.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    notes: [type: "string", description: "Device note; empty string clears it."],
-                    maxEvents: [type: "integer", minimum: 1, maximum: 2000, description: "Stored events per event type. Reducing retention can remove older history."],
-                    maxStates: [type: "integer", minimum: 1, maximum: 2000, description: "Stored states per attribute. Reducing retention can remove older history."],
-                    spammyThreshold: [type: "integer", minimum: 100, maximum: 2000, description: "Events per hour that trigger the too-many-events alert."],
-                    defaultIcon: [type: "string", description: "Native custom icon identifier; empty string removes the override."],
-                    dashboardIds: [type: "array", items: [type: "integer", minimum: 1], description: "Replace native dashboard assignments using configuration option IDs; [] clears.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    meshEnabled: [type: "boolean", description: "Share through Hub Mesh.[[FLAT_TRIM]] When native selection is available; requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    retryEnabled: [type: "boolean", description: "Enable native command retry when available for this device."],
-                    meshFullSync: [type: "boolean", description: "Regularly sync a linked device.[[FLAT_TRIM]] When Hub Mesh refresh is enabled; requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    homeKitEnabled: [type: "boolean", description: "Native Apple HomeKit assignment when supported/enabled.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    amazonAlexaEnabled: [type: "boolean", description: "Native Amazon Alexa assignment when installed and supported.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    googleHomeEnabled: [type: "boolean", description: "Native Google Home assignment when installed and supported.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "Explicit approval for driver, identity, dashboard, mesh or assistant changes; also requires a hub backup within 24 hours."]
-                ],
-                required: ["deviceId"]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_get_device_attribute"],["description","Get a device attribute\'s current value, or block-poll until it reaches an expected value.\\n\\n[[FLAT_TRIM]]\\nOne-shot read by default (deviceId + attribute). Provide expectedValue or expectedValues (exactly one) to block-poll until currentValue matches, returning immediately on match or when timeoutMs elapses.\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["deviceId",["m",[["type",["l",["string","integer"]]],["description","Device ID from hub_list_devices."]]]],["deviceIds",["m",[["type","array"],["items",["m",[["type",["l",["string","integer"]]]]]],["description","Array of device IDs for a multi-device poll (mutually exclusive with deviceId; max 20)."]]]],["mode",["m",[["type","string"],["enum",["l",["any","all"]]],["description","Multi-device aggregate."],["default","all"]]]],["attribute",["m",[["type","string"],["description","Attribute name."]]]],["expectedValue",["m",[["type","string"],["description","If set, block-poll until currentValue matches per comparator (enables poll mode). Single value, e.g. \\"72\\".[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"]]]],["expectedValues",["m",[["type","array"],["items",["m",[["type","string"]]]],["description","If set, block-poll until currentValue matches per comparator (enables poll mode). For between, two numeric bounds [low, high].[[FLAT_TRIM]] Provide exactly one of expectedValue or expectedValues.[[/FLAT_TRIM]]"]]]],["comparator",["m",[["type","string"],["enum",["l",["eq","ne","gt","gte","lt","lte","between"]]],["description","Match operator. Default eq (value in the expected set)."],["default","eq"]]]],["stableForMs",["m",[["type","integer"],["description","Debounce: the match must hold continuously for this many MILLISECONDS before converging. Default 0 (first match)."],["default",0],["minimum",0]]]],["timeoutMs",["m",[["type","integer"],["description","Poll mode only: max wait in MILLISECONDS. Default 5000, min 100, max 60000. Requires expectedValue/expectedValues \\u2014 passing a timeout without one is rejected."],["default",5000],["minimum",100],["maximum",60000]]]],["pollIntervalMs",["m",[["type","integer"],["description","Poll mode: re-check interval in MILLISECONDS. Default 200, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] Target cadence: each tick\'s native read latency is subtracted from the sleep, down to a floor of half the interval, so slow reads space ticks by the reads plus that floor; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it. (hub_call_device_command\'s waitFor defaults to 250 instead: a post-command poll follows a write, so wider spacing reduces read contention.)[[/FLAT_TRIM]]"],["default",200],["minimum",50],["maximum",5000]]]]]]],["required",["l",["attribute"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_call_device_command"],["description","Send a command (e.g. on, off, setLevel) to one device, or to SEVERAL at once via `commands`. Use to actuate or control a device; for read-only checks use hub_get_device_attribute instead.\\n\\nFor more than one device pass `commands` (max 20) rather than calling this repeatedly: one round trip instead of N.[[FLAT_TRIM]] Entries are independent -- one failing entry does not stop the others; check results[] for per-entry success. Confirm a batch with hub_get_device_attribute\'s deviceIds form. The round trip, not the hub actuating the device, is most of the wall-clock time, so this is the biggest win available on a multi-device intent; mixed devices and mixed commands go in one batch. For a set commanded repeatedly a group or scene is better still - one device to command, with the hub fanning out; `commands` is for the ad-hoc set nobody defined in advance.[[/FLAT_TRIM]]\\n\\nIf no exact device match: suggest similar devices and get user confirmation before sending any command."],["inputSchema",["m",[["type","object"],["properties",["m",[["deviceId",["m",[["type",["l",["string","integer"]]],["description","Device ID from hub_list_devices - must be confirmed by user if not an exact match.[[FLAT_TRIM]] Omit when using commands.[[/FLAT_TRIM]]"]]]],["command",["m",[["type","string"],["description","Command name, e.g. \\"setLevel\\". Must be one of the device\'s supported commands (see hub_get_device).[[FLAT_TRIM]] Omit when using commands.[[/FLAT_TRIM]]"]]]],["commands",["m",[["type","array"],["description","Several devices in ONE call. Mutually exclusive with deviceId/command; no waitFor. Entries return no state snapshot. A bad entry is reported in its own results[] slot while the rest still go; malformed input is rejected before anything is sent.[[FLAT_TRIM]] Entries are sent in the order given.[[/FLAT_TRIM]]"],["minItems",1],["maxItems",20],["items",["m",[["type","object"],["properties",["m",[["deviceId",["m",[["type",["l",["string","integer"]]],["description","As deviceId above"]]]],["command",["m",[["type","string"],["description","As command above"]]]],["parameters",["m",[["type","array"],["description","As parameters above"],["items",["m",[["type","string"]]]]]]]]]],["required",["l",["deviceId","command"]]]]]]]]],["parameters",["m",[["type","array"],["description","Ordered command arguments as an array of strings, in the order the command declares them, e.g. [\\"75\\"] for setLevel[[FLAT_TRIM]] or [\\"#FF0000\\"] for setColor[[/FLAT_TRIM]]."],["items",["m",[["type","string"]]]]]]],["waitFor",["m",[["type","object"],["description","Optional: after firing the command, block-poll an attribute for an expected value; check waitFor.converged to confirm the resulting state.[[FLAT_TRIM]] The native `state` snapshot is read after dispatch and any poll. Without waitFor it is an immediate read that may show the prior or resulting value.[[/FLAT_TRIM]]"],["properties",["m",[["attribute",["m",[["type","string"],["description","Attribute to poll until it converges, e.g. \\"switch\\". NOT checked before the command fires (native metadata lists reported attributes only): a name the device never reports times out with neverReported after the command has already executed."]]]],["expectedValue",["m",[["type","string"],["description","Awaited value: eq/ne in-set, or gt/gte/lt/lte numeric threshold."]]]],["expectedValues",["m",[["type","array"],["items",["m",[["type","string"]]]],["description","Awaited set: eq/ne value list (OR), or between\'s two bounds [low, high]."]]]],["comparator",["m",[["type","string"],["enum",["l",["eq","ne","gt","gte","lt","lte","between"]]],["description","Match operator, as on hub_get_device_attribute. Default eq."],["default","eq"]]]],["stableForMs",["m",[["type","integer"],["description","Debounce ms; match must hold this long before converging. Default 0, < timeoutMs."],["default",0],["minimum",0]]]],["timeoutMs",["m",[["type","integer"],["description","Max wait in MILLISECONDS. Default 5000, min 100, max 30000. BLOCKS a hub thread for the full timeout, so keep it tight."],["default",5000],["minimum",100],["maximum",30000]]]],["pollIntervalMs",["m",[["type","integer"],["description","Re-check interval in MILLISECONDS. Default 250, min 50, max 5000. Clamped to timeoutMs if larger.[[FLAT_TRIM]] Target cadence: read latency is subtracted from the sleep down to a floor of half the interval; the final tick can still sleep less than that floor because the remaining timeoutMs window clamps it.[[/FLAT_TRIM]]"],["default",250],["minimum",50],["maximum",5000]]]]]]],["required",["l",["attribute"]]]]]]]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_list_device_events"],["description","Get event history for a device, an app or rule (the automation events it emitted), or the location.\\n\\n[[FLAT_TRIM]]\\nDefault: most-recent events for a device (deviceId + optional limit). Device events include producedBy (the app, rule, or device that caused it) and triggered (the apps it fired) when the hub records them -- use attribute \'command-on\' etc. to see who sent a command.\\n[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["deviceId",["m",[["type",["l",["string","integer"]]],["description","Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."]]]],["appId",["m",[["type","integer"],["description","Installed-app ID for per-app events (what the app/rule emitted). Mutually exclusive with deviceId."]]]],["hoursBack",["m",[["type","integer"],["description","If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events.[[FLAT_TRIM]] Ignored when since is given.[[/FLAT_TRIM]]"]]]],["until",["m",[["type",["l",["string","integer"]]],["description","[[FLAT_TRIM]]Optional window end (inclusive), same formats as since.[[/FLAT_TRIM]]"]]]],["since",["m",[["type",["l",["string","integer"]]],["description","Absolute window start -- return only events AFTER this timestamp; ISO-8601 with a numeric offset (-0600 or -06:00; e.g. 2026-06-23T10:00:00.000-0600) or epoch milliseconds.[[FLAT_TRIM]] This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"]]]],["attribute",["m",[["type","string"],["description","Event-name filter. Device: an attribute (e.g. \'switch\').[[FLAT_TRIM]] Location: \'mode\', \'hsmStatus\', \'hsmAlert\', or a hub-variable name.[[/FLAT_TRIM]]"]]]],["limit",["m",[["type","integer"],["description","Max events to return. Recent mode default 10; history mode default 100 (max 500).[[FLAT_TRIM]] Higher values may slow hub.[[/FLAT_TRIM]]"],["default",10]]]]]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_update_device"],["description","Update device configuration and driver preferences. Read hub_get_device(mode=\'configuration\') first for current values, valid options, and availability.\\n\\nOnly modify devices user explicitly requested. Pre-flight: read configuration, choose the exact patch, obtain the update_device guide key.[[FLAT_TRIM]] Writes require Write master.[[/FLAT_TRIM]] Identity, driver, dashboard, mesh and assistant changes additionally require confirm=true and a backup less than 24 hours old. Saved preferences do not invoke device commands. Per-property changes/errors report partial success; inspect readback before retrying."],["inputSchema",["m",[["type","object"],["properties",["m",[["deviceId",["m",[["type","string"],["description","The device ID to update (from hub_list_devices or hub_list_devices(filter=\'virtual\'))"]]]],["label",["m",[["type","string"],["description","New display label for the device"]]]],["name",["m",[["type","string"],["description","New device name"]]]],["deviceNetworkId",["m",[["type","string"],["description","New device network ID (must be unique across all hub devices)"]]]],["room",["m",[["type","string"],["description","Existing room name (case-insensitive exact match); empty string removes the assignment."]]]],["enabled",["m",[["type","boolean"],["description","Set to true to enable or false to disable the device"]]]],["dataValues",["m",[["type","object"],["description","Key-value pairs to set in the device\'s Data section. Example: {\\"firmware\\": \\"1.2.3\\", \\"model\\": \\"ABC\\"}"],["additionalProperties",["m",[["type","string"]]]]]]],["preferences",["m",[["type","object"],["description","Declared driver preferences; discover names/types/options using configuration mode. Use {type,value} or a compatible nonblank bare value. Use {clear:true} to remove an optional saved setting; omit a name to preserve it.[[FLAT_TRIM]] Null, blank strings, empty arrays and clear combined with value are rejected.[[/FLAT_TRIM]] Booleans, numbers and nonempty multiple-enum arrays retain native types.[[FLAT_TRIM]] If configuration reports multiple:null for an unset enum, check its driver declaration or pre-clear metadata and supply {value:...,multiple:true/false}; cardinality is never guessed.[[/FLAT_TRIM]]"]]]],["showOnHome",["m",[["type","boolean"],["description","Show this device on the hub Home page.[[FLAT_TRIM]] Also counts it in the quick status-bar summaries (climate/lights/locks/etc.)[[/FLAT_TRIM]]"]]]],["defaultCurrentState",["m",[["type","string"],["description","Which attribute appears in the Status column[[FLAT_TRIM]] (Devices/Rooms pages)[[/FLAT_TRIM]], e.g. \\"switch\\"; \\"\\" selects None."]]]],["tags",["m",[["type","array"],["description","Free-form device tags; REPLACES the full set ([] clears all)."],["items",["m",[["type","string"]]]]]]],["deviceTypeId",["m",[["type","integer"],["minimum",1],["description","Driver selection ID from configuration driver options. Changes behavior[[FLAT_TRIM]]; requires confirm and recent backup[[/FLAT_TRIM]]."]]]],["zigbeeId",["m",[["type","string"],["description","Existing Zigbee device identity; unavailable on components or linked devices.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"]]]],["notes",["m",[["type","string"],["description","Device note; empty string clears it."]]]],["maxEvents",["m",[["type","integer"],["minimum",1],["maximum",2000],["description","Stored events per event type. Reducing retention can remove older history."]]]],["maxStates",["m",[["type","integer"],["minimum",1],["maximum",2000],["description","Stored states per attribute. Reducing retention can remove older history."]]]],["spammyThreshold",["m",[["type","integer"],["minimum",100],["maximum",2000],["description","Events per hour that trigger the too-many-events alert."]]]],["defaultIcon",["m",[["type","string"],["description","Native custom icon identifier; empty string removes the override."]]]],["dashboardIds",["m",[["type","array"],["items",["m",[["type","integer"],["minimum",1]]]],["description","Replace native dashboard assignments using configuration option IDs; [] clears.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"]]]],["meshEnabled",["m",[["type","boolean"],["description","Share through Hub Mesh.[[FLAT_TRIM]] When native selection is available; requires confirm and recent backup.[[/FLAT_TRIM]]"]]]],["retryEnabled",["m",[["type","boolean"],["description","Enable native command retry when available for this device."]]]],["meshFullSync",["m",[["type","boolean"],["description","Regularly sync a linked device.[[FLAT_TRIM]] When Hub Mesh refresh is enabled; requires confirm and recent backup.[[/FLAT_TRIM]]"]]]],["homeKitEnabled",["m",[["type","boolean"],["description","Native Apple HomeKit assignment when supported/enabled.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"]]]],["amazonAlexaEnabled",["m",[["type","boolean"],["description","Native Amazon Alexa assignment when installed and supported.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"]]]],["googleHomeEnabled",["m",[["type","boolean"],["description","Native Google Home assignment when installed and supported.[[FLAT_TRIM]] Requires confirm and recent backup.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","Explicit approval for driver, identity, dashboard, mesh or assistant changes; also requires a hub backup within 24 hours."]]]]]]],["required",["l",["deviceId"]]]]]]]]']) as Map),
         // Device Admin
-        [
-            name: "hub_delete_device",
-            description: """⚠️ MOST DESTRUCTIVE: Permanently delete a device. NO UNDO.[[FLAT_TRIM]] Requires Write master + confirm. For ghost/orphaned/stuck devices only.[[/FLAT_TRIM]]
-
-PRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zigbee → exclusion first 5) Get confirmation. Device + history lost, automations break.[[FLAT_TRIM]] A Hub Mesh LINKED device unlinks locally only (the peer's source device is untouched) and warns on appsUsing. See hub_get_tool_guide(section='hub_admin_write_destructive').[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceId: [type: "string", description: "Device ID to delete."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true.[[FLAT_TRIM]] Confirms a backup exists (<24h), the device was verified, and the user approved the deletion.[[/FLAT_TRIM]]"]
-                ],
-                required: ["deviceId", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_call_device_swap",
-            description: """⚠️ DESTRUCTIVE: Swap a device — apps and rules using from_device_id run on to_device_id's hardware afterwards. Running it again swaps them back.[[FLAT_TRIM]] The hub exchanges the two devices' identities (name, label, network id, driver, room, current state; event history stays): app references stay on both ids, so from_device_id's apps run on the replacement and to_device_id's apps on the old device.[[/FLAT_TRIM]]
-
-Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) hub_list_device_dependents on both ids — from_device_id's apps move to the new hardware, to_device_id's to the old; 3) confirm with the user.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    from_device_id: [type: "string", description: "Device the apps use today (from hub_list_devices).[[FLAT_TRIM]] Its id keeps every app reference and takes on the replacement's identity.[[/FLAT_TRIM]]"],
-                    to_device_id: [type: "string", description: "Replacement device ID. Must be capability-compatible — on mismatch the error lists the compatible candidates."],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms a hub backup exists (<24h) and the user approved the swap."]
-                ],
-                required: ["from_device_id", "to_device_id", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_call_device_replace",
-            description: """⚠️ DESTRUCTIVE: Replace a device's hardware, KEEPING its id + all app/rule references.
-
-[[FLAT_TRIM]]
-Two-step: list_options=true to list candidates, then apply with confirm=true.
-[[/FLAT_TRIM]]
-Pre-flight: backup <24h (hub_create_backup) + user OK.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    old_device_id: [type: "string", description: "Device to replace; its id is preserved."],
-                    new_device_id: [type: "string", description: "Compatible replacement device."],
-                    list_options: [type: "boolean", description: "Read-only: list compatible replacement candidates (no confirm)."],
-                    confirm: [type: "boolean", description: "REQUIRED to apply (omit for list_options): confirms backup <24h + user approval."]
-                ],
-                required: ["old_device_id"]
-            ]
-        ],
-        [
-            name: "hub_create_device",
-            description: """Create a device from a driver TYPE id. Requires Write master + confirm.[[FLAT_TRIM]] For LAN/integration/software drivers, NOT radio pairing (Z-Wave/Zigbee/Matter); for virtual devices use hub_manage_virtual_device. Or LINK a peer hub's shared device over Hub Mesh: pass mesh_source_hub_id + mesh_source_device_id from hub_get_hub_mesh availableLinkedDevices[] instead of deviceTypeId; see hub_get_tool_guide(section='update_device').[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    deviceTypeId: [type: "string", description: "Driver-type id to instantiate (the 'id' from hub_list_drivers(include='all')).[[FLAT_TRIM]] Omit when linking a Hub Mesh device.[[/FLAT_TRIM]]"],
-                    label: [type: "string", description: "Optional display label for the new device.[[FLAT_TRIM]] Driver-based create only.[[/FLAT_TRIM]]"],
-                    mesh_source_hub_id: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedDevices[]; send with mesh_source_device_id, omit deviceTypeId.[[/FLAT_TRIM]]"],
-                    mesh_source_device_id: [type: "string", description: "Hub Mesh: peer device id.[[FLAT_TRIM]] From the same availableLinkedDevices[] row.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true to create the device."]
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_get_compatible_devices",
-            description: """Search Hubitat's official compatible-devices catalog of brands/models[[FLAT_TRIM]] with pairing/exclusion/factory-reset instructions and the Hubitat driver each maps to[[/FLAT_TRIM]]. Read-only reference -- NOT your installed devices.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    query: [type: "string", description: "Free-text match across brand, name, product number, device type, and driver name."],
-                    brand: [type: "string", description: "Filter by brand (substring, case-insensitive)."],
-                    protocol: [type: "string", description: "Filter by protocol (substring), e.g. 'Zigbee'."],
-                    deviceType: [type: "string", description: "Filter by device type (substring), e.g. 'Dimmer'."],
-                    includeInstructions: [type: "boolean", description: "Include join/exclude/factory-reset instructions[[FLAT_TRIM]] (HTML stripped) + notes[[/FLAT_TRIM]]. Default false (summaries)."],
-                    cursor: [type: "string", description: "Pagination cursor. Pass \"\" (or omit) for the first page; iterate nextCursor."]
-                ]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_delete_device"],["description","\\u26a0\\ufe0f MOST DESTRUCTIVE: Permanently delete a device. NO UNDO.[[FLAT_TRIM]] Requires Write master + confirm. For ghost/orphaned/stuck devices only.[[/FLAT_TRIM]]\\n\\nPRE-FLIGHT: 1) Backup <24h 2) hub_get_device to verify 3) Warn user 4) Z-Wave/Zigbee \\u2192 exclusion first 5) Get confirmation. Device + history lost, automations break.[[FLAT_TRIM]] A Hub Mesh LINKED device unlinks locally only (the peer\'s source device is untouched) and warns on appsUsing. See hub_get_tool_guide(section=\'hub_admin_write_destructive\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["deviceId",["m",[["type","string"],["description","Device ID to delete."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true.[[FLAT_TRIM]] Confirms a backup exists (<24h), the device was verified, and the user approved the deletion.[[/FLAT_TRIM]]"]]]]]]],["required",["l",["deviceId","confirm"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_call_device_swap"],["description","\\u26a0\\ufe0f DESTRUCTIVE: Swap a device \\u2014 apps and rules using from_device_id run on to_device_id\'s hardware afterwards. Running it again swaps them back.[[FLAT_TRIM]] The hub exchanges the two devices\' identities (name, label, network id, driver, room, current state; event history stays): app references stay on both ids, so from_device_id\'s apps run on the replacement and to_device_id\'s apps on the old device.[[/FLAT_TRIM]]\\n\\nPre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) hub_list_device_dependents on both ids \\u2014 from_device_id\'s apps move to the new hardware, to_device_id\'s to the old; 3) confirm with the user."],["inputSchema",["m",[["type","object"],["properties",["m",[["from_device_id",["m",[["type","string"],["description","Device the apps use today (from hub_list_devices).[[FLAT_TRIM]] Its id keeps every app reference and takes on the replacement\'s identity.[[/FLAT_TRIM]]"]]]],["to_device_id",["m",[["type","string"],["description","Replacement device ID. Must be capability-compatible \\u2014 on mismatch the error lists the compatible candidates."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms a hub backup exists (<24h) and the user approved the swap."]]]]]]],["required",["l",["from_device_id","to_device_id","confirm"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_call_device_replace"],["description","\\u26a0\\ufe0f DESTRUCTIVE: Replace a device\'s hardware, KEEPING its id + all app/rule references.\\n\\n[[FLAT_TRIM]]\\nTwo-step: list_options=true to list candidates, then apply with confirm=true.\\n[[/FLAT_TRIM]]\\nPre-flight: backup <24h (hub_create_backup) + user OK."],["inputSchema",["m",[["type","object"],["properties",["m",[["old_device_id",["m",[["type","string"],["description","Device to replace; its id is preserved."]]]],["new_device_id",["m",[["type","string"],["description","Compatible replacement device."]]]],["list_options",["m",[["type","boolean"],["description","Read-only: list compatible replacement candidates (no confirm)."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED to apply (omit for list_options): confirms backup <24h + user approval."]]]]]]],["required",["l",["old_device_id"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_create_device"],["description","Create a device from a driver TYPE id. Requires Write master + confirm.[[FLAT_TRIM]] For LAN/integration/software drivers, NOT radio pairing (Z-Wave/Zigbee/Matter); for virtual devices use hub_manage_virtual_device. Or LINK a peer hub\'s shared device over Hub Mesh: pass mesh_source_hub_id + mesh_source_device_id from hub_get_hub_mesh availableLinkedDevices[] instead of deviceTypeId; see hub_get_tool_guide(section=\'update_device\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["deviceTypeId",["m",[["type","string"],["description","Driver-type id to instantiate (the \'id\' from hub_list_drivers(include=\'all\')).[[FLAT_TRIM]] Omit when linking a Hub Mesh device.[[/FLAT_TRIM]]"]]]],["label",["m",[["type","string"],["description","Optional display label for the new device.[[FLAT_TRIM]] Driver-based create only.[[/FLAT_TRIM]]"]]]],["mesh_source_hub_id",["m",[["type","string"],["description","Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedDevices[]; send with mesh_source_device_id, omit deviceTypeId.[[/FLAT_TRIM]]"]]]],["mesh_source_device_id",["m",[["type","string"],["description","Hub Mesh: peer device id.[[FLAT_TRIM]] From the same availableLinkedDevices[] row.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to create the device."]]]]]]],["required",["l",["confirm"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_get_compatible_devices"],["description","Search Hubitat\'s official compatible-devices catalog of brands/models[[FLAT_TRIM]] with pairing/exclusion/factory-reset instructions and the Hubitat driver each maps to[[/FLAT_TRIM]]. Read-only reference -- NOT your installed devices."],["inputSchema",["m",[["type","object"],["properties",["m",[["query",["m",[["type","string"],["description","Free-text match across brand, name, product number, device type, and driver name."]]]],["brand",["m",[["type","string"],["description","Filter by brand (substring, case-insensitive)."]]]],["protocol",["m",[["type","string"],["description","Filter by protocol (substring), e.g. \'Zigbee\'."]]]],["deviceType",["m",[["type","string"],["description","Filter by device type (substring), e.g. \'Dimmer\'."]]]],["includeInstructions",["m",[["type","boolean"],["description","Include join/exclude/factory-reset instructions[[FLAT_TRIM]] (HTML stripped) + notes[[/FLAT_TRIM]]. Default false (summaries)."]]]],["cursor",["m",[["type","string"],["description","Pagination cursor. Pass \\"\\" (or omit) for the first page; iterate nextCursor."]]]]]]]]]]]]']) as Map),
     ]
 }
 

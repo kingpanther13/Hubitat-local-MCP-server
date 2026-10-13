@@ -453,9 +453,7 @@ private Map _createLegacyDashboard(Map args) {
     def deviceCsv = _dashboardDeviceCsv(args.deviceIds, false)
     def parentId = _legacyDashboardParentId()
     if (parentId == null) {
-        return [success: false,
-                error: "The legacy Hubitat® Dashboard parent app was not found and could not be auto-installed via Add Built-In App (details logged), so no legacy dashboard can be created.",
-                note: "Install the built-in 'Hubitat® Dashboard' app via Apps > Add built-in app and retry, or create an Easy Dashboard instead (omit type)."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","The legacy Hubitat\\u00ae Dashboard parent app was not found and could not be auto-installed via Add Built-In App (details logged), so no legacy dashboard can be created."],["note","Install the built-in \'Hubitat\\u00ae Dashboard\' app via Apps > Add built-in app and retry, or create an Easy Dashboard instead (omit type)."]]]']) as Map)
     }
     _requireUnprotectedAppMutation(parentId, "create a dashboard under")
     def resp
@@ -1092,94 +1090,8 @@ private Map _dashboardWriteResult(raw, String op, String reqId) {
 
 // Tool DEFINITIONS (issue #209: schema lives with the impl); gateway membership + dispatch stay in main.
 def _getAllToolDefinitions_partDashboards() {
-    def dashFields = [
-        id: [type: "string"], name: [type: "string"], type: [type: "string"],
-        showModeTile: [type: "boolean"], showClockTile: [type: "boolean"],
-        showCalendarTile: [type: "boolean"], showHSMTile: [type: "boolean"],
-        showEdit: [type: "boolean"], showNavigation: [type: "boolean"], showTutorial: [type: "boolean"],
-        navigationSelection: [type: "string"], theme: [type: "string"],
-        deviceIds: [type: "array"], dashboardPin: [type: "string"], hsmPin: [type: "string"]
-    ]
-    return [
-        [
-            name: "hub_list_dashboards",
-            description: "List the hub's dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards.[[FLAT_TRIM]] Read-only; each entry carries id, name, and a type ('easy' or 'legacy'). Easy entries also include tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    pinToken: [type: "string", description: "Optional pin token. Auto-resolved when omitted."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_dashboard",
-            description: "Get a dashboard's full config by id. Easy Dashboard: tiles/theme/devices/PINs. Legacy Hubitat® Dashboard: its authorized deviceIds plus the nested layout (tiles, grid, colors).[[FLAT_TRIM]] Read this before a wholesale hub_update_dashboard and pass its output straight back. A read that partly fails returns partial:true with a note (values are unavailable, not defaulted). See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    dashboardId: [type: "string", description: "installedAppId."],
-                    pinToken: [type: "string", description: "Optional pin token. Auto-resolved when omitted."]
-                ],
-                required: ["dashboardId"]
-            ]
-        ],
-        [
-            name: "hub_create_dashboard",
-            description: "Create a dashboard. type='easy' (default) builds an Easy Dashboard from devices + tile options; type='legacy' creates an empty legacy Hubitat® Dashboard whose deviceIds are its authorized-device list.[[FLAT_TRIM]] A legacy dashboard starts with an empty layout -- add tiles afterward with hub_update_dashboard (addTiles / setOptions) -- and rejects the Easy-only options arg. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Display name."],
-                    type: [type: "string", enum: ["easy", "legacy"], description: "Dashboard kind: 'easy' (default) or 'legacy' Hubitat® Dashboard."],
-                    deviceIds: [type: "array", description: "Device ids. Required (>=1, runtime-enforced) for an Easy Dashboard; for a legacy dashboard these are its authorized devices (optional).", items: [type: "string"]],
-                    options: [type: "object", description: "Easy-only optional config; see hub_get_tool_guide(section='dashboards'). Rejected for type='legacy'."]
-                ],
-                required: ["name"]
-            ]
-        ],
-        [
-            name: "hub_update_dashboard",
-            description: "Update a dashboard by id; behavior depends on its kind. Easy Dashboard: wholesale config replace -- read hub_get_dashboard first and pass the FULL config back (name + deviceIds required; omitted fields revert to default). Legacy Hubitat® Dashboard: edit its name (label), deviceIds (authorized devices), and/or layout.[[FLAT_TRIM]] Legacy layout edits are EITHER `layout` (wholesale object) OR the granular ops removeTileIds / updateTiles / addTiles / setOptions (not both); ops apply in that order in one save and are retry-safe (an already-gone removal and an identical add are skipped with a warning). Passing a legacy layout arg at an Easy Dashboard, or options at a legacy one, is rejected. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    dashboardId: [type: "string", description: "installedAppId."],
-                    name: [type: "string", description: "Display name (Easy) or app label (legacy)."],
-                    deviceIds: [type: "array", description: "Full device id set. Required (>=1) for Easy; wholesale-replaces a legacy dashboard's authorized devices.", items: [type: "string"]],
-                    options: [type: "object", description: "Easy-only. Same keys as hub_create_dashboard.options."],
-                    layout: [type: "object", description: "Legacy-only. Wholesale layout replace (the hub_get_dashboard object)."],
-                    setOptions: [type: "object", description: "Legacy-only. Merge top-level layout fields (cols, rows, bgColor, iconSize, fontSize, gridGap)."],
-                    addTiles: [type: "array", description: "Legacy-only. Tiles to add; each needs template, col, row (device/colSpan/rowSpan/templateExtra optional).", items: [type: "object"]],
-                    updateTiles: [type: "array", description: "Legacy-only. Tile edits; each entry is {id, ...fields-to-change}.", items: [type: "object"]],
-                    removeTileIds: [type: "array", description: "Legacy-only. Tile ids to remove; ids already gone are skipped.", items: [type: "integer"]]
-                ],
-                required: ["dashboardId"]
-            ]
-        ],
-        [
-            name: "hub_delete_dashboard",
-            description: "⚠️ Permanently delete a dashboard by id (irreversible), Easy or legacy Hubitat®. Tell the user first.[[FLAT_TRIM]] A legacy dashboard is removed through the classic force-delete and confirmed by effect; the result carries its type. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    dashboardId: [type: "string", description: "installedAppId to delete."],
-                    confirm: [type: "boolean", description: "Must be true (requires a recent backup + user approval)."]
-                ],
-                required: ["dashboardId", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_clone_dashboard",
-            description: "Clone a dashboard into a copy by id. Easy: copies its config. Legacy Hubitat®: creates a new legacy dashboard with the same authorized devices and copies the layout wholesale (clone-by-value; the source is never touched).[[FLAT_TRIM]] See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    dashboardId: [type: "string", description: "Source installedAppId."]
-                ],
-                required: ["dashboardId"]
-            ]
-        ]
-    ]
+    def dashFields = (_bat529EmbeddedCatalogRead(['["m",[["id",["m",[["type","string"]]]],["name",["m",[["type","string"]]]],["type",["m",[["type","string"]]]],["showModeTile",["m",[["type","boolean"]]]],["showClockTile",["m",[["type","boolean"]]]],["showCalendarTile",["m",[["type","boolean"]]]],["showHSMTile",["m",[["type","boolean"]]]],["showEdit",["m",[["type","boolean"]]]],["showNavigation",["m",[["type","boolean"]]]],["showTutorial",["m",[["type","boolean"]]]],["navigationSelection",["m",[["type","string"]]]],["theme",["m",[["type","string"]]]],["deviceIds",["m",[["type","array"]]]],["dashboardPin",["m",[["type","string"]]]],["hsmPin",["m",[["type","string"]]]]]]']) as Map)
+    return (_bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_dashboards"],["description","List the hub\'s dashboards -- both Easy Dashboards and legacy Hubitat\\u00ae Dashboards.[[FLAT_TRIM]] Read-only; each entry carries id, name, and a type (\'easy\' or \'legacy\'). Easy entries also include tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed. See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["pinToken",["m",[["type","string"],["description","Optional pin token. Auto-resolved when omitted."]]]]]]]]]]]],["m",[["name","hub_get_dashboard"],["description","Get a dashboard\'s full config by id. Easy Dashboard: tiles/theme/devices/PINs. Legacy Hubitat\\u00ae Dashboard: its authorized deviceIds plus the nested layout (tiles, grid, colors).[[FLAT_TRIM]] Read this before a wholesale hub_update_dashboard and pass its output straight back. A read that partly fails returns partial:true with a note (values are unavailable, not defaulted). See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["dashboardId",["m",[["type","string"],["description","installedAppId."]]]],["pinToken",["m",[["type","string"],["description","Optional pin token. Auto-resolved when omitted."]]]]]]],["required",["l",["dashboardId"]]]]]]]],["m",[["name","hub_create_dashboard"],["description","Create a dashboard. type=\'easy\' (default) builds an Easy Dashboard from devices + tile options; type=\'legacy\' creates an empty legacy Hubitat\\u00ae Dashboard whose deviceIds are its authorized-device list.[[FLAT_TRIM]] A legacy dashboard starts with an empty layout -- add tiles afterward with hub_update_dashboard (addTiles / setOptions) -- and rejects the Easy-only options arg. See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Display name."]]]],["type",["m",[["type","string"],["enum",["l",["easy","legacy"]]],["description","Dashboard kind: \'easy\' (default) or \'legacy\' Hubitat\\u00ae Dashboard."]]]],["deviceIds",["m",[["type","array"],["description","Device ids. Required (>=1, runtime-enforced) for an Easy Dashboard; for a legacy dashboard these are its authorized devices (optional)."],["items",["m",[["type","string"]]]]]]],["options",["m",[["type","object"],["description","Easy-only optional config; see hub_get_tool_guide(section=\'dashboards\'). Rejected for type=\'legacy\'."]]]]]]],["required",["l",["name"]]]]]]]],["m",[["name","hub_update_dashboard"],["description","Update a dashboard by id; behavior depends on its kind. Easy Dashboard: wholesale config replace -- read hub_get_dashboard first and pass the FULL config back (name + deviceIds required; omitted fields revert to default). Legacy Hubitat\\u00ae Dashboard: edit its name (label), deviceIds (authorized devices), and/or layout.[[FLAT_TRIM]] Legacy layout edits are EITHER `layout` (wholesale object) OR the granular ops removeTileIds / updateTiles / addTiles / setOptions (not both); ops apply in that order in one save and are retry-safe (an already-gone removal and an identical add are skipped with a warning). Passing a legacy layout arg at an Easy Dashboard, or options at a legacy one, is rejected. See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["dashboardId",["m",[["type","string"],["description","installedAppId."]]]],["name",["m",[["type","string"],["description","Display name (Easy) or app label (legacy)."]]]],["deviceIds",["m",[["type","array"],["description","Full device id set. Required (>=1) for Easy; wholesale-replaces a legacy dashboard\'s authorized devices."],["items",["m",[["type","string"]]]]]]],["options",["m",[["type","object"],["description","Easy-only. Same keys as hub_create_dashboard.options."]]]],["layout",["m",[["type","object"],["description","Legacy-only. Wholesale layout replace (the hub_get_dashboard object)."]]]],["setOptions",["m",[["type","object"],["description","Legacy-only. Merge top-level layout fields (cols, rows, bgColor, iconSize, fontSize, gridGap)."]]]],["addTiles",["m",[["type","array"],["description","Legacy-only. Tiles to add; each needs template, col, row (device/colSpan/rowSpan/templateExtra optional)."],["items",["m",[["type","object"]]]]]]],["updateTiles",["m",[["type","array"],["description","Legacy-only. Tile edits; each entry is {id, ...fields-to-change}."],["items",["m",[["type","object"]]]]]]],["removeTileIds",["m",[["type","array"],["description","Legacy-only. Tile ids to remove; ids already gone are skipped."],["items",["m",[["type","integer"]]]]]]]]]],["required",["l",["dashboardId"]]]]]]]],["m",[["name","hub_delete_dashboard"],["description","\\u26a0\\ufe0f Permanently delete a dashboard by id (irreversible), Easy or legacy Hubitat\\u00ae. Tell the user first.[[FLAT_TRIM]] A legacy dashboard is removed through the classic force-delete and confirmed by effect; the result carries its type. See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["dashboardId",["m",[["type","string"],["description","installedAppId to delete."]]]],["confirm",["m",[["type","boolean"],["description","Must be true (requires a recent backup + user approval)."]]]]]]],["required",["l",["dashboardId","confirm"]]]]]]]],["m",[["name","hub_clone_dashboard"],["description","Clone a dashboard into a copy by id. Easy: copies its config. Legacy Hubitat\\u00ae: creates a new legacy dashboard with the same authorized devices and copies the layout wholesale (clone-by-value; the source is never touched).[[FLAT_TRIM]] See hub_get_tool_guide(section=\'dashboards\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["dashboardId",["m",[["type","string"],["description","Source installedAppId."]]]]]]],["required",["l",["dashboardId"]]]]]]]]]]']) as List)
 }
 
 def _readOnlyToolNames_partDashboards() {

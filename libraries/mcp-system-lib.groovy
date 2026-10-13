@@ -754,15 +754,7 @@ def toolGetHubMesh(args = null) {
     // where the truth is "unreadable". Track those so the note can flag them -- an ABSENT section
     // stays silent, since absent is a legitimate "none shared". Result-facing names, mirroring the
     // scalar `unreadable` signal below.
-    def listSections = [hubList: 'peers',
-                        sharedDevices: 'sharedDevices',
-                        localLinkedDevices: 'localLinkedDevices',
-                        availableLinkedDevices: 'availableLinkedDevices',
-                        sharedHubVariables: 'sharedHubVariables',
-                        localLinkedHubVariables: 'localLinkedHubVariables',
-                        availableLinkedHubVariables: 'availableLinkedHubVariables',
-                        privateDevices: 'privateDeviceCount',
-                        localHubVariables: 'localHubVariableCount']
+    def listSections = (_bat529EmbeddedCatalogRead(['["m",[["hubList","peers"],["sharedDevices","sharedDevices"],["localLinkedDevices","localLinkedDevices"],["availableLinkedDevices","availableLinkedDevices"],["sharedHubVariables","sharedHubVariables"],["localLinkedHubVariables","localLinkedHubVariables"],["availableLinkedHubVariables","availableLinkedHubVariables"],["privateDevices","privateDeviceCount"],["localHubVariables","localHubVariableCount"]]]']) as Map)
     def misShapedLists = listSections.findAll { k, v -> parsed.containsKey(k) && !(parsed.get(k) instanceof List) }.values()
 
     def result = [
@@ -1224,15 +1216,10 @@ private Map _readHubNetworkSettings() {
     // An empty or error object ({} or {success:false,...}) would otherwise project to success:true with
     // every field null and dnsList:[] -- indistinguishable from a real "no DNS". Require at least one
     // recognized network key before trusting the shape.
-    def knownKeys = ["usingStaticIP", "lanAddr", "wlanAddr", "dnsServers", "staticIP", "staticGateway",
-                     "staticSubnetMask", "staticNameServers", "dhcpNameServers", "useDNSFallover",
-                     "lanAutoneg", "hasEthernet", "hasWiFi", "wifiNetwork", "wifiDriversInstalled",
-                     "restartBonjourOnSchedule", "hubVersion"]
+    def knownKeys = (_bat529EmbeddedCatalogRead(['["l",["usingStaticIP","lanAddr","wlanAddr","dnsServers","staticIP","staticGateway","staticSubnetMask","staticNameServers","dhcpNameServers","useDNSFallover","lanAutoneg","hasEthernet","hasWiFi","wifiNetwork","wifiDriversInstalled","restartBonjourOnSchedule","hubVersion"]]']) as List)
     if (!knownKeys.any { parsed.containsKey(it) }) {
         mcpLog("warn", "server", "hub_get_info includeNetwork: /hub2/networkConfiguration had none of the expected network keys")
-        return [success: false,
-                error: "The /hub2/networkConfiguration response carried none of the expected network fields.",
-                note: "The hub returned an empty or unexpected object (transient error or a changed response shape); retry. See hub_get_tool_guide(section='hub_admin_write_system')."]
+        return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","The /hub2/networkConfiguration response carried none of the expected network fields."],["note","The hub returned an empty or unexpected object (transient error or a changed response shape); retry. See hub_get_tool_guide(section=\'hub_admin_write_system\')."]]]']) as Map)
     }
 
     // Normalize a DNS list the hub may send as an array OR a comma/space-joined string into a clean list.
@@ -1539,110 +1526,14 @@ private Map _parseFirmwareCheck(rawText) {
 def _getAllToolDefinitions_partSystem() {
     return [
         // System Tools
-        [
-            name: "hub_get_info",
-            description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, the calling MCP client, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write_system')[[FLAT_TRIM]] for the optional deep-dive flags and PII gating[[/FLAT_TRIM]].",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    identifyHub: [type: "boolean", description: "Blink the hub LED to identify it.", default: false],
-                    includeHealthAlerts: [type: "boolean", description: "Include the full health-alerts block.", default: false],
-                    includeAppUpdate: [type: "boolean", description: "Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.[[FLAT_TRIM]] The check is async, so appUpdate reflects the prior completed check and carries checkInProgress; call again in a few seconds for the freshest result.[[/FLAT_TRIM]]", default: false],
-                    includeSubscriptions: [type: "boolean", description: "[[FLAT_TRIM]]Include Hubitat subscription status under `subscriptions`.[[/FLAT_TRIM]]", default: false],
-                    includeNetwork: [type: "boolean", description: "Include the hub's network config under `network`.[[FLAT_TRIM]] IP mode, the saved static IP/gateway/subnet (reported whether or not static is the active mode; null on DHCP-only hubs), DNS, Ethernet autoneg and Wi-Fi SSID (never the Wi-Fi password); the read counterpart of hub_set_system_settings(network:...).[[/FLAT_TRIM]]", default: false]
-                ]
-            ]
-        ],
-        [
-            name: "hub_list_modes",
-            description: "List the hub's location modes (with the active one) + Mode Manager state.[[FLAT_TRIM]] Use it to get valid mode names + ids (hub-specific, e.g. Day/Night/Away) before activating/renaming/deleting a mode.[[/FLAT_TRIM]]",
-            inputSchema: [type: "object", properties: [:]]
-        ],
-        [
-            name: "hub_manage_mode",
-            description: """⚠️ Create, rename, delete, or activate a hub location mode.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    action: [type: "string", enum: ["create", "rename", "delete", "activate"], description: "Which mode operation to perform."],
-                    name: [type: "string", description: "New mode name (create), or the new name (rename)."],
-                    mode: [type: "string", description: "Target for rename/delete/activate: id or name (from hub_list_modes)."],
-                    icon: [type: "string", description: "OPTIONAL icon for create/rename, e.g. fa-moon."],
-                    confirm: [type: "boolean", description: "REQUIRED for action=delete: true + a backup <24h (hub_create_backup). Confirms a backup <24h + that breaking mode references is intended."],
-                    args: [type: "object"]
-                ],
-                required: ["action"]
-            ]
-        ],
-        [
-            name: "hub_set_mode_manager",
-            description: """Configure the hub's Mode Manager — select which manager runs and/or set its per-mode conditions.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    manager: [type: "string", enum: ["builtIn", "legacy", "app"], description: "Which Mode Manager to activate."],
-                    conditions: [type: "object", description: "OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide(section='hub_admin_write_system')."],
-                    args: [type: "object"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_hsm_status",
-            description: "Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands.[[FLAT_TRIM]] See hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]",
-            inputSchema: [type: "object", properties: [:]]
-        ],
-        [
-            name: "hub_set_hsm",
-            description: "Set Hubitat Safety Monitor (HSM) arm state. Always verify HSM changed after.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    armCommand: [type: "string", enum: ["armAway", "armHome", "armNight", "disarm"], description: "HSM arm command."],
-                    args: [type: "object"]
-                ],
-                required: ["armCommand"]
-            ]
-        ],
-        [
-            name: "hub_set_system_settings",
-            description: """Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, network config[[FLAT_TRIM]], and dismissing a hub alert[[/FLAT_TRIM]]. All optional — pass only what changes. See hub_get_tool_guide(section='hub_admin_write_system') for the per-field write model and reboot caveats.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    hubName: [type: "string", description: "New hub name."],
-                    timeZone: [type: "string", description: "IANA time zone ID, e.g. America/New_York. ⚠️ Reboots the hub."],
-                    latitude: [type: "number", description: "Latitude in decimal degrees, e.g. 40.7128."],
-                    longitude: [type: "number", description: "Longitude in decimal degrees, e.g. -74.006."],
-                    zipCode: [type: "string", description: "Postal/zip code, e.g. 10001."],
-                    temperatureScale: [type: "string", enum: ["F", "C"], description: "Temperature scale."],
-                    darkMode: [type: "boolean", description: "Hub admin UI dark mode (true) or light (false)."],
-                    dismissAlert: [type: "object", description: "[[FLAT_TRIM]]Dismiss a hub alert: {key, version?} from healthAlerts.items.[[/FLAT_TRIM]]"],
-                    network: [type: "object", description: "⚠️ Hub network config — can DISCONNECT the hub; needs confirm=true + a backup <24h.", properties: [
-                        ipMode: [type: "string", enum: ["dhcp", "static"], description: "[[FLAT_TRIM]]IP mode.[[/FLAT_TRIM]]"],
-                        address: [type: "string", description: "[[FLAT_TRIM]]Static IP address.[[/FLAT_TRIM]]"],
-                        netmask: [type: "string", description: "[[FLAT_TRIM]]Static subnet mask.[[/FLAT_TRIM]]"],
-                        gateway: [type: "string", description: "[[FLAT_TRIM]]Static gateway.[[/FLAT_TRIM]]"],
-                        nameserver: [type: "string", description: "[[FLAT_TRIM]]DNS nameserver(s).[[/FLAT_TRIM]]"],
-                        useDNSFallover: [type: "boolean", description: "[[FLAT_TRIM]]DHCP DNS failover.[[/FLAT_TRIM]]"],
-                        ethernetAutoneg: [type: "boolean", description: "[[FLAT_TRIM]]Ethernet autonegotiation.[[/FLAT_TRIM]]"],
-                        wifiSsid: [type: "string", description: "[[FLAT_TRIM]]WiFi SSID to join.[[/FLAT_TRIM]]"],
-                        wifiPassword: [type: "string", description: "[[FLAT_TRIM]]WiFi password (psk).[[/FLAT_TRIM]]"]
-                    ]],
-                    confirm: [type: "boolean", description: "REQUIRED (true) for timeZone or network changes; both need a backup <24h (hub_create_backup)."],
-                    args: [type: "object"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_hub_mesh",
-            description: """Read Hub Mesh config: enabled state, peer hubs, shared/linked devices + variables (hub-to-hub sharing, NOT the Z-Wave/Zigbee radio mesh).[[FLAT_TRIM]] Radio topology is hub_get_radio_details. Peers auto-discover on the LAN (no "add peer" op). Unshared devices and local hub variables come back as counts only (privateDeviceCount / localHubVariableCount — hub_list_devices / hub_list_variables carry the full lists); modeHubId 'none' = local modes. Full field reference: hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    include_token: [type: "boolean", description: "Also return this hub's mesh token (a credential; off by default).[[FLAT_TRIM]] A peer hub needs it to reach THIS hub when THIS hub has UI login security.[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_get_info"],["description","Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, the calling MCP client, and security/toggle settings. See hub_get_tool_guide(section=\'hub_admin_write_system\')[[FLAT_TRIM]] for the optional deep-dive flags and PII gating[[/FLAT_TRIM]]."],["inputSchema",["m",[["type","object"],["properties",["m",[["identifyHub",["m",[["type","boolean"],["description","Blink the hub LED to identify it."],["default",false]]]],["includeHealthAlerts",["m",[["type","boolean"],["description","Include the full health-alerts block."],["default",false]]]],["includeAppUpdate",["m",[["type","boolean"],["description","Also check GitHub for a newer MCP Rule Server APP version, returned under appUpdate.[[FLAT_TRIM]] The check is async, so appUpdate reflects the prior completed check and carries checkInProgress; call again in a few seconds for the freshest result.[[/FLAT_TRIM]]"],["default",false]]]],["includeSubscriptions",["m",[["type","boolean"],["description","[[FLAT_TRIM]]Include Hubitat subscription status under `subscriptions`.[[/FLAT_TRIM]]"],["default",false]]]],["includeNetwork",["m",[["type","boolean"],["description","Include the hub\'s network config under `network`.[[FLAT_TRIM]] IP mode, the saved static IP/gateway/subnet (reported whether or not static is the active mode; null on DHCP-only hubs), DNS, Ethernet autoneg and Wi-Fi SSID (never the Wi-Fi password); the read counterpart of hub_set_system_settings(network:...).[[/FLAT_TRIM]]"],["default",false]]]]]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_list_modes"],["description","List the hub\'s location modes (with the active one) + Mode Manager state.[[FLAT_TRIM]] Use it to get valid mode names + ids (hub-specific, e.g. Day/Night/Away) before activating/renaming/deleting a mode.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_manage_mode"],["description","\\u26a0\\ufe0f Create, rename, delete, or activate a hub location mode."],["inputSchema",["m",[["type","object"],["properties",["m",[["action",["m",[["type","string"],["enum",["l",["create","rename","delete","activate"]]],["description","Which mode operation to perform."]]]],["name",["m",[["type","string"],["description","New mode name (create), or the new name (rename)."]]]],["mode",["m",[["type","string"],["description","Target for rename/delete/activate: id or name (from hub_list_modes)."]]]],["icon",["m",[["type","string"],["description","OPTIONAL icon for create/rename, e.g. fa-moon."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED for action=delete: true + a backup <24h (hub_create_backup). Confirms a backup <24h + that breaking mode references is intended."]]]],["args",["m",[["type","object"]]]]]]],["required",["l",["action"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_set_mode_manager"],["description","Configure the hub\'s Mode Manager \\u2014 select which manager runs and/or set its per-mode conditions."],["inputSchema",["m",[["type","object"],["properties",["m",[["manager",["m",[["type","string"],["enum",["l",["builtIn","legacy","app"]]],["description","Which Mode Manager to activate."]]]],["conditions",["m",[["type","object"],["description","OPTIONAL per-mode conditions keyed by mode id; REPLACES the whole set, so read-modify-write from hub_list_modes. See hub_get_tool_guide(section=\'hub_admin_write_system\')."]]]],["args",["m",[["type","object"]]]]]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_get_hsm_status"],["description","Get the current HSM (Hubitat Safety Monitor) armed status, any active alert, and the valid HSM arm commands.[[FLAT_TRIM]] See hub_get_tool_guide(section=\'hub_admin_write_system\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_set_hsm"],["description","Set Hubitat Safety Monitor (HSM) arm state. Always verify HSM changed after."],["inputSchema",["m",[["type","object"],["properties",["m",[["armCommand",["m",[["type","string"],["enum",["l",["armAway","armHome","armNight","disarm"]]],["description","HSM arm command."]]]],["args",["m",[["type","object"]]]]]]],["required",["l",["armCommand"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_set_system_settings"],["description","Set hub-GLOBAL settings: hub name, time zone, location, zip code, temperature scale, admin-UI dark mode, network config[[FLAT_TRIM]], and dismissing a hub alert[[/FLAT_TRIM]]. All optional \\u2014 pass only what changes. See hub_get_tool_guide(section=\'hub_admin_write_system\') for the per-field write model and reboot caveats."],["inputSchema",["m",[["type","object"],["properties",["m",[["hubName",["m",[["type","string"],["description","New hub name."]]]],["timeZone",["m",[["type","string"],["description","IANA time zone ID, e.g. America/New_York. \\u26a0\\ufe0f Reboots the hub."]]]],["latitude",["m",[["type","number"],["description","Latitude in decimal degrees, e.g. 40.7128."]]]],["longitude",["m",[["type","number"],["description","Longitude in decimal degrees, e.g. -74.006."]]]],["zipCode",["m",[["type","string"],["description","Postal/zip code, e.g. 10001."]]]],["temperatureScale",["m",[["type","string"],["enum",["l",["F","C"]]],["description","Temperature scale."]]]],["darkMode",["m",[["type","boolean"],["description","Hub admin UI dark mode (true) or light (false)."]]]],["dismissAlert",["m",[["type","object"],["description","[[FLAT_TRIM]]Dismiss a hub alert: {key, version?} from healthAlerts.items.[[/FLAT_TRIM]]"]]]],["network",["m",[["type","object"],["description","\\u26a0\\ufe0f Hub network config \\u2014 can DISCONNECT the hub; needs confirm=true + a backup <24h."],["properties",["m",[["ipMode",["m",[["type","string"],["enum",["l",["dhcp","static"]]],["description","[[FLAT_TRIM]]IP mode.[[/FLAT_TRIM]]"]]]],["address",["m",[["type","string"],["description","[[FLAT_TRIM]]Static IP address.[[/FLAT_TRIM]]"]]]],["netmask",["m",[["type","string"],["description","[[FLAT_TRIM]]Static subnet mask.[[/FLAT_TRIM]]"]]]],["gateway",["m",[["type","string"],["description","[[FLAT_TRIM]]Static gateway.[[/FLAT_TRIM]]"]]]],["nameserver",["m",[["type","string"],["description","[[FLAT_TRIM]]DNS nameserver(s).[[/FLAT_TRIM]]"]]]],["useDNSFallover",["m",[["type","boolean"],["description","[[FLAT_TRIM]]DHCP DNS failover.[[/FLAT_TRIM]]"]]]],["ethernetAutoneg",["m",[["type","boolean"],["description","[[FLAT_TRIM]]Ethernet autonegotiation.[[/FLAT_TRIM]]"]]]],["wifiSsid",["m",[["type","string"],["description","[[FLAT_TRIM]]WiFi SSID to join.[[/FLAT_TRIM]]"]]]],["wifiPassword",["m",[["type","string"],["description","[[FLAT_TRIM]]WiFi password (psk).[[/FLAT_TRIM]]"]]]]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED (true) for timeZone or network changes; both need a backup <24h (hub_create_backup)."]]]],["args",["m",[["type","object"]]]]]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_get_hub_mesh"],["description","Read Hub Mesh config: enabled state, peer hubs, shared/linked devices + variables (hub-to-hub sharing, NOT the Z-Wave/Zigbee radio mesh).[[FLAT_TRIM]] Radio topology is hub_get_radio_details. Peers auto-discover on the LAN (no \\"add peer\\" op). Unshared devices and local hub variables come back as counts only (privateDeviceCount / localHubVariableCount \\u2014 hub_list_devices / hub_list_variables carry the full lists); modeHubId \'none\' = local modes. Full field reference: hub_get_tool_guide(section=\'hub_admin_write_system\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["include_token",["m",[["type","boolean"],["description","Also return this hub\'s mesh token (a credential; off by default).[[FLAT_TRIM]] A peer hub needs it to reach THIS hub when THIS hub has UI login security.[[/FLAT_TRIM]]"]]]]]]]]]]]]']) as Map),
         [
             name: "hub_update_hub_mesh",
             description: """Change Hub Mesh settings (hub-to-hub sharing, NOT the Z-Wave/Zigbee radios). All optional — pass only what changes. ⚠️ An `enabled` change needs a hub REBOOT (hub_reboot) to take effect.[[FLAT_TRIM]] The tool never reboots on its own. Applied fields are echoed in `applied`. Peers auto-discover on the LAN (no "add peer" write); per-DEVICE sharing is hub_update_device (meshEnabled; meshFullSync there is a LINKED-device sync flag, not a share). Read current config + valid peer hubIds via hub_get_hub_mesh; full write model in hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]""",
@@ -1657,46 +1548,9 @@ def _getAllToolDefinitions_partSystem() {
                 ]
             ]
         ],
-        [
-            name: "hub_reboot",
-            description: """⚠️ DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]
-
-PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_shutdown",
-            description: """⚠️ EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]
-
-PRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won't restart automatically 3) Get explicit confirmation 4) Set confirm=true[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved the shutdown."]
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_update_firmware",
-            description: """⚠️ DESTRUCTIVE: Install the hub's pending platform/firmware update. The hub downloads + installs it and then REBOOTS ITSELF (5-10 min of full downtime; all automations and device communications stop).[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]
-
-PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually pending 3) Tell user about the downtime 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    statusOnly: [type: "boolean", description: "Poll the hub's update status only and return without applying anything. No confirm/backup needed. Default false."],
-                    confirm: [type: "boolean", description: "REQUIRED to apply (omit for statusOnly): must be true. Confirms a backup <24h exists and the user approved the install + reboot."],
-                    args: [type: "object"]
-                ]
-            ]
-        ],
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_reboot"],["description","\\u26a0\\ufe0f DESTRUCTIVE: Reboots the hub (1-3 min downtime, all automations stop). To install a pending hub firmware update instead, use hub_update_firmware.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]\\n\\nPRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user 3) Get explicit confirmation 4) Set confirm=true[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved the reboot."]]]]]]],["required",["l",["confirm"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_shutdown"],["description","\\u26a0\\ufe0f EXTREME: Powers OFF the hub (requires physical restart). NOT a reboot.[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]\\n\\nPRE-FLIGHT: 1) Ensure backup <24h old 2) Tell user it won\'t restart automatically 3) Get explicit confirmation 4) Set confirm=true[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved the shutdown."]]]]]]],["required",["l",["confirm"]]]]]]]]']) as Map),
+        (_bat529EmbeddedCatalogRead(['["m",[["name","hub_update_firmware"],["description","\\u26a0\\ufe0f DESTRUCTIVE: Install the hub\'s pending platform/firmware update. The hub downloads + installs it and then REBOOTS ITSELF (5-10 min of full downtime; all automations and device communications stop).[[FLAT_TRIM]] Requires Write master.[[/FLAT_TRIM]][[FLAT_TRIM]]\\n\\nPRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually pending 3) Tell user about the downtime 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["statusOnly",["m",[["type","boolean"],["description","Poll the hub\'s update status only and return without applying anything. No confirm/backup needed. Default false."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED to apply (omit for statusOnly): must be true. Confirms a backup <24h exists and the user approved the install + reboot."]]]],["args",["m",[["type","object"]]]]]]]]]]]]']) as Map),
     ]
 }
 

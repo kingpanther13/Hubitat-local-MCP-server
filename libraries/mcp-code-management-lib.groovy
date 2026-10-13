@@ -918,13 +918,7 @@ def toolListAppPages(args) {
     boolean curatedHpm = appTypeNameLower.contains("hubitat package manager")
 
     if (curatedHpm) {
-        pages = [
-            [name: "prefOptions",    title: "Main Menu",                role: "navigation"],
-            [name: "prefPkgUninstall", title: "Uninstall / Full Package List", role: "full_package_list"],
-            [name: "prefPkgModify",  title: "Modify Package (optional-components subset)", role: "modifiable_subset"],
-            [name: "prefPkgInstall", title: "Install New Package",       role: "install_flow"],
-            [name: "prefPkgMatchUp", title: "Match Up Packages",         role: "matching_flow"]
-        ]
+        pages = (_bat529EmbeddedCatalogRead(['["l",[["m",[["name","prefOptions"],["title","Main Menu"],["role","navigation"]]],["m",[["name","prefPkgUninstall"],["title","Uninstall / Full Package List"],["role","full_package_list"]]],["m",[["name","prefPkgModify"],["title","Modify Package (optional-components subset)"],["role","modifiable_subset"]]],["m",[["name","prefPkgInstall"],["title","Install New Package"],["role","install_flow"]]],["m",[["name","prefPkgMatchUp"],["title","Match Up Packages"],["role","matching_flow"]]]]]']) as List)
     } else {
         pages = [primaryPage]
     }
@@ -2136,8 +2130,7 @@ private Map _updateAppOAuth(appId, oauth) {
         if (cur == null) {
             // Read FAILED -- can't tell whether the app already has creds. Submitting empty would
             // clobber existing ones, so refuse rather than risk blanking a live OAuth client.
-            return [success: false, error: "Could not read the app's current OAuth credentials to preserve them.",
-                    note: "Refusing to submit empty credentials (would clobber an already-enabled app's live creds). Pass client_id + client_secret explicitly, or retry."]
+            return (_bat529EmbeddedCatalogRead(['["m",[["success",false],["error","Could not read the app\'s current OAuth credentials to preserve them."],["note","Refusing to submit empty credentials (would clobber an already-enabled app\'s live creds). Pass client_id + client_secret explicitly, or retry."]]]']) as Map)
         }
         if (clientId == null) clientId = cur.clientId?.toString() ?: ""
         if (clientSecret == null) clientSecret = cur.clientSecret?.toString() ?: ""

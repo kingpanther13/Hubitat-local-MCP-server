@@ -35,13 +35,7 @@ def toolManageVirtualDevice(args) {
 // Single source of truth: the tool-schema enum, the missing-arg error,
 // and the create-time validator must all agree on this list.
 def getSupportedVirtualDeviceTypes() {
-    [
-        "Virtual Switch", "Virtual Button", "Virtual Contact Sensor",
-        "Virtual Motion Sensor", "Virtual Presence", "Virtual Lock",
-        "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer",
-        "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener",
-        "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
-    ]
+    (_bat529EmbeddedCatalogRead(['["l",["Virtual Switch","Virtual Button","Virtual Contact Sensor","Virtual Motion Sensor","Virtual Presence","Virtual Lock","Virtual Temperature Sensor","Virtual Humidity Sensor","Virtual Dimmer","Virtual RGBW Light","Virtual Shade","Virtual Garage Door Opener","Virtual Water Sensor","Virtual Omni Sensor","Virtual Fan Controller"]]']) as List)
 }
 
 private Map resolveDriverSpec(args) {
@@ -395,13 +389,7 @@ action="delete": provide the target deviceNetworkId.
                     action: [type: "string", description: "Operation to perform", enum: ["create", "delete"]],
                     deviceType: [type: "string", description: "Built-in virtual driver type for create; mutually exclusive with customDriver.",
                         enum: getSupportedVirtualDeviceTypes()],
-                    customDriver: [type: "object", description: "User-installed custom driver for create; mutually exclusive with deviceType.",
-                        properties: [
-                            namespace: [type: "string", description: "Driver namespace (e.g., 'level99-vesync')."],
-                            name: [type: "string", description: "Driver type name as registered on the hub (e.g., 'Levoit Classic 200S Humidifier')."]
-                        ],
-                        required: ["namespace", "name"]
-                    ],
+                    customDriver: (_bat529EmbeddedCatalogRead(['["m",[["type","object"],["description","User-installed custom driver for create; mutually exclusive with deviceType."],["properties",["m",[["namespace",["m",[["type","string"],["description","Driver namespace (e.g., \'level99-vesync\')."]]]],["name",["m",[["type","string"],["description","Driver type name as registered on the hub (e.g., \'Levoit Classic 200S Humidifier\')."]]]]]]],["required",["l",["namespace","name"]]]]]']) as Map),
                     deviceLabel: [type: "string", description: "Display label (required for create)"],
                     deviceNetworkId: [type: "string", description: "Device network ID; auto-generated on create when omitted, REQUIRED for delete (find via hub_list_devices(filter='virtual'))."],
                     confirm: [type: "boolean", description: "REQUIRED: Must be true to confirm the operation."],

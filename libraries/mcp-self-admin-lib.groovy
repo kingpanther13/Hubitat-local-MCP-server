@@ -38,23 +38,7 @@ def toolUpdateMcpSettings(args) {
     //   enableWrite          — would footgun: could disable own write path mid-session
     //   enableDeveloperMode  — lockout protection (must remain UI-only to disable)
     //   disabled_tools / disabled_gateways — could self-disable this tool; UI-only (Advanced page)
-    def allowedSettings = [
-        "mcpLogLevel":            "enum",
-        "debugLogging":           "bool",
-        "maxCapturedStates":      "number",
-        "loopGuardMax":           "number",
-        "loopGuardWindowSec":     "number",
-        "enableRead":             "bool",
-        "enableCustomRuleEngine": "bool",
-        "useGateways":            "bool",
-        "enableMandatoryBPS":     "bool",
-        "bypassDeviceAllowlist":  "bool",
-        "maxConcurrentWrites":    "number",
-        "backupEveryRuleWrite":   "bool",
-        "enableLocalAccess":      "bool",
-        "enableCloudAccess":      "bool",
-        "redactAccessTokens":     "bool"
-    ]
+    def allowedSettings = (_bat529EmbeddedCatalogRead(['["m",[["mcpLogLevel","enum"],["debugLogging","bool"],["maxCapturedStates","number"],["loopGuardMax","number"],["loopGuardWindowSec","number"],["enableRead","bool"],["enableCustomRuleEngine","bool"],["useGateways","bool"],["enableMandatoryBPS","bool"],["bypassDeviceAllowlist","bool"],["maxConcurrentWrites","number"],["backupEveryRuleWrite","bool"],["enableLocalAccess","bool"],["enableCloudAccess","bool"],["redactAccessTokens","bool"]]]']) as Map)
     // Allowed keys for the not-allowed error message = scalar allowlist + the special selectedDevices key.
     def allowedKeyNames = ((allowedSettings.keySet() + ["selectedDevices"]) as List).sort()
 
