@@ -64,9 +64,11 @@ def test_self_test_case(desc, source, expected):
 # these pytest cases predate that and stay for the richer per-case reporting.)
 
 @pytest.mark.parametrize("desc,src,expected_codes", sl.READ_WRITE_SPLIT_SELF_TEST_CASES)
-def test_read_write_split_self_test_case(desc, src, expected_codes):
+@pytest.mark.parametrize("return_type", ["def", "java.util.List"])
+def test_read_write_split_self_test_case(desc, src, expected_codes, return_type):
     """Each READ_WRITE_SPLIT_SELF_TEST_CASES entry: the guard reports exactly the
     declared rule codes (empty set = must-not-catch, a code = must-catch)."""
+    src = re.sub(r"(?m)^def (?=\w+\()", return_type + " ", src)
     findings = sl.check_read_write_split(src_override=src)
     actual_codes = {f["rule"] for f in findings}
     assert actual_codes == set(expected_codes), (
@@ -1560,7 +1562,8 @@ def someTool() {
     assert findings == [], f"expected no findings, got: {findings}"
 
 
-def test_check_tool_guide_pointers_accepts_sub_section_keys(monkeypatch, tmp_path):
+@pytest.mark.parametrize("return_type", ["def", "java.util.Map"])
+def test_check_tool_guide_pointers_accepts_sub_section_keys(monkeypatch, tmp_path, return_type):
     """A pointer at a getToolGuideSubSections() sub-key resolves through hub_get_tool_guide
     exactly like a section key, so the lint must accept it."""
     server_groovy = """\
@@ -1586,6 +1589,7 @@ def someTool() {
     return [description: "Call `get_tool_guide(section='builtin_app_tools_apps')` for details."]
 }
 """
+    server_groovy = server_groovy.replace("def getToolGuide", return_type + " getToolGuide")
     _patch_tool_guide_sources(monkeypatch, tmp_path, server_groovy)
     findings = sl.check_tool_guide_pointers()
     assert findings == [], f"sub-key pointer should resolve, got: {findings}"
@@ -2017,11 +2021,14 @@ def _canon_defs(*names):
     return f"def _getAllToolDefinitions_part1() {{\n    return [\n{body}\n    ]\n}}\n"
 
 
-def test_extract_canonical_counts_excludes_dev_only_top_level(monkeypatch, tmp_path):
+@pytest.mark.parametrize("return_type", ["def", "java.util.List"])
+def test_extract_canonical_counts_excludes_dev_only_top_level(monkeypatch, tmp_path, return_type):
     """A dev-only top-level tool counts in total but is subtracted from core/tools_list."""
     src = (
         _CANON_GATEWAY
-        + _canon_defs("hub_get_thing", "hub_list_things", "hub_top_level_a", "hub_dev_tool")
+        + _canon_defs("hub_get_thing", "hub_list_things", "hub_top_level_a", "hub_dev_tool").replace(
+            "def _getAllToolDefinitions", return_type + " _getAllToolDefinitions"
+        )
         + 'def getDeveloperModeOnlyToolNames() {\n    return ["hub_dev_tool"] as Set\n}\n'
     )
     (tmp_path / "hubitat-mcp-server.groovy").write_text(src)
@@ -2119,8 +2126,18 @@ def test_logs_json_guard_passes_a_valid_snapshot_consumer(tmp_path, monkeypatch)
     assert sl.check_logs_json_snapshot_guard() == []
 
 
+def test_logs_json_guard_passes_typed_adapter_snapshot_consumer(tmp_path, monkeypatch):
+    server = _SNAP_SERVER_OK.replace("def _budgetAwareTools", "java.util.Set _budgetAwareTools")
+    server = server.replace("def _mrtrReadTools", "java.util.Set _mrtrReadTools")
+    lib = _SNAP_LIB_OK.replace("def toolGet", "java.util.Map toolGet")
+    lib = lib.replace("_logsJsonSnapshot(args)", "__bat529StaticCall_java_util_Map_1('_logsJsonSnapshot', args)")
+    _write_snapshot_repo(tmp_path, monkeypatch, server=server, lib=lib)
+    assert sl.check_logs_json_snapshot_guard() == []
+
+
 @pytest.mark.parametrize("call", ['hubInternalGet("/logs/json", null, 30)', "hubInternalGet('/logs/json')",
-                                  'hubInternalGetRaw("/logs/json")'])
+                                  'hubInternalGetRaw("/logs/json")',
+                                  "__bat529StaticCall_java_lang_Object_1('hubInternalGet', '/logs/json')"])
 def test_logs_json_guard_flags_a_direct_fetch_outside_the_publisher(tmp_path, monkeypatch, call):
     """Either quote style, and the Raw variant, must be caught: a blocking fetch anywhere but the
     publisher is exactly the shape that 502'd on a large hub."""

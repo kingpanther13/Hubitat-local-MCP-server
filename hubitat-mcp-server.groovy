@@ -9646,7 +9646,7 @@ private Map _rmForceDeleteApp(Integer appId) {
 
 
 @groovy.transform.CompileStatic
-java.lang.String currentVersion() {
+def currentVersion() {
     return "4.7.1"
 }
 

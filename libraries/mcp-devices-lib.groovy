@@ -5923,7 +5923,7 @@ java.util.Map _bat529Cb_15d0a4c9_214(def p) {
 @groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_215(def args, def key) {
         def v = __bat529StaticBinary_GetAt_java_lang_Object(args, key)
-        (v instanceof Map || v instanceof List) ? "${key}(${v.size()})".toString() : key.toString()
+        (v instanceof Map || v instanceof List) ? "${key}(${__bat529StaticReceiverCall_java_lang_Object_0(v, 'size')})".toString() : key.toString()
     
 }
 

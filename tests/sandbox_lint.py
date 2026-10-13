@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 _embedded_catalog_module = None
+_COLLECTION_RETURN = r"(?:def|(?:java\.util\.)?(?:Map|List|Set))"
 
 
 def _catalog_metadata_source(source: str) -> str:
@@ -931,7 +932,7 @@ def _extract_canonical_counts() -> dict | None:
 
     # Carve out the getGatewayConfig() body
     gw_match = re.search(
-        r"^def getGatewayConfig\(\) \{(.*?)^}",
+        rf"^{_COLLECTION_RETURN} getGatewayConfig\(\) \{{(.*?)^}}",
         src,
         re.DOTALL | re.MULTILINE,
     )
@@ -990,7 +991,7 @@ def _extract_canonical_counts() -> dict | None:
     # (The dispatcher body carries no `name:` lines, so including it is harmless;
     # a pre-split source with all defs in getAllToolDefinitions() still matches.)
     all_bodies = re.findall(
-        r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\w+)\(\) \{(.*?)^}",
+        rf"^{_COLLECTION_RETURN} (?:getAllToolDefinitions|_getAllToolDefinitions_part\w+)\(\) \{{(.*?)^}}",
         src,
         re.DOTALL | re.MULTILINE,
     )
@@ -1831,7 +1832,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
     # 1. Extract every section key from getToolGuideSections().
     #    Match lines like `        device_authorization: '''## Device Authorization (CRITICAL)`
     sections_block_match = re.search(
-        r"def getToolGuideSections\(\)\s*\{\s*return\s*\[(.*?)\n\s*\]\s*\}",
+        rf"{_COLLECTION_RETURN} getToolGuideSections\(\)\s*\{{\s*return\s*\[(.*?)\n\s*\]\s*\}}",
         src,
         re.DOTALL,
     )
@@ -1861,7 +1862,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
     #     valid.
     sub_section_keys = set()
     sub_block_match = re.search(
-        r"def getToolGuideSubSections\(\)\s*\{\s*return\s*\[(.*?)\n\s*\]\s*\}",
+        rf"{_COLLECTION_RETURN} getToolGuideSubSections\(\)\s*\{{\s*return\s*\[(.*?)\n\s*\]\s*\}}",
         src,
         re.DOTALL,
     )
@@ -2532,7 +2533,7 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
     # 1. getGatewayConfig() -> {gateway_name: [tool, ...]}. Same two-stage anchor
     #    _extract_canonical_counts() uses, but we keep the full tool LISTS (not
     #    just counts) and the gateway names (to split hub_read_ vs hub_manage_).
-    gw_match = re.search(r"^def getGatewayConfig\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE)
+    gw_match = re.search(rf"^{_COLLECTION_RETURN} getGatewayConfig\(\) \{{(.*?)^}}", src, re.DOTALL | re.MULTILINE)
     if not gw_match:
         return _fail(
             "read-write-split-no-gateway-config",
@@ -2560,19 +2561,19 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
     #    _readOnlyToolNames_part<Name>() chunk (the libraries are concatenated into
     #    `src` above), and the main body keeps only the main-resident remainder -- so
     #    the read set is the union of literals across the getter AND every part method.
-    ro_match = re.search(r"^def getReadOnlyToolNames\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE)
+    ro_match = re.search(rf"^{_COLLECTION_RETURN} getReadOnlyToolNames\(\) \{{(.*?)^}}", src, re.DOTALL | re.MULTILINE)
     if not ro_match:
         return _fail(
             "read-write-split-no-readonly-list",
             "Could not locate getReadOnlyToolNames() return literal -- has the function shape changed?",
         )
     part_bodies = re.findall(
-        r"^def _readOnlyToolNames_part\w+\(\) \{(.*?)^}", src, re.DOTALL | re.MULTILINE,
+        rf"^{_COLLECTION_RETURN} _readOnlyToolNames_part\w+\(\) \{{(.*?)^}}", src, re.DOTALL | re.MULTILINE,
     )
     # Format-drift guard: if part methods are MENTIONED (declared or called in the
     # aggregator) but the body regex parses fewer, the read set would silently
     # under-count and the split check would quietly stop enforcing -- fail loud instead.
-    declared = len(set(re.findall(r"def (_readOnlyToolNames_part\w+)\s*\(", src)))
+    declared = len(set(re.findall(rf"{_COLLECTION_RETURN} (_readOnlyToolNames_part\w+)\s*\(", src)))
     if declared != len(part_bodies):
         return _fail(
             "read-write-split-part-format-drift",
@@ -2595,7 +2596,7 @@ def check_read_write_split(src_override: str | None = None) -> list[dict]:
     #    The defs are split across per-domain _getAllToolDefinitions_part<Name>() chunk
     #    methods (64KB-method-bytecode cap); gather names from all of them.
     all_bodies = re.findall(
-        r"^def (?:getAllToolDefinitions|_getAllToolDefinitions_part\w+)\(\) \{(.*?)^}",
+        rf"^{_COLLECTION_RETURN} (?:getAllToolDefinitions|_getAllToolDefinitions_part\w+)\(\) \{{(.*?)^}}",
         src, re.DOTALL | re.MULTILINE,
     )
     if not all_bodies:
@@ -2907,6 +2908,13 @@ _STATIC_SCRIPT_CALL = re.compile(
 )
 
 
+def _static_dispatch_source(src: str) -> str:
+    """Expose literal script targets to source guards, preserving line numbers."""
+    return _STATIC_SCRIPT_CALL.sub(
+        lambda match: match.group("method") + "(" + "\n" * match.group(0).count("\n"), src,
+    )
+
+
 def _blank_comments(src: str) -> str:
     """Replace comment CONTENT with spaces (same length, newlines kept); string literals stay."""
     pattern = re.compile(r'"""(?:\\.|[^\\])*?"""|\'\'\'(?:\\.|[^\\])*?\'\'\''
@@ -2934,9 +2942,7 @@ def _device_tool_bodies(src: str) -> list[tuple[str, int, str, str]]:
     # Restore literal script-call targets for the same native-access and gate
     # analysis after BAT529's statically compiled adapter calls. The runtime
     # source is unchanged; comments/string bodies are still blanked below.
-    src = _STATIC_SCRIPT_CALL.sub(
-        lambda match: match.group("method") + "(" + "\n" * match.group(0).count("\n"), src,
-    )
+    src = _static_dispatch_source(src)
     out: list[tuple[str, int, str, str]] = []
     code = _blank_noncode(src)
     strings = _blank_comments(src)
@@ -5343,9 +5349,9 @@ def check_logs_json_snapshot_guard() -> list[dict]:
     server = REPO_ROOT / "hubitat-mcp-server.groovy"
     if not server.is_file():
         return findings
-    sources = {f: f.read_text(encoding="utf-8") for f in
+    sources = {f: _static_dispatch_source(f.read_text(encoding="utf-8")) for f in
                [server, *sorted((REPO_ROOT / "libraries").glob("*.groovy"))]}
-    fn_re = re.compile(r"^(?:private\s+|static\s+)*(?:def|void|boolean|Map|List|String|Set|Long|long|int|Integer)\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.M)
+    fn_re = re.compile(r"^(?:private\s+|static\s+)*(?:def|void|boolean|long|int|(?:java\.(?:lang|util)\.)?(?:Object|Map|List|String|Set|Long|Integer|Boolean))\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.M)
 
     def enclosing_fn(src: str, pos: int) -> str | None:
         last = None
@@ -5375,7 +5381,7 @@ def check_logs_json_snapshot_guard() -> list[dict]:
     server_src = sources[server]
 
     def set_literal(name: str) -> set[str] | None:
-        m = re.search(rf"def {re.escape(name)}\(\)\s*\{{\s*return\s*\[(.*?)\]\s*as\s+Set", server_src, re.S)
+        m = re.search(rf"(?:def|(?:java\.util\.)?Set) {re.escape(name)}\(\)\s*\{{\s*return\s*\[(.*?)\]\s*as\s+Set", server_src, re.S)
         if not m:
             return None
         return set(re.findall(r'"([^"]+)"', m.group(1)))

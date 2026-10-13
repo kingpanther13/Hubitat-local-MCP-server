@@ -14,6 +14,14 @@ allprojects {
                         p.name == 'groovy2x-spock' ? 'groovy25' : 'groovy30']
             }
         } else if (p.configurations.findByName('groovy24')) {
+            p.tasks.register('repairBroad24', JavaExec) {
+                javaLauncher = p.javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
+                classpath = p.configurations.groovy24
+                mainClass = 'groovy.ui.GroovyMain'
+                maxHeapSize = '2g'
+                args = [new File(root, 'experiments/broad-static/repair.groovy').absolutePath,
+                        root.absolutePath, new File(root, 'experiments/broad-static/results/repair').absolutePath]
+            }
             p.tasks.register('prepareBroad24', JavaExec) {
                 javaLauncher = p.javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
                 classpath = p.configurations.groovy24

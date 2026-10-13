@@ -451,7 +451,8 @@ methods.each { method ->
     // A def return can be made explicit only after all runtime return shapes
     // agree. Mixed, unknown, GString, and meaningful implicit returns remain intact.
     Map contract = contracts[method.name]
-    if (contract?.evidence == 'all-return-shapes' && contract.type != 'java.lang.Object') {
+    // The release bot and clone builder use the exact def currentVersion anchor.
+    if (method.name != 'currentVersion' && contract?.evidence == 'all-return-shapes' && contract.type != 'java.lang.Object') {
         def header = (body =~ ('^(?:(?:private|protected|public|static|final)\\s+)*def(?=\\s+' + java.util.regex.Pattern.quote(method.name) + '\\s*\\()'))
         if (header.find()) {
             int keyword = range[0] + header.group().lastIndexOf('def')

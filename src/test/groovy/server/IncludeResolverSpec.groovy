@@ -23,6 +23,10 @@ class IncludeResolverSpec extends Specification {
         new File(dir, filename).text = content
     }
 
+    private boolean declaresMethod(String source, String name) {
+        return (source =~ /(?m)^(?:def|(?:java\.util\.)?(?:Map|List|Set)|(?:java\.lang\.)?(?:String|Object)|void)\s+${java.util.regex.Pattern.quote(name)}\s*\(/).find()
+    }
+
     def "source with no #include is returned unchanged"() {
         given:
         def src = "definition(name: 'X')\n\ndef foo() { 1 }\n"
@@ -137,8 +141,8 @@ class IncludeResolverSpec extends Specification {
         def out = IncludeResolver.resolve(src, realLibs)
 
         then: 'the room tool impls are inlined and both the directive and the library() decl are stripped'
-        out.contains('def toolListRooms')
-        out.contains('def toolRenameRoom')
+        declaresMethod(out, 'toolListRooms')
+        declaresMethod(out, 'toolRenameRoom')
         !out.contains('#include')
         !out.contains('library(name: "McpRoomsLib"')
     }
@@ -153,9 +157,9 @@ class IncludeResolverSpec extends Specification {
         def out = IncludeResolver.resolve(src, realLibs)
 
         then: 'the bundle tool impls + the def-chunk method are inlined; directive + library() decl stripped'
-        out.contains('def toolListBundles')
-        out.contains('def toolExportBundle')
-        out.contains('def _getAllToolDefinitions_partBundles')
+        declaresMethod(out, 'toolListBundles')
+        declaresMethod(out, 'toolExportBundle')
+        declaresMethod(out, '_getAllToolDefinitions_partBundles')
         // The #include DIRECTIVE line is gone (the bundle tool DESCRIPTIONS legitimately contain
         // the text "#include", so assert on the directive line, not the substring).
         !(out =~ /(?m)^\s*#include\b/)
@@ -172,10 +176,10 @@ class IncludeResolverSpec extends Specification {
         def out = IncludeResolver.resolve(src, realLibs)
 
         then: 'the VRB tool impls + the def-chunk method are inlined; directive + library() decl stripped'
-        out.contains('def toolGetVisualRule')
-        out.contains('def toolSetVisualRule')
-        out.contains('def toolDeleteVisualRule')
-        out.contains('def _getAllToolDefinitions_partVisualRules')
+        declaresMethod(out, 'toolGetVisualRule')
+        declaresMethod(out, 'toolSetVisualRule')
+        declaresMethod(out, 'toolDeleteVisualRule')
+        declaresMethod(out, '_getAllToolDefinitions_partVisualRules')
         !(out =~ /(?m)^\s*#include\b/)
         !out.contains('library(name: "McpVisualRulesLib"')
     }
@@ -190,9 +194,9 @@ class IncludeResolverSpec extends Specification {
         def out = IncludeResolver.resolve(src, realLibs)
 
         then:
-        out.contains("def ${markerImpl}")
-        out.contains("def _getAllToolDefinitions_part${part}")
-        out.contains("def _toolDisplayMeta_part${part}")
+        declaresMethod(out, markerImpl)
+        declaresMethod(out, "_getAllToolDefinitions_part${part}")
+        declaresMethod(out, "_toolDisplayMeta_part${part}")
         !(out =~ /(?m)^\s*#include\b/)
         !out.contains("library(name: \"${libName}\"")
 

@@ -1715,7 +1715,7 @@ def _bat529Cb_dbfd46be_37(def savedSchema, def s) {
 
 @groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_38(def savedId, def id) {
-            try { __bat529StaticCall_java_util_Map_1('toolSetAppDisabled', [appId: id, disabled: false])?.success != true } catch (Exception enableExc) {
+            try { __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticCall_java_util_Map_1('toolSetAppDisabled', [appId: id, disabled: false]), 'success') != true } catch (Exception enableExc) {
                 __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "Restore of app ${savedId}: re-enabling app ${id} threw (${enableExc.message})")
                 true
             }

@@ -40,12 +40,15 @@ def main() -> None:
     parser.add_argument("--results", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--apply", action="store_true", help="Apply to this disposable Actions checkout after all checksum guards")
+    parser.add_argument("--repair", action="store_true", help="Assemble a narrow stock-2.4 repair; normal complete CI remains required")
     args = parser.parse_args()
     root = args.root.resolve()
     reports = [
         json.loads((args.results / flavor / "report.json").read_text(encoding="utf-8"))
-        for flavor in ("groovy24", "groovy25", "groovy30")
+        for flavor in (("groovy24",) if args.repair else ("groovy24", "groovy25", "groovy30"))
     ]
+    if args.repair and reports[0].get("mode") != "repair":
+        raise ValueError("Single-runtime assembly is allowed only for a repair report")
     if any(report["revision"] != reports[0]["revision"] for report in reports):
         raise ValueError("Reports came from different revisions")
     if any(report["files"] != reports[0]["files"] for report in reports):
@@ -117,7 +120,8 @@ def main() -> None:
     (args.output / "candidate.patch").write_text("".join(patch), encoding="utf-8", newline="")
     manifest = {
         "revision": reports[0]["revision"],
-        "addedStaticBodies": len(accepted),
+        "addedStaticBodies": 0 if args.repair else len(accepted),
+        "repairedMethods": len(accepted) if args.repair else 0,
         "retainedStaticBodies": reports[0]["retainedStaticBodies"],
         "explicitMethodReturns": sum(plan.get("explicitReturnType") is not None for plan in accepted),
         "explicitLocalVariables": sum(len(plan.get("explicitLocalTypes", [])) for plan in accepted),

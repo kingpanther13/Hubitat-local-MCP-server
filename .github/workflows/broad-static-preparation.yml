@@ -4,6 +4,11 @@ on:
     branches: [experiment/529-broad-static]
   workflow_dispatch:
     inputs:
+      mode:
+        description: Full preparation or narrow operator repair of an applied candidate
+        type: choice
+        options: [prepare, repair]
+        default: prepare
       reuse_run_id:
         description: Reuse successful compiler plans from this run; every source hash must match
         type: string
@@ -12,8 +17,38 @@ permissions:
   contents: read
   actions: read
 jobs:
+  repair:
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'repair'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: |
+            11
+            17
+      - uses: gradle/actions/setup-gradle@v6.4.0
+      - name: Repair static collection operators and compile exact full source
+        run: ./gradlew -p experiments/compile-static -I "$PWD/experiments/broad-static/remote.gradle" repairBroad24 -PbroadRoot="$PWD" --console=plain --no-daemon
+      - name: Assemble guarded repair in disposable checkout
+        run: python experiments/broad-static/assemble.py --repair --root "$PWD" --results experiments/broad-static/results/repair --output experiments/broad-static/repaired --apply
+      - name: Measure actual repaired source
+        run: ./gradlew -p experiments/compile-static measure -PexperimentMode=verify --console=plain --no-daemon
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: broad-static-${{ github.sha }}-repaired
+          path: |
+            experiments/broad-static/results/repair/
+            experiments/broad-static/repaired/
+            experiments/compile-static/results/
   prepare:
-    if: inputs.reuse_run_id == '' || github.event_name == 'push'
+    if: inputs.mode != 'repair' && (inputs.reuse_run_id == '' || github.event_name == 'push')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -45,7 +80,7 @@ jobs:
           path: experiments/broad-static/results/
   assemble:
     needs: prepare
-    if: ${{ !cancelled() && (needs.prepare.result == 'success' || inputs.reuse_run_id != '') }}
+    if: ${{ inputs.mode != 'repair' && !cancelled() && (needs.prepare.result == 'success' || inputs.reuse_run_id != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
