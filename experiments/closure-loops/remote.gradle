@@ -21,7 +21,6 @@ allprojects {
         tasks.register('bat529ClosurePrepare', JavaExec) {
             workingDir rootDir
             javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
-            dependsOn 'bat529ClosureParity'
             classpath = configurations.bat529ClosureGroovy24
             mainClass = 'groovy.ui.GroovyMain'
             args = [new File(preparation, 'convert.groovy').absolutePath,

@@ -5,6 +5,8 @@ import org.codehaus.groovy.ast.expr.*
 import org.codehaus.groovy.ast.stmt.*
 import org.codehaus.groovy.control.*
 import org.codehaus.groovy.classgen.VariableScopeVisitor
+import org.codehaus.groovy.antlr.parser.GroovyLexer
+import org.codehaus.groovy.antlr.parser.GroovyTokenTypes
 import java.security.MessageDigest
 
 class EachLoopConverter {
@@ -233,8 +235,45 @@ class EachLoopConverter {
         return p
     }
 
-    static String closureBody(String source, ClosureExpression closure) {
-        List range = span(source, closure)
+    // The 2.4 AST end may point past an inline block. Use the same Groovy lexer
+    // to pair punctuation tokens, ignoring braces inside strings/comments and
+    // correctly resuming GString/slashy interpolation with plumb().
+    static Map curlySpans(String source) {
+        def lexer = new GroovyLexer(new StringReader(source))
+        def tokens = lexer.plumb()
+        List stack = []
+        Map pairs = [:]
+        while (true) {
+            def token = tokens.nextToken()
+            if (token.type == GroovyTokenTypes.EOF) break
+            if (token.type == GroovyTokenTypes.LCURLY) {
+                stack << offset(source, token.line, token.column)
+            } else if (token.type == GroovyTokenTypes.RCURLY) {
+                if (!stack) throw new IllegalStateException('Unmatched lexical closing brace')
+                int start = stack.remove(stack.size() - 1)
+                pairs.put(start, offset(source, token.line, token.column) + 1)
+            }
+        }
+        if (stack) throw new IllegalStateException('Unmatched lexical opening brace')
+        return pairs
+    }
+
+    static List closureSpan(String source, ClosureExpression closure, MethodCallExpression call, Map pairs) {
+        int anchor = offset(source, closure.lineNumber, closure.columnNumber)
+        if (pairs.containsKey(anchor)) return [anchor, pairs.get(anchor)]
+        // Some implicit-parameter blocks are positioned at their first body
+        // token. Accept only the innermost enclosing token pair inside this call.
+        int callStart = span(source, call)[0]
+        List enclosing = pairs.findAll { start, end ->
+            start >= callStart && start <= anchor && anchor < end
+        }.collect { start, end -> [start, end] }.sort { a, b -> (a[1] - a[0]) <=> (b[1] - b[0]) }
+        if (!enclosing) throw new IllegalStateException('No lexical closure boundary at ' +
+            closure.lineNumber + ':' + closure.columnNumber)
+        return enclosing[0]
+    }
+
+    static String closureBody(String source, ClosureExpression closure, MethodCallExpression call, Map pairs) {
+        List range = closureSpan(source, closure, call, pairs)
         int start = range[0], end = range[1]
         if (source.charAt(start) != '{' || source.charAt(end - 1) != '}') {
             throw new IllegalStateException("Unreliable closure span at ${closure.lineNumber}")
@@ -261,6 +300,7 @@ class EachLoopConverter {
         String parsed = source.replaceAll('(?m)^[ \\t]*#include[^\\r\\n]*', { String line -> ' ' * line.length() })
         SourceUnit su = SourceUnit.create(name, parsed)
         su.parse(); su.completePhase(); su.nextPhase(); su.convert()
+        Map braces = curlySpans(parsed)
         // Resolve lexical identities without executing semantic transforms or
         // depending on name matching. Reassignments inside closures count too.
         su.AST.classes.each { new VariableScopeVisitor(su).visitClass(it) }
@@ -378,7 +418,7 @@ class EachLoopConverter {
                     } else {
                         String receiver = slice(source, call.objectExpression)
                         String parameter = closure.parameterSpecified ? closure.parameters[0].name : 'it'
-                        String body = closureBody(source, closure)
+                        String body = closureBody(source, closure, call, braces)
                         String temporary = prefix + (++nextId)
                         String values = shape.kind == 'map' ? temporary + '.entrySet()' : temporary
                         // An else branch prevents a surrounding unbraced if's else
