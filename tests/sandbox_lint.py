@@ -4695,7 +4695,7 @@ def check_complete_search_removal() -> list[dict]:
     sources = [(REPO_ROOT / 'hubitat-mcp-server.groovy').read_text(encoding='utf-8')]
     sources.extend(path.read_text(encoding='utf-8') for path in sorted((REPO_ROOT / 'libraries').glob('*.groovy')))
     raw = '\n'.join(sources)
-    code = strip_comments_and_strings(raw)
+    code = '\n'.join(strip_comments_and_strings(raw))
     findings = []
     removed = ('toolSearchTools', 'bm25Score', 'bm25Tokenize', '_bm25Key', '_bm25DocText', '_fpField',
                'buildToolSearchCorpus', 'toolSearchCorpusFingerprint', 'TOOL_SEARCH_INDEX', 'TOOL_SEARCH_CORPUS_FP',
