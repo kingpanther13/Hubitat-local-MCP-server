@@ -44,7 +44,7 @@ def _platformUpdateFromHub2(hub2) {
     // getLatestAvailablePlatformVersion() names the newest release; only a newer one is an update
     // (a beta hub can run ahead of it).
     if (pa == null) {
-        def item = (alerts.alertItems instanceof List) ? alerts.alertItems.find { it instanceof Map && it.key == "PLATFORM_UPDATE_AVAILABLE" } : null
+        def item = (alerts.alertItems instanceof List) ? (alerts.alertItems).find((this.&_bat529Cb_523e098a_16)): null
         if (item != null) return [available: true, currentVersion: current, availableVersion: item.version?.toString()]
         def latest = null
         try { latest = getLatestAvailablePlatformVersion()?.toString() } catch (Exception e) {
@@ -85,12 +85,12 @@ def _healthAlertsFromHub2(hub2) {
     alerts.remove("platformUpdateAvailable"); alerts.remove("platformUpdateVersion")
     def out = [safeMode: hub2.safeMode == true]
     if (alerts.alertItems instanceof List) {
-        def items = (alerts.alertItems as List).findAll { it instanceof Map && it.key }
-        out.active = items.collect { it.key.toString() }.unique().sort()
+        def items = ((alerts.alertItems as List)).findAll((this.&_bat529Cb_523e098a_12))
+        out.active = (items).collect((this.&_bat529Cb_523e098a_4)).unique().sort()
         // The handle hub_set_system_settings(dismissAlert) takes.
-        out.items = items.collect { [key: it.key, message: it.message, version: it.version, dismissible: it.dismissible == true] }
+        out.items = (items).collect((this.&_bat529Cb_523e098a_17))
     } else {
-        out.active = alerts.findAll { k, v -> v == true }.collect { k, v -> k.toString() }.sort()
+        out.active = ((alerts).findAll((this.&_bat529Cb_523e098a_5))).collect((this.&_bat529Cb_523e098a_13)).sort()
     }
     out.details = alerts
     return out
@@ -537,7 +537,7 @@ private _validateNetworkArgs(network) {
         throw new IllegalArgumentException("network must be an object, e.g. {ipMode:'static', address, netmask, gateway, nameserver} or {ipMode:'dhcp'} or {ethernetAutoneg:true} or {wifiSsid, wifiPassword}.")
     }
     def known = ["ipMode", "address", "netmask", "gateway", "nameserver", "useDNSFallover", "ethernetAutoneg", "wifiSsid", "wifiPassword"]
-    def unknown = network.keySet().findAll { !(it in known) }
+    def unknown = (network.keySet()).findAll(((this.&_bat529Cb_523e098a_9).curry([known] as Object[])))
     if (unknown) throw new IllegalArgumentException("Unknown network field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
     if (network.isEmpty()) {
         throw new IllegalArgumentException("network is empty -- provide at least one of: ${known.join(', ')}.")
@@ -980,7 +980,7 @@ def toolUpdateHubMesh(args) {
 
 def toolGetModes() {
     def currentMode = location.mode
-    def modes = location.modes?.collect { [id: it.id.toString(), name: it.name] }
+    def modes = (location.modes)?.collect((this.&_bat529Cb_523e098a_11))
     def modeManager = null
     // Enrich with per-mode icon + Mode Manager state from the HTTP surface (the SDK exposes
     // neither). Best-effort: fall back to the SDK list if /modes/json can't be read.
@@ -989,7 +989,7 @@ def toolGetModes() {
         def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
         if (parsed instanceof Map) {
             if (parsed.modes instanceof List) {
-                modes = parsed.modes.collect { [id: it?.id?.toString(), name: it?.name, icon: it?.icon] }
+                modes = (parsed.modes).collect((this.&_bat529Cb_523e098a_14))
             }
             // Only surface modeManager when the payload actually carries it -- a Map that lacks the
             // manager keys (an error envelope, or a firmware shape change) must NOT yield an all-null
@@ -1020,7 +1020,7 @@ def toolGetModes() {
 private _resolveModeId(idOrName) {
     def s = idOrName?.toString()?.trim()
     if (!s) return null
-    def m = location.modes?.find { it?.id?.toString() == s || it?.name?.equalsIgnoreCase(s) }
+    def m = (location.modes)?.find(((this.&_bat529Cb_523e098a_15).curry([s] as Object[])))
     return m ? m.id : null
 }
 
@@ -1090,9 +1090,9 @@ private _modeDelete(modeId) {
 
 private _modeActivate(String modeName) {
     if (!modeName) throw new IllegalArgumentException("mode (the mode name to activate) is required")
-    def mode = location.modes?.find { it.name.equalsIgnoreCase(modeName) }
+    def mode = (location.modes)?.find(((this.&_bat529Cb_523e098a_10).curry([modeName] as Object[])))
     if (!mode) {
-        def available = location.modes?.collect { it.name }
+        def available = (location.modes)?.collect((this.&_bat529Cb_523e098a_3))
         throw new IllegalArgumentException("Mode '${modeName}' not found. Available: ${available}")
     }
     def previousMode = location.mode
@@ -1224,8 +1224,8 @@ private Map _readHubNetworkSettings() {
 
     // Normalize a DNS list the hub may send as an array OR a comma/space-joined string into a clean list.
     def dnsList = { v ->
-        if (v instanceof List) return v.collect { it?.toString() }.findAll { it }
-        if (v instanceof String && v.trim()) return v.split(/[,\s]+/).findAll { it }.toList()
+        if (v instanceof List) return ((v).collect((this.&_bat529Cb_523e098a_1))).findAll((this.&_bat529Cb_523e098a_8))
+        if (v instanceof String && v.trim()) return (v.split(/[,\s]+/)).findAll((this.&_bat529Cb_523e098a_2)).toList()
         return []
     }
 
@@ -1349,8 +1349,8 @@ def isNewerVersion(String remote, String local) {
         return false
     }
     try {
-        def remoteParts = remote.tokenize('.').collect { it as int }
-        def localParts = local.tokenize('.').collect { it as int }
+        def remoteParts = (remote.tokenize('.')).collect((this.&_bat529Cb_523e098a_7))
+        def localParts = (local.tokenize('.')).collect((this.&_bat529Cb_523e098a_6))
         def maxLen = Math.max(remoteParts.size(), localParts.size())
         for (int i = 0; i < maxLen; i++) {
             def r = i < remoteParts.size() ? remoteParts[i] : 0
@@ -1577,4 +1577,56 @@ def _toolDisplayMeta_partSystem() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return _bat529EmbeddedCatalogRead(['["m",[["hub_get_info",["m",[["title","Get Hub Info"],["summary","Comprehensive hub info: hardware, health, firmware/platform-update status, network, and MCP stats."]]]],["hub_list_modes",["m",[["title","List Modes"],["summary","List the hub\'s location modes, the active one, and Mode Manager state."]]]],["hub_manage_mode",["m",[["title","Manage Modes"],["summary","Create, rename, delete, or activate a hub location mode."]]]],["hub_set_mode_manager",["m",[["title","Set Mode Manager"],["summary","Pick the Mode Manager and update its per-mode conditions."]]]],["hub_get_hsm_status",["m",[["title","Get HSM Status"],["summary","Get the current Hubitat Safety Monitor arm status."]]]],["hub_set_hsm",["m",[["title","Set HSM Arm Mode"],["summary","Arm or disarm Hubitat Safety Monitor."]]]],["hub_set_system_settings",["m",[["title","Set System Settings"],["summary","Set hub name, time zone, location, zip, temperature scale, dark mode, network config, or dismiss a hub alert."]]]],["hub_get_hub_mesh",["m",[["title","Get Hub Mesh"],["summary","Read Hub Mesh config: enabled state, peer hubs, shared and linked devices/variables, sync interval."]]]],["hub_update_hub_mesh",["m",[["title","Update Hub Mesh"],["summary","Enable/disable Hub Mesh, set the sync interval, follow a peer\'s modes, or store a peer\'s mesh token."]]]],["hub_update_firmware",["m",[["title","Update Hub Firmware"],["summary","Install the hub\'s pending platform/firmware update (downloads, installs, and reboots the hub)."]]]],["hub_reboot",["m",[["title","Reboot Hub"],["summary","Reboot the hub (1-3 minutes of downtime)."]]]],["hub_shutdown",["m",[["title","Shut Down Hub"],["summary","Power the hub off; a physical restart is required afterwards."]]]]]]'])
+}
+
+
+def _bat529Cb_523e098a_1(def it) { it?.toString() 
+}
+
+def _bat529Cb_523e098a_2(def it) { it 
+}
+
+def _bat529Cb_523e098a_3(def it) { it.name 
+}
+
+def _bat529Cb_523e098a_4(def it) { it.key.toString() 
+}
+
+def _bat529Cb_523e098a_5(def k, def v) { v == true 
+}
+
+def _bat529Cb_523e098a_6(def it) { it as int 
+}
+
+def _bat529Cb_523e098a_7(def it) { it as int 
+}
+
+def _bat529Cb_523e098a_8(def it) { it 
+}
+
+def _bat529Cb_523e098a_9(def known, def it) { !(it in known) 
+}
+
+def _bat529Cb_523e098a_10(def modeName, def it) { it.name.equalsIgnoreCase(modeName) 
+}
+
+def _bat529Cb_523e098a_11(def it) { [id: it.id.toString(), name: it.name] 
+}
+
+def _bat529Cb_523e098a_12(def it) { it instanceof Map && it.key 
+}
+
+def _bat529Cb_523e098a_13(def k, def v) { k.toString() 
+}
+
+def _bat529Cb_523e098a_14(def it) { [id: it?.id?.toString(), name: it?.name, icon: it?.icon] 
+}
+
+def _bat529Cb_523e098a_15(def s, def it) { it?.id?.toString() == s || it?.name?.equalsIgnoreCase(s) 
+}
+
+def _bat529Cb_523e098a_16(def it) { it instanceof Map && it.key == "PLATFORM_UPDATE_AVAILABLE" 
+}
+
+def _bat529Cb_523e098a_17(def it) { [key: it.key, message: it.message, version: it.version, dismissible: it.dismissible == true] 
 }

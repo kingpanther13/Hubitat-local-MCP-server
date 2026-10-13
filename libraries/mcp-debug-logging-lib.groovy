@@ -16,34 +16,20 @@ def toolGetDebugLogs(args) {
 
     // Apply filters
     if (level && level != "all") {
-        logs = logs.findAll { it.level == level }
+        logs = (logs).findAll(((this.&_bat529Cb_1fa286f7_1).curry([level] as Object[])))
     }
     if (component) {
-        logs = logs.findAll { it.component?.contains(component) }
+        logs = (logs).findAll(((this.&_bat529Cb_1fa286f7_8).curry([component] as Object[])))
     }
     if (ruleId) {
-        logs = logs.findAll { it.ruleId == ruleId }
+        logs = (logs).findAll(((this.&_bat529Cb_1fa286f7_3).curry([ruleId] as Object[])))
     }
 
     // Get most recent entries
     def count = Math.min(limit, logs.size())
     logs = logs.drop(Math.max(0, logs.size() - count))
 
-    def materialized = logs.collect { entry ->
-        def e = [
-            timestamp: entry.timestamp,
-            time: formatTimestamp(entry.timestamp),
-            level: entry.level,
-            component: entry.component,
-            message: entry.message
-        ]
-        if (entry.ruleId) e.ruleId = entry.ruleId
-        if (entry.ruleName) e.ruleName = entry.ruleName
-        if (entry.duration) e.durationMs = entry.duration
-        if (entry.stackTrace) e.stackTrace = entry.stackTrace
-        if (entry.details) e.details = entry.details
-        return e
-    }
+    def materialized = (logs).collect((this.&_bat529Cb_1fa286f7_23))
     def cursor = args?.cursor
     def paged = _paginateList(materialized, cursor, 100, "hub_get_logs")
     def result = [
@@ -106,11 +92,10 @@ def toolGetLoggingStatus(args) {
         maxEntries: 100,
         storage: "hub_native_logs",
         entriesByLevel: [
-            debug: entries.count { it.level == "debug" },
-            info: entries.count { it.level == "info" },
-            warn: entries.count { it.level == "warn" },
-            error: entries.count { it.level == "error" }
-        ],
+            debug: (entries).count((this.&_bat529Cb_1fa286f7_5)),
+            info: (entries).count((this.&_bat529Cb_1fa286f7_2)),
+            warn: (entries).count((this.&_bat529Cb_1fa286f7_4)),
+            error: (entries).count((this.&_bat529Cb_1fa286f7_7))],
         oldestEntry: entries.size() > 0 ? formatTimestamp(entries.first().timestamp) : null,
         newestEntry: entries.size() > 0 ? formatTimestamp(entries.last().timestamp) : null
     ]
@@ -152,7 +137,7 @@ private List _reportErrorSnapshot() {
     if (settings?.retainReportErrors != true) return []
     def entries = atomicState.reportErrors instanceof List ? atomicState.reportErrors : []
     def generation = atomicState.debugLogGeneration
-    def current = entries.findAll { it instanceof Map && it.generation == generation }
+    def current = (entries).findAll(((this.&_bat529Cb_1fa286f7_16).curry([generation] as Object[])))
     return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(current.takeRight(10)))
 }
 
@@ -161,11 +146,7 @@ private List _reportErrorSnapshot() {
 private List _reportErrorsForScope(args, List entries) {
     boolean scoped = args.failingTool || args.ruleId || args.nativeAppId
     if (!scoped) return entries
-    return entries.findAll { entry ->
-        (args.failingTool && entry.details?.tool == args.failingTool) ||
-        (args.ruleId && entry.ruleId?.toString() == args.ruleId.toString()) ||
-        (args.nativeAppId && entry.details?.appId?.toString() == args.nativeAppId.toString())
-    }
+    return (entries).findAll(((this.&_bat529Cb_1fa286f7_22).curry([args] as Object[])))
 }
 
 // A bug report with no failingTool takes the newest retained tool error inside its own log
@@ -174,11 +155,7 @@ private List _reportErrorsForScope(args, List entries) {
 private String _inferredFailingTool(args, String issueType, List retainedErrors, long windowMs) {
     if (issueType != "bug" || args.failingTool) return null
     long cutoff = now() - windowMs
-    def hit = retainedErrors.reverse().find { entry ->
-        def tool = entry.details?.tool?.toString()
-        def ts = entry.timestamp instanceof Number ? entry.timestamp.longValue() : null
-        tool && tool != "hub_report_issue" && ts != null && ts >= cutoff
-    }
+    def hit = (retainedErrors.reverse()).find(((this.&_bat529Cb_1fa286f7_21).curry([cutoff] as Object[])))
     return hit?.details?.tool?.toString()
 }
 
@@ -206,7 +183,7 @@ def toolGenerateBugReport(args) {
         logLoading = true
         history = [error: "Native MCP log history is still loading; retained errors are included in the report.", retryable: true]
     }
-    def allEntries = (history.entries ?: []).findAll { it.level == "error" || it.level == "warn" }
+    def allEntries = ((history.entries ?: [])).findAll((this.&_bat529Cb_1fa286f7_18))
     def anchor = _bugReportResolveAnchor(args, allEntries)
     def scopedLogs = _bugReportScopedLogs(args, allEntries, anchor, windowMs)
     def identity = mcpClientIdentity()
@@ -275,15 +252,15 @@ private Map _bugReportResolveAnchor(args, List entries) {
     if (!entries) return [entry: null, matchedOn: "none"]
     def reversed = entries.reverse()
     if (args.failingTool) {
-        def hit = reversed.find { it.details?.tool == args.failingTool }
+        def hit = (reversed).find(((this.&_bat529Cb_1fa286f7_10).curry([args] as Object[])))
         if (hit) return [entry: hit, matchedOn: "tool"]
     }
     if (args.ruleId) {
-        def hit = reversed.find { it.ruleId?.toString() == args.ruleId?.toString() }
+        def hit = (reversed).find(((this.&_bat529Cb_1fa286f7_15).curry([args] as Object[])))
         if (hit) return [entry: hit, matchedOn: "ruleId"]
     }
     if (args.nativeAppId) {
-        def hit = reversed.find { it.details?.appId?.toString() == args.nativeAppId?.toString() }
+        def hit = (reversed).find(((this.&_bat529Cb_1fa286f7_19).curry([args] as Object[])))
         if (hit) return [entry: hit, matchedOn: "nativeAppId"]
     }
     return [entry: null, matchedOn: "none"]
@@ -323,15 +300,7 @@ private Map _bugReportScopedLogs(args, List entries, Map anchor, long windowMs) 
     }
     def relevant = []
     def other = []
-    entries.each { entry ->
-        def ts = safeTs(entry)
-        if (ts == null) return
-        if (ts >= windowStart && ts <= windowEnd && matchesContext(entry)) {
-            relevant << entry
-        } else {
-            other << entry
-        }
-    }
+    (entries).each(((this.&_bat529Cb_1fa286f7_20).curry([matchesContext, other, relevant, safeTs, windowEnd, windowStart] as Object[])))
     return [
         relevant: relevant.takeRight(20),
         other: other.takeRight(20),
@@ -403,10 +372,10 @@ private List _bugReportSettingsLines(String privacyMode) {
             if (raw == null) return "${effective} (default)".toString()
             return raw.toString() == effective.toString() ? effective.toString() : "${effective} (configured ${raw})".toString()
         }
-        def nameList = { raw -> (raw ?: []).collect { it.toString() } }
+        def nameList = { raw -> ((raw ?: [])).collect((this.&_bat529Cb_1fa286f7_6))}
         def disabledGateways = nameList(settings.disabled_gateways)
         def disabledTools = nameList(settings.disabled_tools)
-        def hiddenTools = (getHiddenToolNames() ?: []).collect { it.toString() }.sort()
+        def hiddenTools = ((getHiddenToolNames() ?: [])).collect((this.&_bat529Cb_1fa286f7_9)).sort()
         def extraOrigins = _configuredExtraOriginHosts()
         // Hub Security is reported as a BOOLEAN only -- the username and password stay out of
         // every report, private mode included. Every line below is posture without a locator
@@ -564,13 +533,13 @@ private Map _bugReportNativeRmStatus() {
     def v5Error = null
     try {
         def v4 = hubitat.helper.RMUtils.getRuleList() ?: []
-        v4.each { r -> if (r?.id != null) ids << r.id.toString() }
+        (v4).each(((this.&_bat529Cb_1fa286f7_12).curry([ids] as Object[])))
     } catch (Throwable e) {
         v4Error = e.toString()
     }
     try {
         def v5 = hubitat.helper.RMUtils.getRuleList("5.0") ?: []
-        v5.each { r -> if (r?.id != null) ids << r.id.toString() }
+        (v5).each(((this.&_bat529Cb_1fa286f7_13).curry([ids] as Object[])))
     } catch (Throwable e) {
         v5Error = e.toString()
     }
@@ -675,8 +644,8 @@ private String _bugReportBuildMarkdown(Map params) {
     def scopedLogs = params.scopedLogs
     def heading = ["bug": "Bug Report", "enhancement": "Feature Request", "agent_behavior": "Agent-Behavior Report"][issueType]
     def expectedActualHeader = issueType == "enhancement" ? "## Request" : (issueType == "agent_behavior" ? "## Agent Behavior" : "## Bug Description")
-    def relevantLines = scopedLogs.relevant.collect { _bugReportFormatLogEntry(it) }
-    def otherLines = scopedLogs.includedUnrelated ? scopedLogs.other.collect { _bugReportFormatLogEntry(it) } : []
+    def relevantLines = (scopedLogs.relevant).collect((this.&_bat529Cb_1fa286f7_14))
+    def otherLines = scopedLogs.includedUnrelated ? (scopedLogs.other).collect((this.&_bat529Cb_1fa286f7_11)): []
     // Agent-supplied identifiers land in a markdown bullet, so they are flattened and capped
     // the same way a client's self-reported name is.
     def failingTool = _mcpClientString(args.failingTool)
@@ -715,7 +684,7 @@ private String _bugReportBuildMarkdown(Map params) {
 - **Execution Count:** ${ruleInfo.executionCount}
 """
     }
-    def retainedLines = (params.retainedErrors ?: []).collect { _bugReportFormatLogEntry(it) }
+    def retainedLines = ((params.retainedErrors ?: [])).collect((this.&_bat529Cb_1fa286f7_17))
     def retainedSection = _bugReportRawSection("Retained Server Errors", retainedLines.join("\n"),
         includeRawLogs, false, privacyMode)
     def logSection
@@ -870,4 +839,104 @@ def _toolDisplayMeta_partDebugLogging() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return _bat529EmbeddedCatalogRead(['["m",[["hub_report_issue",["m",[["title","Generate Diagnostic Report"],["summary","Generate a comprehensive diagnostic report for bug reports."]]]],["hub_delete_debug_logs",["m",[["title","Clear MCP Debug Logs"],["summary","Clear all MCP debug log entries."]]]],["hub_set_log_level",["m",[["title","Set MCP Log Level"],["summary","Set the MCP log level (debug, info, warn, error)."]]]]]]'])
+}
+
+
+def _bat529Cb_1fa286f7_1(def level, def it) { it.level == level 
+}
+
+def _bat529Cb_1fa286f7_2(def it) { it.level == "info" 
+}
+
+def _bat529Cb_1fa286f7_3(def ruleId, def it) { it.ruleId == ruleId 
+}
+
+def _bat529Cb_1fa286f7_4(def it) { it.level == "warn" 
+}
+
+def _bat529Cb_1fa286f7_5(def it) { it.level == "debug" 
+}
+
+def _bat529Cb_1fa286f7_6(def it) { it.toString() 
+}
+
+def _bat529Cb_1fa286f7_7(def it) { it.level == "error" 
+}
+
+def _bat529Cb_1fa286f7_8(def component, def it) { it.component?.contains(component) 
+}
+
+def _bat529Cb_1fa286f7_9(def it) { it.toString() 
+}
+
+def _bat529Cb_1fa286f7_10(def args, def it) { it.details?.tool == args.failingTool 
+}
+
+def _bat529Cb_1fa286f7_11(def it) { _bugReportFormatLogEntry(it) 
+}
+
+def _bat529Cb_1fa286f7_12(def ids, def r) { if (r?.id != null) ids << r.id.toString() 
+}
+
+def _bat529Cb_1fa286f7_13(def ids, def r) { if (r?.id != null) ids << r.id.toString() 
+}
+
+def _bat529Cb_1fa286f7_14(def it) { _bugReportFormatLogEntry(it) 
+}
+
+def _bat529Cb_1fa286f7_15(def args, def it) { it.ruleId?.toString() == args.ruleId?.toString() 
+}
+
+def _bat529Cb_1fa286f7_16(def generation, def it) { it instanceof Map && it.generation == generation 
+}
+
+def _bat529Cb_1fa286f7_17(def it) { _bugReportFormatLogEntry(it) 
+}
+
+def _bat529Cb_1fa286f7_18(def it) { it.level == "error" || it.level == "warn" 
+}
+
+def _bat529Cb_1fa286f7_19(def args, def it) { it.details?.appId?.toString() == args.nativeAppId?.toString() 
+}
+
+def _bat529Cb_1fa286f7_20(def matchesContext, def other, def relevant, def safeTs, def windowEnd, def windowStart, def entry) {
+        def ts = safeTs(entry)
+        if (ts == null) return
+        if (ts >= windowStart && ts <= windowEnd && matchesContext(entry)) {
+            relevant << entry
+        } else {
+            other << entry
+        }
+    
+}
+
+def _bat529Cb_1fa286f7_21(def cutoff, def entry) {
+        def tool = entry.details?.tool?.toString()
+        def ts = entry.timestamp instanceof Number ? entry.timestamp.longValue() : null
+        tool && tool != "hub_report_issue" && ts != null && ts >= cutoff
+    
+}
+
+def _bat529Cb_1fa286f7_22(def args, def entry) {
+        (args.failingTool && entry.details?.tool == args.failingTool) ||
+        (args.ruleId && entry.ruleId?.toString() == args.ruleId.toString()) ||
+        (args.nativeAppId && entry.details?.appId?.toString() == args.nativeAppId.toString())
+    
+}
+
+def _bat529Cb_1fa286f7_23(def entry) {
+        def e = [
+            timestamp: entry.timestamp,
+            time: formatTimestamp(entry.timestamp),
+            level: entry.level,
+            component: entry.component,
+            message: entry.message
+        ]
+        if (entry.ruleId) e.ruleId = entry.ruleId
+        if (entry.ruleName) e.ruleName = entry.ruleName
+        if (entry.duration) e.durationMs = entry.duration
+        if (entry.stackTrace) e.stackTrace = entry.stackTrace
+        if (entry.details) e.details = entry.details
+        return e
+    
 }

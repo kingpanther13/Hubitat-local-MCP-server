@@ -16,11 +16,7 @@ private boolean _refreshHubVarInUseRegistrations() {
                 try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
                 if (ruleData) {
                     def serialized = groovy.json.JsonOutput.toJson(ruleData)
-                    hubVarNames.each { varName ->
-                        // Match a whole JSON value so temp cannot match temperature.
-                        def needle = "\"${varName}\""
-                        if (serialized?.contains(needle)) currentVars << varName
-                    }
+                    (hubVarNames).each(((this.&_bat529Cb_b8585dac_23).curry([currentVars, serialized] as Object[])))
                 }
             }
         } catch (Exception e) {
@@ -146,11 +142,11 @@ def toolGetVariableHistory(args) {
     def filtered = history
     if (args?.name) {
         def n = args.name.toString()
-        filtered = filtered.findAll { it?.name == n }
+        filtered = (filtered).findAll(((this.&_bat529Cb_b8585dac_1).curry([n] as Object[])))
     }
     if (args?.sinceMs != null) {
         def since = args.sinceMs as Long
-        filtered = filtered.findAll { (it?.timestamp ?: 0L) >= since }
+        filtered = (filtered).findAll(((this.&_bat529Cb_b8585dac_8).curry([since] as Object[])))
     }
     def limit = (args?.limit != null) ? (args.limit as Integer) : 50
     if (limit < 1) limit = 1
@@ -175,16 +171,7 @@ def toolListVariables(args = null) {
     try {
         def allVars = getAllGlobalVars()
         if (allVars) {
-            hubVariables = allVars.collect { name, var ->
-                [
-                    name: name,
-                    value: var?.value,
-                    type: var?.type,
-                    deviceId: var?.deviceId,
-                    attribute: var?.attribute,
-                    source: "hub"
-                ]
-            }
+            hubVariables = (allVars).collect((this.&_bat529Cb_b8585dac_24))
         }
     } catch (Exception e) {
         // Surface to mcpLog (not just logDebug) so a "no hub variables" response can be
@@ -193,9 +180,7 @@ def toolListVariables(args = null) {
         mcpLog("warn", "hub-vars", "hub_list_variables: getAllGlobalVars() failed: ${hubVarsError} -- returning empty hubVariables", null, [details: [error: hubVarsError]])
     }
 
-    def ruleVariables = state.ruleVariables?.collect { name, value ->
-        [name: name, value: value, source: "rule_engine"]
-    } ?: []
+    def ruleVariables = (state.ruleVariables)?.collect((this.&_bat529Cb_b8585dac_20))?: []
 
     // type filter: the hub_create_variable names or the stored names the listing shows
     // (integer, bigdecimal, string, boolean, datetime).
@@ -203,7 +188,7 @@ def toolListVariables(args = null) {
         def hubType = [number: "integer", integer: "integer", decimal: "bigdecimal", bigdecimal: "bigdecimal", string: "string",
                        boolean: "boolean", datetime: "datetime"].get(args.type.toString().toLowerCase())
         if (hubType == null) throw new IllegalArgumentException("type must be one of Number, Decimal, String, Boolean, DateTime (or the stored integer, bigdecimal, string, boolean, datetime).")
-        hubVariables = hubVariables.findAll { it.type?.toString()?.toLowerCase() == hubType }
+        hubVariables = (hubVariables).findAll(((this.&_bat529Cb_b8585dac_14).curry([hubType] as Object[])))
         ruleVariables = []
     }
 
@@ -312,7 +297,7 @@ private void _validateHubVarName(String name) {
     if (!name?.trim()) {
         throw new IllegalArgumentException("Variable name is required")
     }
-    def bad = getHubVarForbiddenChars().findAll { c -> name.contains(c) }
+    def bad = (getHubVarForbiddenChars()).findAll(((this.&_bat529Cb_b8585dac_12).curry([name] as Object[])))
     if (bad) {
         throw new IllegalArgumentException(
             "Variable name '${name}' contains forbidden character(s): ${bad.join(' ')}. " +
@@ -322,7 +307,7 @@ private void _validateHubVarName(String name) {
 
 private String _validateHubVarType(String type) {
     def types = getHubVarTypes()
-    def match = types.find { it.equalsIgnoreCase(type) }
+    def match = (types).find(((this.&_bat529Cb_b8585dac_5).curry([type] as Object[])))
     if (!match) {
         throw new IllegalArgumentException(
             "Variable type '${type}' is invalid. Must be one of: ${types.join(', ')}")
@@ -498,8 +483,7 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
     def localBefore = (beforeJson?.localLinkedHubVariables instanceof List) ? beforeJson.localLinkedHubVariables : null
 
     def resolveLocal = { List rows ->
-        (rows instanceof List) ? rows.find {
-            it?.sourceVarName?.toString() == meshName && it?.sourceHubId?.toString() == meshHubId } : null
+        (rows instanceof List) ? (rows).find(((this.&_bat529Cb_b8585dac_21).curry([meshHubId, meshName] as Object[]))): null
     }
 
     // Pre-validate BEFORE the GET (validation-before-side-effect). Two short-circuits, in order:
@@ -509,7 +493,7 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
     //  (b) not offered -- pool readable but no matching row AND not already linked -> reject (an
     //      unoffered pair would otherwise read as "linked" in the read-back and false-succeed).
     def srcBeforeRow = (availBefore != null)
-        ? availBefore.find { it.hubId?.toString() == meshHubId && it.name?.toString() == meshName }
+        ? (availBefore).find(((this.&_bat529Cb_b8585dac_18).curry([meshHubId, meshName] as Object[])))
         : null
     boolean sourceWasOffered = (srcBeforeRow != null)
     def existingLocal = resolveLocal(localBefore)
@@ -561,7 +545,7 @@ private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
         if (localRow != null) matchedLocalRow = localRow
         Boolean availLinked = null
         if (avail != null) {
-            def srcRow = avail.find { it.hubId?.toString() == meshHubId && it.name?.toString() == meshName }
+            def srcRow = (avail).find(((this.&_bat529Cb_b8585dac_15).curry([meshHubId, meshName] as Object[])))
             if (srcRow == null) {
                 // Source row absent: "took" only when the pair was offered before this call
                 // (sourceWasOffered). A pair that was never offered is absent for a different reason,
@@ -1179,7 +1163,7 @@ private Map _setVariableValueLeg(name, value) {
 private List _meshSharedHubVarNames() {
     def j = _meshJson()
     if (!(j?.sharedHubVariables instanceof List)) return null
-    return j.sharedHubVariables.collect { it?.name?.toString() }
+    return (j.sharedHubVariables).collect((this.&_bat529Cb_b8585dac_10))
 }
 
 def toolDeleteHubVariable(args) {
@@ -1215,16 +1199,7 @@ def toolDeleteHubVariable(args) {
         // Word-boundary match: the JSON-quoted name or a %name% substitution, so a
         // var named `temp` doesn't match rules referencing `temperature` etc.
         def needles = ["\"${varName}\"".toString(), "%${varName}%".toString()]
-        getChildApps()?.each { child ->
-            def ruleData = null
-            try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
-            if (ruleData) {
-                def serialized = groovy.json.JsonOutput.toJson(ruleData)
-                if (needles.any { serialized?.contains(it) }) {
-                    consumers << [id: child.id, label: child.label]
-                }
-            }
-        }
+        (getChildApps())?.each(((this.&_bat529Cb_b8585dac_26).curry([consumers, needles] as Object[])))
     } catch (Exception e) {
         // Defensive: if the scan itself errors, fall through to apply normal force gate
         // rather than blocking deletion entirely. Log so investigators know the scan
@@ -1245,7 +1220,7 @@ def toolDeleteHubVariable(args) {
         Map meshJson = _meshJson()
         def meshRows = (meshJson?.localLinkedHubVariables instanceof List) ? meshJson.localLinkedHubVariables : null
         if (meshRows != null) {
-            linkedMirrorRow = meshRows.find { it instanceof Map && it.name?.toString() == varName }
+            linkedMirrorRow = (meshRows).find(((this.&_bat529Cb_b8585dac_13).curry([varName] as Object[])))
         }
         try {
             hubVarsAppId = _findHubVariablesAppId()
@@ -1283,7 +1258,7 @@ def toolDeleteHubVariable(args) {
         def consumerWord = consumerCount == 1 ? "rule" : "rules"
         throw new IllegalArgumentException(
             "Variable '${varName}' is referenced by ${consumerCount} ${consumerWord}: " +
-            "${consumers.collect { "${it.label} (id=${it.id})" }.join(', ')}. " +
+            "${(consumers).collect((this.&_bat529Cb_b8585dac_7)).join(', ')}. " +
             "Deleting will silently break ${consumerCount == 1 ? 'that rule' : 'those rules'} (null lookups, false conditions, " +
             "literal %${varName}% in substitutions). Pass force=true to proceed anyway, " +
             "or update/remove the consuming ${consumerWord} first."
@@ -1334,7 +1309,7 @@ def toolDeleteHubVariable(args) {
         def consumerNote = ""
         if (consumers) {
             def cc = consumers.size()
-            consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})"
+            consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${(consumers).collect((this.&_bat529Cb_b8585dac_2)).join(', ')})"
         }
         // For a linked mirror the platform in-use registry always reads "true" (the mesh link itself),
         // so suppress the generic forced-registry note and record the unlink instead.
@@ -1367,7 +1342,7 @@ def toolDeleteHubVariable(args) {
     // rule_engine fallback (legacy MCP-managed rule variables): replace the map
     // with a filtered copy so sibling variables are preserved.
     def previousValue = state.ruleVariables.get(varName)
-    def updated = state.ruleVariables.findAll { k, v -> k != varName }
+    def updated = (state.ruleVariables).findAll(((this.&_bat529Cb_b8585dac_9).curry([varName] as Object[])))
     state.ruleVariables = updated
 
     def prevStr = previousValue?.toString()
@@ -1375,7 +1350,7 @@ def toolDeleteHubVariable(args) {
     def consumerNote = ""
     if (consumers) {
         def cc = consumers.size()
-        consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${consumers.collect { "id=${it.id}" }.join(', ')})"
+        consumerNote = " (forced; ${cc} ${cc == 1 ? 'rule' : 'rules'} now broken: ${(consumers).collect((this.&_bat529Cb_b8585dac_3)).join(', ')})"
     }
     mcpLog("warn", "developer-mode", "hub_delete_variable: removed '${varName}' (previous value: ${auditValue})${consumerNote}")
     return [success: true, name: varName, deleted: true, source: "rule_engine", previousValue: previousValue, brokenConsumers: consumers ?: null]
@@ -1448,7 +1423,7 @@ Map _hubVarInUseApps(Integer hubVarsAppId, String varName) {
     // THIS variable (match raw and escaped forms, like _hubVarPlatformInUse). A panel naming another
     // variable -> not our panel -> keep polling -> fall through to UNKNOWN.
     def escaped = varName.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("'", "&#39;").replace('"', "&quot;")
-    def markerForms = [varName, escaped].unique().collect { "<b>${it}</b> is in use by these apps".toString() }
+    def markerForms = ([varName, escaped].unique()).collect((this.&_bat529Cb_b8585dac_17))
 
     def apps = []
     boolean panelForThisVar = false
@@ -1467,7 +1442,7 @@ Map _hubVarInUseApps(Integer hubVarsAppId, String varName) {
             // body falls back to the raw text).
             def html = _hubVarRevealHtml(hubInternalGet("/installedapp/configure/json/${hubVarsAppId}")?.toString())
             if (!html) continue
-            if (!markerForms.any { html.contains(it) }) continue   // not our panel yet (or another var's)
+            if (!(markerForms).any(((this.&_bat529Cb_b8585dac_4).curry([html] as Object[])))) continue   // not our panel yet (or another var's)
             panelForThisVar = true
             apps = _parseHubVarConsumerAnchors(html)
         }
@@ -1525,13 +1500,7 @@ private String _hubVarRevealHtml(String raw) {
     try { parsed = new groovy.json.JsonSlurper().parseText(raw) }
     catch (Exception e) { return raw }   // not JSON -> scan as-is
     if (!(parsed instanceof Map) || parsed.configPage == null) return raw
-    def chunks = (parsed.configPage?.sections ?: []).collectMany { sect ->
-        def fromBody = (sect?.body ?: [])
-            .findAll { it instanceof Map && it.description != null }
-            .collect { it.description.toString() }
-        def fromParagraphs = (sect?.paragraphs ?: []).collect { it?.toString() ?: "" }
-        fromBody + fromParagraphs
-    }
+    def chunks = ((parsed.configPage?.sections ?: [])).collectMany((this.&_bat529Cb_b8585dac_25))
     return chunks ? chunks.join("\n") : raw
 }
 
@@ -1556,4 +1525,114 @@ def _toolDisplayMeta_partVariables() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return _bat529EmbeddedCatalogRead(['["m",[["hub_list_variables",["m",[["title","List Variables"],["summary","List hub and rule-engine variables, optionally only hub variables of one type."]]]],["hub_get_variable",["m",[["title","Get Variable"],["summary","Get a variable\'s value and metadata (optionally the apps that reference it)."]]]],["hub_set_variable",["m",[["title","Set Variable"],["summary","Set an existing variable\'s value or atomically add to a numeric hub variable."]]]],["hub_create_variable",["m",[["title","Create Variable"],["summary","Create a new hub variable."]]]],["hub_delete_variable",["m",[["title","Delete Variable"],["summary","Permanently delete a hub variable and any connector it has."]]]],["hub_create_connector",["m",[["title","Create Variable Connector"],["summary","Create a virtual-device connector for a hub variable."]]]],["hub_delete_connector",["m",[["title","Delete Variable Connector"],["summary","Remove a hub variable\'s connector device."]]]],["hub_list_variable_changes",["m",[["title","List Variable Changes"],["summary","Recent hub-variable changes from the retained 200-entry history."]]]]]]'])
+}
+
+
+def _bat529Cb_b8585dac_1(def n, def it) { it?.name == n 
+}
+
+def _bat529Cb_b8585dac_2(def it) { "id=${it.id}" 
+}
+
+def _bat529Cb_b8585dac_3(def it) { "id=${it.id}" 
+}
+
+def _bat529Cb_b8585dac_4(def html, def it) { html.contains(it) 
+}
+
+def _bat529Cb_b8585dac_5(def type, def it) { it.equalsIgnoreCase(type) 
+}
+
+def _bat529Cb_b8585dac_6(def serialized, def it) { serialized?.contains(it) 
+}
+
+def _bat529Cb_b8585dac_7(def it) { "${it.label} (id=${it.id})" 
+}
+
+def _bat529Cb_b8585dac_8(def since, def it) { (it?.timestamp ?: 0L) >= since 
+}
+
+def _bat529Cb_b8585dac_9(def varName, def k, def v) { k != varName 
+}
+
+def _bat529Cb_b8585dac_10(def it) { it?.name?.toString() 
+}
+
+def _bat529Cb_b8585dac_11(def it) { it?.toString() ?: "" 
+}
+
+def _bat529Cb_b8585dac_12(def name, def c) { name.contains(c) 
+}
+
+def _bat529Cb_b8585dac_13(def varName, def it) { it instanceof Map && it.name?.toString() == varName 
+}
+
+def _bat529Cb_b8585dac_14(def hubType, def it) { it.type?.toString()?.toLowerCase() == hubType 
+}
+
+def _bat529Cb_b8585dac_15(def meshHubId, def meshName, def it) { it.hubId?.toString() == meshHubId && it.name?.toString() == meshName 
+}
+
+def _bat529Cb_b8585dac_16(def it) { it instanceof Map && it.description != null 
+}
+
+def _bat529Cb_b8585dac_17(def it) { "<b>${it}</b> is in use by these apps".toString() 
+}
+
+def _bat529Cb_b8585dac_18(def meshHubId, def meshName, def it) { it.hubId?.toString() == meshHubId && it.name?.toString() == meshName 
+}
+
+def _bat529Cb_b8585dac_19(def name, def value) {
+        [name: name, value: value, source: "rule_engine"]
+    
+}
+
+def _bat529Cb_b8585dac_20(def name, def value) {
+        [name: name, value: value, source: "rule_engine"]
+    
+}
+
+def _bat529Cb_b8585dac_21(def meshHubId, def meshName, def it) {
+            it?.sourceVarName?.toString() == meshName && it?.sourceHubId?.toString() == meshHubId 
+}
+
+def _bat529Cb_b8585dac_22(def it) { it.description.toString() 
+}
+
+def _bat529Cb_b8585dac_23(def currentVars, def serialized, def varName) {
+                        // Match a whole JSON value so temp cannot match temperature.
+                        def needle = "\"${varName}\""
+                        if (serialized?.contains(needle)) currentVars << varName
+                    
+}
+
+def _bat529Cb_b8585dac_24(def name, def var) {
+                [
+                    name: name,
+                    value: var?.value,
+                    type: var?.type,
+                    deviceId: var?.deviceId,
+                    attribute: var?.attribute,
+                    source: "hub"
+                ]
+            
+}
+
+def _bat529Cb_b8585dac_25(def sect) {
+        def fromBody = (((sect?.body ?: [])).findAll((this.&_bat529Cb_b8585dac_16))).collect((this.&_bat529Cb_b8585dac_22))
+        def fromParagraphs = ((sect?.paragraphs ?: [])).collect((this.&_bat529Cb_b8585dac_11))
+        fromBody + fromParagraphs
+    
+}
+
+def _bat529Cb_b8585dac_26(def consumers, def needles, def child) {
+            def ruleData = null
+            try { ruleData = child.getRuleData() } catch (Exception e) { /* not an MCP rule child */ }
+            if (ruleData) {
+                def serialized = groovy.json.JsonOutput.toJson(ruleData)
+                if ((needles).any(((this.&_bat529Cb_b8585dac_6).curry([serialized] as Object[])))) {
+                    consumers << [id: child.id, label: child.label]
+                }
+            }
+        
 }

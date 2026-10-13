@@ -19,9 +19,9 @@ def toolListDashboards(args = null) {
     }
     // Keep Easy (2.x) AND legacy Hubitat® (1.x) dashboards; a null/absent version (create/update
     // echo, which only the Easy endpoints produce) is kept and classified easy.
-    def list = (parsed instanceof List) ? parsed.findAll { it != null && (it.version == null || it.version.toString().startsWith("2") || it.version.toString().startsWith("1")) } : []
+    def list = (parsed instanceof List) ? (parsed).findAll((this.&_bat529Cb_298d4999_24)): []
     if (!list.isEmpty()) {
-        def dashboards = list.collect { _summarizeDashboard(it) }
+        def dashboards = (list).collect((this.&_bat529Cb_298d4999_7))
         return [dashboards: dashboards, count: dashboards.size(), source: "dashboard-all"]
     }
     def viaApps = _listDashboardsViaChildApps()
@@ -80,15 +80,9 @@ private List _listDashboardsViaChildApps() {
             def d = node?.data ?: [:]
             def t = d.type?.toString() ?: ""
             if (t == "Easy Dashboard Parent") {
-                (node?.children ?: []).each { c ->
-                    def cd = c?.data ?: [:]
-                    if (cd.id != null) out << [id: cd.id?.toString(), name: cd.name, type: "easy"]
-                }
+                ((node?.children ?: [])).each(((this.&_bat529Cb_298d4999_26).curry([out] as Object[])))
             } else if (_isLegacyDashboardParentType(t)) {
-                (node?.children ?: []).each { c ->
-                    def cd = c?.data ?: [:]
-                    if (cd.id != null && cd.type?.toString() == "Dashboard") out << [id: cd.id?.toString(), name: cd.name, type: "legacy"]
-                }
+                ((node?.children ?: [])).each(((this.&_bat529Cb_298d4999_27).curry([out] as Object[])))
             }
             (node?.children ?: []).each { walk(it) }
         }
@@ -129,9 +123,9 @@ def toolGetDashboard(args) {
     if (listed instanceof Map && listed.success == false) {
         return listed
     }
-    def match = (listed.dashboards ?: []).find { it.id?.toString() == wantId }
+    def match = ((listed.dashboards ?: [])).find(((this.&_bat529Cb_298d4999_15).curry([wantId] as Object[])))
     if (!match) {
-        def available = (listed.dashboards ?: []).collect { it.id }.findAll { it != null }
+        def available = (((listed.dashboards ?: [])).collect((this.&_bat529Cb_298d4999_9))).findAll((this.&_bat529Cb_298d4999_18))
         return [success: false, error: "No dashboard found with id '${wantId}'.",
                 availableIds: available,
                 note: available.isEmpty()
@@ -186,12 +180,10 @@ private Map _legacyDashboardProbe(String id) {
     // dashboard", distinct from the read-failure null above.
     if (!(ia instanceof Map) || ia.name?.toString() != "Dashboard" || ia.systemAppType != true) return [legacy: false]
     def out = [legacy: true, label: ia.label]
-    (parsed.appState ?: []).each { s ->
-        if (s?.name?.toString() == "accessToken") out.accessToken = s.value?.toString()
-    }
-    def devices = (parsed.appSettings ?: []).find { it?.name?.toString() == "devicesPicked" }
+    ((parsed.appState ?: [])).each(((this.&_bat529Cb_298d4999_23).curry([out] as Object[])))
+    def devices = ((parsed.appSettings ?: [])).find((this.&_bat529Cb_298d4999_20))
     if (devices?.deviceIdsForDeviceList != null) out.deviceIds = _normalizeDeviceIdList(devices.deviceIdsForDeviceList)
-    def la = (parsed.appSettings ?: []).find { it?.name?.toString() == "localAccess" }
+    def la = ((parsed.appSettings ?: [])).find((this.&_bat529Cb_298d4999_19))
     if (la != null) out.localAccess = la.value?.toString() != "false"
     return out
 }
@@ -274,7 +266,7 @@ for (def k in __bat529EachReceiver1) {
 __bat529EachReceiver1
 } else { null }
         if (s.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(s.navigationSelection)
-        if (s.devicesPicked instanceof Map) out.deviceIds = s.devicesPicked.keySet().collect { it.toString() }
+        if (s.devicesPicked instanceof Map) out.deviceIds = (s.devicesPicked.keySet()).collect((this.&_bat529Cb_298d4999_10))
         // app-config returns "" for an unset pin and the literal "null" for an unset hsmPin.
         if (s.dashboardPin && s.dashboardPin.toString() != "null") out.dashboardPin = s.dashboardPin
         if (s.hsmPin && s.hsmPin.toString() != "null") out.hsmPin = s.hsmPin
@@ -289,10 +281,10 @@ __bat529EachReceiver1
 // true=present, false=confirmed absent, null=could not verify (so delete never false-claims "gone").
 private Boolean _dashboardPresent(String id) {
     def viaApps = _listDashboardsViaChildApps()
-    if (viaApps != null) return viaApps.any { it.id?.toString() == id }
+    if (viaApps != null) return (viaApps).any(((this.&_bat529Cb_298d4999_6).curry([id] as Object[])))
     def listed = toolListDashboards([:])
     if (!(listed instanceof Map) || listed.success == false) return null   // couldn't read either source
-    return (listed.dashboards ?: []).any { it.id?.toString() == id }
+    return ((listed.dashboards ?: [])).any(((this.&_bat529Cb_298d4999_13).curry([id] as Object[])))
 }
 
 def toolCreateDashboard(args) {
@@ -674,32 +666,19 @@ def granular = __bat529EachReceiver3Result
 // options. All validation throws BEFORE the single save, so a bad op leaves the layout untouched.
 private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warnings) {
     def layout = new LinkedHashMap(current)
-    def tiles = (layout.tiles instanceof List) ? layout.tiles.findAll { it instanceof Map }.collect { new LinkedHashMap(it as Map) } : []
+    def tiles = (layout.tiles instanceof List) ? ((layout.tiles).findAll((this.&_bat529Cb_298d4999_8))).collect((this.&_bat529Cb_298d4999_21)): []
     if (args.removeTileIds != null) {
         def rawIds = (args.removeTileIds instanceof Collection) ? args.removeTileIds : [args.removeTileIds]
-        def ids = rawIds.collect { _requireTileId(it, "removeTileIds") }
+        def ids = (rawIds).collect((this.&_bat529Cb_298d4999_12))
         // Delete semantics are retry-safe: an id that is already gone is skipped with a warning, not an error.
-        ids.each { tid ->
-            if (!tiles.any { _tileIdOf(it) == tid }) warnings << "removeTileIds: no tile with id ${tid} (already removed?); skipped."
-        }
+        (ids).each(((this.&_bat529Cb_298d4999_25).curry([tiles, warnings] as Object[])))
         tiles.removeAll { _tileIdOf(it) in ids }
     }
     if (args.updateTiles != null) {
         if (!(args.updateTiles instanceof Collection)) {
             throw new IllegalArgumentException("updateTiles must be an array of {id, ...fields-to-change} objects.")
         }
-        args.updateTiles.each { spec ->
-            if (!(spec instanceof Map) || spec.id == null) {
-                throw new IllegalArgumentException("Each updateTiles entry needs an id plus the fields to change (e.g. [id: 3, col: 2, colSpan: 2]).")
-            }
-            def tid = _requireTileId(spec.id, "updateTiles")
-            def tile = tiles.find { _tileIdOf(it) == tid }
-            if (tile == null) {
-                throw new IllegalArgumentException("updateTiles: no tile with id ${tid}. Existing tile ids: ${tiles.collect { it.id }}.")
-            }
-            spec.each { k, v -> if (k?.toString() != "id") tile.put(k, v) }
-            _warnUnauthorizedTileDevice(tile, probe, warnings)
-        }
+        (args.updateTiles).each(((this.&_bat529Cb_298d4999_30).curry([probe, tiles, warnings] as Object[])))
     }
     if (args.addTiles != null) {
         if (!(args.addTiles instanceof Collection)) {
@@ -707,21 +686,17 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
         }
         // isEmpty check, not Elvis: a real max id of 0 is falsy in Groovy, so `.max() ?: -1` would
         // hand the next add id 0 again -- two tiles sharing an id makes later id-addressed ops ambiguous.
-        def existingIds = tiles.collect { _tileIdOf(it) }.findAll { it != null }
+        def existingIds = ((tiles).collect((this.&_bat529Cb_298d4999_3))).findAll((this.&_bat529Cb_298d4999_11))
         int nextId = (existingIds.isEmpty() ? -1 : existingIds.max()) + 1
         args.addTiles.each { spec ->
             if (!(spec instanceof Map)) throw new IllegalArgumentException("Each addTiles entry must be a tile object.")
-            def missing = ["template", "col", "row"].findAll { spec.get(it) == null }
+            def missing = (["template", "col", "row"]).findAll(((this.&_bat529Cb_298d4999_14).curry([spec] as Object[])))
             if (missing) {
                 throw new IllegalArgumentException("addTiles: each tile needs template, col, and row (missing ${missing.join(', ')} in ${spec}).")
             }
             // Skip an add identical to an existing tile so a retried call can't stack duplicates
             // (keeps hub_update_dashboard honest about its idempotent annotation).
-            def dup = tiles.find { t ->
-                ["template", "device", "col", "row", "templateExtra"].every { k -> t.get(k)?.toString() == spec.get(k)?.toString() } &&
-                    (t.colSpan ?: 1).toString() == (spec.colSpan ?: 1).toString() &&
-                    (t.rowSpan ?: 1).toString() == (spec.rowSpan ?: 1).toString()
-            }
+            def dup = (tiles).find(((this.&_bat529Cb_298d4999_28).curry([spec] as Object[])))
             if (dup != null) {
                 warnings << "addTiles: an identical tile already exists (id ${dup.id}); skipped (retry-safe)."
                 return
@@ -738,12 +713,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
         if (!(args.setOptions instanceof Map)) {
             throw new IllegalArgumentException("setOptions must be an object of top-level layout fields (e.g. cols, rows, bgColor, iconSize, fontSize, gridGap, roundedCorners).")
         }
-        args.setOptions.each { k, v ->
-            def key = k?.toString()
-            if (key == "tiles") throw new IllegalArgumentException("setOptions cannot replace tiles; use addTiles / updateTiles / removeTileIds (or a wholesale layout).")
-            if (key == "name") throw new IllegalArgumentException("The dashboard name is its app label; pass the top-level name arg, not setOptions.name.")
-            layout.put(key, v)
-        }
+        (args.setOptions).each(((this.&_bat529Cb_298d4999_29).curry([layout] as Object[])))
     }
     layout.tiles = tiles
     return layout
@@ -1082,7 +1052,7 @@ private Map _dashboardWriteResult(raw, String op, String reqId) {
         return [success: false,
                 error: "Dashboard ${op} returned the dashboard list instead of a status object; outcome unconfirmed.",
                 note: "The ${op} may or may not have applied; verify with hub_list_dashboards.",
-                dashboards: parsed.findAll { it != null }.collect { _summarizeDashboard(it) }]
+                dashboards: ((parsed).findAll((this.&_bat529Cb_298d4999_2))).collect((this.&_bat529Cb_298d4999_17))]
     }
     return [success: false, error: "Unexpected (non-JSON) response from /dashboard/${op}.",
             note: "The ${op} may or may not have applied; verify with hub_list_dashboards."]
@@ -1108,4 +1078,125 @@ def _idempotentWriteToolNames_partDashboards() {
 def _toolDisplayMeta_partDashboards() {
     // Title + Advanced-menu summary per tool, merged into getToolDisplayMeta().
     return _bat529EmbeddedCatalogRead(['["m",[["hub_list_dashboards",["m",[["title","List Dashboards"],["summary","List Easy and legacy Hubitat\\u00ae Dashboards with ids, names, and type."]]]],["hub_get_dashboard",["m",[["title","Get Dashboard"],["summary","Get one dashboard\'s full config by id (Easy config or legacy layout)."]]]],["hub_create_dashboard",["m",[["title","Create Dashboard"],["summary","Create an Easy Dashboard or an empty legacy Hubitat\\u00ae Dashboard."]]]],["hub_update_dashboard",["m",[["title","Update Dashboard"],["summary","Update a dashboard: Easy wholesale, or legacy name/devices/layout edits."]]]],["hub_delete_dashboard",["m",[["title","Delete Dashboard"],["summary","Permanently delete an Easy or legacy Hubitat\\u00ae Dashboard by id."]]]],["hub_clone_dashboard",["m",[["title","Clone Dashboard"],["summary","Clone an Easy or legacy Hubitat\\u00ae Dashboard into a new one."]]]]]]'])
+}
+
+
+def _bat529Cb_298d4999_1(def it) { it.id 
+}
+
+def _bat529Cb_298d4999_2(def it) { it != null 
+}
+
+def _bat529Cb_298d4999_3(def it) { _tileIdOf(it) 
+}
+
+def _bat529Cb_298d4999_4(def tid, def it) { _tileIdOf(it) == tid 
+}
+
+def _bat529Cb_298d4999_5(def tid, def it) { _tileIdOf(it) == tid 
+}
+
+def _bat529Cb_298d4999_6(def id, def it) { it.id?.toString() == id 
+}
+
+def _bat529Cb_298d4999_7(def it) { _summarizeDashboard(it) 
+}
+
+def _bat529Cb_298d4999_8(def it) { it instanceof Map 
+}
+
+def _bat529Cb_298d4999_9(def it) { it.id 
+}
+
+def _bat529Cb_298d4999_10(def it) { it.toString() 
+}
+
+def _bat529Cb_298d4999_11(def it) { it != null 
+}
+
+def _bat529Cb_298d4999_12(def it) { _requireTileId(it, "removeTileIds") 
+}
+
+def _bat529Cb_298d4999_13(def id, def it) { it.id?.toString() == id 
+}
+
+def _bat529Cb_298d4999_14(def spec, def it) { spec.get(it) == null 
+}
+
+def _bat529Cb_298d4999_15(def wantId, def it) { it.id?.toString() == wantId 
+}
+
+def _bat529Cb_298d4999_16(def tile, def k, def v) { if (k?.toString() != "id") tile.put(k, v) 
+}
+
+def _bat529Cb_298d4999_17(def it) { _summarizeDashboard(it) 
+}
+
+def _bat529Cb_298d4999_18(def it) { it != null 
+}
+
+def _bat529Cb_298d4999_19(def it) { it?.name?.toString() == "localAccess" 
+}
+
+def _bat529Cb_298d4999_20(def it) { it?.name?.toString() == "devicesPicked" 
+}
+
+def _bat529Cb_298d4999_21(def it) { new LinkedHashMap(it as Map) 
+}
+
+def _bat529Cb_298d4999_22(def spec, def t, def k) { t.get(k)?.toString() == spec.get(k)?.toString() 
+}
+
+def _bat529Cb_298d4999_23(def out, def s) {
+        if (s?.name?.toString() == "accessToken") out.accessToken = s.value?.toString()
+    
+}
+
+def _bat529Cb_298d4999_24(def it) { it != null && (it.version == null || it.version.toString().startsWith("2") || it.version.toString().startsWith("1")) 
+}
+
+def _bat529Cb_298d4999_25(def tiles, def warnings, def tid) {
+            if (!(tiles).any(((this.&_bat529Cb_298d4999_4).curry([tid] as Object[])))) warnings << "removeTileIds: no tile with id ${tid} (already removed?); skipped."
+        
+}
+
+def _bat529Cb_298d4999_26(def out, def c) {
+                    def cd = c?.data ?: [:]
+                    if (cd.id != null) out << [id: cd.id?.toString(), name: cd.name, type: "easy"]
+                
+}
+
+def _bat529Cb_298d4999_27(def out, def c) {
+                    def cd = c?.data ?: [:]
+                    if (cd.id != null && cd.type?.toString() == "Dashboard") out << [id: cd.id?.toString(), name: cd.name, type: "legacy"]
+                
+}
+
+def _bat529Cb_298d4999_28(def spec, def t) {
+                (["template", "device", "col", "row", "templateExtra"]).every(((this.&_bat529Cb_298d4999_22).curry([spec, t] as Object[])))&&
+                    (t.colSpan ?: 1).toString() == (spec.colSpan ?: 1).toString() &&
+                    (t.rowSpan ?: 1).toString() == (spec.rowSpan ?: 1).toString()
+            
+}
+
+def _bat529Cb_298d4999_29(def layout, def k, def v) {
+            def key = k?.toString()
+            if (key == "tiles") throw new IllegalArgumentException("setOptions cannot replace tiles; use addTiles / updateTiles / removeTileIds (or a wholesale layout).")
+            if (key == "name") throw new IllegalArgumentException("The dashboard name is its app label; pass the top-level name arg, not setOptions.name.")
+            layout.put(key, v)
+        
+}
+
+def _bat529Cb_298d4999_30(def probe, def tiles, def warnings, def spec) {
+            if (!(spec instanceof Map) || spec.id == null) {
+                throw new IllegalArgumentException("Each updateTiles entry needs an id plus the fields to change (e.g. [id: 3, col: 2, colSpan: 2]).")
+            }
+            def tid = _requireTileId(spec.id, "updateTiles")
+            def tile = (tiles).find(((this.&_bat529Cb_298d4999_5).curry([tid] as Object[])))
+            if (tile == null) {
+                throw new IllegalArgumentException("updateTiles: no tile with id ${tid}. Existing tile ids: $(tiles).collect((this.&_bat529Cb_298d4999_1)).")
+            }
+            (spec).each(((this.&_bat529Cb_298d4999_16).curry([tile] as Object[])))
+            _warnUnauthorizedTileDevice(tile, probe, warnings)
+        
 }

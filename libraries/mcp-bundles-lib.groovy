@@ -16,7 +16,7 @@ private Map _parseBundleContent(String content) {
             if (close > open) {
                 matched = true
                 def inner = content.substring(open + 1, close).trim()
-                out[key] = inner ? inner.split(/\s*,\s*/).collect { it.trim() }.findAll { it } : []
+                out[key] = inner ? ((inner.split(/\s*,\s*/)).collect((this.&_bat529Cb_54ce7189_3))).findAll((this.&_bat529Cb_54ce7189_5)): []
             }
         }
     }
@@ -37,21 +37,10 @@ def toolListBundles(args) {
                 if (parsed instanceof List) {
                     // Defensive: skip any null / non-map element the hub API might return so a
                     // single malformed row can't NPE the whole listing.
-                    result.bundles = parsed.findAll { it instanceof Map }.collect { b ->
-                        def entry = [
-                            id: b.id?.toString(),
-                            name: b.name,
-                            namespace: b.namespace,
-                            "private": (b["private"] == true)
-                        ]
-                        def contains = _parseBundleContent(b.content?.toString())
-                        if (contains != null) entry.contains = contains
-                        else if (b.content != null) entry.content = b.content?.toString()
-                        entry
-                    }
+                    result.bundles = ((parsed).findAll((this.&_bat529Cb_54ce7189_1))).collect((this.&_bat529Cb_54ce7189_8))
                     result.count = result.bundles.size()
                     result.source = "hub_api"
-                    def noId = result.bundles.count { it.id == null }
+                    def noId = (result.bundles).count((this.&_bat529Cb_54ce7189_2))
                     if (noId > 0) {
                         result.note = "${noId} bundle${noId == 1 ? '' : 's'} returned by the hub had no id and cannot be targeted by hub_delete_bundle / hub_export_bundle (possible firmware shape change)."
                     }
@@ -110,7 +99,7 @@ def toolDeleteBundle(args) {
     }
 
     def before = toolListBundles([:])
-    def target = (before.bundles ?: []).find { it.id?.toString() == bundleId }
+    def target = ((before.bundles ?: [])).find(((this.&_bat529Cb_54ce7189_6).curry([bundleId] as Object[])))
     // Only a clean live list that actually contains the id proves the bundle existed. Without that,
     // a later "absent" can't prove WE deleted it (deleting a nonexistent id is a harmless hub no-op),
     // so the result must NOT claim verified:true.
@@ -145,7 +134,7 @@ def toolDeleteBundle(args) {
             lastBackup: formatTimestamp(state.lastBackupTimestamp)
         ]
     }
-    def stillThere = (after.bundles ?: []).any { it.id?.toString() == bundleId }
+    def stillThere = ((after.bundles ?: [])).any(((this.&_bat529Cb_54ce7189_4).curry([bundleId] as Object[])))
     if (stillThere) {
         return [success: false, error: "Bundle ${bundleId}${bundleName ? " ('${bundleName}')" : ''} is still present after the delete request -- the hub may have refused it (status=${resp?.status}).", bundleId: bundleId, status: resp?.status, lastBackup: formatTimestamp(state.lastBackupTimestamp)]
     }
@@ -190,7 +179,7 @@ def toolExportBundle(args) {
     }
 
     def listed = toolListBundles([:])
-    def target = (listed.bundles ?: []).find { it.id?.toString() == bundleId }
+    def target = ((listed.bundles ?: [])).find(((this.&_bat529Cb_54ce7189_7).curry([bundleId] as Object[])))
     if (listed.source == "hub_api" && !target) {
         return [success: false, error: "No bundle with id ${bundleId} found on the hub. Use hub_list_bundles to see installed bundles.", bundleId: bundleId]
     }
@@ -387,4 +376,40 @@ def _toolDisplayMeta_partBundles() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return _bat529EmbeddedCatalogRead(['["m",[["hub_list_bundles",["m",[["title","List Bundles"],["summary","List installed code bundles and what they contain."]]]],["hub_install_bundle",["m",[["title","Install Bundle"],["summary","Install a code bundle (.zip) from a URL."]]]],["hub_delete_bundle",["m",[["title","Delete Bundle"],["summary","Delete an installed code bundle."]]]],["hub_export_bundle",["m",[["title","Export Bundle"],["summary","Export an installed bundle\'s zip to the File Manager."]]]]]]'])
+}
+
+
+def _bat529Cb_54ce7189_1(def it) { it instanceof Map 
+}
+
+def _bat529Cb_54ce7189_2(def it) { it.id == null 
+}
+
+def _bat529Cb_54ce7189_3(def it) { it.trim() 
+}
+
+def _bat529Cb_54ce7189_4(def bundleId, def it) { it.id?.toString() == bundleId 
+}
+
+def _bat529Cb_54ce7189_5(def it) { it 
+}
+
+def _bat529Cb_54ce7189_6(def bundleId, def it) { it.id?.toString() == bundleId 
+}
+
+def _bat529Cb_54ce7189_7(def bundleId, def it) { it.id?.toString() == bundleId 
+}
+
+def _bat529Cb_54ce7189_8(def b) {
+                        def entry = [
+                            id: b.id?.toString(),
+                            name: b.name,
+                            namespace: b.namespace,
+                            "private": (b["private"] == true)
+                        ]
+                        def contains = _parseBundleContent(b.content?.toString())
+                        if (contains != null) entry.contains = contains
+                        else if (b.content != null) entry.content = b.content?.toString()
+                        entry
+                    
 }

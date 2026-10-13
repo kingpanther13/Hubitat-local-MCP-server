@@ -33,7 +33,7 @@ private String _hpmDiscoverAppId() {
             if (d.id == null) throw new IllegalArgumentException("HPM entry found but has no id field -- cannot determine hpmAppId; pass hpmAppId explicitly")
             hpmMatches << d.id.toString()
         }
-        (node?.children ?: []).each { workQueue << it }
+        ((node?.children ?: [])).each(((this.&_bat529Cb_112d3686_2).curry([workQueue] as Object[])))
     }
     if (hpmMatches.isEmpty()) {
         throw new IllegalArgumentException("HPM not found in installed apps -- Hubitat Package Manager does not appear to be installed")
@@ -61,7 +61,7 @@ private void _hpmAssertAppIsHpm(String explicitAppId) {
         if (d.id?.toString() == explicitAppId) {
             foundEntry = d
         } else {
-            (node?.children ?: []).each { workQueue << it }
+            ((node?.children ?: [])).each(((this.&_bat529Cb_112d3686_3).curry([workQueue] as Object[])))
         }
     }
     if (foundEntry == null) {
@@ -99,7 +99,7 @@ private Map _hpmFetchManifests(String hpmAppId) {
     // as a Map (JsonSlurper recursively parsed the inner JSON). Older firmware or large payloads
     // may leave it as a JSON-encoded String. Handle both: if it's already a Map, use it directly.
     def appState = outer.appState ?: []
-    def manifestsEntry = appState.find { it?.name?.toString() == "manifests" }
+    def manifestsEntry = (appState).find((this.&_bat529Cb_112d3686_5))
     if (manifestsEntry == null) {
         // HPM installed but no packages tracked yet.
         return [:]
@@ -151,115 +151,7 @@ def toolListHpmPackages(args) {
     }
 
     def skippedMalformed = []
-    def packages = manifests.collect { manifestUrl, manifest ->
-        if (!(manifest instanceof Map)) {
-            mcpLog("warn", "hpm", "hub_list_hpm_packages: skipping malformed manifest entry for URL ${manifestUrl} -- value is not a Map")
-            skippedMalformed << manifestUrl?.toString()
-            return null
-        }
-        int skippedAppCount = 0
-        int skippedDriverCount = 0
-        int skippedFileCount = 0
-        def apps = (manifest.apps ?: []).collect { a ->
-            if (!(a instanceof Map)) { skippedAppCount++; mcpLog("warn", "hpm", "hub_list_hpm_packages: non-Map app component in '${manifest.packageName}' (value: ${a?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
-            def heId = a.heID
-            def heIdStr = null
-            def heIdWarning = null
-            if (heId instanceof String && heId.trim() == "") {
-                // Empty/whitespace-only String heID normalized to null -- surfaces the data quality
-                // issue without breaking the consumer (matches drift treatment).
-                heIdWarning = "empty heID string '${heId}' normalized to null"
-                heId = null
-                mcpLog("warn", "hpm", "hub_list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
-            }
-            // Whitespace-padded String heID (e.g. " 142 ") is normalized to the trimmed value so
-            // that heID surfaces correctly to the consumer (matches get_hpm_drift treatment).
-            if (heId instanceof String && heId.trim() != heId) {
-                def trimmed = heId.trim()
-                heIdWarning = "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
-                mcpLog("warn", "hpm", "hub_list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
-                heId = trimmed
-            }
-            if (heId != null) {
-                if (heId instanceof Number || heId instanceof String) {
-                    heIdStr = heId.toString()
-                } else {
-                    heIdWarning = "non-scalar heID (not Number or String) -- heID cleared"
-                    mcpLog("warn", "hpm", "hub_list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping heID")
-                }
-            }
-            def entry = [
-                id      : a.id?.toString(),
-                name    : a.name?.toString(),
-                required: a.required == true,
-                version : a.version?.toString(),
-                heID    : heIdStr
-            ]
-            if (heIdWarning) entry._warning = heIdWarning
-            entry
-        }.findAll { it != null }
-
-        def drivers = (manifest.drivers ?: []).collect { d ->
-            if (!(d instanceof Map)) { skippedDriverCount++; mcpLog("warn", "hpm", "hub_list_hpm_packages: non-Map driver component in '${manifest.packageName}' (value: ${d?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
-            def heId = d.heID
-            def heIdStr = null
-            def heIdWarning = null
-            if (heId instanceof String && heId.trim() == "") {
-                // Empty/whitespace-only String heID normalized to null -- surfaces the data quality
-                // issue without breaking the consumer (matches drift treatment).
-                heIdWarning = "empty heID string '${heId}' normalized to null"
-                heId = null
-                mcpLog("warn", "hpm", "hub_list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
-            }
-            // Whitespace-padded String heID normalized to trimmed value (matches app treatment above).
-            if (heId instanceof String && heId.trim() != heId) {
-                def trimmed = heId.trim()
-                heIdWarning = "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
-                mcpLog("warn", "hpm", "hub_list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
-                heId = trimmed
-            }
-            if (heId != null) {
-                if (heId instanceof Number || heId instanceof String) {
-                    heIdStr = heId.toString()
-                } else {
-                    heIdWarning = "non-scalar heID (not Number or String) -- heID cleared"
-                    mcpLog("warn", "hpm", "hub_list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping heID")
-                }
-            }
-            def entry = [
-                id      : d.id?.toString(),
-                name    : d.name?.toString(),
-                required: d.required == true,
-                version : d.version?.toString(),
-                heID    : heIdStr
-            ]
-            if (heIdWarning) entry._warning = heIdWarning
-            entry
-        }.findAll { it != null }
-
-        def files = (manifest.files ?: []).collect { f ->
-            if (!(f instanceof Map)) { skippedFileCount++; mcpLog("warn", "hpm", "hub_list_hpm_packages: non-Map file component in '${manifest.packageName}' (value: ${f?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
-            [
-                id  : f.id?.toString(),
-                name: f.name?.toString()
-            ]
-        }.findAll { it != null }
-
-        def pkg = [
-            manifestUrl : manifestUrl?.toString(),
-            packageName : manifest.packageName?.toString(),
-            version     : manifest.version?.toString(),
-            beta        : manifest.beta == true,
-            author      : manifest.author?.toString(),
-            apps        : apps,
-            drivers     : drivers,
-            files       : files
-        ]
-        if (skippedAppCount > 0)    pkg.skippedAppCount    = skippedAppCount
-        if (skippedDriverCount > 0) pkg.skippedDriverCount = skippedDriverCount
-        if (skippedFileCount > 0)   pkg.skippedFileCount   = skippedFileCount
-        pkg
-    }.findAll { it != null }
+    def packages = ((manifests).collect(((this.&_bat529Cb_112d3686_14).curry([skippedMalformed] as Object[])))).findAll((this.&_bat529Cb_112d3686_15))
 
     def cursor = args?.cursor
     def paged = _paginateList(packages, cursor, 25, "hub_list_hpm_packages")
@@ -326,10 +218,7 @@ def toolGetHpmDrift(args) {
                 orphanDetection = [enabled: false, reason: "Unexpected /hub2/userAppTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-app signals were not evaluated this call"]
                 mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userAppTypes returned non-List shape (${actualTypeName}) -- orphan detection disabled")
             } else {
-                userAppTypesParsed.each { t ->
-                    def typeId = t?.id?.toString()
-                    if (typeId) installedAppCodeIds << typeId
-                }
+                (userAppTypesParsed).each(((this.&_bat529Cb_112d3686_9).curry([installedAppCodeIds] as Object[])))
             }
         }
     } catch (Exception e) {
@@ -358,10 +247,7 @@ def toolGetHpmDrift(args) {
                 orphanDriverDetection = [enabled: false, reason: "Unexpected /hub2/userDeviceTypes response shape (expected JSON array, got ${actualTypeName}: ${actualPreview}) -- orphan-driver signals were not evaluated this call"]
                 mcpLog("warn", "hpm", "get_hpm_drift: /hub2/userDeviceTypes returned non-List shape (${actualTypeName}) -- orphan driver detection disabled")
             } else {
-                userDeviceTypesParsed.each { t ->
-                    def typeId = t?.id?.toString()
-                    if (typeId) installedDriverCodeIds << typeId
-                }
+                (userDeviceTypesParsed).each(((this.&_bat529Cb_112d3686_10).curry([installedDriverCodeIds] as Object[])))
             }
         }
     } catch (Exception e) {
@@ -371,7 +257,7 @@ def toolGetHpmDrift(args) {
 
     // Apply optional package filter before drift analysis.
     def filteredManifests = packageFilter
-        ? manifests.findAll { url, m -> m instanceof Map && m.packageName?.toString()?.toLowerCase()?.contains(packageFilter.toLowerCase()) }
+        ? (manifests).findAll(((this.&_bat529Cb_112d3686_7).curry([packageFilter] as Object[])))
         : manifests
 
     def driftEntries = []
@@ -581,7 +467,7 @@ def toolGetHpmDrift(args) {
     // but must not appear in the summary as "showing drift" when totalDriftSignals is 0.
     // Note: drift[].length may exceed packagesWithActionableDrift when data-quality-only
     // packages are present -- those entries are included for visibility but not in the count.
-    int packagesWithActionableDrift = driftEntries.count { it.signals }
+    int packagesWithActionableDrift = (driftEntries).count((this.&_bat529Cb_112d3686_1))
     def summary = packagesWithActionableDrift == 0
         ? "No drift detected across ${checked} tracked package${checked == 1 ? '' : 's'}."
         : "${packagesWithActionableDrift} of ${checked} tracked package${checked == 1 ? '' : 's'} ${packagesWithActionableDrift == 1 ? 'shows' : 'show'} drift (${totalSignals} total signal${totalSignals == 1 ? '' : 's'})."
@@ -614,9 +500,7 @@ def toolGetHpmDrift(args) {
     // the caller can distinguish "clean hub" from "typo in filter".
     if (packageFilter && checked == 0) {
         result.filterMatchedZero = true
-        result.availablePackages = manifests.findAll { url, m -> m instanceof Map }
-            .collect { url, m -> m.packageName?.toString() }
-            .findAll { it }
+        result.availablePackages = (((manifests).findAll((this.&_bat529Cb_112d3686_4))).collect((this.&_bat529Cb_112d3686_6))).findAll((this.&_bat529Cb_112d3686_8))
     }
     return result
 }
@@ -646,4 +530,164 @@ def _toolDisplayMeta_partHpm() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return _bat529EmbeddedCatalogRead(['["m",[["hub_list_hpm_packages",["m",[["title","List HPM Packages"],["summary","List packages tracked by Hubitat Package Manager, optionally with drift detection."]]]]]]'])
+}
+
+
+def _bat529Cb_112d3686_1(def it) { it.signals 
+}
+
+def _bat529Cb_112d3686_2(def workQueue, def it) { workQueue << it 
+}
+
+def _bat529Cb_112d3686_3(def workQueue, def it) { workQueue << it 
+}
+
+def _bat529Cb_112d3686_4(def url, def m) { m instanceof Map 
+}
+
+def _bat529Cb_112d3686_5(def it) { it?.name?.toString() == "manifests" 
+}
+
+def _bat529Cb_112d3686_6(def url, def m) { m.packageName?.toString() 
+}
+
+def _bat529Cb_112d3686_7(def packageFilter, def url, def m) { m instanceof Map && m.packageName?.toString()?.toLowerCase()?.contains(packageFilter.toLowerCase()) 
+}
+
+def _bat529Cb_112d3686_8(def it) { it 
+}
+
+def _bat529Cb_112d3686_9(def installedAppCodeIds, def t) {
+                    def typeId = t?.id?.toString()
+                    if (typeId) installedAppCodeIds << typeId
+                
+}
+
+def _bat529Cb_112d3686_10(def installedDriverCodeIds, def t) {
+                    def typeId = t?.id?.toString()
+                    if (typeId) installedDriverCodeIds << typeId
+                
+}
+
+def _bat529Cb_112d3686_11(def it) { it != null 
+}
+
+def _bat529Cb_112d3686_12(def it) { it != null 
+}
+
+def _bat529Cb_112d3686_13(def it) { it != null 
+}
+
+def _bat529Cb_112d3686_14(def skippedMalformed, def manifestUrl, def manifest) {
+        if (!(manifest instanceof Map)) {
+            mcpLog("warn", "hpm", "hub_list_hpm_packages: skipping malformed manifest entry for URL ${manifestUrl} -- value is not a Map")
+            skippedMalformed << manifestUrl?.toString()
+            return null
+        }
+        int skippedAppCount = 0
+        int skippedDriverCount = 0
+        int skippedFileCount = 0
+        def apps = ((manifest.apps ?: []).collect { a ->
+            if (!(a instanceof Map)) { skippedAppCount++; mcpLog("warn", "hpm", "hub_list_hpm_packages: non-Map app component in '${manifest.packageName}' (value: ${a?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
+            def heId = a.heID
+            def heIdStr = null
+            def heIdWarning = null
+            if (heId instanceof String && heId.trim() == "") {
+                // Empty/whitespace-only String heID normalized to null -- surfaces the data quality
+                // issue without breaking the consumer (matches drift treatment).
+                heIdWarning = "empty heID string '${heId}' normalized to null"
+                heId = null
+                mcpLog("warn", "hpm", "hub_list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
+            }
+            // Whitespace-padded String heID (e.g. " 142 ") is normalized to the trimmed value so
+            // that heID surfaces correctly to the consumer (matches get_hpm_drift treatment).
+            if (heId instanceof String && heId.trim() != heId) {
+                def trimmed = heId.trim()
+                heIdWarning = "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
+                mcpLog("warn", "hpm", "hub_list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                heId = trimmed
+            }
+            if (heId != null) {
+                if (heId instanceof Number || heId instanceof String) {
+                    heIdStr = heId.toString()
+                } else {
+                    heIdWarning = "non-scalar heID (not Number or String) -- heID cleared"
+                    mcpLog("warn", "hpm", "hub_list_hpm_packages: app '${a.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping heID")
+                }
+            }
+            def entry = [
+                id      : a.id?.toString(),
+                name    : a.name?.toString(),
+                required: a.required == true,
+                version : a.version?.toString(),
+                heID    : heIdStr
+            ]
+            if (heIdWarning) entry._warning = heIdWarning
+            entry
+        }).findAll((this.&_bat529Cb_112d3686_13))
+
+        def drivers = ((manifest.drivers ?: []).collect { d ->
+            if (!(d instanceof Map)) { skippedDriverCount++; mcpLog("warn", "hpm", "hub_list_hpm_packages: non-Map driver component in '${manifest.packageName}' (value: ${d?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
+            def heId = d.heID
+            def heIdStr = null
+            def heIdWarning = null
+            if (heId instanceof String && heId.trim() == "") {
+                // Empty/whitespace-only String heID normalized to null -- surfaces the data quality
+                // issue without breaking the consumer (matches drift treatment).
+                heIdWarning = "empty heID string '${heId}' normalized to null"
+                heId = null
+                mcpLog("warn", "hpm", "hub_list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID is empty/whitespace -- normalized to null")
+            }
+            // Whitespace-padded String heID normalized to trimmed value (matches app treatment above).
+            if (heId instanceof String && heId.trim() != heId) {
+                def trimmed = heId.trim()
+                heIdWarning = "whitespace-padded heID '${heId}' normalized to '${trimmed}'"
+                mcpLog("warn", "hpm", "hub_list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID has surrounding whitespace -- normalized to '${trimmed}'")
+                heId = trimmed
+            }
+            if (heId != null) {
+                if (heId instanceof Number || heId instanceof String) {
+                    heIdStr = heId.toString()
+                } else {
+                    heIdWarning = "non-scalar heID (not Number or String) -- heID cleared"
+                    mcpLog("warn", "hpm", "hub_list_hpm_packages: driver '${d.name}' in '${manifest.packageName}' heID is not a Number or String -- skipping heID")
+                }
+            }
+            def entry = [
+                id      : d.id?.toString(),
+                name    : d.name?.toString(),
+                required: d.required == true,
+                version : d.version?.toString(),
+                heID    : heIdStr
+            ]
+            if (heIdWarning) entry._warning = heIdWarning
+            entry
+        }).findAll((this.&_bat529Cb_112d3686_12))
+
+        def files = ((manifest.files ?: []).collect { f ->
+            if (!(f instanceof Map)) { skippedFileCount++; mcpLog("warn", "hpm", "hub_list_hpm_packages: non-Map file component in '${manifest.packageName}' (value: ${f?.toString()?.take(60) ?: 'null'}) -- skipped"); return null }
+            [
+                id  : f.id?.toString(),
+                name: f.name?.toString()
+            ]
+        }).findAll((this.&_bat529Cb_112d3686_11))
+
+        def pkg = [
+            manifestUrl : manifestUrl?.toString(),
+            packageName : manifest.packageName?.toString(),
+            version     : manifest.version?.toString(),
+            beta        : manifest.beta == true,
+            author      : manifest.author?.toString(),
+            apps        : apps,
+            drivers     : drivers,
+            files       : files
+        ]
+        if (skippedAppCount > 0)    pkg.skippedAppCount    = skippedAppCount
+        if (skippedDriverCount > 0) pkg.skippedDriverCount = skippedDriverCount
+        if (skippedFileCount > 0)   pkg.skippedFileCount   = skippedFileCount
+        pkg
+    
+}
+
+def _bat529Cb_112d3686_15(def it) { it != null 
 }

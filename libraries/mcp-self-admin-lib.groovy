@@ -138,14 +138,7 @@ def toolUpdateMcpSettings(args) {
     // toolSetLogLevel. If toolSetLogLevel ever evolves to throw on an unexpected condition,
     // the rest of the batch has already landed. Per-key validation above is the primary
     // safeguard; this ordering is belt-and-suspenders.
-    updates.each { key, value ->
-        if (key == "mcpLogLevel") {
-            // Delegate to existing helper — it updates both state cache + setting
-            toolSetLogLevel([level: value.toString()])
-        } else {
-            app.updateSetting(key, [type: allowedSettings.get(key), value: value])
-        }
-    }
+    (updates).each(((this.&_bat529Cb_13cb0dba_15).curry([allowedSettings] as Object[])))
 
     // "applied" audits fire only now -- after EVERY write (scope + scalars) has completed -- so a
     // scalar write that throws mid-loop can never leave a falsely-reassuring "applied" line behind.
@@ -166,7 +159,7 @@ def toolUpdateMcpSettings(args) {
     // enableDeveloperMode are intentionally omitted -- they are excluded from allowedSettings and
     // can never land here.
     def schemaAffectingKeys = ["enableRead", "enableCustomRuleEngine", "useGateways"] as Set
-    def touchedSchemaKey = updates.keySet().any { schemaAffectingKeys.contains(it) }
+    def touchedSchemaKey = (updates.keySet()).any(((this.&_bat529Cb_13cb0dba_9).curry([schemaAffectingKeys] as Object[])))
     def message = "Updated ${updateCount} ${settingWord}."
     if (touchedSchemaKey) {
         message += " MCP clients (Claude Code, etc.) may need to reconnect to refresh cached tool schemas if you toggled an enable* flag or useGateways."
@@ -236,29 +229,14 @@ private Map _validateMcpDeviceScope(scopeValue) {
     // Normalize every requested id to its String form up front (the hub returns Long ids; MCP
     // callers send strings/ints). Reject a non-scalar or blank-after-trim element before any hub call.
     def requestedIds = []
-    rawIds.each { raw ->
-        if (raw == null || raw instanceof Map || raw instanceof List) {
-            throw new IllegalArgumentException("selectedDevices ids entries must be device ID strings or integers, got: ${raw}")
-        }
-        def s = raw.toString().trim()
-        if (!s) {
-            throw new IllegalArgumentException("selectedDevices ids entries must be non-empty device IDs")
-        }
-        if (!requestedIds.contains(s)) requestedIds << s
-    }
+    (rawIds).each(((this.&_bat529Cb_13cb0dba_17).curry([requestedIds] as Object[])))
 
     // Current authorized set = the ids on the selectedDevices input. Normally a
     // List<DeviceWrapper>; tolerate raw String/Number ids defensively too. FAIL LOUD on an element
     // that resolves to neither (no .id, not a scalar) -- silently dropping it would shrink the scope
     // without telling anyone (this is the current-scope read, so it guards against corrupt stored
     // state). Per the AGENTS.md error contract: surface, don't swallow.
-    def currentIds = (settings.selectedDevices ?: []).collect { dev ->
-        def id = (dev instanceof String || dev instanceof Number) ? dev.toString() : dev?.id?.toString()
-        if (id == null) {
-            throw new IllegalArgumentException("settings.selectedDevices contains an unrecognized element (neither a device with an id nor a String/Number id): ${dev}. Nothing was changed.")
-        }
-        id
-    } as List
+    def currentIds = ((settings.selectedDevices ?: [])).collect((this.&_bat529Cb_13cb0dba_16))as List
     def currentSet = currentIds as Set
 
     // ATOMIC validation: for replace/add, every requested id must resolve to a real hub device
@@ -288,7 +266,7 @@ private Map _validateMcpDeviceScope(scopeValue) {
         if (inventory.failure) {
             return [success: false, isError: true, error: "Unexpected ${inventory.source} response; cannot validate selectedDevices.", note: "Hub firmware may have changed the endpoint contract; nothing was changed."]
         }
-        def hubDeviceIds = (inventory.records.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
+        def hubDeviceIds = (((inventory.records).findAll((this.&_bat529Cb_13cb0dba_4))).collect((this.&_bat529Cb_13cb0dba_12))).findAll((this.&_bat529Cb_13cb0dba_14))as Set
         def __bat529EachReceiver1 = (requestedIds)
 def __bat529EachReceiver1Result = []
 for (def it in __bat529EachReceiver1) {if (!hubDeviceIds.contains(it) ) __bat529EachReceiver1Result.add(it)
@@ -298,7 +276,7 @@ def unknown = __bat529EachReceiver1Result
         // (re-adding them is a no-op). A complete inventory still rejects stale ids, including
         // authorized ones.
         if (inventory.idsComplete == false && mode == "add") {
-            unknown = unknown.findAll { !currentSet.contains(it) }
+            unknown = (unknown).findAll(((this.&_bat529Cb_13cb0dba_3).curry([currentSet] as Object[])))
         }
         if (!unknown.isEmpty()) {
             if (inventory.idsComplete == false) {
@@ -316,7 +294,7 @@ def unknown = __bat529EachReceiver1Result
     switch (mode) {
         case "replace": resultIds = new ArrayList(requestedIds); break
         case "add":     def u = new LinkedHashSet(currentIds); u.addAll(requestedIds); resultIds = new ArrayList(u); break
-        case "remove":  resultIds = currentIds.findAll { !requestedIds.contains(it) }; break
+        case "remove":  resultIds = (currentIds).findAll(((this.&_bat529Cb_13cb0dba_5).curry([requestedIds] as Object[]))); break
     }
     def resultSet = resultIds as Set
 
@@ -476,7 +454,7 @@ def _resolveSelfAppClassId() {
         if (!responseText) return null
         def parsed = new groovy.json.JsonSlurper().parseText(responseText)
         if (!(parsed instanceof List)) return null
-        def match = parsed.find { it?.namespace == "mcp" && it?.name == "MCP Rule Server" }
+        def match = (parsed).find((this.&_bat529Cb_13cb0dba_11))
         return match?.id?.toString()
     } catch (Exception e) {
         // Reached from the code-update path too (not just hub_update_package); keep the label neutral.
@@ -660,7 +638,7 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
     // bundle-artifacts branch (the parent with its libraries inlined). Older refs keep the
     // bundle path unchanged.
     boolean inlined = manifestBundles.isEmpty() && !manifestApps.isEmpty() &&
-        manifestApps.every { it?.location instanceof String && it.location.contains("/bundle-artifacts/") }
+        (manifestApps).every((this.&_bat529Cb_13cb0dba_13))
     def includeTokens = []
     def plannedBundles = []
     if (!inlined) {
@@ -689,7 +667,7 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
     }
     def plannedApps = []
     for (a in manifestApps) {
-        def match = appTypes.find { it?.namespace == a?.namespace && it?.name == a?.name }
+        def match = (appTypes).find(((this.&_bat529Cb_13cb0dba_10).curry([a] as Object[])))
         def classId = match?.id?.toString()
         def url = inlined ? _bundleArtifactUrlForRef(a?.location, base, ref) : _reanchorToRef(a?.location, base, ref)
         if (!classId || !url) {
@@ -712,7 +690,7 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
         plannedApps << entry
     }
     // Non-self apps first, the self app last (so the self recompile is the final act).
-    def orderedApps = plannedApps.findAll { !it.isSelf } + plannedApps.findAll { it.isSelf }
+    def orderedApps = (plannedApps).findAll((this.&_bat529Cb_13cb0dba_2))+ (plannedApps).findAll((this.&_bat529Cb_13cb0dba_1))
 
     if (dryRun) {
         return [
@@ -848,7 +826,7 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
     // branches/main zip (exactly what HPM users install; only wrong if this ref's libraries
     // differ from current main); "committed-at-ref" = a legacy ref's in-tree zip (only
     // wrong if the ref changed library code relative to its base).
-    if (bundleResults.any { it.source == "manifest-current" }) {
+    if ((bundleResults).any((this.&_bat529Cb_13cb0dba_7))) {
         if (ref == "main") {
             result.bundleFreshnessWarning = "The per-ref artifact probe failed, so the bundle leg installed the manifest's branches/main zip directly -- for ref=main that is the correct, current bundle (the same bytes HPM users install). Noted only because the probe failing may indicate a transient raw.githubusercontent issue."
             mcpLog("warn", "developer-mode", "hub_update_package: ref=main artifact probe failed; installed the manifest's branches/main zip directly (correct bytes for main)")
@@ -856,12 +834,12 @@ def _updatePackageBody(Map args, String ref, boolean dryRun, Map packageWorkerCo
             result.bundleFreshnessWarning = "Ref '${ref}': no bundle-artifacts zip was found for this ref, so the bundle leg installed CURRENT MAIN's bundle (the manifest's branches/main zip). That is only correct if this ref's libraries match current main. If this ref changed library code, push it to this repo (publish-bundle-artifact stores a fresh zip per push, keyed by branch and full SHA) and re-run."
             mcpLog("warn", "developer-mode", "hub_update_package: non-main ref '${ref}' fell back to current main's bundle -- wrong if the ref changed library code")
         }
-    } else if (bundleResults.any { it.source == "committed-at-ref" }) {
+    } else if ((bundleResults).any((this.&_bat529Cb_13cb0dba_8))) {
         result.bundleFreshnessWarning = "Ref '${ref}' (legacy manifest): no bundle-artifacts zip was found for this ref, so the bundle leg installed the zip COMMITTED at the ref. That is only stale if this ref CHANGED library code without rebuilding the zip."
         mcpLog("warn", "developer-mode", "hub_update_package: legacy ref '${ref}' fell back to the committed bundle zip -- stale if the ref changed library code")
     }
     // Only ref=main can reach an app fallback (_planAppArtifact refuses every other ref).
-    if (orderedApps.any { it.source == "manifest-current" }) {
+    if ((orderedApps).any((this.&_bat529Cb_13cb0dba_6))) {
         result.artifactFreshnessWarning = "No app artifact was found under ${base} for ref=main, so the apps were installed from the manifest's own branches/main build -- the same files HPM users install."
         mcpLog("warn", "developer-mode", "hub_update_package: ref=main app artifact probe missed under ${base}; installed the manifest's branches/main build")
     }
@@ -994,4 +972,78 @@ def _toolDisplayMeta_partSelfAdmin() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return _bat529EmbeddedCatalogRead(['["m",[["hub_update_mcp_settings",["m",[["title","Update MCP Settings"],["summary","Update the MCP app\'s own settings + device-access scope (Developer Mode)."]]]],["hub_update_package",["m",[["title","Deploy MCP Package"],["summary","Full repair-install of the MCP package at a git ref (Developer Mode)."]]]]]]'])
+}
+
+
+def _bat529Cb_13cb0dba_1(def it) { it.isSelf 
+}
+
+def _bat529Cb_13cb0dba_2(def it) { !it.isSelf 
+}
+
+def _bat529Cb_13cb0dba_3(def currentSet, def it) { !currentSet.contains(it) 
+}
+
+def _bat529Cb_13cb0dba_4(def it) { it instanceof Map 
+}
+
+def _bat529Cb_13cb0dba_5(def requestedIds, def it) { !requestedIds.contains(it) 
+}
+
+def _bat529Cb_13cb0dba_6(def it) { it.source == "manifest-current" 
+}
+
+def _bat529Cb_13cb0dba_7(def it) { it.source == "manifest-current" 
+}
+
+def _bat529Cb_13cb0dba_8(def it) { it.source == "committed-at-ref" 
+}
+
+def _bat529Cb_13cb0dba_9(def schemaAffectingKeys, def it) { schemaAffectingKeys.contains(it) 
+}
+
+def _bat529Cb_13cb0dba_10(def a, def it) { it?.namespace == a?.namespace && it?.name == a?.name 
+}
+
+def _bat529Cb_13cb0dba_11(def it) { it?.namespace == "mcp" && it?.name == "MCP Rule Server" 
+}
+
+def _bat529Cb_13cb0dba_12(def it) { it.id?.toString() 
+}
+
+def _bat529Cb_13cb0dba_13(def it) { it?.location instanceof String && it.location.contains("/bundle-artifacts/") 
+}
+
+def _bat529Cb_13cb0dba_14(def it) { it != null 
+}
+
+def _bat529Cb_13cb0dba_15(def allowedSettings, def key, def value) {
+        if (key == "mcpLogLevel") {
+            // Delegate to existing helper — it updates both state cache + setting
+            toolSetLogLevel([level: value.toString()])
+        } else {
+            app.updateSetting(key, [type: allowedSettings.get(key), value: value])
+        }
+    
+}
+
+def _bat529Cb_13cb0dba_16(def dev) {
+        def id = (dev instanceof String || dev instanceof Number) ? dev.toString() : dev?.id?.toString()
+        if (id == null) {
+            throw new IllegalArgumentException("settings.selectedDevices contains an unrecognized element (neither a device with an id nor a String/Number id): ${dev}. Nothing was changed.")
+        }
+        id
+    
+}
+
+def _bat529Cb_13cb0dba_17(def requestedIds, def raw) {
+        if (raw == null || raw instanceof Map || raw instanceof List) {
+            throw new IllegalArgumentException("selectedDevices ids entries must be device ID strings or integers, got: ${raw}")
+        }
+        def s = raw.toString().trim()
+        if (!s) {
+            throw new IllegalArgumentException("selectedDevices ids entries must be non-empty device IDs")
+        }
+        if (!requestedIds.contains(s)) requestedIds << s
+    
 }

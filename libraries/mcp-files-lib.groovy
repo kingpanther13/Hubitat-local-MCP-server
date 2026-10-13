@@ -11,7 +11,7 @@ private String _filesFoldCase(value) {
 private List _filesApplyListFilters(List fileList, String filterLower) {
     def out = fileList
     if (filterLower) {
-        out = out.findAll { _filesFoldCase(it?.name)?.contains(filterLower) }
+        out = (out).findAll(((this.&_bat529Cb_f7f9d965_5).curry([filterLower] as Object[])))
     }
     return out
 }
@@ -25,7 +25,7 @@ def toolListFiles(args = null) {
     def filterText = args?.filter?.toString()?.trim()
     def filterLower = _filesFoldCase(filterText)
     def folder = args?.folder?.toString()?.trim()?.replaceAll(/^\/+|\/+$/, "")
-    if (folder && (!(folder ==~ /[A-Za-z0-9_.\/ -]+/) || folder.split("/").any { it == ".." || it == "." || it == "" })) {
+    if (folder && (!(folder ==~ /[A-Za-z0-9_.\/ -]+/) || (folder.split("/")).any((this.&_bat529Cb_f7f9d965_4)))) {
         throw new IllegalArgumentException("folder must be a relative File Manager folder path such as 'webcore' (letters, digits, space, dot, underscore, hyphen, '/' between parts; no '..').")
     }
     if (folder && _hubFirmwareBefore("2.5.2")) throw new IllegalArgumentException("folder needs firmware 2.5.2 or later; older File Manager has no subfolders.")
@@ -64,40 +64,17 @@ def toolListFiles(args = null) {
 
         if (parsed instanceof List) {
             // Direct list response: [{name: "file.txt", size: 123}, ...]
-            fileList = parsed.collect { f ->
-                def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
-                def entry = [name: name, directDownload: "http://<HUB_IP>/local/${prefix}${name}"]
-                if (f instanceof Map) {
-                    if (f.size != null) entry.size = f.size
-                    if (f.date) entry.lastModified = f.date
-                }
-                return entry
-            }
+            fileList = (parsed).collect(((this.&_bat529Cb_f7f9d965_6).curry([prefix] as Object[])))
         } else if (parsed instanceof Map) {
             // Object response: {files: [...]} or {type: [...]}
             // An empty folder answers files:[]; only a shape without the key falls back to its values.
             def files = parsed.containsKey("files") ? parsed.get("files") : parsed.values()?.flatten()
             if (files instanceof List) {
-                fileList = files.collect { f ->
-                    def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
-                    def entry = [name: name]
-                    if (f instanceof Map) {
-                        // Firmware 2.5.2 lists subfolders (type "dir") beside files and flags files a
-                        // full backup leaves out (backupIncluded:false, past its 100 MiB limit).
-                        if (f.type) entry.type = f.type
-                        if (f.type != "dir") entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
-                        if (f.size != null && f.type != "dir") entry.size = f.size
-                        if (f.date) entry.lastModified = f.date
-                        if (f.backupIncluded != null) entry.backupIncluded = f.backupIncluded
-                    } else {
-                        entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
-                    }
-                    return entry
-                }
+                fileList = (files).collect(((this.&_bat529Cb_f7f9d965_7).curry([prefix] as Object[])))
             }
         }
 
-        fileList = fileList.sort { a, b -> (a.name <=> b.name) }
+        fileList = (fileList).sort((this.&_bat529Cb_f7f9d965_3))
 
         // Shape-drift diagnostic: a non-empty parsed response that yielded zero files is almost
         // always a firmware shape change (new top-level key, files nested deeper, etc.); an
@@ -135,7 +112,7 @@ def toolListFiles(args = null) {
             def matcher = responseText =~ /(?i)href=["']?\/local\/([^"'\s>]+)/
             while (matcher.find()) {
                 def name = java.net.URLDecoder.decode(matcher.group(1), "UTF-8")
-                if (!fileList.any { it.name == name }) {
+                if (!(fileList).any(((this.&_bat529Cb_f7f9d965_1).curry([name] as Object[])))) {
                     fileList << [name: name, directDownload: "http://<HUB_IP>/local/${name}"]
                 }
             }
@@ -144,7 +121,7 @@ def toolListFiles(args = null) {
         }
 
         if (fileList) {
-            fileList = fileList.sort { a, b -> (a.name <=> b.name) }
+            fileList = (fileList).sort((this.&_bat529Cb_f7f9d965_2))
             fileList = _filesApplyListFilters(fileList, filterLower)
             mcpLog("info", "file-manager", "Listed ${fileList.size()}${filterLower ? ' matching' : ''} files from File Manager HTML page")
             def pagedHtml = _paginateList(fileList, cursor, 100, "hub_list_files")
@@ -383,4 +360,49 @@ def _toolDisplayMeta_partFiles() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return _bat529EmbeddedCatalogRead(['["m",[["hub_list_files",["m",[["title","List Files"],["summary","List files in the hub File Manager, optionally filtered by a name substring."]]]],["hub_read_file",["m",[["title","Read File"],["summary","Read a File Manager file\'s contents."]]]],["hub_write_file",["m",[["title","Write File"],["summary","Create or update a File Manager file (auto-backs up existing)."]]]],["hub_delete_file",["m",[["title","Delete File"],["summary","Delete a File Manager file (auto-backs up first)."]]]]]]'])
+}
+
+
+def _bat529Cb_f7f9d965_1(def name, def it) { it.name == name 
+}
+
+def _bat529Cb_f7f9d965_2(def a, def b) { (a.name <=> b.name) 
+}
+
+def _bat529Cb_f7f9d965_3(def a, def b) { (a.name <=> b.name) 
+}
+
+def _bat529Cb_f7f9d965_4(def it) { it == ".." || it == "." || it == "" 
+}
+
+def _bat529Cb_f7f9d965_5(def filterLower, def it) { _filesFoldCase(it?.name)?.contains(filterLower) 
+}
+
+def _bat529Cb_f7f9d965_6(def prefix, def f) {
+                def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
+                def entry = [name: name, directDownload: "http://<HUB_IP>/local/${prefix}${name}"]
+                if (f instanceof Map) {
+                    if (f.size != null) entry.size = f.size
+                    if (f.date) entry.lastModified = f.date
+                }
+                return entry
+            
+}
+
+def _bat529Cb_f7f9d965_7(def prefix, def f) {
+                    def name = (f instanceof Map) ? (f.name ?: f.toString()) : f.toString()
+                    def entry = [name: name]
+                    if (f instanceof Map) {
+                        // Firmware 2.5.2 lists subfolders (type "dir") beside files and flags files a
+                        // full backup leaves out (backupIncluded:false, past its 100 MiB limit).
+                        if (f.type) entry.type = f.type
+                        if (f.type != "dir") entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
+                        if (f.size != null && f.type != "dir") entry.size = f.size
+                        if (f.date) entry.lastModified = f.date
+                        if (f.backupIncluded != null) entry.backupIncluded = f.backupIncluded
+                    } else {
+                        entry.directDownload = "http://<HUB_IP>/local/${prefix}${name}"
+                    }
+                    return entry
+                
 }

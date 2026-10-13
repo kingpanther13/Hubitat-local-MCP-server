@@ -5,14 +5,7 @@ def toolListRooms(args = null) {
     if (!rooms) {
         return [rooms: [], count: 0, message: "No rooms configured on this hub."]
     }
-    def roomList = rooms.findAll { it != null }.collect { room ->
-        [
-            id: room.id?.toString(),
-            name: room.name,
-            deviceCount: room.deviceIds?.size() ?: 0,
-            deviceIds: room.deviceIds?.collect { it.toString() } ?: []
-        ]
-    }.sort { it.name }
+    def roomList = (((rooms).findAll((this.&_bat529Cb_cfcfe2bd_4))).collect((this.&_bat529Cb_cfcfe2bd_28))).sort((this.&_bat529Cb_cfcfe2bd_29))
     def cursor = args?.cursor
     def paged = _paginateList(roomList, cursor, 100, "hub_list_rooms")
     def result = [rooms: paged.page, count: paged.page.size()]
@@ -30,11 +23,11 @@ def toolGetRoom(String roomIdentifier) {
     if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
 
     // Find room by ID or name (case-insensitive)
-    def room = rooms.find { it?.id?.toString() == roomIdentifier } ?:
-               rooms.find { it?.name?.toLowerCase() == roomIdentifier.toLowerCase() }
+    def room = (rooms).find(((this.&_bat529Cb_cfcfe2bd_11).curry([roomIdentifier] as Object[])))?:
+               (rooms).find(((this.&_bat529Cb_cfcfe2bd_21).curry([roomIdentifier] as Object[])))
 
     if (!room) {
-        def available = rooms.collect { it?.name }.sort()
+        def available = (rooms).collect((this.&_bat529Cb_cfcfe2bd_1)).sort()
         throw new IllegalArgumentException("Room '${roomIdentifier}' not found. Available rooms: ${available.join(', ')}")
     }
 
@@ -42,39 +35,16 @@ def toolGetRoom(String roomIdentifier) {
     def devices = []
     def allDevices = (settings.selectedDevices ?: []).toList()
     def childDevs = getChildDevices() ?: []
-    def selectedIds = allDevices.collect { it.id.toString() } as Set
-    childDevs.each { cd -> if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } }
+    def selectedIds = (allDevices).collect((this.&_bat529Cb_cfcfe2bd_5))as Set
+    (childDevs).each(((this.&_bat529Cb_cfcfe2bd_26).curry([allDevices, selectedIds] as Object[])))
 
-    room.deviceIds?.each { devId ->
-        def device = allDevices?.find { it?.id?.toString() == devId.toString() }
-        if (device) {
-            def devInfo = [
-                id: device.id.toString(),
-                label: device.label ?: device.name ?: "unknown",
-                name: device.name ?: "unknown"
-            ]
-            // Add common current states
-            def states = [:]
-            try {
-                device.currentStates?.each { st ->
-                    states.put(st.name, st.value)
-                }
-            } catch (Exception e) {
-                mcpLog("debug", "room", "hub_get_room: currentStates read failed for device ${device.id}: ${e.message}")
-            }
-            if (states) devInfo.currentStates = states
-            devices << devInfo
-        } else {
-            devices << [id: devId.toString(), label: "(device not accessible via MCP)", name: "unknown", accessible: false]
-        }
-    }
+    (room.deviceIds)?.each(((this.&_bat529Cb_cfcfe2bd_31).curry([allDevices, devices] as Object[])))
 
     return [
         id: room.id?.toString(),
         name: room.name,
         deviceCount: devices.size(),
-        devices: devices.sort { (it.label ?: "").toLowerCase() }
-    ]
+        devices: (devices).sort((this.&_bat529Cb_cfcfe2bd_12))]
 }
 
 def toolCreateRoom(args) {
@@ -87,19 +57,13 @@ def toolCreateRoom(args) {
 
     // Check for duplicate name
     def rooms = getRooms()
-    if (rooms?.find { it?.name?.toLowerCase() == roomName.toLowerCase() }) {
+    if ((rooms)?.find(((this.&_bat529Cb_cfcfe2bd_20).curry([roomName] as Object[])))) {
         throw new IllegalArgumentException("A room named '${roomName}' already exists")
     }
 
     // Build device IDs list. Validate each element before coercing so a non-numeric id is a clean
     // IllegalArgumentException (an isError validation result) naming the offending value, not an opaque NumberFormatException.
-    def deviceIds = (args.deviceIds ?: []).collect {
-        def s = it?.toString()?.trim()
-        if (!(s ==~ /\d+/)) {
-            throw new IllegalArgumentException("deviceIds must be numeric device ids; got '${it}'. Use hub_list_devices to find device ids.")
-        }
-        s as Integer
-    }
+    def deviceIds = ((args.deviceIds ?: [])).collect((this.&_bat529Cb_cfcfe2bd_30))
 
     // POST /room/save with roomId: 0 to create (Grails convention). Routed through
     // hubInternalPostJson for the shared Hub Security cookie-refresh retry; the
@@ -120,7 +84,7 @@ def toolCreateRoom(args) {
 
     // Verify creation (case-insensitive to handle any normalization)
     def updatedRooms = getRooms()
-    def newRoom = updatedRooms?.find { it?.name?.toLowerCase() == roomName.toLowerCase() }
+    def newRoom = (updatedRooms)?.find(((this.&_bat529Cb_cfcfe2bd_22).curry([roomName] as Object[])))
     if (!newRoom) {
         throw new RuntimeException("Room creation endpoint returned success but room '${roomName}' not found in rooms list")
     }
@@ -142,10 +106,10 @@ def toolDeleteRoom(args) {
     def rooms = getRooms()
     if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
 
-    def room = rooms.find { it?.id?.toString() == args.room.trim() } ?:
-               rooms.find { it?.name?.toLowerCase() == args.room.trim().toLowerCase() }
+    def room = (rooms).find(((this.&_bat529Cb_cfcfe2bd_14).curry([args] as Object[])))?:
+               (rooms).find(((this.&_bat529Cb_cfcfe2bd_23).curry([args] as Object[])))
     if (!room) {
-        def available = rooms.collect { it?.name }.sort()
+        def available = (rooms).collect((this.&_bat529Cb_cfcfe2bd_2)).sort()
         throw new IllegalArgumentException("Room '${args.room}' not found. Available rooms: ${available.join(', ')}")
     }
 
@@ -189,7 +153,7 @@ def toolDeleteRoom(args) {
 
     // Verify deletion
     def updatedRooms = getRooms()
-    def stillExists = updatedRooms?.find { it?.id?.toString() == roomId.toString() }
+    def stillExists = (updatedRooms)?.find(((this.&_bat529Cb_cfcfe2bd_19).curry([roomId] as Object[])))
     if (stillExists) {
         throw new RuntimeException("Delete endpoint returned success but room '${roomName}' still exists")
     }
@@ -218,21 +182,21 @@ def toolRenameRoom(args) {
     def rooms = getRooms()
     if (!rooms) throw new IllegalArgumentException("No rooms configured on this hub.")
 
-    def room = rooms.find { it?.id?.toString() == args.room.trim() } ?:
-               rooms.find { it?.name?.toLowerCase() == args.room.trim().toLowerCase() }
+    def room = (rooms).find(((this.&_bat529Cb_cfcfe2bd_16).curry([args] as Object[])))?:
+               (rooms).find(((this.&_bat529Cb_cfcfe2bd_24).curry([args] as Object[])))
     if (!room) {
-        def available = rooms.collect { it?.name }.sort()
+        def available = (rooms).collect((this.&_bat529Cb_cfcfe2bd_3)).sort()
         throw new IllegalArgumentException("Room '${args.room}' not found. Available rooms: ${available.join(', ')}")
     }
 
     // Check for name conflict
-    if (rooms.find { it?.name?.toLowerCase() == newName.toLowerCase() && it.id != room.id }) {
+    if ((rooms).find(((this.&_bat529Cb_cfcfe2bd_25).curry([newName, room] as Object[])))) {
         throw new IllegalArgumentException("A room named '${newName}' already exists")
     }
 
     def oldName = room.name
     def roomId = room.id
-    def deviceIds = room.deviceIds?.collect { it as Integer } ?: []
+    def deviceIds = (room.deviceIds)?.collect((this.&_bat529Cb_cfcfe2bd_9))?: []
 
     // POST /room/save with existing roomId and new name. Routed through
     // hubInternalPostJson for the shared cookie-refresh retry; the rename is
@@ -253,7 +217,7 @@ def toolRenameRoom(args) {
 
     // Verify rename
     def updatedRooms = getRooms()
-    def updatedRoom = updatedRooms?.find { it?.id?.toString() == roomId.toString() }
+    def updatedRoom = (updatedRooms)?.find(((this.&_bat529Cb_cfcfe2bd_18).curry([roomId] as Object[])))
     if (!updatedRoom || updatedRoom.name != newName) {
         throw new RuntimeException("Rename endpoint returned success but room name did not change")
     }
@@ -289,4 +253,133 @@ def _toolDisplayMeta_partRooms() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return _bat529EmbeddedCatalogRead(['["m",[["hub_list_rooms",["m",[["title","List Rooms"],["summary","List all rooms with IDs, names, and device counts."]]]],["hub_get_room",["m",[["title","Get Room Details"],["summary","Get one room\'s details with its assigned devices."]]]],["hub_create_room",["m",[["title","Create Room"],["summary","Create a new room, optionally assigning devices."]]]],["hub_delete_room",["m",[["title","Delete Room"],["summary","Permanently delete a room."]]]],["hub_update_room",["m",[["title","Rename Room"],["summary","Rename an existing room."]]]]]]'])
+}
+
+
+def _bat529Cb_cfcfe2bd_1(def it) { it?.name 
+}
+
+def _bat529Cb_cfcfe2bd_2(def it) { it?.name 
+}
+
+def _bat529Cb_cfcfe2bd_3(def it) { it?.name 
+}
+
+def _bat529Cb_cfcfe2bd_4(def it) { it != null 
+}
+
+def _bat529Cb_cfcfe2bd_5(def it) { it.id.toString() 
+}
+
+def _bat529Cb_cfcfe2bd_6(def it) { it.toString() 
+}
+
+def _bat529Cb_cfcfe2bd_7(def it) { it.toString() 
+}
+
+def _bat529Cb_cfcfe2bd_8(def it) { it as Integer 
+}
+
+def _bat529Cb_cfcfe2bd_9(def it) { it as Integer 
+}
+
+def _bat529Cb_cfcfe2bd_10(def roomIdentifier, def it) { it?.id?.toString() == roomIdentifier 
+}
+
+def _bat529Cb_cfcfe2bd_11(def roomIdentifier, def it) { it?.id?.toString() == roomIdentifier 
+}
+
+def _bat529Cb_cfcfe2bd_12(def it) { (it.label ?: "").toLowerCase() 
+}
+
+def _bat529Cb_cfcfe2bd_13(def args, def it) { it?.id?.toString() == args.room.trim() 
+}
+
+def _bat529Cb_cfcfe2bd_14(def args, def it) { it?.id?.toString() == args.room.trim() 
+}
+
+def _bat529Cb_cfcfe2bd_15(def args, def it) { it?.id?.toString() == args.room.trim() 
+}
+
+def _bat529Cb_cfcfe2bd_16(def args, def it) { it?.id?.toString() == args.room.trim() 
+}
+
+def _bat529Cb_cfcfe2bd_17(def devId, def it) { it?.id?.toString() == devId.toString() 
+}
+
+def _bat529Cb_cfcfe2bd_18(def roomId, def it) { it?.id?.toString() == roomId.toString() 
+}
+
+def _bat529Cb_cfcfe2bd_19(def roomId, def it) { it?.id?.toString() == roomId.toString() 
+}
+
+def _bat529Cb_cfcfe2bd_20(def roomName, def it) { it?.name?.toLowerCase() == roomName.toLowerCase() 
+}
+
+def _bat529Cb_cfcfe2bd_21(def roomIdentifier, def it) { it?.name?.toLowerCase() == roomIdentifier.toLowerCase() 
+}
+
+def _bat529Cb_cfcfe2bd_22(def roomName, def it) { it?.name?.toLowerCase() == roomName.toLowerCase() 
+}
+
+def _bat529Cb_cfcfe2bd_23(def args, def it) { it?.name?.toLowerCase() == args.room.trim().toLowerCase() 
+}
+
+def _bat529Cb_cfcfe2bd_24(def args, def it) { it?.name?.toLowerCase() == args.room.trim().toLowerCase() 
+}
+
+def _bat529Cb_cfcfe2bd_25(def newName, def room, def it) { it?.name?.toLowerCase() == newName.toLowerCase() && it.id != room.id 
+}
+
+def _bat529Cb_cfcfe2bd_26(def allDevices, def selectedIds, def cd) { if (!selectedIds.contains(cd.id.toString())) { allDevices.add(cd) } 
+}
+
+def _bat529Cb_cfcfe2bd_27(def states, def st) {
+                    states.put(st.name, st.value)
+                
+}
+
+def _bat529Cb_cfcfe2bd_28(def room) {
+        [
+            id: room.id?.toString(),
+            name: room.name,
+            deviceCount: room.deviceIds?.size() ?: 0,
+            deviceIds: (room.deviceIds)?.collect((this.&_bat529Cb_cfcfe2bd_7))?: []
+        ]
+    
+}
+
+def _bat529Cb_cfcfe2bd_29(def it) { it.name 
+}
+
+def _bat529Cb_cfcfe2bd_30(def it) {
+        def s = it?.toString()?.trim()
+        if (!(s ==~ /\d+/)) {
+            throw new IllegalArgumentException("deviceIds must be numeric device ids; got '${it}'. Use hub_list_devices to find device ids.")
+        }
+        s as Integer
+    
+}
+
+def _bat529Cb_cfcfe2bd_31(def allDevices, def devices, def devId) {
+        def device = (allDevices)?.find(((this.&_bat529Cb_cfcfe2bd_17).curry([devId] as Object[])))
+        if (device) {
+            def devInfo = [
+                id: device.id.toString(),
+                label: device.label ?: device.name ?: "unknown",
+                name: device.name ?: "unknown"
+            ]
+            // Add common current states
+            def states = [:]
+            try {
+                (device.currentStates)?.each(((this.&_bat529Cb_cfcfe2bd_27).curry([states] as Object[])))
+            } catch (Exception e) {
+                mcpLog("debug", "room", "hub_get_room: currentStates read failed for device ${device.id}: ${e.message}")
+            }
+            if (states) devInfo.currentStates = states
+            devices << devInfo
+        } else {
+            devices << [id: devId.toString(), label: "(device not accessible via MCP)", name: "unknown", accessible: false]
+        }
+    
 }

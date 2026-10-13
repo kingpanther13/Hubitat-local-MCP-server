@@ -2,22 +2,7 @@ library(name: "McpCustomRulesLib", namespace: "mcp", author: "kingpanther13", de
 
 def toolListRules(args = null) {
     def childApps = getChildApps()
-    def rules = childApps?.collect { childApp ->
-        def ruleData = childApp.getRuleData()
-        if (!ruleData) return null  // Skip rules that return null data
-        [
-            id: ruleData.id,
-            name: ruleData.name,
-            description: ruleData.description,
-            enabled: ruleData.enabled,
-            triggerCount: ruleData.triggers?.size() ?: 0,
-            conditionCount: ruleData.conditions?.size() ?: 0,
-            actionCount: ruleData.actions?.size() ?: 0,
-            lastTriggered: ruleData.lastTriggered,
-            executionCount: ruleData.executionCount ?: 0,
-            source: "mcp_custom_engine"
-        ]
-    }?.findAll { it != null } ?: []
+    def rules = ((childApps)?.collect((this.&_bat529Cb_221baae5_28)))?.findAll((this.&_bat529Cb_221baae5_30))?: []
 
     def cursor = args?.cursor
     def paged = _paginateList(rules, cursor, 50, "hub_get_custom_rule")
@@ -65,22 +50,16 @@ def toolCreateRule(args) {
     }
 
     // Normalize triggers (convert common sunrise/sunset formats to canonical form)
-    args.triggers = args.triggers.collect { trigger -> normalizeTrigger(trigger) }
+    args.triggers = (args.triggers).collect((this.&_bat529Cb_221baae5_8))
 
     // Validate triggers
-    args.triggers.each { trigger ->
-        validateTrigger(trigger)
-    }
+    (args.triggers).each((this.&_bat529Cb_221baae5_14))
 
     // Validate conditions
-    args.conditions?.each { condition ->
-        validateCondition(condition)
-    }
+    (args.conditions)?.each((this.&_bat529Cb_221baae5_15))
 
     // Validate actions
-    args.actions.each { action ->
-        validateAction(action)
-    }
+    (args.actions).each((this.&_bat529Cb_221baae5_12))
 
     // Normalize operators (convert "==" to "equals", "!=" to "not_equals")
     normalizeRuleOperators(args)
@@ -162,7 +141,7 @@ def toolUpdateRule(ruleId, args, String customEngineMode = "full") {
     // the engine to be fully enabled.
     if (customEngineMode == "readonly") {
         // Fields in args besides 'enabled' (ruleId is passed as a separate param, not in args)
-        def structuralKeys = (args?.keySet() ?: []).findAll { it != "enabled" && it != "ruleId" }
+        def structuralKeys = ((args?.keySet() ?: [])).findAll((this.&_bat529Cb_221baae5_13))
         if (!structuralKeys.isEmpty()) {
             throw new IllegalArgumentException("In read-only mode (Custom Rule Engine toggle OFF), only the 'enabled' field can be updated. Structural fields provided: ${structuralKeys.sort().join(', ')}. To modify rule structure (triggers/conditions/actions), turn ON the Custom Rule Engine toggle in MCP server settings. The custom rule engine is legacy -- for new rule structure work, use hub_manage_rule_machine hub_set_rule instead.")
         }
@@ -170,18 +149,18 @@ def toolUpdateRule(ruleId, args, String customEngineMode = "full") {
 
     // Normalize and validate any provided triggers
     if (args.triggers != null) {
-        args.triggers = args.triggers.collect { trigger -> normalizeTrigger(trigger) }
-        args.triggers.each { validateTrigger(it) }
+        args.triggers = (args.triggers).collect((this.&_bat529Cb_221baae5_9))
+        (args.triggers).each((this.&_bat529Cb_221baae5_5))
     }
 
     // Validate any provided conditions
     if (args.conditions != null) {
-        args.conditions.each { validateCondition(it) }
+        (args.conditions).each((this.&_bat529Cb_221baae5_6))
     }
 
     // Validate any provided actions
     if (args.actions != null) {
-        args.actions.each { validateAction(it) }
+        (args.actions).each((this.&_bat529Cb_221baae5_1))
     }
 
     // Normalize operators (convert "==" to "equals", "!=" to "not_equals")
@@ -364,11 +343,11 @@ private String findRuleAppRedirect(ruleId, String verb) {
         def appTypeName = foundData.type?.toString() ?: "built-in app"
         def appTypeNameLower = appTypeName.toLowerCase()
 
-        boolean isRuleLike = ruleTypeFragments.any { frag -> appTypeNameLower.contains(frag) }
+        boolean isRuleLike = (ruleTypeFragments).any(((this.&_bat529Cb_221baae5_11).curry([appTypeNameLower] as Object[])))
         if (!isRuleLike) return null
 
         // Is this app a Rule Machine instance? Gates the hub_call_rule pointer in the test-verb hint.
-        boolean isRmRule = rmTypeFragments.any { frag -> appTypeNameLower.contains(frag) }
+        boolean isRmRule = (rmTypeFragments).any(((this.&_bat529Cb_221baae5_10).curry([appTypeNameLower] as Object[])))
 
         // Build verb-appropriate redirect hint.
         if (verb == "read") {
@@ -570,40 +549,17 @@ def buildDeviceManifest(ruleData) {
     def deviceUsage = [:]  // deviceId -> [sections]
 
     // Scan triggers
-    ruleData.triggers?.each { trigger ->
-        collectDeviceIds(trigger, "triggers", deviceUsage)
-    }
+    (ruleData.triggers)?.each(((this.&_bat529Cb_221baae5_18).curry([deviceUsage] as Object[])))
 
     // Scan conditions
-    ruleData.conditions?.each { condition ->
-        collectDeviceIds(condition, "conditions", deviceUsage)
-    }
+    (ruleData.conditions)?.each(((this.&_bat529Cb_221baae5_23).curry([deviceUsage] as Object[])))
 
     // Scan actions
-    ruleData.actions?.each { action ->
-        collectDeviceIds(action, "actions", deviceUsage)
-    }
+    (ruleData.actions)?.each(((this.&_bat529Cb_221baae5_16).curry([deviceUsage] as Object[])))
 
     // Build manifest entries with device info
     def manifest = []
-    deviceUsage.each { deviceId, sections ->
-        def entry = [
-            deviceId: deviceId.toString(),
-            usedIn: sections.toList().sort()
-        ]
-
-        // Try to look up device details from selected devices
-        def device = findDevice(deviceId)
-        if (device) {
-            entry.label = device.label ?: device.name ?: "Device ${deviceId}"
-            entry.capabilities = device.capabilities?.collect { it.name } ?: []
-        } else {
-            entry.label = "Unknown device (not in selected devices)"
-            entry.capabilities = []
-        }
-
-        manifest << entry
-    }
+    (deviceUsage).each(((this.&_bat529Cb_221baae5_26).curry([manifest] as Object[])))
 
     return manifest
 }
@@ -622,36 +578,22 @@ private void collectDeviceIds(component, String section, Map deviceUsage) {
 
     // Check for deviceIds field (plural — multi-device triggers, capture_state, etc.)
     if (component.deviceIds) {
-        component.deviceIds.each { did ->
-            def id = did.toString()
-            if (!deviceUsage.containsKey(id)) {
-                deviceUsage.put(id, new LinkedHashSet())
-            }
-            deviceUsage.get(id) << section
-        }
+        (component.deviceIds).each(((this.&_bat529Cb_221baae5_25).curry([deviceUsage, section] as Object[])))
     }
 
     // Check nested structures in if_then_else actions
     if (component.type == "if_then_else") {
         // Scan conditions inside if_then_else
-        component.conditions?.each { cond ->
-            collectDeviceIds(cond, section, deviceUsage)
-        }
+        (component.conditions)?.each(((this.&_bat529Cb_221baae5_19).curry([deviceUsage, section] as Object[])))
         // Scan then actions
-        component.thenActions?.each { action ->
-            collectDeviceIds(action, section, deviceUsage)
-        }
+        (component.thenActions)?.each(((this.&_bat529Cb_221baae5_21).curry([deviceUsage, section] as Object[])))
         // Scan else actions
-        component.elseActions?.each { action ->
-            collectDeviceIds(action, section, deviceUsage)
-        }
+        (component.elseActions)?.each(((this.&_bat529Cb_221baae5_22).curry([deviceUsage, section] as Object[])))
     }
 
     // Check nested actions in repeat blocks
     if (component.type == "repeat") {
-        component.actions?.each { action ->
-            collectDeviceIds(action, section, deviceUsage)
-        }
+        (component.actions)?.each(((this.&_bat529Cb_221baae5_20).curry([deviceUsage, section] as Object[])))
     }
 }
 
@@ -700,9 +642,9 @@ def toolGetRuleDiagnostics(args) {
     def logHistory = getDebugLogReadResult(args)
     if (logHistory.status == "in_progress") return logHistory + [tool: "hub_get_custom_rule"]
     def ruleData = childApp.getRuleData()
-    def ruleLogs = (logHistory.entries ?: []).findAll { it.ruleId == ruleId }
+    def ruleLogs = ((logHistory.entries ?: [])).findAll(((this.&_bat529Cb_221baae5_7).curry([ruleId] as Object[])))
     def recentLogs = ruleLogs.drop(Math.max(0, ruleLogs.size() - 10))
-    def errorLogs = ruleLogs.findAll { it.level == "error" }
+    def errorLogs = (ruleLogs).findAll((this.&_bat529Cb_221baae5_2))
 
     def result = [
         source: "mcp_custom_engine",
@@ -733,9 +675,8 @@ def toolGetRuleDiagnostics(args) {
         logs: [
             recentCount: logHistory.error ? null : recentLogs.size(),
             errorCount: logHistory.error ? null : errorLogs.size(),
-            recent: recentLogs.collect { [time: formatTimestamp(it.timestamp), level: it.level, message: it.message] },
-            errors: errorLogs.drop(Math.max(0, errorLogs.size() - 5)).collect { [time: formatTimestamp(it.timestamp), message: it.message, stackTrace: it.stackTrace] }
-        ]
+            recent: (recentLogs).collect((this.&_bat529Cb_221baae5_17)),
+            errors: (errorLogs.drop(Math.max(0, errorLogs.size() - 5))).collect((this.&_bat529Cb_221baae5_24))]
     ]
     if (logHistory.error) {
         result.logReadError = logHistory.error
@@ -765,4 +706,168 @@ def _toolDisplayMeta_partCustomRules() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return _bat529EmbeddedCatalogRead(['["m",[["hub_get_custom_rule",["m",[["title","Get Custom Rule"],["summary","List custom-engine rules or get one rule\'s details and diagnostics."]]]],["hub_create_custom_rule",["m",[["title","Create Custom Rule"],["summary","Create a new custom-engine automation rule."]]]],["hub_update_custom_rule",["m",[["title","Update Custom Rule"],["summary","Update a custom-engine rule\'s triggers, conditions, actions, or enabled state."]]]],["hub_delete_custom_rule",["m",[["title","Delete Custom Rule"],["summary","Permanently delete a custom-engine rule (auto-backs up first)."]]]],["hub_test_custom_rule",["m",[["title","Test Custom Rule"],["summary","Dry-run a custom-engine rule without executing its actions."]]]],["hub_export_custom_rule",["m",[["title","Export Custom Rule"],["summary","Export a custom-engine rule to JSON in the hub File Manager."]]]],["hub_import_custom_rule",["m",[["title","Import Custom Rule"],["summary","Import a custom-engine rule from exported JSON as a new rule."]]]],["hub_clone_custom_rule",["m",[["title","Clone Custom Rule"],["summary","Clone an existing custom-engine rule (the copy starts disabled)."]]]]]]'])
+}
+
+
+def _bat529Cb_221baae5_1(def it) { validateAction(it) 
+}
+
+def _bat529Cb_221baae5_2(def it) { it.level == "error" 
+}
+
+def _bat529Cb_221baae5_3(def it) { it.name 
+}
+
+def _bat529Cb_221baae5_4(def it) { it.name 
+}
+
+def _bat529Cb_221baae5_5(def it) { validateTrigger(it) 
+}
+
+def _bat529Cb_221baae5_6(def it) { validateCondition(it) 
+}
+
+def _bat529Cb_221baae5_7(def ruleId, def it) { it.ruleId == ruleId 
+}
+
+def _bat529Cb_221baae5_8(def trigger) { normalizeTrigger(trigger) 
+}
+
+def _bat529Cb_221baae5_9(def trigger) { normalizeTrigger(trigger) 
+}
+
+def _bat529Cb_221baae5_10(def appTypeNameLower, def frag) { appTypeNameLower.contains(frag) 
+}
+
+def _bat529Cb_221baae5_11(def appTypeNameLower, def frag) { appTypeNameLower.contains(frag) 
+}
+
+def _bat529Cb_221baae5_12(def action) {
+        validateAction(action)
+    
+}
+
+def _bat529Cb_221baae5_13(def it) { it != "enabled" && it != "ruleId" 
+}
+
+def _bat529Cb_221baae5_14(def trigger) {
+        validateTrigger(trigger)
+    
+}
+
+def _bat529Cb_221baae5_15(def condition) {
+        validateCondition(condition)
+    
+}
+
+def _bat529Cb_221baae5_16(def deviceUsage, def action) {
+        collectDeviceIds(action, "actions", deviceUsage)
+    
+}
+
+def _bat529Cb_221baae5_17(def it) { [time: formatTimestamp(it.timestamp), level: it.level, message: it.message] 
+}
+
+def _bat529Cb_221baae5_18(def deviceUsage, def trigger) {
+        collectDeviceIds(trigger, "triggers", deviceUsage)
+    
+}
+
+def _bat529Cb_221baae5_19(def deviceUsage, def section, def cond) {
+            collectDeviceIds(cond, section, deviceUsage)
+        
+}
+
+def _bat529Cb_221baae5_20(def deviceUsage, def section, def action) {
+            collectDeviceIds(action, section, deviceUsage)
+        
+}
+
+def _bat529Cb_221baae5_21(def deviceUsage, def section, def action) {
+            collectDeviceIds(action, section, deviceUsage)
+        
+}
+
+def _bat529Cb_221baae5_22(def deviceUsage, def section, def action) {
+            collectDeviceIds(action, section, deviceUsage)
+        
+}
+
+def _bat529Cb_221baae5_23(def deviceUsage, def condition) {
+        collectDeviceIds(condition, "conditions", deviceUsage)
+    
+}
+
+def _bat529Cb_221baae5_24(def it) { [time: formatTimestamp(it.timestamp), message: it.message, stackTrace: it.stackTrace] 
+}
+
+def _bat529Cb_221baae5_25(def deviceUsage, def section, def did) {
+            def id = did.toString()
+            if (!deviceUsage.containsKey(id)) {
+                deviceUsage.put(id, new LinkedHashSet())
+            }
+            deviceUsage.get(id) << section
+        
+}
+
+def _bat529Cb_221baae5_26(def manifest, def deviceId, def sections) {
+        def entry = [
+            deviceId: deviceId.toString(),
+            usedIn: sections.toList().sort()
+        ]
+
+        // Try to look up device details from selected devices
+        def device = findDevice(deviceId)
+        if (device) {
+            entry.label = device.label ?: device.name ?: "Device ${deviceId}"
+            entry.capabilities = (device.capabilities)?.collect((this.&_bat529Cb_221baae5_4))?: []
+        } else {
+            entry.label = "Unknown device (not in selected devices)"
+            entry.capabilities = []
+        }
+
+        manifest << entry
+    
+}
+
+def _bat529Cb_221baae5_27(def childApp) {
+        def ruleData = childApp.getRuleData()
+        if (!ruleData) return null  // Skip rules that return null data
+        [
+            id: ruleData.id,
+            name: ruleData.name,
+            description: ruleData.description,
+            enabled: ruleData.enabled,
+            triggerCount: ruleData.triggers?.size() ?: 0,
+            conditionCount: ruleData.conditions?.size() ?: 0,
+            actionCount: ruleData.actions?.size() ?: 0,
+            lastTriggered: ruleData.lastTriggered,
+            executionCount: ruleData.executionCount ?: 0,
+            source: "mcp_custom_engine"
+        ]
+    
+}
+
+def _bat529Cb_221baae5_28(def childApp) {
+        def ruleData = childApp.getRuleData()
+        if (!ruleData) return null  // Skip rules that return null data
+        [
+            id: ruleData.id,
+            name: ruleData.name,
+            description: ruleData.description,
+            enabled: ruleData.enabled,
+            triggerCount: ruleData.triggers?.size() ?: 0,
+            conditionCount: ruleData.conditions?.size() ?: 0,
+            actionCount: ruleData.actions?.size() ?: 0,
+            lastTriggered: ruleData.lastTriggered,
+            executionCount: ruleData.executionCount ?: 0,
+            source: "mcp_custom_engine"
+        ]
+    
+}
+
+def _bat529Cb_221baae5_29(def it) { it != null 
+}
+
+def _bat529Cb_221baae5_30(def it) { it != null 
 }

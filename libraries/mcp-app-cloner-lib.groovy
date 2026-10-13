@@ -39,10 +39,7 @@ private Map _appClonerInit(Integer sourceAppId) {
     def justPath = parts[0]
     def query = [:]
     if (parts.length > 1) {
-        parts[1].split('&').each { kv ->
-            def eq = kv.indexOf('=')
-            if (eq > 0) query[kv.substring(0, eq)] = kv.substring(eq + 1)
-        }
+        (parts[1].split('&')).each(((this.&_bat529Cb_dbfd46be_29).curry([query] as Object[])))
     }
     try {
         hubInternalGet(justPath, query)
@@ -118,7 +115,7 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
     if (extras) body.putAll(extras)
     // A navigation submit (an _action_* marker) is one the UI validates first: refuse it where the
     // cloner's own page would, with the values this POST is about to send overlaid on its current ones.
-    if (extras?.keySet()?.any { it.toString().startsWith("_action_") }) {
+    if ((extras?.keySet())?.any((this.&_bat529Cb_dbfd46be_15))) {
         def navCfg = null
         try { navCfg = _rmFetchConfigJson(clonerAppId, currentPage) } catch (Exception readExc) {
             // An unreadable page cannot be checked; the cloner's own flow verifies the transition.
@@ -126,16 +123,11 @@ private Map _appClonerSubmitForm(Integer clonerAppId, String currentPage, String
         }
         if (navCfg?.configPage instanceof Map) {
             def navValues = (navCfg.settings instanceof Map) ? new LinkedHashMap(navCfg.settings as Map) : [:]
-            extras.each { k, v ->
-                def m = (k.toString() =~ /^settings\[(.+)\]$/)
-                if (m.find()) navValues.put(m[0][1], v)
-            }
+            (extras).each(((this.&_bat529Cb_dbfd46be_30).curry([navValues] as Object[])))
             def navSchema = _rmCollectInputSchema(navCfg.configPage as Map)
             _requireUiNavigationValid(clonerAppId, "leaving cloner page '${currentPage}'".toString(), navSchema, navValues)
             // The page submits an unset input's defaultValue with the navigation; send what the check accepted.
-            def defaults = navSchema.findAll { k, meta ->
-                meta?.disabled != true && meta?.type != "button" && meta?.defaultValue != null && _uiValueIsEmpty(navValues.get(k), meta as Map)
-            }.collectEntries { k, meta -> [(k): meta.defaultValue] }
+            def defaults = ((navSchema).findAll(((this.&_bat529Cb_dbfd46be_33).curry([navValues] as Object[])))).collectEntries((this.&_bat529Cb_dbfd46be_35))
             if (defaults) {
                 def defaultBody = _rmBuildSettingsBody(clonerAppId, defaults, navSchema)
                 defaultBody.remove("id")
@@ -264,7 +256,7 @@ private Map _appClonerSnapshotChildren(Integer parentAppId) {
         if (!(cfg.childApps instanceof List)) {
             throw new IllegalStateException("missing childApps list")
         }
-        return [ids: cfg.childApps.collect { it?.id?.toString() }.findAll { it }]
+        return [ids: ((cfg.childApps).collect((this.&_bat529Cb_dbfd46be_5))).findAll((this.&_bat529Cb_dbfd46be_11))]
     } catch (Exception e) {
         return [success: false, isError: true,
                 error: "Cannot read the child-app snapshot for parent ${parentAppId}: ${e.message}".toString(),
@@ -281,14 +273,14 @@ private Integer _appClonerDiscoverNewChild(Integer parentAppId, Set<String> preC
         mcpLog("warn", "rm-native", "appCloner: parent ${parentAppId} fetch after commit failed: ${e.message}")
         return null
     }
-    def afterIds = ((afterCfg?.childApps ?: []) as List).collect { it?.id?.toString() }.findAll { it }
-    def added = afterIds.findAll { !preCloneIds.contains(it) }
+    def afterIds = ((((afterCfg?.childApps ?: []) as List)).collect((this.&_bat529Cb_dbfd46be_17))).findAll((this.&_bat529Cb_dbfd46be_22))
+    def added = (afterIds).findAll(((this.&_bat529Cb_dbfd46be_8).curry([preCloneIds] as Object[])))
     if (added.isEmpty()) return null
     if (added.size() == 1) return added[0] as Integer
     // Concurrent creations can appear in the same diff. Only an unambiguous
     // requested name identifies our result; a prefix or largest ID is a guess.
-    def candidates = (afterCfg.childApps as List).findAll { added.contains(it?.id?.toString()) }
-    def hintMatches = hint ? candidates.findAll { (it.label?.toString() ?: "") == hint } : []
+    def candidates = ((afterCfg.childApps as List)).findAll(((this.&_bat529Cb_dbfd46be_18).curry([added] as Object[])))
+    def hintMatches = hint ? (candidates).findAll(((this.&_bat529Cb_dbfd46be_12).curry([hint] as Object[]))): []
     if (hintMatches.size() == 1) return hintMatches[0].id as Integer
     mcpLog("warn", "rm-native", "appCloner: ambiguous new children ${added} for '${hint ?: sourceLabel}'; no app selected")
     return null
@@ -719,10 +711,7 @@ private Map _appClonerStagePlan(Integer newAppId) {
             targets << tid
             try {
                 def cfg = _rmFetchConfigJson(tid)
-                ((cfg?.childApps ?: []) as List).each { c ->
-                    def cid = c?.id?.toString()
-                    if (cid?.isInteger()) queue << cid.toInteger()
-                }
+                (((cfg?.childApps ?: []) as List)).each(((this.&_bat529Cb_dbfd46be_32).curry([queue] as Object[])))
             } catch (Exception childErr) {
                 failures << [appId: tid, kind: "childEnumeration", error: "child enumeration failed for app ${tid}: ${childErr.message} -- its DESCENDANTS (if any) were not discovered and were NOT disabled; app ${tid} itself is still attempted below"]
             }
@@ -737,7 +726,7 @@ private Map _appClonerDisableTargets(List targets, Long reqT0, List staged, List
     List stageRemaining = []
     for (int i = 0; i < targets.size(); i++) {
         if (i > 0 && _timeBudgetExceeded(reqT0)) {
-            stageRemaining = targets.subList(i, targets.size()).collect { it }
+            stageRemaining = (targets.subList(i, targets.size())).collect((this.&_bat529Cb_dbfd46be_10))
             break
         }
         def tid = targets[i]
@@ -763,7 +752,7 @@ private void _appClonerFinishStaging(Map result, Integer newAppId, Map outcome) 
         result.partial = true
         result.success = false
         result.isError = true
-        def newAppItselfFailed = failures.any { it.kind == "disable" && it.appId == newAppId }
+        def newAppItselfFailed = (failures).any(((this.&_bat529Cb_dbfd46be_14).curry([newAppId] as Object[])))
         def remainderText = stageRemaining ? "Response budget ran out before ${stageRemaining.size()} app(s) were disabled (${stageRemaining.join(', ')}). " : ""
         result.error = "stageDisabled did NOT fully land: ${failures.size()} failure(s)${stageRemaining ? " + ${stageRemaining.size()} not yet attempted" : ""} -- see stageFailures/stageRemaining. ${newAppItselfFailed ? "The NEW APP ITSELF (${newAppId}) is still ENABLED and live. " : ""}${remainderText}The clone/import DID commit (newAppId=${newAppId}) -- do NOT re-issue this call (that would create a duplicate app); disable the listed apps via hub_set_app_disabled(appId=<id>, disabled=true) instead."
         result.note = "${result.note} STAGING ${stageRemaining ? 'INCOMPLETE' : 'FAILED'} -- see error/stageFailures."
@@ -874,8 +863,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
         return [fallback: "the backup's App Cloner export could not be parsed"]
     }
     def gone = [:]
-    def deadDevices = ((parsed?.deviceReplacements instanceof Map) ? (parsed.deviceReplacements as Map).keySet() : [])
-        .collect { it.toString() }.findAll { _rmDeviceGone(it, gone) }
+    def deadDevices = ((((parsed?.deviceReplacements instanceof Map) ? (parsed.deviceReplacements as Map).keySet() : [])).collect((this.&_bat529Cb_dbfd46be_25))).findAll(((this.&_bat529Cb_dbfd46be_31).curry([gone] as Object[])))
     if (deadDevices) {
         mcpLog("info", "rm-native", "Restore of app ${savedId}: device(s) ${deadDevices} no longer exist, so the App Cloner import is skipped for the settings replay")
         return [fallback: "device(s) ${deadDevices.join(', ')} named by the App Cloner export no longer exist".toString()]
@@ -884,7 +872,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     if (hint == null) {
         try {
             def kids = _appClonerSnapshotChildren(_discoverParentAppId(snapshot?.appType ?: "rule_machine"))
-            hint = (kids?.ids ?: []).collect { it.toString() }.find { it.isInteger() }?.toInteger()
+            hint = (((kids?.ids ?: [])).collect((this.&_bat529Cb_dbfd46be_4))).find((this.&_bat529Cb_dbfd46be_16))?.toInteger()
         } catch (Exception e) {
             mcpLog("warn", "rm-native", "Restore of app ${savedId}: finding a Rule Machine rule to seed the import failed (${e.message})")
             hint = null
@@ -972,12 +960,7 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
     def reenableFailed = []
     if (liveDisabled) out.leftDisabled = true
     if (snapshot?.configJson?.app?.disabled != true && !liveDisabled) {
-        def failed = (imp.stagedDisabled ?: [newId]).findAll { id ->
-            try { toolSetAppDisabled([appId: id, disabled: false])?.success != true } catch (Exception enableExc) {
-                mcpLog("warn", "rm-native", "Restore of app ${savedId}: re-enabling app ${id} threw (${enableExc.message})")
-                true
-            }
-        }
+        def failed = ((imp.stagedDisabled ?: [newId])).findAll(((this.&_bat529Cb_dbfd46be_38).curry([savedId] as Object[])))
         if (failed) {
             reenableFailed = failed
             out.success = false
@@ -998,12 +981,12 @@ private Map _rmRestoreViaNativeImport(Map snapshot, Integer savedId, boolean exi
 // broken); otherwise why not. Unreadable counts as a mismatch, since the old rule goes next.
 String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
     def snap = [:]
-    (snapshot?.statusJson?.appState ?: []).each { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) }
+    ((snapshot?.statusJson?.appState ?: [])).each(((this.&_bat529Cb_dbfd46be_24).curry([snap] as Object[])))
     def copy = _rmReadRuleState(copyId)
     if (!copy) return "app ${copyId}'s state could not be read".toString()
     if (copy.broken == true) return "app ${copyId} reads as broken".toString()
-    def keys = { m -> (m instanceof Map) ? (m as Map).keySet().collect { it.toString() }.sort() : [] }
-    def list = { l -> (l instanceof List) ? (l as List).collect { it.toString() } : [] }
+    def keys = { m -> (m instanceof Map) ? ((m as Map).keySet()).collect((this.&_bat529Cb_dbfd46be_7)).sort() : [] }
+    def list = { l -> (l instanceof List) ? ((l as List)).collect((this.&_bat529Cb_dbfd46be_3)): [] }
     def problems = []
     if (keys(copy.capabstrue) != keys(snap.capabstrue)) problems << "triggers ${keys(copy.capabstrue)} vs the backup's ${keys(snap.capabstrue)}".toString()
     if (list(copy.actionList) != list(snap.actionList)) problems << "actions ${list(copy.actionList)} vs the backup's ${list(snap.actionList)}".toString()
@@ -1119,16 +1102,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     // declared it. Page-derived entries take precedence (they include
     // `required` and other UI-only metadata) so this is additive only.
     def savedSchema = _rmCollectInputSchema(snapshot?.configJson?.configPage) ?: [:]
-    snapshot?.statusJson?.appSettings?.each { s ->
-        def n = s?.name?.toString()
-        if (n && !savedSchema.containsKey(n)) {
-            savedSchema.put(n, [
-                name: n,
-                type: s?.type?.toString(),
-                multiple: s?.multiple == true
-            ])
-        }
-    }
+    (snapshot?.statusJson?.appSettings)?.each(((this.&_bat529Cb_dbfd46be_37).curry([savedSchema] as Object[])))
     // Two steps that fail differently: a rejected replay leaves the rule as it was (nothing is
     // committed on a 4xx/5xx), while a failed updateRule click after a committed replay leaves the
     // restored settings in place with subscriptions not yet rebuilt. Name the step, and log it --
@@ -1138,44 +1112,21 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     // those through the update endpoint is at best a no-op and at worst a press. The replay of one
     // such snapshot answered 500 on a live 2.5.1.177 hub; the same shapes replay cleanly without
     // the button rows. Replay only value-bearing inputs.
-    def replaySettings = savedSettings.findAll { k, v -> savedSchema.get(k.toString())?.type != "button" }
-    def skippedButtons = (savedSettings.keySet() - replaySettings.keySet()).collect { it.toString() }.sort()
+    def replaySettings = (savedSettings).findAll(((this.&_bat529Cb_dbfd46be_21).curry([savedSchema] as Object[])))
+    def skippedButtons = ((savedSettings.keySet() - replaySettings.keySet())).collect((this.&_bat529Cb_dbfd46be_20)).sort()
     // A device picker is snapshotted as configure/json renders it, an {id: label} map.
     // statusJson's deviceIdsForDeviceList (the id list the hub stores for the picker) is used when
     // the snapshot carries it; otherwise the map's keys are the id list.
     // An EMPTY id list is not authoritative (every sibling reader falls back on empty or absent):
     // trusting it would post an empty picker and report the key applied.
     def liveDeviceIds = [:]
-    snapshot?.statusJson?.appSettings?.each { st ->
-        def n = st?.name?.toString()
-        if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds.put(n, st.deviceIdsForDeviceList)
-    }
+    (snapshot?.statusJson?.appSettings)?.each(((this.&_bat529Cb_dbfd46be_34).curry([liveDeviceIds] as Object[])))
     def skippedMaps = []
     // A device deleted since the backup must not go back into a picker: RM's pages then dereference
     // a null device and stop rendering (seen live on fw 2.5.2.129).
     def deviceGone = [:]
     def skippedDevices = []
-    replaySettings = replaySettings.collectEntries { k, v ->
-        String key = k.toString()
-        boolean isPicker = _isDevicePickerType(savedSchema.get(key)?.type)
-        if (!isPicker) {
-            // A Map that is NOT a device picker cannot be replayed through the settings endpoint as
-            // its keys; rewriting it silently would be a value change reported as applied.
-            if (v instanceof Map) { skippedMaps << key; return [:] }
-            return [(key): v]
-        }
-        def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds.get(key) : _devicePickerIds(v)
-        if (ids instanceof List) {
-            ids = ids.collect { it?.toString() }
-            def gone = ids.findAll { _rmDeviceGone(it, deviceGone) }
-            if (gone) {
-                skippedDevices << [key: key, ids: gone]
-                ids = ids - gone
-                if (!ids) return [:]
-            }
-        }
-        return [(key): ids]
-    }
+    replaySettings = (replaySettings).collectEntries(((this.&_bat529Cb_dbfd46be_40).curry([deviceGone, liveDeviceIds, savedSchema, skippedDevices, skippedMaps] as Object[])))
     boolean isRm = savedAppType == "rule_machine"
     def settingsCleared = []
     def clearMiss = null
@@ -1230,9 +1181,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         restoredVia: "settingsReplay",
         backupFile: fileName,
         settingsApplied: replaySettings.keySet().toList(),
-        settingsSkipped: skippedButtons.collect { key -> [key: key, reason: "button input excluded from replay"] }
-            + skippedMaps.collect { key -> [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] }
-            + skippedDevices.collect { sd -> [key: sd.key, reason: "device(s) ${sd.ids.join(', ')} no longer exist on the hub; left out of the replay".toString()] },
+        settingsSkipped: (skippedButtons).collect((this.&_bat529Cb_dbfd46be_23))+ (skippedMaps).collect((this.&_bat529Cb_dbfd46be_28))+ (skippedDevices).collect((this.&_bat529Cb_dbfd46be_26)),
         note: exists ? "Settings restored in place." : "Rule was deleted; recreated with new id ${ruleId} and replayed settings."
     ]
     if (settingsCleared) {
@@ -1255,7 +1204,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     }
     if (skippedDevices) {
         out.partial = true
-        out.note = "${out.note} Device(s) deleted since the backup were left out: ${skippedDevices.collect { "${it.key} (${it.ids.join(', ')})" }.join(', ')}. Pick replacements with hub_set_rule if the rule needs them.".toString()
+        out.note = "${out.note} Device(s) deleted since the backup were left out: ${(skippedDevices).collect((this.&_bat529Cb_dbfd46be_13)).join(', ')}. Pick replacements with hub_set_rule if the rule needs them.".toString()
     }
     if (skippedMaps) {
         out.partial = true
@@ -1282,7 +1231,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     if (structure) out.putAll(structure)
     if (out.leftoverConditionIds && structure?.removedConditionIds) {
         def gone = (structure.removedConditionIds as List)*.toString()
-        out.leftoverConditionIds = (out.leftoverConditionIds as List).findAll { !gone.contains(it.toString()) }
+        out.leftoverConditionIds = ((out.leftoverConditionIds as List)).findAll(((this.&_bat529Cb_dbfd46be_19).curry([gone] as Object[])))
         if (!out.leftoverConditionIds) out.remove("leftoverConditionIds")
     }
     if (structure?.structureRestored == false) {
@@ -1296,7 +1245,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     if (reOutcome?.requiredExpressionRestored == false) {
         out.success = false
         out.partial = true
-        out.error = [out.error, "Settings were restored, but the rule's Required Expression does not match the backup: ${reOutcome.requiredExpressionError}"].findAll { it }.join(" ").toString()
+        out.error = ([out.error, "Settings were restored, but the rule's Required Expression does not match the backup: ${reOutcome.requiredExpressionError}"]).findAll((this.&_bat529Cb_dbfd46be_27)).join(" ").toString()
         out.note = "${out.note} The Required Expression was NOT restored -- inspect it with hub_get_app_config(appId=${ruleId}) and rebuild it with hub_set_rule(addRequiredExpression or replaceRequiredExpression).".toString()
     } else if (reOutcome?.requiredExpressionRemoved == true) {
         out.note = "${out.note} The backup had no Required Expression, so the rule's expression was removed.".toString()
@@ -1312,24 +1261,13 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
 List _rmClearSettingsNotInBackup(Integer appId, Map savedSettings) {
     def status = _rmFetchStatusJson(appId)
     if (!(status?.appSettings instanceof List)) return []
-    def saved = savedSettings.keySet().collect { it.toString() } as Set
-    def extra = (status.appSettings as List).findAll { rec ->
-        def n = rec?.name?.toString()
-        // A device picker reports its devices in deviceIdsForDeviceList, with a null value.
-        boolean hasValue = (rec?.value != null && rec?.value != "") ||
-            (rec?.deviceIdsForDeviceList instanceof List && !(rec.deviceIdsForDeviceList as List).isEmpty())
-        n && !saved.contains(n) && rec?.type?.toString() != "button" && hasValue
-    }
+    def saved = (savedSettings.keySet()).collect((this.&_bat529Cb_dbfd46be_9))as Set
+    def extra = ((status.appSettings as List)).findAll(((this.&_bat529Cb_dbfd46be_39).curry([saved] as Object[])))
     if (!extra) return []
     def body = [id: appId.toString()]
-    extra.each { rec ->
-        def n = rec.name.toString()
-        body["settings[${n}]".toString()] = ""
-        if (rec.type) body["${n}.type".toString()] = rec.type.toString()
-        body["${n}.multiple".toString()] = (rec.multiple == true).toString()
-    }
+    (extra).each(((this.&_bat529Cb_dbfd46be_36).curry([body] as Object[])))
     _rmPostSettings(appId, body)
-    return extra.collect { it.name.toString() }.sort()
+    return (extra).collect((this.&_bat529Cb_dbfd46be_2)).sort()
 }
 
 // True only when the hub positively says the device is gone (404 or an empty object). An empty or
@@ -1586,4 +1524,184 @@ private Map _mrtrAppClonerStageSlice(Map cp, String operationLabel) {
     _appClonerFinishStaging(result, cp.newAppId as Integer, outcome)
     _appClonerCleanup(cp.clonerAppId as Integer)
     return result
+}
+
+
+def _bat529Cb_dbfd46be_1(def it) { it?.toString() 
+}
+
+def _bat529Cb_dbfd46be_2(def it) { it.name.toString() 
+}
+
+def _bat529Cb_dbfd46be_3(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_4(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_5(def it) { it?.id?.toString() 
+}
+
+def _bat529Cb_dbfd46be_6(def deviceGone, def it) { _rmDeviceGone(it, deviceGone) 
+}
+
+def _bat529Cb_dbfd46be_7(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_8(def preCloneIds, def it) { !preCloneIds.contains(it) 
+}
+
+def _bat529Cb_dbfd46be_9(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_10(def it) { it 
+}
+
+def _bat529Cb_dbfd46be_11(def it) { it 
+}
+
+def _bat529Cb_dbfd46be_12(def hint, def it) { (it.label?.toString() ?: "") == hint 
+}
+
+def _bat529Cb_dbfd46be_13(def it) { "${it.key} (${it.ids.join(', ')})" 
+}
+
+def _bat529Cb_dbfd46be_14(def newAppId, def it) { it.kind == "disable" && it.appId == newAppId 
+}
+
+def _bat529Cb_dbfd46be_15(def it) { it.toString().startsWith("_action_") 
+}
+
+def _bat529Cb_dbfd46be_16(def it) { it.isInteger() 
+}
+
+def _bat529Cb_dbfd46be_17(def it) { it?.id?.toString() 
+}
+
+def _bat529Cb_dbfd46be_18(def added, def it) { added.contains(it?.id?.toString()) 
+}
+
+def _bat529Cb_dbfd46be_19(def gone, def it) { !gone.contains(it.toString()) 
+}
+
+def _bat529Cb_dbfd46be_20(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_21(def savedSchema, def k, def v) { savedSchema.get(k.toString())?.type != "button" 
+}
+
+def _bat529Cb_dbfd46be_22(def it) { it 
+}
+
+def _bat529Cb_dbfd46be_23(def key) { [key: key, reason: "button input excluded from replay"] 
+}
+
+def _bat529Cb_dbfd46be_24(def snap, def it) { if (it instanceof Map && it.name != null) snap.put(it.name.toString(), it.value) 
+}
+
+def _bat529Cb_dbfd46be_25(def it) { it.toString() 
+}
+
+def _bat529Cb_dbfd46be_26(def sd) { [key: sd.key, reason: "device(s) ${sd.ids.join(', ')} no longer exist on the hub; left out of the replay".toString()] 
+}
+
+def _bat529Cb_dbfd46be_27(def it) { it 
+}
+
+def _bat529Cb_dbfd46be_28(def key) { [key: key, reason: "map value without a device-picker schema; not replayable through the settings endpoint"] 
+}
+
+def _bat529Cb_dbfd46be_29(def query, def kv) {
+            def eq = kv.indexOf('=')
+            if (eq > 0) query[kv.substring(0, eq)] = kv.substring(eq + 1)
+        
+}
+
+def _bat529Cb_dbfd46be_30(def navValues, def k, def v) {
+                def m = (k.toString() =~ /^settings\[(.+)\]$/)
+                if (m.find()) navValues.put(m[0][1], v)
+            
+}
+
+def _bat529Cb_dbfd46be_31(def gone, def it) { _rmDeviceGone(it, gone) 
+}
+
+def _bat529Cb_dbfd46be_32(def queue, def c) {
+                    def cid = c?.id?.toString()
+                    if (cid?.isInteger()) queue << cid.toInteger()
+                
+}
+
+def _bat529Cb_dbfd46be_33(def navValues, def k, def meta) {
+                meta?.disabled != true && meta?.type != "button" && meta?.defaultValue != null && _uiValueIsEmpty(navValues.get(k), meta as Map)
+            
+}
+
+def _bat529Cb_dbfd46be_34(def liveDeviceIds, def st) {
+        def n = st?.name?.toString()
+        if (n && st?.deviceIdsForDeviceList instanceof List && st.deviceIdsForDeviceList) liveDeviceIds.put(n, st.deviceIdsForDeviceList)
+    
+}
+
+def _bat529Cb_dbfd46be_35(def k, def meta) { [(k): meta.defaultValue] 
+}
+
+def _bat529Cb_dbfd46be_36(def body, def rec) {
+        def n = rec.name.toString()
+        body["settings[${n}]".toString()] = ""
+        if (rec.type) body["${n}.type".toString()] = rec.type.toString()
+        body["${n}.multiple".toString()] = (rec.multiple == true).toString()
+    
+}
+
+def _bat529Cb_dbfd46be_37(def savedSchema, def s) {
+        def n = s?.name?.toString()
+        if (n && !savedSchema.containsKey(n)) {
+            savedSchema.put(n, [
+                name: n,
+                type: s?.type?.toString(),
+                multiple: s?.multiple == true
+            ])
+        }
+    
+}
+
+def _bat529Cb_dbfd46be_38(def savedId, def id) {
+            try { toolSetAppDisabled([appId: id, disabled: false])?.success != true } catch (Exception enableExc) {
+                mcpLog("warn", "rm-native", "Restore of app ${savedId}: re-enabling app ${id} threw (${enableExc.message})")
+                true
+            }
+        
+}
+
+def _bat529Cb_dbfd46be_39(def saved, def rec) {
+        def n = rec?.name?.toString()
+        // A device picker reports its devices in deviceIdsForDeviceList, with a null value.
+        boolean hasValue = (rec?.value != null && rec?.value != "") ||
+            (rec?.deviceIdsForDeviceList instanceof List && !(rec.deviceIdsForDeviceList as List).isEmpty())
+        n && !saved.contains(n) && rec?.type?.toString() != "button" && hasValue
+    
+}
+
+def _bat529Cb_dbfd46be_40(def deviceGone, def liveDeviceIds, def savedSchema, def skippedDevices, def skippedMaps, def k, def v) {
+        String key = k.toString()
+        boolean isPicker = _isDevicePickerType(savedSchema.get(key)?.type)
+        if (!isPicker) {
+            // A Map that is NOT a device picker cannot be replayed through the settings endpoint as
+            // its keys; rewriting it silently would be a value change reported as applied.
+            if (v instanceof Map) { skippedMaps << key; return [:] }
+            return [(key): v]
+        }
+        def ids = liveDeviceIds.containsKey(key) ? liveDeviceIds.get(key) : _devicePickerIds(v)
+        if (ids instanceof List) {
+            ids = (ids).collect((this.&_bat529Cb_dbfd46be_1))
+            def gone = (ids).findAll(((this.&_bat529Cb_dbfd46be_6).curry([deviceGone] as Object[])))
+            if (gone) {
+                skippedDevices << [key: key, ids: gone]
+                ids = ids - gone
+                if (!ids) return [:]
+            }
+        }
+        return [(key): ids]
+    
 }

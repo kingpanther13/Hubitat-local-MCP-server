@@ -124,12 +124,7 @@ private Map _zigbeeDeviceActivity() {
         return (raw instanceof Map && raw.error) ? raw : [error: "/hub/zigbee/getDevicesJson returned an unexpected shape."]
     }
     long nowMs = now()
-    def devices = raw.devices.findAll { it instanceof Map }.collect { d ->
-        Long last = (d.lastMessage instanceof Number) ? (d.lastMessage as Long) : null
-        [id: d.id, name: d.name, zigbeeId: d.zigbeeId,
-         lastMessage: last != null ? formatTimestamp(last) : null,
-         minutesSinceLastMessage: last != null ? (long) ((nowMs - last) / 60000L) : null]
-    }.sort { it.minutesSinceLastMessage == null ? Long.MIN_VALUE : -(it.minutesSinceLastMessage as long) }
+    def devices = (((raw.devices).findAll((this.&_bat529Cb_7399a956_10))).collect(((this.&_bat529Cb_7399a956_40).curry([nowMs] as Object[])))).sort((this.&_bat529Cb_7399a956_42))
     return [devices: devices, count: devices.size(),
             note: "lastMessage is the last Zigbee radio message the hub received from the device; null means none since the hub last started."]
 }
@@ -403,8 +398,8 @@ def _nativeLogSnapshot(Map query, Map args) {
 
 private String _deviceReadAccessScope() {
     return groovy.json.JsonOutput.toJson([
-        selected: (settings.selectedDevices ?: []).collect { it.id.toString() }.sort(),
-        children: (getChildDevices() ?: []).collect { it.id.toString() }.sort(),
+        selected: ((settings.selectedDevices ?: [])).collect((this.&_bat529Cb_7399a956_20)).sort(),
+        children: ((getChildDevices() ?: [])).collect((this.&_bat529Cb_7399a956_16)).sort(),
         bypass: _bypassEnabled()
     ])
 }
@@ -429,19 +424,7 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
     Map job = null
     String fetchId
     synchronized (NATIVE_LOG_SNAPSHOTS) {
-        NATIVE_LOG_SNAPSHOTS.entrySet().findAll { entry ->
-            Map value = entry.value as Map
-            // Health permits serial 30s traceroute + 90s speedtest + inventory/ping work.
-            // Retention outlasts those HTTP deadlines; it is not a worker cancellation timer.
-            long pendingTtl = value.work?.tool == "hub_get_device_health" ? 240000L : 90000L
-            long ttl = value.pending == true ? pendingTtl : 30000L
-            // Readers protect normal TTL expiry. A leaked counter must not reserve
-            // one of the eight slots forever: recover after ten minutes in this
-            // phase. Worker completion resets at, preserving the full replay TTL;
-            // fetchId fencing prevents an expired worker publishing into a new slot.
-            long age = now() - (value.at as Long)
-            age >= 600000L || (age >= ttl && ((value.readers ?: 0) as Integer) == 0)
-        }.collect { it.key }.each { NATIVE_LOG_SNAPSHOTS.remove(it) }
+        (((NATIVE_LOG_SNAPSHOTS.entrySet()).findAll((this.&_bat529Cb_7399a956_46))).collect((this.&_bat529Cb_7399a956_47))).each((this.&_bat529Cb_7399a956_48))
         if (deviceRead != null) {
             def current = NATIVE_LOG_SNAPSHOTS[key]
             if (current instanceof Map && current.scope != deviceRead.scope) {
@@ -454,10 +437,8 @@ private Map _hubReadSnapshot(Map query, Map args, Map deviceRead) {
         // Returning a continuation reserves its snapshot through terminal replay.
         // Completed one-round reads can be evicted after every active caller observes them.
         if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() >= 8) {
-            def ready = NATIVE_LOG_SNAPSHOTS.findAll { k, v ->
-                v.pending != true && v.replayProtected != true && ((v.readers ?: 0) as Integer) == 0
-            }
-            if (ready) NATIVE_LOG_SNAPSHOTS.remove(ready.min { it.value.at }.key)
+            def ready = (NATIVE_LOG_SNAPSHOTS).findAll((this.&_bat529Cb_7399a956_32))
+            if (ready) NATIVE_LOG_SNAPSHOTS.remove((ready).min((this.&_bat529Cb_7399a956_1)).key)
             else throw new IllegalStateException("Background read capacity is full; retry after existing snapshots expire.")
         }
         if (!(NATIVE_LOG_SNAPSHOTS[key] instanceof Map) && NATIVE_LOG_SNAPSHOTS.size() < 8) {
@@ -842,14 +823,7 @@ def supplied = __bat529EachReceiver1Result
     // non-UTC timezones. Build reusable UTC-anchored parsers once per call, outside
     // the per-entry loop, to avoid constructing SimpleDateFormat on every iteration.
     def hubLogUtcTz = TimeZone.getTimeZone("UTC")
-    def hubLogSdfs = logTimeFmts
-        .findAll { !it.contains("Z") && !it.contains("'Z'") }
-        .collect { fmt ->
-            def sdf = new java.text.SimpleDateFormat(fmt)
-            sdf.setTimeZone(hubLogUtcTz)
-            sdf.setLenient(false)
-            sdf
-        }
+    def hubLogSdfs = ((logTimeFmts).findAll((this.&_bat529Cb_7399a956_25))).collect(((this.&_bat529Cb_7399a956_36).curry([hubLogUtcTz] as Object[])))
     // Formats with a real Z offset marker (no quotes) carry explicit TZ info and Date.parse
     // handles them correctly. Formats with a literal 'Z' in quotes are intentionally excluded
     // here: Date.parse treats 'Z' as a literal character match, not a TZ marker, so it
@@ -862,12 +836,7 @@ def __bat529EachReceiver2Result = []
 for (def it in __bat529EachReceiver2) {if (it.contains("Z") && !it.contains("'Z'") ) __bat529EachReceiver2Result.add(it)
 }
 def hubLogIsoFmts = __bat529EachReceiver2Result
-    def hubLogLocalSdfs = hubLogSdfs.collect { utcParser ->
-        def parser = new java.text.SimpleDateFormat(utcParser.toPattern())
-        parser.setTimeZone(location?.timeZone ?: TimeZone.getTimeZone("UTC"))
-        parser.setLenient(false)
-        return parser
-    }
+    def hubLogLocalSdfs = (hubLogSdfs).collect((this.&_bat529Cb_7399a956_35))
 
     // Counter for entries that passed through the time-window filter due to unparseable timestamps.
     // Populated only when since or until is active; surfaced in the response as timeFilterUnparseable.
@@ -903,9 +872,9 @@ def hubLogIsoFmts = __bat529EachReceiver2Result
         if (compiledPatterns) {
             def msg = entry.message ?: ""
             if (patternModeAll) {
-                if (!compiledPatterns.every { it.matcher(msg).find() }) { filterExcluded++; continue }
+                if (!(compiledPatterns).every(((this.&_bat529Cb_7399a956_14).curry([msg] as Object[])))) { filterExcluded++; continue }
             } else {
-                if (!compiledPatterns.any { it.matcher(msg).find() }) { filterExcluded++; continue }
+                if (!(compiledPatterns).any(((this.&_bat529Cb_7399a956_12).curry([msg] as Object[])))) { filterExcluded++; continue }
             }
         }
 
@@ -975,9 +944,9 @@ def hubLogIsoFmts = __bat529EachReceiver2Result
     // Per-entry truncation is independent of cursor pagination: cursor bounds the entry
     // count, the per-message take(200) bounds the message body so a single oversized
     // entry can't push the page past the cap on its own.
-    def estimatedJsonSize = paged.page.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
+    def estimatedJsonSize = (paged.page).sum(0, (this.&_bat529Cb_7399a956_27))
     if (estimatedJsonSize > hubResponseCapBytes() - 11072) {  // =120000; matches handleToolsCall responseSizeLimit
-        paged.page.each { it.message = it.message?.take(200) }
+        (paged.page).each((this.&_bat529Cb_7399a956_15))
         result.truncated = true
         result.note = "Log messages truncated to fit response size limit"
     }
@@ -1009,7 +978,7 @@ def hubLogIsoFmts = __bat529EachReceiver2Result
     // error. RM 5.1's own `periodic` page method logs an unguarded NPE on
     // params.n (against the rule app, not us) while RM renders the periodic
     // sub-page during a periodic-trigger build -- non-fatal; the trigger bakes.
-    def benignRmNoiseCount = paged.page.count { _isBenignRmInternalNoise(it.message) }
+    def benignRmNoiseCount = (paged.page).count((this.&_bat529Cb_7399a956_19))
     if (benignRmNoiseCount > 0) {
         result.benignRmNoiseCount = benignRmNoiseCount
         result.benignRmNoiseNote = "${benignRmNoiseCount} of these entr${benignRmNoiseCount == 1 ? 'y is' : 'ies are'} known-benign RM-internal noise (RM 5.1's own 'periodic' method logging an NPE on params.n while it renders the periodic sub-page during a periodic-trigger build). NON-FATAL, NOT an MCP-tool failure -- the trigger bakes correctly. Safe to ignore."
@@ -1049,20 +1018,7 @@ def _logsJsonUsesBackgroundFetch() { _mrtrReadContinuationActive() }
 
 private List _logsJsonTrimStats(statsList) {
     if (!(statsList instanceof List)) return []
-    return statsList.collect { stat ->
-        def trimmed = [
-            id: stat.id, name: stat.name, count: stat.count, pct: stat.pct, total: stat.total,
-            average: stat.average, stateSize: stat.stateSize, formattedPct: stat.formattedPct,
-            formattedPctTotal: stat.formattedPctTotal, hubActionCount: stat.hubActionCount,
-            pendingEventsCount: stat.pendingEventsCount, cloudCallCount: stat.cloudCallCount
-        ]
-        if (stat.customAttributes instanceof Map) {
-            trimmed.customAttributes = [eventsCount: stat.customAttributes.eventsCount,
-                                        statesCount: stat.customAttributes.statesCount]
-        }
-        if (stat.largeState) trimmed.largeState = true
-        return trimmed
-    }
+    return (statsList).collect((this.&_bat529Cb_7399a956_45))
 }
 
 // A present table that is not an array, or a table row that is not an object, is a changed
@@ -1071,7 +1027,7 @@ private List _logsJsonTable(Map data, String key) {
     def table = data[key]
     if (table == null) return []
     if (!(table instanceof List)) throw new IllegalStateException("Unexpected /logs/json response: '${key}' is not an array")
-    if (key != "hubCommands" && table.any { !(it instanceof Map) }) {
+    if (key != "hubCommands" && (table).any((this.&_bat529Cb_7399a956_3))) {
         throw new IllegalStateException("Unexpected /logs/json response: '${key}' contains a non-object entry")
     }
     return table
@@ -1096,12 +1052,8 @@ def _logsJsonFetchAndPublish(Long fetchId = null, boolean background = false) {
         totalAppsRuntime: data.totalAppsRuntime, appPct: data.appPct,
         deviceStats: _logsJsonTrimStats(_logsJsonTable(data, "deviceStats")),
         appStats: _logsJsonTrimStats(_logsJsonTable(data, "appStats")),
-        jobs: _logsJsonTable(data, "jobs").collect { job ->
-            [id: job.id, name: job.name, recurring: job.recurring, method: job.methodName, nextRun: job.nextRun]
-        },
-        runningJobs: _logsJsonTable(data, "runningJobs").collect { job ->
-            [id: job.id, name: job.name, method: job.methodName]
-        },
+        jobs: (_logsJsonTable(data, "jobs")).collect((this.&_bat529Cb_7399a956_33)),
+        runningJobs: (_logsJsonTable(data, "runningJobs")).collect((this.&_bat529Cb_7399a956_30)),
         hubCommands: _logsJsonTable(data, "hubCommands")
     ]
     synchronized (LOGS_JSON_SNAPSHOT) {
@@ -1272,11 +1224,11 @@ def toolGetPerformanceStats(args) {
         // Sort a copy: the cached lists are shared by every concurrent caller of the snapshot.
         def statsList = new ArrayList(cached)
         switch (sortBy) {
-            case "count": statsList = statsList.sort { -(it.count ?: 0) }; break
-            case "stateSize": statsList = statsList.sort { -(it.stateSize ?: 0) }; break
-            case "totalMs": statsList = statsList.sort { -(it.total ?: 0) }; break
-            case "name": statsList = statsList.sort { (it.name ?: "").toLowerCase() }; break
-            default: statsList = statsList.sort { -(it.pct ?: 0) }; break
+            case "count": statsList = (statsList).sort((this.&_bat529Cb_7399a956_5)); break
+            case "stateSize": statsList = (statsList).sort((this.&_bat529Cb_7399a956_8)); break
+            case "totalMs": statsList = (statsList).sort((this.&_bat529Cb_7399a956_4)); break
+            case "name": statsList = (statsList).sort((this.&_bat529Cb_7399a956_13)); break
+            default: statsList = (statsList).sort((this.&_bat529Cb_7399a956_2)); break
         }
         // Limit
         if (limit > 0 && statsList.size() > limit) {
@@ -1359,18 +1311,8 @@ private Map _cloudCallsSummary() {
 
 private Map _shapeCloudCalls(Map raw) {
     def hoursByApp = [:]
-    (raw.hours instanceof List ? raw.hours : []).each { h ->
-        if (!(h instanceof Map) || h.appId == null || h.hourStart == null) return
-        def key = h.appId.toString()
-        if (!hoursByApp.get(key)) hoursByApp.put(key, [])
-        hoursByApp.get(key) << [epoch: h.hourStart as Long, count: h.count]
-    }
-    def apps = (raw.apps instanceof List ? raw.apps : []).findAll { it instanceof Map }.collect { a ->
-        def series = (hoursByApp.get(a.id?.toString()) ?: []).sort { -(it.epoch as long) }
-                                                            .collect { [hourStart: formatTimestamp(it.epoch as Long), count: it.count] }
-        [id: a.id, name: a.name, installed: a.installed, total: a.total, currentHour: a.currentHour,
-         hourly: series.take(48)]
-    }.sort { -((it.total ?: 0) as long) }
+    ((raw.hours instanceof List ? raw.hours : [])).each(((this.&_bat529Cb_7399a956_38).curry([hoursByApp] as Object[])))
+    def apps = ((((raw.apps instanceof List ? raw.apps : [])).findAll((this.&_bat529Cb_7399a956_23))).collect(((this.&_bat529Cb_7399a956_41).curry([hoursByApp] as Object[])))).sort((this.&_bat529Cb_7399a956_43))
     return [apps: apps, timeZone: raw.timeZone,
             countingSince: raw.startedAt != null ? formatTimestamp(raw.startedAt as Long) : null,
             note: "Calls each app made to Hubitat cloud services. hourly lists the newest hours first (at most 48 per app)."]
@@ -1604,7 +1546,7 @@ def toolGetMemoryHistory(args) {
         if (latest.directJavaKB != null) {
             summary.directJavaKB = latest.directJavaKB
             // Track direct memory growth (potential NIO buffer leak indicator)
-            def directValues = allEntries.findAll { it.directJavaKB != null }.collect { it.directJavaKB }
+            def directValues = ((allEntries).findAll((this.&_bat529Cb_7399a956_11))).collect((this.&_bat529Cb_7399a956_26))
             if (directValues.size() >= 2) {
                 summary.directJavaMinKB = directValues.min()
                 summary.directJavaMaxKB = directValues.max()
@@ -1677,7 +1619,7 @@ def toolForceGarbageCollection(args) {
 
 private Map _deviceHealthInventory() {
     boolean bypass = _bypassEnabled()
-    def allowedIds = ((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it.id.toString() } as Set
+    def allowedIds = (((settings.selectedDevices ?: []) + (getChildDevices() ?: []))).collect((this.&_bat529Cb_7399a956_28))as Set
     if (!bypass && !allowedIds) {
         return [devices: [], message: "No devices selected for MCP access and no MCP-managed virtual devices"]
     }
@@ -1687,17 +1629,9 @@ private Map _deviceHealthInventory() {
     def records = _flattenHub2DeviceTree(parsed instanceof Map ? parsed.devices : null)
     if (!(records instanceof List)) throw new IllegalStateException("Native device tree is unavailable or malformed")
     def byId = [:]
-    records.each { record ->
-        String id = record.id.toString()
-        if (bypass || allowedIds.contains(id)) {
-            byId.put(id, [id: id, label: record.label, lastActivity: record.lastActivity,
-                metadataUnavailable: !record.containsKey('lastActivity')])
-        }
-    }
+    (records).each(((this.&_bat529Cb_7399a956_37).curry([allowedIds, byId, bypass] as Object[])))
     // A missing selected/owned device is an unknown result, not proof that it is healthy or absent.
-    allowedIds.each { id ->
-        if (!byId.containsKey(id)) byId.put(id, [id: id, metadataUnavailable: true])
-    }
+    (allowedIds).each(((this.&_bat529Cb_7399a956_29).curry([byId] as Object[])))
     return [devices: byId.values() as List]
 }
 
@@ -1810,65 +1744,10 @@ def toolDeviceHealthCheck(args) {
     def stale = []
     def unknown = []
 
-    devices.each { device ->
-        try {
-            def deviceLabel = device.label ?: device.name ?: "Device ${device.id}"
-            def entry = [
-                id: device.id.toString(),
-                name: deviceLabel
-            ]
-            if (device.metadataUnavailable == true) {
-                entry.lastActivity = "unavailable"
-                entry.hoursAgo = null
-                entry.metadataUnavailable = true
-                unknown << entry
-                return
-            }
-
-            def lastActivity = device.lastActivity != null ? _parseSinceArg(device.lastActivity) : null
-            if (device.lastActivity != null && lastActivity == null) {
-                mcpLog("error", "monitoring", "hub_get_device_health could not parse native lastActivity for device ${device.id}")
-                entry.lastActivity = "unavailable"
-                entry.hoursAgo = null
-                entry.metadataUnavailable = true
-                unknown << entry
-                return
-            }
-
-            if (lastActivity) {
-                try {
-                    entry.lastActivity = lastActivity.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
-                    def activityTime = lastActivity.getTime()
-                    // `as double`: Groovy decimal literals are BigDecimal, so 0/10.0
-                    // renders as "0E+1" for fresh devices -- coerce to a plain double.
-                    entry.hoursAgo = (Math.round((now() - activityTime) / 3600000.0 * 10) / 10.0) as double
-
-                    if (activityTime < staleThreshold) {
-                        stale << entry
-                    } else {
-                        healthy << entry
-                    }
-                } catch (Exception e) {
-                    entry.lastActivity = "error: ${e.message}"
-                    unknown << entry
-                }
-            } else {
-                entry.lastActivity = "never"
-                entry.hoursAgo = null
-                unknown << entry
-            }
-        } catch (Exception e) {
-            // Skip device entirely if we can't even get basic info. Log so the failure
-            // shows up in hub_get_logs MCP mode / hub_report_issue; surface errorClass on the
-            // entry so an LLM triaging the result can distinguish transient (NPE) from
-            // systemic (MissingMethodException) without re-running.
-            mcpLog("warn", "monitoring", "hub_get_device_health failed to inspect device ${device?.id}: ${e.class.simpleName}: ${e.message}")
-            unknown << [id: device.id?.toString() ?: "unknown", name: "Error: ${e.message}", lastActivity: "error", errorClass: e.class.simpleName]
-        }
-    }
+    (devices).each(((this.&_bat529Cb_7399a956_50).curry([healthy, stale, staleThreshold, unknown] as Object[])))
 
     // Sort stale by most-stale first
-    stale.sort { a, b -> (b.hoursAgo ?: 0) <=> (a.hoursAgo ?: 0) }
+    (stale).sort((this.&_bat529Cb_7399a956_21))
 
     // Only stale is paged; unknown/healthy stay in full so the summary call still resolves in one request.
     def paged = _paginateList(stale, cursor, 100, "hub_get_device_health")
@@ -1925,42 +1804,7 @@ def toolDeviceHealthCheck(args) {
 
 def runPingChecks(List rawHosts, Integer count) {
     def results = []
-    rawHosts.each { rawHost ->
-        if (rawHost == null || !(rawHost instanceof CharSequence)) {
-            results << [ipAddress: rawHost, reachable: false, error: "missing or non-string host"]
-            return
-        }
-        def host = rawHost.toString().trim()
-        // Range-validated IPv4 dotted-quad. Hostnames are not supported by NetworkUtils.ping.
-        if (!(host ==~ /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/)) {
-            results << [ipAddress: host, reachable: false, error: "not a dotted-quad IPv4 literal (hostnames not supported, pass an IP)"]
-            return
-        }
-        try {
-            def pd = hubitat.helper.NetworkUtils.ping(host, count)
-            // Explicit null guards (not ?:) so a real platform-reported 0 is preserved.
-            def transmitted = (pd?.packetsTransmitted == null ? count : pd.packetsTransmitted) as Integer
-            def received = (pd?.packetsReceived == null ? 0 : pd.packetsReceived) as Integer
-            results << [
-                ipAddress: host,
-                reachable: transmitted > 0 && received > 0,
-                packetsTransmitted: transmitted,
-                packetsReceived: received,
-                packetLoss: pd?.packetLoss,
-                rttAvg: pd?.rttAvg,
-                rttMin: pd?.rttMin,
-                rttMax: pd?.rttMax
-            ]
-        } catch (Exception e) {
-            def errorType
-            if (e instanceof java.net.UnknownHostException) errorType = "unknown_host"
-            else if (e instanceof java.net.SocketException) errorType = "socket"
-            else if (e instanceof SecurityException) errorType = "security"
-            else errorType = "other"
-            mcpLog("warn", "monitoring", "ping failed for ${host} (count=${count}, type=${errorType}): ${e.message}")
-            results << [ipAddress: host, reachable: false, errorType: errorType, error: e.message ?: e.toString()]
-        }
-    }
+    (rawHosts).each(((this.&_bat529Cb_7399a956_49).curry([count, results] as Object[])))
     return results
 }
 
@@ -2047,7 +1891,7 @@ def toolSetZwave(args) {
         }
         // Drop null params -- an absent value must not reach the hub as the string "null"
         // (e.g. region-less hub + region-omitting call).
-        def resp = _radioGet("/hub/zwaveDetails/update", params.findAll { k, v -> v != null })
+        def resp = _radioGet("/hub/zwaveDetails/update", (params).findAll((this.&_bat529Cb_7399a956_6)))
         mcpLog("info", "hub-admin", "Z-Wave region/long-range config updated via MCP")
         return [success: true, radio: "zwave", region: params.region, longRangeChannel: params.longRangeChannel,
                 message: "Z-Wave radio configuration updated.", response: resp]
@@ -2329,7 +2173,7 @@ def toolCallZwave(args) {
                     throw new IllegalArgumentException("security_keys.long_range must be an object: {S2_Authenticated, S2_AccessControl}.")
                 }
                 def lrKeys = args.security_keys.long_range ?: [:]
-                def mainKeys = args.security_keys.findAll { k, v -> k != "long_range" }
+                def mainKeys = (args.security_keys).findAll((this.&_bat529Cb_7399a956_18))
                 _zwValidateNetworkKeys(mainKeys, ["S0_Legacy", "S2_Unauthenticated", "S2_Authenticated", "S2_AccessControl"], "security_keys")
                 _zwValidateNetworkKeys(lrKeys, ["S2_Authenticated", "S2_AccessControl"], "security_keys.long_range")
                 def keyBody = [securityKeys: _zwNormalizeKeys(mainKeys), securityKeysLongRange: _zwNormalizeKeys(lrKeys)]
@@ -2395,7 +2239,7 @@ private Integer _zwIntArg(v, String name) {
 private Map _zwArgObject(v, String name, List known) {
     if (v == null) return [:]
     if (!(v instanceof Map)) throw new IllegalArgumentException("${name} must be an object with ${known.join(', ')}.")
-    def unknown = v.keySet().findAll { !(it in known) }
+    def unknown = (v.keySet()).findAll(((this.&_bat529Cb_7399a956_7).curry([known] as Object[])))
     if (unknown) throw new IllegalArgumentException("Unknown ${name} field(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
     return v
 }
@@ -2666,7 +2510,7 @@ def toolCallDestructiveOps(args) {
                 if (fromService && args.update_id == null) throw new IllegalArgumentException("device_firmware_batch_start_available requires update_id.")
                 if (!fromService && !args.file_name) throw new IllegalArgumentException("device_firmware_batch_start requires file_name (a firmware file from hub_get_radio_details(include_firmware=true)).")
                 def batchBody = [sourceNodeId: _zwNodeNumber(args.node_id.toString()),
-                                 nodeIds: batch.node_ids.collect { _zwNodeNumber(it.toString()) },
+                                 nodeIds: (batch.node_ids).collect((this.&_bat529Cb_7399a956_17)),
                                  inactivityTimeoutSeconds: (batch.inactivity_timeout_seconds != null ? _zwIntArg(batch.inactivity_timeout_seconds, "batch.inactivity_timeout_seconds") : 600)]
                 String batchPath
                 if (fromService) {
@@ -2808,14 +2652,7 @@ private Map _captureEntriesLocked(Map store) {
         if (state.capturedDeviceStates instanceof Map) legacy.putAll(state.capturedDeviceStates)
         if (atomicState.capturedDeviceStates instanceof Map) legacy.putAll(atomicState.capturedDeviceStates)
         Map entries = [:]
-        legacy.each { id, raw ->
-            def devices = raw instanceof Map && raw.containsKey("devices") ? raw.devices : raw
-            if (!(devices instanceof Map) && !(devices instanceof List)) {
-                throw new IllegalStateException("Legacy capture has an invalid device payload")
-            }
-            entries.put(id.toString(), [text: groovy.json.JsonOutput.toJson(devices),
-                timestamp: raw instanceof Map ? raw.timestamp : null, deviceCount: devices.size()])
-        }
+        (legacy).each(((this.&_bat529Cb_7399a956_44).curry([entries] as Object[])))
         store.entries = entries
         store.loaded = true
     }
@@ -2845,7 +2682,7 @@ def saveCapturedState(stateId, capturedStates) {
         List deleted = []
         int max = getMaxCapturedStates()
         while (entries.size() > max) {
-            def oldest = entries.findAll { key, row -> key != id }.min { it.value.timestamp ?: 0 }
+            def oldest = ((entries).findAll(((this.&_bat529Cb_7399a956_9).curry([id] as Object[])))).min((this.&_bat529Cb_7399a956_24))
             deleted << oldest.key
             entries.remove(oldest.key)
         }
@@ -2864,12 +2701,7 @@ def getCapturedState(stateId) {
 def listCapturedStates() {
     Map store = _captureStore()
     synchronized (store) {
-        return _captureEntriesLocked(store).entrySet().toList().sort { a, b ->
-            (b.value.timestamp ?: 0) <=> (a.value.timestamp ?: 0)
-        }.collect { item ->
-            [stateId: item.key, deviceCount: item.value.deviceCount, timestamp: item.value.timestamp,
-             capturedAt: formatTimestamp(item.value.timestamp)]
-        }
+        return ((_captureEntriesLocked(store).entrySet().toList()).sort((this.&_bat529Cb_7399a956_31))).collect((this.&_bat529Cb_7399a956_39))
     }
 }
 
@@ -2955,4 +2787,320 @@ def _toolDisplayMeta_partDiagnostics() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return _bat529EmbeddedCatalogRead(['["m",[["hub_get_logs",["m",[["title","Get Logs"],["summary","Hub log history, structured MCP history, or MCP logging status."]]]],["hub_get_performance_stats",["m",[["title","Get Performance Stats"],["summary","Device and app performance statistics, optionally with per-app cloud-call counts."]]]],["hub_get_jobs",["m",[["title","Get Scheduled Jobs"],["summary","Scheduled jobs, running jobs, and hub actions."]]]],["hub_get_metrics",["m",[["title","Get Hub Metrics"],["summary","Hub metrics with CSV trend history."]]]],["hub_get_memory_history",["m",[["title","Get Memory History"],["summary","Free-memory and CPU-load history with summary stats."]]]],["hub_call_gc",["m",[["title","Force Garbage Collection"],["summary","Force JVM garbage collection and report freed memory."]]]],["hub_get_device_health",["m",[["title","Get Device Health"],["summary","Find stale devices, ICMP-ping LAN hosts, run traceroute/WAN speedtest, and optionally blink the hub identify LED."]]]],["hub_get_radio_details",["m",[["title","Get Radio Details"],["summary","Radio details, topology, node state, status, channel scan, SmartStart, firmware, Zigbee activity, Z-Wave backup jobs."]]]],["hub_set_zwave",["m",[["title","Set Z-Wave Radio"],["summary","Enable/disable the Z-Wave radio, set region and long-range channel, or switch to or from Z-Wave JS."]]]],["hub_set_zigbee",["m",[["title","Set Zigbee Radio"],["summary","Enable/disable the radio, set channel/power, radio settings (rebuild-on-reboot, ping-inactive), or per-device keep-alive ping."]]]],["hub_call_zwave",["m",[["title","Z-Wave Operations"],["summary","Z-Wave repair, inclusion, exclusion, node maintenance, link tests, CC commands, and Z-Wave network backup."]]]],["hub_call_zigbee",["m",[["title","Zigbee Operations"],["summary","Reboot the Zigbee radio, rebuild the network, or trigger a channel scan."]]]],["hub_call_matter",["m",[["title","Matter Operations"],["summary","Enable/disable Matter, pair or cancel pairing a device by setup code, or open a pairing window."]]]],["hub_call_destructive_ops",["m",[["title","Destructive Hub Ops"],["summary","Reset a radio, flash firmware, disconnect WiFi/Ethernet, or disable the cloud controller (irreversible)."]]]],["hub_list_captured_states",["m",[["title","List Captured States"],["summary","List saved device state snapshots."]]]],["hub_delete_captured_state",["m",[["title","Delete Captured State"],["summary","Delete one or all captured device state snapshots."]]]]]]'])
+}
+
+
+def _bat529Cb_7399a956_1(def it) { it.value.at 
+}
+
+def _bat529Cb_7399a956_2(def it) { -(it.pct ?: 0) 
+}
+
+def _bat529Cb_7399a956_3(def it) { !(it instanceof Map) 
+}
+
+def _bat529Cb_7399a956_4(def it) { -(it.total ?: 0) 
+}
+
+def _bat529Cb_7399a956_5(def it) { -(it.count ?: 0) 
+}
+
+def _bat529Cb_7399a956_6(def k, def v) { v != null 
+}
+
+def _bat529Cb_7399a956_7(def known, def it) { !(it in known) 
+}
+
+def _bat529Cb_7399a956_8(def it) { -(it.stateSize ?: 0) 
+}
+
+def _bat529Cb_7399a956_9(def id, def key, def row) { key != id 
+}
+
+def _bat529Cb_7399a956_10(def it) { it instanceof Map 
+}
+
+def _bat529Cb_7399a956_11(def it) { it.directJavaKB != null 
+}
+
+def _bat529Cb_7399a956_12(def msg, def it) { it.matcher(msg).find() 
+}
+
+def _bat529Cb_7399a956_13(def it) { (it.name ?: "").toLowerCase() 
+}
+
+def _bat529Cb_7399a956_14(def msg, def it) { it.matcher(msg).find() 
+}
+
+def _bat529Cb_7399a956_15(def it) { it.message = it.message?.take(200) 
+}
+
+def _bat529Cb_7399a956_16(def it) { it.id.toString() 
+}
+
+def _bat529Cb_7399a956_17(def it) { _zwNodeNumber(it.toString()) 
+}
+
+def _bat529Cb_7399a956_18(def k, def v) { k != "long_range" 
+}
+
+def _bat529Cb_7399a956_19(def it) { _isBenignRmInternalNoise(it.message) 
+}
+
+def _bat529Cb_7399a956_20(def it) { it.id.toString() 
+}
+
+def _bat529Cb_7399a956_21(def a, def b) { (b.hoursAgo ?: 0) <=> (a.hoursAgo ?: 0) 
+}
+
+def _bat529Cb_7399a956_22(def it) { -(it.epoch as long) 
+}
+
+def _bat529Cb_7399a956_23(def it) { it instanceof Map 
+}
+
+def _bat529Cb_7399a956_24(def it) { it.value.timestamp ?: 0 
+}
+
+def _bat529Cb_7399a956_25(def it) { !it.contains("Z") && !it.contains("'Z'") 
+}
+
+def _bat529Cb_7399a956_26(def it) { it.directJavaKB 
+}
+
+def _bat529Cb_7399a956_27(def it) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 
+}
+
+def _bat529Cb_7399a956_28(def it) { it.id.toString() 
+}
+
+def _bat529Cb_7399a956_29(def byId, def id) {
+        if (!byId.containsKey(id)) byId.put(id, [id: id, metadataUnavailable: true])
+    
+}
+
+def _bat529Cb_7399a956_30(def job) {
+            [id: job.id, name: job.name, method: job.methodName]
+        
+}
+
+def _bat529Cb_7399a956_31(def a, def b) {
+            (b.value.timestamp ?: 0) <=> (a.value.timestamp ?: 0)
+        
+}
+
+def _bat529Cb_7399a956_32(def k, def v) {
+                v.pending != true && v.replayProtected != true && ((v.readers ?: 0) as Integer) == 0
+            
+}
+
+def _bat529Cb_7399a956_33(def job) {
+            [id: job.id, name: job.name, recurring: job.recurring, method: job.methodName, nextRun: job.nextRun]
+        
+}
+
+def _bat529Cb_7399a956_34(def it) { [hourStart: formatTimestamp(it.epoch as Long), count: it.count] 
+}
+
+def _bat529Cb_7399a956_35(def utcParser) {
+        def parser = new java.text.SimpleDateFormat(utcParser.toPattern())
+        parser.setTimeZone(location?.timeZone ?: TimeZone.getTimeZone("UTC"))
+        parser.setLenient(false)
+        return parser
+    
+}
+
+def _bat529Cb_7399a956_36(def hubLogUtcTz, def fmt) {
+            def sdf = new java.text.SimpleDateFormat(fmt)
+            sdf.setTimeZone(hubLogUtcTz)
+            sdf.setLenient(false)
+            sdf
+        
+}
+
+def _bat529Cb_7399a956_37(def allowedIds, def byId, def bypass, def record) {
+        String id = record.id.toString()
+        if (bypass || allowedIds.contains(id)) {
+            byId.put(id, [id: id, label: record.label, lastActivity: record.lastActivity,
+                metadataUnavailable: !record.containsKey('lastActivity')])
+        }
+    
+}
+
+def _bat529Cb_7399a956_38(def hoursByApp, def h) {
+        if (!(h instanceof Map) || h.appId == null || h.hourStart == null) return
+        def key = h.appId.toString()
+        if (!hoursByApp.get(key)) hoursByApp.put(key, [])
+        hoursByApp.get(key) << [epoch: h.hourStart as Long, count: h.count]
+    
+}
+
+def _bat529Cb_7399a956_39(def item) {
+            [stateId: item.key, deviceCount: item.value.deviceCount, timestamp: item.value.timestamp,
+             capturedAt: formatTimestamp(item.value.timestamp)]
+        
+}
+
+def _bat529Cb_7399a956_40(def nowMs, def d) {
+        Long last = (d.lastMessage instanceof Number) ? (d.lastMessage as Long) : null
+        [id: d.id, name: d.name, zigbeeId: d.zigbeeId,
+         lastMessage: last != null ? formatTimestamp(last) : null,
+         minutesSinceLastMessage: last != null ? (long) ((nowMs - last) / 60000L) : null]
+    
+}
+
+def _bat529Cb_7399a956_41(def hoursByApp, def a) {
+        def series = (((hoursByApp.get(a.id?.toString()) ?: [])).sort((this.&_bat529Cb_7399a956_22))).collect((this.&_bat529Cb_7399a956_34))
+        [id: a.id, name: a.name, installed: a.installed, total: a.total, currentHour: a.currentHour,
+         hourly: series.take(48)]
+    
+}
+
+def _bat529Cb_7399a956_42(def it) { it.minutesSinceLastMessage == null ? Long.MIN_VALUE : -(it.minutesSinceLastMessage as long) 
+}
+
+def _bat529Cb_7399a956_43(def it) { -((it.total ?: 0) as long) 
+}
+
+def _bat529Cb_7399a956_44(def entries, def id, def raw) {
+            def devices = raw instanceof Map && raw.containsKey("devices") ? raw.devices : raw
+            if (!(devices instanceof Map) && !(devices instanceof List)) {
+                throw new IllegalStateException("Legacy capture has an invalid device payload")
+            }
+            entries.put(id.toString(), [text: groovy.json.JsonOutput.toJson(devices),
+                timestamp: raw instanceof Map ? raw.timestamp : null, deviceCount: devices.size()])
+        
+}
+
+def _bat529Cb_7399a956_45(def stat) {
+        def trimmed = [
+            id: stat.id, name: stat.name, count: stat.count, pct: stat.pct, total: stat.total,
+            average: stat.average, stateSize: stat.stateSize, formattedPct: stat.formattedPct,
+            formattedPctTotal: stat.formattedPctTotal, hubActionCount: stat.hubActionCount,
+            pendingEventsCount: stat.pendingEventsCount, cloudCallCount: stat.cloudCallCount
+        ]
+        if (stat.customAttributes instanceof Map) {
+            trimmed.customAttributes = [eventsCount: stat.customAttributes.eventsCount,
+                                        statesCount: stat.customAttributes.statesCount]
+        }
+        if (stat.largeState) trimmed.largeState = true
+        return trimmed
+    
+}
+
+def _bat529Cb_7399a956_46(def entry) {
+            Map value = entry.value as Map
+            // Health permits serial 30s traceroute + 90s speedtest + inventory/ping work.
+            // Retention outlasts those HTTP deadlines; it is not a worker cancellation timer.
+            long pendingTtl = value.work?.tool == "hub_get_device_health" ? 240000L : 90000L
+            long ttl = value.pending == true ? pendingTtl : 30000L
+            // Readers protect normal TTL expiry. A leaked counter must not reserve
+            // one of the eight slots forever: recover after ten minutes in this
+            // phase. Worker completion resets at, preserving the full replay TTL;
+            // fetchId fencing prevents an expired worker publishing into a new slot.
+            long age = now() - (value.at as Long)
+            age >= 600000L || (age >= ttl && ((value.readers ?: 0) as Integer) == 0)
+        
+}
+
+def _bat529Cb_7399a956_47(def it) { it.key 
+}
+
+def _bat529Cb_7399a956_48(def it) { NATIVE_LOG_SNAPSHOTS.remove(it) 
+}
+
+def _bat529Cb_7399a956_49(def count, def results, def rawHost) {
+        if (rawHost == null || !(rawHost instanceof CharSequence)) {
+            results << [ipAddress: rawHost, reachable: false, error: "missing or non-string host"]
+            return
+        }
+        def host = rawHost.toString().trim()
+        // Range-validated IPv4 dotted-quad. Hostnames are not supported by NetworkUtils.ping.
+        if (!(host ==~ /^(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)$/)) {
+            results << [ipAddress: host, reachable: false, error: "not a dotted-quad IPv4 literal (hostnames not supported, pass an IP)"]
+            return
+        }
+        try {
+            def pd = hubitat.helper.NetworkUtils.ping(host, count)
+            // Explicit null guards (not ?:) so a real platform-reported 0 is preserved.
+            def transmitted = (pd?.packetsTransmitted == null ? count : pd.packetsTransmitted) as Integer
+            def received = (pd?.packetsReceived == null ? 0 : pd.packetsReceived) as Integer
+            results << [
+                ipAddress: host,
+                reachable: transmitted > 0 && received > 0,
+                packetsTransmitted: transmitted,
+                packetsReceived: received,
+                packetLoss: pd?.packetLoss,
+                rttAvg: pd?.rttAvg,
+                rttMin: pd?.rttMin,
+                rttMax: pd?.rttMax
+            ]
+        } catch (Exception e) {
+            def errorType
+            if (e instanceof java.net.UnknownHostException) errorType = "unknown_host"
+            else if (e instanceof java.net.SocketException) errorType = "socket"
+            else if (e instanceof SecurityException) errorType = "security"
+            else errorType = "other"
+            mcpLog("warn", "monitoring", "ping failed for ${host} (count=${count}, type=${errorType}): ${e.message}")
+            results << [ipAddress: host, reachable: false, errorType: errorType, error: e.message ?: e.toString()]
+        }
+    
+}
+
+def _bat529Cb_7399a956_50(def healthy, def stale, def staleThreshold, def unknown, def device) {
+        try {
+            def deviceLabel = device.label ?: device.name ?: "Device ${device.id}"
+            def entry = [
+                id: device.id.toString(),
+                name: deviceLabel
+            ]
+            if (device.metadataUnavailable == true) {
+                entry.lastActivity = "unavailable"
+                entry.hoursAgo = null
+                entry.metadataUnavailable = true
+                unknown << entry
+                return
+            }
+
+            def lastActivity = device.lastActivity != null ? _parseSinceArg(device.lastActivity) : null
+            if (device.lastActivity != null && lastActivity == null) {
+                mcpLog("error", "monitoring", "hub_get_device_health could not parse native lastActivity for device ${device.id}")
+                entry.lastActivity = "unavailable"
+                entry.hoursAgo = null
+                entry.metadataUnavailable = true
+                unknown << entry
+                return
+            }
+
+            if (lastActivity) {
+                try {
+                    entry.lastActivity = lastActivity.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")
+                    def activityTime = lastActivity.getTime()
+                    // `as double`: Groovy decimal literals are BigDecimal, so 0/10.0
+                    // renders as "0E+1" for fresh devices -- coerce to a plain double.
+                    entry.hoursAgo = (Math.round((now() - activityTime) / 3600000.0 * 10) / 10.0) as double
+
+                    if (activityTime < staleThreshold) {
+                        stale << entry
+                    } else {
+                        healthy << entry
+                    }
+                } catch (Exception e) {
+                    entry.lastActivity = "error: ${e.message}"
+                    unknown << entry
+                }
+            } else {
+                entry.lastActivity = "never"
+                entry.hoursAgo = null
+                unknown << entry
+            }
+        } catch (Exception e) {
+            // Skip device entirely if we can't even get basic info. Log so the failure
+            // shows up in hub_get_logs MCP mode / hub_report_issue; surface errorClass on the
+            // entry so an LLM triaging the result can distinguish transient (NPE) from
+            // systemic (MissingMethodException) without re-running.
+            mcpLog("warn", "monitoring", "hub_get_device_health failed to inspect device ${device?.id}: ${e.class.simpleName}: ${e.message}")
+            unknown << [id: device.id?.toString() ?: "unknown", name: "Error: ${e.message}", lastActivity: "error", errorClass: e.class.simpleName]
+        }
+    
 }
