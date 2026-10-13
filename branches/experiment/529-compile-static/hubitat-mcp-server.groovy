@@ -14076,7 +14076,7 @@ java.util.Map _bat529Cb_15d0a4c9_214(def p) {
 @groovy.transform.CompileStatic
 def _bat529Cb_15d0a4c9_215(def args, def key) {
         def v = __bat529StaticBinary_GetAt_java_lang_Object(args, key)
-        (v instanceof Map || v instanceof List) ? "${key}(${v.size()})".toString() : key.toString()
+        (v instanceof Map || v instanceof List) ? "${key}(${__bat529StaticReceiverCall_java_lang_Object_0(v, 'size')})".toString() : key.toString()
 }
 def _bat529Cb_15d0a4c9_216(def errors, def name, def setting) {
             errors << [property: "preference.${name}", stage: "verify", status: "unavailable", error: "Update accepted but could not confirm the preference -- the read-back fetch failed."]
@@ -22397,7 +22397,7 @@ def _bat529Cb_dbfd46be_37(def savedSchema, def s) {
 }
 @groovy.transform.CompileStatic
 def _bat529Cb_dbfd46be_38(def savedId, def id) {
-            try { __bat529StaticCall_java_util_Map_1('toolSetAppDisabled', [appId: id, disabled: false])?.success != true } catch (Exception enableExc) {
+            try { __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticCall_java_util_Map_1('toolSetAppDisabled', [appId: id, disabled: false]), 'success') != true } catch (Exception enableExc) {
                 __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "rm-native", "Restore of app ${savedId}: re-enabling app ${id} threw (${enableExc.message})")
                 true
             }
@@ -40436,7 +40436,7 @@ private Map _rmForceDeleteApp(Integer appId) {
     return resp
 }
 @groovy.transform.CompileStatic
-java.lang.String currentVersion() {
+def currentVersion() {
     return "4.7.1"
 }
 def hubBpsGuideKey(String section, Long atMs = null) {
