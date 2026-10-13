@@ -460,6 +460,7 @@ private List _vrb2ActionTypes() {
             "exitAwayMode", "runRule", "wait", "cancelWait", "sample"]
 }
 
+@groovy.transform.CompileStatic
 private Map _vrb2NodeFromDialog(Map node, String typeKey) {
     // A 1.0 dialog node maps 1:1 onto a 2.0 node: `type` is the dialog's triggerType/actionType
     // and everything else becomes `config`. The builder's own dialog->config mapping drops
@@ -513,6 +514,7 @@ private List _vrb2EditorList(def raw, String typeKey, String label) {
     return out
 }
 
+@groovy.transform.CompileStatic
 private String _vrb2UniqueId(String base, Set used) {
     def candidate = base
     int n = 1
@@ -682,6 +684,7 @@ private Map _vrb2Decompose(Map graph) {
             structureIds: structureIds]
 }
 
+@groovy.transform.CompileStatic
 private List _vrb2ValidateChain(Map kinds, Map nextMap, String from, String port, String terminal, Set visited) {
     // Walk one linear action chain leaving `from` on `port`. When a branchMerge exists every
     // decision branch MUST reach it (an empty branch is the direct decision -> branchMerge edge
@@ -883,6 +886,7 @@ private String _vrb2Where(String kind) {
     return kind == "trigger" ? "Trigger node" : (kind == "action" ? "Action node" : "Condition")
 }
 
+@groovy.transform.CompileStatic
 private String _vrb2TypeKey(String where, String type) {
     return "${where}|${type}".toString()
 }
@@ -966,6 +970,7 @@ private Map _vrbClassicToGraph(Map classic, List warnings = null) {
     ])
 }
 
+@groovy.transform.CompileStatic
 private void _vrbValidateClassicShape(Map definition) {
     // A classic node-list carries ARRAYS of node objects. Anything else would either blow up as a
     // cast after a child already exists or be POSTed verbatim for the hub to choke on, so it is
@@ -987,6 +992,7 @@ private void _vrbValidateClassicShape(Map definition) {
     }
 }
 
+@groovy.transform.CompileStatic
 private String _vrbPreflightMessage(List validationErrors) {
     return "Definition failed pre-flight validation; nothing was created or saved. Problems: " + validationErrors.join(" ") +
            " Fix them and retry -- see hub_get_tool_guide(section='visual_rule_reference') for the graph schema, the editor form and the type catalogs."
@@ -1039,6 +1045,7 @@ private Map _vrbPreflightRefusal(Integer appId, List validationErrors, String ex
     return out
 }
 
+@groovy.transform.CompileStatic
 private Map _vrbFormatMismatchRefusal(Integer appId, String definitionFormat, String extraNote) {
     // appId == null: a CREATE on firmware whose builder can only make 1.0 children.
     // appId != null: an EDIT of a rule that is itself 1.0 (the hub may well run both builders).
@@ -1057,6 +1064,7 @@ private Map _vrbFormatMismatchRefusal(Integer appId, String definitionFormat, St
     return out
 }
 
+@groovy.transform.CompileStatic
 private String _vrbDetectDefinitionFormat(Map definition) {
     def looksGraph = definition.containsKey("nodes") || definition.containsKey("edges")
     def looksClassic = definition.containsKey("whenNodes") || definition.containsKey("thenNodes") || definition.containsKey("elseNodes")
@@ -1092,6 +1100,7 @@ private Map _vrbNormalizeDefinition(def rawDefinition) {
     return [map: map, format: _vrbDetectDefinitionFormat(map)]
 }
 
+@groovy.transform.CompileStatic
 private String _vrbBareName(Object raw, boolean paused) {
     // Remove the graph endpoint's runtime suffix without decoding raw name text.
     // Hubitat itself conflates an identical literal suffix with its pause marker.

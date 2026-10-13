@@ -465,6 +465,7 @@ def _bundleArtifactExists(String artifactUrl) {
 // Parse "#include namespace.Name" directives from Groovy source. Returns an ordered,
 // de-duplicated list of include tokens ("namespace.Name") in first-seen order so the
 // install order is deterministic across runs.
+@groovy.transform.CompileStatic
 def _parseIncludeDirectives(String source) {
     def tokens = []
     def seen = [] as Set

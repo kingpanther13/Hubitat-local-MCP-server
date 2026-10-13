@@ -7,7 +7,7 @@ on:
       mode:
         type: choice
         options: [discover, verify]
-        default: discover
+        default: verify
       publish:
         description: Publish verified isolated clone after all non-E2E workflows pass for this SHA
         type: boolean
@@ -29,7 +29,7 @@ jobs:
       - uses: gradle/actions/setup-gradle@v6.4.0
       - name: Discover conservative static candidates and compare bytecode and behavior
         env:
-          EXPERIMENT_MODE: ${{ inputs.mode || 'discover' }}
+          EXPERIMENT_MODE: ${{ inputs.mode || 'verify' }}
         run: ./gradlew -p experiments/compile-static measure -PexperimentMode="$EXPERIMENT_MODE" --console=plain --no-daemon
       - name: Build isolated HPM clone from release artifact
         run: |

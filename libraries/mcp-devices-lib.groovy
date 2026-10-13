@@ -741,6 +741,7 @@ def _contextResourceByteBudget() { 80000 }
 
 // The cost of `s` once embedded in the serialized envelope: its JSON-escaped length
 // minus the surrounding quotes JsonOutput adds.
+@groovy.transform.CompileStatic
 private int _escapedLen(String s) { s == null ? 0 : groovy.json.JsonOutput.toJson(s).length() - 2 }
 
 // resources/read has no continuation (it is not a tool, so no MRTR/background path exists) and
@@ -1113,6 +1114,7 @@ private Map _fetchAllHubDeviceRecords(String logCategory, String logPrefix) {
 
 // The capabilitiesNote for a partial scope='all' inventory: the counted note the inventory read
 // produced, else the no-capability-source wording (both response shapes carry the same text).
+@groovy.transform.CompileStatic
 private String _allHubCapabilitiesNote(Map inventory) {
     return inventory.partialNote ?: "No capability-bearing source was usable on this hub -- /device/listWithCapabilities/json was removed in platform 2.5.1.173 and later, and /hub2/vrb/devices either did not answer or carried no capabilities lists -- so the inventory came from /hub2/devicesList, which carries no capabilities. Capabilities are filled in for mcpAuthorized devices only; an unauthorized device shows an empty list because its capabilities cannot be read under the current device-access policy. capabilityFilter therefore matches authorized devices only."
 }
@@ -1286,6 +1288,7 @@ private boolean _requireDeviceToolAccess(deviceId) {
     return listed
 }
 
+@groovy.transform.CompileStatic
 private void _validateNativeDeviceId(deviceId) {
     if (deviceId == null || !(deviceId.toString() ==~ /[0-9]+/)) {
         throw new IllegalArgumentException('deviceId must contain only decimal digits from hub_list_devices')
@@ -1388,6 +1391,7 @@ private Map _mapBypassEventRow(evt) {
 // producedBy arrives as hub-rendered HTML: one <a> to /installedapp/configure/<id> or
 // /device/edit/<id>, or bare text such as "Unknown app". The ids are typed to match what
 // hub_list_device_events / hub_get_app_config accept (appId integer, deviceId string).
+@groovy.transform.CompileStatic
 private Map _parseEventProducer(html) {
     def s = html?.toString()?.trim()
     if (!s) return null
@@ -1586,6 +1590,7 @@ private boolean _devicePreferenceIsSecret(Map entry) {
     return entry?.type?.toString() == 'password' || _deviceConfigurationSecretKey(entry?.name)
 }
 
+@groovy.transform.CompileStatic
 private boolean _deviceConfigurationSecretKey(key) {
     String normalized = key?.toString()?.toLowerCase()?.replaceAll(/[^a-z0-9]/, '') ?: ''
     return normalized.contains('password') || normalized.contains('token') || normalized.contains('secret') ||
@@ -2132,6 +2137,7 @@ private Map _deviceExpandedResult(deviceId, Map identity, Map fj, String mode, s
     return result
 }
 
+@groovy.transform.CompileStatic
 private Map _deviceReadFragment(Map snapshot, String token, int start) {
     String serialized = snapshot.content
     int end = Math.min(start + 18000, serialized.length())
@@ -2166,6 +2172,7 @@ private Map _deviceReadContinuation(String cursor, String selection) {
 
 // A lower bound, not an encoded size: stop before copying obviously oversized strings
 // into the JSON encoder. The exact encoded bound below still accounts for escaping.
+@groovy.transform.CompileStatic
 private int _deviceReadRawCharacters(value, int remaining) {
     if (value instanceof CharSequence) return Math.min(value.length(), remaining + 1)
     int count = 0
@@ -2392,6 +2399,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
 // Canonical string form of a device-id argument. A String passes through; an INTEGRAL Number is
 // stringified (ids arrive numeric from hub_list_devices format='ids'); anything else -- a
 // fractional number included -- returns null for the caller to reject before any side effect.
+@groovy.transform.CompileStatic
 private _canonicalDeviceIdArg(value) {
     // CharSequence, not String: an internal caller may hand a GString and must not be rejected.
     if (value instanceof CharSequence) return value.toString().trim() ?: null
@@ -2654,6 +2662,7 @@ private Map _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) {
 // null so the caller treats it as "no match" rather than throwing. A GString is not a String
 // subtype in Groovy, so match CharSequence and normalize via toString() before parsing.
 // NumberFormatException is the only expected failure.
+@groovy.transform.CompileStatic
 private BigDecimal _parseBigDecimalOrNull(v) {
     if (v instanceof Number) return v as BigDecimal
     if (v instanceof CharSequence && v.isNumber()) {
@@ -2713,6 +2722,7 @@ private Map _fireBypassCommand(deviceId, command, List params, Map fullJson) {
 
 // Coerce a device id to the integer the runmethod endpoint expects, passing a non-numeric id
 // through unchanged (fullJson already proved the device exists, so the id is well-formed).
+@groovy.transform.CompileStatic
 private _runMethodDeviceId(deviceId) {
     def s = deviceId?.toString()
     return (s != null && s.isInteger()) ? s.toInteger() : deviceId
@@ -3800,6 +3810,7 @@ private Map _deviceHistoryBypass(args, Map fj, sinceDate, sinceMode, effectiveHo
 
 // /device/preference/save expects a numeric deviceId in its JSON body (the Vue posts
 // this.device.id, a number). Coerce the string id to a Long; leave a non-numeric id as-is.
+@groovy.transform.CompileStatic
 def _prefSaveDeviceId(deviceId) {
     try { return (deviceId != null) ? (deviceId.toString() as Long) : deviceId }
     catch (Exception ignored) { return deviceId }
@@ -3833,6 +3844,7 @@ private Map _deviceAssistantProperties() {
     return [homeKitEnabled: "homeKit", amazonAlexaEnabled: "amazonAlexa", googleHomeEnabled: "googleHome"]
 }
 
+@groovy.transform.CompileStatic
 private boolean _deviceFlag(value) {
     return value == true || value?.toString() == "true"
 }
@@ -5479,6 +5491,7 @@ private Map _deviceSwapSnapshot(String deviceId) {
 // exchanged | unchanged | unreadable | inconsistent. Network ids are unique per device, so a
 // clean swap is each device now carrying the other's network id (create time as the fallback
 // identity when a network id is missing).
+@groovy.transform.CompileStatic
 private String _deviceSwapIdentityOutcome(Map fromBefore, Map toBefore, Map fromAfter, Map toAfter) {
     if (fromBefore == null || toBefore == null || fromAfter == null || toAfter == null) return "unreadable"
     for (key in ["dni", "createTime"]) {
@@ -5505,6 +5518,7 @@ private Map _deviceSwapFindInput(Map cfg, String name) {
 // Normalize an enum input's options to [[id, label], ...]. The hub renders
 // device options as a list of single-entry maps ([{<deviceId>: <label>}, ...]);
 // tolerate a plain map too in case firmware flattens the shape.
+@groovy.transform.CompileStatic
 private List _deviceSwapEnumOptions(Map input) {
     def out = []
     def opts = input?.options

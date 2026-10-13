@@ -778,6 +778,7 @@ private void _appClonerApplyStageDisabled(Map result, Integer newAppId, Long req
     _appClonerFinishStaging(result, newAppId, outcome)
 }
 
+@groovy.transform.CompileStatic
 private void _appClonerStagingDiscoveryMiss(Map result, String operationLabel) {
     result.stagedDisabled = []
     result.success = false

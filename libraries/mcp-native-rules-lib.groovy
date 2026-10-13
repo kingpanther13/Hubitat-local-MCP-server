@@ -631,6 +631,7 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
 // Drop a trailing runtime decoration from a label WITHOUT re-encoding it: the caller's
 // string keeps whatever escaping its source used, so a decorated and an undecorated rule
 // come back in the same encoding. Returns the input unchanged when the suffix is absent.
+@groovy.transform.CompileStatic
 private String _rmStripTrailingDecoration(Object raw, String suffix) {
     def s = raw?.toString()
     if (s == null) return null
@@ -1007,6 +1008,7 @@ private Map sendRmActionFallback(List<Integer> ruleIds, String rmAction, String 
 // the render (e.g. Basic Rule's "For input string: updateRule").
 // Repair hint for a session-end mainPage Done that did not commit. A Done the page itself refused
 // (uiBlocked) posted nothing: the fix is the named fields, not a commit click.
+@groovy.transform.CompileStatic
 private String _rmMainPageDoneRepairHint(Integer appId, Map done) {
     if (done?.uiBlocked == true) {
         return "The closing mainPage Done was refused, as Hubitat's app page would refuse it (${done.reason}). Settings are already written; set the listed fields with hub_set_native_app(appId=${appId}, settings={...}), which re-runs the Done.".toString()
@@ -1147,6 +1149,7 @@ private Map _rmCheckSubscriptionSettle(Integer appId) {
     ]
 }
 
+@groovy.transform.CompileStatic
 private String _rmSuppressedSettleText(Object gate) {
     def why = [requiredExpressionFalse: "its Required Expression is false (RM removes trigger subscriptions until it is true)",
                paused: "the rule is paused", stopped: "the rule is stopped"][gate?.toString()] ?: "RM reports the rule as inactive (${gate})"
@@ -1384,6 +1387,7 @@ private List _rmInformationalSkippedReasons() {
 // source of truth _rmReclassifyDeviceListSkips uses to reclassify a cosmetic device-write
 // silent_rejection. Takes a status appSettings entry (the {name, value, deviceIdsForDeviceList,
 // deviceList} shape from statusJson), not a config input descriptor.
+@groovy.transform.CompileStatic
 private boolean _rmStatusEntryIsDeviceList(Object entry) {
     if (!(entry instanceof Map)) return false
     def e = entry as Map
@@ -1395,6 +1399,7 @@ private boolean _rmStatusEntryIsDeviceList(Object entry) {
 // it falls back to the deviceList map's keys (id->label) -- the two shapes are treated
 // interchangeably, matching _rmStatusEntryIsDeviceList. Empty Set when no IDs are committed --
 // which, for a requested non-empty write, means the write did NOT land (keeps the skip partial).
+@groovy.transform.CompileStatic
 private Set _rmStatusEntryDeviceIds(Object entry) {
     if (!(entry instanceof Map)) return [] as Set
     def e = entry as Map
@@ -1548,14 +1553,17 @@ private List _rmNormalizeRuleIdsForWrite(Object ids, boolean allowThisRule = fal
 
 // RM stores a rule-targeting action aimed at its own rule as "*", alone or mixed with
 // real ids (privateT.<N> = ["*","1809"]). Seen live only on Set Private Boolean.
+@groovy.transform.CompileStatic
 private boolean _rmIsThisRuleTarget(Object id) {
     return id?.toString()?.trim() == "*"
 }
 
+@groovy.transform.CompileStatic
 private boolean _rmTargetAllowsThisRule(Object capability) {
     return capability?.toString() == "privateBoolean"
 }
 
+@groovy.transform.CompileStatic
 private String _rmThisRuleUnsupportedMessage(Object label) {
     return "${label} target '*' is Rule Machine's \"this rule\" target. It is supported only for privateBoolean actions; for this action use the rule's own numeric id (hub_list_rules) or edit it in the RM wizard. RM is not touched.".toString()
 }
@@ -1567,6 +1575,7 @@ private String _rmThisRuleUnsupportedMessage(Object label) {
 // branch compares doubleValue against longValue (avoids BigDecimal-from-double rounding on
 // an already-numeric id); the String branch parses via BigDecimal (integer-valued when
 // stripTrailingZeros leaves scale <= 0), since toInteger() throws on any decimal point.
+@groovy.transform.CompileStatic
 private Integer _rmCoerceRuleId(Object id) {
     try {
         if (id instanceof Number) {
@@ -1638,6 +1647,7 @@ private void _rmValidateRuleTargetExists(String label, Object ids, Set validRule
 // is the Unicode "≠". Pass-through for unrecognized values so callers
 // who already pass the Unicode glyphs continue to work.
 // Internal _rm helper -- not part of the tool surface.
+@groovy.transform.CompileStatic
 String _rmNormalizeComparator(Object raw) {
     if (raw == null) return null
     def s = raw.toString()
@@ -1693,6 +1703,7 @@ boolean _rmComparatorIsRhsOptional(Object rawComparator) {
 // surrounding whitespace removed, case-folded. RM renders state-change tokens wrapped
 // (e.g. '*became true*') in the picker option list but the request may arrive wrapped
 // or bare; normalizing both sides lets an EXACT equality decide a route.
+@groovy.transform.CompileStatic
 private String _rmComparatorToken(Object raw) {
     def s = raw?.toString()?.trim()?.toLowerCase()
     if (!s) return null
@@ -1759,6 +1770,7 @@ List _rmReadPickerOptionStrings(Object pickerInput) {
 // Custom Attribute (the comparator_not_representable_for_enum_attribute skip). Single
 // source of truth so the trigger / condition / Required-Expression emit sites cannot
 // drift. ASCII-only.
+@groovy.transform.CompileStatic
 private String _rmNotRepresentableEnumComparatorHint(Object attribute, Object comparator) {
     def attrName = attribute?.toString()
     def cmp = comparator?.toString()
@@ -1870,6 +1882,7 @@ private boolean _rmStateChangeGuardApplies(String cap) {
 // their full nth-weekday or by-day combo. A non-empty rawSettings map is the caller's escape
 // hatch (they drive the sub-page fields directly), so the recognized-field requirement is
 // skipped when it is present. Messages are ASCII-only and name the concrete fields.
+@groovy.transform.CompileStatic
 private String _rmPeriodicShapeError(String freq, Map per) {
     if (per?.rawSettings instanceof Map && !(per.rawSettings as Map).isEmpty()) return null
     switch (freq) {
@@ -4103,6 +4116,7 @@ Boolean _rmIsAppDisabled(Integer appId) {
 // rather than a generic "edit". Same precedence as _applyNativeAppEdit's backupReason chain, so
 // a call carrying more than one key is labelled the way its own backup reason names it; the
 // keys that chain folds into "pre-update" (patches, settings) come last for the same reason.
+@groovy.transform.CompileStatic
 private String _rmEditOpLabel(Map args) {
     if (args == null) return "edit"
     def first = ["button", "addTrigger", "addAction", "addActions", "addTriggers",
@@ -4371,10 +4385,12 @@ Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
 // Scope: only state-value changes (mods.state) are supported. Capability and
 // deviceIds changes require removeTrigger + addTrigger because RM's wizard
 // does not expose a capability-change path in an existing trigger slot.
+@groovy.transform.CompileStatic
 private String _rmModifyTriggerNoStateMessage(Integer triggerIdx) {
     return "modifyTrigger: trigger ${triggerIdx} has no 'state' value to change -- this trigger does not expose a plain state field. Use removeTrigger + addTrigger to reconfigure it.".toString()
 }
 
+@groovy.transform.CompileStatic
 private String _rmModifyTriggerWizardRecoveryHint(Integer appId) {
     return "A trigger editor may still be open. Inspect hub_get_app_config(appId=${appId}, pageName='selectTriggers', includeSettings=true) before another edit. Only if the original trigger editor remains open, close it with hub_set_rule(appId=${appId}, button='hasAll', pageName='selectTriggers', confirm=true), then verify it closed with hub_get_app_config. Do not click hasAll again if the editor already closed.".toString()
 }
@@ -4718,6 +4734,7 @@ private void _rmRejectMultiOpPatchItems(List patchesList) {
     }
 }
 
+@groovy.transform.CompileStatic
 private Integer _rmPatchOpIndex(String op, Object raw) {
     if (raw instanceof Number) return (raw as Number).intValue()
     String text = raw?.toString()?.trim()
@@ -4725,6 +4742,7 @@ private Integer _rmPatchOpIndex(String op, Object raw) {
     throw new IllegalArgumentException("${op}.index must be an integer index (from hub_get_app_config), got '${raw}'")
 }
 
+@groovy.transform.CompileStatic
 private boolean _rmModifyTriggerInnerPartial(Map res) {
     ((res?.settingsSkipped as List)?.size() ?: 0) > 0 || res?.verificationFetchFailed == true
 }
@@ -4756,6 +4774,7 @@ private Map _rmPatchModifyOp(Integer appId, Map pm, Long reqT0) {
 // any nested "RM is not touched" sentinel (true for the inner helper's own
 // pre-flight, a lie for the composed operation) so the error-response builder
 // cannot route a post-delete failure to the nothing-to-restore hint.
+@groovy.transform.CompileStatic
 private String _rmModifyPostDeleteMsg(Integer actionIdx, String leg, Exception e, Integer rebuiltIdx = null) {
     def m = (e.message ?: e.toString()).replace("RM is not touched", "the original action WAS already removed")
     def rebuilt = rebuiltIdx != null ? " The rebuilt action IS in the rule at settings index ${rebuiltIdx} (position NOT restored)." : ""
@@ -5497,6 +5516,7 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
 // comma-bearing mode name that DID resolve is never second-guessed. The body carries NO
 // surface word -- each caller passes its own `context` (e.g. "addTrigger Mode",
 // "conditions[2]") so the message is prefixed once, never doubled. ASCII-only.
+@groovy.transform.CompileStatic
 private String _rmCommaJoinedModeHint(Object rawName, Collection validNames, String context = "") {
     def s = rawName?.toString()
     if (s == null || !s.contains(",")) return null
@@ -6837,6 +6857,7 @@ private void _rmValidateActionExpressionShape(String cap, Map exprSpec) {
 // hands it a child action-spec map; this carries the request clock down on that map (a copy --
 // the caller's spec is not mutated) so the add's own budget checks see the real clock. The
 // signature of _rmAddAction stays as it is: the specs stub it by arity.
+@groovy.transform.CompileStatic
 private Map _rmWithClock(Map spec, Long reqT0) {
     if (reqT0 == null || spec == null) return spec
     // Only a positive Number is a clock. A client-supplied nested spec can carry anything under
@@ -6983,6 +7004,7 @@ private void _rmPrevalidateActionSpecList(List specs, String label, Set validRul
 
 // An argument refusal raised before the rule's first write, marked with the not-touched sentinel
 // the error envelope keys its "nothing to restore" hint on.
+@groovy.transform.CompileStatic
 private String _rmNotTouched(String msg) {
     return (msg ?: "").contains("RM is not touched") ? msg : "${msg} RM is not touched.".toString()
 }
@@ -6990,6 +7012,7 @@ private String _rmNotTouched(String msg) {
 // The numOp a setVariable/setLocalVariable 'value' action writes. The other source modes
 // select their own source picker, so a caller numOp there (or with no value) could only be
 // silently dropped -- refuse it instead.
+@groovy.transform.CompileStatic
 private String _rmSetVariableValueNumOp(Map actionSpec) {
     if (actionSpec.numOp == null) return "number"
     String capLabel = (actionSpec.capability?.toString()?.trim() == "setLocalVariable") ? "setLocalVariable" : "setVariable"
@@ -8058,6 +8081,7 @@ boolean _rmIsNumericVarType(String token) {
 // rejects fractional numbers, non-positive values, and non-numeric input. Used to gate
 // fromDevice.deviceId without false-rejecting a valid whole-number id that arrives as a
 // BigDecimal or exceeds Integer range. ASCII-only; no reflection (sandbox-safe).
+@groovy.transform.CompileStatic
 def _rmAsPositiveDeviceId(Object raw) {
     if (raw == null) return null
     if (raw instanceof Number) {
@@ -8160,6 +8184,7 @@ private List _rmStructuralSequenceFromSpecList(List specList) {
 // caught error message. Both the structured _rmBuildUpdateErrorResponse
 // path and the legacy-flat trigger-mutation catch reuse this so the two
 // surfaces stay word-identical.
+@groovy.transform.CompileStatic
 private String _rmPreflightRestoreHint(String reason = null, Map backup = null, String lead = null) {
     def why = reason ? " Reason: ${reason}" : ""
     // Whether a snapshot exists depends on WHICH pre-flight fired -- the ones hoisted ahead of
@@ -8239,6 +8264,7 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
 // at the per-item dispatch step after clearActions has already wiped
 // the rule — exactly the #178 damage class the pre-flight is meant to
 // prevent.
+@groovy.transform.CompileStatic
 private List _rmStructuralPairForCapability(String cap) {
     if (cap == null) return null
     switch (cap.toString()) {
@@ -8871,6 +8897,7 @@ private Map _rmWalkStepHealth(Integer appId, Long t0) {
 // no-evidence states pass; only a checked-and-broken verdict fails. ONE
 // definition so no future gate site can silently invert the polarity of either
 // no-evidence state.
+@groovy.transform.CompileStatic
 private boolean _rmHealthGatePass(Map health) {
     return health?.ok == true || health?.unreadable == true
 }
@@ -8901,6 +8928,7 @@ private List _rmPreExistingStructuralOnly(List baseline, Map finalHealth) {
 }
 
 // Final structural issues that were already present in the baseline, matched one by one; empty without a baseline.
+@groovy.transform.CompileStatic
 private List _rmPreExistingStructuralSubset(List baseline, Map finalHealth) {
     if (baseline == null || !(finalHealth instanceof Map)) return []
     def before = baseline.collect { it?.toString() } as Set
@@ -13027,6 +13055,7 @@ private Map _rmAddRequiredExpression(Integer appId, Map exprSpec) {
 
 // The "RM is not touched" marker classifies an error as a refusal before any change; it is untrue
 // once the gate was switched on and could not be switched back off.
+@groovy.transform.CompileStatic
 private String _rmStripNotTouched(String msg) {
     (msg ?: "").replace(" RM is not touched.", "").replace("RM is not touched", "the rule WAS changed")
 }
@@ -13551,6 +13580,7 @@ Set _rmCollectPageInputNames(Integer appId, String pageName, Map cache = null) {
 // An UNCHANGED count or a pre-existing imbalance present in the baseline is NOT new, so a
 // clean replace on an already-imbalanced rule is never spuriously rolled back. The restore
 // message names ONLY these new issues, not the full current-issue list.
+@groovy.transform.CompileStatic
 private List _rmHealthRegressionNewIssues(Map baselineHealth, Map nowHealth) {
     // A couldn't-check post-op probe (unreadable: NEITHER source read) carries no
     // positive evidence of anything: its "health check failed" issue strings are
@@ -13731,6 +13761,7 @@ private List _rmReadExpressionTokens(Integer appId) {
 }
 
 // A token as the newToken picker spells it: condition ids as their number, operators verbatim.
+@groovy.transform.CompileStatic
 private String _rmTokenValue(Object tok) {
     return tok?.toString()?.trim()
 }
@@ -13923,6 +13954,7 @@ private Map _rmRevertRequiredExpression(Integer appId, List origTokens, String e
 // ("Switch(<span>off</span>) is on"), so that parenthesised markup is dropped before comparing; a
 // plain parenthesis (a device named "Lamp (Den)") stays. The tag pattern only matches real tags, so
 // RM's raw `<` / `<=` comparators survive.
+@groovy.transform.CompileStatic
 private Map _rmConditionTexts(Map state) {
     def out = [:]
     if (state?.get("capabsfalse") instanceof Map) (state.get("capabsfalse") as Map).each { id, txt ->
@@ -14131,6 +14163,7 @@ private Integer _rmReplayConditionSlot(Integer appId, Map srcSettings, int srcId
     throw new IllegalStateException("the restored condition (from slot ${srcIdx}) did not complete within the wizard step limit")
 }
 
+@groovy.transform.CompileStatic
 private boolean _rmReplayValueMatches(Object current, Object want) {
     def norm = { o ->
         if (o instanceof Map) return (o as Map).keySet().collect { it?.toString() }.sort()
@@ -14616,15 +14649,18 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Map backup
 // source of truth for the walkStep-drive, patches, and bulk pause paths. The k?.toString()
 // comparison is null-safe and normalizes a GString key to a plain String before matching, so
 // the strip holds regardless of how a key was constructed.
+@groovy.transform.CompileStatic
 private _stripInternalClock(rem) {
     return (rem instanceof Map) ? ((Map) rem).findAll { k, v -> k?.toString() != "__reqT0" } : rem
 }
 
 // Fail-closed bulk contract: a failed or partial item stops every later mutation and finalisation.
+@groovy.transform.CompileStatic
 private boolean _rmBulkItemBlocks(r) {
     return r instanceof Map && (r.success == false || r.partial == true)
 }
 
+@groovy.transform.CompileStatic
 private Map _rmBulkNotAttempted(String stoppedAfter) {
     return [success: false, notAttempted: true, error: "not attempted: bulk stopped after ${stoppedAfter} failed or was partial".toString()]
 }

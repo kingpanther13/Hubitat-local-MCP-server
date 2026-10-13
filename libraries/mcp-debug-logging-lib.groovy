@@ -257,6 +257,7 @@ def toolGenerateBugReport(args) {
     return result
 }
 
+@groovy.transform.CompileStatic
 private String _bugReportNormalizeIssueType(raw) {
     def s = raw?.toString()?.toLowerCase()?.trim()
     if (s in ["bug", "enhancement", "agent_behavior"]) return s
@@ -375,6 +376,7 @@ private Map _bugReportEnvironmentSummary(args, String privacyMode, Map identity)
 // The client's own self-report on THIS request (initialize, or the per-request _meta), not the
 // agent-supplied llmClient: the two disagree often enough (a wrapper reports its transport, the
 // user names the host app) that a maintainer needs both.
+@groovy.transform.CompileStatic
 private String _bugReportClientLine(Map client) {
     if (!client?.name) return "not reported on this request"
     def line = client.name.toString()
@@ -438,6 +440,7 @@ private List _bugReportSettingsLines(String privacyMode) {
 
 // A pasted payload can carry its own fence, so the block opens on a longer backtick run than
 // anything inside it -- otherwise the first inner fence closes the block early.
+@groovy.transform.CompileStatic
 private String _bugReportFence(String text) {
     def runs = (text ?: "").findAll(/`+/)
     int longest = runs ? runs.collect { it.length() }.max() : 0
@@ -446,6 +449,7 @@ private String _bugReportFence(String text) {
 
 // Wraps only the free-prose fields. Lines inside a ``` fence and any single word longer
 // than the width are left alone, so pasted payloads survive intact.
+@groovy.transform.CompileStatic
 private String _bugReportWrap(String text, int width = 100) {
     if (text == null) return null
     def limit = width > 0 ? width : 100
@@ -648,6 +652,7 @@ private String _bugReportFormatLogEntry(entry) {
     return "[${ts}] ${lvl}${tool}: ${_bugReportScrubSecrets(entry.message?.toString())}${ruleRef}${benignTag}"
 }
 
+@groovy.transform.CompileStatic
 private boolean _isBenignRmInternalNoise(message) {
     def m = message?.toString()
     if (m == null) return false
@@ -787,6 +792,7 @@ _Add any other context, screenshots, or transcripts when filing._
 
 // Credentials reach these sections through pasted transcripts and client logs, and the report is
 // headed for a public issue tracker -- redact in BOTH privacy modes, not just public.
+@groovy.transform.CompileStatic
 private String _bugReportScrubSecrets(String text) {
     if (text == null) return null
     // Each pattern ends at the credential, never at the end of the line, so evidence sitting

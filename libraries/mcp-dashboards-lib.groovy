@@ -103,11 +103,13 @@ private List _listDashboardsViaChildApps() {
 // The legacy parent's app-type name carries the (R) glyph between the words ("Hubitat® Dashboard"),
 // so match the stable ASCII prefix/suffix rather than the exact string -- an encoding difference
 // anywhere in the chain would otherwise hide every legacy dashboard.
+@groovy.transform.CompileStatic
 private boolean _isLegacyDashboardParentType(String t) {
     return t && t.startsWith("Hubitat") && t.endsWith("Dashboard")
 }
 
 // Dashboard ids are numeric; reject anything else so a bad value can't be spliced into /dashboard/<id>.
+@groovy.transform.CompileStatic
 private String _requireDashboardId(rawId, String verbNote) {
     def s = rawId?.toString()?.trim()
     if (!s) {
@@ -351,6 +353,7 @@ private void _requireUnprotectedEasyDashboardParent() {
 }
 
 // type arg: easy (default) | legacy. Rejects anything else so a typo can't silently create the wrong kind.
+@groovy.transform.CompileStatic
 private String _dashboardTypeArg(raw) {
     def t = raw?.toString()?.trim()?.toLowerCase()
     if (!t) return "easy"
@@ -737,6 +740,7 @@ private Map _applyLegacyLayoutOps(Map current, Map args, Map probe, List warning
 
 // Tile ids are small integers assigned at add time; normalize whatever shape the caller (or a
 // JSON round-trip) delivers.
+@groovy.transform.CompileStatic
 private Integer _tileIdOf(tile) {
     def raw = (tile instanceof Map) ? tile.id : tile
     if (raw == null) return null
@@ -928,6 +932,7 @@ private Map _summarizeDashboard(raw) {
 
 // The hub renders unset optional fields as the literals "null" or "None" (Groovy toString of null)
 // depending on the endpoint; treat both as absent.
+@groovy.transform.CompileStatic
 private boolean _dashboardRealValue(v) {
     def s = v?.toString()
     return s && s != "null" && s != "None"
@@ -935,6 +940,7 @@ private boolean _dashboardRealValue(v) {
 
 // Serialize deviceIds to CSV for /dashboard/create|update. Coerce shape first (a String "12" is not a
 // char collection): Collection as-is, String split on commas, else wrap; validate each token is numeric.
+@groovy.transform.CompileStatic
 private String _dashboardDeviceCsv(deviceIds, boolean required) {
     def tokens
     if (deviceIds == null) {
@@ -959,6 +965,7 @@ private String _dashboardDeviceCsv(deviceIds, boolean required) {
 }
 
 // Normalize a deviceIds value to a list of id strings: a JSON-array string ("[8,1,9]") or a real collection.
+@groovy.transform.CompileStatic
 private List _normalizeDeviceIdList(raw) {
     if (raw instanceof Collection) return raw.collect { it?.toString() }.findAll { it }
     if (raw instanceof String) {
@@ -1014,6 +1021,7 @@ private String _dashboardNavSelectionCsv(navigationSelection) {
 }
 
 // theme: legacy|light|dark|auto; empty == legacy. A value outside the set is rejected (catch a typo).
+@groovy.transform.CompileStatic
 private String _dashboardTheme(theme) {
     if (theme == null || !theme.toString().trim()) return "legacy"
     def t = theme.toString().trim().toLowerCase()

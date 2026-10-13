@@ -663,6 +663,7 @@ private List _meshRefreshIntervals() {
 // hub call, so a mid-way failure leaves the earlier legs committed). `whatFailed` is the human
 // phrase for the error line; `recoveryNote` is appended after the already-applied prefix. `detail`
 // may be a Throwable (its message is used) or a plain string (e.g. an _unparseable body message).
+@groovy.transform.CompileStatic
 private Map _meshLegFailure(List applied, String whatFailed, detail, String recoveryNote) {
     def msg = (detail instanceof Throwable) ? detail.message : detail?.toString()
     return [success: false,
@@ -1054,6 +1055,7 @@ private _modePost(String path, Map body) {
     return hubInternalPostJson(path, groovy.json.JsonOutput.toJson(body))
 }
 
+@groovy.transform.CompileStatic
 private _modeWriteResult(String op, parsed) {
     if (parsed instanceof Map && parsed.success == true) {
         // Don't re-read the full mode list here -- that's an extra /modes/json round-trip per write

@@ -696,6 +696,7 @@ private Map _createVariablesBulk(variables) {
 // rejected; additionally a String variable created with an empty/blank value
 // reports success but never actually persists (getGlobalVar stays null --
 // deterministic), so reject that up front with an actionable error.
+@groovy.transform.CompileStatic
 private void _validateInitialValue(String name, String type, value) {
     if (value == null) {
         throw new IllegalArgumentException("Initial value is required")
@@ -1500,6 +1501,7 @@ Map _hubVarInUseApps(Integer hubVarsAppId, String varName) {
 // label RAW (not entity-escaped), so < > & ' in a label appear literally. The tag-bearing anchor text
 // is unparseable (a label's own < > read as tags), so read the id from the href and the label from the
 // title attribute, which is delimited by '> (the quote that closes title plus the tag's own >).
+@groovy.transform.CompileStatic
 private List _parseHubVarConsumerAnchors(String html) {
     def apps = []
     def m = html =~ /<a\s+href='\/installedapp\/configure\/(\d+)'[^>]*?title='Open (.*?)'>.*?<\/a>/

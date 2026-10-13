@@ -362,6 +362,7 @@ def toolGetItemSource(String type, String idParam, args) {
     }
 }
 
+@groovy.transform.CompileStatic
 private String stripAppConfigHtml(value) {
     if (value == null) return null
     def s = value.toString()
@@ -1192,6 +1193,7 @@ private Map _submitAppDoneForm(Integer instanceId, String pageName, boolean requ
 // render -- would toString() into junk and POST that junk back, so those defer to the page value.
 // NOT private: _submitAppDoneForm calls this from inside a schema.each {} closure, and a closure
 // resolves owner calls through the metaClass, which does not expose private methods.
+@groovy.transform.CompileStatic
 boolean _isSimpleSettingValue(v) {
     if (v instanceof Map) return false
     if (v instanceof List) {

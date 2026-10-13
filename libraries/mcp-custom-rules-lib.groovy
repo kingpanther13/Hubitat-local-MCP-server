@@ -411,6 +411,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
     }
 }
 
+@groovy.transform.CompileStatic
 private Map buildRuleExport(Map ruleData) {
     return [
         name: ruleData.name,
@@ -654,6 +655,7 @@ private void collectDeviceIds(component, String section, Map deviceUsage) {
     }
 }
 
+@groovy.transform.CompileStatic
 def applyDeviceMapping(data, Map mapping) {
     if (data == null) return null
 

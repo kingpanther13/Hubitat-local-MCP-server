@@ -182,6 +182,7 @@ private String _bm25DocText(entry) {
 // Cold builds fold fields without allocating a concatenated catalog (~98 KB in the original
 // audit); warm searches reuse the memoized fingerprint. Include each field's
 // length so delimiter text such as "source|sourceFile|importUrl" cannot erase field boundaries.
+@groovy.transform.CompileStatic
 private long _fpField(long h, value) {
     String s = (value == null) ? "" : value.toString()
     // String.hashCode(), not a hand-rolled character loop. Nothing here is @CompileStatic,
@@ -233,12 +234,14 @@ private buildToolSearchCorpus(List defs = null) {
 }
 
 // BM25 tokenizer: lowercase, split on non-alphanumeric, drop tokens < 2 chars
+@groovy.transform.CompileStatic
 private bm25Tokenize(String text) {
     if (!text) return []
     return text.toLowerCase().split(/[^a-z0-9]+/).findAll { it.length() > 1 }
 }
 
 // BM25 Okapi scoring
+@groovy.transform.CompileStatic
 private String _bm25Key(String token) {
     // Keep document, term, and query keys in the same namespace. This prefix
     // predates Map.get/put and preserves the existing token representation.

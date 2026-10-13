@@ -746,6 +746,7 @@ def uninstalled() {
     try { unschedule() } catch (Exception e) { /* best-effort teardown */ }
 }
 
+@groovy.transform.CompileStatic
 private String _protectedAppId(value) {
     String id = value?.toString()?.trim()
     return id?.isLong() && id.toLong() > 0L ? id.toLong().toString() : null
@@ -1336,6 +1337,7 @@ def _originHost(String origin) {
 // Reduce an HTTP authority ("user@host:port/path") to its bare lowercase host.
 // Bracketed IPv6 literals keep their inner address so the colons are not read as a
 // port separator.
+@groovy.transform.CompileStatic
 def _authorityHost(String authority) {
     String s = authority?.trim()
     if (!s) return null
@@ -1450,6 +1452,7 @@ def _requestMetaProtocolVersion(msg) {
 // case-sensitive -- and MUST be decoded before it is compared to the body value.
 // A plain value passes through untouched. Returns null when the wrapper is present
 // but its payload will not decode, so the caller can answer -32020.
+@groovy.transform.CompileStatic
 def _decodeHeaderValue(String value) {
     if (value == null) return null
     if (value.length() < 11 || !value.startsWith("=?base64?") || !value.endsWith("?=")) return value
@@ -1544,6 +1547,7 @@ private Map _mcpClientInfoFrom(msg) {
 // means this request's identity cannot name the real client. "mcp" with no version or 0.1.0 is
 // the Python MCP SDK default identity stdio-to-HTTP bridges send; an unanchored contains-match
 // would flag unrelated names like mcp-remote-control.
+@groovy.transform.CompileStatic
 private boolean _mcpClientIsWrapper(String name, String version) {
     String lower = name?.toLowerCase()
     if (!lower) return false
@@ -1553,6 +1557,7 @@ private boolean _mcpClientIsWrapper(String name, String version) {
 
 // Client-supplied text is echoed into logs and into markdown headed for a public issue tracker,
 // so a defective client could otherwise bloat it or inject structure into the report it lands in.
+@groovy.transform.CompileStatic
 private String _mcpClientString(value) {
     if (value == null) return null
     String s = value.toString().replaceAll(/[\r\n\t`]/, " ").replaceAll(/ {2,}/, " ").trim()
@@ -2211,6 +2216,7 @@ private Map _mrtrPendingResult(String stateId, boolean rejoined = false, leafToo
     return pending
 }
 
+@groovy.transform.CompileStatic
 private def _mrtrMarkRejoined(result, boolean rejoined) {
     if (!rejoined || !(result instanceof Map)) return result
     return ([:] + (result as Map)) + [rejoined: true]
@@ -2339,6 +2345,7 @@ def _lanBudgetMs() {
 
 // Positive budgets have a 6000 ms floor on both transports so eight Logs-page observation
 // slices cover the native fetch timeout. Zero (off) passes through unchanged.
+@groovy.transform.CompileStatic
 private long _flooredBudgetMs(long configuredMs) {
     return configuredMs > 0L ? Math.max(6000L, configuredMs) : configuredMs
 }
@@ -2466,7 +2473,9 @@ private boolean _isActualWriteCall(outerToolName, leafToolName, args) {
     return true
 }
 
+@groovy.transform.CompileStatic
 private long _writeLeaseMs() { 3L * 60L * 1000L }
+@groovy.transform.CompileStatic
 private long _packageDeployRecoveryMs() { 10L * 60L * 1000L }
 
 // Caller holds WRITE_RESERVATION_LOCK for every helper down to
@@ -2702,11 +2711,13 @@ private void _writeReleaseRequest(String leaseId) {
     }
 }
 
+@groovy.transform.CompileStatic
 private Map _mrtrCopyMap(Map value) {
     if (value == null) return [:]
     return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(value)) as Map
 }
 
+@groovy.transform.CompileStatic
 private def _mrtrLeafArguments(String outerTool, String leafTool, Map outerArgs) {
     if (outerTool == leafTool) return outerArgs
     def inner = outerArgs.args
@@ -2782,6 +2793,7 @@ private Map _mrtrBinding(outerToolName, leafToolName, Map args) {
     ]
 }
 
+@groovy.transform.CompileStatic
 private String _mrtrSha256(String value) {
     def digester = java.security.MessageDigest.getInstance("SHA-256")
     def digest = digester.digest(value.getBytes("UTF-8"))
@@ -2795,6 +2807,7 @@ private String _mrtrSha256(String value) {
     return hex.toString()
 }
 
+@groovy.transform.CompileStatic
 private def _mrtrCanonicalArgs(value) {
     if (value instanceof Map) {
         def canonical = [:]
@@ -2808,6 +2821,7 @@ private def _mrtrCanonicalArgs(value) {
     return value
 }
 
+@groovy.transform.CompileStatic
 private boolean _mrtrBindingMatches(Map rec, Map binding) {
     return rec.outerTool?.toString() == binding.outerTool?.toString() &&
         rec.leafTool?.toString() == binding.leafTool?.toString() &&
@@ -2815,6 +2829,7 @@ private boolean _mrtrBindingMatches(Map rec, Map binding) {
 }
 
 def _mrtrActiveTtlMs() { _writeLeaseMs() }
+@groovy.transform.CompileStatic
 def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
 // A read terminal only needs to survive a lost final HTTP response, not the ten-minute write
 // TTL: its record holds a replay marker rather than a payload, and the replay re-reads the
@@ -3750,6 +3765,7 @@ private def _mrtrAggregateTerminal(Map rec, result) {
 }
 
 // Adds offset to every index written as token + digits + "]" in text.
+@groovy.transform.CompileStatic
 private String _mrtrShiftIndex(String text, String token, int offset) {
     if (text == null || offset == 0 || !text.contains(token)) return text
     StringBuilder out = new StringBuilder()
@@ -3773,6 +3789,7 @@ private String _mrtrShiftIndex(String text, String token, int offset) {
 }
 
 // Applies fix to the item references a stopped slice writes: its stop location, error, hints, and item errors.
+@groovy.transform.CompileStatic
 private void _mrtrRewriteStopRefs(node, Closure fix) {
     if (node instanceof Map) {
         Map m = node as Map
@@ -4206,6 +4223,7 @@ private List _mrtrWalkSteps(Map aggregate, Map result) {
     return numbered
 }
 
+@groovy.transform.CompileStatic
 private List _mrtrPatchResults(Map result) {
     def rows = result.patchResults instanceof List ? result.patchResults :
         (result.patches instanceof List ? result.patches : [])
@@ -4283,6 +4301,7 @@ private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
 // rule that succeeded on retry still poisons success/partial/failedRuleIds. First-appearance
 // order is preserved; entries carrying no ruleId are never collapsed and keep their order
 // after the keyed ones.
+@groovy.transform.CompileStatic
 private List _mrtrCollapseRuleResults(List entries) {
     def lastByRule = [:]
     def unkeyed = []
@@ -4313,6 +4332,7 @@ private void _mrtrCleanupRecord(Map rec) {
 // observable at the guarded boundary below. Any Map stored under a `backup` key
 // is public backup metadata; strip its internal brokenBefore wording signal at
 // every nesting depth (bulk/patch results contain per-item backup maps too).
+@groovy.transform.CompileStatic
 private def _publicToolResultValue(value, boolean backupMetadata = false) {
     if (value instanceof Map) {
         def copy = new LinkedHashMap()
@@ -4346,6 +4366,7 @@ private def _publicToolResultValue(value, boolean backupMetadata = false) {
 // tool argument is input validation the model can fix. Envelope faults that never throw
 // (a missing tool name, non-object arguments, resources/read uri) call jsonRpcError
 // directly and never reach this function.
+@groovy.transform.CompileStatic
 private boolean _isProtocolValidation(String message) {
     String txt = (message ?: '').toString()
     return ["Unknown tool", "Unknown gateway", "Cannot call a gateway", "Gateway arg",
@@ -4468,6 +4489,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
 // an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
 // (app settings and state), and that same key inside JSON carried as a string (a file read or
 // an exported setting).
+@groovy.transform.CompileStatic
 private def _redactAccessTokens(value) {
     String marker = "***redacted (access token)***"
     if (value instanceof Map) {
@@ -4568,6 +4590,7 @@ def _responseTooLargeSuggestion(String toolName) {
 // offset returned in a prior call's nextCursor; null/"" means "start at 0". Anything else
 // throws IllegalArgumentException so the dispatch layer surfaces an isError validation result. Raw cursor is
 // sanitized before being echoed back so a defective client can't pollute the hub log.
+@groovy.transform.CompileStatic
 def _parseListCursor(cursor, int totalSize, String toolName) {
     if (cursor == null || cursor == "") return 0
     def safeCursor = (cursor?.toString() ?: "").replaceAll(/[\r\n]/, " ").take(80)
@@ -4609,6 +4632,7 @@ private def _toolMetadataGet(String key) {
     synchronized (TOOL_METADATA_CACHE) { return TOOL_METADATA_CACHE.get(key) }
 }
 
+@groovy.transform.CompileStatic
 private def _immutableToolMetadata(value) {
     if (value instanceof Map) return value.collectEntries { k, v -> [(k): _immutableToolMetadata(v)] }.asImmutable()
     if (value instanceof Set) return (value.collect { _immutableToolMetadata(it) } as Set).asImmutable()
@@ -4628,6 +4652,7 @@ def _invalidateToolMetadata() {
     synchronized (TOOL_METADATA_CACHE) { TOOL_METADATA_CACHE.clear() }
 }
 
+@groovy.transform.CompileStatic
 private String _cleanupFailureDetail(Exception error) {
     // Delegated API calls can wrap the actual storage/scheduler failure without a message.
     return error.message ?: error.cause?.message ?: error.toString()
@@ -5451,6 +5476,7 @@ def annotationsForLeaf(String toolName, Set readOnlyNames, Map displayMeta, Set 
 // roll-up direction for each hint). Callers pass `visibleSubTools` so
 // feature-toggle hiding (a Read/Write master OFF, custom engine readonly, or
 // an Advanced override) propagates into the gateway label.
+@groovy.transform.CompileStatic
 def annotationsForGateway(List visibleSubTools, Set readOnlyNames, Set idempotentNames, Set openWorldNames) {
     if (!visibleSubTools) {
         throw new IllegalArgumentException(
@@ -5633,6 +5659,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChec
 // carries them into its runtime value (issue #342 found them polluting three tool
 // descriptions and the hub_report_issue report body). Generic helper (main file per the
 // AGENTS.md placement rule): consumed by stripFlatTrim below and _bugReportBuildMarkdown.
+@groovy.transform.CompileStatic
 def _stripLibraryMarkers(String s) {
     if (s == null || !s.contains('// library marker')) return s
     return s.replaceAll(/ *\/\/ library marker [\w.]+, line \d+/, '')
@@ -5914,6 +5941,7 @@ def requiredParamsByTool() {
 // write (see toolCallDeviceReplace). It is a read-only MODE of a write tool, so it
 // answers to the Read master rather than the Write master.
 // The tool itself stays a write -- only this argument shape is a read.
+@groovy.transform.CompileStatic
 def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
     return toolName == 'hub_call_device_replace' && (args instanceof Map) && args.list_options == true
 }
@@ -6919,6 +6947,7 @@ def getSelectedDevices() {
 // Single source for the hub's internal API base URI (was an 11x-repeated literal).
 def hubBaseUri() { "http://127.0.0.1:8080" }
 
+@groovy.transform.CompileStatic
 def _firmwareAtLeast(fw, String target) {
     // Compare dotted firmware versions segment-by-segment, numerically. Returns true when fw >=
     // target. Missing/BLANK fw returns true (assume modern) -- safe where a newer endpoint is the
@@ -7198,6 +7227,7 @@ private String _readRespText(resp) {
 // logged, so the WiFi-join leg's psk no longer reaches this at all. It stays because the [hubrt] log
 // line below takes whatever path it is handed, and a future path-segment value carrying a secret
 // would otherwise land in the hub system log unmasked. Masks psk/password/psw values only.
+@groovy.transform.CompileStatic
 private String _redactSecretsInPath(String path) {
     if (path == null) return path
     return path.replaceAll(/(?i)(psk|password|psw)=[^&]*/, '$1=***')
@@ -7697,14 +7727,17 @@ def hubInternalBytes(String method, String path, Map query = null, Map formBody 
 
 // Archive checks before a download is kept or uploaded: a gzip stream (.tar.gz) or an H2
 // database file (.lzf, which starts "-- H2"). An HTML or JSON reply fails both.
+@groovy.transform.CompileStatic
 def _isGzip(byte[] b) {
     return b != null && b.length > 2 && (b[0] & 0xff) == 0x1f && (b[1] & 0xff) == 0x8b
 }
 
+@groovy.transform.CompileStatic
 def _isH2Database(byte[] b) {
     return b != null && b.length > 5 && b[0] == (byte) 45 && b[1] == (byte) 45 && b[2] == (byte) 32 && b[3] == (byte) 72 && b[4] == (byte) 50
 }
 
+@groovy.transform.CompileStatic
 def _bytesPreview(byte[] b) {
     if (b == null) return "nothing"
     return new String(b, 0, Math.min(b.length, 120), "UTF-8").replaceAll(/\s+/, " ").trim()
@@ -8558,6 +8591,7 @@ def _typeName(v) {
 
 // Dotted numeric version compare (2.5.2.134 vs 2.5.2.129): 1, 0 or -1; null when either is not
 // purely numeric, so a caller can report "unknown" instead of guessing.
+@groovy.transform.CompileStatic
 Integer _compareVersions(String a, String b) {
     def pat = ~/^\d+(\.\d+)*$/
     if (!(a?.trim() ==~ pat) || !(b?.trim() ==~ pat)) return null
@@ -8615,6 +8649,7 @@ def _exceptionStack(Throwable e) {
  * failure shape for `String as Integer`; anything else is a real bug and
  * should propagate rather than be rewrapped as an IllegalArgumentException.
  */
+@groovy.transform.CompileStatic
 private Integer normalizeRuleId(def ruleId) {
     if (ruleId instanceof Number) return ruleId.toInteger()
     try {
@@ -9024,6 +9059,7 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
  *   - "last activity:", "last run:", "last fired:" prefixes + their value
  *   - Bare epoch-ms numbers (13+ digits)
  */
+@groovy.transform.CompileStatic
 private String _rmSanitizeRenderForHash(Object sections) {
     def raw = sections?.toString() ?: ""
     if (!raw) return ""
@@ -9257,6 +9293,7 @@ private Map _rmFetchConfigJson(Integer appId, String pageName = null, Map cache 
 // /installedapp/update/json or /installedapp/btn) calls this: cross-page render coupling
 // means one page's write can change how sibling pages render, AND the app.version token
 // shifts, so per-page invalidation would be unsafe. No-op when cache is null.
+@groovy.transform.CompileStatic
 private void _rmCacheInvalidate(Map cache, Integer appId) {
     if (cache != null) cache.put(appId, [:])
 }
@@ -9520,6 +9557,7 @@ private String _rmActionSettingText(Map settingsByName, String prefix, Integer i
  * actions were all removed -- but whose actType/actSubType rows survived -- back down the settings
  * scan, where the leftovers read as an unclosed block: the UI-built false positive in its zero-action form.
  */
+@groovy.transform.CompileStatic
 private List _rmCoerceActionIndices(List raw) {
     if (raw == null) return null
     def out = []
@@ -9549,6 +9587,7 @@ List _rmOrderedActionIndices(Integer appId) {
  * Every action index carrying an actType.<N> or actSubType.<N> settings row, ascending. Shared by
  * the structural walk's settings fallback and the orphan scan so the two cannot drift.
  */
+@groovy.transform.CompileStatic
 private TreeSet _rmScannedActionIndices(Map settingsByName) {
     def scanned = [] as TreeSet
     settingsByName?.keySet()?.each { name ->
@@ -9675,6 +9714,7 @@ private String _classicAppFormat(Map cfg) {
 // nothing detected, for the degenerate verdicts (null appId here; the skipped
 // probe in _rmWalkStepHealth) -- ONE literal to keep in lockstep with the main
 // report shape instead of a hand-copied literal per degenerate case.
+@groovy.transform.CompileStatic
 private Map _rmEmptyHealthVerdict(Map overrides) {
     def v = [ok: false, unreadable: false, broken: null, source: "none", ruleFormat: null,
              label: null, disabled: null, paused: null, configPageError: null,
@@ -10068,6 +10108,7 @@ private boolean _uiValueIsEmpty(v, Map meta = null) {
 }
 
 // A classic-app device picker: `capability.<name>` or a driver-specific `device.<DriverName>`.
+@groovy.transform.CompileStatic
 private boolean _isDevicePickerType(type) {
     def t = type?.toString()
     return t != null && (t.startsWith("capability.") || t.startsWith("device."))
@@ -10086,6 +10127,7 @@ private _devicePickerIds(v) {
     return v
 }
 
+@groovy.transform.CompileStatic
 private Map _uiRangeBounds(range) {
     if (!range || !range.toString().contains("..")) return null
     def parts = range.toString().split(/\.\./, 2)
@@ -10097,6 +10139,7 @@ private Map _uiRangeBounds(range) {
     return [min: parse(parts[0]), max: parts.size() > 1 ? parse(parts[1]) : null]
 }
 
+@groovy.transform.CompileStatic
 private String _uiPlainTitle(title) {
     if (!title) return null
     return title.toString().replaceAll(/<[^>]*>/, "").trim() ?: null
@@ -10359,6 +10402,7 @@ boolean hubBpsKeyAccepted(String section, value) {
 String _bpsSectionForTool(toolName) { _guideSectionForTool(toolName) ?: 'best_practice_reference' }
 
 // The gate's refusal. Names the section and why the offered value failed, never a key.
+@groovy.transform.CompileStatic
 String _bpsBlockMessage(String section, value) {
     String v = value?.toString() ?: ''
     String prefix = 'I-HAVE-READ-THE-GUIDE-'
@@ -10428,6 +10472,7 @@ String _guideSectionServed(String key, String body) {
 // what this feature must avoid). The map also selects the gate's required key (null ->
 // best_practice_reference), so it must match best_practice_reference's tool list, and a sub-section
 // that publishes a key must map every write tool it documents to that key (both drift guards).
+@groovy.transform.CompileStatic
 def _guideSectionForTool(toolName) {
     def t = (toolName ?: '').toString()
     if (t == 'hub_set_rule') return 'set_rule_reference'

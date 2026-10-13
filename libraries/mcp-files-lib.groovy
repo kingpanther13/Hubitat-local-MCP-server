@@ -2,6 +2,7 @@ library(name: "McpFilesLib", namespace: "mcp", author: "kingpanther13", descript
 
 // Hubitat's sandbox does not expose java.util.Locale. File Manager names are
 // ASCII-only, so use a deterministic ASCII fold instead of the process locale.
+@groovy.transform.CompileStatic
 private String _filesFoldCase(value) {
     return value?.toString()?.tr('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
 }

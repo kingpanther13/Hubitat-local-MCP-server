@@ -32,7 +32,7 @@ def clone_source(source: str, filename: str, version: str) -> str:
             raise ValueError("Expected one parent currentVersion()")
     if 'name: "MCP Rule Server"' in source or 'name: "MCP Rule"' in source:
         raise ValueError("Production app identity remains")
-    if '#include ' in source:
+    if re.search(r"(?m)^[ \t]*#include[ \t]+", source):
         raise ValueError("Clone must use the inlined release build")
     return source
 

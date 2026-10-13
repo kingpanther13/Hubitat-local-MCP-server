@@ -1078,6 +1078,7 @@ private Map _cloudBackupSize(String path) {
     return (size != null) ? [size: size] : [reason: "sizeUnknown"]
 }
 
+@groovy.transform.CompileStatic
 private String _sizeLookupError(String reason, String name, String where) {
     if (reason == "notListed") return "No backup '${name}' is in the hub's ${where} backup list.".toString()
     if (reason == "unreadable") return "The hub's ${where} backup list could not be read, so the size of '${name}' is unknown and it was not downloaded.".toString()
@@ -1085,6 +1086,7 @@ private String _sizeLookupError(String reason, String name, String where) {
 }
 
 // "7 MB" / "512 KB" / a bare byte count -> bytes; null when it is not one of those.
+@groovy.transform.CompileStatic
 private Long _parseSizeBytes(value) {
     def m = value?.toString() =~ /(?i)^\s*([\d.]+)\s*(B|KB|MB|GB)?\s*$/
     if (!m.find()) return null
@@ -1108,6 +1110,7 @@ private boolean _isFullLocalHubBackup(String fileName) {
 
 // fullRestore options for a full (.tar.gz) backup: what to restore beyond the database. Validated
 // before anything is fetched or sent.
+@groovy.transform.CompileStatic
 private Map _fullRestoreOptions(opts) {
     if (opts != null && !(opts instanceof Map)) throw new IllegalArgumentException("fullRestore must be an object: {restoreZigbee, restoreZwave, restoreFiles, deleteExistingFiles, allowZwaveFirmwareMismatch} (all booleans, default false).")
     def known = ["restoreZigbee", "restoreZwave", "restoreFiles", "deleteExistingFiles", "allowZwaveFirmwareMismatch"]
@@ -1185,6 +1188,7 @@ private Map _restoreRequestFailed(String type, String location, Exception e) {
             note: "The hub may be rebooting into the restore. Do not resend: wait a few minutes, then check hub_get_info (uptime) before deciding."]
 }
 
+@groovy.transform.CompileStatic
 private _parseJsonOrNull(String raw) {
     if (!raw) return null
     try { return new groovy.json.JsonSlurper().parseText(raw) } catch (Exception e) { return null }

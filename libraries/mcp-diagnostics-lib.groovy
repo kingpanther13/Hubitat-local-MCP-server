@@ -366,6 +366,7 @@ def toolGetZigbeeDetails(args) {
     return result
 }
 
+@groovy.transform.CompileStatic
 private Map _parseHubLogLine(String line) {
     if (!line?.trim()) return null
     def parts = line.split("\t", -1)
@@ -1058,6 +1059,7 @@ private List _logsJsonTrimStats(statsList) {
 
 // A present table that is not an array, or a table row that is not an object, is a changed
 // contract and must fail loudly rather than be reported as an empty hub.
+@groovy.transform.CompileStatic
 private List _logsJsonTable(Map data, String key) {
     def table = data[key]
     if (table == null) return []
@@ -1225,6 +1227,7 @@ private Map _logsJsonInProgress(String tool) {
 }
 
 // The runtime-error contract for a Logs-page read that could not be served.
+@groovy.transform.CompileStatic
 private Map _logsJsonFailure(String tool, String detail) {
     String reason = detail?.toString()?.trim() ?: "unknown /logs/json fetch failure"
     return [
@@ -2364,12 +2367,14 @@ private Map _zwFirmwareStartResult(String action, resp, nodeId) {
             response: resp]
 }
 
+@groovy.transform.CompileStatic
 private Integer _zwNodeNumber(String nodeId) {
     if (!(nodeId ==~ /\d+/)) throw new IllegalArgumentException("node_id must be a decimal Z-Wave node number, got '${nodeId}'.")
     return nodeId as Integer
 }
 
 // Whole-number argument, decimal or 0x hex (command classes are usually written in hex).
+@groovy.transform.CompileStatic
 private Integer _zwIntArg(v, String name) {
     def s = v?.toString()?.trim()
     try {
@@ -2388,6 +2393,7 @@ private Map _zwArgObject(v, String name, List known) {
     return v
 }
 
+@groovy.transform.CompileStatic
 private void _zwValidateNetworkKeys(Map keys, List known, String label) {
     def unknown = keys.keySet().findAll { !(it in known) }
     if (unknown) throw new IllegalArgumentException("Unknown ${label} key(s): ${unknown.join(', ')}. Valid: ${known.join(', ')}.")
@@ -2398,6 +2404,7 @@ private void _zwValidateNetworkKeys(Map keys, List known, String label) {
 
 // A radio write the hub did not confirm. strict: only success:true counts (how the UI reads the
 // firmware writes). Otherwise an explicit failure, an error, or an answer that is not JSON.
+@groovy.transform.CompileStatic
 private boolean _radioRefused(resp, boolean strict = false) {
     if (strict) return !(resp instanceof Map) || resp.success != true
     if (resp instanceof Map) return resp.success == false || resp.error || resp._unparseable
@@ -2406,6 +2413,7 @@ private boolean _radioRefused(resp, boolean strict = false) {
 
 // The pair answer: {nodeId, error} on 2.5.2 or a bare node id (also the only shape before 2.5.2),
 // as the UI reads it; node "0" or none means the hub did not start pairing.
+@groovy.transform.CompileStatic
 private Map _matterPairAnswer(resp, String action, String wifiSsid) {
     def node = (resp instanceof Map) ? resp.nodeId : resp
     String nodeId = node?.toString()?.trim()
@@ -2420,6 +2428,7 @@ private Map _matterPairAnswer(resp, String action, String wifiSsid) {
     return out
 }
 
+@groovy.transform.CompileStatic
 private String _radioReason(resp) {
     if (resp == null) return "the hub returned nothing"
     if (resp instanceof Map) return (resp.message ?: resp.error ?: "no reason given").toString()
@@ -2479,6 +2488,7 @@ private Map _zwaveBackupImport(String url) {
 }
 
 // The UI accepts keys with a 0x prefix or stray whitespace and sends bare hex.
+@groovy.transform.CompileStatic
 private Map _zwNormalizeKeys(Map keys) {
     return keys.collectEntries { k, v -> [(k.toString()): (v == null ? "" : v.toString().trim().replaceFirst(/(?i)^0x/, ""))] }
 }
