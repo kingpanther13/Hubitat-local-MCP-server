@@ -318,6 +318,20 @@ class BroadCallbackExtractor {
             String body = render(source, candidate.bodyStart as int, (candidate.range[1] as int) - 1, edits)
             String definition = 'def ' + helper + '(' + (captureParameters + callbackParameters).join(', ') +
                 ') {' + body + '\n}\n'
+            // Generated closures unpack a sole List/Tuple argument. MethodClosure
+            // does not unpack after curry has prepended captured values. Keep the
+            // full signature longest so DGM still sees the original callback arity.
+            if (callbackParameters.size() > 1) {
+                String tuple = '__bat529Tuple'
+                while (candidate.captures.any { it.name == tuple }) tuple += '_'
+                definition += '\ndef ' + helper + '(' +
+                    (captureParameters + ['List ' + tuple]).join(', ') + ') {\n' +
+                    '    if (' + tuple + ' == null || ' + tuple + '.size() != ' + callbackParameters.size() + ')\n' +
+                    "        throw new MissingMethodException('doCall', groovy.lang.Closure, (" +
+                    tuple + ' == null ? [null] : ' + tuple + ').toArray())\n' +
+                    '    return ' + helper + '(' +
+                    (candidate.captures.collect { it.name } + ['*' + tuple]).join(', ') + ')\n}\n'
+            }
             String replacement = '(this.&' + helper + ')'
             if (candidate.captures) replacement = '(' + replacement + '.curry([' +
                 candidate.captures.collect { it.name }.join(', ') + '] as Object[]))'
@@ -330,6 +344,7 @@ class BroadCallbackExtractor {
             helpers << definition
             helperInventory << [name: helper, operation: candidate.operation,
                 callbackArity: callbackParameters.size(), captures: candidate.captures.collect { it.name },
+                tupleAdapter: callbackParameters.size() > 1,
                 bodySourceCharacters: body.length()]
           }
           MethodCallExpression call = group.call

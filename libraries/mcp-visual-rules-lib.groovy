@@ -2166,3 +2166,21 @@ def _bat529Cb_c0a86baf_42(def errors, def ids, def kinds, def nextMap, def seenE
         nextMap["${from}:${port}".toString()] = to
     
 }
+
+def _bat529Cb_c0a86baf_39(def conditionIds, def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_39(conditionIds, errors, *__bat529Tuple)
+}
+
+def _bat529Cb_c0a86baf_41(def errors, def ids, def kinds, def types, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_41(errors, ids, kinds, types, *__bat529Tuple)
+}
+
+def _bat529Cb_c0a86baf_42(def errors, def ids, def kinds, def nextMap, def seenEdges, def usedPorts, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_c0a86baf_42(errors, ids, kinds, nextMap, seenEdges, usedPorts, *__bat529Tuple)
+}

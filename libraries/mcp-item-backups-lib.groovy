@@ -1423,3 +1423,15 @@ def _bat529Cb_8f5ba462_8(def key, def entry) {
 
 def _bat529Cb_8f5ba462_9(def a, def b) { (b.timestampEpoch <=> a.timestampEpoch) 
 }
+
+def _bat529Cb_8f5ba462_8(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_8f5ba462_8(*__bat529Tuple)
+}
+
+def _bat529Cb_8f5ba462_9(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_8f5ba462_9(*__bat529Tuple)
+}

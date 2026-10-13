@@ -1636,3 +1636,27 @@ def _bat529Cb_b8585dac_26(def consumers, def needles, def child) {
             }
         
 }
+
+def _bat529Cb_b8585dac_9(def varName, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_b8585dac_9(varName, *__bat529Tuple)
+}
+
+def _bat529Cb_b8585dac_19(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_b8585dac_19(*__bat529Tuple)
+}
+
+def _bat529Cb_b8585dac_20(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_b8585dac_20(*__bat529Tuple)
+}
+
+def _bat529Cb_b8585dac_24(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_b8585dac_24(*__bat529Tuple)
+}

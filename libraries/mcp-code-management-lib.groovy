@@ -3229,3 +3229,15 @@ def _bat529Cb_3ac884d1_34(def filter, def entry) {
             }
         
 }
+
+def _bat529Cb_3ac884d1_25(def passwordInputNames, def redactedPw, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_3ac884d1_25(passwordInputNames, redactedPw, *__bat529Tuple)
+}
+
+def _bat529Cb_3ac884d1_32(def body, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_3ac884d1_32(body, *__bat529Tuple)
+}

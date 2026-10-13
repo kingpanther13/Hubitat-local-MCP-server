@@ -406,3 +406,15 @@ def _bat529Cb_f7f9d965_7(def prefix, def f) {
                     return entry
                 
 }
+
+def _bat529Cb_f7f9d965_2(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_f7f9d965_2(*__bat529Tuple)
+}
+
+def _bat529Cb_f7f9d965_3(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_f7f9d965_3(*__bat529Tuple)
+}

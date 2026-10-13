@@ -6356,3 +6356,213 @@ def _bat529Cb_15d0a4c9_258(def d, def deviceId, def fields, def fj, def identity
         result.sections.put(section, value)
     
 }
+
+def _bat529Cb_15d0a4c9_69(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_69(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_81(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_81(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_86(def spineIds, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_86(spineIds, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_98(def payload, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_98(payload, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_122(def names, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_122(names, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_151(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_151(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_161(def fresh, def payload, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_161(fresh, payload, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_167(def fields, def selected, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_167(fields, selected, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_175(def e, def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_175(e, errors, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_176(def e, def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_176(e, errors, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_185(def copy, def name, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_185(copy, name, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_191(def enc, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_191(enc, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_195(def changes, def deviceId, def errors, def model, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_195(changes, deviceId, errors, model, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_202(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_202(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_211(def declaredTypes, def out, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_211(declaredTypes, out, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_213(def states, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_213(states, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_216(def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_216(errors, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_217(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_217(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_219(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_219(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_223(def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_223(errors, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_224(def snapshot, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_224(snapshot, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_226(def args, def assistantAvailable, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_226(args, assistantAvailable, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_229(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_229(*__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_231(def coercedIds, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_231(coercedIds, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_236(def recovered, def recoveryErrors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_236(recovered, recoveryErrors, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_240(def problems, def scope, def source, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_240(problems, scope, source, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_241(def args, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_241(args, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_242(def errors, def response, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_242(errors, response, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_244(def d, def fj, def problems, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_244(d, fj, problems, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_246(def declaredTypes, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_246(declaredTypes, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_247(def assistants, def changes, def errors, def readback, def response, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_247(assistants, changes, errors, readback, response, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_248(def changes, def deviceId, def errors, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_248(changes, deviceId, errors, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_249(def changes, def errors, def full, def updated, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_249(changes, errors, full, updated, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_251(def entryDeviceIds, def validEntryKeys, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_251(entryDeviceIds, validEntryKeys, *__bat529Tuple)
+}
+
+def _bat529Cb_15d0a4c9_254(def model, def normalized, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_15d0a4c9_254(model, normalized, *__bat529Tuple)
+}

@@ -691,3 +691,27 @@ def _bat529Cb_112d3686_14(def skippedMalformed, def manifestUrl, def manifest) {
 
 def _bat529Cb_112d3686_15(def it) { it != null 
 }
+
+def _bat529Cb_112d3686_4(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_112d3686_4(*__bat529Tuple)
+}
+
+def _bat529Cb_112d3686_6(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_112d3686_6(*__bat529Tuple)
+}
+
+def _bat529Cb_112d3686_7(def packageFilter, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_112d3686_7(packageFilter, *__bat529Tuple)
+}
+
+def _bat529Cb_112d3686_14(def skippedMalformed, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_112d3686_14(skippedMalformed, *__bat529Tuple)
+}

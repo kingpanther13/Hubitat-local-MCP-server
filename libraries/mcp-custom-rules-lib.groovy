@@ -871,3 +871,9 @@ def _bat529Cb_221baae5_29(def it) { it != null
 
 def _bat529Cb_221baae5_30(def it) { it != null 
 }
+
+def _bat529Cb_221baae5_26(def manifest, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_221baae5_26(manifest, *__bat529Tuple)
+}

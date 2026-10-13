@@ -1630,3 +1630,15 @@ def _bat529Cb_523e098a_16(def it) { it instanceof Map && it.key == "PLATFORM_UPD
 
 def _bat529Cb_523e098a_17(def it) { [key: it.key, message: it.message, version: it.version, dismissible: it.dismissible == true] 
 }
+
+def _bat529Cb_523e098a_5(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_523e098a_5(*__bat529Tuple)
+}
+
+def _bat529Cb_523e098a_13(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_523e098a_13(*__bat529Tuple)
+}

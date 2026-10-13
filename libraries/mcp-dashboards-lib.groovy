@@ -1200,3 +1200,15 @@ def _bat529Cb_298d4999_30(def probe, def tiles, def warnings, def spec) {
             _warnUnauthorizedTileDevice(tile, probe, warnings)
         
 }
+
+def _bat529Cb_298d4999_16(def tile, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_298d4999_16(tile, *__bat529Tuple)
+}
+
+def _bat529Cb_298d4999_29(def layout, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_298d4999_29(layout, *__bat529Tuple)
+}

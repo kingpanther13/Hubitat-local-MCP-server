@@ -3104,3 +3104,45 @@ def _bat529Cb_7399a956_50(def healthy, def stale, def staleThreshold, def unknow
         }
     
 }
+
+def _bat529Cb_7399a956_6(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_6(*__bat529Tuple)
+}
+
+def _bat529Cb_7399a956_9(def id, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_9(id, *__bat529Tuple)
+}
+
+def _bat529Cb_7399a956_18(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_18(*__bat529Tuple)
+}
+
+def _bat529Cb_7399a956_21(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_21(*__bat529Tuple)
+}
+
+def _bat529Cb_7399a956_31(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_31(*__bat529Tuple)
+}
+
+def _bat529Cb_7399a956_32(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_32(*__bat529Tuple)
+}
+
+def _bat529Cb_7399a956_44(def entries, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_7399a956_44(entries, *__bat529Tuple)
+}

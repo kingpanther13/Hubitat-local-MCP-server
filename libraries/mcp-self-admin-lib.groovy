@@ -1047,3 +1047,9 @@ def _bat529Cb_13cb0dba_17(def requestedIds, def raw) {
         if (!requestedIds.contains(s)) requestedIds << s
     
 }
+
+def _bat529Cb_13cb0dba_15(def allowedSettings, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_13cb0dba_15(allowedSettings, *__bat529Tuple)
+}

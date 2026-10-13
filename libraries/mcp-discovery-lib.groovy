@@ -550,3 +550,33 @@ def _bat529Cb_ac505e8e_23(def displayMeta, def gatewayConfig, def searchHideByNa
         return entry
     
 }
+
+def _bat529Cb_ac505e8e_3(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_3(*__bat529Tuple)
+}
+
+def _bat529Cb_ac505e8e_12(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_12(*__bat529Tuple)
+}
+
+def _bat529Cb_ac505e8e_15(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_15(*__bat529Tuple)
+}
+
+def _bat529Cb_ac505e8e_16(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_16(*__bat529Tuple)
+}
+
+def _bat529Cb_ac505e8e_22(def allDefsMap, def corpus, def displayMeta, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_ac505e8e_22(allDefsMap, corpus, displayMeta, *__bat529Tuple)
+}

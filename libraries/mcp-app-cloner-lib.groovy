@@ -1705,3 +1705,33 @@ def _bat529Cb_dbfd46be_40(def deviceGone, def liveDeviceIds, def savedSchema, de
         return [(key): ids]
     
 }
+
+def _bat529Cb_dbfd46be_21(def savedSchema, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_21(savedSchema, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_30(def navValues, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_30(navValues, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_33(def navValues, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_33(navValues, *__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_35(List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_35(*__bat529Tuple)
+}
+
+def _bat529Cb_dbfd46be_40(def deviceGone, def liveDeviceIds, def savedSchema, def skippedDevices, def skippedMaps, List __bat529Tuple) {
+    if (__bat529Tuple == null || __bat529Tuple.size() != 2)
+        throw new MissingMethodException('doCall', groovy.lang.Closure, (__bat529Tuple == null ? [null] : __bat529Tuple).toArray())
+    return _bat529Cb_dbfd46be_40(deviceGone, liveDeviceIds, savedSchema, skippedDevices, skippedMaps, *__bat529Tuple)
+}
