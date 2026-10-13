@@ -40,8 +40,6 @@ import groovy.json.JsonSlurper
 @groovy.transform.Field static final Map PRED_CLEAR_STORES = new java.util.HashMap()
 @groovy.transform.Field static final Map WRITE_STATE_CACHE = new java.util.HashMap()
 @groovy.transform.Field static final Set WRITE_STATE_DURABLE_MAPS = new java.util.HashSet()
-@groovy.transform.Field static volatile String TOOL_SEARCH_CORPUS_FP = null
-@groovy.transform.Field static final Map TOOL_SEARCH_INDEX = new java.util.HashMap()
 @groovy.transform.Field static final Map TOOL_METADATA_CACHE = new java.util.HashMap()
 @groovy.transform.Field static final long WORKER_START_DELAY_MS = 50L
 @groovy.transform.Field static final long WORKER_POLL_MS = 50L
@@ -20770,185 +20768,6 @@ private Map _mrtrAppClonerStageSlice(Map cp, String operationLabel) {
     _appClonerCleanup(cp.clonerAppId as Integer)
     return result
 }
-def toolSearchTools(args) {
-    def query = args.query
-    if (!query?.trim()) return [error: "query is required"]
-    _cleanupRetiredToolState()
-    def maxResults = args.maxResults != null ? Math.max(0, args.maxResults as Integer) : 5
-    def allDefs = null
-    String corpusFp = TOOL_SEARCH_CORPUS_FP
-    if (corpusFp == null) {
-        allDefs = getAllToolDefinitions()
-        corpusFp = toolSearchCorpusFingerprint(allDefs)
-        TOOL_SEARCH_CORPUS_FP = corpusFp
-    }
-    def corpus = null
-    def docTokensAll = null
-    synchronized (TOOL_SEARCH_INDEX) {
-        if (TOOL_SEARCH_INDEX.fingerprint != corpusFp || !(TOOL_SEARCH_INDEX.corpus instanceof List) ||
-                !(TOOL_SEARCH_INDEX.tokens instanceof List) || TOOL_SEARCH_INDEX.tokens.size() != TOOL_SEARCH_INDEX.corpus.size()) {
-            def built = buildToolSearchCorpus(allDefs)
-            def tokens = built.collect { bm25Tokenize(_bm25DocText(it)) }
-            TOOL_SEARCH_INDEX.clear()
-            TOOL_SEARCH_INDEX.putAll([fingerprint: corpusFp, corpus: built, tokens: tokens])
-        }
-        corpus = TOOL_SEARCH_INDEX.corpus
-        docTokensAll = TOOL_SEARCH_INDEX.tokens
-    }
-    def searchHideByName = getHiddenToolNames()
-    def visibleCorpus = []
-    def docTokens = []
-    corpus.eachWithIndex { entry, i ->
-        if (searchHideByName.contains(entry.name)) return
-        visibleCorpus << entry
-        docTokens << docTokensAll[i]
-    }
-    def queryTokens = bm25Tokenize(query)
-    if (!queryTokens) return [results: [], message: "No searchable terms in query"]
-    def scores = bm25Score(docTokens, queryTokens)
-    def ranked = []
-    scores.eachWithIndex { score, idx ->
-        if (score > 0) ranked << [index: idx, score: score]
-    }
-    ranked.sort { -it.score }
-    def seenSearchNames = [] as Set
-    ranked = ranked.findAll { r ->
-        def nm = visibleCorpus[r.index].name
-        if (seenSearchNames.contains(nm)) return false
-        seenSearchNames << nm
-        return true
-    }
-    if (ranked.size() > maxResults) ranked = ranked.take(maxResults)
-    def gatewayConfig = getGatewayConfig()
-    def displayMeta = getToolDisplayMeta()
-    def results = ranked.collect { r ->
-        def tool = visibleCorpus[r.index]
-        def entry = [
-            tool: _externalToolName(tool.name as String),
-            description: _withGuideFirst(tool.name as String, tool.description as String),
-            relevance: Math.round(r.score * 100) / 100.0
-        ]
-        if (tool.title) entry.title = tool.title
-        if (tool.gateway) {
-            def config = gatewayConfig.get(tool.gateway)
-            def intro = _visibleGatewayIntro(tool.gateway, gatewayConfig, searchHideByName, displayMeta)
-            entry.description = _withGuideFirst(tool.name as String, "${config.summaries.get(tool.name) ?: ''} [${intro}]".toString())
-            entry.gateway = _externalToolName(tool.gateway as String)
-            entry.callAs = "Call via ${_externalToolName(tool.gateway as String)}(tool=\"${_externalToolName(tool.name as String)}\", args={...})"
-        } else {
-            entry.callAs = "Call directly: ${_externalToolName(tool.name as String)}({...})"
-        }
-        return entry
-    }
-    return [
-        query: query,
-        resultsCount: results.size(),
-        totalToolsSearched: visibleCorpus*.name.toSet().size(),
-        results: results
-    ]
-}
-def toolSearchCorpusFingerprint(List defs = null) {
-    long h = 17L
-    def displayMeta = getToolDisplayMeta()
-    applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false).each { toolDef ->
-        h = _fpField(h, toolDef.name as String)
-        h = _fpField(h, displayMeta[toolDef.name]?.title)
-        h = _fpField(h, toolDef.description)
-        h = _fpField(h, toolDef.inputSchema?.properties?.keySet()?.join(','))
-    }
-    getGatewayConfig().each { gwName, config ->
-        h = _fpField(h, gwName as String)
-        h = _fpField(h, config.description)
-        config.tools.each { toolName ->
-            h = _fpField(h, toolName as String)
-            h = _fpField(h, config.summaries?."${toolName}")
-            h = _fpField(h, config.searchHints?."${toolName}")
-        }
-    }
-    h = _fpField(h, bm25Tokenize(_bm25DocText(
-        [name: 'hub_x-1', title: 'A_b', description: 'cd', params: 'ef', hints: 'gh',
-         gateway: 'ij'])).join(','))
-    return Long.toString(h)
-}
-private String _bm25DocText(entry) {
-    return "${entry.name} ${entry.title ?: ''} ${entry.description} ${entry.params ?: ''} ${entry.hints ?: ''}"
-}
-@groovy.transform.CompileStatic
-private long _fpField(long h, value) {
-    String s = (value == null) ? "" : value.toString()
-    h = h * 31L + s.length()
-    return h * 31L + s.hashCode()
-}
-private buildToolSearchCorpus(List defs = null) {
-    def gatewayConfig = getGatewayConfig()
-    def proxiedNames = gatewayConfig.values().collectMany { it.tools } as Set
-    def allDefs = applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false)
-    def allDefsMap = allDefs.collectEntries { [(it.name): it] }
-    def displayMeta = getToolDisplayMeta()
-    def corpus = []
-    allDefs.each { toolDef ->
-        if (!proxiedNames.contains(toolDef.name)) {
-            def params = toolDef.inputSchema?.properties?.keySet()?.join(" ") ?: ""
-            corpus << [name: toolDef.name, title: displayMeta[toolDef.name]?.title, description: toolDef.description?.replaceAll(/\n+/, ' ')?.trim(), params: params, gateway: null]
-        }
-    }
-    gatewayConfig.each { gwName, config ->
-        config.tools.each { toolName ->
-            def summary = config.summaries[toolName] ?: ""
-            def hints = config.searchHints?."${toolName}" ?: ""
-            def fullDef = allDefsMap[toolName]
-            def params = fullDef?.inputSchema?.properties?.keySet()?.join(" ") ?: ""
-            corpus << [name: toolName, title: displayMeta[toolName]?.title, description: "${summary} [${config.description}]", params: params, hints: hints, gateway: gwName]
-        }
-    }
-    return corpus
-}
-@groovy.transform.CompileStatic
-private bm25Tokenize(String text) {
-    if (!text) return []
-    return text.toLowerCase().split(/[^a-z0-9]+/).findAll { it.length() > 1 }
-}
-@groovy.transform.CompileStatic
-private String _bm25Key(String token) {
-    return "t_${token}".toString()
-}
-@groovy.transform.CompileStatic
-private List<Double> bm25Score(List<List<String>> docTokens, List<String> queryTokens) {
-    BigDecimal k1 = 1.5
-    BigDecimal b = 0.75
-    int n = docTokens.size()
-    if (n == 0) return []
-    List<Integer> docLengths = docTokens.collect { it.size() }
-    double avgDl = (docLengths.sum() as Number).doubleValue() / (double) n
-    if (avgDl == 0) return new double[n] as List
-    Map<String, Integer> df = [:]
-    docTokens.each { tokens ->
-        tokens.toSet().each { token ->
-            String k = _bm25Key(token)
-            df.put(k, (df.get(k) ?: 0) + 1)
-        }
-    }
-    double[] scores = new double[n]
-    docTokens.eachWithIndex { tokens, docIdx ->
-        Map<String, Integer> tf = [:]
-        tokens.each { t -> String k = _bm25Key(t); tf.put(k, (tf.get(k) ?: 0) + 1) }
-        int dl = docLengths[docIdx]
-        double score = 0.0
-        queryTokens.each { rawQt ->
-            String qt = _bm25Key(rawQt)
-            int termFreq = tf.get(qt) ?: 0
-            if (termFreq > 0) {
-                int docFreq = df.get(qt) ?: 0
-                double idf = Math.log(((n - docFreq + 0.5) / (docFreq + 0.5) + 1.0).doubleValue())
-                BigDecimal num = termFreq * (k1 + 1)
-                double den = (termFreq + k1 * (1 - b + b * dl / avgDl)) as double
-                score += idf * num.doubleValue() / den
-            }
-        }
-        scores[docIdx] = score
-    }
-    return scores as List
-}
 def toolGetToolGuide(section, cursor = null, Map apiDocs = null) {
     if (apiDocs?.platform_api_search != null || apiDocs?.platform_api_page != null) {
         if (section) throw new IllegalArgumentException("section and platform_api_search / platform_api_page are separate lookups; send one.")
@@ -21086,13 +20905,13 @@ private Map _withGuidePage(Map result, content, cursor) {
     return result
 }
 def _getAllToolDefinitions_partDiscovery() {
-    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_tool_guide"],["description","Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool\'s section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent\'s response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (paged via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub\'s own Groovy API documentation instead.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["section",["m",[["type","string"],["description","One section key from the enum. Omit to get the key list plus the first page of the full guide."],["enum",["l",["device_authorization","best_practice_reference","tool_access","hub_admin_write","hub_admin_write_overview","hub_admin_write_destructive","hub_admin_write_radios","hub_admin_write_devices","hub_admin_write_code","hub_admin_write_system","virtual_devices","update_device","rules","backup","file_manager","performance","performance_overview","performance_devices","performance_diagnostics","builtin_app_tools","builtin_app_tools_overview","builtin_app_tools_apps","builtin_app_tools_rules","builtin_app_tools_crud","set_rule_reference","set_rule_reference_overview","set_rule_reference_triggers","set_rule_reference_actions","set_rule_reference_conditions","set_rule_reference_walkstep","set_rule_reference_responses","set_rule_reference_guards","set_rule_create_reference","visual_rule_reference","variables","dashboards","bundles","rooms","slow_ops"]]]]]],["cursor",["m",[["type","string"],["description","Continue a paged payload: pass the prior call\'s nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."]]]],["platform_api_search",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: search the hub\'s Groovy API docs, e.g. \'eventsBetween\'.[[/FLAT_TRIM]]"]]]],["platform_api_page",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_search_tools"],["description","Search all MCP tools by natural language query (BM25 ranking). Searches tool names, friendly titles, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need."],["inputSchema",["m",[["type","object"],["properties",["m",[["query",["m",[["type","string"],["description","Natural language search query (e.g. \'zigbee radio\', \'delete app\', \'memory leak\', \'room management\')"]]]],["maxResults",["m",[["type","integer"],["description","Max results to return. Default: 5."],["default",5]]]]]]],["required",["l",["query"]]]]]]]]]]'])
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_tool_guide"],["description","Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool\'s section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent\'s response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (paged via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub\'s own Groovy API documentation instead.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["section",["m",[["type","string"],["description","One section key from the enum. Omit to get the key list plus the first page of the full guide."],["enum",["l",["device_authorization","best_practice_reference","tool_access","hub_admin_write","hub_admin_write_overview","hub_admin_write_destructive","hub_admin_write_radios","hub_admin_write_devices","hub_admin_write_code","hub_admin_write_system","virtual_devices","update_device","rules","backup","file_manager","performance","performance_overview","performance_devices","performance_diagnostics","builtin_app_tools","builtin_app_tools_overview","builtin_app_tools_apps","builtin_app_tools_rules","builtin_app_tools_crud","set_rule_reference","set_rule_reference_overview","set_rule_reference_triggers","set_rule_reference_actions","set_rule_reference_conditions","set_rule_reference_walkstep","set_rule_reference_responses","set_rule_reference_guards","set_rule_create_reference","visual_rule_reference","variables","dashboards","bundles","rooms","slow_ops"]]]]]],["cursor",["m",[["type","string"],["description","Continue a paged payload: pass the prior call\'s nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."]]]],["platform_api_search",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: search the hub\'s Groovy API docs, e.g. \'eventsBetween\'.[[/FLAT_TRIM]]"]]]],["platform_api_page",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]]]]]]]]]]]]]]'])
 }
 def _readOnlyToolNames_partDiscovery() {
-    return _bat529EmbeddedCatalogRead(['["l",["hub_get_tool_guide","hub_search_tools"]]'])
+    return _bat529EmbeddedCatalogRead(['["l",["hub_get_tool_guide"]]'])
 }
 def _toolDisplayMeta_partDiscovery() {
-    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_tool_guide",["m",[["title","Get Tool Guide"],["summary","Deep-reference guide for MCP tool topics, plus search of the hub\'s own Groovy API documentation."]]]],["hub_search_tools",["m",[["title","Search Tools"],["summary","Search all MCP tools by natural-language query."]]]]]]'])
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_tool_guide",["m",[["title","Get Tool Guide"],["summary","Deep-reference guide for MCP tool topics, plus search of the hub\'s own Groovy API documentation."]]]]]]'])
 }
 def _getAllToolDefinitions_partNativeRM() {
     return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_rules"],["description","List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id) with each rule\'s id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub\'s app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub\'s list source decorates the label (many firmwares don\'t) \\u2014 the authoritative stopped check is hub_get_rule_health\'s `stopped` field. For ONE rule\'s state, call hub_get_rule_health(appId) instead of listing every rule \\u2014 it returns that rule\'s paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope=\'instances\'). Call `hub_get_tool_guide(section=\'builtin_app_tools_rules\')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_call_rule"],["description","Trigger one or more Rule Machine rules. Not destructive (invokes existing user-configured automation).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]] Call `hub_get_tool_guide(section=\'builtin_app_tools_rules\')` for action semantics."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type",["l",["integer","array"]]],["items",["m",[["type","integer"]]]],["description","Rule ID from hub_list_rules, or an array of rule IDs to act on in one call"]]]],["action",["m",[["type","string"],["enum",["l",["rule","actions","stop","start"]]],["description","Which RM action to invoke. Default: rule."]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_set_rule_paused"],["description","Pause or resume one or more Rule Machine rules in one call (paused rules don\'t fire on triggers). paused=true pauses, paused=false resumes (idempotent on the hub). Pass an array of ruleIds to pause/resume a whole set at once \\u2014 one RMUtils dispatch, e.g. a staged-migration cutover.[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type",["l",["integer","array"]]],["items",["m",[["type","integer"]]]],["description","Rule ID from hub_list_rules, or an array of rule IDs to pause/resume together"]]]],["paused",["m",[["type","boolean"],["description","true = pause the rule(s); false = resume."]]]]]]],["required",["l",["ruleId","paused"]]]]]]]],["m",[["name","hub_set_rule_private_boolean"],["description","Set the private boolean of one or more Rule Machine rules to true or false (strict: accepts Boolean or lowercase string \'true\'/\'false\' only).[[FLAT_TRIM]] Requires the Write master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type",["l",["integer","array"]]],["items",["m",[["type","integer"]]]],["description","Rule ID from hub_list_rules, or an array of rule IDs to set together"]]]],["value",["m",[["type","boolean"],["description","Target value for the rule\'s Private Boolean."]]]]]]],["required",["l",["ruleId","value"]]]]]]]],["m",[["name","hub_set_native_app"],["description","Create OR edit a classic native app (Room Lighting, Button Controller, Notifier, Group, Scene, Visual Rule, etc.): omit appId to CREATE (appType + name), provide appId to EDIT.[[FLAT_TRIM]] One generic upsert for any classic SmartApp instance via settings/button.[[/FLAT_TRIM]] For Rule Machine RULES use hub_set_rule[[FLAT_TRIM]] (in the hub_manage_rule_machine gateway)[[/FLAT_TRIM]] instead.[[FLAT_TRIM]] Its one-call structured shortcuts are the preferred RM path, NOT this tool\'s raw settings/walkStep.[[/FLAT_TRIM]]\\n\\nRequires the Write master + confirm=true + recent hub backup.[[FLAT_TRIM]]\\n\\nOn MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and eventually return one final result; no custom token or client extension is needed. Older clients retain the existing status:\'in_progress\' remainder envelope. See hub_get_tool_guide(section=\'slow_ops\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app id of an existing classic app (from hub_list_apps with scope=\'instances\'). OMIT to CREATE a new app of `appType` (then `name` is required); PROVIDE to EDIT an existing app\'s settings/button."]]]],["appType",["m",[["type","string"],["enum",["l",["rule_machine","button_controller","groups_scenes","notifier","basic_rule","room_lighting"]]],["description","Native app class to CREATE (appId omitted). Default: rule_machine. Visual Rules: use hub_set_visual_rule (not this enum).[[FLAT_TRIM]] Other classic apps are edited by appId and can usually be created through their parent app\'s own page (e.g. the Room Lighting parent\'s newScene input creates Room Lights from a group or scene) -- see hub_get_tool_guide(section=\'builtin_app_tools_crud\').[[/FLAT_TRIM]]"]]]],["name",["m",[["type","string"],["description","Label for the new app. Required on CREATE (when appId is omitted); ignored when appId is provided."]]]],["settings",["m",[["type","object"],["description","Map {inputName: value} to write to the app\'s current config page: scalars for bool/enum/text/number inputs; for device inputs (capability.* or driver-specific device.*) a List of device IDs or the {id: label} map hub_get_app_config returns. Discover input names via hub_get_app_config; inputs on a sub-page need pageName or walkStep."]]]],["button",["m",[["type","string"],["description","Page-transition button name to click (discover via hub_get_app_config)."]]]],["pageName",["m",[["type","string"],["description","Optional sub-page for schema introspection + settings POST."]]]],["stateAttribute",["m",[["type","string"],["description","Optional state attribute value for the button click."]]]],["buttonRule",["m",[["type","object"],["description","Create a Button Rule under an existing Button Controller."],["properties",["m",[["controllerId",["m",[["type","integer"],["description","Button Controller-5.1 appId"]]]],["buttonNumber",["m",[["type","integer"],["description","button number (>=1)"]]]],["event",["m",[["type","string"],["enum",["l",["pushed","held","doubleTapped","released"]]]]]]]]]]]],["walkStep",["m",[["type","object"],["description","Multi-page classic-app walker \\u2014 EDIT-only (requires appId; rejected on create). Use it for inputs on a sub-page (hub_list_app_pages lists them), inputs that appear only after an earlier choice, and anything settings/button cannot represent.[[FLAT_TRIM]] For RM rules prefer hub_set_rule\'s structured shortcuts, which do the same walk in one call. Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation=\'drive\' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule\'s walkStep.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","Must be true. Safety gate for Write master operations."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_set_rule"],["description","Create OR edit a Hubitat Rule Machine rule (RM 5.1) \\u2014 one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. In trigger/action/condition specs use `capability` NOT `type`. RM-only \\u2014 for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; each edit ensures a File Manager baseline exists (same-rule baselines are reused for one hour by default; backup.backupKey restores it through hub_manage_backup).\\n\\nALWAYS prefer the one-call shortcuts (addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, remove/modify/move/clear, addLocalVariable/removeLocalVariable, patches); walkStep and raw settings+button are LAST RESORTS.[[FLAT_TRIM]] Each shortcut orchestrates the full RM 5.1 wizard in one call; walkStep (one wizard page per call) covers capabilities no shortcut can represent.\\n\\nPartial-success (every shortcut): success:true can pair with partial:true \\u2014 inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button=\'updateRule\', confirm=true). If wizardStuck:true, first run the close-editor click restoreHint names (cancelCapab for a condition sub-wizard, actionCancel for the action editor). On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).[[/FLAT_TRIM]]\\n\\nDeep reference + worked examples: guide:true inline, or hub_get_tool_guide(section=\'set_rule_reference\').[[FLAT_TRIM]] Full create + repair protocol: hub_get_tool_guide(section=\'set_rule_create_reference\'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.\\n\\nOn MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and return one final result. Older clients retain the status:\'in_progress\' remainder envelope. See hub_get_tool_guide(section=\'slow_ops\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","RM rule ID (the rule\'s installed-app id). OMIT to CREATE a new rule (then `name` is required); PROVIDE to EDIT an existing rule."]]]],["name",["m",[["type","string"],["description","Label for the new rule (shown in Hubitat\'s Rule Machine app list). Required on CREATE (when appId is omitted); ignored when appId is provided. To RENAME an existing rule, do not pass name -- write the new label as a setting: settings:{origLabel:\'New Name\'} (a mainPage settings write auto-commits via updateRule, which copies origLabel to the display label; passing button:\'updateRule\' too is harmless but redundant)."]]]],["settings",["m",[["type","object"],["description","Map {inputName: value}: scalars for bool/enum/text/number inputs, list of device IDs for multi-device inputs, capability.* or driver-specific device.* (the multiple=true 3-field contract is emitted and verified automatically \\u2014 you don\'t manage it)."]]]],["button",["m",[["type","string"],["description","Page-transition button name (e.g. updateRule, editCond, pausRule for RM; discover others via hub_get_app_config)."]]]],["pageName",["m",[["type","string"],["description","Optional sub-page for schema introspection + settings POST."]]]],["stateAttribute",["m",[["type","string"],["description","Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."]]]],["addTrigger",["m",[["type","object"],["description","Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:\'switch\'}` is rejected); returns triggerIndex. Capability families (use these display names): Device-state \\u2014 Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source; Numeric \\u2014 Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints; Button; Custom Attribute; Certain Time (and optional date) / Sunrise / Sunset (the picker value is the full \'Certain Time (and optional date)\' string); Mode; Periodic Schedule. Modifiers: andStays, allOfThese. Optional per spec: conditional (sets the conditional-trigger gate \\u2014 pair with `condition` to bind it in one call), condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?, rawSettings?} (a NARROWER set than addRequiredExpression), rawSettings {field:value} with @N = the auto-assigned index (e.g. {\'xVar@N\':\'myVar\'}). addTriggers[] = bulk, updateRule once at the end. Per-field specs and the periodic shape: pass {discover: true}, guide:true, or hub_get_tool_guide(section=\'set_rule_reference_triggers\'). Extended condition shapes: section=\'set_rule_reference_conditions\'. Cross-cutting fail-loud steers: section=\'set_rule_reference_guards\'."]]]],["addTriggers",["m",[["type","array"],["description","Bulk-add triggers (each item the same shape as addTrigger); updateRule fires ONCE at the end. The first failed or partial item stops the batch: later items are notAttempted and updateRule is not fired. Pairs with addActions to build a whole rule in one call."],["items",["m",[["type","object"]]]]]]],["addRequiredExpression",["m",[["type","object"],["description","Add an RM 5.1 Required Expression (the pre-trigger gate that conditions whether the rule may fire); returns conditionIndices. Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}, ...], operator:\'AND\'|\'OR\'|\'XOR\' OR operators:[...] (one per gap; RM walks left to right and stops early, so group mixed AND/OR with subExpression)}. comparator is REQUIRED with attribute (Custom Attribute) and with variable+value (Variable); ASCII !=/<>/== auto-map to RM glyphs, and a free-valued (String) variable/attribute offers `*contains*` (substring match; negate with not:true). STPage capability list and extended shapes (Mode, Between two times, Variable incl. compareToVariable, device-relative compareToDevice, nested subExpression): guide:true or hub_get_tool_guide(section=\'set_rule_reference_conditions\'); cross-cutting fail-loud steers: section=\'set_rule_reference_guards\'."]]]],["replaceRequiredExpression",["m",[["type","object"],["description","Replace the rule\'s existing Required Expression in place (same appId). Same spec as addRequiredExpression ({conditions:[...], operator|operators}, incl. `*contains*` substring match on a free-valued String variable/attribute -- negate with not:true); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing). A failed build leaves the original in place (originalPreserved:true); a failure after the switch rolls back to the original (requiredExpressionRestored).[[FLAT_TRIM]] The new expression is built after the existing one in RM\'s expression editor and the old one is removed only once the new one is complete. The replaced conditions stay listed as unused under Manage Conditions.[[/FLAT_TRIM]]"]]]],["addActions",["m",[["type","array"],["description","Bulk-add actions (each item the same shape as addAction; actions self-bake via doActPage); updateRule fires once at the end. The first failed or partial item stops the batch: later items are notAttempted and updateRule is not fired. Pairs with addTriggers."],["items",["m",[["type","object"]]]]]]],["addLocalVariable",["m",[["type","object"],["description","Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions."]]]],["removeLocalVariable",["m",[["type","object"],["description","Remove a local variable. Spec: {name}. WARNING: RM does NOT refuse to delete a local an action still references \\u2014 the delete usually succeeds and leaves the referencing action Broken; that returns success=false (deleted=true) with a repairHint to restore the pre-delete backup (backupKey in the response) or remove the references first. List current locals via hub_list_rule_local_variables (in hub_read_rules)."]]]],["patches",["m",[["type","array"],["description","Multi-mutation in one call (not a transaction: ops before a stop stay written): each item is a sub-spec with ONE operation key (settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, modifyAction). Operations run sequentially; updateRule fires once at the end; per-op outcome in patches[i]. The first failed or partial op or inner item stops the batch: later ops are notAttempted and updateRule is not fired."],["items",["m",[["type","object"]]]]]]],["removeAction",["m",[["type","object"],["description","Delete one action by index: {index:<N>}. RM preserves remaining indices (no renumbering)."]]]],["clearActions",["m",[["type","boolean"],["description","Pass true to delete every action (highest index first) \\u2014 the wipe-and-rebuild pattern. On a rare unconfirmed late commit (asyncCommitLikely:true) verify via hub_get_app_config(appId); do NOT call cancelTrash (it can commit pending deletes)."]]]],["replaceActions",["m",[["type","array"],["description","Replace the entire action list (not a transaction): clears all actions, bulk-adds every spec here (same shape as addAction items), then updateRule once. The first failed or partial added item stops the rest (notAttempted, no updateRule); the old list is already cleared. Pass [] to clear all (= clearActions). On asyncCommitLikely:true verify before retrying; do NOT call cancelTrash."],["items",["m",[["type","object"]]]]]]],["moveAction",["m",[["type","object"],["description","Move one action up or down a slot: {index:<N>, direction:\'up\'|\'down\'}. For arbitrary reorders prefer replaceActions (one call)."]]]],["removeTrigger",["m",[["type","object"],["description","Delete one trigger by index: {index:<N>}. RM preserves remaining indices. Use addTrigger to add a replacement."]]]],["modifyTrigger",["m",[["type","object"],["description","Change a trigger\'s state field: {index:<N>, mods:{state:\'<new-state>\'}}. Only the state field is supported, and only on device-state triggers (Switch, Motion, Contact, Lock, Presence, ...) \\u2014 Time/Periodic/Mode triggers are rejected with a removeTrigger+addTrigger hint. To change capability or deviceIds, use removeTrigger + addTrigger."]]]],["modifyAction",["m",[["type","object"],["description","Retarget a rule-targeting action in one op: {index:<N>, mods:{ruleIds:[...]}} \\u2014 e.g. point a Run Rule Actions caller at a replacement rule during a staged migration. Supported on runRule/cancelTimers/pauseRule (mods also: action \'pause\'|\'resume\') and privateBoolean (mods also: value bool) actions; other action shapes are rejected toward removeAction + addAction. Implemented as a position-preserving rebuild (remove + re-add + reposition), so the action\'s settings index changes while its position is kept."]]]],["walkStep",["m",[["type","object"],["description","Raw wizard walker \\u2014 LAST RESORT, one call per wizard step (token-heavy): use ONLY when the structured shortcuts can\'t represent the change (Periodic sub-pages, conditional-trigger binding, later-firmware features). operation=\'drive\' runs a whole steps=[...] loop in ONE call (introspect \\u2192 navigate into a sub-page \\u2192 write each field \\u2192 done \\u2192 finalize), carrying the page forward and stopping at the first failed step (stopOnError=false to continue); the single-step primitives drive composes are introspect | write (one field) | click | navigate | done. Spec: {page, operation, write?:{field:value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?}, steps?:[...]}; page is e.g. selectTriggers/selectActions/doActPage/periodic. Always check silentRejection / valueEcho.match / health (the fail-loud signals; health.skipped / health.unreadable mean not-checked, not broken; a standalone mutation with budget-skipped health returns success:false, partial:true, healthUnverified:true -- verify health before continuing, do not replay the committed step). Full walker mechanics + page names: guide:true or hub_get_tool_guide(section=\'set_rule_reference_walkstep\')."]]]],["addAction",["m",[["type","object"],["description","Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:\'log\'}` is rejected); returns actionIndex (no trailing updateRule \\u2014 doActPage self-bakes). Capability names: switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, hsm, shade, fan, mode, setVariable/setLocalVariable, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, fileWrite/fileAppend/fileDelete, zwavePoll; flow control \\u2014 delay, delayPerMode, cancelDelay, repeat, stopRepeat, repeatWhile, waitExpression, waitEvents, ifThen, elseIf, else, endIf, exitRule, comment. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents per rule. Rule-targeting caps (runRule/cancelTimers/pauseRule/privateBoolean) validate each ruleIds entry against the live RM rule list before any write; a rule id that is not an existing rule is rejected -- use hub_list_rules for valid ids. privateBoolean also takes \'*\', RM\'s \\"this rule\\" target, alone or mixed (e.g. [\'*\', 1809]). (On a hub whose rule list can\'t be resolved -- RM not installed or app-tree unreadable -- the check is skipped; a hub with zero rules instead rejects every rule target.) Per-condition shape: {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array \\u2014 a bare integer silently stores {N:null}); nested subExpression not supported here (use addRequiredExpression). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the auto action index (e.g. {\'flashRate.@N\':750}). Per-field specs, the shape guards, and variable-sourced values: pass {discover: true} for the live schema, hub_get_tool_guide(section=\'set_rule_reference_actions\'), or docs/rm_action_subtype_schemas.md. Extended expression shapes (Mode, Between two times, Variable, compareToDevice): section=\'set_rule_reference_conditions\'."]]]],["guide",["m",[["type","boolean"],["description","Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section=\'set_rule_reference\')), without a separate call. Makes NO change to any rule."]]]],["buttonRule",["m",[["type","object"],["description","Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded \\u2014 then author actions via addAction on that appId. The controller must already have a button device."],["properties",["m",[["controllerId",["m",[["type","integer"],["description","Button Controller-5.1 appId"]]]],["buttonNumber",["m",[["type","integer"],["description","button number (>=1)"]]]],["event",["m",[["type","string"],["enum",["l",["pushed","held","doubleTapped","released"]]]]]]]]]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_get_rule_health"],["description","Inspect a rule\'s current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule). This standalone read adds live eventSubscriptionCount/scheduledJobCount, runtime stopped, and status/markup fallbacks for paused. paused is true/false/null (unknown); explicit stopped state outranks display markup. Embedded health from write tools carries the structural verdict and compiled paused only, without these extra reads. With auto or ruleBuilderJson, Visual Rule labels preserve the raw own name; forcing configPage uses the rendered label.[[/FLAT_TRIM]] Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn\'t-check verdict, not evidence of breakage."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app ID to check (Rule Machine or Visual Rules Builder rule)."]]]],["source",["m",[["type","string"],["enum",["l",["auto","ruleBuilderJson","configPage"]]],["description","Which source(s) to read; default auto."]]]]]]],["required",["l",["appId"]]]]]]]],["m",[["name","hub_list_rule_local_variables"],["description","List a Rule Machine rule\'s LOCAL variables (per-rule, distinct from hub globals).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","The Rule Machine rule\'s installed-app id (the rule whose local variables to list)."]]]]]]],["required",["l",["appId"]]]]]]]],["m",[["name","hub_delete_native_app"],["description","Delete any classic native automation app (RM rule, Room Lighting instance, Button Controller / Button Rule, Basic Rule, Notifier, Group, Scene, etc.). Same endpoint family across all of them.[[FLAT_TRIM]] force=false (default) soft-deletes (hub refuses if the app has child apps/devices); force=true hard-deletes with no child safety checks.[[/FLAT_TRIM]]\\n\\nBEFORE DELETE: full snapshot saved to File Manager (backup.backupKey).[[FLAT_TRIM]] Call hub_restore_backup (in hub_manage_backup) with that key to recreate the app with all its settings re-applied.[[/FLAT_TRIM]]\\n\\nRequires Write master + confirm=true + recent hub backup."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app ID."]]]],["force",["m",[["type","boolean"],["description","true = bypass child/device safety checks and force-delete. Default false."]]]],["confirm",["m",[["type","boolean"],["description","Must be true."]]]]]]],["required",["l",["appId","confirm"]]]]]]]],["m",[["name","hub_set_app_disabled"],["description","Enable or disable any installed app (the admin UI red-X) without deleting it \\u2014 reversible and preserves the app\'s config. For Rule Machine rules use hub_set_rule_paused instead. Write master only \\u2014 no confirm/backup needed[[FLAT_TRIM]]; the disabled flag is read-back verified[[/FLAT_TRIM]]."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Installed-app ID to enable/disable (from hub_list_apps)."]]]],["disabled",["m",[["type","boolean"],["description","true = disable the app (stop it running), false = enable it."]]]]]]],["required",["l",["appId","disabled"]]]]]]]]]]'])
@@ -31567,7 +31386,7 @@ def mainPage() {
                   description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Read master ON = read-only mode: hub_get_custom_rule (list/get/diagnostics modes), hub_update_custom_rule(enabled only), hub_test_custom_rule are visible; create/delete/export/import/clone are hidden. OFF + Read master OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (governed by the Read/Write masters) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
                   defaultValue: false, submitOnChange: true
             input "useGateways", "bool", title: "Consolidate tools behind category gateways",
-                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool and hub_search_tools is hidden because its only purpose is finding tools hidden behind gateways. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other settings (the Read/Write masters, the Custom Rule Engine, and Advanced per-tool/per-gateway overrides) also add or remove entries from tools/list independently of this setting.",
+                  description: "When ON (default): tools are organized behind domain-named category gateways so tools/list stays compact for clients that struggle with long tool lists. When OFF: every tool is exposed individually as a top-level MCP tool. Most LLM clients perform better with the gateway list; turn this off only if your client has its own progressive-disclosure / tool-search layer. Note: other settings (the Read/Write masters, the Custom Rule Engine, and Advanced per-tool/per-gateway overrides) also add or remove entries from tools/list independently of this setting.",
                   defaultValue: true
             input "mcpLogLevel", "enum", title: "MCP Debug Log Level",
                   description: "Controls MCP-accessible debug logs (default: errors only)",
@@ -31661,7 +31480,7 @@ def advancedOverridesPage() {
                 ".SumoSelect > .optWrapper > .options li label { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; word-break: break-word; overflow-wrap: anywhere; line-height: 1.35; padding-top: 2px; padding-bottom: 2px; } " +
                 ".SumoSelect > .optWrapper > .options li.opt { height: auto !important; }" +
                 "</style>" +
-                "Deny-only fine-grained control. These selections are applied <b>below</b> the Read/Write masters: they can only turn things OFF, never re-enable something a master already hid. A disabled tool disappears from tools/list and hub_search_tools everywhere it appears (including shared tools in multiple gateways) and returns a clear error if a cached client still calls it; it remains documented in hub_get_tool_guide."
+                "Deny-only fine-grained control. These selections are applied <b>below</b> the Read/Write masters: they can only turn things OFF, never re-enable something a master already hid. A disabled tool disappears from tools/list everywhere it appears (including shared tools in multiple gateways) and returns a clear error if a cached client still calls it; it remains documented in hub_get_tool_guide."
         }
         section("Protected apps") {
             def choices = _protectedAppChoices()
@@ -31814,8 +31633,6 @@ def updated() {
     if (settings.retainReportErrors != true) atomicState.remove("reportErrors")
     _retireHubSecuritySettings()
     _cleanupRetiredToolState()
-    TOOL_SEARCH_CORPUS_FP = null
-    synchronized (TOOL_SEARCH_INDEX) { TOOL_SEARCH_INDEX.clear() }
     initialize()
     if (state.customEngineMigrated != true
             && settings.enableRuleEngine != null
@@ -34820,16 +34637,6 @@ def getGatewayConfig() {
                 hub_import_custom_rule: "Import a custom rule from exported JSON (creates a NEW rule, fresh ruleId). Args: exportData (the export OBJECT from hub_export_custom_rule), name? (override), deviceMapping? (remap old->new device IDs for cross-hub import)",
                 hub_clone_custom_rule: "Clone an existing custom rule (starts disabled). Args: ruleId, name? (name for the clone; defaults to 'Copy of <original>')"
             ],
-            searchHints: [
-                hub_get_custom_rule: "read fetch inspect list show custom mcp sandbox rule automation diagnostics",
-                hub_create_custom_rule: "add new custom mcp sandbox rule automation",
-                hub_update_custom_rule: "modify edit change enable disable custom mcp sandbox rule automation",
-                hub_delete_custom_rule: "remove automation custom mcp sandbox",
-                hub_test_custom_rule: "simulate preview validate check automation custom",
-                hub_export_custom_rule: "save download share automation custom file manager persist",
-                hub_import_custom_rule: "load upload restore automation custom",
-                hub_clone_custom_rule: "copy duplicate automation custom"
-            ]
         ],
         hub_manage_variables: [
             description: "Manage hub variables (every type: Number, Decimal, String, Boolean, DateTime), their connector devices, and rule-engine variables. Full read/write CRUD via the modern Hub Variable API + wizard; observe changes via hub_list_variable_changes.",
@@ -34844,16 +34651,6 @@ def getGatewayConfig() {
                 hub_delete_connector: "Remove the connector device for a hub variable (variable itself unchanged). Args: name, confirm=true",
                 hub_list_variable_changes: "Recent hub-variable changes from the retained 200-entry history. Args: name (optional filter), sinceMs (optional), limit (optional)"
             ],
-            searchHints: [
-                hub_list_variables: "show all global state connector",
-                hub_get_variable: "read fetch lookup global state which apps use reference depend on dependents consumers in use before rename delete",
-                hub_set_variable: "write update change store global state increment add subtract counter",
-                hub_create_variable: "add new hub variable global",
-                hub_delete_variable: "remove drop destroy purge cleanup orphan stranded BAT_ stale variable",
-                hub_create_connector: "expose hub variable as virtual device switch dimmer",
-                hub_delete_connector: "unlink delete connector device variable",
-                hub_list_variable_changes: "watch observe changes events recent variable timeline"
-            ]
         ],
         hub_manage_rooms: [
             description: "Manage hub rooms: list, view details, create, delete, and rename rooms.",
@@ -34865,13 +34662,6 @@ def getGatewayConfig() {
                 hub_delete_room: "Permanently delete a room. Args: room (name or ID), confirm=true",
                 hub_update_room: "Rename a room. Args: room (name or ID), newName, confirm=true"
             ],
-            searchHints: [
-                hub_list_rooms: "show all locations areas groups",
-                hub_get_room: "view location area group",
-                hub_create_room: "add new location area group",
-                hub_delete_room: "remove location area group",
-                hub_update_room: "change name location area group"
-            ]
         ],
         hub_manage_destructive_ops: [
             description: "DESTRUCTIVE hub operations: reboot, shutdown, permanent device deletion, radio network/fabric resets + firmware flashes, network disconnects, and cloud-controller disable. All operations are irreversible or cause significant downtime — confirm with user first.",
@@ -34882,12 +34672,6 @@ def getGatewayConfig() {
                 hub_delete_device: "Permanently delete any device (MOST DESTRUCTIVE, no undo). Args: deviceId, confirm=true",
                 hub_call_destructive_ops: "Destructive ops by target: radio reset/firmware (target=zwave|zigbee|matter), network disconnect (target=network, disconnect_wifi|disconnect_ethernet), or cloud controller disable/enable (target=cloud). Args: target, action, confirm=true"
             ],
-            searchHints: [
-                hub_reboot: "restart reset power cycle boot",
-                hub_shutdown: "power off turn off stop halt",
-                hub_delete_device: "remove ghost orphan zwave zigbee stuck failed pairing",
-                hub_call_destructive_ops: "reset wipe zwave zigbee matter network fabric exclude all firmware flash chip radio ota brick factory disconnect wifi ethernet cloud disable alexa google dashboard subscription"
-            ]
         ],
         hub_read_apps_code: [
             description: "Read-only inspection of installed apps, drivers, libraries, code bundles, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, list installed bundles, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
@@ -34905,19 +34689,6 @@ def getGatewayConfig() {
                 hub_list_app_pages: "List an app's page names: every sub-page its live page links to (any classic app), plus a curated directory for HPM. Args: appId",
                 hub_list_hpm_packages: "List all HPM-tracked packages (name, version, beta flag, apps, drivers, files). includeDrift=true surfaces missing-required/orphan components. Args: hpmAppId?, includeDrift?, packageFilter?"
             ],
-            searchHints: [
-                hub_list_apps: "show installed applications integrations apps list code types running instances builtin user parent child tree",
-                hub_list_drivers: "show installed device handlers types driver catalog built-in system virtual user deviceTypeId include all create device",
-                hub_get_source: "view read application driver library groovy code namespace include",
-                hub_list_libraries: "list show installed groovy libraries code namespace include shared modules discover library id",
-                hub_list_bundles: "list show installed bundles bundle manager hpm package zip containers code delivery discover bundle id apps drivers libraries",
-                hub_list_backups: "list show backups code source whole hub database local cloud full backup restore points schedule frequency automatic daily time when backups run network share smb nas",
-                hub_get_backup: "view read saved previous version revision",
-                hub_list_device_dependents: "which apps use device reference inUseBy appsUsing dependencies affected by",
-                hub_get_app_config: "read inspect app configuration page settings inputs values rule machine room lighting hpm mode manager",
-                hub_list_app_pages: "page names sub-pages pageName multi-page hpm navigation discover",
-                hub_list_hpm_packages: "package manager HPM tracked installed manifest version inventory community apps drivers drift orphan missing required"
-            ]
         ],
         hub_manage_backup: [
             description: "Hub-database backup management plus source-code backup restore: list/restore/delete local + cloud whole-hub backups, restore an uploaded external backup, and restore source-code backups. Creating a backup and setting the automatic-backup schedule is the core hub_create_backup tool (kept top-level as the pre-flight for destructive ops); hub_list_backups (hub scopes) reports the current schedule. Hub-DB restore/delete are destructive — a hub-DB restore REBOOTS the hub — and need confirm + a recent backup. The read tools (hub_list_backups/hub_get_backup) are also in hub_read_apps_code.",
@@ -34928,12 +34699,6 @@ def getGatewayConfig() {
                 hub_restore_backup: "Restore a code/rule backup (scope=source + backupKey) OR the whole hub DB or a full backup (scope=hub_local + fileName | hub_cloud + cloudBackupPassword | hub_uploaded + backupUrl -- REBOOTS). Args: scope?, backupKey?/fileName?/cloudBackupPassword?/backupUrl?, fullRestore?, confirm",
                 hub_delete_backup: "Delete a whole-hub DB backup. Args: location (local|cloud), fileName?/path?, confirm"
             ],
-            searchHints: [
-                hub_list_backups: "list show backups code source whole hub database local cloud full backup restore points schedule frequency automatic daily time when backups run network share smb nas",
-                hub_get_backup: "view read saved previous version revision source",
-                hub_restore_backup: "restore revert roll back code rule whole hub database full backup radios files disaster recovery migration upload reboot",
-                hub_delete_backup: "delete remove prune hub database backup local cloud free space recovery point"
-            ]
         ],
         hub_manage_code: [
             description: "Install, update, and delete hub apps, drivers, libraries, and code bundles (install/delete/export). All operations modify hub code and require Write master. Read-only counterparts (hub_get_source, list_*) live in the hub_read_apps_code gateway.",
@@ -34950,18 +34715,6 @@ def getGatewayConfig() {
                 hub_delete_bundle: "Delete an installed code bundle container by id (DESTRUCTIVE; verifies via re-list). Code it delivered may remain in Code -- delete separately. Args: bundleId (from hub_list_bundles), confirm=true",
                 hub_export_bundle: "Export an installed bundle's .zip to the File Manager (downloadable at /local/<file>). Args: bundleId (from hub_list_bundles), saveAs?"
             ],
-            searchHints: [
-                hub_create_app: "add new application integration groovy",
-                hub_create_driver: "add new device handler type groovy",
-                hub_update_app: "modify change edit application groovy push deploy oauth enable client id secret access token endpoint",
-                hub_update_driver: "modify change edit device handler type groovy push deploy",
-                hub_delete_item: "remove uninstall application integration device handler driver type groovy library shared",
-                hub_create_library: "add new shared groovy library include namespace",
-                hub_update_library: "modify change edit groovy library shared code push deploy",
-                hub_install_bundle: "install bundle zip package hpm hubitat package manager uploadZipFromUrl library delivery deploy code",
-                hub_delete_bundle: "delete remove uninstall bundle container bundle manager code zip package by id",
-                hub_export_bundle: "export download save bundle zip to file manager backup copy archive container"
-            ]
         ],
         hub_manage_logs: [
             description: "System logs, performance stats, and log settings: hub logs, device/app performance stats, scheduled jobs, MCP debug logs, and log level configuration. (Device/app/location event history: use the core hub_list_device_events tool.)",
@@ -34973,13 +34726,6 @@ def getGatewayConfig() {
                 hub_delete_debug_logs: "Clear all MCP debug log entries",
                 hub_set_log_level: "Set minimum log level threshold. Args: level (debug/info/warn/error)"
             ],
-            searchHints: [
-                hub_get_logs: "mcp internal debug logging status buffer capacity errors warnings trace syslog recent device app regex time window since until",
-                hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
-                hub_get_jobs: "scheduled cron timer recurring what is running next automation",
-                hub_delete_debug_logs: "wipe reset mcp internal",
-                hub_set_log_level: "verbosity debug trace quiet"
-            ]
         ],
         hub_manage_diagnostics: [
             description: "Health monitoring, diagnostics, and radio details: hub metrics, memory history, garbage collection, device health, radio info, and state snapshots. (Z-Wave/Zigbee/Matter radio writes — repair, inclusion, config, reset — live in hub_manage_radio. Custom-rule diagnostics: use hub_get_custom_rule with detailed=true.)",
@@ -34993,15 +34739,6 @@ def getGatewayConfig() {
                 hub_list_captured_states: "List saved device state snapshots",
                 hub_delete_captured_state: "Delete a captured state by stateId, or ALL captured states when stateId is omitted. Args: stateId (optional)"
             ],
-            searchHints: [
-                hub_get_metrics: "temperature database size trending monitoring over time health alerts safe mode radio offline backup failed low memory",
-                hub_get_memory_history: "ram free used leak trending over time java heap nio",
-                hub_call_gc: "gc garbage collection free reclaim ram cleanup java heap memory",
-                hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router gateway traceroute route hops speedtest bandwidth wan download internet speed identify led blink locate physical hub",
-                hub_get_radio_details: "zwave zigbee matter thread fabric mesh network frequency firmware 908mhz 700 800 series channel pan coordinator 2400mhz radio commissioned node topology smartstart status zwave js interview last message wifi backup job",
-                hub_list_captured_states: "saved snapshot bookmark remember device values",
-                hub_delete_captured_state: "remove delete clear saved snapshot bookmark all"
-            ]
         ],
         hub_manage_radio: [
             description: "Manage the Z-Wave, Zigbee, and Matter radios: configure (enable/disable, region, channel, power, Z-Wave JS stack) and run lifecycle operations (repair, inclusion/exclusion, node maintenance, replace/remove, Z-Wave JS re-interview/link test/CC commands, Z-Wave network backup and import, Zigbee reboot/rebuild/scan, Matter pair/cancel/window). Reads live in hub_get_radio_details (also in hub_read_diagnostics). DESTRUCTIVE resets + firmware flashes live in hub_manage_destructive_ops (hub_call_destructive_ops).",
@@ -35014,14 +34751,6 @@ def getGatewayConfig() {
                 hub_call_zigbee: "Zigbee ops. Args: action (radio_reboot, rebuild_network, channel_scan)",
                 hub_call_matter: "Matter ops. Args: action (enable/disable — needs hub reboot, pair, cancel_pair, open_pairing_window), setup_code? + wifi_ssid?/wifi_password? (pair), node_id? (cancel_pair/open_pairing_window), confirm (disable)"
             ],
-            searchHints: [
-                hub_get_radio_details: "zwave zigbee matter thread fabric mesh network firmware channel pan coordinator radio commissioned node topology smartstart status read zwave js interview last message stale wifi backup job",
-                hub_set_zwave: "zwave radio enable disable turn on off region rf frequency long range channel configure settings zwave js stack switch legacy",
-                hub_set_zigbee: "zigbee radio enable disable turn on off channel power level transmit configure settings idempotent rebuild reboot ping inactive keep-alive device",
-                hub_call_zwave: "zwave repair heal rebuild mesh include pair join exclude unpair remove failed node refresh rediscover reinitialize reinit replace stop abort antenna test smartstart s2 dsk security grant secure reinterview link reliability command class backup restore import nvm keys",
-                hub_call_zigbee: "zigbee reboot restart radio rebuild network mesh channel scan energy",
-                hub_call_matter: "matter enable disable thread pair commission setup code wifi network credentials cancel pairing open pairing window share fabric node"
-            ]
         ],
         hub_manage_files: [
             description: "Manage hub File Manager: list, read, write, and delete files stored on the hub.",
@@ -35032,12 +34761,6 @@ def getGatewayConfig() {
                 hub_write_file: "Write file to File Manager. Args: fileName, content, confirm=true",
                 hub_delete_file: "Delete file from File Manager (auto-backs up first to <name>_backup_<ts>, unless it's already a backup). Args: fileName, confirm=true"
             ],
-            searchHints: [
-                hub_list_files: "show uploaded stored csv json text data filter search name substring backup",
-                hub_read_file: "view open contents download stored data",
-                hub_write_file: "upload save store create csv json text data",
-                hub_delete_file: "remove clean up stored data"
-            ]
         ],
         hub_read_diagnostics: [
             description: "Read-only hub health, logs, and diagnostics: system logs, performance stats, scheduled jobs, MCP debug logs, hub metrics, free-memory/CPU history, device health/staleness, Z-Wave/Zigbee radio details, and saved state snapshots. All operations are read-only; the matching writes (gc, Z-Wave repair, clear logs, set log level, delete snapshots) live in hub_manage_logs / hub_manage_diagnostics.",
@@ -35052,16 +34775,6 @@ def getGatewayConfig() {
                 hub_get_radio_details: "Z-Wave and/or Zigbee radio info (firmware, channel, PAN/home ID, device count), or Matter fabric/device details. Args: radio (zwave|zigbee|matter, omit for Z-Wave+Zigbee)",
                 hub_list_captured_states: "List saved device state snapshots"
             ],
-            searchHints: [
-                hub_get_logs: "errors warnings messages trace syslog output recent latest device app scope regex pattern filter time window since until",
-                hub_get_performance_stats: "slow cpu busy resource usage hog bottleneck",
-                hub_get_jobs: "scheduled cron timer recurring what is running next automation",
-                hub_get_metrics: "temperature database size trending monitoring memory over time snapshot history health alerts safe mode radio offline backup failed weak mesh",
-                hub_get_memory_history: "ram free used leak trending over time java heap nio",
-                hub_get_device_health: "stale offline dead unresponsive battery not reporting ping icmp reachable network ip lan host router traceroute route hops speedtest bandwidth wan download internet speed identify led blink locate",
-                hub_get_radio_details: "zwave zigbee matter thread fabric mesh network frequency firmware channel pan coordinator radio commissioned node",
-                hub_list_captured_states: "saved snapshot bookmark remember device values"
-            ]
         ],
         hub_read_rules: [
             description: "Read-only inspection of automation rules: list/inspect MCP custom rules (legacy engine), list native Rule Machine rules + check rule health, and list/read Visual Rules Builder rules. All operations are read-only; rule writes live in hub_manage_custom_rules, hub_manage_rule_machine, and hub_manage_native_rules_and_apps.",
@@ -35074,14 +34787,6 @@ def getGatewayConfig() {
                 hub_list_rule_local_variables: "List a Rule Machine rule's local variables with their current values. Distinct from hub_list_variables (hub globals). Args: appId",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?"
             ],
-            searchHints: [
-                hub_get_custom_rule: "read fetch inspect list show custom mcp sandbox rule automation diagnostics",
-                hub_test_custom_rule: "simulate preview validate check automation custom dry run",
-                hub_list_rules: "rule machine rules native builtin automation list enumerate",
-                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption visual rules builder button controller basic rule classic app validationErrors",
-                hub_list_rule_local_variables: "rule local variables list allLocalVars per-rule variable name type value rule machine RM setLocalVariable",
-                hub_get_visual_rule: "visual rules builder VRB read list show inspect automation json definition when then else nodes graph"
-            ]
         ],
         hub_manage_native_rules_and_apps: [
             description: "Native classic-app CRUD plus Rule Machine runtime control. Use hub_set_native_app to create/edit non-RM classic SmartApps; use hub_manage_rule_machine (hub_set_rule) to author RM triggers/actions/conditions. Also delete/clone/export/import apps and list/run/pause/resume RM rules. Not the legacy custom_* engine. Edits ensure a rollback baseline, reused for the same app for one hour by default. Writes need confirm=true plus a recent hub backup; verify async failures via hub_get_app_config(appId) before retrying.",
@@ -35099,19 +34804,6 @@ def getGatewayConfig() {
                 hub_import_native_app: "Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner (the import lands ACTIVE). Args: jsonContent | fromFile, parentHintAppId (existing rule under the target parent — used to seed the cloner), newName (opt), stageDisabled (opt: disable import + every descendant immediately), confirm. Returns newAppId.",
                 hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption. Args: appId, source. Returns {ok, broken, source, ruleFormat, issues, ...}. Auto-attached to hub_set_rule and hub_set_visual_rule responses too."
             ],
-            searchHints: [
-                hub_list_rules: "rule machine rules native builtin automation list enumerate",
-                hub_call_rule: "trigger fire execute native rule machine rule",
-                hub_set_rule_paused: "pause resume disable enable stop unpause temporarily rule machine rule",
-                hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
-                hub_set_native_app: "create edit modify change native room lighting button controller notifier groups scenes basic rule visual rule classic smartapp settings button upsert app",
-                hub_delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app",
-                hub_set_app_disabled: "disable enable pause stop park red-x toggle installed app room lighting notifier groups scenes without deleting reversible",
-                hub_clone_native_app: "copy duplicate clone existing rule app appCloner template surgical edit",
-                hub_export_native_app: "export serialize download rule app json appCloner backup transfer canonical shape",
-                hub_import_native_app: "import restore upload create rule app from json appCloner backup transfer round trip",
-                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger broken action multiple flag corruption visual rules builder button controller basic rule classic app validationErrors"
-            ]
         ],
         hub_manage_mcp: [
             description: "Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration, scope, and operational state without manual UI intervention. Requires `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each write is logged at WARN level for audit. Covers self-settings including the device-access scope (selectedDevices); additional self-admin tools (true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.",
@@ -35119,9 +34811,6 @@ def getGatewayConfig() {
             summaries: [
                 hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices). Args: settings (map of key→value), confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
             ],
-            searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access enableLocalAccess enableCloudAccess local cloud remote LAN endpoint access disable block connection"
-            ]
         ],
         hub_read_devices: [
             description: "Read-only device inspection: list devices with current states; inspect one device in summary, configuration, or sectioned details mode; read or block-poll an attribute; read device/location event history; search Hubitat's compatible-device catalog; and read Hub Mesh (hub-to-hub device/variable sharing between Hubitat hubs on the LAN). All operations are read-only; device commands, updates, and Hub Mesh writes live in hub_manage_devices.",
@@ -35134,14 +34823,6 @@ def getGatewayConfig() {
                 hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?"
             ],
-            searchHints: [
-                hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room",
-                hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
-                hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
-                hub_get_compatible_devices: "compatible devices catalog supported hardware brands models pairing join exclude factory reset instructions how to pair driver protocol zigbee zwave matter lan",
-                hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub"
-            ]
         ],
         hub_read_rooms: [
             description: "Read-only room inspection: list rooms and view a room's assigned devices. All operations are read-only; room create/delete/rename live in hub_manage_rooms.",
@@ -35150,10 +34831,6 @@ def getGatewayConfig() {
                 hub_list_rooms: "List all rooms with IDs, names, and device counts",
                 hub_get_room: "Get room details with assigned devices. Args: room (name or ID)"
             ],
-            searchHints: [
-                hub_list_rooms: "show all locations areas groups rooms",
-                hub_get_room: "view location area group room devices"
-            ]
         ],
         hub_read_files: [
             description: "Read-only hub File Manager access: list files and read file content. All operations are read-only; write/delete live in hub_manage_files.",
@@ -35162,10 +34839,6 @@ def getGatewayConfig() {
                 hub_list_files: "List files and subfolders in File Manager (names, sizes, URLs, free space). Args: filter, folder, cursor",
                 hub_read_file: "Read file content. Args: fileName, offset, length"
             ],
-            searchHints: [
-                hub_list_files: "show uploaded stored csv json text data files filter search name substring backup",
-                hub_read_file: "view open contents download stored data file"
-            ]
         ],
         hub_read_variables: [
             description: "Read-only hub-variable inspection: list all variables (with type/connector linkage), get one variable's value + metadata (optionally the apps that reference it), and watch the recent change timeline. All operations are read-only; variable create/set/delete and connectors live in hub_manage_variables.",
@@ -35175,11 +34848,6 @@ def getGatewayConfig() {
                 hub_get_variable: "Get a variable's value + metadata (type, deviceId, attribute). includeDependents=true also lists the apps that reference a hub variable. Args: name, includeDependents?",
                 hub_list_variable_changes: "Recent hub-variable changes from the retained 200-entry history. Args: name?, sinceMs?, limit?"
             ],
-            searchHints: [
-                hub_list_variables: "show all global state connector variables",
-                hub_get_variable: "read fetch lookup global state variable which apps use reference depend on dependents consumers in use before rename delete",
-                hub_list_variable_changes: "watch observe changes events recent variable timeline"
-            ]
         ],
         hub_manage_devices: [
             description: "Control and inspect devices: send commands; inspect configuration before changing identity, preferences, native properties, integration assignments, or driver; create a device from a driver type; and swap/replace a device across all referencing apps; plus Hub Mesh read+write (hub-to-hub device/variable sharing between Hubitat hubs on the LAN — enable/disable, sync interval, follow a peer's modes, peer mesh token). Device and Hub Mesh reads are also in hub_read_devices.",
@@ -35197,19 +34865,6 @@ def getGatewayConfig() {
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
                 hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
             ],
-            searchHints: [
-                hub_call_device_command: "send command control turn on off set level dim lock unlock device run batch multiple several devices mixed commands ad hoc one call",
-                hub_call_device_swap: "swap replace device exchange identities move automations new hardware retire failing hardware",
-                hub_call_device_replace: "replace device hardware failed dead broken re-point preserve keep id references rules dashboard compatible replacement candidates getReplacementOptions",
-                hub_update_device: "rename relabel move room device edit configuration preferences driver type zigbee history limits dashboard mesh retry homekit alexa google assistant tags",
-                hub_create_device: "create add device from driver type instantiate lan integration cloud software component install new deviceTypeId driverId",
-                hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room",
-                hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
-                hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
-                hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub",
-                hub_update_hub_mesh: "enable disable hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval full refresh linked device hub to hub"
-            ]
         ],
         hub_manage_rule_machine: [
             description: "Dedicated rule-authoring gateway. Visual Rules Builder is the primary engine for new automations (hub_set_visual_rule / hub_get_visual_rule / hub_delete_visual_rule) — one clean JSON write with if/then/else gating. Use hub_set_rule to create/edit a full RM rule (triggers, actions, conditions, required expressions, IF/THEN/ELSE, local variables, walkStep) when the automation needs nested logic, loops, variables, or arbitrary device commands; delete RM rules with hub_delete_native_app; plus RMUtils runtime control (list/run, pause/resume, private boolean, health). This is the path for 'create a rule' / 'make a Hubitat automation'. For non-RM classic apps (Room Lighting, Button Controllers, Notifier, Groups+Scenes) use hub_manage_native_rules_and_apps. Read-only views are in hub_read_rules. Inspect a rule's config after a write via hub_get_app_config (in hub_read_apps_code, not here).",
@@ -35227,19 +34882,6 @@ def getGatewayConfig() {
                 hub_set_visual_rule: "Create or update a Visual Rules Builder rule — VRB is the primary rule engine; one JSON write with if/then/else gating. Use hub_set_rule only for complex automations (nested logic/loops/variables). Args: appId (omit=create), name, definition, paused (opt), confirm.",
                 hub_delete_visual_rule: "Delete a Visual Rules Builder rule (type-gated; returns the pre-delete definition for recovery). Args: appId, confirm."
             ],
-            searchHints: [
-                hub_set_rule: "create edit modify make rule machine rule trigger action condition required expression walkStep RM authoring native automation hubitat rule upsert",
-                hub_list_rules: "rule machine rules native builtin automation list enumerate RM",
-                hub_call_rule: "trigger fire execute run native rule machine rule stop start",
-                hub_set_rule_paused: "pause resume disable enable stop unpause rule machine rule",
-                hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
-                hub_get_rule_health: "broken validate inspect rule health diagnostic broken trigger multiple flag corruption visual rules builder button controller basic rule classic app validationErrors",
-                hub_list_rule_local_variables: "rule local variables list allLocalVars per-rule variable name type value rule machine RM setLocalVariable",
-                hub_delete_native_app: "remove delete destroy rule machine rule native app classic smartapp",
-                hub_get_visual_rule: "visual rules builder VRB read list show inspect automation json definition when then else nodes graph",
-                hub_set_visual_rule: "visual rules builder VRB create edit update make automation rule motion light contact alert schedule json primary engine if then else",
-                hub_delete_visual_rule: "visual rules builder VRB remove delete destroy automation rule"
-            ]
         ],
         hub_manage_dashboards: [
             description: "Manage Hubitat dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards: list, view, create, update, delete, and clone. Easy update REPLACES the config wholesale (read it first with hub_get_dashboard); legacy update edits name, authorized devices, or the tile layout (grid, background, colors) either wholesale or via granular tile ops. Delete is destructive (confirm + recent backup). Reads are also in hub_read_dashboards.",
@@ -35252,14 +34894,6 @@ def getGatewayConfig() {
                 hub_delete_dashboard: "Permanently delete an Easy or legacy dashboard (DESTRUCTIVE). Args: dashboardId, confirm=true",
                 hub_clone_dashboard: "Clone an Easy or legacy dashboard into a copy (clone-by-value). Args: dashboardId"
             ],
-            searchHints: [
-                hub_list_dashboards: "list show easy legacy hubitat dashboards dashboard tiles panels touch UI screen wall tablet",
-                hub_get_dashboard: "view read inspect easy legacy hubitat dashboard tiles layout grid template config one",
-                hub_create_dashboard: "add new easy legacy hubitat dashboard tiles devices panel touch screen wall tablet build",
-                hub_update_dashboard: "edit modify change replace easy legacy hubitat dashboard tile layout grid background color move resize template devices theme navigation config",
-                hub_delete_dashboard: "remove delete destroy easy legacy hubitat dashboard panel tiles",
-                hub_clone_dashboard: "copy duplicate clone easy legacy hubitat dashboard template layout"
-            ]
         ],
         hub_read_dashboards: [
             description: "Read-only dashboard inspection: list dashboards (Easy and legacy Hubitat®) and view one dashboard's full config -- Easy tiles/navigation/theme/devices, or a legacy dashboard's authorized devices and tile layout (grid, colors). All operations are read-only; create/update/delete/clone live in hub_manage_dashboards.",
@@ -35268,10 +34902,6 @@ def getGatewayConfig() {
                 hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). Args: pinToken? (optional; resolved automatically)",
                 hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: dashboardId, pinToken?"
             ],
-            searchHints: [
-                hub_list_dashboards: "list show easy legacy hubitat dashboards dashboard tiles panels touch UI screen wall tablet read",
-                hub_get_dashboard: "view read inspect easy legacy hubitat dashboard tiles layout grid template config one read"
-            ]
         ]
     ]
     return _toolMetadataPut("getGatewayConfig", built)
@@ -35646,13 +35276,7 @@ def getToolDefinitions() {
     def openWorldNames = getOpenWorldToolNames()
     if (settings.useGateways == false) {
         def all = getAllToolDefinitions()
-        def filtered = all.findAll { it.name != 'hub_search_tools' && !hideByName.contains(it.name) }
-        if (!all.any { it.name == 'hub_search_tools' }) {
-            throw new IllegalStateException(
-                "Flat-mode filter expected to drop 'hub_search_tools' but it was not found in " +
-                "getAllToolDefinitions(). Update getToolDefinitions() if the tool was renamed."
-            )
-        }
+        def filtered = all.findAll { !hideByName.contains(it.name) }
         def transformed = applyDescriptionTransform(filtered, true)
         return transformed.collect { tool ->
             def base = tool
@@ -35930,7 +35554,6 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_delete_dashboard": return toolDeleteDashboard(args)
         case "hub_clone_dashboard": return toolCloneDashboard(args)
         case "hub_get_tool_guide": return toolGetToolGuide(args.section, args.cursor, [platform_api_search: args.platform_api_search, platform_api_page: args.platform_api_page])
-        case "hub_search_tools": return toolSearchTools(args)
         case "hub_read_apps_code":
         case "hub_read_devices":
         case "hub_read_diagnostics":
@@ -38781,13 +38404,13 @@ pointer to THAT tool's own guide section -- follow it for the failing tool's ref
   destructive tools refuse otherwise.''',
         tool_access: '''## Gateways, Permissions & Catalog Shape
 
-**Gateways.** With the default "Consolidate tools behind category gateways" setting ON, most tools sit behind domain gateways. Call a gateway with no arguments to get the schemas of its visible sub-tools, then call it with `tool='<name>'` and `args={...}` to run one. `hub_read_*` gateways contain only read-only tools; `hub_manage_*` gateways contain at least one write, and a read tool may appear in both kinds. `hub_manage_virtual_device` and `hub_manage_mode` are direct tools, not gateways. `hub_search_tools` finds any tool by natural-language query. A gateway call is permission-checked per sub-tool, exactly like a direct call.
+**Gateways.** With the default "Consolidate tools behind category gateways" setting ON, most tools sit behind domain gateways. Call a gateway with no arguments to get the schemas of its visible sub-tools, then call it with `tool='<name>'` and `args={...}` to run one. `hub_read_*` gateways contain only read-only tools; `hub_manage_*` gateways contain at least one write, and a read tool may appear in both kinds. `hub_manage_virtual_device` and `hub_manage_mode` are direct tools, not gateways. A gateway call is permission-checked per sub-tool, exactly like a direct call.
 
-**Flat mode.** With that setting OFF, `tools/list` lists every tool individually and `hub_search_tools` is hidden. A cached call to a gateway name then returns an error naming the sub-tools to call directly. The Read/Write masters, the legacy Custom Rule Engine toggle, Developer Mode and the Advanced per-tool overrides also add or remove `tools/list` entries, so the visible catalog differs per install. After any of these change, the client may need to reconnect.
+**Flat mode.** With that setting OFF, `tools/list` lists every tool individually. A cached call to a gateway name then returns an error naming the sub-tools to call directly. The Read/Write masters, the legacy Custom Rule Engine toggle, Developer Mode and the Advanced per-tool overrides also add or remove `tools/list` entries, so the visible catalog differs per install. After any of these change, the client may need to reconnect.
 
 **Hub API documentation.** `hub_get_tool_guide(platform_api_search='<words>')` searches the hub's own Groovy API reference (firmware 2.5.2+, Settings > For Developers > API documentation) and returns ranked class and method matches with signatures, 25 per page (follow `nextCursor`). `hub_get_tool_guide(platform_api_page='<pageId>')` returns one class with every method's full description, 40 per page (fewer when long descriptions would pass ~60 KB; a description past 20,000 characters is cut and flagged `descriptionTruncated`). Use it when writing or reviewing app and driver code. The docs do not mark which methods the sandbox restricts to system apps, so test a method from a user app before relying on it.
 
-**Permissions.** Two masters, Read and Write, gate every tool. Both are ON by default, and only an explicit OFF blocks. A tool under an OFF master disappears from `tools/list` and `hub_search_tools`, and a cached call fails with "Read tools are disabled..." or "Write tools are disabled...". Direct the user to the Read/Write toggles in the MCP app settings. On the Advanced: Per-tool Overrides page, individual tools or whole gateways can be switched OFF. These overrides are deny-only (they never re-enable what a master hides), and a cached call fails with "...is disabled in Advanced settings (Per-tool Overrides)...". Destructive writes also need `confirm=true` plus a backup <24h, regardless of the masters. Self-administration tools also need Developer Mode (see hub_update_mcp_settings).
+**Permissions.** Two masters, Read and Write, gate every tool. Both are ON by default, and only an explicit OFF blocks. A tool under an OFF master disappears from `tools/list`, and a cached call fails with "Read tools are disabled..." or "Write tools are disabled...". Direct the user to the Read/Write toggles in the MCP app settings. On the Advanced: Per-tool Overrides page, individual tools or whole gateways can be switched OFF. These overrides are deny-only (they never re-enable what a master hides), and a cached call fails with "...is disabled in Advanced settings (Per-tool Overrides)...". Destructive writes also need `confirm=true` plus a backup <24h, regardless of the masters. Self-administration tools also need Developer Mode (see hub_update_mcp_settings).
 ''',
         hub_admin_write: '''## Admin, System & Destructive Write Tools
 
