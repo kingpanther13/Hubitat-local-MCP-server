@@ -1,5 +1,26 @@
 # Broad static preparation
 
+## October 13 installation result
+
+The cumulative candidate passed all 11 non-E2E GitHub Actions workflows at
+`f75c018c00cf835500432e910ea742dcfedde1e0`. It compiled 1,819 of 2,949 declared
+methods statically and reduced dynamic callsite slots from 37,414 to 30,249
+(19.15%). No runtime performance benchmark or E2E phase was added.
+
+Actual HPM 1.9.13 update timings on the isolated clone:
+
+| Version | Change | Parent stage (seconds) | Full update (seconds) | Versus 0.0.10 |
+| --- | --- | ---: | ---: | ---: |
+| 0.0.10 | Previous retained candidate | 246.704 | 270.769 | baseline |
+| 0.0.11 | Broad static/types | 294.557 | 323.876 | +53.107 |
+| 0.0.12 | Unchanged-code retry | 283.804 | 308.215 | +37.446 |
+
+Both runs exceeded the owner's 30-second regression threshold. Version 0.0.13
+restores the app and library sources from 0.0.10 (`d59e5a59`), keeping the earlier
+embedded-data and closure changes. The rejected candidate remains in branch
+history and immutable experiment artifacts for future investigation. Production
+MCP code was not part of these updates.
+
 This generator runs only in GitHub Actions. It consumes the checkout's current
 app/libraries, so catalog and closure changes can precede it without rebasing a
 precomputed source patch. It never executes the app DSL or changes state storage.

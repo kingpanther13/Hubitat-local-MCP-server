@@ -82,34 +82,32 @@ private Map _vrbFetchGraph(Integer appId) {
     return out
 }
 
-@groovy.transform.CompileStatic
 private Map _vrbFetchClassic(Integer appId) {
     // GET /app/ruleBuilderJson/<id>. CAUTION: this endpoint serializes the raw state of ANY
     // installed app (and returns {} for nonexistent ids) -- only the whenNodes+thenNodes shape
     // proves the app is a classic-format Visual Rule. Never surface a non-matching body.
-    def text = __bat529StaticCall_java_lang_Object_1('hubInternalGet', "/app/ruleBuilderJson/${appId}")
+    def text = hubInternalGet("/app/ruleBuilderJson/${appId}")
     if (!text) return null
     def parsed
     try {
-        parsed = __bat529StaticReceiverCall_java_lang_Object_1(new groovy.json.JsonSlurper(), 'parseText', text)
+        parsed = new groovy.json.JsonSlurper().parseText(text)
     } catch (Exception e) {
         return null
     }
     if (!(parsed instanceof Map)) return null
-    if (!__bat529StaticReceiverCall_java_lang_Object_1(parsed, 'containsKey', "whenNodes") || !__bat529StaticReceiverCall_java_lang_Object_1(parsed, 'containsKey', "thenNodes")) return null
-    return [name: __bat529StaticProperty_java_lang_Object(parsed, 'name'), rulePaused: __bat529StaticProperty_java_lang_Object(parsed, 'rulePaused') == true,
-            whenNodes: __bat529StaticProperty_java_lang_Object(parsed, 'whenNodes') ?: [], thenNodes: __bat529StaticProperty_java_lang_Object(parsed, 'thenNodes') ?: [],
-            elseNodes: __bat529StaticProperty_java_lang_Object(parsed, 'elseNodes') ?: [], promptHistory: __bat529StaticProperty_java_lang_Object(parsed, 'promptHistory') ?: []]
+    if (!parsed.containsKey("whenNodes") || !parsed.containsKey("thenNodes")) return null
+    return [name: parsed.name, rulePaused: parsed.rulePaused == true,
+            whenNodes: parsed.whenNodes ?: [], thenNodes: parsed.thenNodes ?: [],
+            elseNodes: parsed.elseNodes ?: [], promptHistory: parsed.promptHistory ?: []]
 }
 
-@groovy.transform.CompileStatic
 private Map _vrbDetect(Integer appId) {
     // Resolve which serialization a VRB rule speaks: graph (2.0 editor, /app/ruleBuilder20Json)
     // or classic (when/then/else editor, /app/ruleBuilderJson). Null = neither (not a VRB rule).
-    java.util.Map graph = __bat529StaticCall_java_util_Map_1('_vrbFetchGraph', appId)
-    if (graph != null) return [format: "graph", data: __bat529StaticCall_java_util_Map_2('_vrbWithBareName', graph, true)]
-    java.util.Map classic = __bat529StaticCall_java_util_Map_1('_vrbFetchClassic', appId)
-    if (classic != null) return [format: "classic", data: __bat529StaticCall_java_util_Map_2('_vrbWithBareName', classic, false)]
+    def graph = _vrbFetchGraph(appId)
+    if (graph != null) return [format: "graph", data: _vrbWithBareName(graph, true)]
+    def classic = _vrbFetchClassic(appId)
+    if (classic != null) return [format: "classic", data: _vrbWithBareName(classic, false)]
     return null
 }
 
@@ -142,9 +140,8 @@ private Map _vrbParentNode(boolean allowMissing = false) {
     return parent
 }
 
-@groovy.transform.CompileStatic
 private List _vrbListRules() {
-    java.util.Map parent = __bat529StaticCall_java_util_Map_0('_vrbParentNode')
+    def parent = _vrbParentNode()
     // A paused VRB rule decorates its appsList name with a "(Paused)" suffix (often HTML-
     // wrapped in a red span); strip tags/entities so the name is clean AND the suffix is
     // detectable. Unlike hub_list_rules there is no RMUtils label to cross-check against, so
@@ -154,7 +151,7 @@ private List _vrbListRules() {
     // paused/disabled are OMITTED (not asserted false) when the node data can't support them:
     // a null stripped name means paused is undeterminable, and an absent data.disabled key
     // means disabled is undeterminable. Present keys behave exactly as before.
-    return __bat529StaticDgm_collect_1_java_util_List((__bat529StaticDgm_findAll_1_java_lang_Object(((parent.children ?: [])), (this.&_bat529Cb_c0a86baf_9))), (this.&_bat529Cb_c0a86baf_40))
+    return (((parent.children ?: [])).findAll((this.&_bat529Cb_c0a86baf_9))).collect((this.&_bat529Cb_c0a86baf_40))
 }
 
 // A named helper avoids null closure parameters. Stock Groovy handles that AST shape;
@@ -292,21 +289,20 @@ private Map _vrbCreateChild(String version) {
     }
 }
 
-@groovy.transform.CompileStatic
 private boolean _vrbIsFreshShell(Integer appId, String version) {
     // The signature of a child the versioned create just made and nobody has touched: typed as
     // that builder version, nameless, and never saved (a 2.0 shell answers the graph endpoint
     // with a blank ruleJson; a 1.0 shell does not yet answer the classic endpoint at all).
-    java.util.Map existence = __bat529StaticCall_java_util_Map_1('_vrbAppExistence', appId)
+    def existence = _vrbAppExistence(appId)
     if (existence.state != "found") return false
     def info = existence.info
-    if (__bat529StaticProperty_java_lang_Object(info, 'type')?.toString() != "Visual Rule Builder ${version}".toString()) return false
-    if (__bat529StaticCall_java_lang_String_1('stripAppConfigHtml', __bat529StaticProperty_java_lang_Object(info, 'name'))?.toString()?.trim()) return false
+    if (info.type?.toString() != "Visual Rule Builder ${version}".toString()) return false
+    if (stripAppConfigHtml(info.name)?.toString()?.trim()) return false
     if (version == "2.0") {
-        java.util.Map graph = __bat529StaticCall_java_util_Map_1('_vrbFetchGraph', appId)
+        def graph = _vrbFetchGraph(appId)
         return graph != null && !(graph.ruleJson?.toString()?.trim())
     }
-    return __bat529StaticCall_java_util_Map_1('_vrbFetchClassic', appId) == null
+    return _vrbFetchClassic(appId) == null
 }
 
 private Map _vrbCreateChildLegacy() {
@@ -352,25 +348,23 @@ private Map _vrbSaveGraph(Integer appId, String name, String definitionJson) {
                                     validationErrors: (resp instanceof Map ? (resp.validationErrors ?: []) : [])])
 }
 
-@groovy.transform.CompileStatic
 private Map _vrbSaveGraphMeta(def resp, Map out) {
     // Copy the VRB2 save-response contract fields onto the result WHEN THE HUB SENT THEM. Every
     // one is optional on the wire (a pre-2.0 firmware answers the same endpoint without them),
     // so presence is what the callers key on -- never a fabricated default.
     if (!(resp instanceof Map)) return out
-    if (__bat529StaticReceiverCall_java_lang_Object_1(resp, 'containsKey', "storedSuccessfully")) out.storedSuccessfully = __bat529StaticProperty_java_lang_Object(resp, 'storedSuccessfully') == true
-    if (__bat529StaticReceiverCall_java_lang_Object_1(resp, 'containsKey', "activatedSuccessfully")) out.activatedSuccessfully = __bat529StaticProperty_java_lang_Object(resp, 'activatedSuccessfully') == true
-    if (__bat529StaticProperty_java_lang_Object(resp, 'revision') != null) out.revision = __bat529StaticProperty_java_lang_Object(resp, 'revision')
-    if (__bat529StaticProperty_java_lang_Object(resp, 'validationIssues') != null) out.validationIssues = __bat529StaticProperty_java_lang_Object(resp, 'validationIssues')
-    if (__bat529StaticProperty_java_lang_Object(resp, 'referencedDeviceIds') != null) out.referencedDeviceIds = __bat529StaticProperty_java_lang_Object(resp, 'referencedDeviceIds')
+    if (resp.containsKey("storedSuccessfully")) out.storedSuccessfully = resp.storedSuccessfully == true
+    if (resp.containsKey("activatedSuccessfully")) out.activatedSuccessfully = resp.activatedSuccessfully == true
+    if (resp.revision != null) out.revision = resp.revision
+    if (resp.validationIssues != null) out.validationIssues = resp.validationIssues
+    if (resp.referencedDeviceIds != null) out.referencedDeviceIds = resp.referencedDeviceIds
     // The ONLY diagnostics for a store-succeeded-but-activation-threw save (validationErrors is
     // empty on that path) and for a storage failure -- never drop them.
-    if (__bat529StaticProperty_java_lang_Object(resp, 'activationError') != null) out.activationError = __bat529StaticProperty_java_lang_Object(resp, 'activationError')
-    if (__bat529StaticProperty_java_lang_Object(resp, 'storageError') != null) out.storageError = __bat529StaticProperty_java_lang_Object(resp, 'storageError')
+    if (resp.activationError != null) out.activationError = resp.activationError
+    if (resp.storageError != null) out.storageError = resp.storageError
     return out
 }
 
-@groovy.transform.CompileStatic
 private void _vrbSaveClassic(Integer appId, String name, Boolean rulePaused, Map definition) {
     // POST /app/ruleBuilderJson/<id> with {name, rulePaused, whenNodes, thenNodes, elseNodes}
     // (real arrays, NOT double-encoded). The hub returns no useful body for this POST -- the
@@ -382,7 +376,7 @@ private void _vrbSaveClassic(Integer appId, String name, Boolean rulePaused, Map
         thenNodes: definition.thenNodes ?: [],
         elseNodes: definition.elseNodes ?: []
     ])
-    __bat529StaticCall_java_lang_Object_2('hubInternalPostJson', "/app/ruleBuilderJson/${appId}", body)
+    hubInternalPostJson("/app/ruleBuilderJson/${appId}", body)
 }
 
 private Map _vrbSetPaused(Integer appId, boolean paused) {
@@ -404,14 +398,13 @@ private void _vrbForceDelete(Integer appId) {
     hubInternalGetRaw("/installedapp/forcedelete/${appId}/quiet")
 }
 
-@groovy.transform.CompileStatic
 private String _vrbTryCleanupShell(Integer appId) {
     // Best-effort removal of a just-created empty shell after a failed create. Never throws --
     // a cleanup failure must not mask the original error -- and always names the appId so a
     // surviving orphan can be deleted manually.
     try {
-        __bat529StaticCall_java_lang_Object_1('_vrbForceDelete', appId)
-        java.util.Map existence = __bat529StaticCall_java_util_Map_1('_vrbAppExistence', appId)
+        _vrbForceDelete(appId)
+        def existence = _vrbAppExistence(appId)
         if (existence.state == "absent") {
             return "The empty child app created during this attempt (appId ${appId}) was cleaned up."
         }
@@ -424,7 +417,6 @@ private String _vrbTryCleanupShell(Integer appId) {
     }
 }
 
-@groovy.transform.CompileStatic
 private List _vrb2TriggerTypes() {
     // VRB 2.0 `type` catalogs. The Groovy sandbox rejects static field initializers, so each
     // catalog is a method. Source: the hub's own VRB2 authoring guide plus the builder chunk.
@@ -433,14 +425,12 @@ private List _vrb2TriggerTypes() {
             "power", "switch", "button", "lock", "shock", "systemMode"]
 }
 
-@groovy.transform.CompileStatic
 private List _vrb2ConditionTypes() {
-    return (__bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["timeIsBetween","daysOfWeek","motionCondition","contactCondition","presenceCondition","accelerationCondition","waterCondition","smokeCondition","coCondition","temperatureCondition","humidityCondition","illuminanceCondition","powerCondition","switchCondition","lockCondition","thermostatModeCondition","systemModeCondition"]]']) as List)
+    return (_bat529EmbeddedCatalogRead(['["l",["timeIsBetween","daysOfWeek","motionCondition","contactCondition","presenceCondition","accelerationCondition","waterCondition","smokeCondition","coCondition","temperatureCondition","humidityCondition","illuminanceCondition","powerCondition","switchCondition","lockCondition","thermostatModeCondition","systemModeCondition"]]']) as List)
 }
 
-@groovy.transform.CompileStatic
 private List _vrb2ActionTypes() {
-    return (__bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["turnOn","turnOff","toggle","setBrightness","setColorTemp","setColor","setLightEffect","lock","unlock","turnOnAlarm","turnOffAlarm","openValve","closeValve","openGarageDoor","closeGarageDoor","openWindowShade","closeWindowShade","pushButton","sendNotification","speakNotification","controlPlayer","controlThermostat","setFanSpeed","setMode","setModeUnlessAway","exitAwayMode","runRule","wait","cancelWait","sample"]]']) as List)
+    return (_bat529EmbeddedCatalogRead(['["l",["turnOn","turnOff","toggle","setBrightness","setColorTemp","setColor","setLightEffect","lock","unlock","turnOnAlarm","turnOffAlarm","openValve","closeValve","openGarageDoor","closeGarageDoor","openWindowShade","closeWindowShade","pushButton","sendNotification","speakNotification","controlPlayer","controlThermostat","setFanSpeed","setMode","setModeUnlessAway","exitAwayMode","runRule","wait","cancelWait","sample"]]']) as List)
 }
 
 @groovy.transform.CompileStatic
@@ -453,7 +443,7 @@ private Map _vrb2NodeFromDialog(Map node, String typeKey) {
     node.each { k, v ->
         def key = k?.toString()
         if (key == null) return
-        if (__bat529Repair_In(key, [typeKey, "id", "kind", "config", "description", "deviceIds", "predefinedColor", "index", "type", "result"])) return
+        if (key in [typeKey, "id", "kind", "config", "description", "deviceIds", "predefinedColor", "index", "type", "result"]) return
         config.put(key, v)
     }
     def out = [type: node.get(typeKey), config: config]
@@ -536,7 +526,6 @@ private void _vrb2ChainEdges(List<Map> edges, String from, String port, List<Map
     }
 }
 
-@groovy.transform.CompileStatic
 private List _vrb2EditorKeys() {
     return ["triggers", "conditions", "decisionType", "thenActions", "elseActions", "commonActions", "structureIds"]
 }
@@ -548,12 +537,12 @@ private Map _vrb2Compose(Map editor) {
     if (editor == null) throw new IllegalArgumentException("The editor definition must be a JSON object.")
     // A typo such as `conditons` must not silently become "no conditions" (an unconditional
     // rule that reports verified:true). The key set is closed, so refuse anything outside it.
-    def unknownKeys = editor.keySet().collect { it.toString() }.findAll { !(__bat529Repair_In(it, _vrb2EditorKeys())) }
+    def unknownKeys = editor.keySet().collect { it.toString() }.findAll { !(it in _vrb2EditorKeys()) }
     if (unknownKeys) {
         throw new IllegalArgumentException("Unknown editor key(s): ${unknownKeys.join(', ')}. The editor form takes only ${_vrb2EditorKeys().join(', ')}.")
     }
     String decisionType = editor.decisionType?.toString()?.trim() ?: "all"
-    if (!(__bat529Repair_In(decisionType, ["all", "any"]))) {
+    if (!(decisionType in ["all", "any"])) {
         throw new IllegalArgumentException("Unsupported decision type '${decisionType}'. Use 'all' (AND) or 'any' (OR).")
     }
     List<Map> triggers = _vrb2EditorList(editor.triggers, "triggerType", "triggers")
@@ -616,23 +605,21 @@ private Map _vrb2Compose(Map editor) {
     return [version: 1, nodes: nodes, edges: edges]
 }
 
-@groovy.transform.CompileStatic
 private boolean _vrb2IsVersionOne(def v) {
     // The hub accepts INTEGER version 1 only; an `as int` coercion would let 1.5 through the
     // pre-flight and store an inactive draft instead of refusing before the write.
     return (v instanceof Integer || v instanceof Long) && (v as long) == 1L
 }
 
-@groovy.transform.CompileStatic
 private List _vrb2WalkChain(Map byId, Map nextMap, String start, String terminal) {
-    java.util.List out = []
-    java.util.Set seen = [] as Set
+    def out = []
+    def seen = [] as Set
     def cursor = start
     while (cursor != null && cursor != terminal) {
         if (seen.contains(cursor)) throw new IllegalArgumentException("The rule contains an action cycle.")
         seen << cursor
         def node = byId[cursor]
-        if (!(node instanceof Map) || __bat529StaticProperty_java_lang_Object(node, 'kind') != "action") {
+        if (!(node instanceof Map) || node.kind != "action") {
             throw new IllegalArgumentException("Expected action node '${cursor}'.")
         }
         out << node
@@ -709,30 +696,29 @@ private List _vrb2ValidateChain(Map kinds, Map nextMap, String from, String port
     return errs
 }
 
-@groovy.transform.CompileStatic
 private List _vrb2Validate(Map graph) {
     // STRUCTURAL + type-catalog pre-flight for a 2.0 graph. Deliberately does NOT inspect config
     // field CONTENTS (device ids, enum labels, ranges, durations) -- that is the hub validator's
     // job, and its verdict comes back as validationErrors on the save. Empty list = looks sane.
-    java.util.List errors = []
+    def errors = []
     if (graph == null) return ["Rule document must be a JSON object."]
-    if (!__bat529StaticCall_boolean_1('_vrb2IsVersionOne', graph.version)) errors << "Rule 'version' must be 1."
+    if (!_vrb2IsVersionOne(graph.version)) errors << "Rule 'version' must be 1."
     if (!(graph.nodes instanceof List)) errors << "Rule 'nodes' must be an array."
     if (!(graph.edges instanceof List)) errors << "Rule 'edges' must be an array."
     if (!(graph.nodes instanceof List) || !(graph.edges instanceof List)) {
-        return __bat529StaticDgm_collect_1_java_util_List((errors), (this.&_bat529Cb_c0a86baf_2))
+        return (errors).collect((this.&_bat529Cb_c0a86baf_2))
     }
 
-    java.util.Map kinds = [:]
-    java.util.Map types = [:]
-    java.util.Set ids = [] as Set
+    def kinds = [:]
+    def types = [:]
+    def ids = [] as Set
     (graph.nodes).eachWithIndex(((this.&_bat529Cb_c0a86baf_41).curry([errors, ids, kinds, types] as Object[])))
 
-    java.util.List idList = ids as List
-    def triggerIds = __bat529StaticDgm_findAll_1_java_util_List((idList), ((this.&_bat529Cb_c0a86baf_6).curry([kinds] as Object[])))
-    def triggerMergeIds = __bat529StaticDgm_findAll_1_java_util_List((idList), ((this.&_bat529Cb_c0a86baf_20).curry([kinds, types] as Object[])))
-    def branchMergeIds = __bat529StaticDgm_findAll_1_java_util_List((idList), ((this.&_bat529Cb_c0a86baf_19).curry([kinds, types] as Object[])))
-    def decisionIds = __bat529StaticDgm_findAll_1_java_util_List((idList), ((this.&_bat529Cb_c0a86baf_7).curry([kinds] as Object[])))
+    def idList = ids as List
+    def triggerIds = (idList).findAll(((this.&_bat529Cb_c0a86baf_6).curry([kinds] as Object[])))
+    def triggerMergeIds = (idList).findAll(((this.&_bat529Cb_c0a86baf_20).curry([kinds, types] as Object[])))
+    def branchMergeIds = (idList).findAll(((this.&_bat529Cb_c0a86baf_19).curry([kinds, types] as Object[])))
+    def decisionIds = (idList).findAll(((this.&_bat529Cb_c0a86baf_7).curry([kinds] as Object[])))
     if (triggerIds.isEmpty()) errors << "Rule must contain at least one trigger node."
     if (triggerMergeIds.size() != 1) errors << "Rule must contain exactly one triggerMerge node."
     if (decisionIds.size() != 1) errors << "Rule must contain exactly one decision node."
@@ -740,8 +726,8 @@ private List _vrb2Validate(Map graph) {
 
     if (decisionIds.size() == 1) {
         def decisionId = decisionIds[0]
-        def decisionNode = __bat529StaticDgm_find_1_java_lang_Object((graph.nodes), ((this.&_bat529Cb_c0a86baf_18).curry([decisionId] as Object[])))
-        def rawConditions = (__bat529StaticProperty_java_lang_Object(decisionNode, 'config') instanceof Map) ? __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(decisionNode, 'config'), 'conditions') : null
+        def decisionNode = (graph.nodes).find(((this.&_bat529Cb_c0a86baf_18).curry([decisionId] as Object[])))
+        def rawConditions = (decisionNode.config instanceof Map) ? decisionNode.config.conditions : null
         if (rawConditions != null && !(rawConditions instanceof List)) {
             errors << "Node '${decisionId}' config.conditions must be an array."
         } else {
@@ -749,31 +735,31 @@ private List _vrb2Validate(Map graph) {
             if (types.get(decisionId) == "any" && conditions.isEmpty()) {
                 errors << "An 'any' decision must contain at least one condition."
             }
-            java.util.Set conditionIds = [] as Set
+            def conditionIds = [] as Set
             (conditions).eachWithIndex(((this.&_bat529Cb_c0a86baf_39).curry([conditionIds, errors] as Object[])))
         }
     }
 
-    java.util.Set seenEdges = [] as Set
-    java.util.Set usedPorts = [] as Set
-    java.util.Map nextMap = [:]
+    def seenEdges = [] as Set
+    def usedPorts = [] as Set
+    def nextMap = [:]
     (graph.edges).eachWithIndex(((this.&_bat529Cb_c0a86baf_42).curry([errors, ids, kinds, nextMap, seenEdges, usedPorts] as Object[])))
 
     if (triggerMergeIds.size() == 1 && decisionIds.size() == 1) {
         def triggerMergeId = triggerMergeIds[0]
         def decisionId = decisionIds[0]
-        __bat529StaticDgm_each_1_java_lang_Object((triggerIds), ((this.&_bat529Cb_c0a86baf_35).curry([errors, nextMap, triggerMergeId] as Object[])))
+        (triggerIds).each(((this.&_bat529Cb_c0a86baf_35).curry([errors, nextMap, triggerMergeId] as Object[])))
         if (nextMap["${triggerMergeId}:next".toString()] != decisionId) {
             errors << "The triggerMerge node must connect to the decision node."
         }
         def terminal = branchMergeIds.size() == 1 ? branchMergeIds[0] : null
-        java.util.Set visited = (__bat529Repair_Plus_java_util_List([triggerMergeId, decisionId], triggerIds)) as Set
+        def visited = ([triggerMergeId, decisionId] + triggerIds) as Set
         if (terminal != null) visited << terminal
-        java.util.List chainErrors = []
-        chainErrors.addAll(__bat529StaticCall_java_util_List_6('_vrb2ValidateChain', kinds, nextMap, decisionId, "true", terminal, visited))
-        chainErrors.addAll(__bat529StaticCall_java_util_List_6('_vrb2ValidateChain', kinds, nextMap, decisionId, "false", terminal, visited))
+        def chainErrors = []
+        chainErrors.addAll(_vrb2ValidateChain(kinds, nextMap, decisionId, "true", terminal, visited))
+        chainErrors.addAll(_vrb2ValidateChain(kinds, nextMap, decisionId, "false", terminal, visited))
         if (terminal != null) {
-            chainErrors.addAll(__bat529StaticCall_java_util_List_6('_vrb2ValidateChain', kinds, nextMap, terminal, "next", null, visited))
+            chainErrors.addAll(_vrb2ValidateChain(kinds, nextMap, terminal, "next", null, visited))
         }
         errors.addAll(chainErrors)
         // The hub rejects disconnected nodes; a declared action the flow never reaches is the
@@ -782,15 +768,14 @@ private List _vrb2Validate(Map graph) {
         // leaves its downstream nodes unvisited, and reporting those as disconnected would send
         // the author adding edges instead of fixing the one real problem.
         if (chainErrors.isEmpty() && branchMergeIds.size() <= 1) {
-            __bat529StaticDgm_each_1_java_lang_Object((__bat529StaticDgm_findAll_1_java_util_List((idList), ((this.&_bat529Cb_c0a86baf_5).curry([visited] as Object[])))), ((this.&_bat529Cb_c0a86baf_27).curry([errors] as Object[])))
+            ((idList).findAll(((this.&_bat529Cb_c0a86baf_5).curry([visited] as Object[])))).each(((this.&_bat529Cb_c0a86baf_27).curry([errors] as Object[])))
         }
     }
-    return __bat529StaticDgm_collect_1_java_util_List((errors), (this.&_bat529Cb_c0a86baf_1)).unique()
+    return (errors).collect((this.&_bat529Cb_c0a86baf_1)).unique()
 }
 
 // The one place the surface labels live: _vrb2UnknownTypes reports them, _vrb2TypeNames keys on
 // them, and the edit gate joins the two by this key.
-@groovy.transform.CompileStatic
 private String _vrb2Where(String kind) {
     return kind == "trigger" ? "Trigger node" : (kind == "action" ? "Action node" : "Condition")
 }
@@ -800,12 +785,11 @@ private String _vrb2TypeKey(String where, String type) {
     return "${where}|${type}".toString()
 }
 
-@groovy.transform.CompileStatic
 private List _vrb2UnknownTypes(Map graph) {
     // [where, id, type] for every trigger/action/condition whose type is outside this build's catalogs.
-    java.util.List out = []
+    def out = []
     if (!(graph?.nodes instanceof List)) return out
-    __bat529StaticDgm_each_1_java_lang_Object((graph.nodes), ((this.&_bat529Cb_c0a86baf_38).curry([out] as Object[])))
+    (graph.nodes).each(((this.&_bat529Cb_c0a86baf_38).curry([out] as Object[])))
     return out
 }
 
@@ -819,12 +803,11 @@ private Set _vrb2TypeNames(def graph) {
     return names
 }
 
-@groovy.transform.CompileStatic
 private List _vrb2CatalogWarnings(Map graph) {
     // Advisory findings the hub will adjudicate: type names outside this build's catalogs (newer
     // firmware may know them) and a rule with no action anywhere (valid, but does nothing).
-    def warnings = __bat529StaticDgm_collect_1_java_util_List((__bat529StaticCall_java_util_List_1('_vrb2UnknownTypes', graph)), (this.&_bat529Cb_c0a86baf_32))
-    if (graph?.nodes instanceof List && !__bat529StaticDgm_any_1_boolean((graph.nodes), (this.&_bat529Cb_c0a86baf_11))) {
+    def warnings = (_vrb2UnknownTypes(graph)).collect((this.&_bat529Cb_c0a86baf_32))
+    if (graph?.nodes instanceof List && !(graph.nodes).any((this.&_bat529Cb_c0a86baf_11))) {
         warnings << "The rule has no action on any branch; it will activate but do nothing."
     }
     return warnings
@@ -876,7 +859,7 @@ private void _vrbValidateClassicShape(Map definition) {
     // (and ignored -- the top-level name/paused arguments govern) so a classic read can be fed
     // straight back, which is exactly what the format-mismatch note tells the caller to do.
     def readEnvelope = ["promptHistory", "name", "rawName", "rulePaused", "success", "appId", "format"]
-    def unknownKeys = definition.keySet().collect { it.toString() }.findAll { !(__bat529Repair_In(it, __bat529Repair_Plus_java_util_List(["whenNodes", "thenNodes", "elseNodes"], readEnvelope))) }
+    def unknownKeys = definition.keySet().collect { it.toString() }.findAll { !(it in ["whenNodes", "thenNodes", "elseNodes"] + readEnvelope) }
     if (unknownKeys) throw new IllegalArgumentException("Unknown classic key(s): ${unknownKeys.join(', ')}. A classic definition takes only whenNodes, thenNodes, elseNodes (the keys a hub_get_visual_rule read adds around them are ignored).")
     ["whenNodes", "thenNodes", "elseNodes"].each { key ->
         if (definition[key] == null) return
@@ -930,13 +913,12 @@ private Map _vrbResolveTargetDefinition(String targetFormat, String definitionFo
     return [ok: false, formatMismatch: true]
 }
 
-@groovy.transform.CompileStatic
 private Map _vrbPreflightRefusal(Integer appId, List validationErrors, String extraNote = null) {
-    java.util.Map out = [success: false]
+    def out = [success: false]
     if (appId != null) out.appId = appId
     out.error = "Definition failed pre-flight validation; nothing was created/saved."
     out.validationErrors = validationErrors
-    java.lang.String note = "Fix the listed problems and retry -- see hub_get_tool_guide(section='visual_rule_reference') for the graph schema, the editor form and the type catalogs."
+    def note = "Fix the listed problems and retry -- see hub_get_tool_guide(section='visual_rule_reference') for the graph schema, the editor form and the type catalogs."
     out.note = extraNote ? "${note} ${extraNote}" : note
     return out
 }
@@ -974,7 +956,6 @@ private String _vrbDetectDefinitionFormat(Map definition) {
     throw new IllegalArgumentException("definition must be the editor form ({triggers, conditions, decisionType, thenActions, elseActions, commonActions} -- recommended), a 2.0 graph ({version, nodes, edges}), or a classic 1.0 node-list ({whenNodes, thenNodes, elseNodes}). See hub_get_tool_guide(section='visual_rule_reference') for all three schemas.")
 }
 
-@groovy.transform.CompileStatic
 private Map _vrbNormalizeDefinition(def rawDefinition) {
     // Accept the definition as a Map (the normal MCP argument shape) or a JSON string.
     // Returns [map: Map, format: "graph"|"classic"].
@@ -994,7 +975,7 @@ private Map _vrbNormalizeDefinition(def rawDefinition) {
     } else {
         throw new IllegalArgumentException("definition must be a JSON object (or a JSON-encoded string of one)")
     }
-    return [map: map, format: __bat529StaticCall_java_lang_String_1('_vrbDetectDefinitionFormat', map)]
+    return [map: map, format: _vrbDetectDefinitionFormat(map)]
 }
 
 @groovy.transform.CompileStatic
@@ -1089,8 +1070,7 @@ def toolGetVisualRule(args) {
     }
 }
 
-@groovy.transform.CompileStatic
-java.util.Map toolSetVisualRule(args) {
+def toolSetVisualRule(args) {
     // Attach the unified rule-health report to every response (success AND failure) that
     // resolves to a concrete rule id, mirroring hub_set_rule (issue #254 follow-up). For a
     // graph Visual Rule _rmCheckRuleHealth reads validationErrors as the broken verdict; the
@@ -1099,15 +1079,15 @@ java.util.Map toolSetVisualRule(args) {
     // than synthesizing the report from the data _toolSetVisualRuleImpl already holds: that keeps
     // a SINGLE source of truth for the health shape (no drift), and the cost is a cheap localhost
     // read on an infrequent write.
-    java.util.Map result = __bat529StaticCall_java_util_Map_1('_toolSetVisualRuleImpl', args)
+    def result = _toolSetVisualRuleImpl(args)
     try {
         // Prefer the id the impl resolved; fall back to the caller-supplied appId so an EDIT
         // failure whose error map omits appId (e.g. a graph-save rejection) still carries health
         // for the rule the caller named (codex review). Only an early CREATE failure — no appId
         // given and no id resolved — legitimately gets none.
-        def rid = result?.appId ?: __bat529StaticProperty_Safe_java_lang_Object(args, 'appId')
+        def rid = result?.appId ?: args?.appId
         if (rid != null && result instanceof Map && !result.containsKey("health")) {
-            result.health = __bat529StaticCall_java_util_Map_1('_rmCheckRuleHealth', rid as Integer)
+            result.health = _rmCheckRuleHealth(rid as Integer)
         }
     } catch (Exception ignored) { /* best effort — never let a health read mask the tool result */ }
     return result
@@ -1485,17 +1465,16 @@ __bat529EachReceiver1
     return out
 }
 
-@groovy.transform.CompileStatic
 private boolean _vrbDefinitionCountsMatch(String format, Map submitted, Map readBack) {
     if (format == "graph") {
         def persisted = readBack.definition
         if (!(persisted instanceof Map)) return false
-        return __bat529StaticReceiverCall_java_lang_Object_0((submitted.nodes ?: []), 'size') == __bat529StaticReceiverCall_java_lang_Object_0((__bat529StaticProperty_java_lang_Object(persisted, 'nodes') ?: []), 'size') &&
-               __bat529StaticReceiverCall_java_lang_Object_0((submitted.edges ?: []), 'size') == __bat529StaticReceiverCall_java_lang_Object_0((__bat529StaticProperty_java_lang_Object(persisted, 'edges') ?: []), 'size')
+        return (submitted.nodes ?: []).size() == (persisted.nodes ?: []).size() &&
+               (submitted.edges ?: []).size() == (persisted.edges ?: []).size()
     }
-    return __bat529StaticReceiverCall_java_lang_Object_0((submitted.whenNodes ?: []), 'size') == __bat529StaticReceiverCall_java_lang_Object_0((readBack.whenNodes ?: []), 'size') &&
-           __bat529StaticReceiverCall_java_lang_Object_0((submitted.thenNodes ?: []), 'size') == __bat529StaticReceiverCall_java_lang_Object_0((readBack.thenNodes ?: []), 'size') &&
-           __bat529StaticReceiverCall_java_lang_Object_0((submitted.elseNodes ?: []), 'size') == __bat529StaticReceiverCall_java_lang_Object_0((readBack.elseNodes ?: []), 'size')
+    return (submitted.whenNodes ?: []).size() == (readBack.whenNodes ?: []).size() &&
+           (submitted.thenNodes ?: []).size() == (readBack.thenNodes ?: []).size() &&
+           (submitted.elseNodes ?: []).size() == (readBack.elseNodes ?: []).size()
 }
 
 def toolDeleteVisualRule(args) {
@@ -1920,34 +1899,29 @@ def _getAllToolDefinitions_partVisualRules() {
     return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_visual_rule"],["description","List Visual Rules Builder rules (omit appId; each entry: appId, name, version, disabled, paused) or read one rule\'s full definition.[[FLAT_TRIM]] List-mode `paused` is detected from the rule\'s name suffix (no cross-check) and `version` (\'2.0\' / \'1.0\') comes from the hub\'s own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: \'graph\' (VRB 2.0, {version, nodes, edges}) or \'classic\' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Visual Rule app id. Omit to list all VRB rules."]]]]]]]]]]]],["m",[["name","hub_set_visual_rule"],["description","Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_set_rule (Rule Machine) only for complex ones (nested logic, loops, variables, custom device commands). On create the definition\'s shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). Editor and graph definitions are structurally pre-flight validated before anything is created or saved, so a malformed 2.0 rule never strands an empty shell; a classic definition is saved as-is and validated by the hub.[[/FLAT_TRIM]] Omit appId to create (name + definition required). On EDIT two refusals (isError validation results, nothing written): a 2.0 type name this build does not know unless the rule already uses it, and a classic key outside whenNodes/thenNodes/elseNodes. Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section=\'visual_rule_reference\')."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","Existing Visual Rule app id to edit. Omit to create."]]]],["name",["m",[["type","string"],["description","Rule name. Required on create; renames on edit."]]]],["definition",["m",[["type","object"],["description","Full rule definition (wholesale replacement). RECOMMENDED shape: the editor form {triggers, conditions, decisionType, thenActions, elseActions, commonActions}.[[FLAT_TRIM]] A raw 2.0 graph ({version, nodes, edges}) and a classic 1.0 node-list ({whenNodes, thenNodes, elseNodes}) are also accepted. On CREATE the shape picks the builder version: classic makes a Visual Rule Builder 1.0 rule, editor/graph a 2.0 one. On EDIT a 2.0 rule takes any of the three (a classic node-list is translated and the response says translatedFrom); a 1.0 rule takes classic only.[[/FLAT_TRIM]] Field schemas: hub_get_tool_guide(section=\'visual_rule_reference\')."]]]],["paused",["m",[["type","boolean"],["description","true=pause, false=resume. May be sent alone with appId."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true (recent backup + user approval)."]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_delete_visual_rule"],["description","Delete a Visual Rules Builder rule by appId.[[FLAT_TRIM]] Type-gated: refuses ids that are not VRB rules (use hub_delete_native_app for RM rules / other classic apps). Returns the pre-delete definition for recovery via hub_set_visual_rule.[[/FLAT_TRIM]] Pre-flight: backup within 24h + confirm=true."],["inputSchema",["m",[["type","object"],["properties",["m",[["appId",["m",[["type","integer"],["description","The Visual Rule app id from hub_get_visual_rule."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true (recent backup + user approval)."]]]]]]],["required",["l",["appId","confirm"]]]]]]]]]]'])
 }
 
-@groovy.transform.CompileStatic
 def _readOnlyToolNames_partVisualRules() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_get_visual_rule"]]'])
+    return _bat529EmbeddedCatalogRead(['["l",["hub_get_visual_rule"]]'])
 }
 
-@groovy.transform.CompileStatic
 def _idempotentWriteToolNames_partVisualRules() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["hub_delete_visual_rule"]]'])
+    return _bat529EmbeddedCatalogRead(['["l",["hub_delete_visual_rule"]]'])
 }
 
-@groovy.transform.CompileStatic
 def _toolDisplayMeta_partVisualRules() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_get_visual_rule",["m",[["title","Get Visual Rule"],["summary","List Visual Rules Builder rules or read one rule\'s full definition."]]]],["hub_set_visual_rule",["m",[["title","Author Visual Rule"],["summary","Create or edit a Visual Rules Builder rule, including rename and pause/resume."]]]],["hub_delete_visual_rule",["m",[["title","Delete Visual Rule"],["summary","Delete a Visual Rules Builder rule, returning its definition for recovery."]]]]]]'])
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_visual_rule",["m",[["title","Get Visual Rule"],["summary","List Visual Rules Builder rules or read one rule\'s full definition."]]]],["hub_set_visual_rule",["m",[["title","Author Visual Rule"],["summary","Create or edit a Visual Rules Builder rule, including rename and pause/resume."]]]],["hub_delete_visual_rule",["m",[["title","Delete Visual Rule"],["summary","Delete a Visual Rules Builder rule, returning its definition for recovery."]]]]]]'])
 }
 
 
-@groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_1(def it) { it.toString() 
 }
 
-@groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_2(def it) { it.toString() 
 }
 
@@ -1957,105 +1931,82 @@ def _bat529Cb_c0a86baf_3(def isCondition, def it) { isCondition(it)
 def _bat529Cb_c0a86baf_4(def isCondition, def it) { !isCondition(it) 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_5(def visited, def it) { !__bat529StaticReceiverCall_java_lang_Object_1(visited, 'contains', it) 
+def _bat529Cb_c0a86baf_5(def visited, def it) { !visited.contains(it) 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_6(def kinds, def it) { __bat529StaticReceiverCall_java_lang_Object_1(kinds, 'get', it) == "trigger" 
+def _bat529Cb_c0a86baf_6(def kinds, def it) { kinds.get(it) == "trigger" 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_7(def kinds, def it) { __bat529StaticReceiverCall_java_lang_Object_1(kinds, 'get', it) == "decision" 
+def _bat529Cb_c0a86baf_7(def kinds, def it) { kinds.get(it) == "decision" 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_8(def it) { (__bat529StaticProperty_java_lang_Object(it, 'index') as Number).intValue() 
+def _bat529Cb_c0a86baf_8(def it) { (it.index as Number).intValue() 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_9(def it) { __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(it, 'data'), 'id') != null 
+def _bat529Cb_c0a86baf_9(def it) { it?.data?.id != null 
 }
 
 def _bat529Cb_c0a86baf_10(def it) { it.substring(it.indexOf('|') + 1) 
 }
 
-@groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_11(def it) { it instanceof Map && it.kind == "action" 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_12(def it) { __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(it, 'data'), 'id')?.toString() 
+def _bat529Cb_c0a86baf_12(def it) { it?.data?.id?.toString() 
 }
 
-@groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_13(def it) { it instanceof Map && it.kind == "trigger" 
 }
 
-@groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_14(def it) { it instanceof Map && it.index instanceof Number 
 }
 
 def _bat529Cb_c0a86baf_15(def it) { "${it.where} '${it.id}' has type '${it.type}'" 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_16(def it) { __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(it, 'data'), 'id')?.toString() 
+def _bat529Cb_c0a86baf_16(def it) { it?.data?.id?.toString() 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_17(def it) { __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(it, 'data'), 'type') == "Visual Rules Builder" 
+def _bat529Cb_c0a86baf_17(def it) { it?.data?.type == "Visual Rules Builder" 
 }
 
-@groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_18(def decisionId, def it) { it instanceof Map && it.id?.toString() == decisionId 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_19(def kinds, def types, def it) { __bat529StaticReceiverCall_java_lang_Object_1(kinds, 'get', it) == "merge" && __bat529StaticReceiverCall_java_lang_Object_1(types, 'get', it) == "branchMerge" 
+def _bat529Cb_c0a86baf_19(def kinds, def types, def it) { kinds.get(it) == "merge" && types.get(it) == "branchMerge" 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_20(def kinds, def types, def it) { __bat529StaticReceiverCall_java_lang_Object_1(kinds, 'get', it) == "merge" && __bat529StaticReceiverCall_java_lang_Object_1(types, 'get', it) == "triggerMerge" 
+def _bat529Cb_c0a86baf_20(def kinds, def types, def it) { kinds.get(it) == "merge" && types.get(it) == "triggerMerge" 
 }
 
-@groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_21(def it) { it 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_22(def placeholders, def it) { !(it instanceof Map && __bat529Repair_In(it.triggerType?.toString(), placeholders))
+def _bat529Cb_c0a86baf_22(def placeholders, def it) { !(it instanceof Map && it.triggerType?.toString() in placeholders) 
 }
 
-@groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_23(def it) { it instanceof Map && it.kind == "merge" && it.type == "branchMerge" 
 }
 
-@groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_24(def it) { it instanceof Map && it.kind == "merge" && it.type == "triggerMerge" 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_25(def byId, def it) { if (it instanceof Map && it.id != null) __bat529StaticReceiverCall_java_lang_Object_2(byId, 'put', it.id.toString(), it) 
+def _bat529Cb_c0a86baf_25(def byId, def it) { if (it instanceof Map && it.id != null) byId.put(it.id.toString(), it) 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_26(def before, def it) { it && !__bat529StaticReceiverCall_java_lang_Object_1(before, 'contains', it) 
+def _bat529Cb_c0a86baf_26(def before, def it) { it && !before.contains(it) 
 }
 
 def _bat529Cb_c0a86baf_27(def errors, def it) { errors << "Node '${it}' is not connected to the rule's flow." 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_28(def it) { it instanceof Map && it.kind == "decision" && (it.type == null || __bat529Repair_In(it.type, ["all", "any"]))
+def _bat529Cb_c0a86baf_28(def it) { it instanceof Map && it.kind == "decision" && (it.type == null || it.type in ["all", "any"]) 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_29(def bareKnown, def knownToRule, def it) { !(__bat529Repair_In(__bat529StaticCall_java_lang_String_2('_vrb2TypeKey', __bat529StaticProperty_java_lang_Object(it, 'where'), __bat529StaticProperty_java_lang_Object(it, 'type')), knownToRule)) && !(__bat529Repair_In(__bat529StaticProperty_java_lang_Object(it, 'type'), bareKnown))
+def _bat529Cb_c0a86baf_29(def bareKnown, def knownToRule, def it) { !(_vrb2TypeKey(it.where, it.type) in knownToRule) && !(it.type in bareKnown) 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_c0a86baf_30(def names, def it) { if (it instanceof Map && it.type != null) __bat529StaticExpr__bat529Cb_c0a86baf_30_0(it, names) 
+def _bat529Cb_c0a86baf_30(def names, def it) { if (it instanceof Map && it.type != null) names << _vrb2TypeKey(_vrb2Where("condition"), it.type.toString()) 
 }
 
 def _bat529Cb_c0a86baf_31(def app) {
@@ -2066,9 +2017,8 @@ def _bat529Cb_c0a86baf_31(def app) {
 def _bat529Cb_c0a86baf_32(def it) { "${it.where} '${it.id}' has type '${it.type}', which this build does not know; the hub will validate it.".toString() 
 }
 
-@groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_33(def it) { it instanceof Map && it.data instanceof Map &&
-                (__bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(it, 'data'), 'id')?.toString() ==~ /[1-9][0-9]*/) && __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(it, 'data'), 'type') instanceof String && __bat529StaticProperty_java_lang_Object(__bat529StaticProperty_java_lang_Object(it, 'data'), 'type') 
+                (it.data.id?.toString() ==~ /[1-9][0-9]*/) && it.data.type instanceof String && it.data.type 
 }
 
 def _bat529Cb_c0a86baf_34(def nextMap, def it) {
@@ -2078,17 +2028,15 @@ def _bat529Cb_c0a86baf_34(def nextMap, def it) {
     
 }
 
-@groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_35(def errors, def nextMap, def triggerMergeId, def tid) {
             if (nextMap["${tid}:next".toString()] != triggerMergeId) {
-                __bat529StaticExpr__bat529Cb_c0a86baf_35_0(errors, tid, triggerMergeId)
+                errors << "Trigger node '${tid}' must connect to the triggerMerge node '${triggerMergeId}'."
             }
         
 }
 
-@groovy.transform.CompileStatic
 def _bat529Cb_c0a86baf_36(def out, def cond) {
-                if (cond instanceof Map && !(__bat529Repair_In(cond.type?.toString(), __bat529StaticCall_java_util_List_0('_vrb2ConditionTypes')))) __bat529StaticExpr__bat529Cb_c0a86baf_36_0(cond, out)
+                if (cond instanceof Map && !(cond.type?.toString() in _vrb2ConditionTypes())) out << [where: _vrb2Where("condition"), id: cond.id?.toString(), type: cond.type?.toString()]
             
 }
 

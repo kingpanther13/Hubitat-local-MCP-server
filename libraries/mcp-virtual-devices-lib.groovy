@@ -34,22 +34,20 @@ def toolManageVirtualDevice(args) {
 
 // Single source of truth: the tool-schema enum, the missing-arg error,
 // and the create-time validator must all agree on this list.
-@groovy.transform.CompileStatic
-java.util.List getSupportedVirtualDeviceTypes() {
-    (__bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["l",["Virtual Switch","Virtual Button","Virtual Contact Sensor","Virtual Motion Sensor","Virtual Presence","Virtual Lock","Virtual Temperature Sensor","Virtual Humidity Sensor","Virtual Dimmer","Virtual RGBW Light","Virtual Shade","Virtual Garage Door Opener","Virtual Water Sensor","Virtual Omni Sensor","Virtual Fan Controller"]]']) as List)
+def getSupportedVirtualDeviceTypes() {
+    (_bat529EmbeddedCatalogRead(['["l",["Virtual Switch","Virtual Button","Virtual Contact Sensor","Virtual Motion Sensor","Virtual Presence","Virtual Lock","Virtual Temperature Sensor","Virtual Humidity Sensor","Virtual Dimmer","Virtual RGBW Light","Virtual Shade","Virtual Garage Door Opener","Virtual Water Sensor","Virtual Omni Sensor","Virtual Fan Controller"]]']) as List)
 }
 
-@groovy.transform.CompileStatic
 private Map resolveDriverSpec(args) {
-    if (__bat529StaticProperty_java_lang_Object(args, 'customDriver') != null) {
-        def cd = __bat529StaticProperty_java_lang_Object(args, 'customDriver')
+    if (args.customDriver != null) {
+        def cd = args.customDriver
         if (!(cd instanceof Map)) {
             throw new IllegalArgumentException("customDriver must be an object with 'namespace' and 'name' fields.")
         }
         // Coerce to String then trim so both numeric values (123) and whitespace-only strings ("  ")
         // are rejected cleanly rather than producing an opaque hub error downstream.
-        def nsRaw   = __bat529StaticProperty_java_lang_Object(cd, 'namespace')
-        def nameRaw = __bat529StaticProperty_java_lang_Object(cd, 'name')
+        def nsRaw   = cd.namespace
+        def nameRaw = cd.name
         def nsTrimmed   = nsRaw   != null ? nsRaw.toString().trim()   : null
         def nameTrimmed = nameRaw != null ? nameRaw.toString().trim() : null
         if (!nsTrimmed || !nameTrimmed) {
@@ -57,9 +55,9 @@ private Map resolveDriverSpec(args) {
         }
         return [namespace: nsTrimmed, typeName: nameTrimmed, displayType: "${nsTrimmed}:${nameTrimmed}"]
     } else {
-        def deviceType = __bat529StaticProperty_java_lang_Object(args, 'deviceType')
+        def deviceType = args.deviceType
         if (!deviceType) throw new IllegalArgumentException("deviceType is required")  // defensive; dispatch already validated
-        java.util.List supportedTypes = __bat529StaticCall_java_util_List_0('getSupportedVirtualDeviceTypes')
+        def supportedTypes = getSupportedVirtualDeviceTypes()
         if (!supportedTypes.contains(deviceType)) {
             throw new IllegalArgumentException("Unsupported device type: '${deviceType}'. Supported types: ${supportedTypes.join(', ')}")
         }
@@ -323,37 +321,36 @@ def toolListVirtualDevices(args) {
 
 }
 
-@groovy.transform.CompileStatic
-java.util.Map toolDeleteVirtualDevice(args) {
-    __bat529StaticCall_java_lang_Object_1('requireDestructiveConfirm', __bat529StaticProperty_java_lang_Object(args, 'confirm'))
+def toolDeleteVirtualDevice(args) {
+    requireDestructiveConfirm(args.confirm)
 
-    def dni = __bat529StaticProperty_java_lang_Object(args, 'deviceNetworkId')
+    def dni = args.deviceNetworkId
     if (!dni) throw new IllegalArgumentException("deviceNetworkId is required")
 
-    def childDevice = __bat529StaticDgm_find_1_Safe_java_lang_Object((__bat529StaticCall_java_util_List_0('getChildDevices')), ((this.&_bat529Cb_0153e466_7).curry([dni] as Object[])))
+    def childDevice = (getChildDevices())?.find(((this.&_bat529Cb_0153e466_7).curry([dni] as Object[])))
     if (!childDevice) {
         throw new IllegalArgumentException("No MCP-managed virtual device found with network ID '${dni}'. Use hub_list_devices(filter='virtual') to see available devices.")
     }
 
-    def deviceId = __bat529StaticProperty_java_lang_Object(childDevice, 'id').toString()
+    def deviceId = childDevice.id.toString()
     // The registry proves ownership; native identity only supplies the display label.
-    java.util.Map fullJson = __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', deviceId)
-    def deviceLabel = __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(fullJson, 'device'), 'label') ?: __bat529StaticProperty_Safe_java_lang_Object(__bat529StaticProperty_Safe_java_lang_Object(fullJson, 'device'), 'name') ?: "MCP-managed virtual device"
+    def fullJson = _fetchDeviceFullJson(deviceId)
+    def deviceLabel = fullJson?.device?.label ?: fullJson?.device?.name ?: "MCP-managed virtual device"
 
-    __bat529StaticCall_java_lang_Object_3('mcpLog', "warn", "device", "DELETE VIRTUAL DEVICE: Deleting '${deviceLabel}' (ID: ${deviceId}, DNI: ${dni})")
+    mcpLog("warn", "device", "DELETE VIRTUAL DEVICE: Deleting '${deviceLabel}' (ID: ${deviceId}, DNI: ${dni})")
 
     try {
-        __bat529StaticCall_java_lang_Object_1('deleteChildDevice', dni)
+        deleteChildDevice(dni)
     } catch (Exception e) {
-        __bat529StaticCall_java_lang_Object_3('mcpLogError', "device", "Failed to delete virtual device '${deviceLabel}' (DNI: ${dni})", e)
+        mcpLogError("device", "Failed to delete virtual device '${deviceLabel}' (DNI: ${dni})", e)
         throw new RuntimeException("Failed to delete virtual device: ${e.message}")
     }
 
     // Verify deletion
-    def stillExists = __bat529StaticDgm_find_1_Safe_java_lang_Object((__bat529StaticCall_java_util_List_0('getChildDevices')), ((this.&_bat529Cb_0153e466_8).curry([dni] as Object[])))
+    def stillExists = (getChildDevices())?.find(((this.&_bat529Cb_0153e466_8).curry([dni] as Object[])))
     def verified = !stillExists
 
-    __bat529StaticCall_java_lang_Object_3('mcpLog', verified ? "info" : "warn", "device", "Virtual device delete ${verified ? 'VERIFIED' : 'UNVERIFIED'}: '${deviceLabel}' (DNI: ${dni})")
+    mcpLog(verified ? "info" : "warn", "device", "Virtual device delete ${verified ? 'VERIFIED' : 'UNVERIFIED'}: '${deviceLabel}' (DNI: ${dni})")
 
     return [
         success: verified,
@@ -401,60 +398,47 @@ action="delete": provide the target deviceNetworkId.
     ]
 }
 
-@groovy.transform.CompileStatic
 def _toolDisplayMeta_partVirtualDevices() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return __bat529StaticCall_java_lang_Object_1('_bat529EmbeddedCatalogRead', ['["m",[["hub_manage_virtual_device",["m",[["title","Manage Virtual Device"],["summary","Create or delete an MCP-managed virtual device."]]]]]]'])
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_manage_virtual_device",["m",[["title","Manage Virtual Device"],["summary","Create or delete an MCP-managed virtual device."]]]]]]'])
 }
 
 
-@groovy.transform.CompileStatic
-def _bat529Cb_0153e466_1(def it) { __bat529StaticProperty_java_lang_Object(it, 'warnings') 
+def _bat529Cb_0153e466_1(def it) { it.warnings 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_0153e466_2(def it) { __bat529StaticProperty_java_lang_Object(it, 'id') 
+def _bat529Cb_0153e466_2(def it) { it.id 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_0153e466_3(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
+def _bat529Cb_0153e466_3(def it) { it.name 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_0153e466_4(def it) { __bat529StaticProperty_java_lang_Object(it, 'name') 
+def _bat529Cb_0153e466_4(def it) { it.name 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_0153e466_5(def it) { __bat529StaticProperty_java_lang_Object(it, 'deviceNetworkId') 
+def _bat529Cb_0153e466_5(def it) { it.deviceNetworkId 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_0153e466_6(def it) { __bat529StaticProperty_java_lang_Object(it, 'value') != null 
+def _bat529Cb_0153e466_6(def it) { it.value != null 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_0153e466_7(def dni, def it) { __bat529StaticProperty_java_lang_Object(it, 'deviceNetworkId') == dni 
+def _bat529Cb_0153e466_7(def dni, def it) { it.deviceNetworkId == dni 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_0153e466_8(def dni, def it) { __bat529StaticProperty_java_lang_Object(it, 'deviceNetworkId') == dni 
+def _bat529Cb_0153e466_8(def dni, def it) { it.deviceNetworkId == dni 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_0153e466_9(def it) { __bat529StaticProperty_java_lang_Object(it, 'success') != false 
+def _bat529Cb_0153e466_9(def it) { it.success != false 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_0153e466_10(def it) { __bat529StaticProperty_java_lang_Object(it, 'success') == false 
+def _bat529Cb_0153e466_10(def it) { it.success == false 
 }
 
-@groovy.transform.CompileStatic
-def _bat529Cb_0153e466_11(def capabilityFilter, def it) { __bat529StaticReceiverCall_Safe_java_lang_Object_1(__bat529StaticReceiverCall_Safe_java_lang_Object_0(it, 'toString'), 'equalsIgnoreCase', capabilityFilter) 
+def _bat529Cb_0153e466_11(def capabilityFilter, def it) { it?.toString()?.equalsIgnoreCase(capabilityFilter) 
 }
 
-@groovy.transform.CompileStatic
-java.util.Map _bat529Cb_0153e466_12(def it) { [name: __bat529StaticProperty_java_lang_Object(it, 'name'), value: __bat529StaticProperty_java_lang_Object(it, 'value')] 
+def _bat529Cb_0153e466_12(def it) { [name: it.name, value: it.value] 
 }
 
 def _bat529Cb_0153e466_13(def info, def attr) {
