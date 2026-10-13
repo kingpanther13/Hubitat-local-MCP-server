@@ -1,0 +1,25 @@
+plugins { id 'java' }
+repositories { mavenCentral() }
+configurations { groovy24 }
+dependencies { groovy24 'org.codehaus.groovy:groovy-all:2.4.21' }
+java { toolchain { languageVersion = JavaLanguageVersion.of(11) } }
+tasks.register('measure', JavaExec) {
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
+    classpath = configurations.groovy24
+    mainClass = 'groovy.ui.GroovyMain'
+    maxHeapSize = '1g'
+    args = [new File(projectDir, 'measure.groovy').absolutePath,
+            projectDir.parentFile.parentFile.absolutePath,
+            project.findProperty('experimentMode') ?: 'discover',
+            new File(projectDir, 'results').absolutePath]
+}
+tasks.register('parseClone', JavaExec) {
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
+    classpath = configurations.groovy24
+    mainClass = 'groovy.ui.GroovyMain'
+    maxHeapSize = '1g'
+    def repoRoot = projectDir.parentFile.parentFile
+    args = [new File(repoRoot, 'ci/groovy24-parse/parse_check.groovy').absolutePath,
+            new File(repoRoot, 'dist/experiment-hpm/hubitat-mcp-server.groovy').absolutePath,
+            new File(repoRoot, 'dist/experiment-hpm/hubitat-mcp-rule.groovy').absolutePath]
+}

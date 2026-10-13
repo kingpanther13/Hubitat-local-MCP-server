@@ -1,0 +1,35 @@
+{
+  "date": "2026-10-13",
+  "hubModel": "C-8",
+  "firmware": "2.5.2.135",
+  "baselineCommit": "93b78e36a78f34794a856d596fcbf3351a991d7b",
+  "branch": "experiment/529-compile-static",
+  "probe": {
+    "codeAppId": 469,
+    "instanceAppId": 2802,
+    "compileAccepted": true,
+    "runtimeResult": "Result: 5 (expected 5)",
+    "scheduledJobCount": 0,
+    "eventSubscriptionCount": 0
+  },
+  "negativeControl": {
+    "compileAccepted": false,
+    "appId": null,
+    "error": "[Static type checking] - Cannot return value of type java.lang.String on method returning type int @ line 12, column 12."
+  },
+  "productionBaseline": {
+    "parentStageSeconds": 245.245,
+    "hpmTotalSeconds": 266.05,
+    "parentStageStart": "2026-10-13 07:25:32.434",
+    "childStageStart": "2026-10-13 07:29:37.679",
+    "hpmCompleted": "2026-10-13 07:29:49.848",
+    "hpmTrackedVersion": "4.7.1"
+  },
+  "constraints": [
+    "No local tests or compilation",
+    "All non-E2E GitHub Actions green before MCP clone installation",
+    "No review agents",
+    "Only dynamic-callsite reduction; no other issue529 work",
+    "HPM tools first; headless browser fallback authorized; file template issue if tools cannot drive required flow"
+  ]
+}

@@ -1,0 +1,42 @@
+name: Compile Static Experiment
+on:
+  push:
+    branches: [experiment/529-compile-static]
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        options: [discover, verify]
+        default: discover
+permissions:
+  contents: read
+jobs:
+  measure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: |
+            11
+            17
+      - uses: gradle/actions/setup-gradle@v6.4.0
+      - name: Discover conservative static candidates and compare bytecode and behavior
+        env:
+          EXPERIMENT_MODE: ${{ inputs.mode || 'discover' }}
+        run: ./gradlew -p experiments/compile-static measure -PexperimentMode="$EXPERIMENT_MODE" --console=plain --no-daemon
+      - name: Build isolated HPM clone from release artifact
+        run: |
+          python3 tools/build-release-app.py
+          python3 experiments/compile-static/hpm/build_clone.py --version "$(cat experiments/compile-static/hpm/version.txt)" --source-sha "$GITHUB_SHA"
+      - name: Check cloned apps under Groovy 2.4 and sandbox/bytecode budgets
+        run: ./gradlew -p experiments/compile-static parseClone --console=plain --no-daemon
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: compile-static-${{ github.sha }}
+          path: |
+            experiments/compile-static/results/
+            dist/experiment-hpm/
