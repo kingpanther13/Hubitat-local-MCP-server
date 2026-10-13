@@ -102,29 +102,29 @@ class EachLoopConverter {
             int depth = 0
             protected SourceUnit getSourceUnit() { su }
             protected void visitConstructorOrMethod(MethodNode node, boolean constructor) {
-                MethodNode prior = method
-                method = node
+                MethodNode prior = this.method
+                this.method = node
                 super.visitConstructorOrMethod(node, constructor)
-                method = prior
+                this.method = prior
             }
             void visitBlockStatement(BlockStatement block) {
-                blocks << block
+                this.blocks << block
                 super.visitBlockStatement(block)
-                blocks.remove(blocks.size() - 1)
+                this.blocks.remove(this.blocks.size() - 1)
             }
             void visitClosureExpression(ClosureExpression e) {
-                depth++; super.visitClosureExpression(e); depth--
+                this.depth++; super.visitClosureExpression(e); this.depth--
             }
             void visitExpressionStatement(ExpressionStatement statement) {
                 Expression e = statement.expression
-                if (depth == 0 && method && e instanceof DeclarationExpression &&
+                if (this.depth == 0 && this.method && e instanceof DeclarationExpression &&
                         !e.multipleAssignmentDeclaration && e.leftExpression instanceof VariableExpression &&
-                        blocks && blocks[-1].statements.any { it.is(statement) }) {
+                        this.blocks && this.blocks[-1].statements.any { it.is(statement) }) {
                     VariableExpression v = e.leftExpression
                     Map shape = producerKind(e.rightExpression, su)
                     if (shape && (shape.kind == 'null' || !compatibleLocal(v, shape, su))) shape = null
-                    declarations.put(binding(v), [shape: shape, block: blocks[-1], blocks: new ArrayList(blocks),
-                        method: method, declaration: e, initializer: e.rightExpression,
+                    declarations.put(binding(v), [shape: shape, block: this.blocks[-1], blocks: new ArrayList(this.blocks),
+                        method: this.method, declaration: e, initializer: e.rightExpression,
                         variable: v, name: v.name, line: v.lineNumber])
                 }
                 super.visitExpressionStatement(statement)
@@ -291,22 +291,22 @@ class EachLoopConverter {
             protected SourceUnit getSourceUnit() { su }
 
             void visitBlockStatement(BlockStatement block) {
-                blocks << block
+                this.blocks << block
                 super.visitBlockStatement(block)
-                blocks.remove(blocks.size() - 1)
+                this.blocks.remove(this.blocks.size() - 1)
             }
 
             protected void visitConstructorOrMethod(MethodNode node, boolean constructor) {
-                MethodNode old = activeMethod
-                activeMethod = node
+                MethodNode old = this.activeMethod
+                this.activeMethod = node
                 super.visitConstructorOrMethod(node, constructor)
-                activeMethod = old
+                this.activeMethod = old
             }
 
             void visitClosureExpression(ClosureExpression e) {
-                closureDepth++
+                this.closureDepth++
                 super.visitClosureExpression(e)
-                closureDepth--
+                this.closureDepth--
             }
 
             void visitExpressionStatement(ExpressionStatement statement) {
@@ -322,9 +322,9 @@ class EachLoopConverter {
                     String reason = null
                     List arguments = call.arguments instanceof TupleExpression ? call.arguments.expressions : []
                     ClosureExpression closure = arguments.size() == 1 && arguments[0] instanceof ClosureExpression ? arguments[0] : null
-                    Map shape = provenReceiver(call.objectExpression, su, inventory, blocks, activeMethod)
-                    if (!activeMethod || (activeMethod.name == 'run' && activeMethod.declaringClass.script)) reason = 'root DSL/script statement'
-                    else if (closureDepth != 0) reason = 'inside another closure'
+                    Map shape = provenReceiver(call.objectExpression, su, inventory, this.blocks, this.activeMethod)
+                    if (!this.activeMethod || (this.activeMethod.name == 'run' && this.activeMethod.declaringClass.script)) reason = 'root DSL/script statement'
+                    else if (this.closureDepth != 0) reason = 'inside another closure'
                     else if (magicSites) reason = 'file changes dynamic dispatch/metaclass'
                     else if (call.implicitThis || call.spreadSafe) reason = 'implicit or spread dispatch'
                     else if (!closure) reason = 'not one literal closure argument'
@@ -334,8 +334,8 @@ class EachLoopConverter {
                     else if (closure.parameterSpecified && (closure.parameters.length != 1 ||
                              !closure.parameters[0].dynamicTyped || closure.parameters[0].annotations ||
                              closure.parameters[0].hasInitialExpression())) reason = 'parameter arity/type/annotation/default'
-                    else if (declaration && (operation == 'each' || !blocks ||
-                             !blocks[-1].statements.any { it.is(statement) })) reason = 'unsupported declaration context'
+                    else if (declaration && (operation == 'each' || !this.blocks ||
+                             !this.blocks[-1].statements.any { it.is(statement) })) reason = 'unsupported declaration context'
                     else if (operation != 'each' && shape.kind != 'list') reason = 'collect/findAll output type not supported'
                     else if (operation != 'each' && (!(closure.code instanceof BlockStatement) ||
                              closure.code.statements.size() != 1 ||
@@ -373,7 +373,7 @@ class EachLoopConverter {
                         if (hazards) reason = hazards.sort().join(', ')
                     }
                     if (reason) {
-                        rejected << [line: call.lineNumber, method: activeMethod?.name,
+                        rejected << [line: call.lineNumber, method: this.activeMethod?.name,
                             operation: operation, producer: shape?.producer, reason: reason]
                     } else {
                         String receiver = slice(source, call.objectExpression)
@@ -413,7 +413,7 @@ class EachLoopConverter {
                         }
                         List range = span(source, target)
                         edits << [start: range[0], end: range[1], replacement: replacement,
-                                  line: call.lineNumber, method: activeMethod.name, receiverKind: shape.kind,
+                                  line: call.lineNumber, method: this.activeMethod.name, receiverKind: shape.kind,
                                   producer: shape.producer, bindingName: shape.bindingName,
                                   declarationLine: shape.declarationLine, operation: operation,
                                   safe: call.safe, original: slice(source, target)]
@@ -424,7 +424,7 @@ class EachLoopConverter {
 
             void visitMethodCallExpression(MethodCallExpression e) {
                 if (e.methodAsString in ['each', 'collect', 'findAll'] && !seen.contains(e)) {
-                    rejected << [line: e.lineNumber, method: activeMethod?.name,
+                    rejected << [line: e.lineNumber, method: this.activeMethod?.name,
                         operation: e.methodAsString, reason: 'value/return/chained context']
                 }
                 super.visitMethodCallExpression(e)
