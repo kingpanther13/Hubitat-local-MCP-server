@@ -586,7 +586,10 @@ private Map _vrb2Compose(Map editor) {
     // collide with an explicit one that appears later in the document.
     Set<String> used = [] as Set
     [triggers, conditions, thenActions, elseActions, commonActions].each { List<Map> list ->
-        list.each { Map item -> if (item.id != null) used << item.id.toString() }
+        list.each { Object rawItem ->
+            Map item = (Map) rawItem
+            if (item.id != null) used << item.id.toString()
+        }
     }
     _vrb2AssignIds(triggers, "trigger", used)
     _vrb2AssignIds(conditions, "condition", used)
