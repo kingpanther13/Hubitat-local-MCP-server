@@ -28,9 +28,9 @@ jobs:
             17
       - uses: gradle/actions/setup-gradle@v6.4.0
       - name: Preflight the typed app harness under Groovy 3.0
-        run: ./gradlew test --tests 'server.AccessTokenRedactionSpec' -PharnessStrictMetaClass=true --console=plain --no-daemon
+        run: ./gradlew test --tests 'server.AccessTokenRedactionSpec' --tests 'server.CompileStaticBm25ParitySpec' -PharnessStrictMetaClass=true --console=plain --no-daemon
       - name: Preflight the typed app harness under Groovy 2.5
-        run: ./gradlew -p ci/groovy2x-spock test --tests 'server.AccessTokenRedactionSpec' -PharnessStrictMetaClass=true --console=plain --no-daemon
+        run: ./gradlew -p ci/groovy2x-spock test --tests 'server.AccessTokenRedactionSpec' --tests 'server.CompileStaticBm25ParitySpec' -PharnessStrictMetaClass=true --console=plain --no-daemon
       - name: Discover conservative static candidates and compare bytecode and behavior
         if: inputs.mode != 'connected'
         env:

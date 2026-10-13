@@ -1586,6 +1586,7 @@ private Map _lookupDevicePreference(Map model, name) {
     return model?.entries?.find { it.name == name?.toString() }
 }
 
+@groovy.transform.CompileStatic
 private boolean _devicePreferenceIsSecret(Map entry) {
     return entry?.type?.toString() == 'password' || _deviceConfigurationSecretKey(entry?.name)
 }
@@ -1598,6 +1599,7 @@ private boolean _deviceConfigurationSecretKey(key) {
         normalized.contains('accesskey') || normalized in ['psk', 'psw']
 }
 
+@groovy.transform.CompileStatic
 private _deviceConfigurationPublicValue(value, key = '') {
     if (_deviceConfigurationSecretKey(key)) return '***redacted (password)***'
     if (value instanceof Map) {
@@ -1631,6 +1633,7 @@ private Map getZwaveManufacturers() {
 // Handles the Hubitat decimal wire form ("634") and "0x"-prefixed hex ("0x027A"). A bare,
 // unprefixed string is read as hex ONLY when it contains an a-f digit ("027A"); an all-digit
 // string ("0063") is read as decimal, not hex.
+@groovy.transform.CompileStatic
 private String _zwaveManufacturerName(id) {
     if (id == null) return null
     String s = id.toString().trim()
@@ -1665,6 +1668,7 @@ private _withResolvedManufacturer(value) {
     return copy
 }
 
+@groovy.transform.CompileStatic
 private Map _publicDevicePreference(Map entry) {
     def copy = [:]
     entry.each { key, value ->
@@ -1679,6 +1683,7 @@ private Map _publicDevicePreference(Map entry) {
     return copy
 }
 
+@groovy.transform.CompileStatic
 private Map _deviceConfigurationProjection(Map source, List keys) {
     def result = [:]
     keys.each { key ->
@@ -1892,6 +1897,7 @@ private _readBypassAttrValue(deviceId, attribute) {
     return _readBypassAttrValueFrom(_fetchDeviceFullJson(deviceId), attribute)
 }
 
+@groovy.transform.CompileStatic
 private List _nativeReportedDeviceAttributes(Map d) {
     def attributes = []
     def cs = d?.currentStates
@@ -2806,6 +2812,7 @@ private String _formatBypassStateDate(rawDate) {
     }
 }
 
+@groovy.transform.CompileStatic
 def normalizeCommandParams(params, List declaredTypes = []) {
     // Case 1: Already a List (Hubitat parsed it successfully) — go straight to element conversion
     if (params instanceof List) {
@@ -5565,6 +5572,7 @@ private boolean _deviceSwapCleanup(Integer appId) {
     }
 }
 
+@groovy.transform.CompileStatic
 def _getAllToolDefinitions_partDevices() {
     return [
         // Device Tools

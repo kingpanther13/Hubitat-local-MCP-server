@@ -1180,6 +1180,7 @@ private Map _restoreFullFromBytes(String location, byte[] bytes, String fileName
 
 // A restore request that threw. An HTTP status means the hub answered and refused it; without one
 // (a timeout or dropped connection) the hub may already be rebooting into the restore.
+@groovy.transform.CompileStatic
 private Map _restoreRequestFailed(String type, String location, Exception e) {
     if (_httpStatusOf(e) != null) {
         return [success: false, type: type, location: location, error: "The hub refused the restore: ${e.message}", note: "Nothing was restored."]

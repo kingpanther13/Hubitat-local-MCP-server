@@ -388,6 +388,7 @@ private String stripAppConfigHtml(value) {
     return s.trim()
 }
 
+@groovy.transform.CompileStatic
 private stripOptionsHtml(options) {
     if (options instanceof List) {
         def out = []
@@ -429,6 +430,7 @@ private boolean _rmIsRuleAppType(String name) {
 
 // Stripped text of a disabled-action span's inner html, or null when the span is empty or
 // is the selectActions header legend (RM pluralizes it by count).
+@groovy.transform.CompileStatic
 private String _rmDisabledActionText(String spanInnerHtml) {
     def text = stripAppConfigHtml(spanInnerHtml)
     if (!text || text ==~ /(?i)Disabled Actions?/) return null
@@ -437,6 +439,7 @@ private String _rmDisabledActionText(String spanInnerHtml) {
 
 // Prefixes each disabled-action span with "[DISABLED] " (keeping its inner html so the mark
 // survives stripAppConfigHtml). Returns [html: <marked html>, disabled: <stripped texts>].
+@groovy.transform.CompileStatic
 private Map _rmMarkDisabledActions(String html) {
     if (!html || !html.contains("color:")) return [html: html, disabled: []]
     def disabled = []
@@ -456,6 +459,7 @@ private Map _rmMarkDisabledActions(String html) {
     return [html: out.toString(), disabled: disabled]
 }
 
+@groovy.transform.CompileStatic
 private String _rmDisabledRowText(String innerRaw) {
     if (!innerRaw || !innerRaw.contains("color:")) return null
     def m = (innerRaw =~ _rmDisabledActionSpanRegex())

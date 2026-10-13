@@ -613,6 +613,7 @@ def buildOverrideOptions() {
 // friendly name, read/write marker, then a one-sentence summary -- scannable
 // without having to decode the bare tool names. Falls back to the bare name
 // when a display-meta entry is missing so the picker never renders blank.
+@groovy.transform.CompileStatic
 def overrideOptionLabel(String name, Map meta, boolean isReadOnly) {
     def title = meta?.title ?: name
     def tag = isReadOnly ? "read" : "write"
@@ -752,6 +753,7 @@ private String _protectedAppId(value) {
     return id?.isLong() && id.toLong() > 0L ? id.toLong().toString() : null
 }
 
+@groovy.transform.CompileStatic
 private Set<String> _protectedAppSelection(value) {
     def values = value instanceof Collection ? value : (value == null ? [] : [value])
     return values.collect { _protectedAppId(it) }.findAll { it != null } as Set
@@ -1326,6 +1328,7 @@ def _originStaticHosts() { ["cloud.hubitat.com", "localhost", "127.0.0.1", "::1"
 // a URI class: the sandbox rejects several java.* class expressions outright, and a
 // malformed Origin must read as invalid instead of throwing. A value with no scheme
 // separator (a browser's opaque "null" origin included) is not a valid origin.
+@groovy.transform.CompileStatic
 def _originHost(String origin) {
     String s = origin?.trim()
     if (!s) return null
@@ -1652,6 +1655,7 @@ def _mrtrClientErrorHint() {
     return "If a write returns a client-side error with no result body, the hub is still running it or has already finished it. Wait about 15 seconds, then call hub_get_info and check recentWrites for that tool (running, paused_resuming, finished, finished_with_error). Read the target before repeating the call: a repeat is only safe when the write shows as failed or absent and the target shows the change did not land, because repeating a finished write performs it again. See hub_get_tool_guide(section='slow_ops')."
 }
 
+@groovy.transform.CompileStatic
 private String _guideFirstInstruction() {
     return "${guideFirstSentence()} Before calling a write tool, read that tool's guide section. ".toString()
 }
@@ -1676,6 +1680,7 @@ def serverInstructions() {
 // request headers (MCP-Protocol-Version / Mcp-Method / Mcp-Name) are validated against
 // the body in handleMcpRequest. A header naming one of the LEGACY entries is served as
 // legacy -- those revisions define no mirrored headers to check.
+@groovy.transform.CompileStatic
 def supportedProtocolVersions() {
     [modernProtocolVersion(), "2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"]
 }
@@ -2231,6 +2236,7 @@ private Map _mrtrFailureWithLedger(Map rec, leafTool, String error) {
     return failure
 }
 
+@groovy.transform.CompileStatic
 private void _mrtrAttachLedger(Map failure, Map rec) {
     if (!(rec instanceof Map && rec.aggregate instanceof Map && !rec.aggregate.isEmpty())) return
     failure.aggregate = _mrtrCopyMap(rec.aggregate as Map)
@@ -2735,6 +2741,7 @@ private def _mrtrLeafArguments(String outerTool, String leafTool, Map outerArgs)
 
 // The arguments a clone/import continuation keeps: the original call minus this round's
 // budget clock and minus the import payload, at both the gateway and the leaf level.
+@groovy.transform.CompileStatic
 private Map _mrtrCheckpointArguments(Map executionArgs) {
     Map next = _mrtrCopyMap(executionArgs ?: [:])
     ["__reqT0", "jsonContent"].each { next.remove(it) }
@@ -2746,6 +2753,7 @@ private Map _mrtrCheckpointArguments(Map executionArgs) {
     return next
 }
 
+@groovy.transform.CompileStatic
 private Map _mrtrWithLeafArguments(Map rec, Map outerArgs, Map nextLeafArgs) {
     if (rec.outerTool?.toString() == rec.leafTool?.toString()) return nextLeafArgs
     def next = _mrtrCopyMap(outerArgs)
@@ -2784,6 +2792,7 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs, boo
 // Hubitat allowlists java.security.MessageDigest. Hash the complete canonical
 // client argument object before persistence: this binds large import JSON exactly
 // without duplicating that payload in atomicState.
+@groovy.transform.CompileStatic
 private Map _mrtrBinding(outerToolName, leafToolName, Map args) {
     String canonical = groovy.json.JsonOutput.toJson(_mrtrCanonicalArgs(args))
     return [
@@ -2828,6 +2837,7 @@ private boolean _mrtrBindingMatches(Map rec, Map binding) {
         rec.argDigest?.toString() == binding.argDigest?.toString()
 }
 
+@groovy.transform.CompileStatic
 def _mrtrActiveTtlMs() { _writeLeaseMs() }
 @groovy.transform.CompileStatic
 def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
@@ -2835,6 +2845,7 @@ def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
 // TTL: its record holds a replay marker rather than a payload, and the replay re-reads the
 // cached snapshot, so the record is kept exactly as long as that snapshot can be (30 s). A
 // later replay gets "expired requestState" and starts a fresh call instead of a refetch.
+@groovy.transform.CompileStatic
 def _mrtrReadTerminalTtlMs() { _logsJsonSnapshotTtlMs() }
 def _mrtrMaxRecords() { 16 }
 def _mrtrMaxContinuationSlices() { 8 }
@@ -4281,6 +4292,7 @@ private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
         aggregate.patchResults.any { it?.success == false || it?.partial == true } : result.partial == true)
 }
 
+@groovy.transform.CompileStatic
 private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
     def prior = (aggregate?.results instanceof List) ? aggregate.results as List : []
     def priorIds = (aggregate?.ruleIds instanceof List) ? aggregate.ruleIds as List : []
@@ -5665,6 +5677,7 @@ def _stripLibraryMarkers(String s) {
     return s.replaceAll(/ *\/\/ library marker [\w.]+, line \d+/, '')
 }
 
+@groovy.transform.CompileStatic
 def stripFlatTrim(String text, boolean dropContent) {
     if (text == null) return null
     // #include line markers captured by multi-line library string literals are wire noise
@@ -5755,6 +5768,7 @@ String _withGuideFirst(String name, String description, visibleSubTools = null) 
 // nested object's properties, or inside an array's items, used to survive the transform and
 // ship raw in the catalog -- the flat wire an LLM reads. Depth is small and bounded by the
 // schema shape, so the recursion is cheap and runs once per catalog build.
+@groovy.transform.CompileStatic
 private void _stripFlatTrimDeep(Object node, boolean dropContent) {
     if (node instanceof List) {
         node.each { _stripFlatTrimDeep(it, dropContent) }
@@ -5905,6 +5919,7 @@ def getToolDefinitions() {
     }
 }
 
+@groovy.transform.CompileStatic
 private Map _withMrtrClientErrorHint(Map tool) {
     return tool + [description: "${tool.description ?: ''}\n\n${_mrtrClientErrorHint()}".toString()]
 }
@@ -6514,6 +6529,7 @@ def validateButtonAction(action, context) {
 }
 
 // Validate time string format (HH:mm)
+@groovy.transform.CompileStatic
 def validateTimeFormat(timeStr, context) {
     if (timeStr != null && !isValidTimeFormat(timeStr)) {
         throw new IllegalArgumentException("${context}: Invalid time format '${timeStr}'. Expected format: HH:mm (e.g., 08:30, 23:45)")
@@ -10087,6 +10103,7 @@ private String _uiEmailPattern() {
 // the input's defaultValue, which every page template (text/number/decimal, textarea, bool, enum)
 // pre-fills. A Done built without it posts "" where the UI posts the default (a Room Lighting
 // "illuminance rises" condition then saves lux=null instead of the page's 100).
+@groovy.transform.CompileStatic
 private _uiValueOrDefault(v, Map meta) {
     return (_uiValueIsEmpty(v, meta) && meta?.defaultValue != null) ? meta.defaultValue : v
 }
@@ -10095,6 +10112,7 @@ private _uiValueOrDefault(v, Map meta) {
 // no selection; they reach here as a List, a JSON-array string ("[]" from statusJson), or a device
 // id->label Map. A number input's whitespace sanitizes to "". Any other typed input is empty only at
 // zero length, so required text holding "null", "[]" or "  " passes, as in the browser.
+@groovy.transform.CompileStatic
 private boolean _uiValueIsEmpty(v, Map meta = null) {
     if (v == null) return true
     if (v instanceof Collection) return v.findAll { it != null && it.toString().trim() }.isEmpty()
@@ -10399,6 +10417,7 @@ boolean hubBpsKeyAccepted(String section, value) {
 }
 
 // Section whose key a write tool must carry.
+@groovy.transform.CompileStatic
 String _bpsSectionForTool(toolName) { _guideSectionForTool(toolName) ?: 'best_practice_reference' }
 
 // The gate's refusal. Names the section and why the offered value failed, never a key.
@@ -10505,6 +10524,7 @@ def _guideSectionForTool(toolName) {
 // domain error (the fix there is a toggle, not the guide); or the error already points at the guide
 // (idempotent -- many tools self-cite, so a retry can't stack hints). (args reserved for future
 // arg-shape hints, e.g. "hub_set_rule created with no trigger".)
+@groovy.transform.CompileStatic
 def _reactiveBpsWarning(toolName, args, errorText) {
     def txt = (errorText ?: '').toString()
     if (txt.contains('get_tool_guide')) return null

@@ -829,6 +829,7 @@ private String _bugReportScrubSecrets(String text) {
 
 // A pasted payload is either fenced verbatim or withheld with its size named, so a reader can
 // tell "nothing to show" apart from "held back".
+@groovy.transform.CompileStatic
 private String _bugReportRawSection(String heading, String body, boolean includeRawLogs, boolean needsEvidence, String privacyMode) {
     if (!body) return needsEvidence ? "\n## ${heading}\n_Not provided_\n".toString() : ""
     if (!includeRawLogs) {

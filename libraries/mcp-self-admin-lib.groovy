@@ -366,6 +366,7 @@ private Map _validateMcpDeviceScope(scopeValue) {
 // - number: accepts native Number, plus integer/decimal-formatted strings.
 // - enum: passed through; downstream (e.g. toolSetLogLevel) does its own enum-membership
 //         check against a tool-specific allowed list.
+@groovy.transform.CompileStatic
 private coerceSettingValue(String key, value, String type) {
     if (value == null) {
         throw new IllegalArgumentException("Setting '${key}' value cannot be null")

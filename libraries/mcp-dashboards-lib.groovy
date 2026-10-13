@@ -747,6 +747,7 @@ private Integer _tileIdOf(tile) {
     try { return raw.toString().trim() as Integer } catch (Exception ignored) { return null }
 }
 
+@groovy.transform.CompileStatic
 private Integer _requireTileId(raw, String op) {
     def id = _tileIdOf(raw)
     if (id == null) {
@@ -1007,6 +1008,7 @@ private Map _buildDashboardConfigQuery(Map args, String deviceCsv) {
 // So feeding a read value back VERBATIM misparses (the hub reads "[1]" as 0), corrupting nav on a
 // get->update round-trip -- the exact workflow this tool advertises. Normalize every form to CSV:
 // an array, a bracketed hub string ("[1,2]"), or an already-CSV string all return "1,2".
+@groovy.transform.CompileStatic
 private String _dashboardNavSelectionCsv(navigationSelection) {
     if (navigationSelection == null || !_dashboardRealValue(navigationSelection)) return ""
     def items

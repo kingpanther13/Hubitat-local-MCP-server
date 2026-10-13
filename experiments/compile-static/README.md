@@ -18,20 +18,23 @@ sandbox-compatible at runtime.
 
 ## Selection and validation
 
-`measure.groovy` considers declared methods independently. It excludes overloaded
-names, reflection/metaclass hooks, and nondeterministic runtime APIs. Standalone
-static compilation rejects undeclared Hubitat bindings and cross-method calls.
-Only methods with a measured reduction in dynamic dispatch are selected; signatures
-and bodies are preserved. Reviewed helpers and catalog builders have direct
-dynamic-versus-static output comparisons. The evidence distinguishes these from
-methods covered only by the repository suite.
+The first two versions selected methods independently, preserving their bodies and
+signatures. The cumulative experiment additionally uses `connected.groovy` to
+check helpers in the full app context under Groovy 2.4, 2.5, and 3.0. This avoids
+rejecting a helper just because the isolated discovery class omitted its siblings.
+Explicit types are added where needed for static resolution, with behavior parity
+checks for sensitive numeric and collection operations. Platform bindings,
+reflection/metaclass hooks, and concurrency boundaries require separate care.
+Zero-gain literal catalog builders are excluded from the static conversion.
 
 The experiment records whole-app dynamic call sites, dispatch instructions,
 generated class count/size, and parent constant-pool size. The normal 64,000-entry
-constant-pool limit applies. Verify mode checks that source annotations match the
-selected list and that its bytecode measurements match the candidate.
+constant-pool limit applies. Verify mode compiles the full current app and a copy
+with static annotations removed. For cumulative changes to method bodies, compare
+the saved results from successive versions as well: stripping annotations does
+not undo those body changes.
 
-Before installing either clone version, all 11 non-E2E validation workflows and
+Before installing or updating any clone version, all 11 non-E2E validation workflows and
 the experiment's measurement/clone parse checks must pass at that exact SHA.
 No PR or E2E workflow is needed for this experiment.
 

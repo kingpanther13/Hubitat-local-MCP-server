@@ -7,6 +7,8 @@ import org.codehaus.groovy.control.messages.SyntaxErrorMessage
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport
 import org.codehaus.groovy.ast.DynamicVariable
 import org.codehaus.groovy.ast.expr.DeclarationExpression
+import org.codehaus.groovy.ast.expr.BinaryExpression
+import org.codehaus.groovy.ast.expr.ConstructorCallExpression
 import org.codehaus.groovy.ast.expr.MethodCallExpression
 import org.codehaus.groovy.ast.expr.PropertyExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
@@ -57,6 +59,7 @@ methods.each { method ->
     Set dependencies = [] as Set
     Set locals = method.parameters*.name as Set
     List reasons = []
+    boolean dispatch = false
     method.code.visit(new ClassCodeVisitorSupport() {
         protected org.codehaus.groovy.control.SourceUnit getSourceUnit() { sourceUnit }
         void visitDeclarationExpression(DeclarationExpression expression) {
@@ -73,6 +76,7 @@ methods.each { method ->
             super.visitVariableExpression(expression)
         }
         void visitPropertyExpression(PropertyExpression expression) {
+            dispatch = true
             if (expression.objectExpression instanceof VariableExpression && expression.objectExpression.thisExpression) {
                 reasons << "script property: ${expression.propertyAsString}"
             }
@@ -83,6 +87,7 @@ methods.each { method ->
             super.visitSynchronizedStatement(statement)
         }
         void visitMethodCallExpression(MethodCallExpression expression) {
+            dispatch = true
             if (expression.implicitThis || (expression.objectExpression instanceof VariableExpression && expression.objectExpression.thisExpression)) {
                 String name = expression.methodAsString
                 if (byName.containsKey(name)) dependencies.add(name)
@@ -90,20 +95,27 @@ methods.each { method ->
             }
             super.visitMethodCallExpression(expression)
         }
+        void visitBinaryExpression(BinaryExpression expression) {
+            if (!(expression instanceof DeclarationExpression)) dispatch = true
+            super.visitBinaryExpression(expression)
+        }
+        void visitConstructorCallExpression(ConstructorCallExpression expression) {
+            dispatch = true
+            super.visitConstructorCallExpression(expression)
+        }
     })
     String body = sourceLines[(method.lineNumber - 1)..(method.lastLineNumber - 1)].join('\n')
     if (body =~ /\b(metaClass|getMetaClass|getClass|respondsTo|invokeMethod|hasProperty|propertyMissing|methodMissing|System|Date|Calendar|Random|UUID)\b|Math\.random/) reasons << 'runtime introspection or nondeterministic API'
     if (method.name in ['_logsJsonTable', '_radioRefused']) reasons << 'confirmed Groovy 2.5/3.0 narrowing failure'
     if (byName[method.name].size() != 1) reasons << 'overloaded method'
+    if (!dispatch) reasons << 'literal return with no dynamic dispatch to remove'
     records[method.name] = [method: method.name, line: method.lineNumber, dependencies: dependencies.toList(), reasons: reasons.unique()]
 }
 Set eligible = records.findAll { name, record -> !record.reasons }.keySet() as Set
-boolean changed = true
-while (changed) {
-    Set remove = eligible.findAll { name -> records[name].dependencies.any { !eligible.contains(it) && !retained.contains(it) } } as Set
-    remove.each { name -> records[name].reasons << 'depends on a dynamic/platform helper' }
-    changed = !remove.isEmpty()
-    eligible.removeAll(remove)
+// A declared sibling may keep its dynamic body behind the compiled caller. Platform DSL and
+// persisted/concurrent state remain excluded above; the complete suites check interception.
+eligible.each { name ->
+    records[name].dynamicSiblingCalls = records[name].dependencies.findAll { !eligible.contains(it) && !retained.contains(it) }
 }
 Set selected = new LinkedHashSet(eligible)
 List failures = []

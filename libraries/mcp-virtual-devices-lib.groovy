@@ -372,6 +372,7 @@ def toolDeleteVirtualDevice(args) {
     ]
 }
 
+@groovy.transform.CompileStatic
 def _getAllToolDefinitions_partVirtualDevices() {
     return [
         // Virtual Device Management

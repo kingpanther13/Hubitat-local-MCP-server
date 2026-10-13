@@ -960,6 +960,7 @@ private String _rmExcessiveLoadMarker() { "excessive hub load" }
 // current run state (the same one-button toggle pattern as stopRule); clicking pausRule on a
 // paused rule resumes it, so both the pause and resume cases steer to the same pausRule button.
 // Substring is scoped tightly to RMUtils' load-message text so unrelated failures keep the plain note.
+@groovy.transform.CompileStatic
 private String _rmSendActionErrorNote(String rmAction, List<Integer> ruleIds, String message) {
     def base = "Verify the ruleId is valid (use hub_list_rules) and Rule Machine is installed."
     if (ruleIds.size() > 1) {
@@ -1519,6 +1520,7 @@ private boolean _rmSpecTargetsRule(Object spec) {
 // True when any spec in a bulk action list targets another RM rule. Lets a bulk
 // entry point resolve the valid-rule-id set once (and only when it is actually
 // needed) and thread it to every _rmAddAction in the batch.
+@groovy.transform.CompileStatic
 private boolean _rmSpecListTargetsRule(List specs) {
     return (specs ?: []).any { _rmSpecTargetsRule(it) }
 }
@@ -1536,6 +1538,7 @@ private boolean _rmSpecListTargetsRule(List specs) {
 // id, and there normalizeRuleId would truncate a fractional Number to a DIFFERENT existing
 // rule via toInteger() -- the exact silent corruption _rmCoerceRuleId exists to prevent.
 // Throwing keeps the guard and the write on the same integer-valued contract on every path.
+@groovy.transform.CompileStatic
 private List _rmNormalizeRuleIdsForWrite(Object ids, boolean allowThisRule = false) {
     def idList = (ids instanceof List) ? ids : (ids != null ? [ids] : [])
     return idList.collect { id ->
@@ -1692,6 +1695,7 @@ private List<String> _rmRhsOptionalComparatorMarkers() { ["changed", "became"] }
 // true'/'became false'). A bare-substring test misfires on unrelated comparators that
 // merely CONTAIN a marker -- 'unchanged' and 'last changed date' both contain 'changed'
 // but are not no-RHS state-change comparators.
+@groovy.transform.CompileStatic
 boolean _rmComparatorIsRhsOptional(Object rawComparator) {
     def token = _rmComparatorToken(rawComparator)
     if (token == null) return false
@@ -1722,6 +1726,7 @@ private String _rmComparatorToken(Object raw) {
 // '*became false*' request to the EXACT option, never the first RHS-optional option;
 // and a picker option like 'unchanged' must NOT match a '*changed*' request. Use this
 // (not the fuzzy family gate) whenever choosing which option to write.
+@groovy.transform.CompileStatic
 private boolean _rmComparatorTokensMatch(Object requested, Object candidate) {
     return _rmComparatorTokenMatchesOption(_rmComparatorToken(requested), candidate)
 }
@@ -1730,6 +1735,7 @@ private boolean _rmComparatorTokensMatch(Object requested, Object candidate) {
 // Equality of an ALREADY-NORMALIZED requested token against a candidate picker option.
 // Route sites normalize the requested comparator ONCE (hoisted out of the per-candidate
 // .find) and call this; _rmComparatorTokensMatch is the un-hoisted convenience form.
+@groovy.transform.CompileStatic
 private boolean _rmComparatorTokenMatchesOption(String requestedToken, Object candidate) {
     if (requestedToken == null) return false
     def b = _rmComparatorToken(candidate)
@@ -1793,6 +1799,7 @@ private List<String> _rmRecognizedTriggerKeys() {
 // 'changed'/'became' forms plus the value-delta 'increased'/'decreased' forms. Built on
 // _rmRhsOptionalComparatorMarkers so the changed/became stems have one owner and cannot
 // drift. Used to detect a state-change token that was mistakenly supplied as `state`.
+@groovy.transform.CompileStatic
 private List<String> _rmStateChangeTokenStems() { _rmRhsOptionalComparatorMarkers() + ["increased", "decreased"] }
 
 // Internal _rm helper -- not part of the tool surface.
@@ -1804,6 +1811,7 @@ private List<String> _rmStateChangeTokenStems() { _rmRhsOptionalComparatorMarker
 // that never contains a change stem (on/open/active/locked/42). The families the guard exempts
 // (Mode, Variable, Custom Attribute, Button, time) legitimately carry a value that CAN contain
 // such a stem, so the guard is scoped away from them rather than relying on this token test alone.
+@groovy.transform.CompileStatic
 private boolean _rmLooksLikeStateChangeToken(Object raw) {
     def s = raw?.toString()?.toLowerCase()
     if (!s) return false
@@ -1870,6 +1878,7 @@ private String _rmSuggestTriggerCapability(String cap, Collection liveOptions = 
 // The deny-list and a positive device-state/numeric list agree on every capability the schema
 // enumerates; they differ ONLY for unlisted caps, which the deny-list correctly guards. Single owner
 // shared by the add and modify paths.
+@groovy.transform.CompileStatic
 private boolean _rmStateChangeGuardApplies(String cap) {
     !(_rmTriggerCapabilityFamily(cap) in ["hub-state", "variable", "custom-attribute", "time", "button"])
 }
@@ -1936,6 +1945,7 @@ private String _rmPeriodicShapeError(String freq, Map per) {
 // Argument-only refusal seam used before MRTR allocates requestState. Keep this
 // allowlist narrower than the full leaf validation: every check here is decided
 // solely from the supplied trigger map and must not read or mutate hub state.
+@groovy.transform.CompileStatic
 private void _rmValidateRoundZeroTriggerSpec(Map triggerSpec) {
     if (!(triggerSpec instanceof Map) || triggerSpec.discover == true) return
     def cap = triggerSpec.capability?.toString()?.trim()
@@ -1972,6 +1982,7 @@ private void _rmValidateRoundZeroTriggerSpec(Map triggerSpec) {
 
 // Pure periodic fields that historically run after device-ID prevalidation.
 // Round zero invokes these only when no earlier dynamic validator can apply.
+@groovy.transform.CompileStatic
 private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
     def cap = triggerSpec?.capability?.toString()?.trim()
     if (!cap) return
@@ -2011,6 +2022,7 @@ private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
 
 // Pure action checks in their established order. Structural checks and
 // picker/existence checks need live rule state and remain inside the worker.
+@groovy.transform.CompileStatic
 private void _rmValidateRoundZeroActionSpec(Map actionSpec) {
     if (!(actionSpec instanceof Map) || actionSpec.discover == true) return
     def cap = actionSpec.capability?.toString()?.trim()
@@ -3336,6 +3348,7 @@ private Map _rmTriggerSchemaForDiscover() {
 // Called when addAction: {discover: true} is passed -- no hub mutation, no
 // confirm/backup required. Content is sourced from the inline capability-family
 // reference in the hub_set_rule tool description.
+@groovy.transform.CompileStatic
 private Map _rmActionSchemaForDiscover() {
     return [
         discriminator: "capability",
@@ -4716,6 +4729,7 @@ private List _rmPatchModifyOpKeys() { ["removeTrigger", "modifyTrigger", "modify
 // Every operation key a patches[] item can carry. An item names exactly one: the dispatch chain
 // runs only the first key it matches, so a second key would be dropped while the item reports
 // success.
+@groovy.transform.CompileStatic
 private List _rmPatchOpKeys() {
     ["settings", "button", "addTrigger", "addTriggers", "addAction", "addActions", "addRequiredExpression",
      "replaceRequiredExpression", "addLocalVariable", "removeLocalVariable", "removeAction", "clearActions",
@@ -4723,6 +4737,7 @@ private List _rmPatchOpKeys() {
 }
 
 // Refuse the whole batch, before any op runs, when an item carries more than one operation.
+@groovy.transform.CompileStatic
 private void _rmRejectMultiOpPatchItems(List patchesList) {
     def opKeys = _rmPatchOpKeys()
     patchesList.eachWithIndex { p, i ->
@@ -7826,6 +7841,7 @@ private void _rmRejectUnwalkableConditionCapability(String requestedCap) {
 // top-of-function pre-flight (the intra-batch / patch catch-all) and the _applyNativeAppEdit
 // single/bulk addAction dispatch, so an unwalkable cap is refused before ANY snapshot or opener
 // commit. No-op for a non-expression action.
+@groovy.transform.CompileStatic
 private void _rmRejectUnwalkableExpressionConditions(Map actionSpec) {
     if (!(actionSpec?.expression instanceof Map)) return
     def conds = (actionSpec.expression as Map).conditions
@@ -8169,6 +8185,7 @@ private void _rmForceWriteEnumField(Integer appId, String pageName, String key, 
 // _applyNativeAppEdit's replaceActions handler and the patches[]
 // replaceActions branch both call this to validate the proposed list
 // before any clearActions click.
+@groovy.transform.CompileStatic
 private List _rmStructuralSequenceFromSpecList(List specList) {
     def out = []
     specList.eachWithIndex { spec, i ->
@@ -8917,6 +8934,7 @@ List _rmStructuralBaseline(Integer appId) {
 // Non-empty list when the final verdict fails ONLY on structural issues that were all present in the baseline
 // taken before the drive; null otherwise (no baseline, any new issue, or any other kind of breakage still fails).
 // orphanedActionRows are left out on purpose: the health contract keeps them diagnostic, outside issues and ok.
+@groovy.transform.CompileStatic
 private List _rmPreExistingStructuralOnly(List baseline, Map finalHealth) {
     if (baseline == null || !(finalHealth instanceof Map) || finalHealth.ok == true || finalHealth.unreadable == true) return null
     if (finalHealth.broken == true || (finalHealth.brokenMarkers as List) ||
@@ -9601,6 +9619,7 @@ def _setRuleOperations() { (['create'] + _setRuleCreateHonored() + _setRuleEditO
 
 // The thin flat-mode tool (description + inputSchema), substituted for hub_set_rule
 // in getToolDefinitions()'s useGateways==false branch.
+@groovy.transform.CompileStatic
 def _setRuleFlatTool() {
     return [
         description: """Create or edit a Hubitat Rule Machine rule (RM 5.1) — one self-describing tool. Set `operation` and call WITHOUT confirm to get that operation's argument schema back (no change is made); then call again with `args` filled and confirm:true to apply it (args is opaque — probe it first). operation='create' makes a new rule (omit appId; put name + any bundled triggers/actions/required-expression in args); every other operation EDITs an existing rule (provide appId). RM-only — for non-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app. Any write needs the Write master + confirm=true + a recent backup. Keywords: create edit rule machine RM trigger action condition required expression local variable walkStep authoring automation.""",
@@ -13606,6 +13625,7 @@ private List _rmHealthRegressionNewIssues(Map baselineHealth, Map nowHealth) {
 // Boolean gate over _rmHealthRegressionNewIssues -- true when the replace introduced any new
 // rule-health problem. Shared by the standalone finalize and the sole-op patches-batch
 // restore so both use identical semantics.
+@groovy.transform.CompileStatic
 private boolean _rmHealthRegressedVsBaseline(Map baselineHealth, Map nowHealth) {
     return !_rmHealthRegressionNewIssues(baselineHealth, nowHealth).isEmpty()
 }
@@ -13766,6 +13786,7 @@ private String _rmTokenValue(Object tok) {
     return tok?.toString()?.trim()
 }
 
+@groovy.transform.CompileStatic
 private boolean _rmTokensEqual(List a, List b) {
     if (a == null || b == null || a.size() != b.size()) return false
     for (int i = 0; i < a.size(); i++) {
@@ -13775,6 +13796,7 @@ private boolean _rmTokensEqual(List a, List b) {
 }
 
 // Condition ids in a token list (numeric tokens).
+@groovy.transform.CompileStatic
 private List _rmTokenConditionIds(List toks) {
     return (toks ?: []).findAll { _rmTokenValue(it)?.isInteger() }.collect { _rmTokenValue(it) as Integer }
 }
@@ -14097,6 +14119,7 @@ Map _rmReconcileRuleStructure(Integer appId, Map snapshot) {
     return out
 }
 
+@groovy.transform.CompileStatic
 private List _rmRenderExpression(List toks, Map texts) {
     return (toks ?: []).collect { t ->
         def v = _rmTokenValue(t)

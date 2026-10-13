@@ -113,6 +113,7 @@ private Map _vrbDetect(Integer appId) {
     return null
 }
 
+@groovy.transform.CompileStatic
 private Map _vrbWithBareName(Map data, boolean graph) {
     // JSON names are raw strings. Only the graph endpoint appends runtime markup.
     if (data?.name != null) {
@@ -478,6 +479,7 @@ private Map _vrb2NodeFromDialog(Map node, String typeKey) {
     return out
 }
 
+@groovy.transform.CompileStatic
 private Map _vrb2EditorItem(def raw, String typeKey, String label) {
     // Normalize one editor item to {id?, type, config}. Accepts the 2.0 shape ({type, config})
     // or the flat 1.0 dialog shape (triggerType/actionType plus the field keys).
@@ -506,10 +508,11 @@ private Map _vrb2EditorItem(def raw, String typeKey, String label) {
     return out
 }
 
-private List _vrb2EditorList(def raw, String typeKey, String label) {
+@groovy.transform.CompileStatic
+private List<Map> _vrb2EditorList(def raw, String typeKey, String label) {
     if (raw == null) return []
     if (!(raw instanceof List)) throw new IllegalArgumentException("${label} must be an array.")
-    def out = []
+    List<Map> out = []
     raw.eachWithIndex { item, i -> out << _vrb2EditorItem(item, typeKey, "${label}[${i}]") }
     return out
 }
@@ -525,8 +528,9 @@ private String _vrb2UniqueId(String base, Set used) {
     return candidate
 }
 
-private void _vrb2AssignIds(List items, String prefix, Set used) {
-    items.eachWithIndex { item, i ->
+@groovy.transform.CompileStatic
+private void _vrb2AssignIds(List<Map> items, String prefix, Set<String> used) {
+    items.eachWithIndex { Map item, int i ->
         if (item.id == null || !item.id.toString().trim()) {
             item.id = _vrb2UniqueId("${prefix}-${i + 1}".toString(), used)
         }
@@ -534,14 +538,15 @@ private void _vrb2AssignIds(List items, String prefix, Set used) {
     }
 }
 
-private void _vrb2ChainEdges(List edges, String from, String port, List chain, String terminal) {
+@groovy.transform.CompileStatic
+private void _vrb2ChainEdges(List<Map> edges, String from, String port, List<Map> chain, String terminal) {
     // The builder's chain(): a non-empty branch is entered on `port` then linked node-to-node on
     // `next`, terminating at the branch merge when there is one; an EMPTY branch with a merge
     // still gets its own edge so the decision port is not left dangling.
     if (!chain.isEmpty()) {
         edges << [from: from, to: chain[0].id, port: port]
-        chain.eachWithIndex { item, i ->
-            def to = (i + 1 < chain.size()) ? chain[i + 1].id : terminal
+        chain.eachWithIndex { Map item, int i ->
+            Object to = (i + 1 < chain.size()) ? chain[i + 1].id : terminal
             if (to != null) edges << [from: item.id, to: to, port: "next"]
         }
     } else if (terminal != null) {
@@ -553,6 +558,7 @@ private List _vrb2EditorKeys() {
     return ["triggers", "conditions", "decisionType", "thenActions", "elseActions", "commonActions", "structureIds"]
 }
 
+@groovy.transform.CompileStatic
 private Map _vrb2Compose(Map editor) {
     // Editor form -> 2.0 graph document, with exactly the topology the hub's own Vue builder
     // composes, so a rule authored here is indistinguishable from one drawn in the UI.
@@ -563,24 +569,24 @@ private Map _vrb2Compose(Map editor) {
     if (unknownKeys) {
         throw new IllegalArgumentException("Unknown editor key(s): ${unknownKeys.join(', ')}. The editor form takes only ${_vrb2EditorKeys().join(', ')}.")
     }
-    def decisionType = editor.decisionType?.toString()?.trim() ?: "all"
+    String decisionType = editor.decisionType?.toString()?.trim() ?: "all"
     if (!(decisionType in ["all", "any"])) {
         throw new IllegalArgumentException("Unsupported decision type '${decisionType}'. Use 'all' (AND) or 'any' (OR).")
     }
-    def triggers = _vrb2EditorList(editor.triggers, "triggerType", "triggers")
-    def conditions = _vrb2EditorList(editor.conditions, "triggerType", "conditions")
-    def thenActions = _vrb2EditorList(editor.thenActions, "actionType", "thenActions")
-    def elseActions = _vrb2EditorList(editor.elseActions, "actionType", "elseActions")
-    def commonActions = _vrb2EditorList(editor.commonActions, "actionType", "commonActions")
+    List<Map> triggers = _vrb2EditorList(editor.triggers, "triggerType", "triggers")
+    List<Map> conditions = _vrb2EditorList(editor.conditions, "triggerType", "conditions")
+    List<Map> thenActions = _vrb2EditorList(editor.thenActions, "actionType", "thenActions")
+    List<Map> elseActions = _vrb2EditorList(editor.elseActions, "actionType", "elseActions")
+    List<Map> commonActions = _vrb2EditorList(editor.commonActions, "actionType", "commonActions")
     if (decisionType == "any" && conditions.isEmpty()) {
         throw new IllegalArgumentException("An OR decision must contain at least one condition.")
     }
 
     // Register every caller-supplied id BEFORE generating any, so a generated id can never
     // collide with an explicit one that appears later in the document.
-    def used = [] as Set
-    [triggers, conditions, thenActions, elseActions, commonActions].each { list ->
-        list.each { if (it.id != null) used << it.id.toString() }
+    Set<String> used = [] as Set
+    [triggers, conditions, thenActions, elseActions, commonActions].each { List<Map> list ->
+        list.each { Map item -> if (item.id != null) used << item.id.toString() }
     }
     _vrb2AssignIds(triggers, "trigger", used)
     _vrb2AssignIds(conditions, "condition", used)
@@ -588,22 +594,22 @@ private Map _vrb2Compose(Map editor) {
     _vrb2AssignIds(elseActions, "else", used)
     _vrb2AssignIds(commonActions, "common", used)
 
-    def structureIds = (editor.structureIds instanceof Map) ? editor.structureIds : [:]
-    def triggerMergeId = structureIds.triggerMerge?.toString()?.trim() ?: _vrb2UniqueId("trigger-merge", used)
+    Map structureIds = (editor.structureIds instanceof Map) ? (Map) editor.structureIds : [:]
+    String triggerMergeId = structureIds.triggerMerge?.toString()?.trim() ?: _vrb2UniqueId("trigger-merge", used)
     used << triggerMergeId
-    def decisionId = structureIds.decision?.toString()?.trim() ?: _vrb2UniqueId("decision", used)
+    String decisionId = structureIds.decision?.toString()?.trim() ?: _vrb2UniqueId("decision", used)
     used << decisionId
     // The builder emits a branchMerge only when there is a common tail. A DECOMPOSED graph may
     // carry a branchMerge with an empty tail (the hub accepts one -- live-verified), and sending
     // that back must not drop the node and re-wire both branches, so an explicit structure id
     // keeps it.
-    def branchMergeId = null
+    String branchMergeId = null
     if (!commonActions.isEmpty() || structureIds.branchMerge?.toString()?.trim()) {
         branchMergeId = structureIds.branchMerge?.toString()?.trim() ?: _vrb2UniqueId("branch-merge", used)
         used << branchMergeId
     }
 
-    def nodes = []
+    List<Map> nodes = []
     triggers.each { nodes << [id: it.id, kind: "trigger", type: it.type, config: it.config] }
     nodes << [id: triggerMergeId, kind: "merge", type: "triggerMerge", config: [:]]
     nodes << [id: decisionId, kind: "decision", type: decisionType,
@@ -611,7 +617,7 @@ private Map _vrb2Compose(Map editor) {
     thenActions.each { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
     elseActions.each { nodes << [id: it.id, kind: "action", type: it.type, config: it.config] }
 
-    def edges = []
+    List<Map> edges = []
     triggers.each { edges << [from: it.id, to: triggerMergeId, port: "next"] }
     edges << [from: triggerMergeId, to: decisionId, port: "next"]
     _vrb2ChainEdges(edges, decisionId, "true", thenActions, branchMergeId)
