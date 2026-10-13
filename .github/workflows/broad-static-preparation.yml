@@ -1,0 +1,73 @@
+name: Broad Static Preparation
+on:
+  push:
+    branches: [experiment/529-broad-static]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        flavor: [groovy24, groovy25, groovy30]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: |
+            11
+            17
+      - uses: gradle/actions/setup-gradle@v6.4.0
+      - name: Generate against stock Groovy 2.4
+        if: matrix.flavor == 'groovy24'
+        run: ./gradlew -p experiments/compile-static -I "$PWD/experiments/broad-static/remote.gradle" prepareBroad24 -PbroadRoot="$PWD" --console=plain --no-daemon
+      - name: Generate against Groovy 2.5 typed harness
+        if: matrix.flavor == 'groovy25'
+        run: ./gradlew -p ci/groovy2x-spock -I "$PWD/experiments/broad-static/remote.gradle" prepareBroad -PbroadRoot="$PWD" --console=plain --no-daemon
+      - name: Generate against Groovy 3.0 typed harness
+        if: matrix.flavor == 'groovy30'
+        run: ./gradlew -I "$PWD/experiments/broad-static/remote.gradle" prepareBroad -PbroadRoot="$PWD" --console=plain --no-daemon
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: broad-static-${{ github.sha }}-${{ matrix.flavor }}
+          path: experiments/broad-static/results/
+  assemble:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: broad-static-${{ github.sha }}-*
+          path: experiments/broad-static/results/
+          merge-multiple: true
+      - name: Intersect plans and apply guarded source in disposable checkout
+        run: python experiments/broad-static/assemble.py --root "$PWD" --results experiments/broad-static/results --output experiments/broad-static/prepared --apply
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: |
+            11
+            17
+      - uses: gradle/actions/setup-gradle@v6.4.0
+      - name: Check actual assembled source under stock Groovy 2.4 and normal budgets
+        run: ./gradlew -p ci/groovy24-parse parse24 --console=plain --no-daemon
+      - name: Measure actual assembled source
+        run: ./gradlew -p experiments/compile-static measure -PexperimentMode=verify --console=plain --no-daemon
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: broad-static-${{ github.sha }}-prepared
+          path: |
+            experiments/broad-static/results/
+            experiments/broad-static/prepared/
+            experiments/compile-static/results/

@@ -1,0 +1,28 @@
+allprojects {
+    afterEvaluate { p ->
+        def root = new File(p.findProperty('broadRoot') ?: p.rootDir.absolutePath)
+        if (p.plugins.hasPlugin('groovy')) {
+            p.tasks.register('prepareBroad', JavaExec) {
+                dependsOn p.tasks.named('testClasses')
+                javaLauncher = p.javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
+                classpath = p.sourceSets.test.runtimeClasspath
+                mainClass = 'groovy.ui.GroovyMain'
+                maxHeapSize = '2g'
+                args = [new File(root, 'experiments/broad-static/prepare.groovy').absolutePath,
+                        root.absolutePath, new File(root, 'experiments/broad-static/results').absolutePath,
+                        'me.biocomp.hubitat_ci.app.HubitatAppScript',
+                        p.name == 'groovy2x-spock' ? 'groovy25' : 'groovy30']
+            }
+        } else if (p.configurations.findByName('groovy24')) {
+            p.tasks.register('prepareBroad24', JavaExec) {
+                javaLauncher = p.javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
+                classpath = p.configurations.groovy24
+                mainClass = 'groovy.ui.GroovyMain'
+                maxHeapSize = '2g'
+                args = [new File(root, 'experiments/broad-static/prepare.groovy').absolutePath,
+                        root.absolutePath, new File(root, 'experiments/broad-static/results').absolutePath,
+                        'groovy.lang.Script', 'groovy24']
+            }
+        }
+    }
+}
