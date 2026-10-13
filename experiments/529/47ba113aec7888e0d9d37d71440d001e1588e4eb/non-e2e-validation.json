@@ -1,0 +1,10 @@
+{
+  "sourceSha": "47ba113aec7888e0d9d37d71440d001e1588e4eb",
+  "status": "version-only-user-exception",
+  "fullNonE2eRepeated": false,
+  "authorization": "User waived repeated CI waiting for version-only clone updates; this is the requested unchanged-code retry after a slowdown of at least 30 seconds.",
+  "changedFiles": ["experiments/compile-static/hpm/version.txt"],
+  "identicalAppCodeValidatedAt": "f75c018c00cf835500432e910ea742dcfedde1e0",
+  "validatedAppWorkflowRuns": [38457457915, 38457461473, 38457465063, 38457468815, 38457472241, 38457475794, 38457478893, 38457482908, 38457485475, 38457488255, 38457492201],
+  "cloneBuildAndParseRun": 38459883039
+}
