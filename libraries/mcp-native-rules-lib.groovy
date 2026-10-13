@@ -9870,7 +9870,7 @@ def toolSetRule(args) {
             if (true) {
 def __bat529EachReceiver4 = (['addTrigger', 'addAction', 'addRequiredExpression'])
 for (def k in __bat529EachReceiver4) {
-                if (args.containsKey(k) && args[k] != null && !(args[k] instanceof Map)) {
+                if (args.containsKey(k) && args.get(k) != null && !(args.get(k) instanceof Map)) {
                     throw new IllegalArgumentException("hub_set_rule create: '${k}' must be an object (a single spec, e.g. {capability: ...}); it was a non-object that would be silently dropped. Use the plural '${k}s' for a list of specs.")
                 }
             
@@ -9880,7 +9880,7 @@ __bat529EachReceiver4
             if (true) {
 def __bat529EachReceiver5 = (['addTriggers', 'addActions'])
 for (def k in __bat529EachReceiver5) {
-                if (args.containsKey(k) && args[k] != null && !(args[k] instanceof List)) {
+                if (args.containsKey(k) && args.get(k) != null && !(args.get(k) instanceof List)) {
                     throw new IllegalArgumentException("hub_set_rule create: '${k}' must be an array of spec objects; it was a non-array that would be silently dropped. Use the singular '${k.replaceAll(/s$/, '')}' for a single spec.")
                 }
             

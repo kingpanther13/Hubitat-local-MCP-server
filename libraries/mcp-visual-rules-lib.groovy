@@ -1490,7 +1490,7 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
             if (true) {
 def __bat529EachReceiver1 = (["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"])
 for (def k in __bat529EachReceiver1) {
-                if (saved.containsKey(k)) failed[k] = saved[k]
+                if (saved.containsKey(k)) failed.put(k, saved.get(k))
             
 }
 __bat529EachReceiver1

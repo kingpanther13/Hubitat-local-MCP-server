@@ -125,8 +125,8 @@ private Map _hubSubscriptions() {
     if (true) {
 def __bat529EachReceiver1 = (["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"])
 for (def k in __bat529EachReceiver1) {
-        def v = raw[k]
-        if (v instanceof Map) out[k] = [active: v.isActive == true, pendingCancellation: v.pendingCancellation == true, endsAt: v.end_ts, trialAvailable: v.trialAvailable == true]
+        def v = raw.get(k)
+        if (v instanceof Map) out.put(k, [active: v.isActive == true, pendingCancellation: v.pendingCancellation == true, endsAt: v.end_ts, trialAvailable: v.trialAvailable == true])
     
 }
 __bat529EachReceiver1

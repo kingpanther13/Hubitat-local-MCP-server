@@ -3821,7 +3821,7 @@ private void _mrtrRewriteStopRefs(node, Closure fix) {
         Map m = node as Map
         if (true) {
 def __bat529EachReceiver4 = (["bulkStoppedAfter", "error", "note"])
-for (def k in __bat529EachReceiver4) { if (m[k] instanceof CharSequence) m[k] = fix(m[k].toString()) 
+for (def k in __bat529EachReceiver4) { if (m.get(k) instanceof CharSequence) m.put(k, fix(m.get(k).toString())) 
 }
 __bat529EachReceiver4
 } else { null }
@@ -8608,7 +8608,7 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
     if (true) {
 def __bat529EachReceiver9 = (["duration", "ruleName", "details", "stackTrace"])
-for (def key in __bat529EachReceiver9) { if (extraData?.get(key)) raw[key] = extraData[key] 
+for (def key in __bat529EachReceiver9) { if (extraData?.get(key)) raw.put(key, extraData.get(key)) 
 }
 __bat529EachReceiver9
 } else { null }

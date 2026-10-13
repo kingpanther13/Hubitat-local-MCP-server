@@ -135,7 +135,7 @@ void _retainReportError(Map entry) {
         if (true) {
 def __bat529EachReceiver1 = (["tool", "appId"])
 for (def key in __bat529EachReceiver1) {
-            if (entry.details?.get(key)) details[key] = scrub(entry.details[key], 120)
+            if (entry.details?.get(key)) details.put(key, scrub(entry.details.get(key), 120))
         
 }
 __bat529EachReceiver1
