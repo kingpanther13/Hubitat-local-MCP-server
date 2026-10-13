@@ -6,7 +6,7 @@ on:
     inputs:
       mode:
         type: choice
-        options: [discover, verify]
+        options: [discover, connected, verify]
         default: verify
       publish:
         description: Publish verified isolated clone after all non-E2E workflows pass for this SHA
@@ -32,9 +32,19 @@ jobs:
       - name: Preflight the typed app harness under Groovy 2.5
         run: ./gradlew -p ci/groovy2x-spock test --tests 'server.AccessTokenRedactionSpec' -PharnessStrictMetaClass=true --console=plain --no-daemon
       - name: Discover conservative static candidates and compare bytecode and behavior
+        if: inputs.mode != 'connected'
         env:
           EXPERIMENT_MODE: ${{ inputs.mode || 'verify' }}
         run: ./gradlew -p experiments/compile-static measure -PexperimentMode="$EXPERIMENT_MODE" --console=plain --no-daemon
+      - name: Discover connected helpers under Groovy 2.4
+        if: inputs.mode == 'connected'
+        run: ./gradlew -p experiments/compile-static discoverConnected24 --console=plain --no-daemon
+      - name: Discover connected helpers with the Groovy 3.0 typed harness
+        if: inputs.mode == 'connected'
+        run: ./gradlew -I "$PWD/experiments/compile-static/connected.init.gradle" discoverConnected -PexperimentRepoRoot="$PWD" --console=plain --no-daemon
+      - name: Discover connected helpers with the Groovy 2.5 typed harness
+        if: inputs.mode == 'connected'
+        run: ./gradlew -p ci/groovy2x-spock -I "$PWD/experiments/compile-static/connected.init.gradle" discoverConnected -PexperimentRepoRoot="$PWD" --console=plain --no-daemon
       - name: Build isolated HPM clone from release artifact
         run: |
           python3 tools/build-release-app.py

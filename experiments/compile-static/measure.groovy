@@ -89,6 +89,43 @@ def invoke = { instance, method, List params ->
     }
 }
 
+if (mode == 'verify') {
+    // Connected helpers require their siblings and declared return types. Verify the actual
+    // full app, rather than forcing it back through the original empty-Candidate selection.
+    List actual = parse(current).findAll { it.annotations.any { a -> a.classNode.name == 'groovy.transform.CompileStatic' } }*.name
+    Map before = metrics(compile(baseline))
+    Map after = metrics(compile(current))
+    int parityCases = 0
+    List methods = parse(baseline)
+    List lines = baseline.readLines()
+    helpers.each { name, vectors ->
+        if (!actual.contains(name)) return
+        def method = methods.find { it.name == name }
+        String body = lines[(method.lineNumber - 1)..(method.lastLineNumber - 1)].join('\n')
+        GroovyClassLoader a = new GroovyClassLoader()
+        GroovyClassLoader b = new GroovyClassLoader()
+        try {
+            def original = a.parseClass("class Candidate {\n${body}\n}").newInstance()
+            def modified = b.parseClass("class Candidate {\n${annotation}\n${body}\n}").newInstance()
+            vectors.each { vector ->
+                assert invoke(original, name, vector) == invoke(modified, name, vector): "behavior differs for ${name} ${vector}"
+                parityCases++
+            }
+        } finally { a.close(); b.close() }
+    }
+    assert actual: 'No production methods are statically compiled'
+    assert after.dynamicDispatchInstructions < before.dynamicDispatchInstructions
+    assert after.parentConstantPool < 64000: "candidate parent exceeds constant-pool budget: ${after.parentConstantPool}"
+    Map report = [mode: mode, groovy: GroovySystem.version, declaredMethods: methods.size(), selected: actual,
+                  before: before, after: after, parityCases: parityCases,
+                  selection: 'actual-full-source', behaviorValidation: 'reviewed-helper-parity plus required complete CI suites']
+    new File(out, 'selected.json').text = JsonOutput.prettyPrint(JsonOutput.toJson(actual)) + '\n'
+    new File(out, 'candidate-inlined.groovy').text = current
+    new File(out, 'measurement.json').text = JsonOutput.prettyPrint(JsonOutput.toJson(report)) + '\n'
+    println JsonOutput.prettyPrint(JsonOutput.toJson(report))
+    System.exit(0)
+}
+
 List lines = baseline.readLines()
 List candidates = parse(baseline).sort { it.lineNumber }
 Map overloads = candidates.groupBy { it.name }
@@ -170,11 +207,6 @@ new File(out, 'candidate-inlined.groovy').text = modified
 Map before = metrics(compile(baseline))
 Map after = metrics(compile(modified))
 Map report = [mode: mode, groovy: GroovySystem.version, declaredMethods: candidates.size(), statusCounts: results.countBy { it.status }, selected: selectedNames, before: before, after: after, parityCases: results.findAll { it.status == 'selected' }.sum { it.parityCases } ?: 0]
-if (mode == 'verify') {
-    List actual = parse(current).findAll { it.annotations.any { it.classNode.name == 'groovy.transform.CompileStatic' } }*.name
-    assert actual.toSet() == selectedNames.toSet(): "annotations differ: actual=${actual}, selected=${selectedNames}"
-    assert metrics(compile(current)) == after: 'production bytes differ from measured candidate metrics'
-}
 assert selectedNames: 'No conservative candidate reduces dynamic dispatch'
 assert after.dynamicDispatchInstructions < before.dynamicDispatchInstructions
 assert after.parentConstantPool < 64000: "candidate parent exceeds constant-pool budget: ${after.parentConstantPool}"

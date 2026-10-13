@@ -10,7 +10,7 @@ tasks.register('measure', JavaExec) {
     maxHeapSize = '1g'
     args = [new File(projectDir, 'measure.groovy').absolutePath,
             projectDir.parentFile.parentFile.absolutePath,
-            project.findProperty('experimentMode') ?: 'discover',
+            project.findProperty('experimentMode') ?: 'verify',
             new File(projectDir, 'results').absolutePath]
 }
 tasks.register('parseClone', JavaExec) {
@@ -22,4 +22,13 @@ tasks.register('parseClone', JavaExec) {
     args = [new File(repoRoot, 'ci/groovy24-parse/parse_check.groovy').absolutePath,
             new File(repoRoot, 'dist/experiment-hpm/hubitat-mcp-server.groovy').absolutePath,
             new File(repoRoot, 'dist/experiment-hpm/hubitat-mcp-rule.groovy').absolutePath]
+}
+tasks.register('discoverConnected24', JavaExec) {
+    javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
+    classpath = configurations.groovy24
+    mainClass = 'groovy.ui.GroovyMain'
+    maxHeapSize = '1g'
+    def repoRoot = projectDir.parentFile.parentFile
+    args = [new File(projectDir, 'connected.groovy').absolutePath, repoRoot.absolutePath,
+            new File(projectDir, 'results/connected').absolutePath, 'groovy.lang.Script', 'groovy24']
 }

@@ -1,0 +1,21 @@
+// Inject a remote experiment task into each existing typed test build without editing it.
+allprojects {
+    afterEvaluate { experimentProject ->
+        if (!experimentProject.plugins.hasPlugin('groovy')) return
+        experimentProject.tasks.register('discoverConnected', JavaExec) {
+            dependsOn experimentProject.tasks.named('testClasses')
+            javaLauncher = experimentProject.javaToolchains.launcherFor {
+                languageVersion = JavaLanguageVersion.of(11)
+            }
+            classpath = experimentProject.sourceSets.test.runtimeClasspath
+            mainClass = 'groovy.ui.GroovyMain'
+            maxHeapSize = '1g'
+            def experimentRoot = new File(experimentProject.findProperty('experimentRepoRoot'))
+            args = [new File(experimentRoot, 'experiments/compile-static/connected.groovy').absolutePath,
+                    experimentRoot.absolutePath,
+                    new File(experimentRoot, 'experiments/compile-static/results/connected').absolutePath,
+                    'me.biocomp.hubitat_ci.app.HubitatAppScript',
+                    experimentProject.name == 'groovy2x-spock' ? 'groovy25' : 'groovy30']
+        }
+    }
+}
