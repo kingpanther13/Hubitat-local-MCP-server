@@ -2848,7 +2848,7 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
             if (true) {
 def __bat529EachReceiver1 = (["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"])
 for (def k in __bat529EachReceiver1) {
-                if (saved.containsKey(k)) failed[k] = saved[k]
+                if (saved.containsKey(k)) failed.put(k, saved.get(k))
 }
 __bat529EachReceiver1
 } else { null }
@@ -5109,7 +5109,7 @@ void _retainReportError(Map entry) {
         if (true) {
 def __bat529EachReceiver1 = (["tool", "appId"])
 for (def key in __bat529EachReceiver1) {
-            if (entry.details?.get(key)) details[key] = scrub(entry.details[key], 120)
+            if (entry.details?.get(key)) details.put(key, scrub(entry.details.get(key), 120))
 }
 __bat529EachReceiver1
 } else { null }
@@ -8488,8 +8488,8 @@ private Map _hubSubscriptions() {
     if (true) {
 def __bat529EachReceiver1 = (["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"])
 for (def k in __bat529EachReceiver1) {
-        def v = raw[k]
-        if (v instanceof Map) out[k] = [active: v.isActive == true, pendingCancellation: v.pendingCancellation == true, endsAt: v.end_ts, trialAvailable: v.trialAvailable == true]
+        def v = raw.get(k)
+        if (v instanceof Map) out.put(k, [active: v.isActive == true, pendingCancellation: v.pendingCancellation == true, endsAt: v.end_ts, trialAvailable: v.trialAvailable == true])
 }
 __bat529EachReceiver1
 } else { null }
@@ -28672,7 +28672,7 @@ def toolSetRule(args) {
             if (true) {
 def __bat529EachReceiver4 = (['addTrigger', 'addAction', 'addRequiredExpression'])
 for (def k in __bat529EachReceiver4) {
-                if (args.containsKey(k) && args[k] != null && !(args[k] instanceof Map)) {
+                if (args.containsKey(k) && args.get(k) != null && !(args.get(k) instanceof Map)) {
                     throw new IllegalArgumentException("hub_set_rule create: '${k}' must be an object (a single spec, e.g. {capability: ...}); it was a non-object that would be silently dropped. Use the plural '${k}s' for a list of specs.")
                 }
 }
@@ -28681,7 +28681,7 @@ __bat529EachReceiver4
             if (true) {
 def __bat529EachReceiver5 = (['addTriggers', 'addActions'])
 for (def k in __bat529EachReceiver5) {
-                if (args.containsKey(k) && args[k] != null && !(args[k] instanceof List)) {
+                if (args.containsKey(k) && args.get(k) != null && !(args.get(k) instanceof List)) {
                     throw new IllegalArgumentException("hub_set_rule create: '${k}' must be an array of spec objects; it was a non-array that would be silently dropped. Use the singular '${k.replaceAll(/s$/, '')}' for a single spec.")
                 }
 }
@@ -35752,7 +35752,7 @@ private void _mrtrRewriteStopRefs(node, Closure fix) {
         Map m = node as Map
         if (true) {
 def __bat529EachReceiver4 = (["bulkStoppedAfter", "error", "note"])
-for (def k in __bat529EachReceiver4) { if (m[k] instanceof CharSequence) m[k] = fix(m[k].toString())
+for (def k in __bat529EachReceiver4) { if (m.get(k) instanceof CharSequence) m.put(k, fix(m.get(k).toString()))
 }
 __bat529EachReceiver4
 } else { null }
@@ -39233,7 +39233,7 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
     if (true) {
 def __bat529EachReceiver9 = (["duration", "ruleName", "details", "stackTrace"])
-for (def key in __bat529EachReceiver9) { if (extraData?.get(key)) raw[key] = extraData[key]
+for (def key in __bat529EachReceiver9) { if (extraData?.get(key)) raw.put(key, extraData.get(key))
 }
 __bat529EachReceiver9
 } else { null }
