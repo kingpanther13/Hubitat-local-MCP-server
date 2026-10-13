@@ -56,7 +56,7 @@ def metrics = { classes ->
                     void visitLdcInsn(Object value) {
                         if (name.startsWith('$createCallSiteArray_') && value instanceof String) result.dynamicCallSiteSlots++
                     }
-                    void visitMethodInsn(int opcode, String owner, String invoked, String descriptor, boolean itf) {
+                    void visitMethodInsn(int opcode, String owner, String invoked, String invokedDescriptor, boolean itf) {
                         if (owner.startsWith('org/codehaus/groovy/runtime/callsite/')) result.dynamicDispatchInstructions++
                     }
                 }
@@ -158,7 +158,7 @@ selected.sort { -it.lineNumber }.each { method ->
 new File(out, 'candidate-inlined.groovy').text = modified
 Map before = metrics(compile(baseline))
 Map after = metrics(compile(modified))
-Map report = [groovy: GroovySystem.version, declaredMethods: candidates.size(), statusCounts: results.countBy { it.status }, selected: selectedNames, before: before, after: after, parityCases: results.findAll { it.status == 'selected' }.sum { it.parityCases } ?: 0]
+Map report = [mode: mode, groovy: GroovySystem.version, declaredMethods: candidates.size(), statusCounts: results.countBy { it.status }, selected: selectedNames, before: before, after: after, parityCases: results.findAll { it.status == 'selected' }.sum { it.parityCases } ?: 0]
 if (mode == 'verify') {
     List actual = parse(current).findAll { it.annotations.any { it.classNode.name == 'groovy.transform.CompileStatic' } }*.name
     assert actual.toSet() == selectedNames.toSet(): "annotations differ: actual=${actual}, selected=${selectedNames}"

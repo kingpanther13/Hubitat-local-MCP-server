@@ -8,6 +8,10 @@ on:
         type: choice
         options: [discover, verify]
         default: discover
+      publish:
+        description: Publish verified isolated clone after all non-E2E workflows pass for this SHA
+        type: boolean
+        default: false
 permissions:
   contents: read
 jobs:
@@ -40,3 +44,55 @@ jobs:
           path: |
             experiments/compile-static/results/
             dist/experiment-hpm/
+  publish:
+    needs: measure
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && inputs.mode == 'verify' && github.ref == 'refs/heads/experiment/529-compile-static'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: bundle-artifacts
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - name: Require all non-E2E workflows successful for this exact SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 experiments/compile-static/check_ci.py --output non-e2e-validation.json
+      - uses: actions/download-artifact@v4
+        with:
+          name: compile-static-${{ github.sha }}
+          path: incoming
+      - name: Publish the verified CI artifact to isolated experiment paths
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch origin bundle-artifacts
+          git worktree add --detach ../experiment-artifacts origin/bundle-artifacts
+          python3 experiments/compile-static/stage_publication.py --artifact incoming --target ../experiment-artifacts --validation non-e2e-validation.json
+          # Recheck immediately before the write; every current run must have completed.
+          python3 experiments/compile-static/check_ci.py --output non-e2e-validation.json
+          cp non-e2e-validation.json "../experiment-artifacts/experiments/529/${GITHUB_SHA}/non-e2e-validation.json"
+          cd ../experiment-artifacts
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- experiments/529
+          if git diff --cached --quiet; then
+            echo "Experiment artifact already published for ${GITHUB_SHA}."
+            exit 0
+          fi
+          git commit -m "compile-static experiment artifact: ${GITHUB_SHA}"
+          for attempt in 1 2 3; do
+            if git push origin HEAD:bundle-artifacts; then
+              echo "Published isolated experiment artifact for ${GITHUB_SHA}."
+              exit 0
+            fi
+            if ! git pull --rebase origin bundle-artifacts; then
+              git rebase --abort 2>/dev/null || true
+            fi
+          done
+          echo "::error::Could not publish the experiment artifact after 3 attempts."
+          exit 1
