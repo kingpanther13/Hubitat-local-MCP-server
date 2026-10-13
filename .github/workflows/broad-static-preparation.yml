@@ -3,10 +3,17 @@ on:
   push:
     branches: [experiment/529-broad-static]
   workflow_dispatch:
+    inputs:
+      reuse_run_id:
+        description: Reuse successful compiler plans from this run; every source hash must match
+        type: string
+        default: ''
 permissions:
   contents: read
+  actions: read
 jobs:
   prepare:
+    if: inputs.reuse_run_id == '' || github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
@@ -38,6 +45,7 @@ jobs:
           path: experiments/broad-static/results/
   assemble:
     needs: prepare
+    if: ${{ !cancelled() && (needs.prepare.result == 'success' || inputs.reuse_run_id != '') }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -46,8 +54,17 @@ jobs:
         with:
           python-version: '3.x'
       - uses: actions/download-artifact@v4
+        if: inputs.reuse_run_id == ''
         with:
           pattern: broad-static-${{ github.sha }}-*
+          path: experiments/broad-static/results/
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        if: inputs.reuse_run_id != ''
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.reuse_run_id }}
+          pattern: broad-static-*-groovy*
           path: experiments/broad-static/results/
           merge-multiple: true
       - name: Intersect plans and apply guarded source in disposable checkout

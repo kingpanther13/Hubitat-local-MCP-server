@@ -18,7 +18,7 @@ def apply_edits(text: str, edits: list[dict]) -> str:
     previous = len(encoded) // 2 + 1
     for edit in sorted(edits, key=lambda item: (item["start"], item["end"]), reverse=True):
         start, end = edit["start"], edit["end"]
-        if not 0 <= start <= end < previous:
+        if not 0 <= start <= end <= previous:
             raise ValueError(f"Overlapping or invalid edit: {start}..{end}")
         expected = edit["before"].encode("utf-16-le")
         if encoded[2 * start : 2 * end] != expected:
@@ -50,6 +50,10 @@ def main() -> None:
         raise ValueError("Reports came from different revisions")
     if any(report["files"] != reports[0]["files"] for report in reports):
         raise ValueError("Reports used different source files")
+    for relative, expected_hash in reports[0]["files"].items():
+        path = (root / relative).resolve()
+        if not path.is_relative_to(root) or digest(path.read_bytes()) != expected_hash:
+            raise ValueError(f"Preparation input changed: {relative}")
     by_runtime = [{plan["method"]: plan for plan in report["selected"]} for report in reports]
     common = set.intersection(*(set(runtime) for runtime in by_runtime))
     accepted, incompatible = [], []

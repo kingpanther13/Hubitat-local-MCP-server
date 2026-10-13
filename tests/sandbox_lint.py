@@ -2897,7 +2897,14 @@ DEVICE_GATE_EXEMPT = {
 # Public tool declarations: `def toolX(`, or a typed form such as `Map toolX(`. Private/protected
 # helpers are deliberately excluded -- they are reached only through a public tool, which is
 # where the gate belongs.
-_DEVICE_TOOL_DECL = re.compile(r"^(?:def|Map|List|String|Object|boolean|void)\s+(tool\w+)\s*\(", re.M)
+_DEVICE_TOOL_DECL = re.compile(
+    r"^(?:def|(?:java\.util\.)?(?:Map|List|Set)|"
+    r"(?:java\.lang\.)?(?:String|Object|Boolean|Integer|Long)|boolean|int|long|void)"
+    r"\s+(tool\w+)\s*\(", re.M,
+)
+_STATIC_SCRIPT_CALL = re.compile(
+    r"__bat529StaticCall_[A-Za-z0-9_]+_\d+\(\s*'(?P<method>[A-Za-z_]\w*)'\s*(?:,\s*)?"
+)
 
 
 def _blank_comments(src: str) -> str:
@@ -2924,6 +2931,12 @@ def _device_tool_bodies(src: str) -> list[tuple[str, int, str, str]]:
     """(tool name, 1-based line, body) for every top-level public `tool<Name>(` declaration in
     src. Bodies are scanned with comments and string contents blanked, so a brace or a gate
     token inside a string or comment neither shifts the boundary nor counts as code."""
+    # Restore literal script-call targets for the same native-access and gate
+    # analysis after BAT529's statically compiled adapter calls. The runtime
+    # source is unchanged; comments/string bodies are still blanked below.
+    src = _STATIC_SCRIPT_CALL.sub(
+        lambda match: match.group("method") + "(" + "\n" * match.group(0).count("\n"), src,
+    )
     out: list[tuple[str, int, str, str]] = []
     code = _blank_noncode(src)
     strings = _blank_comments(src)
@@ -2996,6 +3009,19 @@ def check_device_tool_access_gate(src_override: dict[str, str] | None = None) ->
 
 DEVICE_GATE_SELF_TEST_CASES = [
     # (description, {file: groovy source}, expected_rule_codes)
+    (
+        "qualified static tool with adapter native access still requires its gate",
+        {"libraries/x.groovy": "java.util.Map toolPingDevice(args) {\n"
+         "    return __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', args.deviceId)\n}\n"},
+        {"device-tool-access-gate-missing"},
+    ),
+    (
+        "qualified static tool with adapter gate and native access is accepted",
+        {"libraries/x.groovy": "java.util.Map toolPingDevice(args) {\n"
+         "    __bat529StaticCall_java_lang_Object_1('_requireDeviceToolAccess', args.deviceId)\n"
+         "    return __bat529StaticCall_java_util_Map_1('_fetchDeviceFullJson', args.deviceId)\n}\n"},
+        set(),
+    ),
     (
         "native fullJson read without the gate -- must-catch",
         {"libraries/x.groovy": 'def toolPingDevice(args) {\n    def fj = _fetchDeviceFullJson(args.deviceId)\n    return [ok: fj != null]\n}\n'},

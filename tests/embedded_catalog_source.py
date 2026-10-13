@@ -4,8 +4,12 @@ import json
 import re
 
 READER = "_bat529EmbeddedCatalogRead"
+READER_CALL = (
+    rf"(?:{READER}\(|"
+    rf"__bat529StaticCall_java_lang_Object_1\(\s*'{READER}'\s*,)"
+)
 CHUNKS = re.compile(
-    rf"{READER}\(\s*\[\s*(?P<chunks>'(?:\\.|[^'\\])*'"
+    rf"{READER_CALL}\s*\[\s*(?P<chunks>'(?:\\.|[^'\\])*'"
     r"(?:\s*,\s*'(?:\\.|[^'\\])*')*)\s*\]\s*\)",
     re.S,
 )
