@@ -75,6 +75,22 @@ while (true) {
     }
 }
 assert !opens: 'Unclosed lexical punctuation'
+NavigableMap openingPairs = new TreeMap(punctuation)
+NavigableMap closingPairs = new TreeMap(closing)
+def balancedRange = { List initial ->
+    if (!initial || initial[0] < 0 || initial[1] < initial[0] || initial[1] > source.length()) return null
+    int start = initial[0], end = initial[1]
+    boolean changed = true
+    while (changed && start < end) {
+        int priorStart = start, priorEnd = end
+        // Every delimiter inside a complete expression must have its partner
+        // inside too. AST child ends often omit a parenthesized RHS's final ')'.
+        openingPairs.subMap(start, true, end, false).values().each { close -> end = Math.max(end, (int) close) }
+        closingPairs.subMap(start, true, end, false).values().each { open -> start = Math.min(start, (int) open) }
+        changed = start != priorStart || end != priorEnd
+    }
+    [start, end]
+}
 def skipTrivia = { int start ->
     int at = start
     while (at < source.length()) {
@@ -159,6 +175,7 @@ span = { ASTNode node ->
         List child = span(node.expression)
         if (child && r) r = [Math.min(child[0], r[0]), Math.max(child[1], r[1])]
     }
+    if (node instanceof Expression && r) r = balancedRange(r)
     if (r && (r[0] < 0 || r[1] < r[0] || r[1] > source.length())) r = null
     expressionSpans[node] = r
     r
