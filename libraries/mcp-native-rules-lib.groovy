@@ -671,7 +671,11 @@ private Map _rmRuleIdListArg(Object raw) {
         def valid = _rmValidRuleIds()
         if (valid != null) {
             verified = true
-            def unknown = ids.findAll { !valid.contains(it) }
+            def __bat529EachReceiver1 = (ids)
+def __bat529EachReceiver1Result = []
+for (def it in __bat529EachReceiver1) {if (!valid.contains(it) ) __bat529EachReceiver1Result.add(it)
+}
+def unknown = __bat529EachReceiver1Result
             if (unknown) {
                 throw new IllegalArgumentException("ruleId array contains id(s) that are not existing RM rules: ${unknown.join(', ')}. Nothing was dispatched. Verify ids via hub_list_rules and re-issue the batch.")
             }
@@ -7708,7 +7712,12 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // work needed" -- avoiding the false success=false when the row exists but
     // is incomplete.
     def uniqueApplied = []
-    applied.each { key -> if (!uniqueApplied.contains(key)) uniqueApplied << key }
+    if (true) {
+def __bat529EachReceiver2 = (applied)
+for (def key in __bat529EachReceiver2) { if (!uniqueApplied.contains(key)) uniqueApplied << key 
+}
+__bat529EachReceiver2
+} else { null }
     return [
         success: !err && !applied.isEmpty(),
         partial: partial,
@@ -9434,7 +9443,12 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
     // The hub's appType record carries the app type's OAuth client credentials and passwords
     // (populated for Rule-5.1); restore never reads them, so they stay out of File Manager.
     if (config?.app?.appType instanceof Map) {
-        ["oauthClientId", "oauthClientSecret", "encryptedPassword", "sourcePassword"].each { config.app.appType.remove(it) }
+        if (true) {
+def __bat529EachReceiver3 = (["oauthClientId", "oauthClientSecret", "encryptedPassword", "sourcePassword"])
+for (def it in __bat529EachReceiver3) { config.app.appType.remove(it) 
+}
+__bat529EachReceiver3
+} else { null }
     }
 
     def snapshot = [
@@ -9853,16 +9867,26 @@ def toolSetRule(args) {
         // and silently creates an empty shell -- the exact silent-success this gate
         // prevents, just for the wrong type.
         if (args instanceof Map) {
-            ['addTrigger', 'addAction', 'addRequiredExpression'].each { k ->
+            if (true) {
+def __bat529EachReceiver4 = (['addTrigger', 'addAction', 'addRequiredExpression'])
+for (def k in __bat529EachReceiver4) {
                 if (args.containsKey(k) && args[k] != null && !(args[k] instanceof Map)) {
                     throw new IllegalArgumentException("hub_set_rule create: '${k}' must be an object (a single spec, e.g. {capability: ...}); it was a non-object that would be silently dropped. Use the plural '${k}s' for a list of specs.")
                 }
-            }
-            ['addTriggers', 'addActions'].each { k ->
+            
+}
+__bat529EachReceiver4
+} else { null }
+            if (true) {
+def __bat529EachReceiver5 = (['addTriggers', 'addActions'])
+for (def k in __bat529EachReceiver5) {
                 if (args.containsKey(k) && args[k] != null && !(args[k] instanceof List)) {
                     throw new IllegalArgumentException("hub_set_rule create: '${k}' must be an array of spec objects; it was a non-array that would be silently dropped. Use the singular '${k.replaceAll(/s$/, '')}' for a single spec.")
                 }
-            }
+            
+}
+__bat529EachReceiver5
+} else { null }
         }
         def createArgs = [appType: "rule_machine", name: args?.name, confirm: args?.confirm] as LinkedHashMap
         // The gateway stamps the request clock on the TOP-LEVEL args only; the bundled
@@ -9917,12 +9941,14 @@ def toolSetNativeApp(args) {
         // shortcut handed to a create would be silently dropped while the
         // call returned success:true on an empty shell -- same honor-or-
         // loudly-reject posture as hub_set_rule's create gate.
-        def droppedOnCreate = ['addTrigger', 'addTriggers', 'addAction', 'addActions',
+        def __bat529EachReceiver6 = (['addTrigger', 'addTriggers', 'addAction', 'addActions',
                                'addRequiredExpression', 'replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions',
                                'removeAction', 'clearActions', 'moveAction', 'removeTrigger',
-                               'modifyTrigger', 'modifyAction', 'walkStep', 'settings', 'button'].findAll {
-            args instanceof Map && args.containsKey(it)
-        }
+                               'modifyTrigger', 'modifyAction', 'walkStep', 'settings', 'button'])
+def __bat529EachReceiver6Result = []
+for (def it in __bat529EachReceiver6) {if (args instanceof Map && args.containsKey(it)) __bat529EachReceiver6Result.add(it)
+}
+def droppedOnCreate = __bat529EachReceiver6Result
         if (droppedOnCreate) {
             throw new IllegalArgumentException("hub_set_native_app CREATE (no appId) does not honor ${droppedOnCreate.join(', ')} -- ${droppedOnCreate.size() == 1 ? 'it requires' : 'they require'} an existing app. Create the app first (appType + name), then re-call with the returned appId; for Rule Machine authoring sugar on create, use hub_set_rule.")
         }
@@ -9959,12 +9985,14 @@ def _createButtonRuleViaController(args) {
     // buttonRule is exclusive: every other operative param would be silently
     // ignored by this flow (same honor-or-loudly-reject posture as the create
     // gates). confirm rides along; everything else is a caller mistake.
-    def bundledExtras = ['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute',
+    def __bat529EachReceiver7 = (['appId', 'appType', 'name', 'settings', 'button', 'pageName', 'stateAttribute',
                          'walkStep', 'addTrigger', 'addTriggers', 'addAction', 'addActions',
                          'addRequiredExpression', 'replaceRequiredExpression', 'addLocalVariable', 'removeLocalVariable', 'patches', 'replaceActions',
-                         'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger', 'modifyAction'].findAll {
-        args instanceof Map && args.containsKey(it)
-    }
+                         'removeAction', 'clearActions', 'moveAction', 'removeTrigger', 'modifyTrigger', 'modifyAction'])
+def __bat529EachReceiver7Result = []
+for (def it in __bat529EachReceiver7) {if (args instanceof Map && args.containsKey(it)) __bat529EachReceiver7Result.add(it)
+}
+def bundledExtras = __bat529EachReceiver7Result
     if (bundledExtras) {
         throw new IllegalArgumentException("buttonRule is exclusive -- ${bundledExtras.join(', ')} would be silently ignored. Create the button rule first, then apply edits in a follow-up call using the returned buttonRuleId as appId.")
     }
@@ -13533,14 +13561,20 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec) {
         // the caller to re-write a comparator that DID land. Split it into a
         // verify-don't-rewrite hint; emit the generic degraded-path hint only for genuinely
         // lost fields.
-        def degEntries = skipped.findAll {
-            it instanceof Map && it.reason != null && !(it.reason in informationalReasons)
-        }
+        def __bat529EachReceiver8 = (skipped)
+def __bat529EachReceiver8Result = []
+for (def it in __bat529EachReceiver8) {if (it instanceof Map && it.reason != null && !(it.reason in informationalReasons)) __bat529EachReceiver8Result.add(it)
+}
+def degEntries = __bat529EachReceiver8Result
         def forceWrittenKeys = degEntries.findAll { it.reason == "comparator_force_written_unverified" }*.key.findAll { it != null }
         // Both comparator_force_written_unverified and comparator_not_representable_for_enum_attribute
         // get their own specific hint below, so exclude them from the generic degraded-path hint.
         def specificHintReasons = ["comparator_force_written_unverified", "comparator_not_representable_for_enum_attribute"]
-        def lostEntries = degEntries.findAll { !(it.reason in specificHintReasons) }
+        def __bat529EachReceiver9 = (degEntries)
+def __bat529EachReceiver9Result = []
+for (def it in __bat529EachReceiver9) {if (!(it.reason in specificHintReasons) ) __bat529EachReceiver9Result.add(it)
+}
+def lostEntries = __bat529EachReceiver9Result
         def reRepairHints = []
         if (!lostEntries.isEmpty()) {
             // Count UNIQUE conditions that had any genuinely-lost degraded write, not raw

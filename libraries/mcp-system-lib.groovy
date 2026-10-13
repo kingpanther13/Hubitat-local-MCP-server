@@ -122,10 +122,15 @@ private Map _hubSubscriptions() {
     }
     if (!(raw instanceof Map)) return [error: "/hub/subscriptions/json returned an unexpected shape."]
     def out = [:]
-    ["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"].each { k ->
+    if (true) {
+def __bat529EachReceiver1 = (["hubProtect", "remoteAdmin", "cloudBackup", "fullLocalBackup"])
+for (def k in __bat529EachReceiver1) {
         def v = raw[k]
         if (v instanceof Map) out[k] = [active: v.isActive == true, pendingCancellation: v.pendingCancellation == true, endsAt: v.end_ts, trialAvailable: v.trialAvailable == true]
-    }
+    
+}
+__bat529EachReceiver1
+} else { null }
     out.fullLocalBackupSupported = raw.fullLocalBackupSupported
     out.hasAvailableTrial = raw.hasAvailableTrial
     out.loaded = raw.loaded
@@ -543,7 +548,11 @@ private _validateNetworkArgs(network) {
             throw new IllegalArgumentException("network.ipMode must be 'dhcp' or 'static', got: ${network.ipMode}")
         }
         if (mode == "static") {
-            def missing = ["address", "netmask", "gateway"].findAll { !network.get(it) }
+            def __bat529EachReceiver2 = (["address", "netmask", "gateway"])
+def __bat529EachReceiver2Result = []
+for (def it in __bat529EachReceiver2) {if (!network.get(it) ) __bat529EachReceiver2Result.add(it)
+}
+def missing = __bat529EachReceiver2Result
             if (missing) throw new IllegalArgumentException("network.ipMode='static' requires ${missing.join(', ')} (address, netmask, gateway are all required for a static IP).")
         }
     }

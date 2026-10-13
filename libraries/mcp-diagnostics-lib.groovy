@@ -575,7 +575,11 @@ def toolGetHubLogs(args) {
     def incompatible = mode == "hub" ? ["component", "ruleId"] :
         mode == "mcp" ? ["source", "appId", "deviceId", "pattern", "patterns", "patternMode", "since", "until"] :
         ["component", "ruleId", "source", "appId", "deviceId", "pattern", "patterns", "patternMode", "since", "until", "level", "limit", "cursor"]
-    def supplied = incompatible.findAll { args[it] != null }
+    def __bat529EachReceiver1 = (incompatible)
+def __bat529EachReceiver1Result = []
+for (def it in __bat529EachReceiver1) {if (args[it] != null ) __bat529EachReceiver1Result.add(it)
+}
+def supplied = __bat529EachReceiver1Result
     if (supplied) throw new IllegalArgumentException("Parameters ${supplied.join(', ')} do not apply to log mode '${mode}'")
     if (mode == "mcp") return toolGetDebugLogs(args)
     if (mode == "status") return toolGetLoggingStatus(args)
@@ -853,7 +857,11 @@ def toolGetHubLogs(args) {
     // Hub /logs/past/json is confirmed not to emit 'T'-with-quoted-'Z' timestamps on any known
     // firmware; keeping them in the fallback list would silently no-op the time-window filter
     // on non-UTC hubs if a future firmware ever did emit them.
-    def hubLogIsoFmts = logTimeFmts.findAll { it.contains("Z") && !it.contains("'Z'") }
+    def __bat529EachReceiver2 = (logTimeFmts)
+def __bat529EachReceiver2Result = []
+for (def it in __bat529EachReceiver2) {if (it.contains("Z") && !it.contains("'Z'") ) __bat529EachReceiver2Result.add(it)
+}
+def hubLogIsoFmts = __bat529EachReceiver2Result
     def hubLogLocalSdfs = hubLogSdfs.collect { utcParser ->
         def parser = new java.text.SimpleDateFormat(utcParser.toPattern())
         parser.setTimeZone(location?.timeZone ?: TimeZone.getTimeZone("UTC"))

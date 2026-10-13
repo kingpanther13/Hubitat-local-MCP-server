@@ -405,7 +405,11 @@ private Map _toolRestoreSourceBackup(args) {
     // exception path can stash too.
     boolean isSelfRestore = false
     if (entry.type == "app") {
-        def selfIds = [app?.id?.toString(), _resolveSelfAppClassId()?.toString()].findAll { it != null }
+        def __bat529EachReceiver1 = ([app?.id?.toString(), _resolveSelfAppClassId()?.toString()])
+def __bat529EachReceiver1Result = []
+for (def it in __bat529EachReceiver1) {if (it != null ) __bat529EachReceiver1Result.add(it)
+}
+def selfIds = __bat529EachReceiver1Result
         isSelfRestore = selfIds.contains(entry.id?.toString())
     }
 

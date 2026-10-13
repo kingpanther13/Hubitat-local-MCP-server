@@ -1487,9 +1487,14 @@ private Map _vrbApplySave(Integer appId, String format, String name, Map definit
             // containsKey is enough: _vrbSaveGraphMeta sets these only when the hub sent a
             // non-null value. (Unlike the read-back merge below, where a present EMPTY list is
             // itself the answer and must not be collapsed by a truthiness test.)
-            ["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"].each { k ->
+            if (true) {
+def __bat529EachReceiver1 = (["storedSuccessfully", "activatedSuccessfully", "storageError", "activationError", "validationIssues", "revision", "referencedDeviceIds"])
+for (def k in __bat529EachReceiver1) {
                 if (saved.containsKey(k)) failed[k] = saved[k]
-            }
+            
+}
+__bat529EachReceiver1
+} else { null }
             return failed
         }
         savedMeta = saved

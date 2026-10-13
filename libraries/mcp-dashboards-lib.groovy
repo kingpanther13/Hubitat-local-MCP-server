@@ -264,10 +264,15 @@ private Map _dashboardConfigFromApp(String id) {
         def s = parsed?.settings
         if (!(s instanceof Map)) return null
         def out = [id: id, name: parsed?.app?.label, type: "easy"]
-        ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
-         "showNavigation", "showTutorial"].each { k ->
+        if (true) {
+def __bat529EachReceiver1 = (["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
+         "showNavigation", "showTutorial"])
+for (def k in __bat529EachReceiver1) {
             if (s.containsKey(k)) out.put(k, s.get(k)?.toString() == "true")
-        }
+        
+}
+__bat529EachReceiver1
+} else { null }
         if (s.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(s.navigationSelection)
         if (s.devicesPicked instanceof Map) out.deviceIds = s.devicesPicked.keySet().collect { it.toString() }
         // app-config returns "" for an unset pin and the literal "null" for an unset hsmPin.
@@ -517,7 +522,11 @@ def toolUpdateDashboard(args) {
     if (probe.legacy == true) {
         return _updateLegacyDashboard(updateId, probe, args)
     }
-    def legacyOnlyArgs = ["layout", "setOptions", "addTiles", "updateTiles", "removeTileIds"].findAll { args.get(it) != null }
+    def __bat529EachReceiver2 = (["layout", "setOptions", "addTiles", "updateTiles", "removeTileIds"])
+def __bat529EachReceiver2Result = []
+for (def it in __bat529EachReceiver2) {if (args.get(it) != null ) __bat529EachReceiver2Result.add(it)
+}
+def legacyOnlyArgs = __bat529EachReceiver2Result
     if (legacyOnlyArgs) {
         throw new IllegalArgumentException("${legacyOnlyArgs.join(', ')} appl${legacyOnlyArgs.size() == 1 ? 'ies' : 'y'} only to legacy Hubitat® Dashboards; dashboard ${updateId} is an Easy Dashboard. Easy updates replace the config wholesale: pass name, deviceIds, and options (read hub_get_dashboard first).")
     }
@@ -567,7 +576,11 @@ def toolUpdateDashboard(args) {
 // layout -- either `layout` (wholesale replace) or the granular ops (removeTileIds -> updateTiles ->
 // addTiles -> setOptions, applied in that order in ONE save). At least one of those args is required.
 private Map _updateLegacyDashboard(String id, Map probe, Map args) {
-    def granular = ["setOptions", "addTiles", "updateTiles", "removeTileIds"].findAll { args.get(it) != null }
+    def __bat529EachReceiver3 = (["setOptions", "addTiles", "updateTiles", "removeTileIds"])
+def __bat529EachReceiver3Result = []
+for (def it in __bat529EachReceiver3) {if (args.get(it) != null ) __bat529EachReceiver3Result.add(it)
+}
+def granular = __bat529EachReceiver3Result
     def hasWholesale = args.layout != null
     def hasName = args.name?.toString()?.trim()
     def hasDevices = args.deviceIds != null
@@ -849,10 +862,15 @@ def toolCloneDashboard(args) {
                 note: "Retry; if it persists, read it with hub_get_dashboard and recreate via hub_create_dashboard."]
     }
     def opts = [:]
-    ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit", "showNavigation",
-     "showTutorial", "theme", "navigationSelection", "dashboardPin", "hsmPin"].each { k ->
+    if (true) {
+def __bat529EachReceiver4 = (["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit", "showNavigation",
+     "showTutorial", "theme", "navigationSelection", "dashboardPin", "hsmPin"])
+for (def k in __bat529EachReceiver4) {
         if (src.containsKey(k)) opts.put(k, src.get(k))
-    }
+    
+}
+__bat529EachReceiver4
+} else { null }
     def created = toolCreateDashboard([name: "${src.name ?: 'Dashboard'} (copy)", deviceIds: (src.deviceIds ?: []), options: opts])
     if (created instanceof Map && created.success == true) {
         return [success: true, sourceId: sourceId, newId: created.id,
@@ -917,10 +935,15 @@ private Map _summarizeDashboard(raw) {
         type: raw.version?.toString()?.startsWith("1") ? "legacy" : "easy"
     ]
     // Pass through config fields (when present) so a read can round-trip back through hub_update_dashboard.
-    ["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
-     "showNavigation", "showTutorial", "theme"].each { k ->
+    if (true) {
+def __bat529EachReceiver5 = (["showModeTile", "showClockTile", "showCalendarTile", "showHSMTile", "showEdit",
+     "showNavigation", "showTutorial", "theme"])
+for (def k in __bat529EachReceiver5) {
         if (raw.containsKey(k)) out.put(k, raw.get(k))
-    }
+    
+}
+__bat529EachReceiver5
+} else { null }
     if (raw.containsKey("navigationSelection")) out.navigationSelection = _dashboardNavSelectionCsv(raw.navigationSelection)
     // /dashboard/all gives deviceIds as a JSON-array string ("[8,1,9]"); normalize to a list of id strings.
     if (raw.containsKey("deviceIds")) out.deviceIds = _normalizeDeviceIdList(raw.deviceIds)

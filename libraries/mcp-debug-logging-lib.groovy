@@ -132,9 +132,14 @@ void _retainReportError(Map entry) {
                         component: scrub(entry.component, 80), message: scrub(entry.message, 500)]
         if (entry.ruleId) retained.ruleId = scrub(entry.ruleId, 80)
         def details = [:]
-        ["tool", "appId"].each { key ->
+        if (true) {
+def __bat529EachReceiver1 = (["tool", "appId"])
+for (def key in __bat529EachReceiver1) {
             if (entry.details?.get(key)) details[key] = scrub(entry.details[key], 120)
-        }
+        
+}
+__bat529EachReceiver1
+} else { null }
         if (details) retained.details = details
         def previous = atomicState.reportErrors instanceof List ? atomicState.reportErrors : []
         atomicState.reportErrors = (previous + [retained]).takeRight(10)

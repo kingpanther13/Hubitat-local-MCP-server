@@ -305,7 +305,11 @@ private Map _validateMcpDeviceScope(scopeValue) {
             return [success: false, isError: true, error: "Unexpected ${inventory.source} response; cannot validate selectedDevices.", note: "Hub firmware may have changed the endpoint contract; nothing was changed."]
         }
         def hubDeviceIds = (inventory.records.findAll { it instanceof Map }.collect { it.id?.toString() }.findAll { it != null }) as Set
-        def unknown = requestedIds.findAll { !hubDeviceIds.contains(it) }
+        def __bat529EachReceiver1 = (requestedIds)
+def __bat529EachReceiver1Result = []
+for (def it in __bat529EachReceiver1) {if (!hubDeviceIds.contains(it) ) __bat529EachReceiver1Result.add(it)
+}
+def unknown = __bat529EachReceiver1Result
         // An incomplete inventory must not refuse an add over ids that are already authorized
         // (re-adding them is a no-op). A complete inventory still rejects stale ids, including
         // authorized ones.

@@ -789,7 +789,11 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
         // for its Done button (both seen live); the value is checked, and set if needed, below.
         def dtCfg = _rmFetchConfigJson(appId, "hubVar")
         def dtSchema = _rmCollectInputSchema(dtCfg?.configPage)
-        def missing = ["varDate", "varTime"].findAll { !dtSchema?.containsKey(it) }
+        def __bat529EachReceiver1 = (["varDate", "varTime"])
+def __bat529EachReceiver1Result = []
+for (def it in __bat529EachReceiver1) {if (!dtSchema?.containsKey(it) ) __bat529EachReceiver1Result.add(it)
+}
+def missing = __bat529EachReceiver1Result
         if (missing) {
             throw new IllegalStateException("hub_create_variable: the Hub Variables form did not offer ${missing.join(' and ')} for DateTime variable '${name}', so it was not created.")
         }

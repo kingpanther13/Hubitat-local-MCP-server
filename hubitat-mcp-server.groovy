@@ -2744,10 +2744,20 @@ private def _mrtrLeafArguments(String outerTool, String leafTool, Map outerArgs)
 @groovy.transform.CompileStatic
 private Map _mrtrCheckpointArguments(Map executionArgs) {
     Map next = _mrtrCopyMap(executionArgs ?: [:])
-    ["__reqT0", "jsonContent"].each { next.remove(it) }
+    if (true) {
+def __bat529EachReceiver1 = (["__reqT0", "jsonContent"])
+for (def it in __bat529EachReceiver1) { next.remove(it) 
+}
+__bat529EachReceiver1
+} else { null }
     if (next.args instanceof Map) {
         Map leaf = _mrtrCopyMap(next.args as Map)
-        ["__reqT0", "jsonContent"].each { leaf.remove(it) }
+        if (true) {
+def __bat529EachReceiver2 = (["__reqT0", "jsonContent"])
+for (def it in __bat529EachReceiver2) { leaf.remove(it) 
+}
+__bat529EachReceiver2
+} else { null }
         next.args = leaf
     }
     return next
@@ -3608,11 +3618,16 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                     "operation."
             }
             if (continuation.kind in ["bulk_edit", "patches", "walk_steps", "driver_installs", "driver_updates"]) {
-                ["appId", "page", "operation", "stepsRemaining", "addTriggersRemaining",
+                if (true) {
+def __bat529EachReceiver3 = (["appId", "page", "operation", "stepsRemaining", "addTriggersRemaining",
                  "addActionsRemaining", "patchesRemaining", "installsRemaining", "updatesRemaining",
-                 "backup", "repairHints", "resume"].each { key ->
+                 "backup", "repairHints", "resume"])
+for (def key in __bat529EachReceiver3) {
                     if (result.containsKey(key)) capped.put(key, result.get(key))
-                }
+                
+}
+__bat529EachReceiver3
+} else { null }
                 capped.note = "aggregate records completed work. Inspect the remaining-work fields " +
                     "and resume guidance before submitting a new call with only that remainder. " +
                     "This requestState now replays the terminal continuation_limit result."
@@ -3804,7 +3819,12 @@ private String _mrtrShiftIndex(String text, String token, int offset) {
 private void _mrtrRewriteStopRefs(node, Closure fix) {
     if (node instanceof Map) {
         Map m = node as Map
-        ["bulkStoppedAfter", "error", "note"].each { k -> if (m[k] instanceof CharSequence) m[k] = fix(m[k].toString()) }
+        if (true) {
+def __bat529EachReceiver4 = (["bulkStoppedAfter", "error", "note"])
+for (def k in __bat529EachReceiver4) { if (m[k] instanceof CharSequence) m[k] = fix(m[k].toString()) 
+}
+__bat529EachReceiver4
+} else { null }
         if (m.repairHints instanceof List) m.repairHints = (m.repairHints as List).collect { it instanceof CharSequence ? fix(it.toString()) : it }
         ["triggers", "actions", "patches", "patchResults", "results", "addedResults"].each { k ->
             if (m[k] instanceof List) (m[k] as List).each { _mrtrRewriteStopRefs(it, fix) }
@@ -4689,12 +4709,17 @@ def _cleanupRetiredToolState() {
         def retryAt = RETIRED_TOOL_STATE_RETRY_AT.get(appKey)
         if (retryAt != null && (retryAt as Long) > now()) return
         try {
-            ['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
+            if (true) {
+def __bat529EachReceiver5 = (['toolSearchCorpus', 'toolSearchTokens', 'toolSearchCorpusVersion',
              'toolSearchCorpusFingerprint', 'requiredParamsByTool',
-             'requiredParamsByToolFingerprint'].each { key ->
+             'requiredParamsByToolFingerprint'])
+for (def key in __bat529EachReceiver5) {
                 if (atomicState.containsKey(key)) atomicState.remove(key)
                 if (state.containsKey(key)) state.remove(key)
-            }
+            
+}
+__bat529EachReceiver5
+} else { null }
             RETIRED_TOOL_STATE_CLEANED.add(appKey)
             RETIRED_TOOL_STATE_RETRY_AT.remove(appKey)
         } catch (Exception e) {
@@ -5248,9 +5273,19 @@ def getHiddenToolNames() {
     // Legacy custom-rule engine visibility.
     def mode = getCustomEngineMode()
     if (mode == "off") {
-        ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each { hide << it }
+        if (true) {
+def __bat529EachReceiver6 = (["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"])
+for (def it in __bat529EachReceiver6) { hide << it 
+}
+__bat529EachReceiver6
+} else { null }
     } else if (mode == "readonly") {
-        ["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"].each { hide << it }
+        if (true) {
+def __bat529EachReceiver7 = (["hub_create_custom_rule", "hub_delete_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"])
+for (def it in __bat529EachReceiver7) { hide << it 
+}
+__bat529EachReceiver7
+} else { null }
     }
     // Developer-Mode-only tools: catalog-hidden ENTIRELY when Developer Mode is off
     // (stricter than the runtime-refusal the older dev tools use), so a low-context
@@ -5403,7 +5438,8 @@ def getToolDisplayMeta() {
     // this file keeps only the gateway entries (gateway membership is cross-domain
     // and lives in getGatewayConfig).
     def meta = [:]
-    [_toolDisplayMeta_partNativeRM(),
+    if (true) {
+def __bat529EachReceiver8 = ([_toolDisplayMeta_partNativeRM(),
      _toolDisplayMeta_partRooms(),
      _toolDisplayMeta_partBundles(),
      _toolDisplayMeta_partVisualRules(),
@@ -5421,7 +5457,11 @@ def getToolDisplayMeta() {
      _toolDisplayMeta_partSelfAdmin(),
      _toolDisplayMeta_partAppCloner(),
      _toolDisplayMeta_partDiscovery(),
-     _toolDisplayMeta_partDashboards()].each { meta.putAll(it) }
+     _toolDisplayMeta_partDashboards()])
+for (def it in __bat529EachReceiver8) { meta.putAll(it) 
+}
+__bat529EachReceiver8
+} else { null }
     meta.putAll([
         // Gateways
         hub_read_apps_code: [title: "Read Apps and Code", summary: "Read-only: apps, drivers, libraries, source code, backups, and HPM packages."],
@@ -8566,7 +8606,12 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     def buffer = initDebugLogs()
     if (!shouldLog(level)) return
     def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
-    ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
+    if (true) {
+def __bat529EachReceiver9 = (["duration", "ruleName", "details", "stackTrace"])
+for (def key in __bat529EachReceiver9) { if (extraData?.get(key)) raw[key] = extraData[key] 
+}
+__bat529EachReceiver9
+} else { null }
     def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
     synchronized (buffer) {
         if (level == "error" && settings?.retainReportErrors == true) _retainReportError(raw)
@@ -9527,11 +9572,16 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
             }
         }
     }
-    stack.each { open ->
+    if (true) {
+def __bat529EachReceiver10 = (stack)
+for (def open in __bat529EachReceiver10) {
         def label = open.kind == "if" ? "IF" : "Repeat"
         def closer = open.kind == "if" ? "END-IF" : "End-Repeat"
         issues << ("action ${open.openIdx} (${label}) opened a block that was never closed — rule is missing an ${closer}".toString())
-    }
+    
+}
+__bat529EachReceiver10
+} else { null }
     issues
 }
 
@@ -9953,7 +10003,12 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     // instance would slip through a string-set delta. Callers comparing two health verdicts
     // (the replace restore gate) use this count map to detect a NEW broken instance.
     def brokenMarkerCounts = [:]
-    brokenMarkers.each { m -> brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
+    if (true) {
+def __bat529EachReceiver11 = (brokenMarkers)
+for (def m in __bat529EachReceiver11) { brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) 
+}
+__bat529EachReceiver11
+} else { null }
 
     // Stable report shape (backward-compatible with the pre-#254 contract): the RM detection
     // arrays are always present so existing consumers can read them unconditionally. The new

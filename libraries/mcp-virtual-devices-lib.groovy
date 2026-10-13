@@ -149,11 +149,16 @@ def toolCreateVirtualDevice(args) {
     def dataChanges = []
     def dataErrors = []
     _applyNativeDeviceDataValues(deviceId, [mcpDriverNamespace: namespace], dataChanges, dataErrors)
-    dataErrors.each { failure ->
+    if (true) {
+def __bat529EachReceiver1 = (dataErrors)
+for (def failure in __bat529EachReceiver1) {
         def warning = "mcpDriverNamespace: ${failure.error}".toString()
         warnings << warning
         mcpLog("warn", "device", "Device ${deviceId} was created, but ${warning}")
-    }
+    
+}
+__bat529EachReceiver1
+} else { null }
 
     // The child already exists. Keep its identity even when the follow-up native read fails.
     def deviceInfo = [id: deviceId, deviceNetworkId: dni, driverNamespace: namespace,

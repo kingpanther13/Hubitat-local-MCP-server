@@ -1731,9 +1731,14 @@ private List _deviceConfigurationEditableFields(Map fj, Map preferences) {
         values.tags = _normalizedDeviceTags(d.tags)
     }
     if (fj?.dashboards instanceof List) values.dashboardIds = fj.dashboards.findAll { it.selected == true }.collect { it.id }
-    ['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'].each { key ->
+    if (true) {
+def __bat529EachReceiver1 = (['homeKitEnabled', 'amazonAlexaEnabled', 'googleHomeEnabled'])
+for (def key in __bat529EachReceiver1) {
         if (fj?.containsKey(key)) values.put(key, fj.get(key))
-    }
+    
+}
+__bat529EachReceiver1
+} else { null }
     def applicable = [
         label: !_deviceFlag(d.linkedAndDisabled),
         name: !_deviceFlag(d.isComponent) && !_deviceFlag(d.linkedDevice),
@@ -3917,9 +3922,14 @@ private Map _prepareDeviceUpdatePatch(Map original, deviceId, Map suppliedFull =
     def allowed = ["deviceId", "bestPracticeKey", "label", "name", "deviceNetworkId", "room", "enabled", "dataValues", "preferences", "showOnHome", "defaultCurrentState", "tags", "confirm"] + _deviceExtendedFormProperties() + _deviceAssistantProperties().keySet().toList()
     if (args.keySet().any { !allowed.contains(it.toString()) }) throw new IllegalArgumentException("Unknown device update property; read hub_get_device(mode='configuration') for supported fields")
     def stringFields = ["label", "name", "deviceNetworkId", "room", "defaultCurrentState", "zigbeeId", "notes", "defaultIcon"]
-    stringFields.each { field ->
+    if (true) {
+def __bat529EachReceiver2 = (stringFields)
+for (def field in __bat529EachReceiver2) {
         if (args.containsKey(field) && !(args.get(field) instanceof String)) throw new IllegalArgumentException("${field} must be a string")
-    }
+    
+}
+__bat529EachReceiver2
+} else { null }
     def booleanFields = ["enabled", "showOnHome", "meshEnabled", "retryEnabled", "meshFullSync", "confirm"] + _deviceAssistantProperties().keySet().toList()
     booleanFields.each { field ->
         if (args.containsKey(field) && !(args.get(field) instanceof Boolean)) throw new IllegalArgumentException("${field} must be a boolean")
@@ -4499,7 +4509,11 @@ private void _requireCompleteDeviceFormSource(Map full, deviceId) {
     def required = ["id", "version", "controllerType", "name", "label", "zigbeeId", "maxEvents", "maxStates",
         "spammyThreshold", "deviceNetworkId", "deviceTypeId", "deviceTypeReadableType", "roomId",
         "meshEnabled", "retryEnabled", "meshFullSync", "locationId", "hubId", "groupId", "tags", "defaultIcon", "notes"]
-    def missing = required.findAll { !d.containsKey(it) }
+    def __bat529EachReceiver3 = (required)
+def __bat529EachReceiver3Result = []
+for (def it in __bat529EachReceiver3) {if (!d.containsKey(it) ) __bat529EachReceiver3Result.add(it)
+}
+def missing = __bat529EachReceiver3Result
     if (missing) throw new RuntimeException("Incomplete /device/fullJson preservation source: missing device fields ${missing.join(', ')}; no form update sent")
     if (d.id == null || d.id.toString() != deviceId.toString()) throw new RuntimeException("Invalid /device/fullJson preservation source: device id does not match; no form update sent")
     if (d.version == null) throw new RuntimeException("Incomplete /device/fullJson preservation source: version is unavailable; no form update sent")
@@ -4539,9 +4553,14 @@ private String _deviceConfigurationFormBody(deviceId, Map fj, Map fieldOverrides
     if (fieldOverrides) model.putAll(fieldOverrides)
     // Native readback verifies omission preserves null for these fields; blanks change stored values.
     // Apply overrides first so explicit empty-string clears and roomId=0 remain in the form.
-    ["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"].each { key ->
+    if (true) {
+def __bat529EachReceiver4 = (["groupId", "controllerType", "roomId", "notes", "tags", "zigbeeId", "defaultIcon"])
+for (def key in __bat529EachReceiver4) {
         if (model.get(key) == null) model.remove(key)
-    }
+    
+}
+__bat529EachReceiver4
+} else { null }
     def enc = { v ->
         if (v == true) return "on"
         if (v == null) return ""
@@ -4562,13 +4581,18 @@ private Map _postDeviceConfigurationForm(deviceId, Map fieldOverrides, List erro
     def updated = _fetchDeviceFullJson(deviceId)
     if (!(updated?.device instanceof Map)) return updated
     def restore = [:]
-    ["label", "name", "deviceNetworkId"].each { property ->
+    if (true) {
+def __bat529EachReceiver5 = (["label", "name", "deviceNetworkId"])
+for (def property in __bat529EachReceiver5) {
         def original = fj.device.get(property)
         boolean intentionalClear = fieldOverrides.containsKey(property) && !fieldOverrides.get(property)
         if (original && !intentionalClear && updated.device.containsKey(property) && !updated.device.get(property)) {
             restore.put(property, original)
         }
-    }
+    
+}
+__bat529EachReceiver5
+} else { null }
     if (restore) {
         // Restore known identity once while carrying changes already confirmed in the fresh model.
         try {
@@ -4619,7 +4643,11 @@ def toolCreateDevice(args) {
         }
         // The link form takes only the source pair (+ confirm); create-only fields (label, ...) do not
         // apply to a linked proxy -- its identity mirrors the peer's source device.
-        def createOnly = ["label"].findAll { args.get(it) != null && args.get(it).toString().trim() != "" }
+        def __bat529EachReceiver6 = (["label"])
+def __bat529EachReceiver6Result = []
+for (def it in __bat529EachReceiver6) {if (args.get(it) != null && args.get(it).toString().trim() != "" ) __bat529EachReceiver6Result.add(it)
+}
+def createOnly = __bat529EachReceiver6Result
         if (createOnly) {
             throw new IllegalArgumentException(
                 "${createOnly.join(', ')} cannot be set when linking a Hub Mesh device -- a linked proxy mirrors the peer's source device. Drop it and pass only mesh_source_hub_id + mesh_source_device_id.")
