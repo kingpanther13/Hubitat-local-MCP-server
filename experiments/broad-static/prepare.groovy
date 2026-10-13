@@ -158,6 +158,42 @@ span = { ASTNode node ->
         r = a && b && c ? [[a[0], b[0], c[0]].min(), [a[1], b[1], c[1]].max()] : null
     } else if (node instanceof BooleanExpression) {
         r = span(node.expression)
+    } else if (node instanceof CastExpression) {
+        List child = span(node.expression)
+        if (!child || !r) r = null
+        else if (node.coerce) {
+            // The 2.5 parser can position a coercion at the 'as' token alone.
+            // Include its operand and complete type spelling, including generic
+            // arguments/arrays, before applying the lexical pair guard below.
+            int at = r[0]
+            if (!source.startsWith('as', at)) at = source.indexOf('as', child[1])
+            if (at < 0 || at < child[1] || at > r[1]) r = null
+            else {
+                int typeStart = skipTrivia(at + 2)
+                def typeToken = (source =~ /[A-Za-z_$][A-Za-z0-9_$.]*/)
+                typeToken.region(typeStart, source.length())
+                if (!typeToken.lookingAt()) r = null
+                else {
+                    int end = typeStart + typeToken.group().length()
+                    int next = skipTrivia(end)
+                    if (next < source.length() && source.charAt(next) == '<') {
+                        int depth = 1; end = next + 1
+                        while (end < source.length() && depth > 0) {
+                            if (source.charAt(end) == '<') depth++
+                            else if (source.charAt(end) == '>') depth--
+                            end++
+                        }
+                        if (depth != 0) end = -1
+                    }
+                    while (end >= 0) {
+                        next = skipTrivia(end)
+                        if (source.startsWith('[]', next)) end = next + 2
+                        else break
+                    }
+                    r = end < 0 ? null : [child[0], end]
+                }
+            }
+        } else r = [Math.min(child[0], r[0]), Math.max(child[1], r[1])]
     } else if (node instanceof MethodCallExpression) {
         if (!node.implicitThis) {
             Map bounds = memberBounds(node)
@@ -382,11 +418,20 @@ def storeReference = { Expression expression ->
 }
 
 def originalEdit = { int start, int end, String replacement ->
-    Map origin = resolved.origins.find { start >= it.start && start < it.end && end <= it.end }
-    assert origin: "Edit crosses an include origin at ${start}..${end}"
+    // Main-app lines have separate origins; their newlines are appended outside
+    // those spans. A multiline edit is valid if its complete text maps exactly
+    // to contiguous characters in the same original file. Include banners and
+    // pasted libraries fail this guard rather than being silently skipped.
+    Map origin = resolved.origins.find { start >= it.start && start < it.end }
+    if (!origin) origin = resolved.origins.find { start >= it.start && start <= it.end }
+    assert origin: "Edit has no source origin at ${start}..${end}"
+    int originalStart = origin.offset + start - origin.start
+    int originalEnd = originalStart + end - start
+    String before = source.substring(start, end)
+    assert originalEnd <= origin.original.text.length() && origin.original.text.substring(originalStart, originalEnd) == before:
+        "Edit is not contiguous in ${origin.original.file} at ${start}..${end}"
     [path: root.toPath().relativize(origin.original.file.toPath()).toString().replace('\\', '/'),
-     start: origin.offset + start - origin.start, end: origin.offset + end - origin.start,
-     before: source.substring(start, end), replacement: replacement]
+     start: originalStart, end: originalEnd, before: before, replacement: replacement]
 }
 methods.each { method ->
     if (method.annotations.any { it.classNode.name == 'groovy.transform.CompileStatic' }) return
