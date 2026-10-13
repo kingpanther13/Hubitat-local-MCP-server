@@ -1,0 +1,16 @@
+{
+  "sourceSha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+  "version": "0.0.11",
+  "files": [
+    {
+      "file": "hubitat-mcp-server.groovy",
+      "bytes": 3074516,
+      "sha256": "b6e481dedc12a59055feac35de7dbfb19a92dcfb63d7ebdc009c98aeb63375ae"
+    },
+    {
+      "file": "hubitat-mcp-rule.groovy",
+      "bytes": 164188,
+      "sha256": "b65ae0fe455fe441c813a90ce1d73118247431ae3b01ef0aeb978c1d1d7c3388"
+    }
+  ]
+}

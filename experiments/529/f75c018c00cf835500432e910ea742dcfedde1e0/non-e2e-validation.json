@@ -1,0 +1,105 @@
+{
+  "sourceSha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+  "branch": "experiment/529-compile-static",
+  "runs": [
+    {
+      "id": 38457457915,
+      "run_attempt": 1,
+      "head_sha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/kingpanther13/Hubitat-local-MCP-server/actions/runs/38457457915",
+      "workflow": "unit-tests.yml"
+    },
+    {
+      "id": 38457461473,
+      "run_attempt": 1,
+      "head_sha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/kingpanther13/Hubitat-local-MCP-server/actions/runs/38457461473",
+      "workflow": "groovy2x-spock.yml"
+    },
+    {
+      "id": 38457465063,
+      "run_attempt": 1,
+      "head_sha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/kingpanther13/Hubitat-local-MCP-server/actions/runs/38457465063",
+      "workflow": "groovy24-parse.yml"
+    },
+    {
+      "id": 38457468815,
+      "run_attempt": 1,
+      "head_sha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/kingpanther13/Hubitat-local-MCP-server/actions/runs/38457468815",
+      "workflow": "sandbox-lint.yml"
+    },
+    {
+      "id": 38457472241,
+      "run_attempt": 1,
+      "head_sha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/kingpanther13/Hubitat-local-MCP-server/actions/runs/38457472241",
+      "workflow": "python-tests.yml"
+    },
+    {
+      "id": 38457475794,
+      "run_attempt": 1,
+      "head_sha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/kingpanther13/Hubitat-local-MCP-server/actions/runs/38457475794",
+      "workflow": "ruff.yml"
+    },
+    {
+      "id": 38457478893,
+      "run_attempt": 1,
+      "head_sha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/kingpanther13/Hubitat-local-MCP-server/actions/runs/38457478893",
+      "workflow": "pr-guard.yml"
+    },
+    {
+      "id": 38457482908,
+      "run_attempt": 1,
+      "head_sha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/kingpanther13/Hubitat-local-MCP-server/actions/runs/38457482908",
+      "workflow": "lane-gate-test.yml"
+    },
+    {
+      "id": 38457485475,
+      "run_attempt": 1,
+      "head_sha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/kingpanther13/Hubitat-local-MCP-server/actions/runs/38457485475",
+      "workflow": "lease-scripts-test.yml"
+    },
+    {
+      "id": 38457488255,
+      "run_attempt": 1,
+      "head_sha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/kingpanther13/Hubitat-local-MCP-server/actions/runs/38457488255",
+      "workflow": "self-deploy-recovery.yml"
+    },
+    {
+      "id": 38457492201,
+      "run_attempt": 1,
+      "head_sha": "f75c018c00cf835500432e910ea742dcfedde1e0",
+      "status": "completed",
+      "conclusion": "success",
+      "html_url": "https://github.com/kingpanther13/Hubitat-local-MCP-server/actions/runs/38457492201",
+      "workflow": "dependency-updates-check.yml"
+    }
+  ]
+}
