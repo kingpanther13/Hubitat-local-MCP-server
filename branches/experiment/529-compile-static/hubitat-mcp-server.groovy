@@ -6503,7 +6503,6 @@ private List _logsJsonTrimStats(statsList) {
         return trimmed
     }
 }
-@groovy.transform.CompileStatic
 private List _logsJsonTable(Map data, String key) {
     def table = data[key]
     if (table == null) return []
@@ -7626,7 +7625,6 @@ private void _zwValidateNetworkKeys(Map keys, List known, String label) {
         if (!(v?.toString()?.trim() ==~ /(?i)(0x)?[0-9a-f]{32}/)) throw new IllegalArgumentException("${label}.${k} must be a 32-hex-digit network key.")
     }
 }
-@groovy.transform.CompileStatic
 private boolean _radioRefused(resp, boolean strict = false) {
     if (strict) return !(resp instanceof Map) || resp.success != true
     if (resp instanceof Map) return resp.success == false || resp.error || resp._unparseable
