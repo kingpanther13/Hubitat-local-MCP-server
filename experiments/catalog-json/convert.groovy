@@ -6,6 +6,9 @@ import org.codehaus.groovy.control.Phases
 import org.codehaus.groovy.ast.expr.ConstantExpression
 import org.codehaus.groovy.ast.expr.ListExpression
 import org.codehaus.groovy.ast.expr.MapExpression
+import org.codehaus.groovy.ast.expr.MethodCallExpression
+import org.codehaus.groovy.ast.ClassCodeVisitorSupport
+import org.codehaus.groovy.control.SourceUnit
 import org.codehaus.groovy.ast.stmt.BlockStatement
 import org.codehaus.groovy.ast.stmt.ReturnStatement
 import org.codehaus.groovy.ast.stmt.ExpressionStatement
@@ -112,44 +115,57 @@ List<File> files = [app] + new File(root, 'libraries').listFiles().findAll { it.
 for (File file : files) {
     String path = root.toPath().relativize(file.canonicalFile.toPath()).toString().replace('\\', '/')
     String source = file.getText('UTF-8')
-    assert !source.contains(reader) && !source.contains(decoder): 'Catalog helper collision or conversion already applied'
     originals[path] = source
     edits[path] = []
     String parsing = source.replaceAll(/(?m)^[ \t]*#include[^\r\n]*/, { match -> ' ' * match.length() })
     for (def method : parse(file.name, parsing)) {
-        if (!(method.name ==~ /_(getAllToolDefinitions|toolDisplayMeta|readOnlyToolNames|idempotentWriteToolNames|openWorldToolNames|developerModeOnlyToolNames)_part[A-Za-z0-9_]+/)) continue
-        Map record = [file: path, method: method.name]
-        try {
-            if (method.parameters.length != 0 || !(method.code instanceof BlockStatement) || method.code.statements.size() != 1) {
-                throw new IllegalArgumentException('Requires zero arguments and a single return/expression statement')
-            }
-            def statement = method.code.statements[0]
-            if (!(statement instanceof ReturnStatement) && !(statement instanceof ExpressionStatement)) throw new IllegalArgumentException('Not a pure return')
-            def expression = statement.expression
-            if (!(expression instanceof ListExpression) && !(expression instanceof MapExpression)) throw new IllegalArgumentException('Root is not a literal Map/List')
-            if (!(method.returnType.name in ['java.lang.Object', 'java.util.Map', 'java.util.List', 'Map', 'List'])) throw new IllegalArgumentException('Unsupported return declaration')
-            String json = JsonOutput.toJson(encode(expression))
-            List<String> parts = chunks(json)
-            String replacement = reader + '([' + parts.collect { quote(it) }.join(',\n        ') + '])'
-            if (method.returnType.name in ['java.util.Map', 'Map']) replacement = '(' + replacement + ' as Map)'
-            if (method.returnType.name in ['java.util.List', 'List']) replacement = '(' + replacement + ' as List)'
+        if (method.name in [reader, decoder]) continue
+        def convertLiteral = { expression ->
+          Map record = [file: path, method: method.name, line: expression.lineNumber]
+          try {
+            if (expression.lineNumber < 1 || expression.lastLineNumber < 1) return false
             int start = offset(source, expression.lineNumber, expression.columnNumber)
             int end = offset(source, expression.lastLineNumber, expression.lastColumnNumber)
             String literal = source.substring(start, end)
-            assert literal.startsWith('[') && literal.endsWith(']'): 'Unexpected AST literal span'
+            if (!literal.startsWith('[') || !literal.endsWith(']')) return false
+            String json = JsonOutput.toJson(encode(expression))
+            // Small one-off lists/maps are cheaper to construct than to parse.
+            // Select maximal pure subtrees, including those inside dynamic schemas.
+            if (json.length() < 256) return false
+            List<String> parts = chunks(json)
+            String replacement = reader + '([' + parts.collect { quote(it) }.join(',\n        ') + '])'
+            replacement = '(' + replacement + (expression instanceof MapExpression ? ' as Map)' : ' as List)')
             edits[path].add([start: start, end: end, replacement: replacement, method: method.name])
             record.putAll([chunks: parts.size(), jsonBytes: json.getBytes('UTF-8').length])
             selected.add(record)
-        } catch (IllegalArgumentException rejection) {
+            return true
+          } catch (IllegalArgumentException rejection) {
             record.reason = rejection.message
             skipped.add(record)
+            return false
+          }
         }
+        method.code.visit(new ClassCodeVisitorSupport() {
+            protected SourceUnit getSourceUnit() { null }
+            void visitMapExpression(MapExpression expression) {
+                if (!convertLiteral(expression)) super.visitMapExpression(expression)
+            }
+            void visitListExpression(ListExpression expression) {
+                if (!convertLiteral(expression)) super.visitListExpression(expression)
+            }
+            void visitMethodCallExpression(MethodCallExpression expression) {
+                // Already embedded data must not become a second layer of JSON.
+                if (expression.methodAsString != reader) super.visitMethodCallExpression(expression)
+            }
+        })
     }
 }
 assert selected: 'No literal-safe catalog methods selected'
 String mainPath = 'hubitat-mcp-server.groovy'
 String main = originals[mainPath]
-edits[mainPath].add([start: main.length(), end: main.length(), replacement: '\n' + helperSource, method: '(shared helpers)'])
+if (!main.contains('private Object ' + reader + '(')) {
+    edits[mainPath].add([start: main.length(), end: main.length(), replacement: '\n' + helperSource, method: '(shared helpers)'])
+}
 if (!(main =~ /(?m)^import[ \t]+groovy\.json\.JsonSlurper[ \t]*;?[ \t]*$/).find()) {
     def leading = main =~ /\A(?:\s|\/\/[^\n]*(?:\n|$)|\/\*[\s\S]*?\*\/)*/
     assert leading.find()
@@ -171,7 +187,8 @@ for (String path : originals.keySet()) {
                  edits: edits[path]])
 }
 Map summary = [status: 'generated', sourceCommit: System.getenv('GITHUB_SHA'), groovy: GroovySystem.version,
-               selectedMethods: selected.size(), skippedMethods: skipped.size(), files: mapping.size(),
+               selectedExpressions: selected.size(), selectedMethods: selected.collect { it.file + ':' + it.method }.unique().size(),
+               skippedExpressions: skipped.size(), files: mapping.size(), minimumEncodedCharacters: 256,
                chunkModifiedUtf8Budget: chunkBudget, validation: 'Input/output integrity only; actual candidate requires full non-E2E CI',
                encoding: 'tagged JSON arrays with ordered Map key/value pairs; fresh LinkedHashMap/ArrayList decoding']
 new File(output, 'replacement-mapping.json').setText(JsonOutput.prettyPrint(JsonOutput.toJson(mapping)) + '\n', 'UTF-8')

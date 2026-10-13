@@ -4,11 +4,6 @@ import json
 import re
 
 READER = "_bat529EmbeddedCatalogRead"
-PART = (
-    r"_(?:getAllToolDefinitions|toolDisplayMeta|readOnlyToolNames|"
-    r"idempotentWriteToolNames|openWorldToolNames|developerModeOnlyToolNames)_part\w+"
-)
-METHOD = re.compile(rf"^def (?P<name>{PART})\(\) \{{(?P<body>.*?)^}}", re.M | re.S)
 CHUNKS = re.compile(
     rf"{READER}\(\s*\[\s*(?P<chunks>'(?:\\.|[^'\\])*'"
     r"(?:\s*,\s*'(?:\\.|[^'\\])*')*)\s*\]\s*\)",
@@ -80,25 +75,14 @@ def expand_embedded_catalogs(source: str) -> str:
     if READER not in source:
         return source
 
-    def expand_method(match):
-        body = match.group("body")
-        if READER not in body:
-            return match.group(0)
-        calls = list(CHUNKS.finditer(body))
-        if len(calls) != 1 or body.count(READER) != 1:
-            raise ValueError("Unsupported embedded catalog expression in " + match.group("name"))
-        call = calls[0]
+    def expand_call(call):
         encoded = "".join(_groovy_string(item.group(0)) for item in QUOTED.finditer(call.group("chunks")))
         try:
             graph = _decode(json.loads(encoded))
         except (ValueError, TypeError) as error:
-            raise ValueError("Invalid embedded catalog in " + match.group("name") + ": " + str(error)) from error
+            raise ValueError("Invalid embedded catalog: " + str(error)) from error
         if not isinstance(graph, (dict, list)):
             raise ValueError("Embedded catalog root must be a Map or List")
-        rewritten = body[:call.start()] + _literal(graph) + body[call.end():]
-        original = match.group(0)
-        body_start = match.start("body") - match.start()
-        body_end = match.end("body") - match.start()
-        return original[:body_start] + rewritten + original[body_end:]
+        return _literal(graph)
 
-    return METHOD.sub(expand_method, source)
+    return CHUNKS.sub(expand_call, source)
