@@ -421,7 +421,5 @@ action="delete": provide the target deviceNetworkId.
 def _toolDisplayMeta_partVirtualDevices() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        hub_manage_virtual_device: [title: "Manage Virtual Device", summary: "Create or delete an MCP-managed virtual device."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_manage_virtual_device",["m",[["title","Manage Virtual Device"],["summary","Create or delete an MCP-managed virtual device."]]]]]]'])
 }

@@ -361,92 +361,30 @@ def _bundleResponseSucceeded(resp) {
 // Tool DEFINITIONS for the bundle tools (issue #209: schema lives with the impl). Concatenated
 // into getAllToolDefinitions() in the main app; gateway membership + dispatch stay in main.
 def _getAllToolDefinitions_partBundles() {
-    return [
-        [
-            name: "hub_install_bundle",
-            description: "Install a Hubitat code bundle (.zip) from a URL the way Hubitat Package Manager does -- the hub fetches the zip and unpacks it into Libraries/Apps/Drivers Code (how a package delivers the libraries an app #includes). Use it to prove on the real hub that a package installs the HPM way before users update. Requires Write master + confirm=true + a recent backup; the hub does not deep-validate the zip.[[FLAT_TRIM]] Verify the result with hub_list_libraries / hub_get_source. Uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else legacy /bundle/uploadZipFromUrl.[[/FLAT_TRIM]][[FLAT_TRIM]] A transport drop can lose the response while the hub still commits this install; verify current hub state before retrying. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    importUrl: [type: "string", description: "URL of the bundle .zip the hub fetches and installs (http:// or https://)."],
-                    installer: [type: "boolean", description: "OPTIONAL. Mark the bundle's contents as installed-by-this-package (HPM's installer/private flag). Default false."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved installing this bundle."],
-                ],
-                required: ["importUrl", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_list_bundles",
-            description: "List installed code bundles -- the Bundle-Manager containers HPM delivers code in, distinct from Libraries Code.[[FLAT_TRIM]] Each entry: id, name, namespace, private flag, and a 'contains' summary of the apps/drivers/libraries it delivered.[[/FLAT_TRIM]] Use to find a bundle's id for hub_delete_bundle/hub_export_bundle, or to verify a bundle installed. Read-only.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_delete_bundle",
-            description: "Delete an installed code bundle by id (the Bundle-Manager container; find the id with hub_list_bundles). DESTRUCTIVE: requires Write master + confirm=true + a recent backup; verifies by re-listing that the id is gone. Removes only the container -- the libraries/apps/drivers it delivered may remain in Code, so delete those separately with hub_delete_item if needed.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    bundleId: [type: "string", description: "The numeric bundle id from hub_list_bundles (e.g. \"4\")."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved deleting this bundle."]
-                ],
-                required: ["bundleId", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_export_bundle",
-            description: "Export an installed bundle's .zip to the hub File Manager (downloadable at /local/<fileName>; find the id with hub_list_bundles). A write (creates a File Manager file), not destructive -- needs Write master, no confirm.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    bundleId: [type: "string", description: "The numeric bundle id from hub_list_bundles (e.g. \"4\")."],
-                    saveAs: [type: "string", description: "OPTIONAL File Manager filename for the exported .zip. Defaults to the bundle's name.[[FLAT_TRIM]] '.zip' is appended if missing; non-filename characters are replaced with '_'.[[/FLAT_TRIM]]"],
-                ],
-                required: ["bundleId"]
-            ]
-        ]
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_install_bundle"],["description","Install a Hubitat code bundle (.zip) from a URL the way Hubitat Package Manager does -- the hub fetches the zip and unpacks it into Libraries/Apps/Drivers Code (how a package delivers the libraries an app #includes). Use it to prove on the real hub that a package installs the HPM way before users update. Requires Write master + confirm=true + a recent backup; the hub does not deep-validate the zip.[[FLAT_TRIM]] Verify the result with hub_list_libraries / hub_get_source. Uses /bundle2/uploadZipFromUrl on firmware >= 2.3.8.108, else legacy /bundle/uploadZipFromUrl.[[/FLAT_TRIM]][[FLAT_TRIM]] A transport drop can lose the response while the hub still commits this install; verify current hub state before retrying. See hub_get_tool_guide(section=\'slow_ops\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["importUrl",["m",[["type","string"],["description","URL of the bundle .zip the hub fetches and installs (http:// or https://)."]]]],["installer",["m",[["type","boolean"],["description","OPTIONAL. Mark the bundle\'s contents as installed-by-this-package (HPM\'s installer/private flag). Default false."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true. Confirms a recent backup exists and the user approved installing this bundle."]]]]]]],["required",["l",["importUrl","confirm"]]]]]]]],["m",[["name","hub_list_bundles"],["description","List installed code bundles -- the Bundle-Manager containers HPM delivers code in, distinct from Libraries Code.[[FLAT_TRIM]] Each entry: id, name, namespace, private flag, and a \'contains\' summary of the apps/drivers/libraries it delivered.[[/FLAT_TRIM]] Use to find a bundle\'s id for hub_delete_bundle/hub_export_bundle, or to verify a bundle installed. Read-only."],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_delete_bundle"],["description","Delete an installed code bundle by id (the Bundle-Manager container; find the id with hub_list_bundles). DESTRUCTIVE: requires Write master + confirm=true + a recent backup; verifies by re-listing that the id is gone. Removes only the container -- the libraries/apps/drivers it delivered may remain in Code, so delete those separately with hub_delete_item if needed."],["inputSchema",["m",[["type","object"],["properties",["m",[["bundleId",["m",[["type","string"],["description","The numeric bundle id from hub_list_bundles (e.g. \\"4\\")."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true. Confirms a recent backup exists and the user approved deleting this bundle."]]]]]]],["required",["l",["bundleId","confirm"]]]]]]]],["m",[["name","hub_export_bundle"],["description","Export an installed bundle\'s .zip to the hub File Manager (downloadable at /local/<fileName>; find the id with hub_list_bundles). A write (creates a File Manager file), not destructive -- needs Write master, no confirm."],["inputSchema",["m",[["type","object"],["properties",["m",[["bundleId",["m",[["type","string"],["description","The numeric bundle id from hub_list_bundles (e.g. \\"4\\")."]]]],["saveAs",["m",[["type","string"],["description","OPTIONAL File Manager filename for the exported .zip. Defaults to the bundle\'s name.[[FLAT_TRIM]] \'.zip\' is appended if missing; non-filename characters are replaced with \'_\'.[[/FLAT_TRIM]]"]]]]]]],["required",["l",["bundleId"]]]]]]]]]]'])
 }
 
 def _readOnlyToolNames_partBundles() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Apps/drivers (read)
-        "hub_list_bundles"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_bundles"]]'])
 }
 
 def _idempotentWriteToolNames_partBundles() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Code (apps/drivers/libraries/bundles/backups)
-        "hub_install_bundle", "hub_delete_bundle", "hub_export_bundle"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_install_bundle","hub_delete_bundle","hub_export_bundle"]]'])
 }
 
 def _openWorldToolNames_partBundles() {
     // Tools in this library that reach BEYOND the hub to the open internet (MCP
     // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
-    return [
-        "hub_install_bundle"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_install_bundle"]]'])
 }
 
 def _toolDisplayMeta_partBundles() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        // Bundles
-        hub_list_bundles: [title: "List Bundles", summary: "List installed code bundles and what they contain."],
-        hub_install_bundle: [title: "Install Bundle", summary: "Install a code bundle (.zip) from a URL."],
-        hub_delete_bundle: [title: "Delete Bundle", summary: "Delete an installed code bundle."],
-        hub_export_bundle: [title: "Export Bundle", summary: "Export an installed bundle's zip to the File Manager."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_bundles",["m",[["title","List Bundles"],["summary","List installed code bundles and what they contain."]]]],["hub_install_bundle",["m",[["title","Install Bundle"],["summary","Install a code bundle (.zip) from a URL."]]]],["hub_delete_bundle",["m",[["title","Delete Bundle"],["summary","Delete an installed code bundle."]]]],["hub_export_bundle",["m",[["title","Export Bundle"],["summary","Export an installed bundle\'s zip to the File Manager."]]]]]]'])
 }

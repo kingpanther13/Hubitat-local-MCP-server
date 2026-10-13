@@ -467,53 +467,18 @@ private Map _withGuidePage(Map result, content, cursor) {
 }
 
 def _getAllToolDefinitions_partDiscovery() {
-    return [
-        // Tool Guide
-        [
-            name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (paged via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["device_authorization", "best_practice_reference", "tool_access", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "set_rule_reference", "set_rule_reference_overview", "set_rule_reference_triggers", "set_rule_reference_actions", "set_rule_reference_conditions", "set_rule_reference_walkstep", "set_rule_reference_responses", "set_rule_reference_guards", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
-                    cursor: [type: "string", description: "Continue a paged payload: pass the prior call's nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."],
-                    platform_api_search: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: search the hub's Groovy API docs, e.g. 'eventsBetween'.[[/FLAT_TRIM]]"],
-                    platform_api_page: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        // Tool Search (BM25)
-        [
-            name: "hub_search_tools",
-            description: "Search all MCP tools by natural language query (BM25 ranking). Searches tool names, friendly titles, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    query: [type: "string", description: "Natural language search query (e.g. 'zigbee radio', 'delete app', 'memory leak', 'room management')"],
-                    maxResults: [type: "integer", description: "Max results to return. Default: 5.", default: 5]
-                ],
-                required: ["query"]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_tool_guide"],["description","Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool\'s section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent\'s response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (paged via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub\'s own Groovy API documentation instead.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["section",["m",[["type","string"],["description","One section key from the enum. Omit to get the key list plus the first page of the full guide."],["enum",["l",["device_authorization","best_practice_reference","tool_access","hub_admin_write","hub_admin_write_overview","hub_admin_write_destructive","hub_admin_write_radios","hub_admin_write_devices","hub_admin_write_code","hub_admin_write_system","virtual_devices","update_device","rules","backup","file_manager","performance","performance_overview","performance_devices","performance_diagnostics","builtin_app_tools","builtin_app_tools_overview","builtin_app_tools_apps","builtin_app_tools_rules","builtin_app_tools_crud","set_rule_reference","set_rule_reference_overview","set_rule_reference_triggers","set_rule_reference_actions","set_rule_reference_conditions","set_rule_reference_walkstep","set_rule_reference_responses","set_rule_reference_guards","set_rule_create_reference","visual_rule_reference","variables","dashboards","bundles","rooms","slow_ops"]]]]]],["cursor",["m",[["type","string"],["description","Continue a paged payload: pass the prior call\'s nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."]]]],["platform_api_search",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: search the hub\'s Groovy API docs, e.g. \'eventsBetween\'.[[/FLAT_TRIM]]"]]]],["platform_api_page",["m",[["type","string"],["description","[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_search_tools"],["description","Search all MCP tools by natural language query (BM25 ranking). Searches tool names, friendly titles, descriptions, and parameter names. Returns matching tools with their gateway location so you know how to call them. Use when unsure which gateway contains the tool you need."],["inputSchema",["m",[["type","object"],["properties",["m",[["query",["m",[["type","string"],["description","Natural language search query (e.g. \'zigbee radio\', \'delete app\', \'memory leak\', \'room management\')"]]]],["maxResults",["m",[["type","integer"],["description","Max results to return. Default: 5."],["default",5]]]]]]],["required",["l",["query"]]]]]]]]]]'])
 }
 
 def _readOnlyToolNames_partDiscovery() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Meta
-        "hub_get_tool_guide", "hub_search_tools"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_get_tool_guide","hub_search_tools"]]'])
 }
 
 def _toolDisplayMeta_partDiscovery() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        // Reference
-        hub_get_tool_guide: [title: "Get Tool Guide", summary: "Deep-reference guide for MCP tool topics, plus search of the hub's own Groovy API documentation."],
-        hub_search_tools: [title: "Search Tools", summary: "Search all MCP tools by natural-language query."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_tool_guide",["m",[["title","Get Tool Guide"],["summary","Deep-reference guide for MCP tool topics, plus search of the hub\'s own Groovy API documentation."]]]],["hub_search_tools",["m",[["title","Search Tools"],["summary","Search all MCP tools by natural-language query."]]]]]]'])
 }

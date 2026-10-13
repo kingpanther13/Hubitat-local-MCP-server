@@ -978,62 +978,19 @@ private Map _planAppArtifact(String name, String location, String artifactUrl, S
 }
 
 def _getAllToolDefinitions_partSelfAdmin() {
-    return [
-        [
-            name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit.[[FLAT_TRIM]] Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write_system'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
-                ],
-                required: ["settings", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_update_package",
-            description: """Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, anchored to packageManifest.json AT `ref` so an UNMERGED PR installs.[[FLAT_TRIM]] (Plain HPM Repair only reads the PUBLISHED manifest, so it can't reach an unmerged PR's artifacts.)[[/FLAT_TRIM]]
-
-Gated on enableDeveloperMode[[FLAT_TRIM]] (the tool is hidden from tools/list when Developer Mode is off)[[/FLAT_TRIM]] + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed)[[FLAT_TRIM]] and see exactly which bundles and apps would deploy[[/FLAT_TRIM]].
-
-A real deploy is accepted quickly with `status: "in_progress"` and runs in the background; do NOT submit it again while one is in flight.[[FLAT_TRIM]] The background run uses Hubitat's own scheduler, so neither the cloud relay nor the MCP client's request timeout has to stay open for the minutes-long repair; a concurrent second deploy is refused. Poll hub_get_info.lastSelfDeploy until its `requestId` matches the acceptance response; that bound record's `success`/`error` fields carry the outcome. No client extension or custom token is required.[[/FLAT_TRIM]]
-""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ref: [type: "string", description: "Branch, tag, or commit SHA to deploy (e.g. 'main' or a PR head SHA)."],
-                    dryRun: [type: "boolean", description: "OPTIONAL. When true, report the deploy plan with NO writes (skips the confirm/backup gate). Default false."],
-                    baseUrl: [type: "string", description: "OPTIONAL raw-source base override (no trailing slash); defaults to the canonical repo.[[FLAT_TRIM]] Per-call URLs are built as <baseUrl>/<ref>/<path>. Use for forks / CI branches on a different remote.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."],
-                    args: [type: "object"]
-                ],
-                required: ["ref"]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_update_mcp_settings"],["description","Update one or more of the MCP rule app\'s own settings (toggles, log levels, tuning, the device-access scope) in place \\u2014 self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit.[[FLAT_TRIM]] Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["settings",["m",[["type","object"],["description","Map of setting key \\u2192 new value (e.g. {\\"mcpLogLevel\\":\\"warn\\",\\"enableCustomRuleEngine\\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch \\u2014 when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section=\'hub_admin_write_system\'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] \\u2014 see hub_get_tool_guide(section=\'hub_admin_write_system\') for per-mode semantics."]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to confirm the operation"]]]]]]],["required",["l",["settings","confirm"]]]]]]]],["m",[["name","hub_update_package"],["description","Developer Mode self-deploy: full HPM-repair of the MCP package at a git ref in one call -- OVERRIDES whatever is installed, anchored to packageManifest.json AT `ref` so an UNMERGED PR installs.[[FLAT_TRIM]] (Plain HPM Repair only reads the PUBLISHED manifest, so it can\'t reach an unmerged PR\'s artifacts.)[[/FLAT_TRIM]]\\n\\nGated on enableDeveloperMode[[FLAT_TRIM]] (the tool is hidden from tools/list when Developer Mode is off)[[/FLAT_TRIM]] + the Write master + confirm=true + a recent backup. Use dryRun=true to fetch + parse + plan with ZERO writes (no confirm/backup needed)[[FLAT_TRIM]] and see exactly which bundles and apps would deploy[[/FLAT_TRIM]].\\n\\nA real deploy is accepted quickly with `status: \\"in_progress\\"` and runs in the background; do NOT submit it again while one is in flight.[[FLAT_TRIM]] The background run uses Hubitat\'s own scheduler, so neither the cloud relay nor the MCP client\'s request timeout has to stay open for the minutes-long repair; a concurrent second deploy is refused. Poll hub_get_info.lastSelfDeploy until its `requestId` matches the acceptance response; that bound record\'s `success`/`error` fields carry the outcome. No client extension or custom token is required.[[/FLAT_TRIM]]\\n"],["inputSchema",["m",[["type","object"],["properties",["m",[["ref",["m",[["type","string"],["description","Branch, tag, or commit SHA to deploy (e.g. \'main\' or a PR head SHA)."]]]],["dryRun",["m",[["type","boolean"],["description","OPTIONAL. When true, report the deploy plan with NO writes (skips the confirm/backup gate). Default false."]]]],["baseUrl",["m",[["type","string"],["description","OPTIONAL raw-source base override (no trailing slash); defaults to the canonical repo.[[FLAT_TRIM]] Per-call URLs are built as <baseUrl>/<ref>/<path>. Use for forks / CI branches on a different remote.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED for a real deploy (omit for dryRun). Must be true; confirms a recent backup exists and the user approved the self-deploy."]]]],["args",["m",[["type","object"]]]]]]],["required",["l",["ref"]]]]]]]]]]'])
 }
 
 def _idempotentWriteToolNames_partSelfAdmin() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // MCP self-admin + logging (selectedDevices (replace/add/remove), when carried in the
-        // settings batch, is idempotent too -- re-delivery converges on the same authorized set
-        // for all three modes)
-        "hub_update_mcp_settings",
-        // Developer Mode self-deploy (full repair to a ref converges, while the
-        // public boundary refuses a duplicate that is already in flight)
-        "hub_update_package"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_mcp_settings","hub_update_package"]]'])
 }
 
 def _openWorldToolNames_partSelfAdmin() {
     // Tools in this library that reach BEYOND the hub to the open internet (MCP
     // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
-    return [
-        "hub_update_package"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_package"]]'])
 }
 
 def _developerModeOnlyToolNames_partSelfAdmin() {
@@ -1046,17 +1003,11 @@ def _developerModeOnlyToolNames_partSelfAdmin() {
     // discoverability surface. hub_update_mcp_settings is that anchor, so it is deliberately
     // absent from this list. Every OTHER self-admin tool hides when the toggle is off (the
     // anchor already provides discoverability), so they go here.
-    return [
-        "hub_update_package"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_package"]]'])
 }
 
 def _toolDisplayMeta_partSelfAdmin() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        // MCP self-administration (Developer Mode)
-        hub_update_mcp_settings: [title: "Update MCP Settings", summary: "Update the MCP app's own settings + device-access scope (Developer Mode)."],
-        hub_update_package: [title: "Deploy MCP Package", summary: "Full repair-install of the MCP package at a git ref (Developer Mode)."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_update_mcp_settings",["m",[["title","Update MCP Settings"],["summary","Update the MCP app\'s own settings + device-access scope (Developer Mode)."]]]],["hub_update_package",["m",[["title","Deploy MCP Package"],["summary","Full repair-install of the MCP package at a git ref (Developer Mode)."]]]]]]'])
 }

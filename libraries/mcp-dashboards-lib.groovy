@@ -1184,27 +1184,16 @@ def _getAllToolDefinitions_partDashboards() {
 
 def _readOnlyToolNames_partDashboards() {
     // Read-only tools, contributed to getReadOnlyToolNames(). Absent => write+destructive by default.
-    return [
-        "hub_list_dashboards", "hub_get_dashboard"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_dashboards","hub_get_dashboard"]]'])
 }
 
 def _idempotentWriteToolNames_partDashboards() {
     // Retry-safe writes (idempotentHint): update = wholesale (same args -> same state); delete = no-op once gone.
     // create/clone each make ANOTHER dashboard, so they are NOT idempotent.
-    return [
-        "hub_update_dashboard", "hub_delete_dashboard"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_dashboard","hub_delete_dashboard"]]'])
 }
 
 def _toolDisplayMeta_partDashboards() {
     // Title + Advanced-menu summary per tool, merged into getToolDisplayMeta().
-    return [
-        hub_list_dashboards: [title: "List Dashboards", summary: "List Easy and legacy Hubitat® Dashboards with ids, names, and type."],
-        hub_get_dashboard: [title: "Get Dashboard", summary: "Get one dashboard's full config by id (Easy config or legacy layout)."],
-        hub_create_dashboard: [title: "Create Dashboard", summary: "Create an Easy Dashboard or an empty legacy Hubitat® Dashboard."],
-        hub_update_dashboard: [title: "Update Dashboard", summary: "Update a dashboard: Easy wholesale, or legacy name/devices/layout edits."],
-        hub_delete_dashboard: [title: "Delete Dashboard", summary: "Permanently delete an Easy or legacy Hubitat® Dashboard by id."],
-        hub_clone_dashboard: [title: "Clone Dashboard", summary: "Clone an Easy or legacy Hubitat® Dashboard into a new one."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_dashboards",["m",[["title","List Dashboards"],["summary","List Easy and legacy Hubitat\\u00ae Dashboards with ids, names, and type."]]]],["hub_get_dashboard",["m",[["title","Get Dashboard"],["summary","Get one dashboard\'s full config by id (Easy config or legacy layout)."]]]],["hub_create_dashboard",["m",[["title","Create Dashboard"],["summary","Create an Easy Dashboard or an empty legacy Hubitat\\u00ae Dashboard."]]]],["hub_update_dashboard",["m",[["title","Update Dashboard"],["summary","Update a dashboard: Easy wholesale, or legacy name/devices/layout edits."]]]],["hub_delete_dashboard",["m",[["title","Delete Dashboard"],["summary","Permanently delete an Easy or legacy Hubitat\\u00ae Dashboard by id."]]]],["hub_clone_dashboard",["m",[["title","Clone Dashboard"],["summary","Clone an Easy or legacy Hubitat\\u00ae Dashboard into a new one."]]]]]]'])
 }

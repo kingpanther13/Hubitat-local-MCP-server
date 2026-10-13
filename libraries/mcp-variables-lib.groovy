@@ -1536,153 +1536,24 @@ private String _hubVarRevealHtml(String raw) {
 }
 
 def _getAllToolDefinitions_partVariables() {
-    return [
-        [
-            name: "hub_list_variables",
-            description: "List all hub variables and rule-engine variables.[[FLAT_TRIM]] Includes every type, even ones without connectors.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "[[FLAT_TRIM]]Optional: only hub variables of this type.[[/FLAT_TRIM]]"],
-                    cursor: [type: "string", description: "Opt-in pagination cursor for the hubVariables list.[[FLAT_TRIM]] Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_variable",
-            description: "Get one variable's current value by name; includeDependents=true also lists the apps referencing a hub variable.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables; use hub_list_variables to enumerate. includeDependents reads the hub's in-use registry by clicking the Settings > Hub Variables wizard reveal, returning appsUsing as {id, label} plus coverageNote — apps that never register their use (e.g. webCoRE) are not covered, and a failed registry read is reported via dependentsError without failing the call. See hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Exact variable name to look up, e.g. \"vacationMode\". Case-sensitive."],
-                    includeDependents: [type: "boolean", description: "Opt-in: also list the apps that reference this hub variable.[[FLAT_TRIM]] Returns appsUsing + coverageNote; clicks the Hub Variables wizard reveal, so off by default.[[/FLAT_TRIM]]", default: false]
-                ],
-                required: ["name"]
-            ]
-        ],
-        [
-            name: "hub_set_variable",
-            description: "Set an existing variable's value[[FLAT_TRIM]], or add to a Number/Decimal hub variable with increment[[/FLAT_TRIM]]. For hub variables, value type must match the variable's declared type.[[FLAT_TRIM]] Falls back to the rule_engine namespace when no hub variable matches. Creating new hub variables requires hub_create_variable — Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both — see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Variable name"],
-                    value: [type: "string", description: "Variable value (string, number, or boolean as string).[[FLAT_TRIM]] Optional when mesh_shared is given.[[/FLAT_TRIM]]"],
-                    increment: [type: "number", description: "[[FLAT_TRIM]]Add this amount atomically to a Number/Decimal hub variable (instead of value; send alone).[[/FLAT_TRIM]]"],
-                    mesh_shared: [type: "boolean", description: "Hub Mesh: share/unshare this hub variable.[[FLAT_TRIM]] true shares into the mesh, false unshares; hub variables only; may accompany value or stand alone.[[/FLAT_TRIM]]"]
-                ],
-                required: ["name"]
-            ]
-        ],
-        [
-            name: "hub_create_variable",
-            description: "Create a new hub variable[[FLAT_TRIM]] (global variable visible to apps and Rule Machine)[[/FLAT_TRIM]], one at a time or several in one call.[[FLAT_TRIM]] Single form: name + type + value. Or LINK a variable a peer hub shares over Hub Mesh: mesh_source_hub_id + mesh_source_name from hub_get_hub_mesh availableLinkedHubVariables[], instead of name/type/value/variables; see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "New variable name, e.g. \"vacationMode\".[[FLAT_TRIM]] Omit when using variables or the Hub Mesh link form.[[/FLAT_TRIM]]"],
-                    type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"],
-                    value: [description: "Initial value, must match the type.[[FLAT_TRIM]] DateTime uses hub-local time, e.g. 2026-02-04T14:00 or {date,time}; offsets are ignored and seconds/fractions discarded. Omit when using variables.[[/FLAT_TRIM]]"],
-                    mesh_source_hub_id: [type: "string", description: "Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with mesh_source_name, not name/type/value.[[/FLAT_TRIM]]"],
-                    mesh_source_name: [type: "string", description: "Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"],
-                    variables: [type: "array", description: "Bulk form: several variables in one call.", items: [
-                        type: "object",
-                        properties: [
-                            name: [type: "string", description: "New variable name"],
-                            type: [type: "string", enum: ["Number", "Decimal", "String", "Boolean", "DateTime"], description: "Variable type"],
-                            value: [description: "Initial value, must match the type"]
-                        ],
-                        required: ["name", "type", "value"]
-                    ]],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true to perform the creation"]
-                ],
-                required: ["confirm"]
-            ]
-        ],
-        [
-            name: "hub_delete_variable",
-            description: "Permanently delete a variable (DESTRUCTIVE — no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\n\n**Reference safety:** for a hub variable the tool first reads the hub's own in-use registry (what Settings > Hub Variables shows in orange, covering Rule Machine and other registering apps) and refuses when it is in use or when the registry cannot be read. It also scans this server's child rules for the name, quoted or as a %name% substitution. Apps that never register use, such as webCoRE pistons, are not covered (see `coverageNote`). To proceed anyway, pass `force=true` after acknowledging the breakage; `brokenConsumers` then lists the affected child rules.\n\nThe consumer scan makes this call slow; if the transport drops, verify whether the variable still exists before retrying.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Variable name to delete"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the deletion"],
-                    force: [type: "boolean", description: "OPTIONAL: must be true to proceed when the hub reports the variable in use, the in-use registry cannot be read, or a child rule references it. Without force, the tool refuses and says why."],
-                ],
-                required: ["name", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_create_connector",
-            description: "Create a virtual-device connector for an existing hub variable[[FLAT_TRIM]] so apps that only consume devices can read/write it. No-op if a connector already exists; see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Existing hub-variable name"],
-                    connectorType: [type: "string", description: "Optional connector type for Number/Decimal vars (e.g. 'Dimmer', 'Variable'); defaults to 'Variable'.[[FLAT_TRIM]] Other options: 'Volume', 'ColorTemp', 'Humidity', 'Illuminance'. Ignored for vars that don't show a chooser.[[/FLAT_TRIM]]"],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true"]
-                ],
-                required: ["name", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_delete_connector",
-            description: "Delete the connector device backing a hub variable. DESTRUCTIVE and not undoable. confirm=true required.[[FLAT_TRIM]] The connector device is removed, but the hub variable itself and its value are unchanged. No-op if the variable has no connector; see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Hub-variable name whose connector device to remove, e.g. \"vacationMode\""],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true to perform the deletion"]
-                ],
-                required: ["name", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_list_variable_changes",
-            description: "List recent hub-variable change events captured by the MCP app's location-event subscription, most-recent first.[[FLAT_TRIM]] Use this to audit or debug what changed a variable and when, without polling hub_get_variable. The buffer holds at most the 200 most recent changes (oldest dropped) and survives app and hub restarts, but it is not a complete history — an empty or partial result does NOT mean the variable never changed. For the hub's separately retained location-event history call hub_list_device_events with no deviceId (location-event mode).[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Optional: filter to changes for this variable name only, e.g. \"vacationMode\".[[FLAT_TRIM]] Omit to include all variables.[[/FLAT_TRIM]]"],
-                    sinceMs: [type: "integer", description: "Optional: only return changes whose timestamp >= this epoch-millis value, e.g. 1717459200000"],
-                    limit: [type: "integer", description: "Optional: max entries to return (default 50)"]
-                ]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_variables"],["description","List all hub variables and rule-engine variables.[[FLAT_TRIM]] Includes every type, even ones without connectors.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["Number","Decimal","String","Boolean","DateTime"]]],["description","[[FLAT_TRIM]]Optional: only hub variables of this type.[[/FLAT_TRIM]]"]]]],["cursor",["m",[["type","string"],["description","Opt-in pagination cursor for the hubVariables list.[[FLAT_TRIM]] Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 100).[[/FLAT_TRIM]]"]]]]]]]]]]]],["m",[["name","hub_get_variable"],["description","Get one variable\'s current value by name; includeDependents=true also lists the apps referencing a hub variable.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables; use hub_list_variables to enumerate. includeDependents reads the hub\'s in-use registry by clicking the Settings > Hub Variables wizard reveal, returning appsUsing as {id, label} plus coverageNote \\u2014 apps that never register their use (e.g. webCoRE) are not covered, and a failed registry read is reported via dependentsError without failing the call. See hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Exact variable name to look up, e.g. \\"vacationMode\\". Case-sensitive."]]]],["includeDependents",["m",[["type","boolean"],["description","Opt-in: also list the apps that reference this hub variable.[[FLAT_TRIM]] Returns appsUsing + coverageNote; clicks the Hub Variables wizard reveal, so off by default.[[/FLAT_TRIM]]"],["default",false]]]]]]],["required",["l",["name"]]]]]]]],["m",[["name","hub_set_variable"],["description","Set an existing variable\'s value[[FLAT_TRIM]], or add to a Number/Decimal hub variable with increment[[/FLAT_TRIM]]. For hub variables, value type must match the variable\'s declared type.[[FLAT_TRIM]] Falls back to the rule_engine namespace when no hub variable matches. Creating new hub variables requires hub_create_variable \\u2014 Hubitat does not allow setGlobalVar to create. mesh_shared shares/unshares a HUB variable over Hub Mesh (rule-only vars rejected); provide value, mesh_shared, or both \\u2014 see hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Variable name"]]]],["value",["m",[["type","string"],["description","Variable value (string, number, or boolean as string).[[FLAT_TRIM]] Optional when mesh_shared is given.[[/FLAT_TRIM]]"]]]],["increment",["m",[["type","number"],["description","[[FLAT_TRIM]]Add this amount atomically to a Number/Decimal hub variable (instead of value; send alone).[[/FLAT_TRIM]]"]]]],["mesh_shared",["m",[["type","boolean"],["description","Hub Mesh: share/unshare this hub variable.[[FLAT_TRIM]] true shares into the mesh, false unshares; hub variables only; may accompany value or stand alone.[[/FLAT_TRIM]]"]]]]]]],["required",["l",["name"]]]]]]]],["m",[["name","hub_create_variable"],["description","Create a new hub variable[[FLAT_TRIM]] (global variable visible to apps and Rule Machine)[[/FLAT_TRIM]], one at a time or several in one call.[[FLAT_TRIM]] Single form: name + type + value. Or LINK a variable a peer hub shares over Hub Mesh: mesh_source_hub_id + mesh_source_name from hub_get_hub_mesh availableLinkedHubVariables[], instead of name/type/value/variables; see hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","New variable name, e.g. \\"vacationMode\\".[[FLAT_TRIM]] Omit when using variables or the Hub Mesh link form.[[/FLAT_TRIM]]"]]]],["type",["m",[["type","string"],["enum",["l",["Number","Decimal","String","Boolean","DateTime"]]],["description","Variable type.[[FLAT_TRIM]] Omit when using variables.[[/FLAT_TRIM]]"]]]],["value",["m",[["description","Initial value, must match the type.[[FLAT_TRIM]] DateTime uses hub-local time, e.g. 2026-02-04T14:00 or {date,time}; offsets are ignored and seconds/fractions discarded. Omit when using variables.[[/FLAT_TRIM]]"]]]],["mesh_source_hub_id",["m",[["type","string"],["description","Hub Mesh: peer hubId.[[FLAT_TRIM]] From hub_get_hub_mesh availableLinkedHubVariables[]; send with mesh_source_name, not name/type/value.[[/FLAT_TRIM]]"]]]],["mesh_source_name",["m",[["type","string"],["description","Hub Mesh: peer variable name.[[FLAT_TRIM]] From the same availableLinkedHubVariables[] row.[[/FLAT_TRIM]]"]]]],["variables",["m",[["type","array"],["description","Bulk form: several variables in one call."],["items",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","New variable name"]]]],["type",["m",[["type","string"],["enum",["l",["Number","Decimal","String","Boolean","DateTime"]]],["description","Variable type"]]]],["value",["m",[["description","Initial value, must match the type"]]]]]]],["required",["l",["name","type","value"]]]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to perform the creation"]]]]]]],["required",["l",["confirm"]]]]]]]],["m",[["name","hub_delete_variable"],["description","Permanently delete a variable (DESTRUCTIVE \\u2014 no undo). Auto-detects whether the target is a hub variable (also deletes its connector device when one exists) or a rule_engine variable. Gated on the Write master + confirm=true + a recent backup.[[FLAT_TRIM]]\\n\\n**Reference safety:** for a hub variable the tool first reads the hub\'s own in-use registry (what Settings > Hub Variables shows in orange, covering Rule Machine and other registering apps) and refuses when it is in use or when the registry cannot be read. It also scans this server\'s child rules for the name, quoted or as a %name% substitution. Apps that never register use, such as webCoRE pistons, are not covered (see `coverageNote`). To proceed anyway, pass `force=true` after acknowledging the breakage; `brokenConsumers` then lists the affected child rules.\\n\\nThe consumer scan makes this call slow; if the transport drops, verify whether the variable still exists before retrying.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Variable name to delete"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to confirm the deletion"]]]],["force",["m",[["type","boolean"],["description","OPTIONAL: must be true to proceed when the hub reports the variable in use, the in-use registry cannot be read, or a child rule references it. Without force, the tool refuses and says why."]]]]]]],["required",["l",["name","confirm"]]]]]]]],["m",[["name","hub_create_connector"],["description","Create a virtual-device connector for an existing hub variable[[FLAT_TRIM]] so apps that only consume devices can read/write it. No-op if a connector already exists; see hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Existing hub-variable name"]]]],["connectorType",["m",[["type","string"],["description","Optional connector type for Number/Decimal vars (e.g. \'Dimmer\', \'Variable\'); defaults to \'Variable\'.[[FLAT_TRIM]] Other options: \'Volume\', \'ColorTemp\', \'Humidity\', \'Illuminance\'. Ignored for vars that don\'t show a chooser.[[/FLAT_TRIM]]"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true"]]]]]]],["required",["l",["name","confirm"]]]]]]]],["m",[["name","hub_delete_connector"],["description","Delete the connector device backing a hub variable. DESTRUCTIVE and not undoable. confirm=true required.[[FLAT_TRIM]] The connector device is removed, but the hub variable itself and its value are unchanged. No-op if the variable has no connector; see hub_get_tool_guide(section=\'variables\').[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Hub-variable name whose connector device to remove, e.g. \\"vacationMode\\""]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true to perform the deletion"]]]]]]],["required",["l",["name","confirm"]]]]]]]],["m",[["name","hub_list_variable_changes"],["description","List recent hub-variable change events captured by the MCP app\'s location-event subscription, most-recent first.[[FLAT_TRIM]] Use this to audit or debug what changed a variable and when, without polling hub_get_variable. The buffer holds at most the 200 most recent changes (oldest dropped) and survives app and hub restarts, but it is not a complete history \\u2014 an empty or partial result does NOT mean the variable never changed. For the hub\'s separately retained location-event history call hub_list_device_events with no deviceId (location-event mode).[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Optional: filter to changes for this variable name only, e.g. \\"vacationMode\\".[[FLAT_TRIM]] Omit to include all variables.[[/FLAT_TRIM]]"]]]],["sinceMs",["m",[["type","integer"],["description","Optional: only return changes whose timestamp >= this epoch-millis value, e.g. 1717459200000"]]]],["limit",["m",[["type","integer"],["description","Optional: max entries to return (default 50)"]]]]]]]]]]]]]]'])
 }
 
 def _readOnlyToolNames_partVariables() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Variables (reads); hub_get_variable folds in the dependents read via includeDependents
-        "hub_list_variables", "hub_get_variable", "hub_list_variable_changes"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_variables","hub_get_variable","hub_list_variable_changes"]]'])
 }
 
 def _idempotentWriteToolNames_partVariables() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Variables + connectors. hub_set_variable is not here: its increment re-adds on a retry.
-        "hub_delete_variable", "hub_create_connector", "hub_delete_connector"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_delete_variable","hub_create_connector","hub_delete_connector"]]'])
 }
 
 def _toolDisplayMeta_partVariables() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        // Variables
-        hub_list_variables: [title: "List Variables", summary: "List hub and rule-engine variables, optionally only hub variables of one type."],
-        hub_get_variable: [title: "Get Variable", summary: "Get a variable's value and metadata (optionally the apps that reference it)."],
-        hub_set_variable: [title: "Set Variable", summary: "Set an existing variable's value or atomically add to a numeric hub variable."],
-        hub_create_variable: [title: "Create Variable", summary: "Create a new hub variable."],
-        hub_delete_variable: [title: "Delete Variable", summary: "Permanently delete a hub variable and any connector it has."],
-        hub_create_connector: [title: "Create Variable Connector", summary: "Create a virtual-device connector for a hub variable."],
-        hub_delete_connector: [title: "Delete Variable Connector", summary: "Remove a hub variable's connector device."],
-        hub_list_variable_changes: [title: "List Variable Changes", summary: "Recent hub-variable changes from the retained 200-entry history."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_variables",["m",[["title","List Variables"],["summary","List hub and rule-engine variables, optionally only hub variables of one type."]]]],["hub_get_variable",["m",[["title","Get Variable"],["summary","Get a variable\'s value and metadata (optionally the apps that reference it)."]]]],["hub_set_variable",["m",[["title","Set Variable"],["summary","Set an existing variable\'s value or atomically add to a numeric hub variable."]]]],["hub_create_variable",["m",[["title","Create Variable"],["summary","Create a new hub variable."]]]],["hub_delete_variable",["m",[["title","Delete Variable"],["summary","Permanently delete a hub variable and any connector it has."]]]],["hub_create_connector",["m",[["title","Create Variable Connector"],["summary","Create a virtual-device connector for a hub variable."]]]],["hub_delete_connector",["m",[["title","Delete Variable Connector"],["summary","Remove a hub variable\'s connector device."]]]],["hub_list_variable_changes",["m",[["title","List Variable Changes"],["summary","Recent hub-variable changes from the retained 200-entry history."]]]]]]'])
 }

@@ -1704,59 +1704,23 @@ def _readOnlyToolNames_partSystem() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Hub state reads (hub_get_info folds in the network-config read via includeNetwork)
-        "hub_get_info", "hub_list_modes", "hub_get_hsm_status", "hub_get_hub_mesh"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_get_info","hub_list_modes","hub_get_hsm_status","hub_get_hub_mesh"]]'])
 }
 
 def _idempotentWriteToolNames_partSystem() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Hub state
-        "hub_set_hsm", "hub_set_mode_manager",
-        // hub_update_hub_mesh: every leg assigns a value or flips a persistent flag
-        // (enable/disable, sync interval, mode-following hub, a peer's stored token), so an
-        // identical retry converges on the same state with no additional effect. The tool
-        // itself never reboots -- the reboot an `enabled` change needs is the caller's own
-        // separate hub_reboot -- so retrying it cannot re-trigger one.
-        "hub_update_hub_mesh"
-        // hub_set_system_settings is deliberately OMITTED here (non-idempotent): its timeZone leg
-        // reboots the hub, so a retry with the same args re-triggers the reboot -- not "no additional
-        // effect" -- which is the conservative, accurate idempotentHint for this tool.
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_set_hsm","hub_set_mode_manager","hub_update_hub_mesh"]]'])
 }
 
 def _openWorldToolNames_partSystem() {
     // Tools in this library that reach BEYOND the hub to the open internet (MCP
     // openWorldHint) -- contributed to the app's getOpenWorldToolNames() aggregator.
-    return [
-        // hub_get_info reaches GitHub for the app-version check when includeAppUpdate=true;
-        // hub_update_firmware drives the hub's cloud download/install of the platform update.
-        "hub_get_info", "hub_update_firmware"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_get_info","hub_update_firmware"]]'])
 }
 
 def _toolDisplayMeta_partSystem() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        // Hub state + modes
-        hub_get_info: [title: "Get Hub Info", summary: "Comprehensive hub info: hardware, health, firmware/platform-update status, network, and MCP stats."],
-        hub_list_modes: [title: "List Modes", summary: "List the hub's location modes, the active one, and Mode Manager state."],
-        hub_manage_mode: [title: "Manage Modes", summary: "Create, rename, delete, or activate a hub location mode."],
-        hub_set_mode_manager: [title: "Set Mode Manager", summary: "Pick the Mode Manager and update its per-mode conditions."],
-        hub_get_hsm_status: [title: "Get HSM Status", summary: "Get the current Hubitat Safety Monitor arm status."],
-        hub_set_hsm: [title: "Set HSM Arm Mode", summary: "Arm or disarm Hubitat Safety Monitor."],
-        hub_set_system_settings: [title: "Set System Settings", summary: "Set hub name, time zone, location, zip, temperature scale, dark mode, network config, or dismiss a hub alert."],
-        // Hub Mesh (hub-to-hub sharing; NOT the Z-Wave/Zigbee radio mesh)
-        hub_get_hub_mesh: [title: "Get Hub Mesh", summary: "Read Hub Mesh config: enabled state, peer hubs, shared and linked devices/variables, sync interval."],
-        hub_update_hub_mesh: [title: "Update Hub Mesh", summary: "Enable/disable Hub Mesh, set the sync interval, follow a peer's modes, or store a peer's mesh token."],
-        // Hub utilities
-        hub_update_firmware: [title: "Update Hub Firmware", summary: "Install the hub's pending platform/firmware update (downloads, installs, and reboots the hub)."],
-        // Destructive hub ops
-        hub_reboot: [title: "Reboot Hub", summary: "Reboot the hub (1-3 minutes of downtime)."],
-        hub_shutdown: [title: "Shut Down Hub", summary: "Power the hub off; a physical restart is required afterwards."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_info",["m",[["title","Get Hub Info"],["summary","Comprehensive hub info: hardware, health, firmware/platform-update status, network, and MCP stats."]]]],["hub_list_modes",["m",[["title","List Modes"],["summary","List the hub\'s location modes, the active one, and Mode Manager state."]]]],["hub_manage_mode",["m",[["title","Manage Modes"],["summary","Create, rename, delete, or activate a hub location mode."]]]],["hub_set_mode_manager",["m",[["title","Set Mode Manager"],["summary","Pick the Mode Manager and update its per-mode conditions."]]]],["hub_get_hsm_status",["m",[["title","Get HSM Status"],["summary","Get the current Hubitat Safety Monitor arm status."]]]],["hub_set_hsm",["m",[["title","Set HSM Arm Mode"],["summary","Arm or disarm Hubitat Safety Monitor."]]]],["hub_set_system_settings",["m",[["title","Set System Settings"],["summary","Set hub name, time zone, location, zip, temperature scale, dark mode, network config, or dismiss a hub alert."]]]],["hub_get_hub_mesh",["m",[["title","Get Hub Mesh"],["summary","Read Hub Mesh config: enabled state, peer hubs, shared and linked devices/variables, sync interval."]]]],["hub_update_hub_mesh",["m",[["title","Update Hub Mesh"],["summary","Enable/disable Hub Mesh, set the sync interval, follow a peer\'s modes, or store a peer\'s mesh token."]]]],["hub_update_firmware",["m",[["title","Update Hub Firmware"],["summary","Install the hub\'s pending platform/firmware update (downloads, installs, and reboots the hub)."]]]],["hub_reboot",["m",[["title","Reboot Hub"],["summary","Reboot the hub (1-3 minutes of downtime)."]]]],["hub_shutdown",["m",[["title","Shut Down Hub"],["summary","Power the hub off; a physical restart is required afterwards."]]]]]]'])
 }

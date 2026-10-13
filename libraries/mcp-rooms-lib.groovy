@@ -269,99 +269,24 @@ def toolRenameRoom(args) {
 // Tool DEFINITIONS for the room tools (issue #209: schema lives with the impl). Concatenated
 // into getAllToolDefinitions() in the main app; gateway membership + dispatch stay in main.
 def _getAllToolDefinitions_partRooms() {
-    return [
-        [
-            name: "hub_list_rooms",
-            description: "List all rooms on the hub, each with its ID, name, device count, and assigned device IDs. Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only — call hub_get_room for per-device states.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 100)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_get_room",
-            description: "Get one room's details: its ID, name, and the full list of assigned devices with each device's current attribute states. Use when you need device-level detail for a single room; for a name-and-count overview of all rooms use hub_list_rooms instead. Read-only and parallel-safe.[[FLAT_TRIM]] Devices unreachable via MCP are returned with accessible=false and no states.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    room: [type: "string", description: "Room name (case-insensitive) or room ID, e.g. \"Living Room\" or \"5\""]
-                ],
-                required: ["room"]
-            ]
-        ],
-        [
-            name: "hub_create_room",
-            description: "Create a new room on the hub, optionally assigning devices to it at creation.[[FLAT_TRIM]] Use when a needed room does not yet exist; to only move devices into an existing room, set the device's room with hub_update_device instead.[[/FLAT_TRIM]] Requires Write master, backup <24h, confirm=true.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Name for the new room, e.g. \"Garage\""],
-                    deviceIds: [type: "array", description: "Optional device IDs to assign to the room at creation, e.g. [\"12\",\"34\"].", items: [type: "string"]],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true. Confirms a recent backup exists and the user approved creating this room."]
-                ],
-                required: ["name", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_delete_room",
-            description: """⚠️ DESTRUCTIVE: Permanently deletes a room. Devices become unassigned (not deleted). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]]
-
-PRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    room: [type: "string", description: "Room name (case-insensitive) or room ID to delete, e.g. \"Garage\" or \"5\""],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]
-                ],
-                required: ["room", "confirm"]
-            ]
-        ],
-        [
-            name: "hub_update_room",
-            description: "Rename a room. Device assignments preserved.[[FLAT_TRIM]] Automations/dashboards referencing the room by name may need updating.[[/FLAT_TRIM]] Requires Write master + confirm + backup <24h.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    room: [type: "string", description: "Current room name (case-insensitive) or room ID, e.g. \"Garage\" or \"5\""],
-                    newName: [type: "string", description: "New name for the room, e.g. \"Workshop\""],
-                    confirm: [type: "boolean", description: "REQUIRED: Must be true. Confirms backup was created and user approved."]
-                ],
-                required: ["room", "newName", "confirm"]
-            ]
-        ]
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_list_rooms"],["description","List all rooms on the hub, each with its ID, name, device count, and assigned device IDs. Use to discover available rooms or resolve a room name to its ID before calling hub_get_room/hub_update_room/hub_delete_room. Read-only and parallel-safe. Returns summaries only \\u2014 call hub_get_room for per-device states."],["inputSchema",["m",[["type","object"],["properties",["m",[["cursor",["m",[["type","string"],["description","Opt-in pagination cursor. Omit for unbounded; pass \\"\\" for the first page, iterate nextCursor (page size 100)."]]]]]]]]]]]],["m",[["name","hub_get_room"],["description","Get one room\'s details: its ID, name, and the full list of assigned devices with each device\'s current attribute states. Use when you need device-level detail for a single room; for a name-and-count overview of all rooms use hub_list_rooms instead. Read-only and parallel-safe.[[FLAT_TRIM]] Devices unreachable via MCP are returned with accessible=false and no states.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["room",["m",[["type","string"],["description","Room name (case-insensitive) or room ID, e.g. \\"Living Room\\" or \\"5\\""]]]]]]],["required",["l",["room"]]]]]]]],["m",[["name","hub_create_room"],["description","Create a new room on the hub, optionally assigning devices to it at creation.[[FLAT_TRIM]] Use when a needed room does not yet exist; to only move devices into an existing room, set the device\'s room with hub_update_device instead.[[/FLAT_TRIM]] Requires Write master, backup <24h, confirm=true."],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Name for the new room, e.g. \\"Garage\\""]]]],["deviceIds",["m",[["type","array"],["description","Optional device IDs to assign to the room at creation, e.g. [\\"12\\",\\"34\\"]."],["items",["m",[["type","string"]]]]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: must be true. Confirms a recent backup exists and the user approved creating this room."]]]]]]],["required",["l",["name","confirm"]]]]]]]],["m",[["name","hub_delete_room"],["description","\\u26a0\\ufe0f DESTRUCTIVE: Permanently deletes a room. Devices become unassigned (not deleted). Requires Write master, backup <24h, confirm=true.[[FLAT_TRIM]]\\n\\nPRE-FLIGHT: 1) Backup <24h 2) Verify correct room 3) List affected devices to user 4) Get explicit confirmation 5) Set confirm=true[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["room",["m",[["type","string"],["description","Room name (case-insensitive) or room ID to delete, e.g. \\"Garage\\" or \\"5\\""]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user explicitly approved the deletion."]]]]]]],["required",["l",["room","confirm"]]]]]]]],["m",[["name","hub_update_room"],["description","Rename a room. Device assignments preserved.[[FLAT_TRIM]] Automations/dashboards referencing the room by name may need updating.[[/FLAT_TRIM]] Requires Write master + confirm + backup <24h."],["inputSchema",["m",[["type","object"],["properties",["m",[["room",["m",[["type","string"],["description","Current room name (case-insensitive) or room ID, e.g. \\"Garage\\" or \\"5\\""]]]],["newName",["m",[["type","string"],["description","New name for the room, e.g. \\"Workshop\\""]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Must be true. Confirms backup was created and user approved."]]]]]]],["required",["l",["room","newName","confirm"]]]]]]]]]]'])
 }
 
 def _readOnlyToolNames_partRooms() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Rooms (read)
-        "hub_list_rooms", "hub_get_room"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_rooms","hub_get_room"]]'])
 }
 
 def _idempotentWriteToolNames_partRooms() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Rooms
-        "hub_update_room", "hub_delete_room"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_room","hub_delete_room"]]'])
 }
 
 def _toolDisplayMeta_partRooms() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        // Rooms
-        hub_list_rooms: [title: "List Rooms", summary: "List all rooms with IDs, names, and device counts."],
-        hub_get_room: [title: "Get Room Details", summary: "Get one room's details with its assigned devices."],
-        hub_create_room: [title: "Create Room", summary: "Create a new room, optionally assigning devices."],
-        hub_delete_room: [title: "Delete Room", summary: "Permanently delete a room."],
-        hub_update_room: [title: "Rename Room", summary: "Rename an existing room."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_rooms",["m",[["title","List Rooms"],["summary","List all rooms with IDs, names, and device counts."]]]],["hub_get_room",["m",[["title","Get Room Details"],["summary","Get one room\'s details with its assigned devices."]]]],["hub_create_room",["m",[["title","Create Room"],["summary","Create a new room, optionally assigning devices."]]]],["hub_delete_room",["m",[["title","Delete Room"],["summary","Permanently delete a room."]]]],["hub_update_room",["m",[["title","Rename Room"],["summary","Rename an existing room."]]]]]]'])
 }

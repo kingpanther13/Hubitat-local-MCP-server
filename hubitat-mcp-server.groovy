@@ -21,6 +21,7 @@
 // locking on `this` does not serialize them. A static @Field is shared by every
 // execution of this single-instance app and gives the compound reservations below
 // one short JVM critical section without serializing tool work.
+import groovy.json.JsonSlurper
 @groovy.transform.Field static final Object WRITE_RESERVATION_LOCK = new Object()
 // Saving new code recompiles the class and resets this, so only the first request after a
 // load reads the setup marker; initialize() records it, and a mismatch re-runs initialize().
@@ -12539,4 +12540,32 @@ def guideSubSectionLookup(subKey) {
     }
     if (!mine) return null
     return [parent: parentKey, content: mine.join("\n")]
+}
+
+
+@groovy.transform.CompileStatic
+private Object _bat529EmbeddedCatalogRead(List<String> chunks) {
+    StringBuilder text = new StringBuilder()
+    for (String chunk : chunks) text.append(chunk)
+    JsonSlurper parser = new JsonSlurper()
+    parser.setCheckDates(false)
+    return _bat529EmbeddedCatalogDecode(parser.parseText(text.toString()))
+}
+
+@groovy.transform.CompileStatic
+private Object _bat529EmbeddedCatalogDecode(Object value) {
+    if (!(value instanceof List)) return value
+    List packet = (List) value
+    List contents = (List) packet.get(1)
+    if (packet.get(0) == "m") {
+        Map<String, Object> result = new LinkedHashMap<String, Object>()
+        for (Object rawEntry : contents) {
+            List entry = (List) rawEntry
+            result.put((String) entry.get(0), _bat529EmbeddedCatalogDecode(entry.get(1)))
+        }
+        return result
+    }
+    List<Object> result = new ArrayList<Object>()
+    for (Object item : contents) result.add(_bat529EmbeddedCatalogDecode(item))
+    return result
 }

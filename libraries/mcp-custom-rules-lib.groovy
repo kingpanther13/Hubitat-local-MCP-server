@@ -745,159 +745,24 @@ def toolGetRuleDiagnostics(args) {
 }
 
 def _getAllToolDefinitions_partCustomRules() {
-    return [
-        // Rule Management
-        [
-            name: "hub_get_custom_rule",
-            description: "Read MCP custom-engine automation rules. Omit ruleId to LIST all rules (summaries; supports cursor pagination). Provide ruleId for one rule's full detail. Add detailed=true (requires ruleId) for comprehensive diagnostics (config + execution history + recent logs + errors).[[FLAT_TRIM]] When the Custom Rule Engine toggle is OFF this operates read-only -- you can list/inspect existing custom rules, but create/modify/delete are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via hub_manage_native_rules_and_apps.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID. Omit to list all rules; provide for one rule's detail."],
-                    detailed: [type: "boolean", description: "Requires ruleId; returns diagnostics instead of plain rule data. Rejected if set without a ruleId.", default: false],
-                    cursor: [type: "string", description: "List mode only (ruleId omitted): pagination cursor. Pass \"\" for the first page, iterate nextCursor (page size 50)."]
-                ]
-            ]
-        ],
-        [
-            name: "hub_create_custom_rule",
-            description: """*** LEGACY (MCP sandbox engine): for "create a Rule Machine rule" / "Hubitat rule" / anything the user wants visible in Hubitat's RM UI, use hub_manage_rule_machine hub_set_rule instead. ***
-
-Create a new automation rule (MCP sandbox engine). The custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. Call `hub_get_tool_guide(section='rules')` for the trigger/condition/action type lists, per-type fields, structure, syntax, and examples.
-
-Verify rule after creation.""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    name: [type: "string", description: "Rule name, e.g. \"Porch light at sunset\""],
-                    description: [type: "string", description: "Optional human-readable rule description"],
-                    enabled: [type: "boolean", description: "Enable rule immediately on creation", default: true],
-                    testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion.", default: false],
-                    triggers: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_event", "button_event", "time", "sunrise", "sunset", "sun", "periodic", "mode_change", "hsm_change"]]]], description: "Trigger objects (at least one required), each a {type, ...} object.[[FLAT_TRIM]] The `type` enum lists the kinds; sunrise/sunset/sun are shortcuts for a time trigger.[[/FLAT_TRIM]]"],
-                    conditions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_state", "device_was", "time_range", "mode", "variable", "days_of_week", "sun_position", "hsm_status", "presence", "lock", "thermostat_mode", "thermostat_state", "illuminance", "power"]]]], description: "Optional condition objects gating the actions, each {type, ...}."],
-                    conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine multiple conditions: 'all' = AND, 'any' = OR.", default: "all"],
-                    actions: [type: "array", items: [type: "object", properties: [type: [type: "string", enum: ["device_command", "toggle_device", "activate_scene", "set_variable", "set_local_variable", "set_mode", "set_hsm", "delay", "if_then_else", "cancel_delayed", "repeat", "stop", "log", "set_level", "set_color", "set_color_temperature", "lock", "unlock", "capture_state", "restore_state", "send_notification", "set_thermostat", "http_request", "speak", "comment", "set_valve", "set_fan_speed", "set_shade", "variable_math"]]]], description: "Action objects to run when triggered (at least one required), each {type, ...}."]
-                ],
-                required: ["name", "triggers", "actions"]
-            ]
-        ],
-        [
-            name: "hub_update_custom_rule",
-            description: "Update an existing MCP custom-engine rule in place; only the fields you supply are changed (use enabled=true/false to enable/disable). Replacing triggers/conditions/actions overwrites the whole array, not a merge; see hub_get_tool_guide(section='rules') for valid types and structure.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "ID of the rule to update (from hub_get_custom_rule)"],
-                    name: [type: "string", description: "New rule name"],
-                    description: [type: "string", description: "New rule description"],
-                    enabled: [type: "boolean", description: "Enable (true) or disable (false) the rule"],
-                    testRule: [type: "boolean", description: "Mark as test rule - will NOT be backed up on deletion"],
-                    triggers: [type: "array", description: "Replacement trigger objects (overwrites ALL triggers)"],
-                    conditions: [type: "array", description: "Replacement condition objects (overwrites ALL conditions)"],
-                    conditionLogic: [type: "string", enum: ["all", "any"], description: "How to combine conditions: 'all' = AND, 'any' = OR"],
-                    actions: [type: "array", description: "Replacement action objects (overwrites ALL actions)"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "hub_delete_custom_rule",
-            description: "DESTRUCTIVE: Permanently delete an MCP custom-engine rule. Automatically saves a backup to File Manager before deletion.[[FLAT_TRIM]] Backup filename pattern: mcp_rule_backup_*.json. Rules marked testRule=true skip backup automatically.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID"],
-                    confirm: [type: "boolean", description: "REQUIRED: Set to true to confirm deletion."],
-                    skipBackupCheck: [type: "boolean", description: "Force skip backup even for non-test rules."]
-                ],
-                required: ["ruleId", "confirm"]
-            ]
-        ],
-        // enable_rule and disable_rule merged into hub_update_custom_rule (use enabled=true/false)
-        [
-            name: "hub_test_custom_rule",
-            description: "Dry-run an MCP custom-engine rule: evaluate its conditions against current device/hub state and report whether it would fire, WITHOUT executing any actions.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "ID of the custom rule to dry-run (from hub_get_custom_rule)"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        // Rule Export/Import/Clone Tools
-        [
-            name: "hub_export_custom_rule",
-            description: "Export a custom rule to JSON and save it to the hub File Manager for backup or sharing.",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID to export"],
-                    saveAs: [type: "string", description: "File Manager filename to write the export JSON to (\".json\" appended if missing). Omit to use a generated name based on the rule."]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-        [
-            name: "hub_import_custom_rule",
-            description: """Import a custom rule from exported JSON (produced by hub_export_custom_rule), creating a NEW rule with a fresh ruleId (it does not overwrite an existing rule).""",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    exportData: [type: "object", description: "The full export JSON object from hub_export_custom_rule"],
-                    name: [type: "string", description: "Override the rule name (optional)"],
-                    deviceMapping: [type: "object", description: "Map old device IDs to new ones: {\"old_id\": \"new_id\"} (optional)"]
-                ],
-                required: ["exportData"]
-            ]
-        ],
-        [
-            name: "hub_clone_custom_rule",
-            description: "Duplicate an existing MCP custom-engine rule into a new, independent rule with its own ruleId.[[FLAT_TRIM]] Same triggers/conditions/actions and device references as the source.[[/FLAT_TRIM]]",
-            inputSchema: [
-                type: "object",
-                properties: [
-                    ruleId: [type: "string", description: "Rule ID to clone"],
-                    name: [type: "string", description: "Name for the clone (defaults to 'Copy of <original>')"]
-                ],
-                required: ["ruleId"]
-            ]
-        ],
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",[["m",[["name","hub_get_custom_rule"],["description","Read MCP custom-engine automation rules. Omit ruleId to LIST all rules (summaries; supports cursor pagination). Provide ruleId for one rule\'s full detail. Add detailed=true (requires ruleId) for comprehensive diagnostics (config + execution history + recent logs + errors).[[FLAT_TRIM]] When the Custom Rule Engine toggle is OFF this operates read-only -- you can list/inspect existing custom rules, but create/modify/delete are hidden. The custom MCP rule engine is legacy; for new rule work prefer native Rule Machine via hub_manage_native_rules_and_apps.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","Rule ID. Omit to list all rules; provide for one rule\'s detail."]]]],["detailed",["m",[["type","boolean"],["description","Requires ruleId; returns diagnostics instead of plain rule data. Rejected if set without a ruleId."],["default",false]]]],["cursor",["m",[["type","string"],["description","List mode only (ruleId omitted): pagination cursor. Pass \\"\\" for the first page, iterate nextCursor (page size 50)."]]]]]]]]]]]],["m",[["name","hub_create_custom_rule"],["description","*** LEGACY (MCP sandbox engine): for \\"create a Rule Machine rule\\" / \\"Hubitat rule\\" / anything the user wants visible in Hubitat\'s RM UI, use hub_manage_rule_machine hub_set_rule instead. ***\\n\\nCreate a new automation rule (MCP sandbox engine). The custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat\'s RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. Call `hub_get_tool_guide(section=\'rules\')` for the trigger/condition/action type lists, per-type fields, structure, syntax, and examples.\\n\\nVerify rule after creation."],["inputSchema",["m",[["type","object"],["properties",["m",[["name",["m",[["type","string"],["description","Rule name, e.g. \\"Porch light at sunset\\""]]]],["description",["m",[["type","string"],["description","Optional human-readable rule description"]]]],["enabled",["m",[["type","boolean"],["description","Enable rule immediately on creation"],["default",true]]]],["testRule",["m",[["type","boolean"],["description","Mark as test rule - will NOT be backed up on deletion."],["default",false]]]],["triggers",["m",[["type","array"],["items",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["device_event","button_event","time","sunrise","sunset","sun","periodic","mode_change","hsm_change"]]]]]]]]]]]],["description","Trigger objects (at least one required), each a {type, ...} object.[[FLAT_TRIM]] The `type` enum lists the kinds; sunrise/sunset/sun are shortcuts for a time trigger.[[/FLAT_TRIM]]"]]]],["conditions",["m",[["type","array"],["items",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["device_state","device_was","time_range","mode","variable","days_of_week","sun_position","hsm_status","presence","lock","thermostat_mode","thermostat_state","illuminance","power"]]]]]]]]]]]],["description","Optional condition objects gating the actions, each {type, ...}."]]]],["conditionLogic",["m",[["type","string"],["enum",["l",["all","any"]]],["description","How to combine multiple conditions: \'all\' = AND, \'any\' = OR."],["default","all"]]]],["actions",["m",[["type","array"],["items",["m",[["type","object"],["properties",["m",[["type",["m",[["type","string"],["enum",["l",["device_command","toggle_device","activate_scene","set_variable","set_local_variable","set_mode","set_hsm","delay","if_then_else","cancel_delayed","repeat","stop","log","set_level","set_color","set_color_temperature","lock","unlock","capture_state","restore_state","send_notification","set_thermostat","http_request","speak","comment","set_valve","set_fan_speed","set_shade","variable_math"]]]]]]]]]]]],["description","Action objects to run when triggered (at least one required), each {type, ...}."]]]]]]],["required",["l",["name","triggers","actions"]]]]]]]],["m",[["name","hub_update_custom_rule"],["description","Update an existing MCP custom-engine rule in place; only the fields you supply are changed (use enabled=true/false to enable/disable). Replacing triggers/conditions/actions overwrites the whole array, not a merge; see hub_get_tool_guide(section=\'rules\') for valid types and structure."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","ID of the rule to update (from hub_get_custom_rule)"]]]],["name",["m",[["type","string"],["description","New rule name"]]]],["description",["m",[["type","string"],["description","New rule description"]]]],["enabled",["m",[["type","boolean"],["description","Enable (true) or disable (false) the rule"]]]],["testRule",["m",[["type","boolean"],["description","Mark as test rule - will NOT be backed up on deletion"]]]],["triggers",["m",[["type","array"],["description","Replacement trigger objects (overwrites ALL triggers)"]]]],["conditions",["m",[["type","array"],["description","Replacement condition objects (overwrites ALL conditions)"]]]],["conditionLogic",["m",[["type","string"],["enum",["l",["all","any"]]],["description","How to combine conditions: \'all\' = AND, \'any\' = OR"]]]],["actions",["m",[["type","array"],["description","Replacement action objects (overwrites ALL actions)"]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_delete_custom_rule"],["description","DESTRUCTIVE: Permanently delete an MCP custom-engine rule. Automatically saves a backup to File Manager before deletion.[[FLAT_TRIM]] Backup filename pattern: mcp_rule_backup_*.json. Rules marked testRule=true skip backup automatically.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","Rule ID"]]]],["confirm",["m",[["type","boolean"],["description","REQUIRED: Set to true to confirm deletion."]]]],["skipBackupCheck",["m",[["type","boolean"],["description","Force skip backup even for non-test rules."]]]]]]],["required",["l",["ruleId","confirm"]]]]]]]],["m",[["name","hub_test_custom_rule"],["description","Dry-run an MCP custom-engine rule: evaluate its conditions against current device/hub state and report whether it would fire, WITHOUT executing any actions."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","ID of the custom rule to dry-run (from hub_get_custom_rule)"]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_export_custom_rule"],["description","Export a custom rule to JSON and save it to the hub File Manager for backup or sharing."],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","Rule ID to export"]]]],["saveAs",["m",[["type","string"],["description","File Manager filename to write the export JSON to (\\".json\\" appended if missing). Omit to use a generated name based on the rule."]]]]]]],["required",["l",["ruleId"]]]]]]]],["m",[["name","hub_import_custom_rule"],["description","Import a custom rule from exported JSON (produced by hub_export_custom_rule), creating a NEW rule with a fresh ruleId (it does not overwrite an existing rule)."],["inputSchema",["m",[["type","object"],["properties",["m",[["exportData",["m",[["type","object"],["description","The full export JSON object from hub_export_custom_rule"]]]],["name",["m",[["type","string"],["description","Override the rule name (optional)"]]]],["deviceMapping",["m",[["type","object"],["description","Map old device IDs to new ones: {\\"old_id\\": \\"new_id\\"} (optional)"]]]]]]],["required",["l",["exportData"]]]]]]]],["m",[["name","hub_clone_custom_rule"],["description","Duplicate an existing MCP custom-engine rule into a new, independent rule with its own ruleId.[[FLAT_TRIM]] Same triggers/conditions/actions and device references as the source.[[/FLAT_TRIM]]"],["inputSchema",["m",[["type","object"],["properties",["m",[["ruleId",["m",[["type","string"],["description","Rule ID to clone"]]]],["name",["m",[["type","string"],["description","Name for the clone (defaults to \'Copy of <original>\')"]]]]]]],["required",["l",["ruleId"]]]]]]]]]]'])
 }
 
 def _readOnlyToolNames_partCustomRules() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Custom rule reads (legacy MCP engine) -- test_rule is dry-run, no
-        // actions fire. (hub_export_custom_rule now persists to File Manager -> write.)
-        "hub_get_custom_rule", "hub_test_custom_rule"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_get_custom_rule","hub_test_custom_rule"]]'])
 }
 
 def _idempotentWriteToolNames_partCustomRules() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Custom rules (legacy engine)
-        "hub_update_custom_rule", "hub_delete_custom_rule"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_custom_rule","hub_delete_custom_rule"]]'])
 }
 
 def _toolDisplayMeta_partCustomRules() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        // Custom rules (legacy MCP engine)
-        hub_get_custom_rule: [title: "Get Custom Rule", summary: "List custom-engine rules or get one rule's details and diagnostics."],
-        hub_create_custom_rule: [title: "Create Custom Rule", summary: "Create a new custom-engine automation rule."],
-        hub_update_custom_rule: [title: "Update Custom Rule", summary: "Update a custom-engine rule's triggers, conditions, actions, or enabled state."],
-        hub_delete_custom_rule: [title: "Delete Custom Rule", summary: "Permanently delete a custom-engine rule (auto-backs up first)."],
-        hub_test_custom_rule: [title: "Test Custom Rule", summary: "Dry-run a custom-engine rule without executing its actions."],
-        hub_export_custom_rule: [title: "Export Custom Rule", summary: "Export a custom-engine rule to JSON in the hub File Manager."],
-        hub_import_custom_rule: [title: "Import Custom Rule", summary: "Import a custom-engine rule from exported JSON as a new rule."],
-        hub_clone_custom_rule: [title: "Clone Custom Rule", summary: "Clone an existing custom-engine rule (the copy starts disabled)."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_get_custom_rule",["m",[["title","Get Custom Rule"],["summary","List custom-engine rules or get one rule\'s details and diagnostics."]]]],["hub_create_custom_rule",["m",[["title","Create Custom Rule"],["summary","Create a new custom-engine automation rule."]]]],["hub_update_custom_rule",["m",[["title","Update Custom Rule"],["summary","Update a custom-engine rule\'s triggers, conditions, actions, or enabled state."]]]],["hub_delete_custom_rule",["m",[["title","Delete Custom Rule"],["summary","Permanently delete a custom-engine rule (auto-backs up first)."]]]],["hub_test_custom_rule",["m",[["title","Test Custom Rule"],["summary","Dry-run a custom-engine rule without executing its actions."]]]],["hub_export_custom_rule",["m",[["title","Export Custom Rule"],["summary","Export a custom-engine rule to JSON in the hub File Manager."]]]],["hub_import_custom_rule",["m",[["title","Import Custom Rule"],["summary","Import a custom-engine rule from exported JSON as a new rule."]]]],["hub_clone_custom_rule",["m",[["title","Clone Custom Rule"],["summary","Clone an existing custom-engine rule (the copy starts disabled)."]]]]]]'])
 }

@@ -5870,38 +5870,17 @@ def _readOnlyToolNames_partDevices() {
     // Read-only classification membership for this library's tools, contributed to the
     // app's getReadOnlyToolNames() aggregator (issue #209: per-tool metadata lives with
     // the tool). A tool absent from every part list is write+destructive by default.
-    return [
-        // Device introspection
-        "hub_list_devices", "hub_get_device", "hub_get_device_attribute", "hub_list_device_events",
-        // Compatible-devices catalog (static reference read)
-        "hub_get_compatible_devices"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_list_devices","hub_get_device","hub_get_device_attribute","hub_list_device_events","hub_get_compatible_devices"]]'])
 }
 
 def _idempotentWriteToolNames_partDevices() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
-    return [
-        // Devices
-        "hub_update_device", "hub_delete_device"
-    ]
+    return _bat529EmbeddedCatalogRead(['["l",["hub_update_device","hub_delete_device"]]'])
 }
 
 def _toolDisplayMeta_partDevices() {
     // Human-facing title/summary per tool (MCP annotations.title + the Advanced per-tool
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
-    return [
-        // Devices
-        hub_list_devices: [title: "List Devices", summary: "List accessible devices with filtering, pagination, and field projection."],
-        hub_get_device: [title: "Get Device Details", summary: "Inspect a device summary, configuration and preferences, or detailed information by section."],
-        hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
-        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location events when neither is given."],
-        hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
-        hub_call_device_swap: [title: "Swap Device", summary: "Exchange two devices' identities so the apps on one run on the other's hardware."],
-        hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
-        hub_update_device: [title: "Update Device Properties", summary: "Update applicable device identity, preferences, display, driver, history limits, or integration assignments."],
-        hub_create_device: [title: "Create Device From Driver", summary: "Create a device from a driver-type id, or link a device shared by a peer hub over Hub Mesh."],
-        hub_get_compatible_devices: [title: "Search Compatible Devices", summary: "Search Hubitat's compatible-device catalog for models and pairing/reset instructions."],
-        hub_delete_device: [title: "Delete Device", summary: "Permanently delete a device from the hub (no undo)."]
-    ]
+    return _bat529EmbeddedCatalogRead(['["m",[["hub_list_devices",["m",[["title","List Devices"],["summary","List accessible devices with filtering, pagination, and field projection."]]]],["hub_get_device",["m",[["title","Get Device Details"],["summary","Inspect a device summary, configuration and preferences, or detailed information by section."]]]],["hub_get_device_attribute",["m",[["title","Get Device Attribute"],["summary","Read one attribute value, optionally waiting until it matches an expected value."]]]],["hub_list_device_events",["m",[["title","List Device Events"],["summary","Recent events for a device or app, or location events when neither is given."]]]],["hub_call_device_command",["m",[["title","Send Device Command"],["summary","Send a command like on, off, or setLevel to one device, or up to 20 in one call."]]]],["hub_call_device_swap",["m",[["title","Swap Device"],["summary","Exchange two devices\' identities so the apps on one run on the other\'s hardware."]]]],["hub_call_device_replace",["m",[["title","Replace Device Hardware"],["summary","Re-point a device to replacement hardware, keeping its id and all references."]]]],["hub_update_device",["m",[["title","Update Device Properties"],["summary","Update applicable device identity, preferences, display, driver, history limits, or integration assignments."]]]],["hub_create_device",["m",[["title","Create Device From Driver"],["summary","Create a device from a driver-type id, or link a device shared by a peer hub over Hub Mesh."]]]],["hub_get_compatible_devices",["m",[["title","Search Compatible Devices"],["summary","Search Hubitat\'s compatible-device catalog for models and pairing/reset instructions."]]]],["hub_delete_device",["m",[["title","Delete Device"],["summary","Permanently delete a device from the hub (no undo)."]]]]]]'])
 }
