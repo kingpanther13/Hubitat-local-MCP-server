@@ -7,6 +7,8 @@ import org.codehaus.groovy.control.*
 import org.codehaus.groovy.control.messages.SyntaxErrorMessage
 import org.codehaus.groovy.classgen.VariableScopeVisitor
 import org.codehaus.groovy.classgen.ReturnAdder
+import org.codehaus.groovy.antlr.parser.GroovyLexer
+import org.codehaus.groovy.antlr.parser.GroovyTokenTypes
 import groovyjarjarasm.asm.*
 import java.security.MessageDigest
 
@@ -46,7 +48,71 @@ def offset = { int line, int column ->
 }
 def span = { ASTNode node ->
     if (node.lineNumber < 1 || node.lastLineNumber < 1 || node.columnNumber < 1 || node.lastColumnNumber < 1) return null
-    [offset(node.lineNumber, node.columnNumber), offset(node.lastLineNumber, node.lastColumnNumber)]
+    int first = offset(node.lineNumber, node.columnNumber)
+    int last = offset(node.lastLineNumber, node.lastColumnNumber)
+    first <= last && last <= source.length() ? [first, last] : null
+}
+// AST spans omit different layers of receiver parentheses in 2.4 and 3.0.
+// Pair lexical punctuation, ignoring strings/comments and GString contents via
+// Groovy's lexer, then derive member-call bounds from the actual method token.
+Map punctuation = [:], closing = [:]
+List opens = []
+def lexer = new GroovyLexer(new StringReader(source)).plumb()
+Map closeTypes = [(GroovyTokenTypes.RPAREN): GroovyTokenTypes.LPAREN,
+                  (GroovyTokenTypes.RBRACK): GroovyTokenTypes.LBRACK,
+                  (GroovyTokenTypes.RCURLY): GroovyTokenTypes.LCURLY]
+while (true) {
+    def token = lexer.nextToken()
+    if (token.type == GroovyTokenTypes.EOF) break
+    if (token.type in closeTypes.values()) opens << [type: token.type, start: offset(token.line, token.column)]
+    else if (closeTypes.containsKey(token.type)) {
+        assert opens && opens[-1].type == closeTypes[token.type]: 'Unmatched lexical punctuation'
+        Map open = opens.remove(opens.size() - 1)
+        int close = offset(token.line, token.column)
+        punctuation[open.start] = close + 1
+        closing[close] = open.start
+    }
+}
+assert !opens: 'Unclosed lexical punctuation'
+def skipTrivia = { int start ->
+    int at = start
+    while (at < source.length()) {
+        if (Character.isWhitespace(source.charAt(at))) at++
+        else if (source.startsWith('//', at)) {
+            int end = source.indexOf('\n', at + 2); at = end < 0 ? source.length() : end + 1
+        } else if (source.startsWith('/*', at)) {
+            int end = source.indexOf('*/', at + 2); assert end >= 0; at = end + 2
+        } else break
+    }
+    at
+}
+def memberBounds = { MethodCallExpression call ->
+    List name = span(call.method), object = span(call.objectExpression)
+    if (!name || !object || source.substring(name[0], name[1]) != call.methodAsString) return null
+    int dot = name[0]
+    while (dot > 0 && Character.isWhitespace(source.charAt(dot - 1))) dot--
+    if (dot == 0 || source.charAt(dot - 1) != '.') return null
+    dot--
+    if (dot > 0 && source.charAt(dot - 1) == '?') dot--
+    int receiverEnd = dot
+    while (receiverEnd > 0 && Character.isWhitespace(source.charAt(receiverEnd - 1))) receiverEnd--
+    int receiverStart = object[0]
+    if (receiverStart >= receiverEnd) return null
+    // Include every enclosing pair that closes before the dispatch operator.
+    // Pairs wrapping the entire call close later, so they stay outside the edit.
+    Integer enclosing = closing[receiverEnd - 1]
+    if (enclosing != null && enclosing < receiverStart) receiverStart = enclosing
+    int next = skipTrivia(name[1])
+    if (next >= source.length() || !(source.charAt(next) in ['(' as char, '{' as char]) || !punctuation.containsKey(next)) return null
+    int end = punctuation[next]
+    if (source.charAt(next) == '(') {
+        int following = skipTrivia(end)
+        if (following < source.length() && source.charAt(following) == '{' && call.arguments instanceof TupleExpression && call.arguments.expressions.any { it instanceof ClosureExpression }) {
+            if (!punctuation.containsKey(following)) return null
+            end = punctuation[following]
+        }
+    }
+    [range: [receiverStart, end], receiver: [receiverStart, receiverEnd], suffix: [name[1], end]]
 }
 def typeName = { ClassNode node ->
     String name = node.name
@@ -268,7 +334,7 @@ methods.each { method ->
     if (calls.any { it.implicitThis && dsl.contains(it.methodAsString) }) reasons << 'delegated UI DSL'
     if (body =~ /\bsuper\s*\./) reasons << 'explicit base-class dispatch'
     if (reasons) { boundaries << [method: method.name, reasons: reasons]; return }
-    Map plan = [method: method.name, range: range, edits: [], helpers: [:], islands: [], failures: [], storeBoundaries: []]
+    Map plan = [method: method.name, range: range, edits: [], helpers: [:], islands: [], failures: [], storeBoundaries: [], explicitReturnType: null, explicitLocalTypes: []]
     int line = lineStarts[method.lineNumber - 1]
     plan.edits << [start: line, end: line, replacement: '@groovy.transform.CompileStatic\n']
     // A def return can be made explicit only after all runtime return shapes
@@ -279,6 +345,7 @@ methods.each { method ->
         if (header.find()) {
             int keyword = range[0] + header.group().lastIndexOf('def')
             plan.edits << [start: keyword, end: keyword + 3, replacement: contract.type]
+            plan.explicitReturnType = contract.type
         }
     }
     // Make proven, unreassigned local contracts explicit. Only a declaration
@@ -295,6 +362,7 @@ methods.each { method ->
         if (declaration.find()) {
             int keyword = start + declaration.group(1).length()
             plan.edits << [start: keyword, end: keyword + 3, replacement: shape.type]
+            plan.explicitLocalTypes << [name: local, type: shape.type]
         }
     }
     // Preserve complete property/index setter operations in dynamic code. This
@@ -373,8 +441,9 @@ methods.each { method ->
         List r = span(call); r ? r[1] - r[0] : Integer.MAX_VALUE
     }.each { call ->
         if (!(call.arguments instanceof TupleExpression) || call.arguments.expressions.any { it instanceof SpreadExpression || it instanceof NamedArgumentListExpression }) return
-        List r = span(call), methodToken = span(call.method)
-        if (!r || !methodToken || source.substring(methodToken[0], methodToken[1]) != call.methodAsString) return
+        Map bounds = memberBounds(call)
+        if (!bounds) return
+        List r = bounds.range
         if (plan.edits.any { it.start < r[0] && it.end > r[0] || it.start < r[1] && it.end > r[1] }) return
         def rewrittenSlice = { List part ->
             String text = source.substring(part[0], part[1])
@@ -397,8 +466,8 @@ methods.each { method ->
         if (call.safe && returns == 'boolean') returns = 'java.lang.Boolean'
         String result = returns == 'java.lang.Object' ? invoke : '(' + returns + ') (' + invoke + ')'
         plan.helpers[bridgeName] = "@groovy.transform.CompileDynamic\nprivate ${returns} ${bridgeName}(Object receiver${params ? ', ' + params : ''}) {\n    return ${result}\n}\n"
-        String receiverText = rewrittenSlice([r[0], methodToken[0]]).replaceFirst(/\??\.\s*$/, '')
-        String suffix = rewrittenSlice([methodToken[1], r[1]])
+        String receiverText = rewrittenSlice(bounds.receiver)
+        String suffix = rewrittenSlice(bounds.suffix)
         String replacement
         if (suffix ==~ /(?s)^\s*\(.*$/) {
             boolean empty = suffix ==~ /(?s)^\s*\(\s*\).*/
@@ -493,6 +562,10 @@ int compilePasses = 0
 for (int pass = 1; pass <= 40; pass++) {
     compilePasses = pass
     candidate = render(selected)
+    // Save before compilation and before attempting to reparse diagnostics.
+    // A generated syntax failure must leave the exact failing source artifact.
+    new File(output, 'candidate-inlined.groovy').text = candidate.source
+    new File(output, 'candidate-pass.json').text = JsonOutput.prettyPrint(JsonOutput.toJson([pass: pass, methods: selected.keySet().sort()])) + '\n'
     def unit = unitFor(candidate.source)
     try {
         unit.compile(Phases.CLASS_GENERATION)
@@ -592,7 +665,8 @@ for (int pass = 1; pass <= 40; pass++) {
 assert compiled: 'Preparation did not converge within 40 full-source compiler passes'
 List resultPlans = selected.values().collect { plan ->
     [method: plan.method, edits: plan.edits.collect { originalEdit(it.start, it.end, it.replacement) },
-     helpers: plan.helpers, islands: plan.islands, storeBoundaries: plan.storeBoundaries, failures: plan.failures]
+     helpers: plan.helpers, islands: plan.islands, storeBoundaries: plan.storeBoundaries, failures: plan.failures,
+     explicitReturnType: plan.explicitReturnType, explicitLocalTypes: plan.explicitLocalTypes]
 }
 Map files = [:]
 resolved.origins.each { origin ->
@@ -602,6 +676,10 @@ resolved.origins.each { origin ->
 Map report = [revision: System.getenv('GITHUB_SHA'), groovy: GroovySystem.version, baseClass: args[2],
               files: files, selected: resultPlans, contracts: contracts, boundaries: boundaries,
               before: before, after: after, compilePasses: compilePasses, attempted: plans.size(),
+              retainedStaticBodies: methods.count { method -> method.annotations.any { it.classNode.name == 'groovy.transform.CompileStatic' } },
+              addedStaticBodies: selected.size(),
+              explicitMethodReturns: resultPlans.count { it.explicitReturnType != null },
+              explicitLocalVariables: resultPlans.sum { it.explicitLocalTypes.size() } ?: 0,
               helperCount: candidate.helpers.size(),
               behaviorValidation: 'REQUIRED: complete existing suites against assembled candidate; no benchmark claims']
 new File(output, 'report.json').text = JsonOutput.prettyPrint(JsonOutput.toJson(report)) + '\n'

@@ -114,6 +114,9 @@ def main() -> None:
     manifest = {
         "revision": reports[0]["revision"],
         "addedStaticBodies": len(accepted),
+        "retainedStaticBodies": reports[0]["retainedStaticBodies"],
+        "explicitMethodReturns": sum(plan.get("explicitReturnType") is not None for plan in accepted),
+        "explicitLocalVariables": sum(len(plan.get("explicitLocalTypes", [])) for plan in accepted),
         "dynamicAdapters": len(helpers),
         "dynamicIslands": sum(len(plan["islands"]) for plan in accepted),
         "storeBoundaries": sum(
