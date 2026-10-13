@@ -215,6 +215,7 @@ private Map _legacyDashboardProbe(String id) {
     if (la != null) out.localAccess = la.value?.toString() != "false"
     return out
 }
+@groovy.transform.CompileStatic
 private String _legacyMintRequestToken(String id, String accessToken) {
     def html = hubInternalGet("/apps/api/${id}/dashboard/${id}", [access_token: accessToken])
     if (!html) return null
@@ -229,6 +230,7 @@ private Map _legacyLayoutFetch(String id, String accessToken) {
     def parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : null
     return (parsed instanceof Map) ? parsed : null
 }
+@groovy.transform.CompileStatic
 private Map _legacyLayoutPost(String id, String accessToken, Map layout) {
     def rt = _legacyMintRequestToken(id, accessToken)
     if (!rt) {
@@ -1804,6 +1806,7 @@ private Map _vrbFetchClassic(Integer appId) {
             whenNodes: parsed.whenNodes ?: [], thenNodes: parsed.thenNodes ?: [],
             elseNodes: parsed.elseNodes ?: [], promptHistory: parsed.promptHistory ?: []]
 }
+@groovy.transform.CompileStatic
 private Map _vrbDetect(Integer appId) {
     def graph = _vrbFetchGraph(appId)
     if (graph != null) return [format: "graph", data: _vrbWithBareName(graph, true)]
@@ -1979,6 +1982,7 @@ private Map _vrbSaveGraphMeta(def resp, Map out) {
     if (resp.storageError != null) out.storageError = resp.storageError
     return out
 }
+@groovy.transform.CompileStatic
 private void _vrbSaveClassic(Integer appId, String name, Boolean rulePaused, Map definition) {
     def body = groovy.json.JsonOutput.toJson([
         name: name,
@@ -2001,9 +2005,11 @@ private Map _vrbSetPaused(Integer appId, boolean paused) {
         return [success: false, error: "pause endpoint returned a non-JSON response: ${text?.take(200)}"]
     }
 }
+@groovy.transform.CompileStatic
 private void _vrbForceDelete(Integer appId) {
     hubInternalGetRaw("/installedapp/forcedelete/${appId}/quiet")
 }
+@groovy.transform.CompileStatic
 private String _vrbTryCleanupShell(Integer appId) {
     try {
         _vrbForceDelete(appId)
@@ -5833,6 +5839,7 @@ private _radioGet(String path, Map query = null) {
     try { return new groovy.json.JsonSlurper().parseText(txt) }
     catch (Exception parseErr) { return txt.take(8000) }
 }
+@groovy.transform.CompileStatic
 private _radioGetSafe(String path, Map query = null) {
     try { return _radioGet(path, query) }
     catch (IllegalStateException guardErr) {
@@ -6019,6 +6026,7 @@ private Map _parseHubLogLine(String line) {
     }
     return entry
 }
+@groovy.transform.CompileStatic
 def _nativeLogSnapshot(Map query, Map args) {
     if (!_mrtrReadContinuationActive()) {
         return [state: "ready", text: hubInternalGet("/logs/past/json", query, 30)]
@@ -6498,6 +6506,7 @@ def _logsJsonObserveWaitMs() {
     if (budget <= 0L) return cap
     return Math.max(1L, Math.min(cap, budget - 1500L))
 }
+@groovy.transform.CompileStatic
 def _logsJsonUsesBackgroundFetch() { _mrtrReadContinuationActive() }
 private List _logsJsonTrimStats(statsList) {
     if (!(statsList instanceof List)) return []
@@ -7598,6 +7607,7 @@ def toolCallZwave(args) {
         return [success: false, action: action, error: "Z-Wave action '${action}' failed: ${e.message}", note: note]
     }
 }
+@groovy.transform.CompileStatic
 private Map _zwFirmwareStartResult(String action, resp, nodeId) {
     if (_radioRefused(resp, true)) {
         return [success: false, target: "zwave", action: action, error: "The hub did not start the firmware update: ${_radioReason(resp)}",
@@ -7913,6 +7923,7 @@ def toolCallDestructiveOps(args) {
         return [success: false, target: radio, action: action, error: "Destructive radio op '${action}' on ${radio} failed: ${e.message}", note: "Check Hub Security credentials."]
     }
 }
+@groovy.transform.CompileStatic
 private _destructiveNetworkOp(String action) {
     def path
     switch (action) {
@@ -7933,6 +7944,7 @@ private _destructiveNetworkOp(String action) {
         return [success: false, target: "network", action: action, error: "Network op '${action}' failed: ${e.message}", note: "The hub may already be unreachable over this interface. Check Hub Security credentials."]
     }
 }
+@groovy.transform.CompileStatic
 private _destructiveCloudOp(String action) {
     def path
     switch (action) {
@@ -8079,6 +8091,7 @@ def toolListCapturedStates(args = null) {
     }
     return result
 }
+@groovy.transform.CompileStatic
 def toolDeleteCapturedState(args) {
     def stateId = (args instanceof Map) ? args.stateId : args
     return stateId ? deleteCapturedState(stateId) : clearAllCapturedStates()
@@ -9116,6 +9129,7 @@ def toolManageMode(args) {
             throw new IllegalArgumentException("Unknown action '${action}'. Valid: create, rename, delete, activate.")
     }
 }
+@groovy.transform.CompileStatic
 private _modePost(String path, Map body) {
     return hubInternalPostJson(path, groovy.json.JsonOutput.toJson(body))
 }
@@ -9343,6 +9357,7 @@ def toolShutdownHub(args) {
         ]
     }
 }
+@groovy.transform.CompileStatic
 def isNewerVersion(String remote, String local) {
     if (remote == null || local == null) return false
     def semverPattern = ~/^\d+\.\d+\.\d+$/
@@ -10073,6 +10088,7 @@ private String formatLastActivity(Date d) {
         return d.toString()
     }
 }
+@groovy.transform.CompileStatic
 def _validateListDeviceStateArgTypes(roomFilter, onlyOn, changedSince, attributeNames, format) {
     if (roomFilter != null && !(roomFilter instanceof String)) {
         throw new IllegalArgumentException("roomFilter must be a string")
@@ -10613,6 +10629,7 @@ private Map _listAllHubDevices(offset, limit, labelFilter, capabilityFilter, for
 private boolean _bypassEnabled() {
     return settings.bypassDeviceAllowlist == true
 }
+@groovy.transform.CompileStatic
 private boolean _requireDeviceToolAccess(deviceId) {
     _validateNativeDeviceId(deviceId)
     boolean listed = findDevice(deviceId) != null
@@ -11140,6 +11157,7 @@ private _readBypassAttrValueFrom(Map fullJson, attribute) {
     def entry = st.get(attribute)
     return _nativeDeviceStateValue(entry)
 }
+@groovy.transform.CompileStatic
 private _readBypassAttrValue(deviceId, attribute) {
     return _readBypassAttrValueFrom(_fetchDeviceFullJson(deviceId), attribute)
 }
@@ -12818,6 +12836,7 @@ private void _verifyDevicePreferenceWrites(deviceId, Map preferences, List chang
         _verifyDevicePreferenceWrite(deviceId, name.toString(), setting, changes, errors, model)
     }
 }
+@groovy.transform.CompileStatic
 private void _verifyDevicePreferenceWrite(deviceId, String name, Map setting, List changes, List errors, Map model = null) {
     if (model == null) {
         _verifyDevicePreferenceWrites(deviceId, [(name): setting], changes, errors)
@@ -14061,6 +14080,7 @@ private List _deviceSwapActionButtons(Map cfg) {
     }
     return names
 }
+@groovy.transform.CompileStatic
 private boolean _deviceSwapCleanup(Integer appId) {
     try {
         hubInternalGetRaw("/installedapp/delete/${appId}")
@@ -14967,6 +14987,7 @@ private String _validateHubVarType(String type) {
     }
     return match
 }
+@groovy.transform.CompileStatic
 def _primeHubVarsWizard(Integer appId, String context) {
     try {
         hubInternalGet("/installedapp/configure/json/${appId}")
@@ -15744,6 +15765,7 @@ def toolDeleteHubVariable(args) {
     mcpLog("warn", "developer-mode", "hub_delete_variable: removed '${varName}' (previous value: ${auditValue})${consumerNote}")
     return [success: true, name: varName, deleted: true, source: "rule_engine", previousValue: previousValue, brokenConsumers: consumers ?: null]
 }
+@groovy.transform.CompileStatic
 String _hubVarPlatformInUseStatus(Integer hubVarsAppId, String varName) {
     if (hubVarsAppId == null || !varName) return "unreadable"
     def text
@@ -15756,6 +15778,7 @@ String _hubVarPlatformInUseStatus(Integer hubVarsAppId, String varName) {
     if (forms.any { text.contains("<td>${it}</td>".toString()) }) return "notInUse"
     return "notListed"
 }
+@groovy.transform.CompileStatic
 Boolean _hubVarPlatformInUse(Integer hubVarsAppId, String varName) {
     switch (_hubVarPlatformInUseStatus(hubVarsAppId, varName)) {
         case "inUse": return true
@@ -17716,6 +17739,7 @@ def toolInstallApp(args) {
     }
     return toolInstallItemSingle("app", args)
 }
+@groovy.transform.CompileStatic
 def toolInstallDriver(args) {
     return toolInstallItem("driver", args)
 }
@@ -20261,6 +20285,7 @@ def _bundleArtifactUrlForRef(location, String base, String ref) {
     def keyPath = (ref ==~ /[0-9a-f]{40}/) ? "shas/${ref}" : "branches/${ref}"
     return "${base}/bundle-artifacts/${keyPath}/${baseName}".toString()
 }
+@groovy.transform.CompileStatic
 def _artifactSizeMarker(String artifactUrl) {
     try {
         def r = _httpFetchUrl("${artifactUrl}.size")
@@ -20271,6 +20296,7 @@ def _artifactSizeMarker(String artifactUrl) {
         return null
     }
 }
+@groovy.transform.CompileStatic
 def _bundleArtifactExists(String artifactUrl) {
     return _artifactSizeMarker(artifactUrl) != null
 }
@@ -20665,6 +20691,7 @@ private Map _planPackageBundles(List manifestBundles, String base, String ref, S
     }
     return [includes: includeTokens, bundles: plannedBundles]
 }
+@groovy.transform.CompileStatic
 private Map _planAppArtifact(String name, String location, String artifactUrl, String ref) {
     def bytes = _artifactSizeMarker(artifactUrl)
     if (bytes != null) return [url: artifactUrl, source: "bundle-artifacts", expectedBytes: bytes]
@@ -20948,6 +20975,7 @@ private Integer _appClonerDiscoverNewChild(Integer parentAppId, Set<String> preC
     mcpLog("warn", "rm-native", "appCloner: ambiguous new children ${added} for '${hint ?: sourceLabel}'; no app selected")
     return null
 }
+@groovy.transform.CompileStatic
 private boolean _appClonerCleanup(Integer clonerAppId) {
     if (clonerAppId == null) return false
     try {
@@ -21318,6 +21346,7 @@ private void _appClonerFinishStaging(Map result, Integer newAppId, Map outcome) 
         result.note = "${result.note} Staged inactive: ${staged.size()} app(s) disabled (the new app${staged.size() > 1 ? ' + descendants' : ''}); re-enable with hub_set_app_disabled(disabled=false)."
     }
 }
+@groovy.transform.CompileStatic
 private void _appClonerApplyStageDisabled(Map result, Integer newAppId, Long reqT0 = null) {
     Map plan = _appClonerStagePlan(newAppId)
     Map outcome = _appClonerDisableTargets(plan.targets as List, reqT0, [], plan.failures as List)
@@ -21358,6 +21387,7 @@ private Map _rmReadBackupSnapshot(Map entry) {
     }
     return snapshot as Map
 }
+@groovy.transform.CompileStatic
 Map _rmNativeExportForBackup(Integer appId) {
     try {
         return [json: _appClonerExportJson(appId).json]
@@ -21523,6 +21553,7 @@ String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
     if (list(copy.actionList) != list(snap.actionList)) problems << "actions ${list(copy.actionList)} vs the backup's ${list(snap.actionList)}".toString()
     return problems ? problems.join("; ") : null
 }
+@groovy.transform.CompileStatic
 void _rmRecordNativeRestore(String backupKey, Integer newId, boolean keepDisabled = false) {
     if (!backupKey) return
     try {
@@ -22748,6 +22779,7 @@ private Map _rmCollectFilteredRmRules() {
     }
     return [combined: combined, ghostIds: ghostIds, v4Error: v4Error, v5Error: v5Error, treeReadable: treeReadable, liveApps: liveApps]
 }
+@groovy.transform.CompileStatic
 private Set _rmValidRuleIds() {
     def collected = _rmCollectFilteredRmRules()
     if (collected.v4Error || collected.v5Error) return null
@@ -22814,6 +22846,7 @@ def toolListRmRules(args) {
     }
     return result
 }
+@groovy.transform.CompileStatic
 private void registerRmRule(Map combined, def r, String version) {
     def id
     def label
@@ -22899,6 +22932,7 @@ private String _rmStripTrailingDecoration(Object raw, String suffix) {
     if (!trimmed.endsWith(suffix)) return s
     return trimmed.substring(0, trimmed.length() - suffix.length()).replaceAll(/\s+$/, "")
 }
+@groovy.transform.CompileStatic
 private Map _rmRuleIdListArg(Object raw) {
     if (raw == null) throw new IllegalArgumentException("ruleId is required")
     def rawList = (raw instanceof List) ? raw : [raw]
@@ -22986,6 +23020,7 @@ def toolRunRmRule(args) {
     if (result instanceof Map && idArg.idsVerified != null) result.idsVerified = idArg.idsVerified
     return result
 }
+@groovy.transform.CompileStatic
 private Map _rmRunActionsButton(Integer ruleId) {
     try {
         _rmClickAppButton(ruleId, "runAction")
@@ -22994,6 +23029,7 @@ private Map _rmRunActionsButton(Integer ruleId) {
     }
     return [success: true, ruleId: ruleId, rmAction: "runAction button"]
 }
+@groovy.transform.CompileStatic
 private Map _rmToggleStopped(Integer ruleId, String action) {
     def status
     try {
@@ -23352,6 +23388,7 @@ private void _rmReclassifyDeviceListSkips(Integer appId, List skipped) {
         mcpLog("warn", "rm-native", "_rmReclassifyDeviceListSkips: post-fetch reclassification for app ${appId} failed (${reclassExc.message ?: reclassExc}) -- device-list silent_rejections left as-is (stay partial)")
     }
 }
+@groovy.transform.CompileStatic
 private void _rmValidateDeviceIdsExist(String label, Object ids) {
     if (!(ids instanceof List)) return
     ids.each { id ->
@@ -23423,6 +23460,7 @@ private Integer _rmCoerceRuleId(Object id) {
         return (bd.stripTrailingZeros().scale() <= 0) ? bd.intValue() : null
     } catch (Exception ignored) { return null }
 }
+@groovy.transform.CompileStatic
 private void _rmValidateRuleTargetExists(String label, Object ids, Set validRuleIds = null) {
     def idList = (ids instanceof List) ? ids : (ids != null ? [ids] : [])
     if (!idList) return
@@ -25152,6 +25190,7 @@ private List _rmLiveActionIndicesFromSettings(Map status) {
     }
     return live.keySet().sort()
 }
+@groovy.transform.CompileStatic
 private List _rmCollectActionIndices(Integer appId) {
     def ordered = _rmOrderedActionIndices(appId)
     if (ordered != null) return ordered
@@ -25188,6 +25227,7 @@ private String _rmEditOpLabel(Map args) {
                  "patches", "settings"].find { args[it] != null }
     return first ?: "edit"
 }
+@groovy.transform.CompileStatic
 void _rmRejectDisabledAppEdit(Integer appId, String opName) {
     if (_rmIsAppDisabled(appId) != true) return
     throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
@@ -26045,6 +26085,7 @@ private boolean _rmActionCapUsesActionVerb(String capRaw) {
     def resolved = (want == "window shade" || want == "windowshade") ? "shade" : want
     return resolved in actionEnumCaps
 }
+@groovy.transform.CompileStatic
 private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean condWizardOpen = false) {
     if (condWizardOpen) {
         try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") } catch (Exception ignored) {   }
@@ -26902,6 +26943,7 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
         }
     }
 }
+@groovy.transform.CompileStatic
 private void _rmPrevalidateTriggerSpecList(List specs, String label) {
     specs.eachWithIndex { spec, i ->
         if (!(spec instanceof Map)) {
@@ -26925,6 +26967,7 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
         }
     }
 }
+@groovy.transform.CompileStatic
 private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null) {
     specs.eachWithIndex { spec, i ->
         if (!(spec instanceof Map)) {
@@ -27490,6 +27533,7 @@ def _rmAsPositiveDeviceId(Object raw) {
     try { bi = new BigInteger(s) } catch (Exception ignored) { return null }
     return bi > 0 ? bi.toString() : null
 }
+@groovy.transform.CompileStatic
 private void _rmForceWriteEnumField(Integer appId, String pageName, String key, Object value, List applied, List skipped, String pageBreadcrumbs = '["mainPage"]') {
     value = _rmNormalizeComparator(value)
     def synthSchema = [(key.toString()): [type: "enum", multiple: false]]
@@ -27532,6 +27576,7 @@ private String _rmPreflightRestoreHint(String reason = null, Map backup = null, 
             : " The backupKey on this response is an unused snapshot taken before the refusal.")
     "${lead ?: 'Pre-flight refusal -- the app was not touched, so nothing needs to be restored.'}${snapshot}${why}"
 }
+@groovy.transform.CompileStatic
 private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, String pageName = "doActPage") {
     def msgStr = msg?.toString() ?: ""
     def isPreflightRefusal = msgStr.contains("RM is not touched") || backup == null
@@ -27971,6 +28016,7 @@ private void _rmVerifySubPageMultipleFlags(Integer appId, String pageName, Map s
         }
     }
 }
+@groovy.transform.CompileStatic
 private Map _rmWalkStepHealth(Integer appId, Long t0) {
     if (_timeBudgetExceeded(t0)) {
         return _rmEmptyHealthVerdict(ok: true, skipped: true, source: "skipped",
@@ -29216,6 +29262,7 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
     _rmNavigateToPage(appId, "selectActions", "mainPage", 0, "name", null, cache, null, false, true)
     mcpLog("info", "rm-native", "${caller}: ghost ifThen clear fired for app ${appId} (clears atomicState.predCapabs without adding an action)")
 }
+@groovy.transform.CompileStatic
 private void _rmRunPendingPredCapabsClear(Integer appId) {
     def pending = _rmPendingPredClearSnapshot()
     def observedGeneration = pending.get(appId.toString())
@@ -29270,6 +29317,7 @@ private Map _rmRevealedInputOrThrow(Integer appId, String fieldName, String miss
     }
     return input
 }
+@groovy.transform.CompileStatic
 private void _rmWriteMathOperand(Integer appId, int idx, Object operandValue, String xVarField,
                                  String constField, String roleLabel, Closure assertInEnum,
                                  Object xVarInput, List applied, List skipped) {
@@ -29495,6 +29543,7 @@ private void _rmRequireExistingHubFile(Integer appId, Integer idx, String field,
         throw new IllegalArgumentException("${capLabel}: '${fileName}' is not a file on the hub, and ${capLabel} only works on an existing file. Check the name with hub_list_files, or create the file first (fileWrite action or hub_write_file).")
     }
 }
+@groovy.transform.CompileStatic
 private void _rmCancelRefusedActionEditor(Integer appId, Integer idx, Exception refusal,
                                           boolean condWizardOpen = false, String stuckWhat = null) {
     boolean cleaned = false
@@ -30767,6 +30816,7 @@ private boolean _rmTokensEqual(List a, List b) {
 private List _rmTokenConditionIds(List toks) {
     return (toks ?: []).findAll { _rmTokenValue(it)?.isInteger() }.collect { _rmTokenValue(it) as Integer }
 }
+@groovy.transform.CompileStatic
 private Map _rmTokClick(Integer appId, String name, String stateAttr, Map cache = null) {
     _rmClickAppButton(appId, name, stateAttr, "STPage", cache)
     return _rmFetchConfigJson(appId, "STPage", cache)
@@ -30775,6 +30825,7 @@ private Set _rmPageInputNames(Map cfg) {
     return ((cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
         .collect { it?.name?.toString() }.findAll { it }) as Set
 }
+@groovy.transform.CompileStatic
 private void _rmTokEnterEditor(Integer appId, Map cache = null) {
     _rmTokClick(appId, "editST", "editST", cache)
     def names = _rmPageInputNames(_rmTokClick(appId, "editToken", "editToken", cache))
@@ -30783,6 +30834,7 @@ private void _rmTokEnterEditor(Integer appId, Map cache = null) {
         throw new IllegalStateException("the Required Expression token editor did not open (STPage shows ${names.sort().join(', ')})")
     }
 }
+@groovy.transform.CompileStatic
 private void _rmTokLeaveEditor(Integer appId, Map cache = null) {
     def names = _rmPageInputNames(_rmFetchConfigJson(appId, "STPage", cache))
     if (names.contains("doneToken")) _rmTokClick(appId, "doneToken", "doneToken", cache)
@@ -30809,6 +30861,7 @@ private void _rmTokInsert(Integer appId, int position, String value, Closure wri
         throw new IllegalStateException("the expression editor did not accept token '${value}' at position ${position}")
     }
 }
+@groovy.transform.CompileStatic
 private boolean _rmTokTrimTo(Integer appId, List target, Map cache = null) {
     for (int guard = 0; guard < 60; guard++) {
         def live = _rmReadExpressionTokens(appId)
@@ -30849,6 +30902,7 @@ List _rmDeleteExpressionConditions(Integer appId, Collection ids) {
     if (remaining == null) return []
     return ids.findAll { !remaining.contains("rCapab_${it}".toString()) }.collect { it as Integer }
 }
+@groovy.transform.CompileStatic
 private Map _rmTokSetExpression(Integer appId, List target) {
     if (!target) return [restored: false, error: "no original tokens were recorded, so nothing was changed"]
     def cache = [:]
@@ -30882,6 +30936,7 @@ private Map _rmTokSetExpression(Integer appId, List target) {
         return [restored: false, error: e.message ?: e.toString()]
     }
 }
+@groovy.transform.CompileStatic
 private Map _rmRevertRequiredExpression(Integer appId, List origTokens, String errMsg, Map carry = [:]) {
     def r = _rmTokSetExpression(appId, origTokens)
     if (r.restored == true) {
@@ -31514,6 +31569,7 @@ private String _rmBulkStopError(String stoppedAfter, stopItem) {
     String detail = itemError ? ": ${itemError}" : ""
     return "Stopped after ${stoppedAfter} ${why}${detail}. Later items were not attempted and finalisation was not fired.".toString()
 }
+@groovy.transform.CompileStatic
 private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter, stopItem, Map extra) {
     def out = [
         success: false,
@@ -33439,6 +33495,7 @@ private Map _protectedAppChoices() {
     return [options: options.sort { a, b -> a.value.toString().compareToIgnoreCase(b.value.toString()) },
             inventoryUnavailable: apps == null]
 }
+@groovy.transform.CompileStatic
 private void _requireUnprotectedAppMutation(Object targetId, String operation, Set<String> protectedIds = null) {
     String id = _protectedAppId(targetId)
     if (id && (protectedIds != null ? protectedIds : _protectedAppIds()).contains(id)) {
@@ -33789,6 +33846,7 @@ boolean _modernEraVersion(String v) { v != null && v ==~ /\d{4}-\d{2}-\d{2}/ && 
 def _modernEraRequest() {
     return _modernEraVersion(_requestHeader("MCP-Protocol-Version"))
 }
+@groovy.transform.CompileStatic
 def _modernRequestRejection(String headerVersion, requestBody) {
     if (requestBody instanceof List) {
         return jsonRpcError(null, -32600,
@@ -33991,6 +34049,7 @@ def _negotiatedProtocolVersion(requested) {
     return initializeProtocolVersions().contains(requested) ? requested : defaultProtocolVersion()
 }
 def cacheHintTtlMs() { 300000 }
+@groovy.transform.CompileStatic
 def serverIdentity() {
     def info = [
         name: "hubitat-mcp-rule-server",
@@ -34041,10 +34100,12 @@ String _hubToolNumber() {
     String digit = settings.hubToolNumber?.toString()
     return (digit != null && digit ==~ /^[0-9]$/) ? digit : null
 }
+@groovy.transform.CompileStatic
 String _externalToolName(String name) {
     String digit = _hubToolNumber()
     return (digit != null && name?.startsWith("hub_")) ? "hub" + digit + name.substring(3) : name
 }
+@groovy.transform.CompileStatic
 String _internalToolName(String name) {
     String digit = _hubToolNumber()
     return (digit != null && name?.startsWith("hub${digit}_")) ? "hub" + name.substring(4) : name
@@ -34369,6 +34430,7 @@ private def _mrtrMarkRejoined(result, boolean rejoined) {
     if (!rejoined || !(result instanceof Map)) return result
     return ([:] + (result as Map)) + [rejoined: true]
 }
+@groovy.transform.CompileStatic
 private Map _mrtrFailureWithLedger(Map rec, leafTool, String error) {
     def failure = [success: false, isError: true, tool: _externalToolName(leafTool as String), error: error]
     _mrtrAttachLedger(failure, rec)
@@ -34442,6 +34504,7 @@ def _isCloudRequest() {
 def _transportEnabled() {
     return settings[_isCloudRequest() ? "enableCloudAccess" : "enableLocalAccess"] != false
 }
+@groovy.transform.CompileStatic
 def _transportDisabledMessage() {
     return "Forbidden: ${_isCloudRequest() ? 'cloud' : 'local'} access to this MCP server is disabled. Turn it on in the MCP Rule Server app on the hub."
 }
@@ -35890,6 +35953,7 @@ def runMrtrAutoContinue(Map job = [:]) {
         _mrtrStoreTerminalOrLog(stateId, rec, claim, failure, leaf)
     }
 }
+@groovy.transform.CompileStatic
 private void _mrtrLogBackgroundCommit(String stateId, Map rec, Map completion) {
     String leaf = rec?.leafTool?.toString()
     if (completion?.outcome == "continued") {
@@ -35901,6 +35965,7 @@ private void _mrtrLogBackgroundCommit(String stateId, Map rec, Map completion) {
             "the result is retained for requestState ${stateId} and any waiting or later identical call receives it")
     }
 }
+@groovy.transform.CompileStatic
 private void _mrtrStoreTerminalOrLog(String stateId, Map rec, Map claim, Map failure, leafTool) {
     if (!_mrtrStoreTerminal(stateId, rec, claim, failure, true)) {
         mcpLog("error", "mrtr", "${leafTool} failure could not be stored for its requestState; a continuation " +
@@ -35933,6 +35998,7 @@ private void _mrtrAbandon(String stateId, Map originalRec, Map claim, String rea
     }
     if (cleanup != null) _mrtrCleanupRecord(cleanup)
 }
+@groovy.transform.CompileStatic
 private def _mrtrExecuteSlice(String stateId, Map rec, Map executionArgs) {
     String leaf = rec.leafTool?.toString()
     if (leaf == "hub_clone_native_app") return _mrtrCloneNativeAppSlice(rec, executionArgs)
@@ -36073,6 +36139,7 @@ private Map _toolLogDetails(reactiveToolName, toolName, args, Map extra = [:]) {
     if (appId != null && appId.toString()) details.appId = appId.toString()
     return details + extra
 }
+@groovy.transform.CompileStatic
 private def _renderValidationError(id, toolName, reactiveToolName, args, String detail,
                                    boolean rejoined = false, Map rec = null) {
     if (_isProtocolValidation(detail)) {
@@ -36189,6 +36256,7 @@ def _resumableBudgetExceeded(Long requestT0) {
     }
     return _timeBudgetExceeded(requestT0)
 }
+@groovy.transform.CompileStatic
 def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) {
     return [
         response_too_large: true,
@@ -36199,6 +36267,7 @@ def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) 
         suggestion: _responseTooLargeSuggestion(toolName)
     ]
 }
+@groovy.transform.CompileStatic
 def _responseTooLargeSuggestion(String toolName) {
     switch (toolName) {
         case "hub_list_devices":
@@ -36817,6 +36886,7 @@ def getHiddenToolNames() {
     hide.addAll(getEffectiveDisabledTools())
     return hide
 }
+@groovy.transform.CompileStatic
 def getDeveloperModeOnlyToolNames() {
     def cached = _toolMetadataGet("getDeveloperModeOnlyToolNames")
     if (cached != null) return cached
@@ -36826,6 +36896,7 @@ def getDeveloperModeOnlyToolNames() {
     ) as Set
     return _toolMetadataPut("getDeveloperModeOnlyToolNames", built)
 }
+@groovy.transform.CompileStatic
 def getReadOnlyToolNames() {
     def cached = _toolMetadataGet("getReadOnlyToolNames")
     if (cached != null) return cached
@@ -36850,6 +36921,7 @@ def getReadOnlyToolNames() {
     ) as Set
     return _toolMetadataPut("getReadOnlyToolNames", built)
 }
+@groovy.transform.CompileStatic
 def getIdempotentWriteToolNames() {
     def cached = _toolMetadataGet("getIdempotentWriteToolNames")
     if (cached != null) return cached
@@ -36879,6 +36951,7 @@ def getIdempotentToolNames() {
     if (cached != null) return cached
     return _toolMetadataPut("getIdempotentToolNames", getReadOnlyToolNames() + getIdempotentWriteToolNames())
 }
+@groovy.transform.CompileStatic
 def getOpenWorldToolNames() {
     def cached = _toolMetadataGet("getOpenWorldToolNames")
     if (cached != null) return cached
@@ -37095,6 +37168,7 @@ boolean _isWriteSurface(String name, visibleSubTools = null) {
     }
     return !readOnly.contains(name)
 }
+@groovy.transform.CompileStatic
 String _withGuideFirst(String name, String description, visibleSubTools = null) {
     String sentence = guideFirstSentence()
     if (description == null || description.startsWith(sentence) || !_isWriteSurface(name, visibleSubTools)) return description
@@ -37215,6 +37289,7 @@ private Map _toolCatalogIndexes() {
     }
     return _toolMetadataPut("catalogIndexes", [required: required, names: names]) as Map
 }
+@groovy.transform.CompileStatic
 def requiredParamsByTool() {
     return _toolCatalogIndexes().required
 }
@@ -38226,6 +38301,7 @@ private void _hubRtLog(String method, String path, long elapsedMs, String outcom
         mcpLog("warn", "hub-admin", "[hubrt] slow internal ${method} ${redacted} took ${elapsedMs}ms (${outcome}), at or over the ${budget}ms cloud-relay budget -- a request that waits on it synchronously cannot be answered over the relay (see hub_get_tool_guide(section='slow_ops'))")
     }
 }
+@groovy.transform.CompileStatic
 def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', isRetry: isRetry])
 }
@@ -38240,6 +38316,7 @@ private Map _meshJson() {
         return null
     }
 }
+@groovy.transform.CompileStatic
 def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'struct',
                               followRedirects: false, handle3xx: true, isRetry: isRetry])
@@ -38341,14 +38418,17 @@ private Map _httpFetchUrl(String url) {
     }
     return [status: status, body: body, contentType: contentType]
 }
+@groovy.transform.CompileStatic
 def hubInternalPost(String path, Map body = null, int timeout = 30, boolean isRetry = false) {
     _hubRequest('POST', path, [body: body, timeout: timeout, returnShape: 'text', isRetry: isRetry])
 }
+@groovy.transform.CompileStatic
 def hubInternalPostFormRaw(String path, String encodedBody, int timeout = 420, boolean isRetry = false) {
     _hubRequest('POST', path, [body: encodedBody, timeout: timeout,
                               requestContentType: "application/x-www-form-urlencoded", keepAlive: true,
                               returnShape: 'struct', isRetry: isRetry])
 }
+@groovy.transform.CompileStatic
 def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetry = false) {
     def resp = _hubRequest('POST', path, [body: body, timeout: timeout,
                               requestContentType: "application/x-www-form-urlencoded", keepAlive: true,
@@ -38605,6 +38685,7 @@ def _latestLocalHubBackupEpoch(String kind = "any") {
         return null
     }
 }
+@groovy.transform.CompileStatic
 def backupItemSource(String type, String id) {
     return _withBackupLock("backup ${type} ${id}") { _backupItemSourceLocked(type, id) }
 }
@@ -39019,6 +39100,7 @@ private List _fetchDebugLogHistory(Map buffer, String generation, String fetchId
 private List _debugLogSnapshot(Map buffer) {
     return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(buffer.entries.collect { it.entry }))
 }
+@groovy.transform.CompileStatic
 def getDebugLogReadResult(Map args = [:]) {
     try {
         return _getDebugLogHistoryResult(args)
