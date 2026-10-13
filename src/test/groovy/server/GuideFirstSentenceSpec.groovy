@@ -1,7 +1,5 @@
 package server
 
-import spock.lang.IgnoreIf
-
 import support.TestChildApp
 import support.ToolSpecBase
 import spock.lang.Unroll
@@ -102,7 +100,6 @@ class GuideFirstSentenceSpec extends ToolSpecBase {
         entries.any { readOnly.contains(it.name) }
     }
 
-    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "hub_search_tools results carry the sentence on write leaves only, and the ranking corpus never does"() {
         given:
         widestCatalog(true)

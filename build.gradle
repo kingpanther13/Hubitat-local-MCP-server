@@ -130,11 +130,6 @@ java {
 
 test {
     useJUnitPlatform()
-    def searchRemovedFlag = file('experiments/compile-static/search-removed.enabled')
-    if (searchRemovedFlag.isFile()) {
-        assert searchRemovedFlag.getText('UTF-8').trim() == 'BAT529_SEARCH_REMOVED'
-        systemProperty 'experiment.searchRemoved', 'true'
-    }
     // Keep specs single-threaded. RMUtilsMock and NetworkUtilsMock inject static
     // metaclass methods on hubitat.helper.RMUtils / .NetworkUtils — concurrent
     // specs installing and uninstalling these at the same time would race.

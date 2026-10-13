@@ -1,7 +1,5 @@
 package server
 
-import spock.lang.IgnoreIf
-
 import spock.lang.Unroll
 import support.PermissiveLog
 import support.TestChildApp
@@ -99,7 +97,7 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         when:
         settingsMap.useGateways = true
         script.getToolDefinitions()
-        if (!searchRemovedExperiment()) script.toolSearchTools([query: 'device', maxResults: 5])
+        script.toolSearchTools([query: 'device', maxResults: 5])
 
         then:
         script.getAllToolDefinitions().find { it.name == 'hub_get_device' }.description == description
@@ -211,7 +209,6 @@ class ToolMetadataMemorySpec extends ToolSpecBase {
         atomic.@removals == 1
     }
 
-    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "direct search shares retired-key cleanup including required metadata"() {
         given:
         atomicStateMap.requiredParamsByTool = [obsolete: ['value']]

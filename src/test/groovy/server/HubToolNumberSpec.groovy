@@ -1,7 +1,5 @@
 package server
 
-import spock.lang.IgnoreIf
-
 import spock.lang.Unroll
 import support.ToolSpecBase
 
@@ -254,7 +252,6 @@ class HubToolNumberSpec extends ToolSpecBase {
             ['hub_list_rooms', 'hub_get_room'] as Set
     }
 
-    @IgnoreIf({ Boolean.getBoolean('experiment.searchRemoved') })
     def "tools/call dispatch: hub_search_tools results carry hub3_ tool names when enabled"() {
         given:
         settingsMap.useGateways = true
