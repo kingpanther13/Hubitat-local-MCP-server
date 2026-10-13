@@ -1,0 +1,10 @@
+{
+  "sourceSha": "d59e5a59c0cb8b3c75112d35209c773d6e11a61a",
+  "branch": "experiment/529-compile-static",
+  "validationPolicy": "User explicitly waived waiting for repeated non-E2E CI for this version-only clone repeat.",
+  "productCodeUnchangedFrom": "7130777258e6dba5d3607d425b39d6ac1ef2b8dd",
+  "previousProductCodeAll11Green": true,
+  "buildAndCloneParseRun": 38444322303,
+  "buildAndCloneParseConclusion": "success",
+  "runs": []
+}
