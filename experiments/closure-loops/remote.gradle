@@ -1,12 +1,13 @@
 // Attach with -I only in the authorized GitHub Actions experiment job.
 allprojects {
     if (project == rootProject) {
-        def preparation = new File(System.getenv('BAT529_CLOSURE_PREP') ?: 'experiments/closure-loops')
-        def artifacts = new File(System.getenv('BAT529_CLOSURE_OUTPUT') ?: 'experiments/closure-loops/results')
+        def preparation = rootProject.file(System.getenv('BAT529_CLOSURE_PREP') ?: 'experiments/closure-loops')
+        def artifacts = rootProject.file(System.getenv('BAT529_CLOSURE_OUTPUT') ?: 'experiments/closure-loops/results')
         configurations.maybeCreate('bat529ClosureGroovy24')
         repositories { mavenCentral() }
         dependencies { bat529ClosureGroovy24 'org.codehaus.groovy:groovy-all:2.4.21' }
         tasks.register('bat529ClosureParity', JavaExec) {
+            workingDir rootDir
             javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
             classpath = configurations.bat529ClosureGroovy24
             mainClass = 'groovy.ui.GroovyMain'
@@ -18,6 +19,7 @@ allprojects {
             }
         }
         tasks.register('bat529ClosurePrepare', JavaExec) {
+            workingDir rootDir
             javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
             dependsOn 'bat529ClosureParity'
             classpath = configurations.bat529ClosureGroovy24
@@ -29,6 +31,7 @@ allprojects {
             }
         }
         tasks.register('bat529ClosureInventory', JavaExec) {
+            workingDir rootDir
             javaLauncher = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(11) }
             classpath = configurations.bat529ClosureGroovy24
             mainClass = 'groovy.ui.GroovyMain'

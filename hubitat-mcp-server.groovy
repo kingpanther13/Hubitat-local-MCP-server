@@ -813,7 +813,6 @@ private Map _protectedAppChoices() {
             inventoryUnavailable: apps == null]
 }
 
-@groovy.transform.CompileStatic
 private void _requireUnprotectedAppMutation(Object targetId, String operation, Set<String> protectedIds = null) {
     String id = _protectedAppId(targetId)
     if (id && (protectedIds != null ? protectedIds : _protectedAppIds()).contains(id)) {
@@ -1387,7 +1386,6 @@ def _modernEraRequest() {
 // POST body to be a single JSON-RPC request or notification, so an array is a
 // malformed BODY. -32020 is defined for header/body disagreement and for missing or
 // malformed headers, which is a different fault. HTTP 400 either way.
-@groovy.transform.CompileStatic
 def _modernRequestRejection(String headerVersion, requestBody) {
     if (requestBody instanceof List) {
         return jsonRpcError(null, -32600,
@@ -1714,7 +1712,6 @@ def cacheHintTtlMs() { 300000 }
 // Server identity advertised by initialize, server/discover, and /health. updateAvailable
 // is a non-spec extra this app's own daily update check surfaces to clients; the
 // spec-required name/version pair also rides every result's `_meta` (jsonRpcResult).
-@groovy.transform.CompileStatic
 def serverIdentity() {
     def info = [
         name: "hubitat-mcp-rule-server",
@@ -1787,14 +1784,12 @@ String _hubToolNumber() {
     return (digit != null && digit ==~ /^[0-9]$/) ? digit : null
 }
 
-@groovy.transform.CompileStatic
 String _externalToolName(String name) {
     String digit = _hubToolNumber()
     return (digit != null && name?.startsWith("hub_")) ? "hub" + digit + name.substring(3) : name
 }
 
 // Plain hub_ names still pass, so a client with a stale cached catalog keeps working.
-@groovy.transform.CompileStatic
 String _internalToolName(String name) {
     String digit = _hubToolNumber()
     return (digit != null && name?.startsWith("hub${digit}_")) ? "hub" + name.substring(4) : name
@@ -2235,7 +2230,6 @@ private def _mrtrMarkRejoined(result, boolean rejoined) {
 // A failed slice may sit on top of committed earlier slices: hand back that ledger and
 // say the failing slice may also have changed the hub, so the caller inspects instead
 // of repeating the whole operation.
-@groovy.transform.CompileStatic
 private Map _mrtrFailureWithLedger(Map rec, leafTool, String error) {
     def failure = [success: false, isError: true, tool: _externalToolName(leafTool as String), error: error]
     _mrtrAttachLedger(failure, rec)
@@ -2329,7 +2323,6 @@ def _transportEnabled() {
     return settings[_isCloudRequest() ? "enableCloudAccess" : "enableLocalAccess"] != false
 }
 
-@groovy.transform.CompileStatic
 def _transportDisabledMessage() {
     return "Forbidden: ${_isCloudRequest() ? 'cloud' : 'local'} access to this MCP server is disabled. Turn it on in the MCP Rule Server app on the hub."
 }
@@ -4135,7 +4128,6 @@ def runMrtrAutoContinue(Map job = [:]) {
 
 // A slice that ran with no request waiting on it finished or paused unseen. One info line
 // says which, so an operator whose client showed an error can see the write did land.
-@groovy.transform.CompileStatic
 private void _mrtrLogBackgroundCommit(String stateId, Map rec, Map completion) {
     String leaf = rec?.leafTool?.toString()
     if (completion?.outcome == "continued") {
@@ -4150,7 +4142,6 @@ private void _mrtrLogBackgroundCommit(String stateId, Map rec, Map completion) {
 
 // The detached and server-side paths have no caller to hand a failure to; if the record
 // was lost as well, the hub log is the only place the failure can still be found.
-@groovy.transform.CompileStatic
 private void _mrtrStoreTerminalOrLog(String stateId, Map rec, Map claim, Map failure, leafTool) {
     if (!_mrtrStoreTerminal(stateId, rec, claim, failure, true)) {
         mcpLog("error", "mrtr", "${leafTool} failure could not be stored for its requestState; a continuation " +
@@ -4187,7 +4178,6 @@ private void _mrtrAbandon(String stateId, Map originalRec, Map claim, String rea
     if (cleanup != null) _mrtrCleanupRecord(cleanup)
 }
 
-@groovy.transform.CompileStatic
 private def _mrtrExecuteSlice(String stateId, Map rec, Map executionArgs) {
     String leaf = rec.leafTool?.toString()
     if (leaf == "hub_clone_native_app") return _mrtrCloneNativeAppSlice(rec, executionArgs)
@@ -4406,7 +4396,6 @@ private Map _toolLogDetails(reactiveToolName, toolName, args, Map extra = [:]) {
     return details + extra
 }
 
-@groovy.transform.CompileStatic
 private def _renderValidationError(id, toolName, reactiveToolName, args, String detail,
                                    boolean rejoined = false, Map rec = null) {
     if (_isProtocolValidation(detail)) {
@@ -4556,7 +4545,6 @@ def _resumableBudgetExceeded(Long requestT0) {
 
 // Returned in place of the real result when handleToolsCall trips the size guard. Shape
 // is the wire contract for the response_too_large case; keep the field names stable.
-@groovy.transform.CompileStatic
 def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) {
     return [
         response_too_large: true,
@@ -4570,7 +4558,6 @@ def _responseTooLargeEnvelope(String toolName, int actualBytes, int limitBytes) 
 
 // Tool-specific retry hints for the response_too_large envelope. New tools fall through
 // to the default branch -- only add a case when the generic hint is misleading.
-@groovy.transform.CompileStatic
 def _responseTooLargeSuggestion(String toolName) {
     switch (toolName) {
         case "hub_list_devices":
@@ -5284,7 +5271,6 @@ def getHiddenToolNames() {
 // meaningful (and only safe to expose) during dev work with the toggle on. Returned as
 // String names; getHiddenToolNames folds them into `hide` when settings.enableDeveloperMode
 // is falsy.
-@groovy.transform.CompileStatic
 def getDeveloperModeOnlyToolNames() {
     def cached = _toolMetadataGet("getDeveloperModeOnlyToolNames")
     if (cached != null) return cached
@@ -5295,7 +5281,6 @@ def getDeveloperModeOnlyToolNames() {
     return _toolMetadataPut("getDeveloperModeOnlyToolNames", built)
 }
 
-@groovy.transform.CompileStatic
 def getReadOnlyToolNames() {
     def cached = _toolMetadataGet("getReadOnlyToolNames")
     if (cached != null) return cached
@@ -5345,7 +5330,6 @@ def getReadOnlyToolNames() {
 //     are NOT -- a retry re-fires the action.
 //   * hub_set_rule / hub_set_native_app are upserts whose no-appId mode
 //     CREATES -- classified non-idempotent for that mode.
-@groovy.transform.CompileStatic
 def getIdempotentWriteToolNames() {
     def cached = _toolMetadataGet("getIdempotentWriteToolNames")
     if (cached != null) return cached
@@ -5387,7 +5371,6 @@ def getIdempotentToolNames() {
 // modes where the HUB fetches an arbitrary URL. Everything else is
 // closed-world -- the hub, its devices, and its radios ARE the system, and
 // hub-local HTTP endpoints (/hub2/*, File Manager) do not leave it.
-@groovy.transform.CompileStatic
 def getOpenWorldToolNames() {
     def cached = _toolMetadataGet("getOpenWorldToolNames")
     if (cached != null) return cached
@@ -5775,7 +5758,6 @@ boolean _isWriteSurface(String name, visibleSubTools = null) {
 }
 
 // Idempotent: lists that pass through the transform twice keep a single sentence.
-@groovy.transform.CompileStatic
 String _withGuideFirst(String name, String description, visibleSubTools = null) {
     String sentence = guideFirstSentence()
     if (description == null || description.startsWith(sentence) || !_isWriteSurface(name, visibleSubTools)) return description
@@ -5966,7 +5948,6 @@ private Map _toolCatalogIndexes() {
     return _toolMetadataPut("catalogIndexes", [required: required, names: names]) as Map
 }
 
-@groovy.transform.CompileStatic
 def requiredParamsByTool() {
     return _toolCatalogIndexes().required
 }
@@ -7392,7 +7373,6 @@ private void _hubRtLog(String method, String path, long elapsedMs, String outcom
  * Automatically includes Hub Security cookie if configured.
  * Returns the response body as text.
  */
-@groovy.transform.CompileStatic
 def hubInternalGet(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', isRetry: isRetry])
 }
@@ -7429,7 +7409,6 @@ private Map _meshJson() {
  * groovyx.net.http.HttpResponseException by name — that class isn't on the
  * Spock test classpath, and naming it would NCDFE at parse time.
  */
-@groovy.transform.CompileStatic
 def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     // followRedirects:false + handle3xx so the 302 Location header (new-child id) is readable.
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'struct',
@@ -7605,7 +7584,6 @@ private Map _httpFetchUrl(String url) {
  * Automatically includes Hub Security cookie if configured.
  * Returns the response body as text.
  */
-@groovy.transform.CompileStatic
 def hubInternalPost(String path, Map body = null, int timeout = 30, boolean isRetry = false) {
     _hubRequest('POST', path, [body: body, timeout: timeout, returnShape: 'text', isRetry: isRetry])
 }
@@ -7617,7 +7595,6 @@ def hubInternalPost(String path, Map body = null, int timeout = 30, boolean isRe
  * inside JSON values). Caller is responsible for URL-encoding keys/values
  * themselves; this method passes the body string straight through.
  */
-@groovy.transform.CompileStatic
 def hubInternalPostFormRaw(String path, String encodedBody, int timeout = 420, boolean isRetry = false) {
     _hubRequest('POST', path, [body: encodedBody, timeout: timeout,
                               requestContentType: "application/x-www-form-urlencoded", keepAlive: true,
@@ -7629,7 +7606,6 @@ def hubInternalPostFormRaw(String path, String encodedBody, int timeout = 420, b
  * (/installedapp/* settings submits, button clicks, lifecycle fires) and other endpoints
  * that require application/x-www-form-urlencoded.
  */
-@groovy.transform.CompileStatic
 def hubInternalPostForm(String path, Map body, int timeout = 420, boolean isRetry = false) {
     def resp = _hubRequest('POST', path, [body: body, timeout: timeout,
                               requestContentType: "application/x-www-form-urlencoded", keepAlive: true,
@@ -7992,7 +7968,6 @@ def _latestLocalHubBackupEpoch(String kind = "any") {
  * Returns the manifest entry on success, or throws if the source cannot be retrieved
  * or the manifest cannot be published.
  */
-@groovy.transform.CompileStatic
 def backupItemSource(String type, String id) {
     return _withBackupLock("backup ${type} ${id}") { _backupItemSourceLocked(type, id) }
 }
@@ -8509,7 +8484,6 @@ private List _debugLogSnapshot(Map buffer) {
     return new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(buffer.entries.collect { it.entry }))
 }
 
-@groovy.transform.CompileStatic
 def getDebugLogReadResult(Map args = [:]) {
     try {
         return _getDebugLogHistoryResult(args)

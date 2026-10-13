@@ -336,7 +336,6 @@ private String _validateHubVarType(String type) {
 // reliably primes it; a single bare GET does not.
 //
 // Non-private so test specs can override via script.metaClass.
-@groovy.transform.CompileStatic
 def _primeHubVarsWizard(Integer appId, String context) {
     try {
         hubInternalGet("/installedapp/configure/json/${appId}")
@@ -1385,7 +1384,6 @@ def toolDeleteHubVariable(args) {
 //   "notInUse"   - the plain <td>var</td> row is present (registered, no consumers)
 //   "unreadable" - appId/var missing, the GET threw, or the page body was empty
 //   "notListed"  - the page read fine but names neither marker (the variable is not on the page)
-@groovy.transform.CompileStatic
 String _hubVarPlatformInUseStatus(Integer hubVarsAppId, String varName) {
     if (hubVarsAppId == null || !varName) return "unreadable"
     def text
@@ -1402,7 +1400,6 @@ String _hubVarPlatformInUseStatus(Integer hubVarsAppId, String varName) {
 // Whether the Hub Variables page marks this variable as in use. Thin Boolean wrapper over
 // _hubVarPlatformInUseStatus: true (in use), false (listed but not in use), null (unreadable OR not
 // listed -- both collapse to "unknown" for callers that only need the tri-state).
-@groovy.transform.CompileStatic
 Boolean _hubVarPlatformInUse(Integer hubVarsAppId, String varName) {
     switch (_hubVarPlatformInUseStatus(hubVarsAppId, varName)) {
         case "inUse": return true

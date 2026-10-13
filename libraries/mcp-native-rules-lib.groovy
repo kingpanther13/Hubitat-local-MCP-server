@@ -392,7 +392,6 @@ private Map _rmCollectFilteredRmRules() {
 // installed, or a transient one-sided v4/v5 failure) or the app-tree cross-check could
 // not run -- so a caller treats "cannot verify" as skip-validation rather than a
 // false-empty reject.
-@groovy.transform.CompileStatic
 private Set _rmValidRuleIds() {
     def collected = _rmCollectFilteredRmRules()
     // Any RMUtils lookup error -- including a one-sided v4 or v5 failure -- makes the
@@ -516,7 +515,6 @@ def toolListRmRules(args) {
 // The key may arrive as String or Integer depending on how the hub built the Map.
 // - RM 4.x: Map with explicit fields `[id: <id>, label: "<label>", name: "...", type: "..."]`.
 // - Raw primitive (int or String ID): defensive fallback for shapes not covered above.
-@groovy.transform.CompileStatic
 private void registerRmRule(Map combined, def r, String version) {
     def id
     def label
@@ -653,7 +651,6 @@ private String _rmStripTrailingDecoration(Object raw, String suffix) {
 // reports nothing per-rule) is the exact failure the batch exists to prevent.
 // Single-id calls keep their long-standing no-validation behavior. The check
 // skips when the rule list is unverifiable (_rmValidRuleIds returns null).
-@groovy.transform.CompileStatic
 private Map _rmRuleIdListArg(Object raw) {
     if (raw == null) throw new IllegalArgumentException("ruleId is required")
     def rawList = (raw instanceof List) ? raw : [raw]
@@ -778,7 +775,6 @@ def toolRunRmRule(args) {
 
 // Click the rule's Run Actions button (runAction on the main page): runs the action list
 // directly, skipping condition evaluation, exactly as the hub UI does.
-@groovy.transform.CompileStatic
 private Map _rmRunActionsButton(Integer ruleId) {
     try {
         _rmClickAppButton(ruleId, "runAction")
@@ -793,7 +789,6 @@ private Map _rmRunActionsButton(Integer ruleId) {
 // clicking stopRule when state.stopped is already the target value would
 // toggle it the wrong way (running -> stopped, stopped -> running), so
 // we read state.stopped first and no-op if we're already there.
-@groovy.transform.CompileStatic
 private Map _rmToggleStopped(Integer ruleId, String action) {
     def status
     try {
@@ -1475,7 +1470,6 @@ private void _rmReclassifyDeviceListSkips(Integer appId, List skipped) {
 // phantom in-flight rule. Throws IllegalArgumentException on the
 // first missing id with a message keyed by `label` (e.g.
 // "addTrigger.deviceIds[2]"). Idempotent for List<null>/empty.
-@groovy.transform.CompileStatic
 private void _rmValidateDeviceIdsExist(String label, Object ids) {
     if (!(ids instanceof List)) return
     ids.each { id ->
@@ -1621,7 +1615,6 @@ private Integer _rmCoerceRuleId(Object id) {
 // integer deviceId is the very bug it exists to catch (RM stores {N:null} for it), so
 // silently ignoring the scalar is the safe stance there. For a rule target the scalar
 // is a legitimate single-rule reference, so it is validated rather than skipped.
-@groovy.transform.CompileStatic
 private void _rmValidateRuleTargetExists(String label, Object ids, Set validRuleIds = null) {
     def idList = (ids instanceof List) ? ids : (ids != null ? [ids] : [])
     if (!idList) return
@@ -4092,7 +4085,6 @@ private List _rmLiveActionIndicesFromSettings(Map status) {
 // WHICH rows exist but NOT the order they display in.
 //
 // Note action keys use a dot-N suffix (actType.1) vs trigger keys without dot (tCapab1).
-@groovy.transform.CompileStatic
 private List _rmCollectActionIndices(Integer appId) {
     def ordered = _rmOrderedActionIndices(appId)
     // null = unreadable (scan settings); [] = the rule genuinely has no actions, honoured as such.
@@ -4150,7 +4142,6 @@ private String _rmEditOpLabel(Map args) {
 
 // Shared disabled-app refusal, so the wording cannot drift between the sites that need it.
 // IllegalArgumentException: this is caller-recoverable -- re-enable, edit, re-disable.
-@groovy.transform.CompileStatic
 void _rmRejectDisabledAppEdit(Integer appId, String opName) {
     if (_rmIsAppDisabled(appId) != true) return
     throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
@@ -5698,7 +5689,6 @@ private boolean _rmActionCapUsesActionVerb(String capRaw) {
 // persist (the caller then surfaces a stuck marker so the envelope points at recovery). Every step
 // is tolerant -- a rollback must never mask the original error, and "nothing to cancel/delete" is
 // a benign no-op.
-@groovy.transform.CompileStatic
 private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean condWizardOpen = false) {
     // 1. Close the in-flight condition wizard ONLY when one is genuinely open and not already cancelled.
     //    On the walker-thrown path the walker's cancelInFlightActCond already issued the single allowed
@@ -6980,7 +6970,6 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
 
 // The argument checks _rmAddTrigger runs before it opens the trigger editor, applied to a whole
 // list so a create can refuse a bad trigger before the rule exists. Device ids are read-only lookups.
-@groovy.transform.CompileStatic
 private void _rmPrevalidateTriggerSpecList(List specs, String label) {
     specs.eachWithIndex { spec, i ->
         if (!(spec instanceof Map)) {
@@ -7009,7 +6998,6 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
 // refused before any of it is written. Everything here only reads (appId null: no rule yet).
 // Structural balance is checked separately; checks that need the rule's own state (one waitEvents
 // action per rule, a fileDelete/fileAppend file list, the disabled-app gate) stay in the add.
-@groovy.transform.CompileStatic
 private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null) {
     specs.eachWithIndex { spec, i ->
         if (!(spec instanceof Map)) {
@@ -8143,7 +8131,6 @@ def _rmAsPositiveDeviceId(Object raw) {
 // default ["mainPage"] (selectTriggers + doActPage via _rmWriteSettingOnPage); STPage
 // walker callers pass '[]' (_rmWriteSubPageField -- re-firing the mainPage href would
 // reset the in-flight condition-builder accumulator).
-@groovy.transform.CompileStatic
 private void _rmForceWriteEnumField(Integer appId, String pageName, String key, Object value, List applied, List skipped, String pageBreadcrumbs = '["mainPage"]') {
     // The comparator field is a single-value enum; pre-normalize defensively so a
     // future caller cannot write a raw '!='/'==' the hub does not recognize (idempotent
@@ -8240,7 +8227,6 @@ private String _rmPreflightRestoreHint(String reason = null, Map backup = null, 
 // the existing damage that motivated the refusal; on a mutation failure it is
 // whether the write left the rule broken — without a follow-up
 // hub_get_rule_health call.
-@groovy.transform.CompileStatic
 private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, String pageName = "doActPage") {
     def msgStr = msg?.toString() ?: ""
     // No backup means the refusal fired before the baseline snapshot, so nothing was written: a
@@ -8914,7 +8900,6 @@ private void _rmVerifySubPageMultipleFlags(Integer appId, String pageName, Map s
 // skipped:true, with a pointer to hub_get_rule_health) so the committed op's
 // response returns under the transport ceiling instead of burning the remaining
 // window on diagnostics. t0 == null (no budget threaded) always probes.
-@groovy.transform.CompileStatic
 private Map _rmWalkStepHealth(Integer appId, Long t0) {
     if (_timeBudgetExceeded(t0)) {
         return _rmEmptyHealthVerdict(ok: true, skipped: true, source: "skipped",
@@ -10971,7 +10956,6 @@ private void _rmClearPredCapabsViaGhostIfThen(Integer appId, String caller) {
 // action isn't wrapped in IF(**Broken Condition**), then drop the flag so it runs at most once.
 // Best-effort + idempotent: a clean predCapabs re-clears harmlessly, and a failed clear degrades to
 // the pre-deferral worst case (a possible IF(Broken Condition) wrap, surfaced as a warn).
-@groovy.transform.CompileStatic
 private void _rmRunPendingPredCapabsClear(Integer appId) {
     def pending = _rmPendingPredClearSnapshot()
     def observedGeneration = pending.get(appId.toString())
@@ -11091,7 +11075,6 @@ private Map _rmRevealedInputOrThrow(Integer appId, String fieldName, String miss
 // describes the operand ("first operand" / "second operand") for error wording. constField is the
 // matching valConst slot name ("valConst.<N>" / "valConst2.<N>"). assertInEnum is passed in so the
 // closure shares the math block's enum-validation/error vocabulary.
-@groovy.transform.CompileStatic
 private void _rmWriteMathOperand(Integer appId, int idx, Object operandValue, String xVarField,
                                  String constField, String roleLabel, Closure assertInEnum,
                                  Object xVarInput, List applied, List skipped) {
@@ -11482,7 +11465,6 @@ private void _rmRequireExistingHubFile(Integer appId, Integer idx, String field,
 // re-raised unchanged. Otherwise an IllegalStateException carries the refusal text (minus its
 // "RM is not touched" claim) plus a wizardStuck marker whose recovery starts with actionCancel,
 // because removeAction is refused while the open editor holds state.editAct.
-@groovy.transform.CompileStatic
 private void _rmCancelRefusedActionEditor(Integer appId, Integer idx, Exception refusal,
                                           boolean condWizardOpen = false, String stuckWhat = null) {
     boolean cleaned = false
@@ -13821,7 +13803,6 @@ private List _rmTokenConditionIds(List toks) {
 
 // Click a token-editor / STPage button and render STPage so the click takes effect. Returns the
 // rendered page.
-@groovy.transform.CompileStatic
 private Map _rmTokClick(Integer appId, String name, String stateAttr, Map cache = null) {
     _rmClickAppButton(appId, name, stateAttr, "STPage", cache)
     return _rmFetchConfigJson(appId, "STPage", cache)
@@ -13834,7 +13815,6 @@ private Set _rmPageInputNames(Map cfg) {
 
 // Open the token editor on a rule with a committed Required Expression. Throws when it does not
 // open (nothing in the expression has changed at that point).
-@groovy.transform.CompileStatic
 private void _rmTokEnterEditor(Integer appId, Map cache = null) {
     _rmTokClick(appId, "editST", "editST", cache)
     def names = _rmPageInputNames(_rmTokClick(appId, "editToken", "editToken", cache))
@@ -13847,7 +13827,6 @@ private void _rmTokEnterEditor(Integer appId, Map cache = null) {
 
 // Close the token editor and the Required Expression page: doneToken returns to the expression
 // view, doneST commits it. The caller fires updateRule.
-@groovy.transform.CompileStatic
 private void _rmTokLeaveEditor(Integer appId, Map cache = null) {
     def names = _rmPageInputNames(_rmFetchConfigJson(appId, "STPage", cache))
     if (names.contains("doneToken")) _rmTokClick(appId, "doneToken", "doneToken", cache)
@@ -13883,7 +13862,6 @@ private void _rmTokInsert(Integer appId, int position, String value, Closure wri
 // Inside the token editor: drop every token past target.size() (tokens this edit appended,
 // including the blank token a cancelled condition leaves), then report whether the live tokens
 // equal `target`.
-@groovy.transform.CompileStatic
 private boolean _rmTokTrimTo(Integer appId, List target, Map cache = null) {
     for (int guard = 0; guard < 60; guard++) {
         def live = _rmReadExpressionTokens(appId)
@@ -13933,7 +13911,6 @@ List _rmDeleteExpressionConditions(Integer appId, Collection ids) {
 // Set the committed Required Expression to exactly `target` (condition ids already in the rule's
 // pool plus operator / paren tokens), then commit and confirm. Rolls a replace back in place.
 // Returns [restored: Boolean, error: String?].
-@groovy.transform.CompileStatic
 private Map _rmTokSetExpression(Integer appId, List target) {
     // An empty target would delete every token and leave the rule ungated.
     if (!target) return [restored: false, error: "no original tokens were recorded, so nothing was changed"]
@@ -13973,7 +13950,6 @@ private Map _rmTokSetExpression(Integer appId, List target) {
 
 // Roll a replaced Required Expression back to `origTokens` and report it in the replace envelope's
 // terms: a failure while switching, a post-commit failure, and the patches[] batch end.
-@groovy.transform.CompileStatic
 private Map _rmRevertRequiredExpression(Integer appId, List origTokens, String errMsg, Map carry = [:]) {
     def r = _rmTokSetExpression(appId, origTokens)
     if (r.restored == true) {
@@ -14738,7 +14714,6 @@ private String _rmBulkStopError(String stoppedAfter, stopItem) {
 
 // Edit and replace stop envelope. Skipping finalisation is not a rollback: items before the stop stay written, and
 // actions self-bake, so they can already affect an active rule. The pre-operation backup is the rollback handle.
-@groovy.transform.CompileStatic
 private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter, stopItem, Map extra) {
     def out = [
         success: false,

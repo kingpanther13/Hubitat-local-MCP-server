@@ -1051,7 +1051,6 @@ def toolManageMode(args) {
     }
 }
 
-@groovy.transform.CompileStatic
 private _modePost(String path, Map body) {
     return hubInternalPostJson(path, groovy.json.JsonOutput.toJson(body))
 }
@@ -1335,7 +1334,6 @@ def toolShutdownHub(args) {
     }
 }
 
-@groovy.transform.CompileStatic
 def isNewerVersion(String remote, String local) {
     // Null guard: callers may pass null when the remote manifest fetch
     // returns no version field. Treat as "not newer" so update prompts

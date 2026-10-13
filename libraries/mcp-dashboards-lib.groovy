@@ -199,7 +199,6 @@ private Map _legacyDashboardProbe(String id) {
 // Render the dashboard page to mint the requestToken the layout endpoint demands. Every page load
 // mints a fresh one, so each read/write mints its own instead of caching (tokens are timestamped
 // server-side and stale ones are rejected).
-@groovy.transform.CompileStatic
 private String _legacyMintRequestToken(String id, String accessToken) {
     def html = hubInternalGet("/apps/api/${id}/dashboard/${id}", [access_token: accessToken])
     if (!html) return null
@@ -220,7 +219,6 @@ private Map _legacyLayoutFetch(String id, String accessToken) {
 
 // Save a layout wholesale. The endpoint echoes the saved layout back (with `name` re-stamped from
 // the app label server-side) -- callers use that echo as the write confirmation.
-@groovy.transform.CompileStatic
 private Map _legacyLayoutPost(String id, String accessToken, Map layout) {
     def rt = _legacyMintRequestToken(id, accessToken)
     if (!rt) {

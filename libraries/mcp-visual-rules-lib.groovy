@@ -103,7 +103,6 @@ private Map _vrbFetchClassic(Integer appId) {
             elseNodes: parsed.elseNodes ?: [], promptHistory: parsed.promptHistory ?: []]
 }
 
-@groovy.transform.CompileStatic
 private Map _vrbDetect(Integer appId) {
     // Resolve which serialization a VRB rule speaks: graph (2.0 editor, /app/ruleBuilder20Json)
     // or classic (when/then/else editor, /app/ruleBuilderJson). Null = neither (not a VRB rule).
@@ -385,7 +384,6 @@ private Map _vrbSaveGraphMeta(def resp, Map out) {
     return out
 }
 
-@groovy.transform.CompileStatic
 private void _vrbSaveClassic(Integer appId, String name, Boolean rulePaused, Map definition) {
     // POST /app/ruleBuilderJson/<id> with {name, rulePaused, whenNodes, thenNodes, elseNodes}
     // (real arrays, NOT double-encoded). The hub returns no useful body for this POST -- the
@@ -414,13 +412,11 @@ private Map _vrbSetPaused(Integer appId, boolean paused) {
     }
 }
 
-@groovy.transform.CompileStatic
 private void _vrbForceDelete(Integer appId) {
     // Standard force-delete path -- the same one the builder UIs use.
     hubInternalGetRaw("/installedapp/forcedelete/${appId}/quiet")
 }
 
-@groovy.transform.CompileStatic
 private String _vrbTryCleanupShell(Integer appId) {
     // Best-effort removal of a just-created empty shell after a failed create. Never throws --
     // a cleanup failure must not mask the original error -- and always names the appId so a

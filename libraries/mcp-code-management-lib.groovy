@@ -1322,7 +1322,6 @@ def toolInstallApp(args) {
     return toolInstallItemSingle("app", args)
 }
 
-@groovy.transform.CompileStatic
 def toolInstallDriver(args) {
     return toolInstallItem("driver", args)
 }
