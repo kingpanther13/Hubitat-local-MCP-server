@@ -46,12 +46,13 @@ def offset = { int line, int column ->
     assert line > 0 && line <= lineStarts.size() && column > 0
     lineStarts[line - 1] + column - 1
 }
-def span = { ASTNode node ->
+def rawSpan = { ASTNode node ->
     if (node.lineNumber < 1 || node.lastLineNumber < 1 || node.columnNumber < 1 || node.lastColumnNumber < 1) return null
     int first = offset(node.lineNumber, node.columnNumber)
     int last = offset(node.lastLineNumber, node.lastColumnNumber)
     first <= last && last <= source.length() ? [first, last] : null
 }
+def span = rawSpan
 // AST spans omit different layers of receiver parentheses in 2.4 and 3.0.
 // Pair lexical punctuation, ignoring strings/comments and GString contents via
 // Groovy's lexer, then derive member-call bounds from the actual method token.
@@ -87,7 +88,7 @@ def skipTrivia = { int start ->
     at
 }
 def memberBounds = { MethodCallExpression call ->
-    List name = span(call.method), object = span(call.objectExpression)
+    List name = rawSpan(call.method), object = span(call.objectExpression)
     if (!name || !object || source.substring(name[0], name[1]) != call.methodAsString) return null
     int dot = name[0]
     while (dot > 0 && Character.isWhitespace(source.charAt(dot - 1))) dot--
@@ -113,6 +114,54 @@ def memberBounds = { MethodCallExpression call ->
         }
     }
     [range: [receiverStart, end], receiver: [receiverStart, receiverEnd], suffix: [name[1], end]]
+}
+Map expressionSpans = new IdentityHashMap()
+span = { ASTNode node ->
+    if (expressionSpans.containsKey(node)) return expressionSpans[node]
+    List r = rawSpan(node)
+    // Several parser nodes are positioned at the operator, not the complete
+    // expression: '+' for BinaryExpression, '.' for PropertyExpression, etc.
+    // Reconstruct their source interval recursively from actual operands.
+    if (node instanceof VariableExpression && node.lineNumber > 0 && node.columnNumber > 0 && !node.thisExpression && !node.superExpression) {
+        int start = offset(node.lineNumber, node.columnNumber)
+        if (source.startsWith(node.name, start)) r = [start, start + node.name.length()]
+    } else if (node instanceof BinaryExpression) {
+        List a = span(node.leftExpression), b = span(node.rightExpression)
+        if (a && b && a[0] <= b[0]) {
+            r = [a[0], b[1]]
+            if (node.operation.text == '[') {
+                int open = source.indexOf('[', a[1])
+                if (open >= 0 && open <= b[0] && punctuation[open] >= b[1]) r[1] = punctuation[open]
+            }
+        } else r = null
+    } else if (node instanceof PropertyExpression) {
+        List a = span(node.objectExpression), b = span(node.property)
+        r = a && b && a[0] <= b[0] ? [a[0], Math.max(a[1], b[1])] : null
+    } else if (node instanceof TernaryExpression) {
+        List a = span(node.booleanExpression.expression), b = span(node.trueExpression), c = span(node.falseExpression)
+        r = a && b && c ? [[a[0], b[0], c[0]].min(), [a[1], b[1], c[1]].max()] : null
+    } else if (node instanceof BooleanExpression) {
+        r = span(node.expression)
+    } else if (node instanceof MethodCallExpression) {
+        if (!node.implicitThis) {
+            Map bounds = memberBounds(node)
+            r = bounds?.range
+        } else {
+            List name = rawSpan(node.method)
+            if (name) {
+                int open = skipTrivia(name[1])
+                if (open < source.length() && source.charAt(open) == '(' && punctuation.containsKey(open)) r = [name[0], punctuation[open]]
+            }
+        }
+    } else if (node instanceof ListExpression || node instanceof MapExpression || node instanceof ClosureExpression) {
+        if (r && punctuation.containsKey(r[0])) r = [r[0], punctuation[r[0]]]
+    } else if (node instanceof PrefixExpression || node instanceof PostfixExpression) {
+        List child = span(node.expression)
+        if (child && r) r = [Math.min(child[0], r[0]), Math.max(child[1], r[1])]
+    }
+    if (r && (r[0] < 0 || r[1] < r[0] || r[1] > source.length())) r = null
+    expressionSpans[node] = r
+    r
 }
 def typeName = { ClassNode node ->
     String name = node.name
@@ -387,7 +436,7 @@ methods.each { method ->
     // Reads use the original script binding dynamically. In particular, do not
     // cast atomicState/state to Map or copy/cache either persistence proxy.
     expressionsByMethod[method.name].findAll { expression ->
-        expression instanceof VariableExpression && expression.name in ['state', 'atomicState'] && expression.accessedVariable instanceof DynamicVariable
+        expression instanceof VariableExpression && expression.name in ['state', 'atomicState', 'settings', 'location', 'app', 'request', 'params', 'log', 'parent', 'device'] && expression.accessedVariable instanceof DynamicVariable
     }.each { expression ->
         List r = span(expression)
         if (!r || plan.edits.any { it.start < r[1] && it.end > r[0] && it.start != it.end }) return
@@ -603,7 +652,7 @@ for (int pass = 1; pass <= 40; pass++) {
                 int original = map.changed ? map.original : map.original + point - map.start
                 List choices = expressionsByMethod[name].findAll { expression ->
                     List r = span(expression)
-                    r && r[0] <= original && original < r[1] && !(expression instanceof DeclarationExpression) &&
+                    r && r[0] <= original && original < r[1] && !(expression instanceof DeclarationExpression) && !(expression instanceof VariableExpression) &&
                         !writesByMethod[name].any { target ->
                             List write = span(target)
                             write && r[0] >= write[0] && r[1] <= write[1]
@@ -619,8 +668,6 @@ for (int pass = 1; pass <= 40; pass++) {
                 if (!choices) return
                 Expression expression = choices[0]
                 List r = span(expression)
-                Map capture = capturesFor(expression, false)
-                if (capture.hazards) return
                 // Whole contained transformations can return to their exact
                 // original spelling inside the dynamic island. Cross-boundary
                 // overlaps cannot be composed safely and remain diagnosed.
@@ -636,6 +683,63 @@ for (int pass = 1; pass <= 40; pass++) {
                 }
                 if (returnsByMethod[name].any { it.is(expression) } && contracts[name]) returns = contracts[name].type
                 if (!safeTypes.contains(returns) || returns in ['void', 'null']) return
+                def fragment = { List part ->
+                    if (!part) return null
+                    String text = source.substring(part[0], part[1])
+                    plan.edits.findAll { it.start >= part[0] && it.end <= part[1] && it.start != it.end }.sort { -it.start }.each { edit ->
+                        text = text.substring(0, edit.start - part[0]) + edit.replacement + text.substring(edit.end - part[0])
+                    }
+                    text
+                }
+                def literal = { String value -> "'" + value.replace('\\', '\\\\').replace("'", "\\'") + "'" }
+                String sharedName, sharedCode, sharedReplacement
+                if (expression instanceof PropertyExpression && !expression.spreadSafe && expression.propertyAsString) {
+                    List receiver = span(expression.objectExpression)
+                    if (!receiver) return
+                    sharedName = prefix + 'Property_' + (expression.safe ? 'Safe_' : '') + returns.replace('.', '_')
+                    String read = 'receiver' + (expression.safe ? '?.' : '.') + '"${key}"'
+                    String result = returns == 'java.lang.Object' ? read : '(' + returns + ') (' + read + ')'
+                    sharedCode = "@groovy.transform.CompileDynamic\nprivate ${returns} ${sharedName}(Object receiver, String key) {\n    return ${result}\n}\n"
+                    sharedReplacement = sharedName + '(' + fragment(receiver) + ', ' + literal(expression.propertyAsString) + ')'
+                } else if (expression instanceof MethodCallExpression && !expression.implicitThis && expression.methodAsString && !expression.spreadSafe && expression.arguments instanceof TupleExpression && !expression.arguments.expressions.any { it instanceof SpreadExpression || it instanceof NamedArgumentListExpression }) {
+                    Map bounds = memberBounds(expression)
+                    if (!bounds) return
+                    int arity = expression.arguments.expressions.size()
+                    sharedName = prefix + 'ReceiverCall_' + (expression.safe ? 'Safe_' : '') + returns.replace('.', '_') + '_' + arity
+                    String params = (0..<arity).collect { 'Object p' + it }.join(', ')
+                    String values = (0..<arity).collect { 'p' + it }.join(', ')
+                    String call = 'receiver' + (expression.safe ? '?.' : '.') + '"${target}"(' + values + ')'
+                    String result = returns == 'java.lang.Object' ? call : '(' + returns + ') (' + call + ')'
+                    sharedCode = "@groovy.transform.CompileDynamic\nprivate ${returns} ${sharedName}(Object receiver, String target${params ? ', ' + params : ''}) {\n    return ${result}\n}\n"
+                    String suffix = fragment(bounds.suffix)
+                    String first = fragment(bounds.receiver) + ', ' + literal(expression.methodAsString)
+                    if (suffix ==~ /(?s)^\s*\(.*$/) {
+                        boolean empty = suffix ==~ /(?s)^\s*\(\s*\).*/
+                        sharedReplacement = sharedName + suffix.replaceFirst(/\(/, java.util.regex.Matcher.quoteReplacement('(' + first + (empty ? '' : ', ')))
+                    } else if (suffix ==~ /(?s)^\s*\{.*$/) sharedReplacement = sharedName + '(' + first + ')' + suffix
+                    else return
+                } else if (expression instanceof BinaryExpression && expression.operation.text in ['+', '-', '*', '/', '%', '==', '!=', '<', '>', '<=', '>=', '<=>', '[']) {
+                    List a = span(expression.leftExpression), b = span(expression.rightExpression)
+                    if (!a || !b) return
+                    Map operations = ['+': 'Plus', '-': 'Minus', '*': 'Multiply', '/': 'Divide', '%': 'Modulo',
+                                      '==': 'Equal', '!=': 'NotEqual', '<': 'Less', '>': 'Greater', '<=': 'LessEqual',
+                                      '>=': 'GreaterEqual', '<=>': 'Compare', '[': 'GetAt']
+                    sharedName = prefix + 'Binary_' + operations[expression.operation.text] + '_' + returns.replace('.', '_')
+                    String operation = expression.operation.text == '[' ? 'left[right]' : 'left ' + expression.operation.text + ' right'
+                    String result = returns == 'java.lang.Object' ? operation : '(' + returns + ') (' + operation + ')'
+                    sharedCode = "@groovy.transform.CompileDynamic\nprivate ${returns} ${sharedName}(Object left, Object right) {\n    return ${result}\n}\n"
+                    sharedReplacement = sharedName + '(' + fragment(a) + ', ' + fragment(b) + ')'
+                }
+                if (sharedName) {
+                    plan.helpers[sharedName] = sharedCode
+                    plan.edits.removeAll { it.start >= r[0] && it.end <= r[1] && it.start != it.end }
+                    plan.edits << [start: r[0], end: r[1], replacement: sharedReplacement]
+                    plan.islands << [line: expression.lineNumber, type: returns, shared: true, expression: source.substring(r[0], r[1])]
+                    changed = true
+                    return
+                }
+                Map capture = capturesFor(expression, false)
+                if (capture.hazards) return
                 List captures = capture.captures
                 String bridgeName = prefix + 'Expr_' + name + '_' + plan.islands.size()
                 String text = source.substring(r[0], r[1])
