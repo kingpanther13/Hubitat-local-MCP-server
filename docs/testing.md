@@ -10,6 +10,11 @@ Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `.
 
 ### Additive hub-closer lanes
 
+The independent [software Hubitat integration lane](emulated-hub-ci.md) runs the
+production MCP app against an in-memory platform model over loopback HTTP. It
+runs for every PR revision regardless of labels, uses no hub secrets, and has its
+own reports and coverage limits. The physical-hub workflow remains separate.
+
 Two standalone lanes complement the primary Groovy 3.0 lane without touching it — Hubitat's hub
 runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
 

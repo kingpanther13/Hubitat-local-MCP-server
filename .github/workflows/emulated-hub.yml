@@ -1,0 +1,62 @@
+name: Emulated Hubitat E2E (software)
+
+# This lane has no shared-hub credentials or label gate.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+  push:
+    branches: [main, 'ci/**', 'feat/emulated-e2e*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: emulated-hub-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  emulated-hub:
+    name: emulated-hub (software)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          # Gradle 9 daemon on 17; the production test toolchain uses 11.
+          java-version: |
+            11
+            17
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: gradle/actions/setup-gradle@v6.4.0
+        with:
+          # PR code cannot publish a dependency cache for later trusted jobs.
+          cache-read-only: true
+      - name: Install loopback MCP client dependency
+        run: pip install requests==2.32.5
+      - name: Run production MCP integration suite on the software hub
+        run: ./gradlew -p ci/emulated-hub clean test --no-daemon --console=plain
+      - name: Verify integration scenarios executed
+        run: >-
+          python .github/scripts/verify_emulated_hub_results.py
+          ci/emulated-hub/build/test-results/test
+          --suite server.EmulatedHubHttpSpec
+          --min-tests 5
+      - name: Upload software-hub test reports
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: emulated-hub-report-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ci/emulated-hub/build/reports/tests/test/
+            ci/emulated-hub/build/test-results/test/
+            ci/emulated-hub/build/reports/problems/
+            ci/emulated-hub/build/scenario-*.log

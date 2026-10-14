@@ -1,0 +1,51 @@
+plugins { id 'groovy' }
+
+repositories {
+    mavenCentral()
+    maven {
+        url = 'https://jitpack.io'
+        content { includeGroup 'com.github.eighty20results' }
+        metadataSources { mavenPom() }
+    }
+}
+
+// Match the root harness: these dependencies compile only public test scaffolding.
+dependencies {
+    implementation 'org.codehaus.groovy:groovy-all:3.0.25'
+    testImplementation 'org.spockframework:spock-core:2.5-groovy-3.0'
+    testImplementation 'com.github.eighty20results:hubitat_ci:v0.28.6'
+    testImplementation 'org.codehaus.groovy.modules.http-builder:http-builder:0.7.1'
+    testImplementation 'org.quartz-scheduler:quartz:2.5.2'
+    testImplementation 'su.litvak.chromecast:api-v2:0.11.1'
+    testImplementation 'net.bytebuddy:byte-buddy:1.18.14'
+    testImplementation 'com.networknt:json-schema-validator:2.0.8'
+    constraints {
+        testImplementation('commons-collections:commons-collections:3.2.2') {
+            because 'Match the root test-only commons-collections security pin'
+        }
+    }
+}
+
+java { toolchain { languageVersion = JavaLanguageVersion.of(11) } }
+
+def repositoryRoot = projectDir.toPath().resolve('../..').normalize().toFile()
+sourceSets {
+    main.groovy.setSrcDirs([new File(repositoryRoot, 'src/main/groovy')])
+    test {
+        groovy.setSrcDirs([new File(repositoryRoot, 'src/test/groovy/support'), 'specs'])
+        resources.setSrcDirs([new File(repositoryRoot, 'src/test/resources')])
+    }
+}
+
+test {
+    useJUnitPlatform()
+    maxParallelForks = 1
+    maxHeapSize = '1g'
+    workingDir repositoryRoot
+    filter { includeTestsMatching 'server.EmulatedHubHttpSpec' }
+    systemProperty 'emulatedHub.python', System.getenv('EMULATED_HUB_PYTHON') ?: 'python'
+    testLogging {
+        events 'started', 'passed', 'skipped', 'failed'
+        exceptionFormat = 'full'
+    }
+}
