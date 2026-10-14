@@ -47,6 +47,23 @@ def test_write_cap_workload_rejects_invalid_or_unbounded_configuration(configure
         helpers.write_cap_variable_items("BAT_E2E_WriteCap_run", {"E2E_WRITE_CAP_VARIABLE_COUNT": configured})
 
 
+def test_write_cap_holder_retry_requires_refusal_and_complete_absence_readback():
+    refused = {"status": "too_many_writes_in_flight"}
+    names = ["fixture_0", "fixture_1"]
+    assert helpers.write_cap_holder_can_retry(refused, {"hubVariables": [{"name": "other"}]}, names)
+    for inventory in (
+        {"hubVariables": [{"name": "fixture_1"}]},
+        {"hubVariables": [{"name": "other"}], "nextCursor": "more"},
+        {"hubVariables": [], "success": False},
+        {"hubVariables": [{"error": "unreadable"}]},
+        {"hubVariables": None}, {}, None,
+    ):
+        assert not helpers.write_cap_holder_can_retry(refused, inventory, names)
+    for payload in ({"status": "failed"}, {}, None):
+        assert not helpers.write_cap_holder_can_retry(payload, {"hubVariables": []}, names)
+    assert not helpers.write_cap_holder_can_retry(refused, {"hubVariables": []}, [])
+
+
 def test_expanded_mrtr_workload_does_not_relax_elapsed_or_continuation_requirements():
     assert len(helpers.mrtr_log_actions("timing proof", {"E2E_MRTR_ACTION_COUNT": "36"})) == 36
     one_leg = [{"duration": 2.325, "status": 200, "has_request_state": False,

@@ -38,6 +38,7 @@ from device_configuration_helpers import assert_native_preferences
 from sdk_conformance_helpers import (
     assert_exact_rule_log_messages,
     mrtr_log_actions,
+    write_cap_holder_can_retry,
     write_cap_variable_items,
 )
 
@@ -15009,51 +15010,75 @@ class TestRunner:
         self.created_variable_names.extend(slow_names)
 
         slow: dict[str, Any] = {}
+        started = threading.Event()
 
         def _hold_the_slot() -> None:
             try:
+                started.set()
                 slow["response"] = bg.call_tool("hub_manage_variables", {
                     "tool": "hub_create_variable",
                     "args": {"variables": items, "confirm": True}})
             except Exception as exc:      # re-raised on the main thread after the join
                 slow["error"] = exc
 
-        worker = threading.Thread(target=_hold_the_slot, name="e2e-write-cap-slow", daemon=True)
         refusal = None
         probes = 0
         try:
             self._create_variable(probe_name, "String", "idle")
             self._set_write_cap(1)
-            worker.start()
-            try:
-                time.sleep(0.8)   # let the slow write reach the hub and take the lease
-                deadline = time.monotonic() + 60
-                while worker.is_alive() and time.monotonic() < deadline:
-                    probes += 1
-                    try:
-                        self.client.call_tool("hub_manage_variables", {
-                            "tool": "hub_set_variable",
-                            "args": {"name": probe_name, "value": f"probe-{probes}"},
-                        })
-                    except McpToolError as exc:
-                        payload = _tool_error_payload(exc)
-                        if payload.get("status") != "too_many_writes_in_flight":
-                            raise
-                        refusal = payload
-                        break
-                    except RelayLostResponseError as exc:
-                        # A dropped probe response says nothing about the cap either way.
-                        print(f"    write-cap probe {probes} lost to a relay 504 ({exc}); re-probing")
-            finally:
-                # The cap restore below is itself a capped write, so it cannot run while the
-                # slow write still owns the only slot.
-                worker.join(timeout=180)
-                # Fold the background call into the run's per-op wall-clock summary; the
-                # near-ceiling detector is what would flag this bulk create drifting toward
-                # the relay's ~10s limit, and it only reads the main client's timings.
-                self.client.op_timings.extend(bg.op_timings)
+            for attempt in range(1, 4):
+                slow.clear()
+                started.clear()
+                bg.op_timings.clear()
+                worker = threading.Thread(target=_hold_the_slot, name="e2e-write-cap-slow", daemon=True)
+                holder_started = time.monotonic()
+                worker.start()
+                try:
+                    assert started.wait(timeout=10), "the background write did not start"
+                    deadline = time.monotonic() + 60
+                    while worker.is_alive() and time.monotonic() < deadline:
+                        probes += 1
+                        try:
+                            self.client.call_tool("hub_manage_variables", {
+                                "tool": "hub_set_variable",
+                                "args": {"name": probe_name, "value": f"probe-{probes}"},
+                            })
+                        except McpToolError as exc:
+                            payload = _tool_error_payload(exc)
+                            if payload.get("status") != "too_many_writes_in_flight":
+                                raise
+                            refusal = payload
+                            break
+                        except RelayLostResponseError as exc:
+                            print(f"    write-cap probe {probes} lost to a relay 504 ({exc}); re-probing")
+                finally:
+                    # Restore is a capped write, so the holder must finish first.
+                    worker.join(timeout=180)
+                    self.client.op_timings.extend(bg.op_timings)
+                    print(f"    WRITE_CAP attempt={attempt} holder_elapsed={time.monotonic() - holder_started:.3f}s "
+                          f"probes={probes} holder_error={slow.get('error')!r}")
+                assert not worker.is_alive(), "the in-flight write never finished; the cap state is unknown"
+                holder_error = slow.get("error")
+                if refusal is None and isinstance(holder_error, McpToolError) and attempt < 3:
+                    payload = _tool_error_payload(holder_error)
+                    if payload.get("status") == "too_many_writes_in_flight":
+                        inventory = self.client.call_tool("hub_read_variables", {
+                            "tool": "hub_list_variables", "args": {}})
+                        if write_cap_holder_can_retry(payload, inventory, slow_names):
+                            print("    WRITE_CAP probe won the race; absent holder fixtures verified before retry")
+                            continue
+                break
             assert not worker.is_alive(), \
                 "the in-flight write never finished; the cap state is unknown"
+            if "error" in slow:
+                exc = slow["error"]
+                if not isinstance(exc, requests.HTTPError) or "504" not in str(exc):
+                    raise exc
+            else:
+                created = slow.get("response") or {}
+                assert created.get("success") is True, f"the write holding the slot failed: {created}"
+                assert created.get("createdCount") == len(slow_names), \
+                    f"the write holding the slot did not create every variable: {created}"
             assert refusal is not None, (
                 f"no write was refused in {probes} probe(s) while a bulk create of "
                 f"{len(slow_names)} variables was in flight -- the cap did not hold the slot")
@@ -15078,11 +15103,6 @@ class TestRunner:
                 time.sleep(3.0)
                 assert all(self._hub_variable_visible_in_bulk(n) for n in slow_names), \
                     f"the write that held the slot was lost to a relay 504 and never committed: {slow_names}"
-            else:
-                created = slow.get("response") or {}
-                assert created.get("success") is True, f"the write holding the slot failed: {created}"
-                assert created.get("createdCount") == len(slow_names), \
-                    f"the write holding the slot did not create every variable: {created}"
             print(f"    WRITE_CAP ok -- refused after {probes} probe(s) "
                   "while hub_create_variable held the slot")
         finally:

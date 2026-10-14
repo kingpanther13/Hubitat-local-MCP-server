@@ -64,6 +64,20 @@ def write_cap_variable_items(prefix: str, environ: Mapping[str, str] | None = No
             for index in range(write_cap_variable_count(environ))]
 
 
+def write_cap_holder_can_retry(payload: Any, inventory: Any, names: list[str]) -> bool:
+    """Retry only a refused holder whose entire fixture is independently absent."""
+    if not isinstance(payload, dict) or payload.get("status") != "too_many_writes_in_flight":
+        return False
+    if not isinstance(inventory, dict) or inventory.get("success") is False:
+        return False
+    rows = inventory.get("hubVariables")
+    if not isinstance(rows, list) or inventory.get("nextCursor"):
+        return False
+    if not all(isinstance(row, dict) and isinstance(row.get("name"), str) for row in rows):
+        return False
+    return bool(names) and set(names).isdisjoint(row["name"] for row in rows)
+
+
 def build_capacity_recovery(e2e_test_module: Any, client: Any) -> Callable[[str], bool]:
     """Build the platform-limiter recovery callable from the e2e suite's machinery.
 
