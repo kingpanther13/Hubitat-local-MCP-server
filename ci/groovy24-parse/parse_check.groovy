@@ -168,6 +168,11 @@ def collectBlocked = { CompilationUnit cu, Map resolved ->
                     p.initialExpression?.visit(this)
                 }
             }
+            // visitClass skips the declared supertypes; compiler-supplied ones carry no position.
+            void visitClass(ClassNode node) {
+                for (ClassNode type : [node.unresolvedSuperClass] + (node.interfaces as List)) report(type, type)
+                super.visitClass(node)
+            }
             void visitAnnotations(AnnotatedNode node) {
                 for (annotation in node.annotations) report(annotation.classNode, annotation)
                 super.visitAnnotations(node)
@@ -203,10 +208,7 @@ def collectBlocked = { CompilationUnit cu, Map resolved ->
                 super.visitVariableExpression(e)
             }
         }
-        module.classes.each { cn ->
-            visitor.visitAnnotations(cn)
-            cn.visitContents(visitor)
-        }
+        module.classes.each { visitor.visitClass(it) }
     }
     return findings as List
 }

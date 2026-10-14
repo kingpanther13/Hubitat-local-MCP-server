@@ -187,6 +187,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         removed.success
         removed.note == null
         removed.brokenConsumers == null
+        removed.consumersUnknown == null
         variables.Counter.sdk.deviceId == null
         posts()[1] == [method: 'POST', path: '/hub2/variables/removeConnector', body: [name: 'Counter', acknowledgeUse: false]]
     }
@@ -260,6 +261,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         then:
         result.success
         result.brokenConsumers == [[id: '82', label: 'Dashboard']]
+        result.consumersUnknown == null
         variables.Counter.sdk.deviceId == null
         posts() == [[method: 'POST', path: '/hub2/variables/removeConnector', body: [name: 'Counter', acknowledgeUse: true]]]
     }
@@ -281,6 +283,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         then:
         result.success
         result.brokenConsumers == null
+        result.consumersUnknown == true
         posts() == [[method: 'POST', path: '/hub2/variables/removeConnector', body: [name: 'Counter', acknowledgeUse: true]]]
     }
 

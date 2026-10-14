@@ -1455,7 +1455,8 @@ private String deleteHubVariable(Integer appId, String varName, String claim = n
     if (appId == null) {
         if (claim != null && !renewPurgeClaim(claim)) return "purge claim lost before the variable delete"
         def response = hubPostJson("/hub2/variables/remove", groovy.json.JsonOutput.toJson([name: varName, acknowledgeUse: true]))
-        if (response?.status == null || response.status >= 400) return "Hub Variables delete was not accepted (HTTP ${response?.status})"
+        // A lost response (null status) may still have committed; the absence check decides.
+        if (response?.status != null && response.status >= 400) return "Hub Variables delete was not accepted (HTTP ${response.status})"
         def reply = response.data?.toString()?.trim() ? _parseJsonBody(response.data) : null
         if (reply instanceof Map && reply.success == false) return "Hub Variables delete was refused: ${reply.message ?: 'no message'}"
         String lastReadError = null
@@ -1463,7 +1464,7 @@ private String deleteHubVariable(Integer appId, String varName, String claim = n
             try { if (getGlobalVar(varName) == null) return null } catch (Exception e) { lastReadError = e.message }
             if (attempt < 7) { try { pauseExecution(300) } catch (Exception ignored) { } }
         }
-        return "Hub Variables delete was accepted but '${varName}' could not be confirmed absent" +
+        return "Hub Variables delete ${response?.status == null ? 'got no response' : 'was accepted'} but '${varName}' could not be confirmed absent" +
             (lastReadError ? " (last read failed: ${lastReadError})" : "")
     }
     String lastClicks = "unknown"

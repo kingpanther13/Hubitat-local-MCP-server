@@ -1136,6 +1136,7 @@ def toolRemoveConnector(args) {
         deviceId: deviceId,
         deviceDeleted: true,
         brokenConsumers: (force && connectorApps) ? connectorApps : null,
+        consumersUnknown: (force && nativeModel != null && connectorApps == null) ?: null,
         message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged."
     ]
     // Known Hubitat platform bug (confirmed 2026-06-02, fw 2.5.0.143, via the UI's "Remove Device"): removing

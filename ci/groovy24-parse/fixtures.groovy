@@ -43,6 +43,9 @@ import java.util.concurrent.ConcurrentHashMap
 class Local {
     static class Inner {}
 }
+interface Marker {}
+class Sub extends Local implements Marker {}
+class Ordered extends java.util.LinkedHashMap {}
 def work(BigDecimal n, int[] counts, byte[][] raw) {
     def m = new java.util.LinkedHashMap()
     if (n instanceof java.math.BigDecimal) m.a = 1
@@ -65,6 +68,9 @@ def work(BigDecimal n, int[] counts, byte[][] raw) {
     ['sandbox-iterator-signature', 'java.util.Iterator walk(\n        java.util.Iterator i) { i }', [[1, 'java.util.Iterator'], [2, 'java.util.Iterator']]],
     ['sandbox-cast', 'def s = [] as java.util.Stack', [[1, 'java.util.Stack']]],
     ['sandbox-field', 'class Holder {\n    private java.util.Stack items\n}', [[2, 'java.util.Stack']]],
+    ['sandbox-class-header', 'class Blocked extends java.util.ArrayDeque\n        implements java.io.Serializable {}',
+        [[1, 'java.util.ArrayDeque'], [2, 'java.io.Serializable']]],
+    ['sandbox-object-initializer', "class Holder {\n    { def f = new java.io.File('x') }\n}", [[2, 'java.io.File']]],
     ['sandbox-closure-param', 'def f = { java.util.Stack s -> s }', [[1, 'java.util.Stack']]],
     ['sandbox-for-variable', 'for (java.util.Stack s in []) {}', [[1, 'java.util.Stack']]],
     ['sandbox-array', 'java.io.File[] files = null', [[1, 'java.io.File']]],

@@ -1221,7 +1221,8 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         'still present'   | 200        | false | false      | false
         'unreadable SDK'  | 200        | false | true       | false
         'POST refused'    | 400        | true  | false      | false
-        'POST lost'       | null       | true  | false      | false
+        'POST lost, gone' | null       | true  | false      | true
+        'POST lost, kept' | null       | false | false      | false
     }
 
     def "a native variable delete reports #scenario"() {

@@ -8,14 +8,14 @@ Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `.
 - **Build:** Gradle 9.5.1 via wrapper (`./gradlew test`)
 - **Python tests and E2E:** Python 3.11 or newer. The suite imports `datetime.UTC` and uses union type annotations and strict `zip`; CI selects the current Python 3 release.
 
-### Software E2E lane
+## Software E2E lane
 
 The independent [Software E2E lane](emulated-hub-ci.md) consumes the exact revision's
 public result for production MCP tests over HTTP in an external software environment.
 It uses no hub secrets or label gates. The existing Python E2E registry and official
 SDK provide its assertions.
 
-### Additive hub-closer lanes
+## Additive hub-closer lanes
 
 Two standalone lanes complement the primary Groovy 3.0 lane without touching it — Hubitat's hub
 runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
