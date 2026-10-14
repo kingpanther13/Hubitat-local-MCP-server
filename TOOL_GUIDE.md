@@ -1065,7 +1065,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
     Community (non-built-in) apps are case-by-case: type='mode' inputs surface via modeInputs when used; otherwise reading the app source is the only signal.
   - summary=true is a fast identity-only mode: the hub's thin app record (id, name, type, disabled, user) with no config-page render -- use it for existence/identity checks on expensive apps
   - Multi-page apps expose sub-pages via pageName. Native editor navigation and supported controls use hub_set_rule(operation='form') for Rule Machine and hub_set_native_app(operation='form') for other apps; rendering can mutate app state.
-  - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
+  - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding). Secret values in it read `***redacted (password)***`: every setting the hub types as a password, on any page of the app, plus free-text settings with credential-shaped names (password, pass, secret, token, API key, credential, ...). Page input values are redacted the same way. If the app's setting types cannot be read, the map is withheld (settingsNote says so) rather than returned partly redacted
   - Workflow: hub_list_apps (scope='instances'; or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.
 
 - **hub_list_app_pages** — discover what pageNames a given app accepts (Read master required)

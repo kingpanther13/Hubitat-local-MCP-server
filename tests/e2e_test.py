@@ -10455,6 +10455,10 @@ def updated() {}
         fails -- precisely the signal wanted, since the shape handling would then need extending
         rather than being assumed correct.
 
+        The same fresh instance carries the live cross-page password redaction check: installed()
+        stores a password-typed setting that no page declares, which hub_get_app_config
+        (includeSettings) must redact from the hub's setting types rather than the rendered page.
+
         Needs a running INSTANCE (not just a code class), so it creates and cleans up both.
         Named "Deadman Test Target ..." in namespace mcptest so the Layer 5 sweep reclaims a
         stranded copy -- instance included -- if a crash skips the finally."""
@@ -10508,6 +10512,26 @@ def updated() {}
             })
             assert ((fresh_cfg.get("app") or {}) if isinstance(fresh_cfg, dict) else {}).get("installed") is True, \
                 f"installAsUserApp committed but the instance is an inert shell (app.installed is not true): {fresh_cfg}"
+
+            # Cross-page password redaction, live: installed() stored linkPhrase as a password-typed
+            # setting that no page declares, under a name no credential pattern matches. Only the
+            # hub's own setting type (statusJson appSettings) can mark it secret, so a plain value
+            # here means includeSettings redaction is still limited to the rendered page. Messages
+            # never echo the value.
+            secret_cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config",
+                "args": {"appId": instance_app_id, "includeSettings": True},
+            })
+            secret_settings = secret_cfg.get("settings") if isinstance(secret_cfg, dict) else None
+            assert isinstance(secret_settings, dict), \
+                f"includeSettings returned no settings map (note={secret_cfg.get('settingsNote')!r})"
+            assert "linkPhrase" in secret_settings, \
+                ("the fixture's installed() did not store its password-typed linkPhrase setting, so the "
+                 f"cross-page redaction check has nothing to read; keys={sorted(secret_settings)}")
+            assert secret_settings["linkPhrase"] == "***redacted (password)***", \
+                "the password-typed linkPhrase setting (declared on no page) came back unredacted"
+            assert "XPAGE-SECRET-FIXTURE-V1" not in json.dumps(secret_cfg), \
+                "the off-page password value appears somewhere in the hub_get_app_config response"
 
             # CONFIGURE the instance: flip refreshProbe off its false default. This is the
             # precondition for the settings-preservation assertion at the end -- verified here
@@ -10689,12 +10713,13 @@ def updated() {}
                     print(f"  [WARN] driver-code update cleanup: delete driver code class {driver_id} failed: {exc}")
 
     # -----------------------------------------------------------------------
-    # GROUP 4f: installed_app_reads (4 tests) -- the thin app-summary mode of
+    # GROUP 4f: installed_app_reads (6 tests) -- the thin app-summary mode of
     # hub_get_app_config (/installedapp/json/<id>) plus its RM disabled-action
     # marking, its modeInputs projection, the appTypeId join from hub_list_apps(instances)
     # rows to the type catalog, the app-type catalog fields (menu tab + built-in vs
-    # community) on hub_list_apps(types), and the per-app events mode of
-    # hub_list_device_events (/installedapp/eventsJson/<id>).
+    # community) on hub_list_apps(types), the per-app events mode of
+    # hub_list_device_events (/installedapp/eventsJson/<id>), the redactAccessTokens
+    # toggle, and secret redaction in the includeSettings map across every page.
     # -----------------------------------------------------------------------
 
     @test("installed_app_reads")
@@ -11011,6 +11036,51 @@ def updated() {}
                 if not unwinding:
                     raise
                 print(f"  [WARN] could not restore redactAccessTokens=false: {exc}")
+
+    @test("installed_app_reads")
+    def test_get_app_config_settings_redact_secrets_from_every_page(self) -> None:
+        # includeSettings returns the app's settings from EVERY page, so secret redaction cannot
+        # rely on the one page it rendered. The MCP server's own hubSecurityPassword sits on a
+        # sub-page, and Hubitat Package Manager keeps hpmPassword on prefSettings while its default
+        # page prefOptions has no inputs. Neither has to be configured on this hub: the check is
+        # that no credential-named key comes back holding a plain non-empty value. The deterministic
+        # cross-page proof (a password-typed setting with a harmless name) is in
+        # test_update_app_code_trigger_updated, whose fixture stores one. Assertion messages name
+        # keys only, never values.
+        marker = "***redacted (password)***"
+        secret_suffixes = ("password", "passwd", "secret")
+
+        def check(app_id: Any, what: str) -> int:
+            cfg = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_get_app_config", "args": {"appId": str(app_id), "includeSettings": True}})
+            assert cfg.get("success") is True, f"{what}: hub_get_app_config failed"
+            settings = cfg.get("settings")
+            assert isinstance(settings, dict), \
+                f"{what}: settings missing (withheld? note={cfg.get('settingsNote')!r})"
+            if settings:
+                note = str(cfg.get("settingsRedactionNote") or "")
+                assert "any page" in note, f"{what}: settingsRedactionNote does not describe all-page redaction"
+                assert "#" not in note, f"{what}: settingsRedactionNote carries an issue reference"
+            leaked = [k for k, v in settings.items()
+                      if isinstance(v, str) and v and v != marker and k.lower().endswith(secret_suffixes)]
+            assert not leaked, f"{what}: credential-named settings returned unredacted: {sorted(leaked)}"
+            return len(settings)
+
+        count = check(self.client.app_id, "MCP server app")
+        print(f"    MCP server app: {count} settings read, no credential-named value exposed")
+
+        hpm = None
+        cursor: str | None = ""
+        while cursor is not None and hpm is None:
+            page = self.client.call_tool("hub_list_apps", {"scope": "instances", "filter": "user", "cursor": cursor})
+            hpm = next((a for a in (page.get("apps") or [])
+                        if "package manager" in f"{a.get('name') or ''} {a.get('label') or ''}".lower()), None)
+            cursor = page.get("nextCursor")
+        if hpm is None:
+            print("    Hubitat Package Manager not installed on this hub -- only the MCP server app checked")
+            return
+        count = check(hpm.get("id"), "Hubitat Package Manager")
+        print(f"    Hubitat Package Manager: {count} settings read, no credential-named value exposed")
 
     # -----------------------------------------------------------------------
     # GROUP 4g: device_swap (1 test) -- hub_call_device_swap child-device
