@@ -35,7 +35,11 @@ from zoneinfo import ZoneInfo
 
 import requests
 from device_configuration_helpers import assert_native_preferences
-from sdk_conformance_helpers import assert_exact_rule_log_messages, mrtr_log_actions, write_cap_variable_items
+from sdk_conformance_helpers import (
+    assert_exact_rule_log_messages,
+    mrtr_log_actions,
+    write_cap_variable_items,
+)
 
 # ---------------------------------------------------------------------------
 # Artifact prefix — every test-created resource uses this for safe cleanup
