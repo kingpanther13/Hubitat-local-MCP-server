@@ -15520,6 +15520,7 @@ def toolRemoveConnector(args) {
         deviceId: deviceId,
         deviceDeleted: true,
         brokenConsumers: (force && connectorApps) ? connectorApps : null,
+        consumersUnknown: (force && nativeModel != null && connectorApps == null) ?: null,
         message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged."
     ]
     if (nativeModel == null) {
@@ -41735,7 +41736,7 @@ Audit/debug what changed a hub variable and when, without polling hub_get_variab
 
 Deletes the connector DEVICE backing a hub variable. DESTRUCTIVE and not undoable — the connector device is removed, but the hub variable itself and its value are unchanged. `confirm=true` required. No-op if the variable has no connector.
 
-On current firmware the hub reports which apps use the connector device. Without `force=true` the tool refuses when any app does, naming each as `label (id=N)`, and also when that use cannot be read (the refusal says why). Pass `force=true` to delete anyway; the result's `brokenConsumers` lists the apps that used it. Older firmware deletes the device without this check.
+On current firmware the hub reports which apps use the connector device. Without `force=true` the tool refuses when any app does, naming each as `label (id=N)`, and also when that use cannot be read (the refusal says why). Pass `force=true` to delete anyway; the result's `brokenConsumers` lists the apps that used it. When that use could not be read, the result has `consumersUnknown: true` instead. Older firmware deletes the device without this check.
 
 ### Hub Mesh: sharing and linking hub variables
 
