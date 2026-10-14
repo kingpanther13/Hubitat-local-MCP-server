@@ -15023,8 +15023,9 @@ class TestRunner:
         ONLY place it is exercised live. Cap 1 + one slow bulk variable create saturates it,
         and the second write must be refused BEFORE dispatch -- the refusal is what proves
         the lease was taken, since nothing else on the wire reports an in-flight write.
-        If the probe still reaches the hub first (the holder is refused instead), the
-        holder is retried, up to three attempts, once its fixtures are verified absent."""
+        The first probe is sent as soon as the holder thread starts, with no fixed head start.
+        If it reaches the hub first (the holder is refused instead), the holder is retried,
+        up to three attempts, once its fixtures are verified absent."""
         suffix = _run_artifact_suffix()
         items = write_cap_variable_items(f"{PREFIX}WriteCap_{suffix}")
         slow_names = [item["name"] for item in items]
@@ -15074,8 +15075,7 @@ class TestRunner:
                 worker.start()
                 try:
                     assert started.wait(timeout=10), "the background write did not start"
-                    # started fires before the request is sent; give the holder a head start to the hub.
-                    time.sleep(0.8)
+                    # No fixed head start: the holder can finish in under a second; the retry covers a probe that wins.
                     deadline = time.monotonic() + 60
                     while worker.is_alive() and time.monotonic() < deadline:
                         probes += 1

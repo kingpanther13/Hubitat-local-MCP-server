@@ -251,7 +251,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         script.toolRemoveConnector([confirm: true, name: 'Counter'])
         then:
         def refusal = thrown(IllegalArgumentException)
-        refusal.message.contains('Dashboard (id=82)')
+        refusal.message.contains('is in use by Dashboard (id=82)')
         refusal.message.contains('force=true')
         refusal.message.contains("hub_get_tool_guide(section='variables')")
         posts().isEmpty()
@@ -382,7 +382,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         script.toolDeleteHubVariable([confirm: true, name: 'Counter'])
         then:
         def refusal = thrown(IllegalArgumentException)
-        refusal.message.contains('Heating (id=81)')
+        refusal.message.contains('is in use by Heating (id=81)')
         posts().isEmpty()
         variables.containsKey('Counter')
         when:

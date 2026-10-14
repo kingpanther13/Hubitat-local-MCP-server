@@ -1091,7 +1091,7 @@ def toolRemoveConnector(args) {
             throw new IllegalArgumentException("Could not read which apps use the connector for '${name}' (${registryError}), so whether deleting it breaks an app is unknown. Retry, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables').")
         }
         if (!force && connectorApps) {
-            throw new IllegalArgumentException("The connector for '${name}' is used by ${_hubVarsConsumerText(connectorApps)}. Deleting it breaks those apps. Update or remove them first, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables').")
+            throw new IllegalArgumentException("The connector for '${name}' is in use by ${_hubVarsConsumerText(connectorApps)}. Deleting it breaks those apps. Update or remove them first, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables').")
         }
         try { _hubVarsNativePost("removeConnector", [name: name, acknowledgeUse: force]) }
         catch (Exception e) { return _hubVarsNativeFailure("hub_delete_connector", e.message ?: e.class.simpleName) }
@@ -1436,7 +1436,7 @@ def toolDeleteHubVariable(args) {
             // refusal is only the mesh-link registration, not a real consumer. requireDestructiveConfirm
             // (confirm + recent backup) still applied above; force is NOT required for the clean case.
         } else if (platformInUse != false && !force) {
-            String usedBy = registryApps ? "is used by ${_hubVarsConsumerText(registryApps)}" :
+            String usedBy = registryApps ? "is in use by ${_hubVarsConsumerText(registryApps)}" :
                 "is registered as in use by at least one app (Settings > Hub Variables shows it in orange; click its name to see which)"
             throw new IllegalArgumentException(platformInUse ?
                 "Hub Variable '${varName}' ${usedBy}. Deleting it breaks those apps, which is why the hub's own delete prompt warns. Update or remove the consuming apps first, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables')." :
