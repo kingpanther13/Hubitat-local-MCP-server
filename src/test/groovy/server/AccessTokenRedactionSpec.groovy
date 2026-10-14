@@ -12,6 +12,14 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
 
     private static final String TOKEN = '0f8e2c1a-1111-2222-3333-444455556666'
     private static final String MARKER = '***redacted (access token)***'
+    private static final String PASSWORD_MARKER = '***redacted (password)***'
+
+    // Every setting typed as free text, so of hub_get_app_config's own settings redaction only the
+    // credential-name rule applies to them.
+    private static String statusJson() {
+        JsonOutput.toJson([installedApp: [id: 35], appState: [],
+                           appSettings: ['accessToken', 'pinToken', 'exported'].collect { n -> [name: n, type: 'text'] }])
+    }
 
     private static String appPageJson() {
         JsonOutput.toJson([
@@ -36,6 +44,7 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         hubGet.register('/installedapp/configure/json/35') { params -> appPageJson() }
+        hubGet.register('/installedapp/statusJson/35') { params -> statusJson() }
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeSettings: true])
@@ -44,7 +53,10 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
         then:
         !response.result.isError
         inner.page.sections[0].paragraphs[0].contains("access_token=${TOKEN}&debug=1")
-        inner.settings.accessToken == TOKEN
+        inner.settings.exported.contains("\"access_token\":\"${TOKEN}\"")
+
+        and: 'a credential-named setting is redacted whatever this toggle says'
+        inner.settings.accessToken == PASSWORD_MARKER
 
         where:
         useGateways << [true, false]
@@ -56,6 +68,7 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.redactAccessTokens = true
         hubGet.register('/installedapp/configure/json/35') { params -> appPageJson() }
+        hubGet.register('/installedapp/statusJson/35') { params -> statusJson() }
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeSettings: true])
@@ -66,8 +79,10 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
         !response.result.content[0].text.contains(TOKEN)
         inner.page.sections[0].paragraphs[0].contains("access_token=${MARKER}&debug=1")
         inner.page.sections[0].paragraphs[1] == 'Version: 4.5.2'
+        // hub_get_app_config already redacted both credential-named settings; the toggle then
+        // re-marks the accessToken key with its own marker.
         inner.settings.accessToken == MARKER
-        inner.settings.pinToken == '1234'
+        inner.settings.pinToken == PASSWORD_MARKER
         inner.settings.exported.contains("\"access_token\":\"${MARKER}\"")
         inner.settings.exported.contains('"name":"kept"')
 
