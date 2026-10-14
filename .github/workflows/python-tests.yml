@@ -37,6 +37,7 @@ jobs:
         # requests satisfies tests/test_e2e_test_helpers.py's importorskip —
         # without it that module's 28 tests are silently skipped on every PR.
         # Offline SDK policy tests use MockTransport; this job never connects to a hub.
+        # PyYAML lets tests/test_emulated_hub_workflow.py parse the workflow it guards.
         run: pip install pytest requests PyYAML==6.0.3 -r tests/sdk-conformance-requirements.txt
       - name: Run Python unit tests
         # --doctest-modules makes the `>>> parse_release_notes(...)` examples

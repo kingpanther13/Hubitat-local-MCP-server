@@ -12,8 +12,7 @@ permissions:
   statuses: read
 
 concurrency:
-  # Automatic consumers follow the latest PR head/main revision selected by the poller.
-  # Manual consumers for independent revisions retain their own result waits.
+  # A new PR head or main push cancels the previous wait; manual dispatches are keyed by SHA and never cancelled.
   group: software-e2e-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
@@ -44,7 +43,7 @@ jobs:
           --fallback-sha "$REVISION" --output "$GITHUB_OUTPUT"
       - name: Explain unsupported source eligibility
         if: steps.revision.outputs.eligible != 'true'
-        run: echo 'Software E2E is not scheduled for this event source. Automatic PR execution supports maintainer-authored same-repository heads.' >> "$GITHUB_STEP_SUMMARY"
+        run: echo 'Software E2E is not scheduled for this event source. Automatic PR execution supports pull requests opened by the repository owner from a same-repository head.' >> "$GITHUB_STEP_SUMMARY"
 
   software-e2e:
     name: software-e2e (external result)

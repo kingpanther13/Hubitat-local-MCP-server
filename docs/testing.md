@@ -8,12 +8,14 @@ Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `.
 - **Build:** Gradle 9.5.1 via wrapper (`./gradlew test`)
 - **Python tests and E2E:** Python 3.11 or newer. The suite imports `datetime.UTC` and uses union type annotations and strict `zip`; CI selects the current Python 3 release.
 
-### Additive hub-closer lanes
+### Software E2E lane
 
 The independent [Software E2E lane](emulated-hub-ci.md) consumes the exact revision's
 public result for production MCP tests over HTTP in an external software environment.
 It uses no hub secrets or label gates. The existing Python E2E registry and official
-SDK provide its assertions; availability and eligibility are explicit.
+SDK provide its assertions.
+
+### Additive hub-closer lanes
 
 Two standalone lanes complement the primary Groovy 3.0 lane without touching it — Hubitat's hub
 runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
@@ -585,7 +587,7 @@ The regular E2E runner also has one protocol mode: `HubitatMcpClient` derives `M
 
 The ordinary `mrtr` E2E group independently repeats the configured Rule Machine edit through `HubitatMcpClient`. Its existing automatic `requestState` path must reach terminal `complete` after multiple continuation rounds, return every requested successful action result, take more than 10 seconds as one logical call, and keep each ANSWERED HTTP POST below 9.5 seconds (relay-dropped legs are absorbed on the same terms as the SDK proof, and bounded the same way). It applies the same positive-owner-count/fewer-than-continuations invariant as the official SDK proof. Outside that call's timing window, it independently makes the same authoritative raw-settings read through its normal gateway path and applies the exact requested row/value assertion. This regular lane does not depend on the official-SDK scenario passing (and the SDK scenario does not consume the regular client's telemetry).
 
-Both proofs default to six actual log actions. `E2E_MRTR_ACTION_COUNT` accepts integers from 6 through 120 to configure a larger workload. This changes the number of real mutations; the elapsed-time, continuation, per-request ceiling, and exact persisted-state assertions remain mandatory.
+Both proofs default to six actual log actions. `E2E_MRTR_ACTION_COUNT` accepts integers from 6 through 120 to configure a larger workload. This changes the number of real mutations; the elapsed-time, continuation, per-request ceiling, and exact persisted-state assertions remain mandatory. `E2E_WRITE_CAP_VARIABLE_COUNT` (integers 4 through 120, default 4) sets how many hub variables the concurrent write-cap test bulk-creates. Both are manual-run knobs: no workflow sets them, so CI uses the defaults.
 
 The observer checks every real SDK POST, not reconstructed requests: each must carry `MCP-Protocol-Version: 2026-07-28`, a matching `Mcp-Method`, and `Mcp-Name` on `tools/call` and `resources/read`; every response must be observed and served as 200/202. Legacy header compatibility remains in the offline schema/server specs, not in live E2E.
 

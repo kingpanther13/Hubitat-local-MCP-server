@@ -1,9 +1,11 @@
 """Consume only the exact revision's public Software E2E status."""
 
 import argparse
+import http.client
 import json
 import os
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -26,13 +28,13 @@ def validate_sha(sha):
 
 
 def select_revision(event_name, event, fallback_sha):
-    if not isinstance(event, dict) or event.get("repository", {}).get("full_name") != REPOSITORY:
+    if not isinstance(event, dict) or (event.get("repository") or {}).get("full_name") != REPOSITORY:
         return None
     if event_name == "pull_request":
         request = event.get("pull_request") or {}
         head = request.get("head") or {}
         repository = head.get("repo") or {}
-        if (request.get("user", {}).get("login") != "kingpanther13"
+        if ((request.get("user") or {}).get("login") != "kingpanther13"
                 or repository.get("full_name") != REPOSITORY):
             return None
         return validate_sha(head.get("sha"))
@@ -50,8 +52,9 @@ def select_revision(event_name, event, fallback_sha):
 
 def result_state(payload, sha):
     validate_sha(sha)
+    # The endpoint is addressed by SHA, so another revision's payload is never worth waiting on.
     if not isinstance(payload, dict) or payload.get("sha") != sha:
-        return WAITING
+        return UNAVAILABLE
     statuses = payload.get("statuses")
     if not isinstance(statuses, list) or any(not isinstance(status, dict) for status in statuses):
         return UNAVAILABLE
@@ -63,31 +66,67 @@ def result_state(payload, sha):
     return {"success": PASSED, "failure": FAILED, "error": FAILED, "pending": WAITING}.get(matching[0].get("state"), UNAVAILABLE)
 
 
-def wait_for_result(sha, fetch, timeout=7800, interval=30, monotonic=time.monotonic, sleep=time.sleep):
+def describe(error):
+    """Class name and HTTP status only: API messages, URLs and bodies are never logged."""
+    code = getattr(error, "code", None)
+    return type(error).__name__ + (f" {code}" if isinstance(code, int) else "")
+
+
+def log(message):
+    print(f"Software E2E status read: {message}", file=sys.stderr)
+
+
+def _seconds(value):
+    return int(value) if isinstance(value, str) and re.fullmatch(r"[0-9]+", value.strip()) else None
+
+
+def rate_limit_delay(error, now):
+    """Seconds GitHub asks the reader to back off, or None when the error is not a rate limit."""
+    headers = error.headers or {}
+    retry_after = _seconds(headers.get("retry-after"))
+    exhausted = headers.get("x-ratelimit-remaining") == "0"
+    if error.code != 429 and not (error.code == 403 and (headers.get("retry-after") is not None or exhausted)):
+        return None
+    if retry_after is not None:
+        return retry_after
+    reset = _seconds(headers.get("x-ratelimit-reset"))
+    return reset - now() if exhausted and reset is not None else 0
+
+
+def wait_for_result(sha, fetch, timeout=7800, interval=30, monotonic=time.monotonic, sleep=time.sleep, now=time.time):
     validate_sha(sha)
     if not 0 < timeout <= 7800 or interval <= 0:
         raise ValueError("Invalid waiting bounds.")
     deadline = monotonic() + timeout
+    transient = 0
     while True:
         if monotonic() >= deadline:
             return UNAVAILABLE
+        delay = interval
         try:
-            payload = fetch()
-            outcome = result_state(payload, sha)
+            outcome = result_state(fetch(), sha)
         except urllib.error.HTTPError as error:
-            if not 500 <= error.code < 600:
+            backoff = rate_limit_delay(error, now)
+            if backoff is None and not 500 <= error.code < 600:
+                log(f"{describe(error)}, giving up.")
                 return UNAVAILABLE
+            transient += 1
+            delay = max(interval, backoff or 0)
+            log(f"{describe(error)}{' rate limited' if backoff is not None else ''}, retrying in {int(delay)} s (transient failure {transient}).")
             outcome = WAITING
-        except OSError:
+        except (OSError, http.client.IncompleteRead, json.JSONDecodeError) as error:
+            transient += 1
+            log(f"{describe(error)}, retrying (transient failure {transient}).")
             outcome = WAITING
-        except Exception:
+        except Exception as error:
+            log(f"{describe(error)}, giving up.")
             return UNAVAILABLE
         if outcome != WAITING:
             return outcome
         remaining = deadline - monotonic()
         if remaining <= 0:
             return UNAVAILABLE
-        sleep(min(interval, remaining))
+        sleep(min(delay, remaining))
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -127,7 +166,8 @@ def main():
             return 0
         sha = validate_sha(args.sha)
         outcome = wait_for_result(sha, lambda: fetch_status(sha, os.environ.get("GITHUB_TOKEN")), args.timeout_seconds)
-    except Exception:
+    except Exception as error:
+        print(f"Software E2E check failed: {describe(error)}", file=sys.stderr)
         outcome = UNAVAILABLE
     print(MESSAGES[outcome])
     return 0 if outcome == PASSED else 1
