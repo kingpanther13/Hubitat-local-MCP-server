@@ -10,7 +10,7 @@ This file is for AI agents. Human contributors follow `.github/pull_request_temp
 ./gradlew test                     # full Spock suite (~1 min)
 ./gradlew test --tests "<spec>"    # single spec
 python tests/sandbox_lint.py       # Groovy sandbox lint
-./gradlew -p ci/groovy24-parse parse24  # Hub Groovy 2.4 syntax, closure-parameter and blocked-class guard
+./gradlew -p ci/groovy24-parse parse24  # Hub Groovy 2.4 syntax, closure-parameter and sandbox-allowlist guard
 ```
 
 Run all three before pushing, or rely on the corresponding CI lanes. Python lint does not run the AST closure-parameter guard. CI runs the same checks.

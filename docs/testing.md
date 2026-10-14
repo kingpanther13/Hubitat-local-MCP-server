@@ -26,7 +26,13 @@ runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
   processes the same AST successfully. An isolated app on firmware 2.5.1.181 rejected `{ -> 42 }`
   with HTTP 500 while identical source using `{ 42 }` compiled; the private compiler mechanism
   remains unproven. See [the live evidence](issue-407-findings.md). The lane also checks syntax
-  and sandbox-blocked classes. `parse24` runs its positive/negative fixtures first;
+  and, after CANONICALIZATION, fails every class reference outside the hub sandbox allowlist:
+  [`allowed-classes.txt`](../ci/groovy24-parse/allowed-classes.txt), transcribed from Hubitat's
+  [Allowed Classes for Import](https://docs2.hubitat.com/en/developer/allowed-imports) page, plus
+  primitives, Throwable subclasses, the file's own classes and the `hubitat.*` / `com.hubitat.*`
+  namespaces. It checks class expressions (`instanceof`, static calls), casts, constructor calls,
+  declared variable, field, parameter, return, catch and loop types, imports and annotations.
+  `parse24` runs its positive/negative fixtures first;
   they can also run directly via `parse_check.groovy --self-test <absolute-repo-root>`.
 - **Groovy 2.5 Spock** (`ci/groovy2x-spock/`) — runs this same spec corpus against a Groovy 2.5
   runtime via [joelwetzel/hubitat_ci](https://github.com/joelwetzel/hubitat_ci) (the biocomp-API fork
