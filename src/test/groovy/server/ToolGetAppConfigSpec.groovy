@@ -1143,7 +1143,6 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'lockPasscode'          | true
         'clientSecret'          | true
         'oauthClientSecret'     | true
-        'accessToken'           | true
         'refresh_token'         | true
         'authtoken'             | true
         'apiTokens'             | true
@@ -1173,6 +1172,10 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         'passwordLength'        | false
         'apiKeyCount'           | false
         'tokenUrl'              | false
+        // OAuth access tokens are left to the redactAccessTokens setting
+        'accessToken'           | false
+        'access_token'          | false
+        'ACCESS_TOKEN'          | false
         'keypadDevice'          | false
         'monkey'                | false
         'triggerDevice'         | false

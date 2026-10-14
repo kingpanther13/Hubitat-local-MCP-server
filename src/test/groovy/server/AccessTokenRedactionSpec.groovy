@@ -53,10 +53,11 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
         then:
         !response.result.isError
         inner.page.sections[0].paragraphs[0].contains("access_token=${TOKEN}&debug=1")
+        inner.settings.accessToken == TOKEN
         inner.settings.exported.contains("\"access_token\":\"${TOKEN}\"")
 
-        and: 'a credential-named setting is redacted whatever this toggle says'
-        inner.settings.accessToken == PASSWORD_MARKER
+        and: 'other credential-named settings are redacted whatever this toggle says'
+        inner.settings.pinToken == PASSWORD_MARKER
 
         where:
         useGateways << [true, false]
@@ -79,8 +80,6 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
         !response.result.content[0].text.contains(TOKEN)
         inner.page.sections[0].paragraphs[0].contains("access_token=${MARKER}&debug=1")
         inner.page.sections[0].paragraphs[1] == 'Version: 4.5.2'
-        // hub_get_app_config already redacted both credential-named settings; the toggle then
-        // re-marks the accessToken key with its own marker.
         inner.settings.accessToken == MARKER
         inner.settings.pinToken == PASSWORD_MARKER
         inner.settings.exported.contains("\"access_token\":\"${MARKER}\"")
