@@ -3402,8 +3402,12 @@ class TestRunner:
         # The Hub object has no zigbeeChannel on current firmware; the details JSON's channel fills it.
         zb_channel = (details.get("zigbeeData") or {}).get("channel") if isinstance(details.get("zigbeeData"), dict) else None
         if zb_channel is not None:
-            assert details.get("zigbeeChannel") not in (None, "unavailable"), \
-                f"zigbeeChannel must be filled when the details carry channel {zb_channel}: {details}"
+            if zb_channel == 0:
+                assert details.get("zigbeeChannel") == "unavailable", \
+                    f"zero Zigbee channel must report unavailable: {details}"
+            else:
+                assert details.get("zigbeeChannel") not in (None, "unavailable"), \
+                    f"zigbeeChannel must be filled when the details carry channel {zb_channel}: {details}"
             info = self.client.call_tool("hub_get_info")
             assert info.get("zigbeeChannel") in (zb_channel, "unavailable"), \
                 f"hub_get_info must report the same Zigbee channel as the radio details ({zb_channel}): {info.get('zigbeeChannel')}"
