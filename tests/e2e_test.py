@@ -17463,7 +17463,8 @@ class TestRunner:
         assert "hub_get_logs" in instructions and "component='write'" in instructions \
             and "recentWrites" not in instructions, \
             f"legacy initialize instructions must point at the write log, not recentWrites: {instructions}"
-        var_name = f"{PREFIX}LegacyVar_{_run_artifact_suffix()}"
+        # Per-attempt nonce: a 504 re-run of this test must not match the earlier attempt's write records.
+        var_name = f"{PREFIX}LegacyVar_{_run_artifact_suffix()}_{time.time_ns()}"
 
         def _legacy_value() -> str | None:
             """The variable's value over the legacy wire, or None when it is gone.
@@ -17517,9 +17518,11 @@ class TestRunner:
                        if (e.get("details") or {}).get("tool") == "hub_create_variable"
                        and ((e.get("details") or {}).get("target") or {}).get("name") == var_name]
             finished = [e for e in records if e["details"].get("phase") == "finished"]
-            assert finished and finished[-1]["details"].get("outcome") == "completed", \
-                f"the legacy create left no completed write record: {records}"
-            write_id = finished[-1]["details"].get("writeId")
+            assert len(finished) == 1, \
+                f"expected exactly one finished write record for {var_name}: {records}"
+            assert finished[0]["details"].get("outcome") == "completed", \
+                f"the legacy create's write record is not completed: {records}"
+            write_id = finished[0]["details"].get("writeId")
             assert any(e["details"].get("phase") == "started" and e["details"].get("writeId") == write_id
                        for e in records), \
                 f"the finished write record has no started record with the same writeId: {records}"
