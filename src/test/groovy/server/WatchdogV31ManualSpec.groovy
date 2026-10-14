@@ -28,6 +28,7 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         // The device/room/code/file leg has its own spec (WatchdogV31PurgeFixturesSpec).
         script.metaClass.purgeOtherFixturesLocked = { String prefix, String claim -> [deleted: [], failed: [], deletedCount: 0] }
         script.metaClass.throwawayCodeClasses = { String path -> [] }
+        script.metaClass.nativeHubVariablesAvailable = { -> false }
     }
 
     /** An atomicState whose writes of ONE key vanish -- a hub dropping state writes under load. */
@@ -1191,6 +1192,64 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
     // There is no removeGlobalVar/removeGlobalVariable on the app class. An earlier revision called
     // one, so every purge failed with "No signature of method" and the variables leg never worked.
 
+    def "native variable purge preserves prefix scope and verifies SDK absence (#scenario)"() {
+        given:
+        List<Map> posts = []
+        script.metaClass.nativeHubVariablesAvailable = { -> true }
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubGetStatus = { String p, Map q -> throw new AssertionError('Native variable purge must not discover the wizard') }
+        script.metaClass.hubPostJson = { String p, String b ->
+            posts << [path: p, body: new groovy.json.JsonSlurper().parseText(b)]
+            [status: httpStatus, data: '{}']
+        }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_leftover: [value: 1], BAT_E2E_KEEP_fixture: [value: 2], HomeMode: [value: 'home']] }
+        script.metaClass.getGlobalVar = { String n ->
+            if (unreadable) throw new IllegalStateException('SDK unavailable')
+            gone ? null : [value: 1]
+        }
+        script.metaClass.pauseExecution = { long ms -> }
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+        then:
+        posts == [[path: '/hub2/variables/remove', body: [name: 'BAT_E2E_leftover', acknowledgeUse: true]]]
+        res.success == expectedSuccess
+        res.variablesDeletedCount == (expectedSuccess ? 1 : 0)
+        res.variablesFailedCount == (expectedSuccess ? 0 : 1)
+        where:
+        scenario          | httpStatus | gone  | unreadable | expectedSuccess
+        'removed'         | 200        | true  | false      | true
+        'still present'   | 200        | false | false      | false
+        'unreadable SDK'  | 200        | false | true       | false
+        'POST refused'    | 400        | true  | false      | false
+        'POST lost'       | null       | true  | false      | false
+    }
+
+    def "native variable feature detection distinguishes supported endpoints from 404 (#status)"() {
+        given:
+        def probe = scriptWithSettings([:])
+        probe.metaClass.hubGetStatus = { String p, Map q ->
+            assert p == '/hub2/variables'
+            [status: status, data: data]
+        }
+        when:
+        def available = probe.nativeHubVariablesAvailable()
+        then:
+        available == expected
+        where:
+        status | data                | expected
+        404    | null                | false
+        200    | '{"variables":[]}'  | true
+    }
+
+    def "native variable malformed model cannot fall through to the wizard"() {
+        given:
+        def probe = scriptWithSettings([:])
+        probe.metaClass.hubGetStatus = { String p, Map q -> [status: 200, data: '{"unexpected":[]}'] }
+        when:
+        probe.nativeHubVariablesAvailable()
+        then:
+        thrown(IllegalStateException)
+    }
     def "purging a hub variable drives the deleteGV then delConfirm wizard clicks"() {
         given:
         List<Map> posts = []

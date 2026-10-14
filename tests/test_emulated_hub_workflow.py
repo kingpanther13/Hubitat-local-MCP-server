@@ -3,6 +3,7 @@
 import importlib.util
 import io
 import json
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -46,6 +47,13 @@ def test_workflow_has_read_only_permissions_and_no_label_or_secret_gate():
     for job in WORKFLOW["jobs"].values():
         checkout = next(step for step in job["steps"] if step.get("uses", "").startswith("actions/checkout@"))
         assert checkout["with"]["persist-credentials"] == "false"
+
+
+def test_concurrency_preserves_latest_automatic_and_independent_manual_waits():
+    assert WORKFLOW["concurrency"] == {
+        "group": "software-e2e-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.pull_request.number || github.ref }}",
+        "cancel-in-progress": "${{ github.event_name != 'workflow_dispatch' }}",
+    }
 
 
 def test_pr_selection_uses_exact_head_instead_of_merge_revision_and_ignores_labels():
@@ -138,10 +146,50 @@ def test_missing_status_can_be_scheduled_after_ten_minutes_and_wait_is_still_bou
     assert clock[0] == 7800
 
 
-def test_network_failure_is_sanitized_and_unavailable():
+@pytest.mark.parametrize("error", [OSError("UNTRUSTED PATH TOKEN URL"),
+                                  urllib.error.HTTPError("https://external.invalid", 503, "UNTRUSTED", {}, None)])
+def test_network_failure_retries_until_bounded_unavailable_result(error, capsys):
+    clock = [0]
+    attempts = []
+    def sleep(seconds):
+        clock[0] += seconds
     def fail():
-        raise OSError("UNTRUSTED PATH TOKEN URL")
-    assert RESULTS.wait_for_result(SHA, fail, timeout=2) == RESULTS.UNAVAILABLE
+        attempts.append(clock[0])
+        raise error
+    assert RESULTS.wait_for_result(SHA, fail, timeout=2, interval=1,
+                                   monotonic=lambda: clock[0], sleep=sleep) == RESULTS.UNAVAILABLE
+    assert attempts == [0, 1]
+    assert clock[0] == 2
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("error", [OSError("UNTRUSTED PATH TOKEN URL"),
+                                  urllib.error.URLError("UNTRUSTED PATH TOKEN URL"),
+                                  urllib.error.HTTPError("https://external.invalid", 503, "UNTRUSTED", {}, None)])
+def test_transient_failure_recovers_to_exact_revision_result(error, capsys):
+    clock = [0]
+    attempts = []
+    def sleep(seconds):
+        clock[0] += seconds
+    def fetch():
+        attempts.append(clock[0])
+        if len(attempts) == 1:
+            raise error
+        return payload("success")
+    assert RESULTS.wait_for_result(SHA, fetch, timeout=2, interval=1,
+                                   monotonic=lambda: clock[0], sleep=sleep) == RESULTS.PASSED
+    assert attempts == [0, 1]
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.parametrize("error", [urllib.error.HTTPError("https://external.invalid", 403, "UNTRUSTED", {}, None),
+                                  ValueError("UNTRUSTED response")])
+def test_permanent_fetch_failure_is_unavailable_without_retry(error, capsys):
+    def fetch():
+        raise error
+    assert RESULTS.wait_for_result(SHA, fetch, timeout=2,
+                                   sleep=lambda seconds: pytest.fail("permanent failure must not retry")) == RESULTS.UNAVAILABLE
+    assert capsys.readouterr() == ("", "")
 
 
 def test_status_request_uses_only_fixed_public_endpoint_and_rejects_redirects(monkeypatch):

@@ -32,6 +32,21 @@ def test_mrtr_workload_rejects_invalid_or_unbounded_configuration(configured):
         helpers.mrtr_log_actions("timing proof", {"E2E_MRTR_ACTION_COUNT": configured})
 
 
+@pytest.mark.parametrize(("configured", "expected"), [(None, 4), ("4", 4), ("72", 72), ("120", 120)])
+def test_write_cap_workload_creates_every_distinct_real_variable(configured, expected):
+    environment = {} if configured is None else {"E2E_WRITE_CAP_VARIABLE_COUNT": configured}
+    items = helpers.write_cap_variable_items("BAT_E2E_WriteCap_run", environment)
+    assert items == [{"name": f"BAT_E2E_WriteCap_run_{index}", "type": "String", "value": "held"}
+                     for index in range(expected)]
+    assert len({item["name"] for item in items}) == expected
+
+
+@pytest.mark.parametrize("configured", ["", "0", "3", "121", "-1", "+4", "4.0", "word", " 4", "4 ", None, True])
+def test_write_cap_workload_rejects_invalid_or_unbounded_configuration(configured):
+    with pytest.raises(ValueError, match="E2E_WRITE_CAP_VARIABLE_COUNT"):
+        helpers.write_cap_variable_items("BAT_E2E_WriteCap_run", {"E2E_WRITE_CAP_VARIABLE_COUNT": configured})
+
+
 def test_expanded_mrtr_workload_does_not_relax_elapsed_or_continuation_requirements():
     assert len(helpers.mrtr_log_actions("timing proof", {"E2E_MRTR_ACTION_COUNT": "36"})) == 36
     one_leg = [{"duration": 2.325, "status": 200, "has_request_state": False,
@@ -295,12 +310,51 @@ def _rule_config(messages=EXPECTED_LOG_MESSAGES):
     return {"success": True, "settings": settings}
 
 
-def test_exact_rule_log_messages_accepts_only_the_six_persisted_action_rows() -> None:
+@pytest.mark.parametrize("environ", [{}, {"E2E_MRTR_ACTION_COUNT": "36"}, {"E2E_MRTR_ACTION_COUNT": "120"}])
+def test_exact_rule_log_messages_accepts_every_configured_persisted_action(environ) -> None:
+    expected = [action["message"] for action in helpers.mrtr_log_actions("proof message", environ)]
     actual = helpers.assert_exact_rule_log_messages(
-        _rule_config(), EXPECTED_LOG_MESSAGES, operation="regular proof readback",
+        _rule_config(expected), expected, operation="regular proof readback",
     )
 
-    assert actual == EXPECTED_LOG_MESSAGES
+    assert actual == expected
+
+
+@pytest.mark.parametrize("count", [0, 5, 121])
+def test_exact_rule_log_messages_rejects_unbounded_expected_workloads(count) -> None:
+    expected = [f"proof message {index}" for index in range(count)]
+    with pytest.raises(AssertionError, match="6 through 120"):
+        helpers.assert_exact_rule_log_messages(_rule_config(expected), expected, operation="proof readback")
+
+
+@pytest.mark.parametrize("invalid_message", ["", "   ", None])
+def test_exact_rule_log_messages_rejects_empty_or_nontext_expected_messages(invalid_message) -> None:
+    expected = [*EXPECTED_LOG_MESSAGES[:-1], invalid_message]
+    with pytest.raises(AssertionError, match="nonempty text"):
+        helpers.assert_exact_rule_log_messages(_rule_config(expected), expected, operation="proof readback")
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda cfg: [cfg["settings"].pop(f"{prefix}.36")
+                      for prefix in ("actType", "actSubType", "logmsg")], "exactly 36 action rows"),
+        (lambda cfg: cfg["settings"].__setitem__("logmsg.36", "corrupted"), "exact messages"),
+        (lambda cfg: cfg["settings"].__setitem__("logmsg.36", "proof message 35"), "distinct"),
+        (lambda cfg: cfg["settings"].pop("actSubType.36"), "action-subtype indices"),
+        (lambda cfg: cfg["settings"].pop("logmsg.36"), "log-message indices"),
+        (lambda cfg: cfg["settings"].__setitem__("actType.36", "otherActs"), "non-log action type"),
+        (lambda cfg: cfg["settings"].__setitem__("actSubType.36", "otherMsg"), "non-log action subtype"),
+    ],
+)
+def test_exact_rule_log_messages_rejects_truncated_or_corrupted_configured_workload(mutate, message) -> None:
+    expected = [action["message"] for action in helpers.mrtr_log_actions(
+        "proof message", {"E2E_MRTR_ACTION_COUNT": "36"},
+    )]
+    config = _rule_config(expected)
+    mutate(config)
+    with pytest.raises(AssertionError, match=message):
+        helpers.assert_exact_rule_log_messages(config, expected, operation="SDK proof readback")
 
 
 @pytest.mark.parametrize(

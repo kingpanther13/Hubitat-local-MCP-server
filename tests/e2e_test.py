@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from device_configuration_helpers import assert_native_preferences
-from sdk_conformance_helpers import assert_exact_rule_log_messages, mrtr_log_actions
+from sdk_conformance_helpers import assert_exact_rule_log_messages, mrtr_log_actions, write_cap_variable_items
 
 # ---------------------------------------------------------------------------
 # Artifact prefix — every test-created resource uses this for safe cleanup
@@ -3409,7 +3409,8 @@ class TestRunner:
                 assert details.get("zigbeeChannel") not in (None, "unavailable"), \
                     f"zigbeeChannel must be filled when the details carry channel {zb_channel}: {details}"
             info = self.client.call_tool("hub_get_info")
-            assert info.get("zigbeeChannel") in (zb_channel, "unavailable"), \
+            expected_channels = ("unavailable",) if zb_channel == 0 else (zb_channel, "unavailable")
+            assert info.get("zigbeeChannel") in expected_channels, \
                 f"hub_get_info must report the same Zigbee channel as the radio details ({zb_channel}): {info.get('zigbeeChannel')}"
 
     @test("diagnostics")
@@ -14973,9 +14974,10 @@ class TestRunner:
         and the second write must be refused BEFORE dispatch -- the refusal is what proves
         the lease was taken, since nothing else on the wire reports an in-flight write."""
         suffix = _run_artifact_suffix()
-        slow_names = [f"{PREFIX}WriteCap_{i}_{suffix}" for i in range(4)]
+        items = write_cap_variable_items(f"{PREFIX}WriteCap_{suffix}")
+        slow_names = [item["name"] for item in items]
         probe_name = f"{PREFIX}WriteCapProbe_{suffix}"
-        items = [{"name": n, "type": "String", "value": "held"} for n in slow_names]
+        print(f"    WRITE_CAP workload: {len(items)} real variable creates")
 
         # A second client instance, not a second caller on self.client: the client keeps
         # per-call mutable state (JSON-RPC id counter, last-op timings), so two threads

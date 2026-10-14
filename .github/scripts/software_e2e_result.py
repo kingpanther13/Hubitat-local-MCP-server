@@ -3,10 +3,11 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import re
 import time
+import urllib.error
 import urllib.request
+from pathlib import Path
 
 REPOSITORY = "kingpanther13/Hubitat-local-MCP-server"
 CONTEXT = "Software E2E"
@@ -68,9 +69,17 @@ def wait_for_result(sha, fetch, timeout=7800, interval=30, monotonic=time.monoto
         raise ValueError("Invalid waiting bounds.")
     deadline = monotonic() + timeout
     while True:
+        if monotonic() >= deadline:
+            return UNAVAILABLE
         try:
             payload = fetch()
             outcome = result_state(payload, sha)
+        except urllib.error.HTTPError as error:
+            if not 500 <= error.code < 600:
+                return UNAVAILABLE
+            outcome = WAITING
+        except OSError:
+            outcome = WAITING
         except Exception:
             return UNAVAILABLE
         if outcome != WAITING:

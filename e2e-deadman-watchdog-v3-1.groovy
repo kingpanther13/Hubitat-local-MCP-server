@@ -1378,9 +1378,7 @@ def adminForceDeleteInstalledApp(args) {
 }
 
 // Hub variables have NO app-facing delete API -- there is no removeGlobalVar/removeGlobalVariable
-// on the app class (an earlier revision called removeGlobalVariable, every purge failed with "No
-// signature of method", and BAT_E2E_ vars accumulated on the test hub). resources/hub2-source's
-// README records the classic hubVar wizard as the real variable-CRUD contract, so drive that.
+// on the app class. Current firmware exposes native JSON endpoints; older firmware uses the wizard.
 //
 // Resolver ported from _resolveDirectAppId (hubitat-mcp-server.groovy). Two hops max: direct ->
 // create -> configure, each ANCHORED on its path shape, because taking the first digits anywhere
@@ -1440,7 +1438,27 @@ private Map clickHubVarButton(Integer appId, String buttonName, String stateAttr
 // entry could outlive the 15-minute staleness escape and keep clicking after a newer sweep had
 // taken the claim. A null claim (a caller outside a sweep) skips the check and never touches the
 // claim stamp.
+def nativeHubVariablesAvailable() {
+    def response = hubGetStatus("/hub2/variables", [:])
+    if (response?.status == 404) return false
+    if (response?.status != 200) throw new IllegalStateException("Could not read Hub Variables endpoint (HTTP ${response?.status})")
+    def model = _parseJsonBody(response.data)
+    if (!(model instanceof Map) || !(model.variables instanceof List)) {
+        throw new IllegalStateException("Hub Variables returned an unexpected JSON model")
+    }
+    return true
+}
 private String deleteHubVariable(Integer appId, String varName, String claim = null) {
+    if (appId == null) {
+        if (claim != null && !renewPurgeClaim(claim)) return "purge claim lost before the variable delete"
+        def response = hubPostJson("/hub2/variables/remove", groovy.json.JsonOutput.toJson([name: varName, acknowledgeUse: true]))
+        if (response?.status == null || response.status >= 400) return "Hub Variables delete was not accepted (HTTP ${response?.status})"
+        for (int attempt = 0; attempt < 8; attempt++) {
+            try { if (getGlobalVar(varName) == null) return null } catch (Exception ignored) { }
+            if (attempt < 7) { try { pauseExecution(300) } catch (Exception ignored) { } }
+        }
+        return "Hub Variables delete was accepted but '${varName}' could not be confirmed absent"
+    }
     String lastClicks = "unknown"
     for (int attempt = 0; attempt < 2; attempt++) {
         try {
@@ -1662,8 +1680,8 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
     }
     // Variables are hub-GLOBAL, so any app can ENUMERATE them via getAllGlobalVars -- but there is
     // no app-facing DELETE (the belief that there was is what left this leg silently broken), so
-    // removal drives the classic hubVar wizard through findHubVariablesAppId / deleteHubVariable
-    // above, the same two clicks the main server's hub_delete_variable uses. Loopback-local; no relay.
+    // removal uses the native Hub Variables endpoint when available, otherwise the classic wizard
+    // above. Both paths verify removal through getGlobalVar. Loopback-local; no relay.
     def varsDeleted = []
     def varsFailed = []
     try {
@@ -1676,8 +1694,9 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
         }
         def targetVars = allVars.keySet().findAll { (it instanceof String) && it.startsWith(prefix) && !it.startsWith("${prefix}KEEP_") }
         if (targetVars) {
-            Integer hvAppId = findHubVariablesAppId()
-            if (hvAppId == null) {
+            boolean nativeVariables = nativeHubVariablesAvailable()
+            Integer hvAppId = nativeVariables ? null : findHubVariablesAppId()
+            if (!nativeVariables && hvAppId == null) {
                 varsFailed << [name: "*", error: "could not resolve the Hub Variables app id via /installedapp/direct/hubVariables"]
             } else {
                 targetVars.each { vn ->
@@ -2648,7 +2667,7 @@ def getManualToolDefinitions() {
          inputSchema: [type: "object", properties: [type: [type: "string", enum: ["app", "driver", "library"]], id: [type: "string"], confirm: [type: "boolean"]], required: ["type", "id", "confirm"]]],
         [name: "hub_force_delete_app", annotations: [title: "Force Delete App", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "Force-delete an INSTALLED-APP instance (e.g. an RM rule) via /installedapp/forcedelete/<id>/quiet. Refuses the watchdog's own instance. confirm:true required.",
          inputSchema: [type: "object", properties: [id: [type: "string"], confirm: [type: "boolean"]], required: ["id", "confirm"]]],
-        [name: "hub_purge_e2e_artifacts", annotations: [title: "Purge E2E Artifacts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_), plus stranded test Button Controllers and mcptest throwaway app instances; delete every matching hub variable by driving the classic hubVar wizard (there is no app-facing global-variable delete API); then devices, rooms, File Manager files and e2e-*_backup_* litter with the prefix, and the mcptest throwaway code classes and bundle. <prefix>KEEP_ scaffolds are never touched. All loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Refused with busy:true while a different manual write is running, and with the held requestId during a package deployment hold. Returns per-class {deleted/failed} counts (otherDeleted/otherFailed for devices, rooms, code and files). confirm:true required. Every in-flight/cached guarantee here is PER PREFIX: a call for a DIFFERENT prefix while a sweep runs returns success:false, busy:true and SHOULD be retried once that sweep finishes.",
+        [name: "hub_purge_e2e_artifacts", annotations: [title: "Purge E2E Artifacts", readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false], description: "One-call LOCAL sweep of leftover test fixtures: force-delete every installed-app instance whose name starts with prefix (default BAT_E2E_), plus stranded test Button Controllers and mcptest throwaway app instances; delete every matching hub variable through the native Hub Variables endpoint or the wizard on older firmware; then devices, rooms, File Manager files and e2e-*_backup_* litter with the prefix, and the mcptest throwaway code classes and bundle. <prefix>KEEP_ scaffolds are never touched. All loopback-local on the hub so CI pays ONE cloud round-trip instead of N. Single-flight: a call arriving while a sweep is running is a no-op, and one arriving just after gets the finished sweep's cached result -- never retry it. Refused with busy:true while a different manual write is running, and with the held requestId during a package deployment hold. Returns per-class {deleted/failed} counts (otherDeleted/otherFailed for devices, rooms, code and files). confirm:true required. Every in-flight/cached guarantee here is PER PREFIX: a call for a DIFFERENT prefix while a sweep runs returns success:false, busy:true and SHOULD be retried once that sweep finishes.",
          inputSchema: [type: "object", properties: [prefix: [type: "string", description: "Name prefix to purge; default BAT_E2E_."], confirm: [type: "boolean"]], required: ["confirm"]]],
         [name: "hub_set_app_disabled", annotations: [title: "Set App Disabled", readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false], description: "Toggle an installed app's disabled flag (the admin UI red-X) via POST /installedapp/disable; verified by read-back. Refuses to disable the watchdog's own instance. confirm:true required.",
          inputSchema: [type: "object", properties: [appId: [type: "string"], disable: [type: "boolean"], confirm: [type: "boolean"]], required: ["appId", "disable", "confirm"]]],

@@ -47,6 +47,23 @@ def mrtr_log_actions(prefix: str, environ: Mapping[str, str] | None = None) -> l
             for index in range(1, mrtr_action_count(environ) + 1)]
 
 
+def write_cap_variable_count(environ: Mapping[str, str] | None = None) -> int:
+    """Select a bounded real bulk-create workload for the concurrent write proof."""
+    settings = os.environ if environ is None else environ
+    configured = settings.get("E2E_WRITE_CAP_VARIABLE_COUNT", "4")
+    if not isinstance(configured, str) or re.fullmatch(r"[0-9]+", configured) is None:
+        raise ValueError("E2E_WRITE_CAP_VARIABLE_COUNT must be an integer from 4 through 120")
+    count = int(configured)
+    if not 4 <= count <= 120:
+        raise ValueError("E2E_WRITE_CAP_VARIABLE_COUNT must be an integer from 4 through 120")
+    return count
+
+
+def write_cap_variable_items(prefix: str, environ: Mapping[str, str] | None = None) -> list[dict[str, str]]:
+    return [{"name": f"{prefix}_{index}", "type": "String", "value": "held"}
+            for index in range(write_cap_variable_count(environ))]
+
+
 def build_capacity_recovery(e2e_test_module: Any, client: Any) -> Callable[[str], bool]:
     """Build the platform-limiter recovery callable from the e2e suite's machinery.
 
@@ -86,7 +103,7 @@ def assert_exact_rule_log_messages(
     *,
     operation: str,
 ) -> list[str]:
-    """Assert an empty RM fixture persisted exactly six requested log actions."""
+    """Assert an empty RM fixture persisted every requested log action exactly."""
     assert isinstance(config, dict), f"{operation} returned no config object"
     assert config.get("success") is not False, (
         f"{operation} failed: {config.get('error')!r}"
@@ -95,15 +112,19 @@ def assert_exact_rule_log_messages(
     assert isinstance(settings, dict), (
         f"{operation} did not return raw settings; includeSettings=true is required"
     )
-    assert len(expected_messages) == 6 and len(set(expected_messages)) == 6, (
-        "the MRTR proof must request exactly 6 distinct log messages"
+    expected_count = len(expected_messages)
+    assert all(isinstance(message, str) and message.strip() for message in expected_messages), (
+        "the MRTR proof must request nonempty text log messages"
+    )
+    assert 6 <= expected_count <= 120 and len(set(expected_messages)) == expected_count, (
+        "the MRTR proof must request 6 through 120 distinct log messages"
     )
 
     action_types = _indexed_settings(settings, "actType.")
     action_subtypes = _indexed_settings(settings, "actSubType.")
     log_messages = _indexed_settings(settings, "logmsg.")
-    assert len(action_types) == 6, (
-        f"{operation} must contain exactly 6 action rows; saw indices "
+    assert len(action_types) == expected_count, (
+        f"{operation} must contain exactly {expected_count} action rows; saw indices "
         f"{sorted(action_types)}"
     )
     action_indices = set(action_types)
@@ -123,7 +144,7 @@ def assert_exact_rule_log_messages(
     )
 
     actual = [log_messages[index] for index in sorted(action_indices)]
-    assert len(set(actual)) == 6, (
+    assert len(set(actual)) == expected_count, (
         f"{operation} log messages are not distinct: {actual}"
     )
     assert actual == expected_messages, (

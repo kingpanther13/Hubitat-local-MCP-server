@@ -36,6 +36,11 @@ class ToolHubVariablesSpec extends ToolSpecBase {
         appExecutor.getLocation() >> sharedLocation
     }
 
+    def setup() {
+        // These cases pin the older wizard flow; native endpoints have their own spec.
+        script.metaClass._hubVarsNativeModel = { -> null }
+    }
+
     def cleanup() {
         sharedLocation.timeZone = TimeZone.getTimeZone('UTC')
     }

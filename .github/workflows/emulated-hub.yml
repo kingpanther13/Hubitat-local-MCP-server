@@ -12,8 +12,10 @@ permissions:
   statuses: read
 
 concurrency:
-  group: software-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Automatic consumers follow the latest PR head/main revision selected by the poller.
+  # Manual consumers for independent revisions retain their own result waits.
+  group: software-e2e-${{ github.event_name }}-${{ github.event_name == 'workflow_dispatch' && github.sha || github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'workflow_dispatch' }}
 
 jobs:
   revision:

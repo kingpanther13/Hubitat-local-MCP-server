@@ -27,6 +27,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         script.metaClass._findHubVariablesAppId = { -> throw new AssertionError('Supported native endpoint must not open the wizard') }
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30 ->
             requests << [method: 'GET', path: path]
+            if (path == '/hub2/hubMeshJson') return JsonOutput.toJson([localLinkedHubVariables: [], availableLinkedHubVariables: [], sharedHubVariables: []])
             if (path != '/hub2/variables') throw new AssertionError("Unexpected GET ${path}")
             if (endpointNotFound) throw new Http404()
             endpointAvailable ? JsonOutput.toJson([variables: variables.values().collect { it.nativeRow }]) : null
@@ -68,6 +69,27 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         Map response = [status: 404]
     }
 
+    def 'create mismatch reports the existing variable and repair steps without rollback'() {
+        given:
+        script.metaClass.getGlobalVar = { String name ->
+            if (posts() && variables[name]) {
+                variables[name].sdk.type = 'string'
+                variables[name].sdk.value = 'observed'
+            }
+            variables[name]?.sdk
+        }
+        when:
+        script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 17])
+        then:
+        def error = thrown(IllegalStateException)
+        error.message.contains("'Counter' exists")
+        error.message.contains('type=string, value=observed')
+        error.message.contains('requested type=integer, value=17')
+        error.message.contains('hub_set_variable')
+        error.message.contains('hub_delete_variable')
+        variables.Counter.sdk.value == 'observed'
+        posts()*.path == ['/hub2/variables/create']
+    }
     def 'single create sends current JSON type and verifies SDK storage'() {
         when:
         def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 17])
@@ -101,6 +123,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         posts().size() == 1
         posts()[0].body.name == 'Schedule'
         posts()[0].body.type == 'datetime'
+        posts()[0].body.mode == 'datetime'
         posts()[0].body.date == '2026-05-06'
         posts()[0].body.time == '12:34'
         posts()[0].body.value == variables.Schedule.sdk.value
