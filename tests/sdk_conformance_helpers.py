@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 try:
@@ -27,6 +28,23 @@ MINIMUM_LOGICAL_SECONDS = 10.0
 # writes it and the MRTR proof reads it through this constant, so a key typo is a
 # NameError in the fast lane instead of silently disabled recovery at hub time.
 CAPACITY_RECOVERY_CONFIG_KEY = "clear_load_throttle"
+
+
+def mrtr_action_count(environ: Mapping[str, str] | None = None) -> int:
+    """Select a bounded real mutation workload without changing the proof's assertions."""
+    settings = os.environ if environ is None else environ
+    configured = settings.get("E2E_MRTR_ACTION_COUNT", "6")
+    if not isinstance(configured, str) or re.fullmatch(r"[0-9]+", configured) is None:
+        raise ValueError("E2E_MRTR_ACTION_COUNT must be an integer from 6 through 120")
+    count = int(configured)
+    if not 6 <= count <= 120:
+        raise ValueError("E2E_MRTR_ACTION_COUNT must be an integer from 6 through 120")
+    return count
+
+
+def mrtr_log_actions(prefix: str, environ: Mapping[str, str] | None = None) -> list[dict[str, str]]:
+    return [{"capability": "log", "message": f"{prefix} {index}"}
+            for index in range(1, mrtr_action_count(environ) + 1)]
 
 
 def build_capacity_recovery(e2e_test_module: Any, client: Any) -> Callable[[str], bool]:

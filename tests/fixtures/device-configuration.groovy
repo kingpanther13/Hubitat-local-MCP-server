@@ -1,7 +1,8 @@
 import groovy.json.JsonOutput
 
 metadata {
-    definition(name: "E2E_PERM_Configuration", namespace: "mcptest", author: "ci", singleThreaded: true) {
+    // The observer's HTTP self-read must allow the native page to resolve this driver's inputs.
+    definition(name: "E2E_PERM_Configuration", namespace: "mcptest", author: "ci") {
         capability "Switch"
         attribute "nativeConfiguration", "string"
         attribute "nativeDeviceInfo", "string"

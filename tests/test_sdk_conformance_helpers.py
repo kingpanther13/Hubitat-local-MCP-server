@@ -16,6 +16,34 @@ from sdk_conformance_helpers import (
 )
 
 
+@pytest.mark.parametrize(("configured", "expected"), [(None, 6), ("6", 6), ("36", 36), ("120", 120)])
+def test_mrtr_workload_keeps_default_and_requires_each_distinct_real_mutation(configured, expected):
+    environment = {} if configured is None else {"E2E_MRTR_ACTION_COUNT": configured}
+    actions = helpers.mrtr_log_actions("timing proof", environment)
+    assert len(actions) == expected
+    assert all(action["capability"] == "log" for action in actions)
+    assert [action["message"] for action in actions] == [f"timing proof {index}" for index in range(1, expected + 1)]
+    assert len({action["message"] for action in actions}) == expected
+
+
+@pytest.mark.parametrize("configured", ["", "0", "5", "121", "-1", "+6", "6.0", "word", " 6", "6 ", None, True])
+def test_mrtr_workload_rejects_invalid_or_unbounded_configuration(configured):
+    with pytest.raises(ValueError, match="E2E_MRTR_ACTION_COUNT"):
+        helpers.mrtr_log_actions("timing proof", {"E2E_MRTR_ACTION_COUNT": configured})
+
+
+def test_expanded_mrtr_workload_does_not_relax_elapsed_or_continuation_requirements():
+    assert len(helpers.mrtr_log_actions("timing proof", {"E2E_MRTR_ACTION_COUNT": "36"})) == 36
+    one_leg = [{"duration": 2.325, "status": 200, "has_request_state": False,
+                "mcp_protocol_version": "2026-07-28"}]
+    with pytest.raises(AssertionError, match="at least 3"):
+        summarize_mrtr_proof(one_leg, 2.325)
+    multiple_legs = [{"duration": 3.0, "status": 200, "has_request_state": index > 0,
+                      "mcp_protocol_version": "2026-07-28"} for index in range(3)]
+    with pytest.raises(AssertionError, match="exceed 10"):
+        summarize_mrtr_proof(multiple_legs, 9.9)
+
+
 class _Headers(dict):
     def get(self, key, default=None):
         return super().get(key.lower(), default)

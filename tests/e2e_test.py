@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 
 import requests
 from device_configuration_helpers import assert_native_preferences
-from sdk_conformance_helpers import assert_exact_rule_log_messages
+from sdk_conformance_helpers import assert_exact_rule_log_messages, mrtr_log_actions
 
 # ---------------------------------------------------------------------------
 # Artifact prefix — every test-created resource uses this for safe cleanup
@@ -9071,10 +9071,8 @@ class TestRunner:
     def test_mrtr_rule_edit_uses_standard_continuation(self) -> None:
         app_id = self._create_native_rule("MrtrContinuation")
         try:
-            requested_actions = [
-                {"capability": "log", "message": f"MRTR regular E2E proof {index}"}
-                for index in range(1, 7)
-            ]
+            requested_actions = mrtr_log_actions("MRTR regular E2E proof")
+            print(f"    MRTR workload: {len(requested_actions)} real log actions")
             args = {
                 "appId": app_id,
                 # The tool schema permits extension properties. These inert values

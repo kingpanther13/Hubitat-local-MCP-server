@@ -17,6 +17,10 @@ install a second copy with only the definition name changed to
 same preferences and commands. The alternate is used for reversible driver
 switching; it is never created or removed inside E2E.
 
+Keep the observer driver reentrant: its HTTP self-read resolves driver inputs on
+another request thread. Enabling `singleThreaded` blocks that read behind the
+command holding the same device gate and causes the observer to time out.
+
 Provision the labels from `device-configuration-manifest.json` exactly:
 
 | Label suffix after `BAT_E2E_KEEP_Configuration_` | Native ownership | MCP exposure | Evidence from the scenario |
