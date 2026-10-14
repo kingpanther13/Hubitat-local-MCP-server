@@ -13,9 +13,11 @@ Review the native prerequisites before adding integration or radio infrastructur
 
 Install `device-configuration.groovy` as `mcptest.E2E_PERM_Configuration`, then
 install a second copy with only the definition name changed to
-`E2E_PERM_Configuration_Alternate`. Both must expose fixture version 2 and the
-same preferences and commands. The alternate is used for reversible driver
-switching; it is never created or removed inside E2E.
+`E2E_PERM_Configuration_Alternate`. Both must expose fixture version 3 and the
+same preferences and commands. Version 3 removed `singleThreaded`; a hub still
+carrying an older driver fails the version check until both drivers are
+reinstalled. The alternate is used for reversible driver switching; it is never
+created or removed inside E2E.
 
 Keep the observer driver reentrant: its HTTP self-read resolves driver inputs on
 another request thread. Enabling `singleThreaded` blocks that read behind the

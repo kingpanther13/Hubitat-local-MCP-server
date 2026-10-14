@@ -1,7 +1,7 @@
 import groovy.json.JsonOutput
 
 metadata {
-    // The observer's HTTP self-read must allow the native page to resolve this driver's inputs.
+    // Not singleThreaded: the observer's /device/fullJson self-read runs on another request thread and would deadlock behind the command.
     definition(name: "E2E_PERM_Configuration", namespace: "mcptest", author: "ci") {
         capability "Switch"
         attribute "nativeConfiguration", "string"
@@ -78,7 +78,7 @@ def captureDeviceEnabled(String nonce, String targetId) {
             throw new IllegalStateException('Native disabled value is unavailable')
         }
         sendEvent(name: 'nativeDeviceInfo', value: JsonOutput.toJson([
-            nonce: nonce, deviceId: targetId, fixtureVersion: 2,
+            nonce: nonce, deviceId: targetId, fixtureVersion: 3,
             enabled: !(target.disabled == true || target.disabled == 'true')
         ]), isStateChange: true)
     }
@@ -101,9 +101,9 @@ def captureConfiguration(String nonce) {
         def values = nativePage.inputValues instanceof List ? nativePage.inputValues.findAll { names.contains(it.name) }.collect {
             [name: it.name, inputValue: it.inputValue]
         } : null
-        def snapshot = [nonce: nonce, deviceId: device.id.toString(), fixtureVersion: 2, settings: rows, inputValues: values,
+        def snapshot = [nonce: nonce, deviceId: device.id.toString(), fixtureVersion: 3, settings: rows, inputValues: values,
                         runtimeMultiple: settings.probeMultiple, runtimeMultipleIsList: settings.probeMultiple instanceof List]
-        def info = [nonce: nonce, deviceId: device.id.toString(), fixtureVersion: 2,
+        def info = [nonce: nonce, deviceId: device.id.toString(), fixtureVersion: 3,
                     largeReadProbePresent: state.containsKey('largeReadProbe')]
         ["name", "label", "deviceNetworkId", "deviceTypeId", "notes", "maxEvents", "maxStates",
          "spammyThreshold", "tags", "defaultIcon", "showOnHome", "defaultCurrentState",

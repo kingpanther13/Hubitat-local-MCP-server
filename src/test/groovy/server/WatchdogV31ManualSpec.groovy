@@ -1224,6 +1224,80 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         'POST lost'       | null       | true  | false      | false
     }
 
+    def "a native variable delete reports #scenario"() {
+        given:
+        script.metaClass.nativeHubVariablesAvailable = { -> true }
+        script.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        script.metaClass.hubPostJson = { String p, String b -> [status: 200, data: reply] }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_leftover: [value: 1]] }
+        script.metaClass.getGlobalVar = { String n -> throw new IllegalStateException('SDK unavailable') }
+        script.metaClass.pauseExecution = { long ms -> }
+        when:
+        def res = script.adminPurgeE2eArtifacts([confirm: true])
+        then:
+        res.variablesFailed*.name == ['BAT_E2E_leftover']
+        res.variablesFailed[0].error.contains(expected)
+        where:
+        scenario                         | reply                                         | expected
+        'the hub refusal message'        | '{"success":false,"message":"in use by X"}'   | 'refused: in use by X'
+        'the last readback failure'      | ''                                            | 'last read failed: SDK unavailable'
+    }
+
+    def "a native variable purge stops once the claim is lost"() {
+        given: "two variables; the first native delete hands the claim to a newer sweep"
+        script.metaClass.nativeHubVariablesAvailable = { -> true }
+        script.metaClass.hubGet = { String path, Map q = [:], Integer t = null ->
+            path == "/hub2/appsList" ? groovy.json.JsonOutput.toJson([apps: []]) : null
+        }
+        script.metaClass.getAllGlobalVars = { -> [BAT_E2E_v1: [value: 1], BAT_E2E_v2: [value: 2]] }
+        script.metaClass.getGlobalVar = { String n -> null }
+        def posted = []
+        script.metaClass.hubPostJson = { String p, String b ->
+            posted << new groovy.json.JsonSlurper().parseText(b).name
+            atomicStateMap.purgeClaim = 'purge-newer'
+            [status: 200, data: '{"success":true}']
+        }
+        atomicStateMap.purgeClaim = 'purge-mine'
+        atomicStateMap.purgeInFlightAt = 1L
+
+        when:
+        def res = script.purgeE2eArtifactsLocked("BAT_E2E_", 'purge-mine')
+
+        then: "the second variable is never posted and the loss is reported against it"
+        posted == ['BAT_E2E_v1']
+        res.variablesDeleted == ['BAT_E2E_v1']
+        res.variablesFailed*.name == ['BAT_E2E_v2']
+        res.variablesFailed[0].error.contains('claim lost')
+    }
+
+    def "a Hub Variables probe status #status is reported as a probe failure, not an enumeration failure"() {
+        given:
+        def probe = scriptWithSettings([:])
+        probe.metaClass.purgeOtherFixturesLocked = { String prefix, String claim -> [deleted: [], failed: [], deletedCount: 0] }
+        probe.metaClass.throwawayCodeClasses = { String path -> [] }
+        probe.metaClass.hubGet = { String p, Map q -> '{"apps":[]}' }
+        probe.metaClass.hubGetStatus = { String p, Map q ->
+            assert p == '/hub2/variables'
+            [status: status, location: null, data: null]
+        }
+        def writes = []
+        probe.metaClass.hubPostJson = { String p, String b -> writes << p; [status: 200, data: ''] }
+        probe.metaClass.hubPostForm = { String p, Map b -> writes << p; [status: 200, data: ''] }
+        probe.metaClass.getAllGlobalVars = { -> [BAT_E2E_a: [value: 1], BAT_E2E_b: [value: 2]] }
+
+        when:
+        def res = probe.purgeE2eArtifactsLocked("BAT_E2E_", null)
+
+        then: "one sweep-wide failure names the probe, and nothing is deleted"
+        writes.isEmpty()
+        res.variablesFailed.size() == 1
+        res.variablesFailed[0].name == '*'
+        res.variablesFailed[0].error.toString() == "Hub Variables endpoint probe failed: Could not read Hub Variables endpoint (HTTP ${status})".toString()
+
+        where:
+        status << [500, 302, null]
+    }
+
     def "native variable feature detection distinguishes supported endpoints from 404 (#status)"() {
         given:
         def probe = scriptWithSettings([:])

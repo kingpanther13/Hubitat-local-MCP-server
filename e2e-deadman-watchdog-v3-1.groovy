@@ -1425,6 +1425,18 @@ private Map clickHubVarButton(Integer appId, String buttonName, String stateAttr
     return hubPostForm("/installedapp/btn", body)
 }
 
+// 404 = firmware without the native Hub Variables page (wizard path); anything else unusable throws.
+def nativeHubVariablesAvailable() {
+    def response = hubGetStatus("/hub2/variables", [:])
+    if (response?.status == 404) return false
+    if (response?.status != 200) throw new IllegalStateException("Could not read Hub Variables endpoint (HTTP ${response?.status})")
+    def model = _parseJsonBody(response.data)
+    if (!(model instanceof Map) || !(model.variables instanceof List)) {
+        throw new IllegalStateException("Hub Variables returned an unexpected JSON model")
+    }
+    return true
+}
+
 // deleteGV opens the confirm prompt keyed on the variable name; delConfirm commits. The first click
 // sequence after a fresh create/edit can be dropped by the hub (a state-machine race that priming
 // alone does not reliably defeat), so the whole sequence is retried once -- the same two-attempt
@@ -1438,26 +1450,21 @@ private Map clickHubVarButton(Integer appId, String buttonName, String stateAttr
 // entry could outlive the 15-minute staleness escape and keep clicking after a newer sweep had
 // taken the claim. A null claim (a caller outside a sweep) skips the check and never touches the
 // claim stamp.
-def nativeHubVariablesAvailable() {
-    def response = hubGetStatus("/hub2/variables", [:])
-    if (response?.status == 404) return false
-    if (response?.status != 200) throw new IllegalStateException("Could not read Hub Variables endpoint (HTTP ${response?.status})")
-    def model = _parseJsonBody(response.data)
-    if (!(model instanceof Map) || !(model.variables instanceof List)) {
-        throw new IllegalStateException("Hub Variables returned an unexpected JSON model")
-    }
-    return true
-}
+// A null appId selects the native /hub2/variables/remove path instead of the wizard.
 private String deleteHubVariable(Integer appId, String varName, String claim = null) {
     if (appId == null) {
         if (claim != null && !renewPurgeClaim(claim)) return "purge claim lost before the variable delete"
         def response = hubPostJson("/hub2/variables/remove", groovy.json.JsonOutput.toJson([name: varName, acknowledgeUse: true]))
         if (response?.status == null || response.status >= 400) return "Hub Variables delete was not accepted (HTTP ${response?.status})"
+        def reply = response.data?.toString()?.trim() ? _parseJsonBody(response.data) : null
+        if (reply instanceof Map && reply.success == false) return "Hub Variables delete was refused: ${reply.message ?: 'no message'}"
+        String lastReadError = null
         for (int attempt = 0; attempt < 8; attempt++) {
-            try { if (getGlobalVar(varName) == null) return null } catch (Exception ignored) { }
+            try { if (getGlobalVar(varName) == null) return null } catch (Exception e) { lastReadError = e.message }
             if (attempt < 7) { try { pauseExecution(300) } catch (Exception ignored) { } }
         }
-        return "Hub Variables delete was accepted but '${varName}' could not be confirmed absent"
+        return "Hub Variables delete was accepted but '${varName}' could not be confirmed absent" +
+            (lastReadError ? " (last read failed: ${lastReadError})" : "")
     }
     String lastClicks = "unknown"
     for (int attempt = 0; attempt < 2; attempt++) {
@@ -1694,11 +1701,13 @@ Map purgeE2eArtifactsLocked(String prefix, String claim = null) {
         }
         def targetVars = allVars.keySet().findAll { (it instanceof String) && it.startsWith(prefix) && !it.startsWith("${prefix}KEEP_") }
         if (targetVars) {
-            boolean nativeVariables = nativeHubVariablesAvailable()
-            Integer hvAppId = nativeVariables ? null : findHubVariablesAppId()
-            if (!nativeVariables && hvAppId == null) {
+            Boolean nativeVariables = null
+            try { nativeVariables = nativeHubVariablesAvailable() }
+            catch (Exception e) { varsFailed << [name: "*", error: "Hub Variables endpoint probe failed: ${e.message}"] }
+            Integer hvAppId = nativeVariables == false ? findHubVariablesAppId() : null
+            if (nativeVariables == false && hvAppId == null) {
                 varsFailed << [name: "*", error: "could not resolve the Hub Variables app id via /installedapp/direct/hubVariables"]
-            } else {
+            } else if (nativeVariables != null) {
                 targetVars.each { vn ->
                     if (!renewPurgeClaim(claim)) {
                         varsFailed << [name: vn, error: "purge claim lost to a newer sweep -- stopped before this delete"]

@@ -38,7 +38,7 @@ from device_configuration_helpers import assert_native_preferences
 from sdk_conformance_helpers import (
     assert_exact_rule_log_messages,
     mrtr_log_actions,
-    write_cap_holder_can_retry,
+    write_cap_holder_retry_blocker,
     write_cap_variable_items,
 )
 
@@ -3405,6 +3405,7 @@ class TestRunner:
         assert "error" in devs or isinstance(devs.get("devices"), list), f"include_devices returned nothing usable: {devs}"
         assert all("minutesSinceLastMessage" in d for d in devs.get("devices") or []), f"Zigbee activity rows lack their age: {devs}"
         # The Hub object has no zigbeeChannel on current firmware; the details JSON's channel fills it.
+        # Channel 0 means no assigned channel, so it is reported as "unavailable" by design.
         zb_channel = (details.get("zigbeeData") or {}).get("channel") if isinstance(details.get("zigbeeData"), dict) else None
         if zb_channel is not None:
             if zb_channel == 0:
@@ -3614,7 +3615,7 @@ class TestRunner:
         """Exercise native transport for provisioned child and selected fixtures; bypass reachability only."""
         fixture_dir = Path(__file__).resolve().parent / "fixtures"
         manifest = json.loads((fixture_dir / "device-configuration-manifest.json").read_text(encoding="utf-8"))
-        assert manifest["version"] == 2, "Update the configuration fixture manifest and provisioned drivers together"
+        assert manifest["version"] == 3, "Update the configuration fixture manifest and provisioned drivers together"
         expected = {
             "probeBool": ("bool", False), "probeNumber": ("number", 3),
             "probeText": ("text", "original saved text"), "probeEnum": ("enum", "eco"),
@@ -3748,7 +3749,8 @@ class TestRunner:
                     f"Stale/wrong-device {attribute} observer snapshot: {snapshot}"
                 )
                 assert snapshot.get("fixtureVersion") == manifest["version"], (
-                    f"Stale persistent observer; provision fixture version {manifest['version']} outside E2E"
+                    f"Stale persistent observer; reinstall both drivers from tests/fixtures/device-configuration.groovy "
+                    f"(fixture version {manifest['version']}) outside E2E"
                 )
                 snapshots.append(snapshot)
             if with_configuration:
@@ -4159,7 +4161,8 @@ class TestRunner:
             }, "independent LAN fixture ownership observation")
             assert captured.get("success") is True, f"LAN fixture identity observer failed: {captured}"
             native = self._wait_configuration_fixture_identity(device_id, nonce)
-            assert native.get("fixtureVersion") == manifest["version"] == 2, "Provision the current LAN fixture driver"
+            assert native.get("fixtureVersion") == manifest["version"] == 3, (
+                "Stale LAN fixture driver; reinstall both drivers from tests/fixtures/device-configuration.groovy outside E2E")
             self._assert_configuration_fixture_parent(profile, native)
             try:
                 result = self._write_once(None, "hub_call_device_command", {
@@ -12989,6 +12992,40 @@ class TestRunner:
             self._delete_variable_safe(unused_var)
 
     @test("hub_variables")
+    def test_hub_variable_connector_round_trip(self) -> None:
+        # The variable's deviceId linkage is the proof of each connector write; a relay 504
+        # falls back to that read-back. An unknown `force` argument fails the delete.
+        var_name = f"{PREFIX}ConnVar_{_run_artifact_suffix()}"
+        self._create_hub_variable_visible(var_name, "Number", "0")
+
+        def read() -> dict:
+            return self.client.call_tool("hub_read_variables", {
+                "tool": "hub_get_variable", "args": {"name": var_name}})
+
+        try:
+            created = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_connector",
+                    "args": {"name": var_name, "connectorType": "Variable", "confirm": True}}),
+                lambda: read().get("deviceId"), f"hub_create_connector({var_name})")
+            if not created["relayDropped"]:
+                assert created["response"].get("success") is True, f"hub_create_connector failed: {created}"
+            linked = read()
+            assert linked.get("deviceId") is not None, f"no connector linked to {var_name}: {linked}"
+
+            removed = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_delete_connector",
+                    "args": {"name": var_name, "confirm": True, "force": True}}),
+                lambda: read().get("deviceId") is None, f"hub_delete_connector({var_name})")
+            if not removed["relayDropped"]:
+                assert removed["response"].get("success") is True, f"hub_delete_connector failed: {removed}"
+            cleared = read()
+            assert cleared.get("deviceId") is None, f"connector still linked to {var_name}: {cleared}"
+        finally:
+            self._delete_variable_safe(var_name)
+
+    @test("hub_variables")
     def test_hub_set_variable_mesh_validation(self) -> None:
         # hub_set_variable gained mesh_shared (Hub Mesh share/unshare). Prove the validation contract
         # LIVE with NO mesh state change -- every rejection fires before any hub call and surfaces as an
@@ -14985,7 +15022,9 @@ class TestRunner:
         The suite runs with the cap OFF (main() pins maxConcurrentWrites=0), so this is the
         ONLY place it is exercised live. Cap 1 + one slow bulk variable create saturates it,
         and the second write must be refused BEFORE dispatch -- the refusal is what proves
-        the lease was taken, since nothing else on the wire reports an in-flight write."""
+        the lease was taken, since nothing else on the wire reports an in-flight write.
+        If the probe still reaches the hub first (the holder is refused instead), the
+        holder is retried, up to three attempts, once its fixtures are verified absent."""
         suffix = _run_artifact_suffix()
         items = write_cap_variable_items(f"{PREFIX}WriteCap_{suffix}")
         slow_names = [item["name"] for item in items]
@@ -15035,6 +15074,8 @@ class TestRunner:
                 worker.start()
                 try:
                     assert started.wait(timeout=10), "the background write did not start"
+                    # started fires before the request is sent; give the holder a head start to the hub.
+                    time.sleep(0.8)
                     deadline = time.monotonic() + 60
                     while worker.is_alive() and time.monotonic() < deadline:
                         probes += 1
@@ -15064,9 +15105,11 @@ class TestRunner:
                     if payload.get("status") == "too_many_writes_in_flight":
                         inventory = self.client.call_tool("hub_read_variables", {
                             "tool": "hub_list_variables", "args": {}})
-                        if write_cap_holder_can_retry(payload, inventory, slow_names):
+                        blocker = write_cap_holder_retry_blocker(payload, inventory, slow_names)
+                        if blocker is None:
                             print("    WRITE_CAP probe won the race; absent holder fixtures verified before retry")
                             continue
+                        print(f"    WRITE_CAP probe won the race; retry declined: {blocker}")
                 break
             assert not worker.is_alive(), \
                 "the in-flight write never finished; the cap state is unknown"

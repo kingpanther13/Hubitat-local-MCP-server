@@ -50,7 +50,7 @@ def test_write_cap_workload_rejects_invalid_or_unbounded_configuration(configure
 def test_write_cap_holder_retry_requires_refusal_and_complete_absence_readback():
     refused = {"status": "too_many_writes_in_flight"}
     names = ["fixture_0", "fixture_1"]
-    assert helpers.write_cap_holder_can_retry(refused, {"hubVariables": [{"name": "other"}]}, names)
+    assert helpers.write_cap_holder_retry_blocker(refused, {"hubVariables": [{"name": "other"}]}, names) is None
     for inventory in (
         {"hubVariables": [{"name": "fixture_1"}]},
         {"hubVariables": [{"name": "other"}], "nextCursor": "more"},
@@ -58,10 +58,23 @@ def test_write_cap_holder_retry_requires_refusal_and_complete_absence_readback()
         {"hubVariables": [{"error": "unreadable"}]},
         {"hubVariables": None}, {}, None,
     ):
-        assert not helpers.write_cap_holder_can_retry(refused, inventory, names)
+        assert helpers.write_cap_holder_retry_blocker(refused, inventory, names)
     for payload in ({"status": "failed"}, {}, None):
-        assert not helpers.write_cap_holder_can_retry(payload, {"hubVariables": []}, names)
-    assert not helpers.write_cap_holder_can_retry(refused, {"hubVariables": []}, [])
+        assert helpers.write_cap_holder_retry_blocker(payload, {"hubVariables": []}, names)
+    assert helpers.write_cap_holder_retry_blocker(refused, {"hubVariables": []}, [])
+
+
+def test_write_cap_holder_retry_blocker_names_the_declining_condition():
+    refused = {"status": "too_many_writes_in_flight"}
+    names = ["fixture_0"]
+    assert helpers.write_cap_holder_retry_blocker(refused, {"hubVariables": []}, names) is None
+    for inventory, reason in (
+        ({"hubVariables": [], "nextCursor": "more"}, "nextCursor"),
+        ({"hubVariables": [], "success": False}, "success:false"),
+        ({"hubVariables": ["fixture_0"]}, "without a name"),
+        ({"hubVariables": [{"name": "fixture_0"}]}, "present on the hub"),
+    ):
+        assert reason in helpers.write_cap_holder_retry_blocker(refused, inventory, names)
 
 
 def test_expanded_mrtr_workload_does_not_relax_elapsed_or_continuation_requirements():

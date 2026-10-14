@@ -64,18 +64,26 @@ def write_cap_variable_items(prefix: str, environ: Mapping[str, str] | None = No
             for index in range(write_cap_variable_count(environ))]
 
 
-def write_cap_holder_can_retry(payload: Any, inventory: Any, names: list[str]) -> bool:
-    """Retry only a refused holder whose entire fixture is independently absent."""
+def write_cap_holder_retry_blocker(payload: Any, inventory: Any, names: list[str]) -> str | None:
+    """Return why a refused holder may not be retried, or None when its fixture is verifiably absent."""
     if not isinstance(payload, dict) or payload.get("status") != "too_many_writes_in_flight":
-        return False
-    if not isinstance(inventory, dict) or inventory.get("success") is False:
-        return False
+        return "holder was not refused by the write cap"
+    if not isinstance(inventory, dict):
+        return "variable inventory is not an object"
+    if inventory.get("success") is False:
+        return "variable inventory reported success:false"
     rows = inventory.get("hubVariables")
-    if not isinstance(rows, list) or inventory.get("nextCursor"):
-        return False
+    if not isinstance(rows, list):
+        return "variable inventory has no hubVariables list"
+    if inventory.get("nextCursor"):
+        return "variable inventory is paginated (nextCursor present)"
     if not all(isinstance(row, dict) and isinstance(row.get("name"), str) for row in rows):
-        return False
-    return bool(names) and set(names).isdisjoint(row["name"] for row in rows)
+        return "variable inventory has rows without a name"
+    if not names:
+        return "no holder fixture names to check"
+    if not set(names).isdisjoint(row["name"] for row in rows):
+        return "holder fixtures are present on the hub"
+    return None
 
 
 def build_capacity_recovery(e2e_test_module: Any, client: Any) -> Callable[[str], bool]:
