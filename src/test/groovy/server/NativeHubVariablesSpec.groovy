@@ -8,11 +8,15 @@ import support.ToolSpecBase
 
 class NativeHubVariablesSpec extends ToolSpecBase {
     @Shared private TestLocation sharedLocation = new TestLocation()
+    private static final Object NATIVE_MODEL = new Object()
     private Map variables = [:]
     private List requests = []
     private boolean persistWrites = true
-    private boolean endpointAvailable = true
-    private boolean endpointNotFound = false
+    private Object modelBody = NATIVE_MODEL
+    private RuntimeException endpointFailure = null
+    private Set hiddenFromModel = [] as Set
+    private Set rejectNames = [] as Set
+    private Map meshJson = [localLinkedHubVariables: [], availableLinkedHubVariables: [], sharedHubVariables: []]
     private Map postResponse = [success: true]
 
     def setupSpec() { appExecutor.getLocation() >> sharedLocation }
@@ -27,14 +31,16 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         script.metaClass._findHubVariablesAppId = { -> throw new AssertionError('Supported native endpoint must not open the wizard') }
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30 ->
             requests << [method: 'GET', path: path]
-            if (path == '/hub2/hubMeshJson') return JsonOutput.toJson([localLinkedHubVariables: [], availableLinkedHubVariables: [], sharedHubVariables: []])
+            if (path == '/hub2/hubMeshJson') return JsonOutput.toJson(meshJson)
             if (path != '/hub2/variables') throw new AssertionError("Unexpected GET ${path}")
-            if (endpointNotFound) throw new Http404()
-            endpointAvailable ? JsonOutput.toJson([variables: variables.values().collect { it.nativeRow }]) : null
+            if (endpointFailure != null) throw endpointFailure
+            if (!modelBody.is(NATIVE_MODEL)) return modelBody
+            JsonOutput.toJson([variables: variables.findAll { name, row -> !(name in hiddenFromModel) }.values().collect { it.nativeRow }])
         }
         script.metaClass.hubInternalPostJson = { String path, String json, int timeout = 420 ->
             Map body = new JsonSlurper().parseText(json) as Map
             requests << [method: 'POST', path: path, body: body]
+            if (body.name in rejectNames) return [success: false, message: 'Rejected by hub']
             if (persistWrites && postResponse.success == true) {
                 if (path == '/hub2/variables/create') {
                     String sdkType = [integer: 'Number', bigdecimal: 'Decimal', string: 'String', boolean: 'Boolean', datetime: 'DateTime'][body.type]
@@ -56,17 +62,26 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         }
     }
 
-    private void seed(String name, String type = 'Number', value = 1, List usedBy = []) {
+    private void seed(String name, String type = 'Number', value = 1, List usedBy = [], List connectorUsedBy = []) {
         String storedType = [Number: 'integer', Decimal: 'bigdecimal', String: 'string', Boolean: 'boolean', DateTime: 'datetime'][type] ?: type
         variables[name] = [sdk: [name: name, type: storedType, value: value, deviceId: null, attribute: null],
             nativeRow: [name: name, type: storedType, value: value, connectorId: null, connectorLabel: null,
-                connectorType: null, connectorOptions: ['Variable', 'Dimmer'], usedBy: usedBy, connectorUsedBy: []]]
+                connectorType: null, connectorOptions: ['Variable', 'Dimmer'], usedBy: usedBy, connectorUsedBy: connectorUsedBy]]
+    }
+
+    private void seedConnector(String name) {
+        variables[name].sdk.deviceId = 905
+        variables[name].nativeRow.connectorId = 905
     }
 
     private List posts() { requests.findAll { it.method == 'POST' } }
 
-    static class Http404 extends RuntimeException {
-        Map response = [status: 404]
+    static class HttpFailure extends RuntimeException {
+        Map response
+        HttpFailure(Integer status) {
+            super("HTTP ${status}".toString())
+            response = [status: status]
+        }
     }
 
     def 'create mismatch reports the existing variable and repair steps without rollback'() {
@@ -79,14 +94,15 @@ class NativeHubVariablesSpec extends ToolSpecBase {
             variables[name]?.sdk
         }
         when:
-        script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 17])
+        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 17])
         then:
-        def error = thrown(IllegalStateException)
-        error.message.contains("'Counter' exists")
-        error.message.contains('type=string, value=observed')
-        error.message.contains('requested type=integer, value=17')
-        error.message.contains('hub_set_variable')
-        error.message.contains('hub_delete_variable')
+        !result.success
+        result.error.contains("'Counter' exists")
+        result.error.contains('type=string, value=observed')
+        result.error.contains('requested type=integer, value=17')
+        result.error.contains('hub_set_variable')
+        result.error.contains('hub_delete_variable')
+        result.note.contains("hub_get_tool_guide(section='variables')")
         variables.Counter.sdk.value == 'observed'
         posts()*.path == ['/hub2/variables/create']
     }
@@ -126,16 +142,20 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         posts()[0].body.mode == 'datetime'
         posts()[0].body.date == '2026-05-06'
         posts()[0].body.time == '12:34'
-        posts()[0].body.value == variables.Schedule.sdk.value
+        posts()[0].body.value == '2026-05-06T12:34:00.000+0000'
+        result.value == '2026-05-06T12:34:00.000+0000'
     }
 
     def 'successful POST without persisted variable fails readback'() {
         given:
         persistWrites = false
         when:
-        script.toolCreateVariable([confirm: true, name: 'Missing', type: 'Number', value: 3])
+        def result = script.toolCreateVariable([confirm: true, name: 'Missing', type: 'Number', value: 3])
         then:
-        thrown(IllegalStateException)
+        !result.success
+        result.error.contains('the hub accepted the create')
+        !result.error.contains('wizard')
+        result.note.contains('hub_get_variable')
         posts().size() == 1
         !variables.containsKey('Missing')
     }
@@ -144,9 +164,10 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         given:
         postResponse = [success: false, error: 'Rejected']
         when:
-        script.toolCreateVariable([confirm: true, name: 'Rejected', type: 'Number', value: 3])
+        def result = script.toolCreateVariable([confirm: true, name: 'Rejected', type: 'Number', value: 3])
         then:
-        thrown(IllegalStateException)
+        !result.success
+        result.error == 'hub_create_variable: Hub Variables create failed: Rejected'
         posts().size() == 1
         variables.isEmpty()
     }
@@ -164,6 +185,8 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         def removed = script.toolRemoveConnector([confirm: true, name: 'Counter'])
         then:
         removed.success
+        removed.note == null
+        removed.brokenConsumers == null
         variables.Counter.sdk.deviceId == null
         posts()[1] == [method: 'POST', path: '/hub2/variables/removeConnector', body: [name: 'Counter', acknowledgeUse: false]]
     }
@@ -173,22 +196,23 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         seed('Counter')
         persistWrites = false
         when:
-        script.toolCreateConnector([confirm: true, name: 'Counter'])
+        def result = script.toolCreateConnector([confirm: true, name: 'Counter'])
         then:
-        thrown(IllegalStateException)
+        !result.success
+        result.error.contains("hub_create_connector: the hub accepted the 'Variable' connector create")
         variables.Counter.sdk.deviceId == null
         posts().size() == 1
     }
 
-    def 'native dependents preserve app id and label without opening a wizard'() {
+    def 'native dependents list direct and connector users once each without opening a wizard'() {
         given:
-        seed('Counter', 'Number', 1, [[id: 81, label: 'Heating']])
+        seed('Counter', 'Number', 1, [[id: 81, label: 'Heating'], [id: 82, label: 'Dashboard']], [[id: 82, label: 'Dashboard']])
         when:
         def result = script.toolGetVariable([name: 'Counter', includeDependents: true])
         then:
-        result.appsUsing.collect { it.id.toString() } == ['81']
-        result.appsUsing*.label == ['Heating']
-        result.count == 1
+        result.appsUsing == [[id: '81', label: 'Heating'], [id: '82', label: 'Dashboard']]
+        result.connectorAppsUsing == [[id: '82', label: 'Dashboard']]
+        result.count == 2
         posts().isEmpty()
     }
 
@@ -199,42 +223,124 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         when:
         def result = script.toolGetVariable([name: 'Counter', includeDependents: true])
         then:
-        result.dependentsError
+        result.dependentsError.contains("could not confirm 'Counter' consumers")
+        result.dependentsNote.contains("section='variables'")
         !result.containsKey('appsUsing')
         when:
         script.toolDeleteHubVariable([confirm: true, name: 'Counter'])
         then:
-        thrown(IllegalArgumentException)
+        def refusal = thrown(IllegalArgumentException)
+        refusal.message.contains("could not confirm 'Counter' consumers")
         posts().isEmpty()
         variables.containsKey('Counter')
+        when:
+        def forced = script.toolDeleteHubVariable([confirm: true, name: 'Counter', force: true])
+        then:
+        forced.success
+        forced.platformInUse == null
+        forced.platformInUseError.contains("could not confirm 'Counter' consumers")
+        posts() == [[method: 'POST', path: '/hub2/variables/remove', body: [name: 'Counter', acknowledgeUse: true]]]
     }
 
-    def 'connector consumers prevent removal'() {
+    def 'connector consumers prevent removal until force acknowledges them'() {
         given:
-        seed('Counter')
-        variables.Counter.sdk.deviceId = 905
-        variables.Counter.nativeRow.connectorId = 905
-        variables.Counter.nativeRow.connectorUsedBy = [[id: 82, label: 'Dashboard']]
+        seed('Counter', 'Number', 1, [], [[id: 82, label: 'Dashboard']])
+        seedConnector('Counter')
         when:
         script.toolRemoveConnector([confirm: true, name: 'Counter'])
         then:
-        thrown(IllegalArgumentException)
+        def refusal = thrown(IllegalArgumentException)
+        refusal.message.contains('Dashboard (id=82)')
+        refusal.message.contains('force=true')
+        refusal.message.contains("hub_get_tool_guide(section='variables')")
         posts().isEmpty()
         variables.Counter.sdk.deviceId == 905
+        when:
+        def result = script.toolRemoveConnector([confirm: true, name: 'Counter', force: true])
+        then:
+        result.success
+        result.brokenConsumers == [[id: '82', label: 'Dashboard']]
+        variables.Counter.sdk.deviceId == null
+        posts() == [[method: 'POST', path: '/hub2/variables/removeConnector', body: [name: 'Counter', acknowledgeUse: true]]]
     }
 
-    def 'unknown connector consumers prevent removal'() {
+    def 'unknown connector consumers prevent removal until force'() {
         given:
         seed('Counter')
-        variables.Counter.sdk.deviceId = 905
-        variables.Counter.nativeRow.connectorId = 905
+        seedConnector('Counter')
         variables.Counter.nativeRow.remove('connectorUsedBy')
         when:
         script.toolRemoveConnector([confirm: true, name: 'Counter'])
         then:
-        thrown(IllegalStateException)
+        def refusal = thrown(IllegalArgumentException)
+        refusal.message.contains("could not confirm 'Counter' consumers")
         posts().isEmpty()
         variables.Counter.sdk.deviceId == 905
+        when:
+        def result = script.toolRemoveConnector([confirm: true, name: 'Counter', force: true])
+        then:
+        result.success
+        result.brokenConsumers == null
+        posts() == [[method: 'POST', path: '/hub2/variables/removeConnector', body: [name: 'Counter', acknowledgeUse: true]]]
+    }
+
+    def 'connector removal fails when the variable cannot be read back (#mode)'() {
+        given:
+        seed('Counter')
+        seedConnector('Counter')
+        script.metaClass.getGlobalVar = { String name ->
+            if (!posts()) return variables[name]?.sdk
+            if (mode == 'throws') throw new IllegalStateException('SDK read unavailable')
+            null
+        }
+        when:
+        def result = script.toolRemoveConnector([confirm: true, name: 'Counter'])
+        then:
+        !result.success
+        result.error.contains(expected)
+        result.note.contains('hub_get_variable')
+        posts()*.path == ['/hub2/variables/removeConnector']
+
+        where:
+        mode      | expected
+        'missing' | 'no longer readable'
+        'throws'  | 'SDK read unavailable'
+    }
+
+    def 'connector type the hub does not offer is refused before any POST'() {
+        given:
+        seed('Counter')
+        when:
+        script.toolCreateConnector([confirm: true, name: 'Counter', connectorType: 'Volume'])
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('The hub offers: Variable, Dimmer')
+        error.message.contains("hub_get_tool_guide(section='variables')")
+        posts().isEmpty()
+    }
+
+    def 'connector create refuses when the hub offers no connector types'() {
+        given:
+        seed('Counter')
+        variables.Counter.nativeRow.connectorOptions = []
+        when:
+        def result = script.toolCreateConnector([confirm: true, name: 'Counter'])
+        then:
+        !result.success
+        result.error.contains("did not offer connector types for 'Counter'")
+        result.note.startsWith('Nothing was changed')
+        posts().isEmpty()
+    }
+
+    def 'connector create defaults to the first offered type when Variable is not offered'() {
+        given:
+        seed('Counter')
+        variables.Counter.nativeRow.connectorOptions = ['Dimmer', 'Volume']
+        when:
+        def result = script.toolCreateConnector([confirm: true, name: 'Counter'])
+        then:
+        result.connectorType == 'Dimmer'
+        posts()*.body == [[name: 'Counter', connectorType: 'Dimmer']]
     }
 
     def 'unreadable SDK deletion readback cannot prove success'() {
@@ -245,9 +351,10 @@ class NativeHubVariablesSpec extends ToolSpecBase {
             variables[name]?.sdk
         }
         when:
-        script.toolDeleteHubVariable([confirm: true, name: 'Counter'])
+        def result = script.toolDeleteHubVariable([confirm: true, name: 'Counter'])
         then:
-        thrown(IllegalStateException)
+        !result.success
+        result.error.contains("could not verify whether 'Counter' was deleted: SDK read unavailable")
         posts().size() == 1
     }
 
@@ -256,9 +363,11 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         seed('Counter')
         persistWrites = false
         when:
-        script.toolDeleteHubVariable([confirm: true, name: 'Counter'])
+        def result = script.toolDeleteHubVariable([confirm: true, name: 'Counter'])
         then:
-        thrown(IllegalStateException)
+        !result.success
+        result.error.contains('hub_delete_variable: the hub accepted the delete')
+        !result.error.contains('click-sequence')
         variables.containsKey('Counter')
         posts() == [[method: 'POST', path: '/hub2/variables/remove', body: [name: 'Counter', acknowledgeUse: false]]]
     }
@@ -269,7 +378,8 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         when:
         script.toolDeleteHubVariable([confirm: true, name: 'Counter'])
         then:
-        thrown(IllegalArgumentException)
+        def refusal = thrown(IllegalArgumentException)
+        refusal.message.contains('Heating (id=81)')
         posts().isEmpty()
         variables.containsKey('Counter')
         when:
@@ -280,10 +390,128 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         posts() == [[method: 'POST', path: '/hub2/variables/remove', body: [name: 'Counter', acknowledgeUse: true]]]
     }
 
-    def 'endpoint unavailable creates through existing wizard primitives (#notFound)'() {
+    def 'connector-only consumers block deletion and appear as dependents'() {
         given:
-        endpointAvailable = false
-        endpointNotFound = notFound
+        seed('Counter', 'Number', 1, [], [[id: 82, label: 'Dashboard']])
+        seedConnector('Counter')
+        when:
+        def found = script.toolGetVariable([name: 'Counter', includeDependents: true])
+        then:
+        found.appsUsing == [[id: '82', label: 'Dashboard']]
+        found.connectorAppsUsing == [[id: '82', label: 'Dashboard']]
+        found.count == 1
+        when:
+        script.toolDeleteHubVariable([confirm: true, name: 'Counter'])
+        then:
+        def refusal = thrown(IllegalArgumentException)
+        refusal.message.contains('Dashboard (id=82)')
+        posts().isEmpty()
+        variables.containsKey('Counter')
+    }
+
+    def 'clean Hub Mesh mirror unlink acknowledges the mesh link without force'() {
+        given:
+        String mirror = 'Counter on Peer'
+        seed(mirror, 'Number', 1, [[id: 7, label: 'Hub Mesh']])
+        meshJson.localLinkedHubVariables = [[name: mirror, sourceVarName: 'Counter', sourceHubName: 'Peer', inUseByApps: false]]
+        when:
+        def result = script.toolDeleteHubVariable([confirm: true, name: mirror])
+        then:
+        result.success
+        result.unlinked
+        posts() == [[method: 'POST', path: '/hub2/variables/remove', body: [name: mirror, acknowledgeUse: true]]]
+        !variables.containsKey(mirror)
+    }
+
+    def 'variable missing from the native model is unknown, not unused'() {
+        given:
+        seed('Counter')
+        hiddenFromModel << 'Counter'
+        when:
+        def found = script.toolGetVariable([name: 'Counter', includeDependents: true])
+        then:
+        found.dependentsError.contains("does not list 'Counter'")
+        !found.containsKey('appsUsing')
+        when:
+        script.toolDeleteHubVariable([confirm: true, name: 'Counter'])
+        then:
+        def refusal = thrown(IllegalArgumentException)
+        refusal.message.contains("does not list 'Counter'")
+        posts().isEmpty()
+        variables.containsKey('Counter')
+    }
+
+    def 'bulk native create reports a rejected item and keeps the others'() {
+        given:
+        rejectNames << 'Bad'
+        when:
+        def result = script.toolCreateVariable([confirm: true, variables: [
+            [name: 'First', type: 'Number', value: 1],
+            [name: 'Bad', type: 'Number', value: 2],
+            [name: 'Last', type: 'Number', value: 3]]])
+        then:
+        !result.success
+        result.createdCount == 2
+        result.failedCount == 1
+        result.results*.name == ['First', 'Bad', 'Last']
+        result.results*.success == [true, false, true]
+        result.results[1].error.contains('Rejected by hub')
+        posts()*.body*.name == ['First', 'Bad', 'Last']
+        variables.keySet() == ['First', 'Last'] as Set
+    }
+
+    def 'empty Hub Variables body fails instead of opening the wizard (#label)'() {
+        given:
+        modelBody = body
+        when:
+        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        then:
+        !result.success
+        result.error == 'hub_create_variable: Could not read the Hub Variables model: Hub Variables returned an empty response'
+        result.note.startsWith('Nothing was changed')
+        posts().isEmpty()
+
+        where:
+        label   | body
+        'null'  | null
+        'empty' | ''
+        'blank' | '  '
+    }
+
+    def 'Hub Variables endpoint failure other than 404 is raised, not routed to the wizard (#status)'() {
+        given:
+        endpointFailure = new HttpFailure(status)
+        when:
+        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        then:
+        !result.success
+        result.error == "hub_create_variable: Could not read the Hub Variables model: HTTP ${status}".toString()
+        posts().isEmpty()
+
+        where:
+        status << [500, 302, null]
+    }
+
+    def 'unreadable Hub Variables model is reported (#label)'() {
+        given:
+        modelBody = body
+        when:
+        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        then:
+        !result.success
+        result.error == "hub_create_variable: Could not read the Hub Variables model: ${expected}".toString()
+        posts().isEmpty()
+
+        where:
+        label            | body                    | expected
+        'malformed JSON' | '{"variables": ['       | 'Could not read the Hub Variables JSON model'
+        'JSON array'     | '[1, 2]'                | 'Hub Variables returned an unexpected JSON model'
+        'no variables'   | '{"variables": "none"}' | 'Hub Variables returned an unexpected JSON model'
+    }
+
+    def 'endpoint 404 creates through existing wizard primitives'() {
+        given:
+        endpointFailure = new HttpFailure(404)
         Map pending = [:]
         List clicks = []
         script.metaClass._findHubVariablesAppId = { -> 1424 }
@@ -303,8 +531,69 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         variables.Legacy.sdk.value == 4
         clicks == ['moreVar']
         posts().isEmpty()
+    }
 
-        where:
-        notFound << [false, true]
+    def 'via dispatch: native create and delete succeed through the tools/call envelope'() {
+        when:
+        def created = mcpDriver.callTool('hub_create_variable', [confirm: true, name: 'Counter', type: 'Number', value: 17])
+        then:
+        created.error == null
+        !created.result.isError
+        mcpDriver.parseInner(created).success == true
+        variables.Counter.sdk.value == 17
+        when:
+        def deleted = mcpDriver.callTool('hub_delete_variable', [confirm: true, name: 'Counter'])
+        then:
+        deleted.error == null
+        !deleted.result.isError
+        mcpDriver.parseInner(deleted).deleted == true
+        !variables.containsKey('Counter')
+        posts()*.path == ['/hub2/variables/create', '/hub2/variables/remove']
+    }
+
+    def 'via dispatch: an unoffered connectorType is a validation error with no POST'() {
+        given:
+        seed('Counter')
+        when:
+        def response = mcpDriver.callTool('hub_create_connector', [confirm: true, name: 'Counter', connectorType: 'Volume'])
+        then:
+        response.error == null
+        response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error.contains('The hub offers: Variable, Dimmer')
+        posts().isEmpty()
+    }
+
+    def 'via dispatch: a connector apps use is refused without force'() {
+        given:
+        seed('Counter', 'Number', 1, [], [[id: 82, label: 'Dashboard']])
+        seedConnector('Counter')
+        when:
+        def response = mcpDriver.callTool('hub_delete_connector', [confirm: true, name: 'Counter'])
+        then:
+        response.error == null
+        response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error.contains('Dashboard (id=82)')
+        inner.error.contains('force=true')
+        posts().isEmpty()
+        variables.Counter.sdk.deviceId == 905
+    }
+
+    def 'via dispatch: a native runtime failure returns the structured error'() {
+        given:
+        modelBody = ''
+        when:
+        def response = mcpDriver.callTool('hub_create_variable', [confirm: true, name: 'Counter', type: 'Number', value: 3])
+        then:
+        response.error == null
+        response.result.isError
+        def inner = mcpDriver.parseInner(response)
+        inner.success == false
+        inner.error.contains('Hub Variables returned an empty response')
+        inner.note.startsWith('Nothing was changed')
+        posts().isEmpty()
     }
 }
