@@ -12688,9 +12688,7 @@ class TestRunner:
 
     @test("hub_variables")
     def test_hub_variable_create_get_delete_round_trip(self) -> None:
-        # create/delete drive the Hub Variables system app's wizard (its instance id
-        # resolved via the direct-alias redirect); get reads back through getGlobalVar,
-        # so a green round-trip proves the wizard writes landed in the real namespace.
+        # The independent getGlobalVar read proves create/delete reached the hub namespace.
         var_name = f"{PREFIX}HubVar_RT"
         # Track BEFORE creating: only the CI purge prefix-sweeps variables, so locally a crash
         # between the create landing and a later append would strand it.
@@ -12801,12 +12799,17 @@ class TestRunner:
                 assert dw["response"].get("success") is True, f"DateTime create failed: {dw['response']}"
             got_dt = self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_get_variable", "args": {"name": dt_name}})
+            assert got_dt.get("source") == "hub" and str(got_dt.get("type")).lower() == "datetime", \
+                f"DateTime create did not persist the requested hub variable type: {got_dt}"
             dt_value = str(got_dt.get("value"))
             assert "T12:30" in dt_value and "99:99" not in dt_value, \
                 f"DateTime variable lost its time (expected T12:30): {got_dt}"
             hub_zone = self.client.call_tool("hub_get_info", {}).get("timeZone")
-            expected_offset = datetime(2026, 1, 1, 12, 30, tzinfo=ZoneInfo(hub_zone)).utcoffset()
-            assert datetime.fromisoformat(dt_value).utcoffset() == expected_offset, \
+            expected_datetime = datetime(2026, 1, 1, 12, 30, tzinfo=ZoneInfo(hub_zone))
+            actual_datetime = datetime.fromisoformat(dt_value)
+            assert actual_datetime.replace(tzinfo=None) == expected_datetime.replace(tzinfo=None), \
+                f"DateTime create changed the requested date or time: {dt_value}"
+            assert actual_datetime.utcoffset() == expected_datetime.utcoffset(), \
                 f"DateTime offset does not match hub zone {hub_zone}: {dt_value}"
         finally:
             self._delete_variable_safe(dt_name)
@@ -12815,13 +12818,14 @@ class TestRunner:
     def test_hub_variable_bulk_create_round_trip(self) -> None:
         # The bulk form (variables=[...]) creates several vars sequentially in one call
         # and reports per-item status. A green round-trip proves the gateway routes the
-        # variables array, each item's wizard write landed in the real namespace, and the
+        # variables array, each variable write landed in the real namespace, and the
         # response carries per-item success + the value that actually persisted.
-        names = [f"{PREFIX}BulkVar_A", f"{PREFIX}BulkVar_B", f"{PREFIX}BulkVar_C"]
+        names = [f"{PREFIX}BulkVar_{letter}" for letter in ("A", "B", "C", "D")]
         items = [
             {"name": names[0], "type": "Number", "value": 1},
             {"name": names[1], "type": "String", "value": "two"},
             {"name": names[2], "type": "Boolean", "value": True},
+            {"name": names[3], "type": "Decimal", "value": 1.25},
         ]
         # Track BEFORE creating -- only the CI purge prefix-sweeps variables, so a crash between the
         # create landing and a later append would strand the entities.
@@ -12842,10 +12846,10 @@ class TestRunner:
             else:
                 created = cw["response"]
                 assert created.get("success") is True, f"bulk create did not fully succeed: {created}"
-                assert created.get("createdCount") == 3 and created.get("failedCount") == 0, \
+                assert created.get("createdCount") == len(items) and created.get("failedCount") == 0, \
                     f"bulk create count mismatch: {created}"
                 results = created.get("results") or []
-                assert len(results) == 3, f"bulk create did not report one result per item: {created}"
+                assert len(results) == len(items), f"bulk create did not report one result per item: {created}"
                 by_name = {r.get("name"): r for r in results}
                 for it in items:
                     r = by_name.get(it["name"])
@@ -12858,6 +12862,8 @@ class TestRunner:
                         f"bulk item {it['name']} type mismatch: got {r.get('type')!r}, expected {it['type']!r}"
 
             # Independently confirm each landed in the hub namespace and read back its value.
+            stored_types = {"Number": "integer", "String": "string",
+                            "Boolean": "boolean", "Decimal": "bigdecimal"}
             for it in items:
                 got = self.client.call_tool("hub_manage_variables", {
                     "tool": "hub_get_variable", "args": {"name": it["name"]},
@@ -12865,10 +12871,12 @@ class TestRunner:
                 assert got.get("source") == "hub", f"bulk var {it['name']} not in the hub namespace: {got}"
                 assert got.get("value") == it["value"], \
                     f"bulk var {it['name']} value mismatch on read-back: {got}"
-            # type filter: the Number lists, the String and Boolean do not, rule-engine vars drop out.
+                assert str(got.get("type")).lower() == stored_types[it["type"]], \
+                    f"bulk var {it['name']} persisted the wrong type: {got}"
+            # The Number filter excludes the other types and rule-engine variables.
             typed = self.client.call_tool("hub_read_variables", {"tool": "hub_list_variables", "args": {"type": "Number"}})
             typed_names = [v.get("name") for v in typed.get("hubVariables") or []]
-            assert names[0] in typed_names and names[1] not in typed_names and names[2] not in typed_names, \
+            assert names[0] in typed_names and all(name not in typed_names for name in names[1:]), \
                 f"type=Number listing is wrong: {typed_names}"
             assert typed.get("ruleVariables") == [], "a typed listing must leave rule-engine variables out"
             # increment adds atomically on the hub and reports both values. Right after the bulk
