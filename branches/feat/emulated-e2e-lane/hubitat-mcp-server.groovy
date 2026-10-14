@@ -15256,7 +15256,7 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
     if (appId == null) {
         def nativeType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][type]
         def body = [name: name, type: nativeType, value: dtValue ?: value.toString()]
-        if (dtValue != null) { body.date = dtValue.take(10); body.time = dtValue.substring(11, 16) }
+        if (dtValue != null) { body.mode = "datetime"; body.date = dtValue.take(10); body.time = dtValue.substring(11, 16) }
         _hubVarsNativePost("create", body)
         applied << "native create"
     } else {
@@ -15308,7 +15308,9 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
                 catch (Exception ignored) { matches = false }
             } else { matches = matches && created.value?.toString() == value.toString() }
         }
-        if (!matches) throw new IllegalStateException("hub_create_variable: '${name}' read-back does not match the requested type and value")
+        if (!matches) throw new IllegalStateException(
+            "hub_create_variable: '${name}' exists, but reads type=${created.type}, value=${created.value}; " +
+            "requested type=${expectedType}, value=${value}. Repair it with hub_set_variable, or delete it with hub_delete_variable before creating it again.")
     }
     if (created == null) {
         throw new IllegalStateException(
@@ -15436,7 +15438,7 @@ def toolRemoveConnector(args) {
     }
     if (res?.success != true) {
         throw new IllegalStateException(
-            "hub_delete_connector: toolDeleteDevice failed for deviceId=${deviceId}: ${res?.error ?: 'unknown error'}")
+            "hub_delete_connector: connector removal failed for deviceId=${deviceId}: ${res?.error ?: 'unknown error'}")
     }
     def after = null
     for (int v = 0; v < 8; v++) {
