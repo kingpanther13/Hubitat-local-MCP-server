@@ -18330,6 +18330,16 @@ def hub_label(hub_url: str) -> str:
     return "ephemeral test hub" if ephemeral_lane() else hub_url
 
 
+def _count_alert_items(value) -> int:
+    """Alert entries in a healthAlerts payload: every `alertItems` list, at any depth."""
+    if isinstance(value, dict):
+        return sum(len(v) if k == "alertItems" and isinstance(v, list) else _count_alert_items(v)
+                   for k, v in value.items())
+    if isinstance(value, list):
+        return sum(_count_alert_items(v) for v in value)
+    return 0
+
+
 def redact_hub_payload(value, key: str | None = None):
     """Ephemeral lane: a hub_get_info-shaped payload minus identity fields; alert text becomes a count."""
     if not ephemeral_lane():
@@ -18337,7 +18347,7 @@ def redact_hub_payload(value, key: str | None = None):
     if key in _IDENTITY_KEYS:
         return _REDACTED
     if key == "healthAlerts":
-        return f"<{len(value)} health-alert entries>" if isinstance(value, (dict, list)) else _REDACTED
+        return f"<{_count_alert_items(value)} health-alert entries>" if isinstance(value, (dict, list)) else _REDACTED
     if isinstance(value, dict):
         return {k: redact_hub_payload(v, k) for k, v in value.items()}
     if isinstance(value, list):

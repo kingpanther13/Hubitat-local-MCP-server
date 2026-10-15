@@ -3326,7 +3326,7 @@ def test_hub_payload_redaction_is_ephemeral_only_and_keeps_counts(monkeypatch):
     redacted = et.redact_hub_payload(HUB_INFO)
     for key in ("localIP", "zigbeeId", "hubData", "network"):
         assert redacted[key] == "<redacted>"
-    assert redacted["healthAlerts"] == "<2 health-alert entries>"
+    assert redacted["healthAlerts"] == "<1 health-alert entries>"
     assert redacted["firmwareVersion"] == "2.5.2.129"
     assert et.redact_hub_payload([{"localIP": "1.2.3.4"}]) == [{"localIP": "<redacted>"}]
     assert "Cloud connection" not in str(et.redact_hub_payload(HUB_INFO["healthAlerts"]["details"], "healthAlerts"))
