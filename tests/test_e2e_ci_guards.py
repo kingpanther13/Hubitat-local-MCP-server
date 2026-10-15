@@ -420,7 +420,7 @@ FAILED_E2E = {"status": "failed", "exit_code": 1, "passed": 298, "failed": 2, "s
 
 @pytest.mark.parametrize("case, changes, passes", [
     ("passed", {}, True),
-    ("sdk-not-run", {"sdk": {"status": "not_run", "exit_code": None, "passed": 0, "failed": 0, "failed_tests": []}}, True),
+    ("sdk-not-run", {"sdk": {"status": "not_run", "exit_code": None, "passed": 0, "failed": 0, "failed_tests": []}}, False),
     ("e2e-failed", {"e2e": FAILED_E2E}, False),
     ("e2e-error", {"e2e": {**PROVIDER_RESULTS["e2e"], "status": "error", "exit_code": 2}}, False),
     ("sdk-failed", {"sdk": {"status": "failed", "exit_code": 1, "passed": 11, "failed": 1,
@@ -463,7 +463,9 @@ def test_ephemeral_provider_results_print_and_gate(case, changes, passes, tmp_pa
     assert f"E2E {e2e['status']}: passed {e2e['passed']}, failed {e2e['failed']}, skipped 4 of 304" in text
     assert f"SDK conformance {sdk['status']}: passed {sdk['passed']}" in text
     if case == "sdk-not-run":
-        assert "exit none." in text
+        assert "exit none." in text and "::error::The SDK conformance leg did not run, and it may not skip." in out
+    else:
+        assert "did not run" not in out
     if case == "e2e-failed":
         assert "- test_alpha: boom\n" in text and "- test_beta: x" in text
     if case == "sdk-failed":

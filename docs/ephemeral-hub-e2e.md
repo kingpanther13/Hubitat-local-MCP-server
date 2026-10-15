@@ -81,9 +81,10 @@ artifact bypasses log masking.
 
 The `e2e` job waits up to 90 minutes for that artifact and applies the same entry check. It prints
 the three logs with workflow commands disabled, writes the counts and failed tests to the step
-summary, and uploads the files as its results. It passes only when `e2e.status` is `passed` and
-`sdk.status` is not `failed`, and it fails when `results.json` is missing, has another schema
-version or names another revision. In this mode it does not check out the head, install Python or
+summary, and uploads the files as its results. It passes only when `e2e.status` and `sdk.status`
+are both `passed`. An SDK leg that did not run fails the job, because conformance may not skip.
+The job also fails when `results.json` is missing, has another schema version or names another
+revision. In this mode it does not check out the head, install Python or
 read `hub_get_info`. It still scrubs tunnel hostnames and MAC-shaped values from the files, as the
 session path masks them.
 

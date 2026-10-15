@@ -227,7 +227,9 @@ jobs:
             "E2E \(.e2e.status): passed \(.e2e.passed), failed \(.e2e.failed), skipped \(.e2e.skipped) of \(.e2e.total), exit \(.e2e.exit_code).", "",
             "SDK conformance \(.sdk.status): passed \(.sdk.passed), failed \(.sdk.failed), exit \(.sdk.exit_code // "none").", "",
             ((.e2e.failed_tests[]?, .sdk.failed_tests[]?) | "- \(.name): \(.message // "" | split("\n")[0])")' results.json >> "$GITHUB_STEP_SUMMARY"
-          jq -e '.e2e.status == "passed" and .sdk.status != "failed"' results.json >/dev/null \
+          jq -e '.sdk.status != "not_run"' results.json >/dev/null \
+            || echo "::error::The SDK conformance leg did not run, and it may not skip."
+          jq -e '.e2e.status == "passed" and .sdk.status == "passed"' results.json >/dev/null \
             || { echo "::error::The provider-run suite failed; the step summary lists the failed tests."; exit 1; }
       - name: Mask hub identity
         if: steps.session.outputs.ready == 'true'
