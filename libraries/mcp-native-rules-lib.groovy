@@ -100,25 +100,25 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'switch'}` is rejected); returns triggerIndex. Capability families (use these display names): Device-state — Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source; Numeric — Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints; Button; Custom Attribute; Certain Time (and optional date) / Sunrise / Sunset (the picker value is the full 'Certain Time (and optional date)' string); Mode; Periodic Schedule. Modifiers: andStays, allOfThese. Optional per spec: conditional (sets the conditional-trigger gate — pair with `condition` to bind it in one call), condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?, rawSettings?} (a NARROWER set than addRequiredExpression), rawSettings {field:value} with @N = the auto-assigned index (e.g. {'xVar@N':'myVar'}). addTriggers[] = bulk, updateRule once at the end. Per-field specs and the periodic shape: pass {discover: true}, guide:true, or hub_get_tool_guide(section='set_rule_reference_triggers'). Extended condition shapes: section='set_rule_reference_conditions'. Cross-cutting fail-loud steers: section='set_rule_reference_guards'."""
+                        description: """Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` (RM's own picker names, e.g. Switch, Temperature, Button, Custom Attribute, Certain Time (and optional date), Mode, Periodic Schedule) NOT `type`; returns triggerIndex. The capability list with each one's fields comes from hub_set_rule(operation:'discover', args:{kind:'trigger'}). Optional per spec: andStays, allOfThese, condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?} (a conditional trigger), rawSettings {field:value} with @N = the trigger index. Periodic shape and extended condition shapes: hub_get_tool_guide(section='set_rule_reference_triggers' / 'set_rule_reference_conditions')."""
                     ],
                     addTriggers: [
                         type: "array",
-                        description: "Bulk-add triggers (each item the same shape as addTrigger); updateRule fires ONCE at the end. The first failed or partial item stops the batch: later items are notAttempted and updateRule is not fired. Pairs with addActions to build a whole rule in one call.",
+                        description: "Add several triggers (addTrigger shape each) in order, then updateRule once. The first failed or partial item stops the batch (later items notAttempted).",
                         items: [type: "object"]
                     ],
                     addRequiredExpression: [
                         type: "object",
-                        description: """Add an RM 5.1 Required Expression (the pre-trigger gate that conditions whether the rule may fire); returns conditionIndices. Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}, ...], operator:'AND'|'OR'|'XOR' OR operators:[...] (one per gap; RM walks left to right and stops early, so group mixed AND/OR with subExpression)}. comparator is REQUIRED with attribute (Custom Attribute) and with variable+value (Variable); ASCII !=/<>/== auto-map to RM glyphs, and a free-valued (String) variable/attribute offers `*contains*` (substring match; negate with not:true). STPage capability list and extended shapes (Mode, Between two times, Variable incl. compareToVariable, device-relative compareToDevice, nested subExpression): guide:true or hub_get_tool_guide(section='set_rule_reference_conditions'); cross-cutting fail-loud steers: section='set_rule_reference_guards'."""
+                        description: """Add the rule's Required Expression (the gate that decides whether a trigger may fire); returns conditionIndices. Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}, ...], operator:'AND'|'OR'|'XOR' or operators:[...] (one per gap; RM evaluates left to right, so group mixed AND/OR with subExpression)}. comparator is required with attribute (Custom Attribute) and with variable+value; ASCII !=/<>/== map to RM's glyphs. Condition capability list and extended shapes (Mode, Between two times, Variable, compareToVariable, compareToDevice, nested subExpression): hub_get_tool_guide(section='set_rule_reference_conditions')."""
                     ],
                     replaceRequiredExpression: [
                         type: "object",
-                        description: """Replace the rule's existing Required Expression in place (same appId). Same spec as addRequiredExpression ({conditions:[...], operator|operators}, incl. `*contains*` substring match on a free-valued String variable/attribute -- negate with not:true); use addRequiredExpression to ADD one when the rule has none (this refuses with requiredExpressionMissing). A failed build leaves the original in place (originalPreserved:true); a failure after the switch rolls back to the original (requiredExpressionRestored).[[FLAT_TRIM]] The new expression is built after the existing one in RM's expression editor and the old one is removed only once the new one is complete. The replaced conditions stay listed as unused under Manage Conditions.[[/FLAT_TRIM]]"""
+                        description: """Replace the rule's existing Required Expression (same spec as addRequiredExpression; refuses with requiredExpressionMissing when the rule has none). The new expression is built before the old one is removed, so a failed build leaves the original in place (originalPreserved) and a failure after the switch restores it (requiredExpressionRestored)."""
                     ],
 
                     addActions: [
                         type: "array",
-                        description: "Bulk-add actions (each item the same shape as addAction; actions self-bake via doActPage); updateRule fires once at the end. The first failed or partial item stops the batch: later items are notAttempted and updateRule is not fired. Pairs with addTriggers.",
+                        description: "Add several actions (addAction shape each) in order, then updateRule once. The first failed or partial item stops the batch (later items notAttempted).",
                         items: [type: "object"]
                     ],
                     addLocalVariable: [
@@ -131,7 +131,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     patches: [
                         type: "array",
-                        description: "Multi-mutation in one call (not a transaction: ops before a stop stay written): each item is a sub-spec with ONE operation key (settings, button, addTrigger(s), addAction(s), addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, modifyAction). Operations run sequentially; updateRule fires once at the end; per-op outcome in patches[i]. The first failed or partial op or inner item stops the batch: later ops are notAttempted and updateRule is not fired.",
+                        description: "Several edits in one call, each item one operation key (any edit operation except walkStep), run in order with one updateRule at the end; per-op outcome in patches[i]. Not a transaction: the first failed or partial op stops the batch (later ops notAttempted, no updateRule) and earlier ops stay written.",
                         items: [type: "object"]
                     ],
                     removeAction: [
@@ -140,11 +140,11 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     clearActions: [
                         type: "boolean",
-                        description: "Pass true to delete every action (highest index first) — the wipe-and-rebuild pattern. On a rare unconfirmed late commit (asyncCommitLikely:true) verify via hub_get_app_config(appId); do NOT call cancelTrash (it can commit pending deletes)."
+                        description: "Pass true to delete every action. On an unconfirmed late commit (asyncCommitLikely:true) verify via hub_get_app_config(appId) before retrying; never click cancelTrash (it can commit pending deletes)."
                     ],
                     replaceActions: [
                         type: "array",
-                        description: "Replace the entire action list (not a transaction): clears all actions, bulk-adds every spec here (same shape as addAction items), then updateRule once. The first failed or partial added item stops the rest (notAttempted, no updateRule); the old list is already cleared. Pass [] to clear all (= clearActions). On asyncCommitLikely:true verify before retrying; do NOT call cancelTrash.",
+                        description: "Clear every action, then add these specs (addAction shape) in order, then updateRule once; [] clears only. Not a transaction: the first failed or partial item stops the rest with the old list already cleared.",
                         items: [type: "object"]
                     ],
                     moveAction: [

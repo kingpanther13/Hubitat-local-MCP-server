@@ -130,19 +130,16 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         'set_rule_reference_actions'    | '### `addAction` capability families'                         | '### `addTrigger` capability families'
         'set_rule_reference_conditions' | '### `addRequiredExpression` STPage capability list'          | '### `walkStep` schema-aware wizard walker'
         'set_rule_reference_walkstep'   | '### `walkStep` schema-aware wizard walker'                   | '### `addRequiredExpression` STPage capability list'
-        'set_rule_reference_responses'  | '### Partial-success and trailing-updateRule response slots'  | '### Raw `settings`/`button` mode'
+        'set_rule_reference_responses'  | '### Responses: applied, activated, verified'                 | '### Raw `settings`/`button` mode'
         'set_rule_reference_guards'     | '### Did-you-mean on unknown capability names'                | '### `addTrigger` capability families'
     }
 
-    def "the fail-loud shape guards each land with the shortcut they steer -- the pointers promise it"() {
-        // The addAction guards used to sit inside the addTrigger block, so retargeting addAction's
-        // description at _actions would have sent a caller whose write just failed to a page that
-        // did not contain its own recovery rule.
+    def "the trigger shape guards land with the shortcut they steer, and the action page points at discover"() {
         expect:
-        (script.toolGetToolGuide('set_rule_reference_actions').content as String)
-            .contains('### Fail-loud `addAction` shape guards')
         (script.toolGetToolGuide('set_rule_reference_triggers').content as String)
             .contains('### Fail-loud `addTrigger` shape guards')
+        (script.toolGetToolGuide('set_rule_reference_actions').content as String)
+            .contains("operation:'discover'")
     }
 
     def "toolGetToolGuide serves a sub-section with its parent named, and the parent still serves the whole section"() {
