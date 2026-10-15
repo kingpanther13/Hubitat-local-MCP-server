@@ -1,6 +1,5 @@
 """Hub-free regressions for the e2e lanes' gates, live label reads and ephemeral hub relay."""
 
-import importlib.util
 import json
 import os
 import re
@@ -14,71 +13,97 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 
 
-@pytest.mark.parametrize("changed_files, expected", [
-    ("TOOL_GUIDE.md\nAGENTS.md\nCLAUDE.md\nSKILL.md\ntools/build-tool-guide.py\n"
-     "tests/sandbox_lint.py\ntests/test_sandbox_lint.py\n.github/workflows/sandbox-lint.yml", False),
-    ("TOOL_GUIDE.md\nlibraries/mcp-variables-lib.groovy", True),
+def _lane_decision(files, labels=(), action="opened", label=None, author=("fixture", "User")):
+    """lane_gate.js's verdict for a pull_request_target event; files are paths or file dicts."""
+    payload = {"action": action, "label": {"name": label} if label else None,
+               "pull_request": {"labels": [{"name": n} for n in labels],
+                                "user": {"login": author[0], "type": author[1]}}}
+    files = [f if isinstance(f, dict) else {"filename": f} for f in files]
+    code = ("const { decide } = require(process.argv[1]); const [payload, files] = JSON.parse(process.argv[2]);"
+            "console.log(decide('pull_request_target', payload, 1, files));")
+    result = subprocess.run(["node", "-e", code, str(ROOT / ".github/scripts/lane_gate.js"),
+                             json.dumps([payload, files])], capture_output=True, text=True, check=True)
+    return result.stdout.strip()
+
+
+@pytest.mark.parametrize("changed_files, relevant", [
+    (["TOOL_GUIDE.md", "AGENTS.md", "CLAUDE.md", "SKILL.md", "tools/build-tool-guide.py",
+      "tests/sandbox_lint.py", "tests/test_sandbox_lint.py", ".github/workflows/sandbox-lint.yml"], False),
+    (["TOOL_GUIDE.md", "libraries/mcp-variables-lib.groovy"], True),
 ])
-@pytest.mark.parametrize("pr_author", ["fixture", "renovate[bot]", "dependabot[bot]"])
-def test_guide_stack_gate_uses_actual_changed_files(changed_files, expected, pr_author, tmp_path):
-    workflow = (ROOT / ".github/workflows/hub-e2e.yml").read_text()
+@pytest.mark.parametrize("pr_author", [("fixture", "User"), ("renovate[bot]", "Bot"), ("dependabot[bot]", "Bot")])
+def test_guide_stack_gate_uses_actual_changed_files(changed_files, relevant, pr_author):
     # Both workflows must accept the guide's base, without trusting arbitrary bases.
     for name, event in [("hub-e2e.yml", "pull_request_target"), ("pr-guard.yml", "pull_request")]:
         source = (ROOT / ".github/workflows" / name).read_text()
         event_body = re.search(rf"^  {event}:\n((?:    .*\n|\n)*)", source, re.M).group(1)
         branches = re.search(r"^    branches: \[(.*?)\]", event_body, re.M).group(1)
         assert {b.strip() for b in branches.split(",")} == {"main", "pr/fixes-447-449-455-471"}
+    # A docs-only diff gets the gate without the hub, with or without the full-run label.
+    unlabeled = _lane_decision(changed_files, author=pr_author)
+    labeled = _lane_decision(changed_files, ["e2e:full"], "labeled", "e2e:full", pr_author)
+    assert (unlabeled, labeled) == (("pending", "run") if relevant else ("not-required", "not-required"))
+
+
+@pytest.mark.parametrize("labels, available, lane", [
+    ("e2e:full", "true", "full"),
+    ("bug release:minor", "true", "full"),
+    ("bug", "false", "pending"),
+    ("", "false", "pending"),
+    ("e2e:skip e2e:full", "false", "skipped"),
+])
+def test_e2e_gate_books_the_hub_only_with_a_live_full_run_label(labels, available, lane, tmp_path):
+    workflow = (ROOT / ".github/workflows/hub-e2e.yml").read_text()
+    assert "e2e_scope" not in workflow and "--groups" not in workflow and "focused" not in workflow.lower()
     step = workflow.split("id: gate\n", 1)[1].split("\n      - ", 1)[0]
     command = textwrap.dedent(step.split("        run: |\n", 1)[1])
     command = command.replace("${{ github.event_name }}", "pull_request_target")
     command = re.sub(r"\$\{\{.*?\}\}", "fixture", command)
-    script = '''
-gh() {
-  case "$*" in
-    *'/files'*) printf '%s\\n' "$CHANGED_FILES" ;;
-    *) printf '%s\\n' 'e2e:full' ;;
-  esac
-}
-''' + command
+    script = "gh() { [ -z \"$LABELS\" ] || printf '%s\\n' $LABELS; }\n" + command
     output = tmp_path / "output"
-    result = subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=ROOT,
-                            env={**os.environ, "CHANGED_FILES": changed_files,
-                                 "MCP_URL": "unused", "WATCHDOG_URL": "unused",
-                                 "PR_AUTHOR": pr_author, "TESTS_INPUT": "",
-                                 "GITHUB_OUTPUT": str(output),
-                                 "GITHUB_STEP_SUMMARY": str(tmp_path / "summary")},
-                            capture_output=True, text=True, check=True)
-    assert f"available={str(expected).lower()}" in output.read_text(), result.stdout
-    if not expected:
-        assert "WITHOUT running the suite" in result.stdout
+    subprocess.run(["bash", "-eo", "pipefail", "-c", script], cwd=ROOT,
+                   env={**os.environ, "LABELS": labels, "MCP_URL": "unused", "WATCHDOG_URL": "unused",
+                        "TESTS_INPUT": "", "GITHUB_OUTPUT": str(output),
+                        "GITHUB_STEP_SUMMARY": str(tmp_path / "summary")},
+                   capture_output=True, text=True, check=True)
+    assert output.read_text().splitlines() == [f"available={available}", f"lane={lane}"]
+    if lane != "full":
+        assert "E2E NOT RUN" in (tmp_path / "summary").read_text()
 
 
 @pytest.mark.parametrize("case, expected", [
     ("dependencies", "dependency_skip=true"),
-    ("runtime-second-page", "run=true"),
-    ("renamed-runtime", "run=true"),
-    ("api-failure", "run=true"),
-    ("malformed", "run=true"),
-    ("truncated", "run=true"),
-    ("head-changed", "run=true"),
+    # Without a full-run label a hub-relevant or unverified diff only holds the gate pending.
+    ("runtime-second-page", "pending=true"),
+    ("runtime-labeled", "run=true"),
+    ("renamed-runtime", "pending=true"),
+    ("api-failure", "pending=true"),
+    ("malformed", "pending=true"),
+    ("truncated", "pending=true"),
+    ("head-changed", "pending=true"),
+    ("docs-human", "not_required=true"),
 ])
-def test_bot_gate_cli_verifies_complete_current_diff(case, expected, tmp_path):
+def test_gate_cli_verifies_complete_current_diff(case, expected, tmp_path):
     """Exercise the real CLI; only GitHub's read API is replaced with fixtures."""
     pages = [[{"filename": "build.gradle"}], [{
         "filename": ".github/workflows/hub-e2e.yml",
         "changes": 2,
         "patch": "@@ -1 +1 @@\n-      - uses: actions/checkout@v6\n+      - uses: actions/checkout@v7",
     }]]
-    if case == "runtime-second-page":
+    if case.startswith("runtime-"):
         pages[1] = [{"filename": "libraries/mcp-variables-lib.groovy"}]
     if case == "renamed-runtime":
         pages[0][0]["previous_filename"] = "hubitat-mcp-server.groovy"
+    if case == "docs-human":
+        pages = [[{"filename": "README.md"}], [{"filename": "docs/testing.md"}]]
     event = {
         "action": "synchronize",
         "sender": {"login": "kingpanther13"},
         "pull_request": {
-            "number": 42, "head": {"sha": "a" * 40}, "labels": [],
-            "user": {"login": "renovate[bot]", "type": "Bot"},
+            "number": 42, "head": {"sha": "a" * 40},
+            "labels": [{"name": "e2e:full"}] if case == "runtime-labeled" else [],
+            "user": {"login": "kingpanther13", "type": "User"} if case == "docs-human"
+            else {"login": "renovate[bot]", "type": "Bot"},
         },
     }
     current = {
@@ -117,15 +142,20 @@ else:
     )
     outputs = output.read_text().splitlines()
     assert expected in outputs, result.stdout + result.stderr
-    if case == "dependencies":
-        assert "run=false" in outputs
-        assert "skip=false" in outputs
-    else:
-        assert "dependency_skip=false" in outputs
+    # Exactly one verdict output is true; the ephemeral lane's relevance comes from the same file list.
+    verdicts = [o for o in outputs if not o.startswith("ephemeral_relevant=")]
+    assert sorted(o.split("=")[0] for o in verdicts) == ["dependency_skip", "not_required", "pending", "run", "skip"]
+    assert [o for o in verdicts if o.endswith("=true")] == [expected]
+    assert f"ephemeral_relevant={str(case not in ('docs-human', 'dependencies')).lower()}" in outputs
 
 
-@pytest.mark.parametrize("dependency_skip, expected_state", [("true", "success"), ("false", "pending")])
-def test_no_hub_gate_posts_explicit_status(dependency_skip, expected_state, tmp_path):
+@pytest.mark.parametrize("verdict, expected_state, description", [
+    ("DEPENDENCY_SKIP", "success", "dependency-only bot PR"),
+    ("NOT_REQUIRED", "success", "no hub-relevant change"),
+    ("PENDING", "pending", "add release:* or e2e:full"),
+    ("SKIP", "pending", "e2e:skip label"),
+])
+def test_no_hub_gate_posts_explicit_status(verdict, expected_state, description, tmp_path):
     workflow = (ROOT / ".github/workflows/hub-e2e.yml").read_text()
     step = workflow.split("name: Post e2e gate status (no hub run)\n", 1)[1].split("\n      - ", 1)[0]
     command = textwrap.dedent(step.split("        run: |\n", 1)[1].split("\n  # Pre-approval", 1)[0])
@@ -135,15 +165,21 @@ gh() { printf '%s\\n' "$@" > "$POSTED_ARGS"; }
 ''' + command
     summary = tmp_path / "summary"
     posted = tmp_path / "posted"
+    flags = {name: "true" if name == verdict else "false" for name in ("DEPENDENCY_SKIP", "NOT_REQUIRED", "PENDING")}
     subprocess.run(["bash", "-eo", "pipefail", "-c", script], check=True,
-                   env={**os.environ, "DEPENDENCY_SKIP": dependency_skip,
+                   env={**os.environ, **flags,
                         "GATE_SHA": "a" * 40, "GITHUB_STEP_SUMMARY": str(summary),
                         "POSTED_ARGS": str(posted)})
     args = posted.read_text().splitlines()
     assert f"repos/owner/repo/statuses/{'a' * 40}" in args
     assert f"state={expected_state}" in args
     assert "context=Full e2e (runs with label)" in args
+    assert any(a.startswith("description=") and description in a for a in args), args
     assert "E2E NOT RUN" in summary.read_text()
+    # The step runs for every verdict that posts here, and only for those.
+    condition = step.split("        if: >-\n", 1)[1].split("        env:", 1)[0]
+    assert sorted(re.findall(r"steps\.decide\.outputs\.(\w+) == 'true'", condition)) == [
+        "dependency_skip", "not_required", "pending", "skip"]
 
 
 @pytest.mark.parametrize("step_name, flag", [
@@ -184,52 +220,51 @@ echo "label_read_ok=${{{flag}}}"
     assert f"label_read_ok={'true' if succeed_on else 'false'}" in result.stdout
 
 
-def test_focused_coverage_includes_shared_device_access_and_watchdog():
-    spec = importlib.util.spec_from_file_location("e2e_scope", ROOT / ".github/scripts/e2e_scope.py")
-    scope = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(scope)
-    assert {"devices", "developer_mode", "system_tools", "app_code_update"} <= set(scope.FILE_GROUP_MAP["hubitat-mcp-server.groovy"])
-    assert "app_code_update" in scope.FILE_GROUP_MAP["libraries/mcp-code-management-lib.groovy"]
-    # e2e never deploys the watchdog app, so mapping its sources would run tests that cannot see them.
-    assert not any(source.startswith("e2e-deadman-watchdog") for source in scope.FILE_GROUP_MAP)
-    assert "error_verification" in scope.SMOKE_GROUPS
-
-
 EPHEMERAL = (ROOT / ".github/workflows/hub-e2e-ephemeral.yml").read_text()
 REQUEST = (ROOT / ".github/workflows/hub-e2e-ephemeral-request.yml").read_text()
 FORK_SHA = "b" * 40
 
 
+def _lane_relevance(file_lists):
+    """For each file list (None = unread), lane_gate.js's physical verdict and ephemeral relevance."""
+    code = ("const { decide, touchesLane } = require(process.argv[1]);"
+            "const payload = { action: 'opened', pull_request: { labels: [] } };"
+            "console.log(JSON.stringify(JSON.parse(process.argv[2]).map(files => ["
+            "decide('pull_request_target', payload, 1, files ?? undefined), touchesLane(files ?? undefined, 'ephemeral')])));")
+    lists = [None if f is None else [{"filename": p} for p in f] for f in file_lists]
+    result = subprocess.run(["node", "-e", code, str(ROOT / ".github/scripts/lane_gate.js"), json.dumps(lists)],
+                            capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
+
+
+def _ephemeral_gate(tmp_path, ephemeral_relevant, configured="true", dependency_skip="false"):
+    step = REQUEST.split("      - id: decide\n", 1)[1].split("\n      - uses: actions/upload-artifact", 1)[0]
+    command = textwrap.dedent(step.split("        run: |\n", 1)[1])
+    output, summary = tmp_path / "output", tmp_path / "summary"
+    env = {**os.environ, "CONFIGURED": configured, "DEPENDENCY_SKIP": dependency_skip,
+           "EPHEMERAL_RELEVANT": ephemeral_relevant, "PR_HEAD_SHA": FORK_SHA, "PR_HEAD_REPO": "contributor/fork",
+           "GITHUB_REPOSITORY": "owner/repo", "RUNNER_TEMP": str(tmp_path),
+           "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
+    result = subprocess.run([_bash(), "-eo", "pipefail", "-c", command], env=env, capture_output=True, text=True,
+                            check=True)
+    return result, output.read_text(), summary
+
+
 @pytest.mark.parametrize("case, files, expected", [
-    ("unconfigured", "hubitat-mcp-server.groovy", "Ephemeral hub lane not configured."),
-    ("docs", "docs/testing.md\nREADME.md", "no hub-relevant files changed"),
-    ("dependency", "hubitat-mcp-server.groovy", "not required"),
-    ("code", "docs/a.md\nlibraries/mcp-rooms-lib.groovy", f"sha={FORK_SHA}"),
-    ("request-script", ".github/scripts/request_ephemeral_hub.sh", f"sha={FORK_SHA}"),
-    ("e2e-skip-label", "tests/e2e_test.py", f"sha={FORK_SHA}"),
+    ("unconfigured", ["hubitat-mcp-server.groovy"], "Ephemeral hub lane not configured."),
+    ("docs", ["docs/testing.md", "README.md"], "no hub-relevant files changed"),
+    ("dependency", ["hubitat-mcp-server.groovy"], "not required"),
+    ("code", ["docs/a.md", "libraries/mcp-rooms-lib.groovy"], f"sha={FORK_SHA}"),
+    ("request-script", [".github/scripts/request_ephemeral_hub.sh"], f"sha={FORK_SHA}"),
+    ("unlabeled", ["tests/e2e_test.py"], f"sha={FORK_SHA}"),  # the physical lane's labels do not apply
     ("unreadable", None, f"sha={FORK_SHA}"),
 ])
 def test_ephemeral_gate_skips_cleanly_and_resolves_the_tested_head(case, files, expected, tmp_path):
-    step = REQUEST.split("      - id: decide\n", 1)[1].split("\n      - uses: actions/upload-artifact", 1)[0]
-    command = textwrap.dedent(step.split("        run: |\n", 1)[1])
-    script = '''
-gh() {
-  [ -n "$CHANGED_FILES" ] || return 1
-  printf '%s\\n' "$CHANGED_FILES"
-}
-''' + command
-    output, summary = tmp_path / "output", tmp_path / "summary"
-    env = {**os.environ, "CONFIGURED": "false" if case == "unconfigured" else "true",
-           "LANE_RUN": "false" if case in ("dependency", "e2e-skip-label") else "true",
-           "LANE_SKIP": "true" if case == "e2e-skip-label" else "false",
-           "PR_NUMBER": "42", "PR_HEAD_SHA": FORK_SHA, "PR_HEAD_REPO": "contributor/fork",
-           "GITHUB_REPOSITORY": "owner/repo", "CHANGED_FILES": files or "", "RUNNER_TEMP": str(tmp_path),
-           "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
-    result = subprocess.run([shutil.which("bash") or "bash", "-eo", "pipefail", "-c", script],
-                            env=env, capture_output=True, text=True, check=True)
-    outputs = output.read_text()
+    relevant = str(_lane_relevance([files])[0][1]).lower()
+    result, outputs, summary = _ephemeral_gate(tmp_path, relevant, "false" if case == "unconfigured" else "true",
+                                               "true" if case == "dependency" else "false")
     assert expected in result.stdout + outputs
-    runs = case in ("code", "request-script", "e2e-skip-label", "unreadable")
+    runs = case in ("code", "request-script", "unlabeled", "unreadable")
     assert ("run=true" in outputs) is runs and ("run=false" in outputs) is not runs
     if runs:
         assert "fork=true" in outputs and not (tmp_path / "unavailable").exists()
@@ -237,6 +272,33 @@ gh() {
         # The test run skips on this reason instead of waiting for a hub.
         assert expected in summary.read_text()
         assert expected in (tmp_path / "unavailable" / "reason.txt").read_text()
+
+
+def test_hub_lanes_share_one_path_list_and_agree_per_file(tmp_path):
+    """hub_relevant_paths.json is the only path list; each consumer gives every file the same verdict."""
+    rules = json.loads((ROOT / ".github/scripts/hub_relevant_paths.json").read_text())
+    assert set(rules) == {"both", "physical", "ephemeral"}
+    listed = [r for lane in rules.values() for r in lane]
+    assert len(listed) == len(set(listed))
+    # No workflow keeps its own copy.
+    for workflow in (ROOT / ".github/workflows/hub-e2e.yml").read_text(), REQUEST:
+        assert 'case "$f"' not in workflow and "/files" not in workflow
+    assert "steps.lane.outputs.ephemeral_relevant" in REQUEST
+
+    def expected(path, lane):
+        return any(path.startswith(r) if r.endswith("/") else path == r for r in rules["both"] + rules[lane])
+
+    paths = [r + "nested/x.groovy" if r.endswith("/") else r for r in listed]
+    paths += ["README.md", "docs/testing.md", "libraries", "tests/lane_gate_test.js", ".github/workflows/ruff.yml"]
+    verdicts = _lane_relevance([[p] for p in paths])
+    for i, (path, (physical, ephemeral)) in enumerate(zip(paths, verdicts, strict=True)):
+        assert physical == ("pending" if expected(path, "physical") else "not-required"), path
+        assert ephemeral is expected(path, "ephemeral"), path
+        (tmp_path / str(i)).mkdir()
+        _, outputs, _ = _ephemeral_gate(tmp_path / str(i), str(ephemeral).lower())
+        assert ("run=true" in outputs) is expected(path, "ephemeral"), path
+        if path in rules["both"] or any(path.startswith(r) for r in rules["both"] if r.endswith("/")):
+            assert physical == "pending" and ephemeral, path
 
 
 def _jobs(workflow):

@@ -8,6 +8,19 @@ Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `.
 - **Build:** Gradle 9.5.1 via wrapper (`./gradlew test`)
 - **Python tests and E2E:** Python 3.11 or newer. The suite imports `datetime.UTC` and uses union type annotations and strict `zip`; CI selects the current Python 3 release.
 
+## Physical hub E2E lane
+
+`hub-e2e.yml` runs the full E2E registry and the SDK conformance script against the shared test
+hub only for a PR that carries a full-run label: `release:patch`, `release:minor`,
+`release:major` or `e2e:full`. Without one, a PR event books nothing and the required
+`Full e2e (runs with label)` status is posted pending. The first full-run label starts the run;
+removing the last one neither runs nor cancels anything. A PR that changes no hub-relevant file
+gets the status as success without a run. `e2e:skip` cancels the in-flight run and holds the
+status pending, and `workflow_dispatch` always runs. The decision lives in `.github/scripts/lane_gate.js`
+and is tested by `tests/lane_gate_test.js`.
+Because the trigger is `pull_request_target`, the base branch's copy of the workflow and of
+`lane_gate.js` decides, so a PR's change to this behaviour applies only after it merges.
+
 ## Ephemeral hub E2E lane
 
 The [ephemeral hub lane](ephemeral-hub-e2e.md) runs the full E2E registry and the SDK

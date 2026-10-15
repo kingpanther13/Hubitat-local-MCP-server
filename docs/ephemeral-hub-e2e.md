@@ -46,10 +46,10 @@ These steps describe hold mode, where the test run drives the hub. The default
 
 1. The test workflow's `e2e` job generates a throwaway RSA-4096 keypair and uploads only the
    public key as artifact `ephemeral-hub-public-key-<attempt>-<kind>`.
-2. For a pull request, the request workflow's `gate` job applies `.github/scripts/lane_gate.js`,
-   checks that both secrets are set and skips PRs that change no hub-relevant file. When the lane
-   should not run, it uploads artifact `ephemeral-hub-unavailable` with the reason, once for both
-   kinds. For a push or dispatch, the test workflow's own `request-hub` job does the secrets check
+2. For a pull request, the request workflow's `gate` job applies the dependency-only bot
+   exemption from `.github/scripts/lane_gate.js`, checks that both secrets are set and skips PRs
+   that change no file `.github/scripts/hub_relevant_paths.json` lists for this lane. When the lane should not run, it uploads artifact
+   `ephemeral-hub-unavailable` with the reason, once for both kinds. For a push or dispatch, the test workflow's own `request-hub` job does the secrets check
    and uploads `ephemeral-hub-unavailable-<kind>`.
 3. `request-hub` publishes a fork head's release files with `.github/scripts/publish_fork_bundle.sh`
    and waits until the revision's files are served. For a pull request it then finds the running
