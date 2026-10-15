@@ -22,7 +22,7 @@ permissions:
 # Keep in lockstep with hub-e2e-ephemeral-request.yml. EPHEMERAL_RUN_SUITE 'false' hands the hub to `e2e`.
 env:
   EPHEMERAL_RUN_SUITE: 'true'
-  EPHEMERAL_HUB_KIND: 'jvm'
+  EPHEMERAL_HUB_KIND: 'os'
 
 concurrency:
   group: hub-e2e-ephemeral-${{ github.event.pull_request.number || github.ref }}

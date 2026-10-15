@@ -11,7 +11,7 @@
 #
 # Env: GITHUB_REPOSITORY; GH_TOKEN (actions:read, or the provider token for `hub`);
 #      `hub` also needs PROVIDER, PUBLIC_SHA, PUBLIC_REPO, CONSUMER_RUN_ID, and takes
-#      HUB_KIND (jvm|os, default jvm) and RUN_SUITE (true|false, default true).
+#      HUB_KIND (os|jvm, default os) and RUN_SUITE (true|false, default true).
 set -euo pipefail
 
 fail() { echo "::error::$1"; exit 1; }
@@ -87,7 +87,7 @@ results() {
 
 hub() {
   : "${PROVIDER:?}" "${PUBLIC_SHA:?}" "${PUBLIC_REPO:?}" "${CONSUMER_RUN_ID:?}" "${GH_TOKEN:?}"
-  local kind="${HUB_KIND:-jvm}" suite="${RUN_SUITE:-true}" since run_id="" deadline=$((SECONDS + 1500))
+  local kind="${HUB_KIND:-os}" suite="${RUN_SUITE:-true}" since run_id="" deadline=$((SECONDS + 1500))
   [[ "$kind" =~ ^(jvm|os)$ && "$suite" =~ ^(true|false)$ ]] || fail "HUB_KIND must be jvm or os, RUN_SUITE true or false."
   since="$(date -u -d '-30 seconds' +%Y-%m-%dT%H:%M:%SZ)"
   gh workflow run ephemeral-hub.yml --repo "$PROVIDER" \

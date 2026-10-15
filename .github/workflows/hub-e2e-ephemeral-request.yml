@@ -15,7 +15,7 @@ permissions:
 # Keep in lockstep with hub-e2e-ephemeral.yml. EPHEMERAL_RUN_SUITE 'false' hands the hub to the test run.
 env:
   EPHEMERAL_RUN_SUITE: 'true'
-  EPHEMERAL_HUB_KIND: 'jvm'
+  EPHEMERAL_HUB_KIND: 'os'
 
 concurrency:
   group: hub-e2e-ephemeral-request-${{ github.event.pull_request.number }}

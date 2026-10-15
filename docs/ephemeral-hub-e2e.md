@@ -58,7 +58,7 @@ hub. To retry a push or dispatch, use **Re-run all jobs**.
 Two workflow-level values select the mode. Both workflows carry them and must keep them equal.
 
 - `EPHEMERAL_RUN_SUITE` is `'true'` by default. `'false'` restores hold mode.
-- `EPHEMERAL_HUB_KIND` is `'jvm'` by default, or `'os'`. It picks the kind of hub the provider boots.
+- `EPHEMERAL_HUB_KIND` is `'os'` by default, a full hub operating system, or `'jvm'`, a lighter runtime that boots in a minute. It picks the kind of hub the provider boots.
 
 The shared script receives them as `RUN_SUITE` and `HUB_KIND` and dispatches them as the
 provider's `run_suite` and `kind` inputs.

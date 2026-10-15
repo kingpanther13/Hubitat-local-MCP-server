@@ -287,7 +287,7 @@ def test_ephemeral_pr_code_runs_only_under_pull_request():
 
 
 def test_ephemeral_mode_toggles_agree_and_reach_the_script():
-    toggles = "\nenv:\n  EPHEMERAL_RUN_SUITE: 'true'\n  EPHEMERAL_HUB_KIND: 'jvm'\n"
+    toggles = "\nenv:\n  EPHEMERAL_RUN_SUITE: 'true'\n  EPHEMERAL_HUB_KIND: 'os'\n"
     for workflow in (EPHEMERAL, REQUEST):
         head, jobs = _jobs(workflow)
         assert toggles in head
@@ -296,7 +296,7 @@ def test_ephemeral_mode_toggles_agree_and_reach_the_script():
         # Exactly one relay per mode: the results, or the encrypted session.
         assert request.count("env.EPHEMERAL_RUN_SUITE == 'true'") == 1 and request.count("env.EPHEMERAL_RUN_SUITE != 'true'") == 1
     script = (ROOT / ".github/scripts/request_ephemeral_hub.sh").read_text()
-    assert 'kind="${HUB_KIND:-jvm}" suite="${RUN_SUITE:-true}"' in script
+    assert 'kind="${HUB_KIND:-os}" suite="${RUN_SUITE:-true}"' in script
 
 
 def test_ephemeral_request_workflow_never_runs_pr_code():
