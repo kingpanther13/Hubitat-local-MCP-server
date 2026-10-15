@@ -3411,7 +3411,7 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "fadeSeconds", type: "Integer", description: "Optional for setLevel/toggle/adjust"],
                     [name: "targetLevel", type: "Integer", description: "Required for fade"],
                     [name: "minutes", type: "Integer", description: "Required for fade"],
-                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Optional for fade and startRaiseLower -- defaults to lower (verified live: the action bakes without it)"],
+                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Optional for fade and startRaiseLower; defaults to lower"],
                     [name: "intervalSeconds", type: "Integer", description: "Optional for fade"],
                     [name: "perMode", type: "Map", description: "For setLevelPerMode: {modeIdOrName: level, ...}"],
                     [name: "levelVariable", type: "String", description: "Hub variable name -- use instead of level for variable-sourced setLevel"],
@@ -3580,7 +3580,7 @@ private Map _rmActionSchemaForDiscover() {
                 ],
                 optionalFields: [
                     [name: "capabilityFilter", type: "String", description: "The capability RM's Run Custom Action picker filters the device picker on, by stored key or picker label (e.g. 'SwitchLevel' or 'Dimmer'); default 'Switch'. A value RM's picker does not offer is refused with RM's list and the row rolled back."],
-                    [name: "parameters", type: "List", description: "Parameter list. Each entry is {type, value} for a literal (e.g. {type: 'number', value: 75}) or {type, variable} for a hub-variable-sourced value (e.g. {type: 'number', variable: 'myVar'}). Type is lowercase: 'number', 'decimal', or 'string'. Variable-sourced params wire via uVar<P>/xVar<P> -- see docs/rm_wire_format.md for the wire sequence. Fails loud if the hub does not reveal the xVar<P> enum after enabling variable mode (returns success=false with a descriptive error)."],
+                    [name: "parameters", type: "List", description: "Each entry is {type, value} for a literal (e.g. {type: 'number', value: 75}) or {type, variable} for a hub-variable value; type is 'number', 'decimal' or 'string'. A variable not in RM's picker is refused."],
                     [name: "useLastEventDevice", type: "Boolean"],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
@@ -3591,24 +3591,24 @@ private Map _rmActionSchemaForDiscover() {
                 family: "hub",
                 requiredFields: [],
                 optionalFields: [
-                    [name: "modeId", type: "Integer", description: "Mode ID -- provide this OR modeName (not both). When modeName is given, it is resolved to its ID before submission; unknown names fail fast with the valid mode list. Degenerate: if location.modes is empty, the error lists '(none -- hub returned no modes; verify hub state via hub_list_modes)'."],
-                    [name: "modeName", type: "String", description: "Mode name (case-insensitive) -- provide this OR modeId (not both). Resolved to mode ID automatically. Use hub_list_modes to confirm available names."]
+                    [name: "modeId", type: "Integer", description: "Mode ID; provide this or modeName"],
+                    [name: "modeName", type: "String", description: "Mode name (case-insensitive), resolved to its ID; an unknown name is refused with the hub's mode list"]
                 ],
-                notes: "Exactly one of modeId or modeName is required at call time."
+                notes: "Exactly one of modeId or modeName is required."
             ],
             [
                 name: "setVariable",
                 family: "hub",
-                notes: "Set a hub variable to a constant, copy it from another hub variable, read it from a device attribute, or compute it with structured variable math. Also accepted as capability='variable'. Exactly ONE source mode (value | sourceVariable | fromDevice | math) per action.",
+                notes: "Set a hub variable from exactly one source: value, sourceVariable, fromDevice or math. Also accepted as capability='variable'. value, fromDevice and math need a Number or Decimal target; sourceVariable also copies into a String target. Boolean and DateTime targets are refused.",
                 requiredFields: [
-                    [name: "variable", type: "String", description: "Hub variable name to write (the target). Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state."]
+                    [name: "variable", type: "String", description: "Target hub variable name; must exist"]
                 ],
                 optionalFields: [
-                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the write otherwise -- RM renders numOp/valNumber only for numeric targets). String, boolean, and datetime targets are not supported via 'value'; copy a String target with 'sourceVariable', or set Boolean/DateTime via rawSettings."],
-                    [name: "numOp", type: "String", description: "Only with 'value': 'number' (default) sets the variable to value; 'add number' adds value to its current value. Any other numOp, or numOp without 'value', is rejected before the write."],
-                    [name: "sourceVariable", type: "String", description: "Hub variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. Must be an existing hub variable name -- an unknown name is rejected before the hub write to prevent silent broken-action state. Works for Number, Decimal and String targets (a String target uses RM's valStringOp='Copy variable' picker instead of numOp=variable); a Boolean or DateTime target is refused before any write. Schema-gated: the source-variable field is only revealed by RM after that selector is written; fails loud (success=false) if the hub does not reveal it. See docs/rm_wire_format.md for the wire sequence."],
-                    [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable. Maps to numOp='device attribute'.[[FLAT_TRIM]] RM does not offer the device-attribute source for String/Boolean/DateTime variables (rejected with success=false before the hub write). deviceId may be ANY hub device (RM's device picker spans all hub devices, not just the MCP-selected set); it is validated only as a positive integer id, not against the MCP device set. The device picker and the attribute enum are schema-gated and revealed in sequence (deviceId reveals an attribute enum FILTERED to that device's live attributes); fails loud (success=false) if the device picker is not revealed. An attribute not in the device's filtered enum is rejected with success=false and the device's available-attribute list. See docs/rm_wire_format.md for the wire sequence.[[/FLAT_TRIM]]"],
-                    [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable -- RM does not offer the variable-math source for String/Boolean/DateTime variables (rejected with success=false before the hub write). Maps to numOp='variable math'. A Number operand becomes a constant; a String operand is treated as a hub variable name. Binary operators (+ - * / %) require 'right'; unary operators (negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees) reject 'right'. Operand fields are schema-gated and revealed in sequence; fails loud (success=false) if a required field is not revealed. See docs/rm_wire_format.md for the wire sequence."],
+                    [name: "value", type: "Number", description: "Numeric constant to assign"],
+                    [name: "numOp", type: "String", description: "Only with value: 'number' (default) sets the variable; 'add number' adds to it"],
+                    [name: "sourceVariable", type: "String", description: "Hub variable to copy from; must exist"],
+                    [name: "fromDevice", type: "Map", description: "{deviceId, attribute}: read a device attribute. Any hub device; the attribute must be one RM lists for it."],
+                    [name: "math", type: "Map", description: "{left, op, right}: operands are a Number (constant) or a variable name. Binary ops + - * / % need right; unary ops (negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees) take none."],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
                 ]
@@ -3616,16 +3616,16 @@ private Map _rmActionSchemaForDiscover() {
             [
                 name: "setLocalVariable",
                 family: "hub",
-                notes: "Set a rule-LOCAL variable (distinct from setVariable, which targets hub globals). Same source modes and wire path as setVariable; the only difference is that the target name is validated against the rule's local variables (state.allLocalVars). Use this -- not setVariable -- when a local and a hub variable share a name and you mean the local. Exactly ONE source mode (value | sourceVariable | fromDevice | math) per action.",
+                notes: "Same as setVariable, but the target is one of this rule's local variables (create one with addLocalVariable first). Sources may be local or hub variables.",
                 requiredFields: [
-                    [name: "variable", type: "String", description: "Local variable name to write (the target). Must be an existing local variable on this rule (create one first via hub_set_rule addLocalVariable) -- an unknown name is rejected before the hub write to prevent silent broken-action state."]
+                    [name: "variable", type: "String", description: "Target local variable name; must exist on this rule"]
                 ],
                 optionalFields: [
-                    [name: "value", type: "Number", description: "Numeric constant to assign -- provide exactly one of value, sourceVariable, fromDevice, or math. String, boolean, and datetime local-variable targets are not supported via 'value'; copy a String target with 'sourceVariable', or set Boolean/DateTime via rawSettings."],
-                    [name: "numOp", type: "String", description: "Only with 'value': 'number' (default) sets the variable to value; 'add number' adds value to its current value. Same rules as setVariable's numOp."],
-                    [name: "sourceVariable", type: "String", description: "Variable name to read from (the source) -- provide exactly one of value, sourceVariable, fromDevice, or math. RM's source picker spans BOTH local and hub variables, so the source may be either; validated against the live revealed enum (fails loud, success=false, if the hub does not reveal it). Number, Decimal and String targets are supported; Boolean and DateTime targets are refused before any action row is written. See docs/rm_wire_format.md for the wire sequence."],
-                    [name: "fromDevice", type: "Map", description: "Read the value from a device attribute: {deviceId: <Integer>, attribute: '<name>'} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same wire and validation as setVariable's fromDevice."],
-                    [name: "math", type: "Map", description: "Compute the value with structured variable math: {left: <varName|Number>, op: '<operator>', right: <varName|Number>} -- provide exactly one of value, sourceVariable, fromDevice, or math. Requires a Number or Decimal target variable (rejected with success=false before the hub write otherwise). Same operator set and wire as setVariable's math; operand variables may be local or hub (validated against the live revealed enum)."],
+                    [name: "value", type: "Number"],
+                    [name: "numOp", type: "String", description: "As setVariable"],
+                    [name: "sourceVariable", type: "String", description: "Local or hub variable to copy from"],
+                    [name: "fromDevice", type: "Map", description: "As setVariable"],
+                    [name: "math", type: "Map", description: "As setVariable"],
                     [name: "delay", type: "Map"],
                     [name: "rawSettings", type: "Map"]
                 ]
@@ -4166,86 +4166,28 @@ void _rmRejectDisabledAppEdit(Integer appId, String opName) {
     throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
 }
 
-// Delete a single action at a specific index. Verified live
-// by inspecting the live UI HTML on selectActions: the per-row trash
-// button has data-stateAttribute='delAct' and the form-input name is
-// just the action index as a digit (e.g. name='2' for action 2). RM's
-// appButtonHandler dispatches on the stateAttribute and uses the name
-// to identify which action to delete.
-//
-// After delete, RM does NOT renumber remaining actions — indices are
-// preserved with gaps. Subsequent addAction picks the next free index
-// via _rmActionIndicesFromSettings' max+1 logic (the settings scan, deliberately -- it must
-// see un-baked rows the compiled list cannot).
-//
-// Pre-flight refuses three things before the delAct click goes out:
-// (a) the requested index does not exist on the rule,
-// (b) the rule has a stuck state.editAct from a prior interrupted
-// edit (RM silently no-ops delAct clicks in that state), and
-// (c) the action is a structural opener/closer (IF / ELSE-IF / ELSE /
-// END-IF / Repeat / While / End-Repeat) and removing it would
-// introduce a new structural-balance issue (compared as a set diff
-// so deletions that merely improve an already-broken rule are
-// still allowed). All three throw IllegalArgumentException /
-// IllegalStateException — no RM mutation is sent.
-//
-// Post-click verification uses a retry loop to absorb RM 5.1's
-// asynchronous button-handler dispatch. The click returns HTTP 200 before
-// the deletion has propagated to appSettings, so a single immediate fetch
-// can falsely report the action still present. Up to 5 attempts are made
-// with increasing delays (1s, 1.5s, 2s, 3s) for a max sleep budget of
-// 7.5s (wall-clock under the relay ceiling including the five HTTP
-// fetches), with ONE verified re-click at the third attempt when the row
-// is still present, and near-zero extra latency on the common success
-// path (first check passes immediately). That budget covers typical and slow hub propagation
-// observed in live-hub runs; on retry exhaustion the throw directs the
-// caller to verify via hub_get_app_config since the deletion may complete
-// post-response. See source comment below for the original race description.
-// `skipStructuralCheck` skips the per-row balance refusal for a caller that has already checked
-// balance itself: the in-flight rollback below (a row this call wrote and never committed, so it
-// is not part of the block structure) and a restore removing a whole set of rows whose combined
-// removal leaves the rule balanced (each half of an IF/END-IF pair alone would be refused).
+// Delete one action row (delAct click). RM keeps the remaining indices as they are, with gaps.
+// skipStructuralCheck is for callers that checked balance themselves (the in-flight rollback and
+// a restore removing a balanced set of rows).
 Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralCheck = false) {
-    // Single statusJson fetch shared by all three pre-flight checks below;
-    // before the refactor each helper (_rmCollectActionIndices,
-    // _rmGetStateEditAct, structural pre-flight) called _rmFetchStatusJson
-    // independently, tripling the per-delete read load on the hub.
     def status = _rmFetchStatusJson(appId)
     def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
-    // Existence check reads SETTINGS, not the compiled action list: a row that
-    // was written but never baked exists only here, and refusing to delete it
-    // would strand it. The status fetch above is reused.
+    // Settings, not the compiled list: a never-baked row exists only here.
     def beforeIndices = _rmActionIndicesFromSettings(status)
     if (!beforeIndices.contains(actionIdx)) {
         throw new IllegalArgumentException("removeAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${beforeIndices.sort().join(', ')}")
     }
-    // Pre-flight: if state.editAct is set, RM will silently no-op the delAct
-    // click. Detect and fail immediately with a descriptive error rather than
-    // burning 10s of retries and surfacing a confusing timeout message.
+    // RM silently ignores delAct while an action editor is open (state.editAct).
     def editActEntry = (status?.appState ?: []).find { it?.name?.toString() == "editAct" }
     def stuckEditAct = editActEntry?.value
     if (stuckEditAct != null) {
-        throw new IllegalStateException("removeAction(${actionIdx}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops delAct clicks until this clears. Recovery options: (a) wait ~60s and retry (RM's stale-state timeout -- UNVERIFIED for this marker: an artificially-set editAct observed live did NOT clear after 5+ minutes); (b) open the rule in the Hubitat UI and finish or cancel the open action editor. Verified live on fw 2.5.1.135: cancelBtn/cancelAct clicks, updateRule, and an in-place hub_restore_backup do NOT clear a stuck editAct (restore-in-place rewrites settings, not app state) -- if (a) and (b) fail, delete the rule, then hub_restore_backup(scope='source', backupKey='<a recent rm-rule snapshot for this rule>', confirm=true), which RECREATES it with fresh state.")
+        throw new IllegalStateException(_rmStuckEditActMessage("removeAction(${actionIdx})", appId, stuckEditAct))
     }
-    // Structural pre-flight: refuse if the deleted index is a block
-    // opener/closer AND removing it would introduce a new imbalance not
-    // present in the current rule. Set-diff (projected MINUS current)
-    // rather than size-only — size comparison allows damage-shuffling on
-    // already-broken rules (e.g. swapping "Repeat never closed" for
-    // "END-IF closes a Repeat — mismatched" keeps the count flat). The
-    // set diff still allows deletions that strictly improve a broken
-    // rule, because every projected issue is also in current.
-    // Keyed off actSubType ALONE: RM 5.1's UI persists no actType.<N> on
-    // ELSE / ELSE-IF / END-IF rows, so also requiring actType would let a
-    // UI-built closer skip the refusal and silently unbalance the rule.
+    // Keyed on actSubType alone: the UI persists no actType on ELSE / ELSE-IF / END-IF rows.
+    // Only NEW imbalance is refused, so a deletion that improves a broken rule is allowed.
     def sType = settingsByName["actSubType.${actionIdx}".toString()]?.value?.toString()
     def structuralSubTypes = ["getIfThen", "getElseIf", "getElse", "getEndIf", "getRepeat", "getWhile", "getStopRepeat"]
     if (sType in structuralSubTypes && !skipStructuralCheck) {
-        // Both sides walk the rule's OWN actions. A leftover settings row is not
-        // part of the rule's structure, and the set-diff does not reliably cancel
-        // it out: a stale closer can absorb the imbalance a real deletion creates,
-        // so current and projected both come back clean and the refusal never fires.
-        // One spelling for both structural refusals below.
         def humanKind = [
             "getIfThen": "IF",
             "getElseIf": "ELSE-IF",
@@ -4257,10 +4199,7 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
         ][sType] ?: sType
         def orderedIndices = _rmOrderedActionIndices(appId)
         if (orderedIndices == null) {
-            // Without the compiled order the only guard left is the whole-settings scan, where a
-            // leftover closer can mask the imbalance this deletion creates -- a structural row
-            // could be deleted past a check that never saw the real block structure. Refuse, as
-            // moveAction and modifyAction do; a non-structural row (above) is unaffected.
+            // A leftover closer in the whole-settings scan can mask the imbalance.
             throw new IllegalStateException("removeAction(${actionIdx}) blocked: action ${actionIdx} is a structural ${humanKind} row and the rule's compiled action order (ruleBuilderJson actionList) is unavailable, so the deletion's effect on block balance cannot be verified -- the settings scan can be masked by leftover rows. Retry once ruleBuilderJson answers (hub_get_rule_health lists the read failure under checkErrors), or use replaceActions to rebuild the action list atomically. RM is not touched.")
         }
         def currentIssues = _rmStructuralIssuesFromSequence(
@@ -4273,36 +4212,16 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
         }
     }
     _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
-    // Verify the action actually disappeared. RM 5.1 silently no-ops the
-    // delAct click if the button-handler dispatch races with another edit.
-    // state.editAct was clear at pre-flight, so the loop below absorbs the
-    // two failure modes a clean 200 on the click can hide:
-    //   (a) propagation lag -- the click committed but appSettings updates
-    //       asynchronously (observed at several seconds in live repros);
-    //   (b) a silently DROPPED first click -- RM 5.1 occasionally no-ops the
-    //       first delAct entirely (live-measured 2/2 on a quiet hub,
-    //       2026-06-12), so nothing ever propagates.
-    // The old loop (1s/3s/6s backoff) treated both the same: it burned the
-    // whole ~10s budget, pushed the op past the ~10s cloud-relay ceiling
-    // (10.4s direct-timed on a QUIET hub, so every cloud caller got a 504),
-    // and then threw -- while its own error text prescribed the verified
-    // re-click performed below. Now: short early polls absorb (a); if the
-    // index is STILL present at ~2.5s, that is the dropped-click signature
-    // (b) -- re-click ONCE (the immediately-preceding presence check is the
-    // verified-non-commit evidence that makes the second click duplicate-
-    // safe) and keep polling. Success lands ~4-7s even on a dropped first
-    // click, back under the relay ceiling.
+    // The click returns 200 before the delete propagates, and RM sometimes drops the first click
+    // entirely: short polls absorb the lag, and a row still present at ~2.5s gets ONE re-click
+    // (the presence check just before it is the evidence that makes the re-click safe). Total
+    // stays under the ~10s cloud-relay ceiling. The live view (rows whose actType still carries
+    // a value) is polled because the UI leaves emptied keys behind on some firmware.
     def afterIndices = null
     def reclicked = false
     def retryDelaysMs = [1000, 1500, 2000, 3000]
     for (int attempt = 0; attempt < 5; attempt++) {
         if (attempt > 0) pauseExecution(retryDelaysMs[attempt - 1] as Integer)
-        // Settings, like beforeIndices above: polling the compiled list instead would report
-        // success the instant a row that was never in it is asked about -- a leftover row would
-        // read as "already deleted" before the click landed. But the LIVE view (a row whose
-        // actType/actSubType still carries a VALUE), because RM's UI leaves the emptied keys
-        // behind on some firmware: keyed on presence alone a landed delete reads as still-present,
-        // and this loop re-clicks a deleted row and then reports a failure that did not happen.
         afterIndices = _rmLiveActionIndicesFromSettings(_rmFetchStatusJson(appId))
         if (!afterIndices.contains(actionIdx)) {
             def out = [success: true, removedIndex: actionIdx, beforeIndices: beforeIndices.sort(), afterIndices: afterIndices.sort()]
@@ -4314,7 +4233,12 @@ Map _rmDeleteAction(Integer appId, Integer actionIdx, boolean skipStructuralChec
             _rmClickAppButton(appId, actionIdx.toString(), "delAct", "selectActions")
         }
     }
-    throw new IllegalStateException("removeAction(${actionIdx}): after the delAct click, one verified re-click, and ~8s of polling, action ${actionIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). state.editAct was clear at pre-flight and the re-click also failed to land. Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check action ${actionIdx}. If still present -> safe to call removeAction(index:${actionIdx}) again. If gone -> a click committed late (rare extreme lag); the removal already succeeded, do not retry. Indices shift on deletion, so retrying without this check can delete the wrong action.")
+    throw new IllegalStateException("removeAction(${actionIdx}): after the delAct click, one re-click and ~8s of polling, action ${actionIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). Verify first: hub_get_app_config(appId=${appId}). If the action is still there, removeAction(index:${actionIdx}) is safe to repeat; if it is gone, a click committed late and the removal succeeded.")
+}
+
+// RM ignores row buttons (delAct, the move arrows) while an action editor is open.
+private String _rmStuckEditActMessage(String op, Integer appId, Object editAct) {
+    return "${op} blocked: rule ${appId} has state.editAct=${editAct} from an interrupted action edit, and Rule Machine ignores row buttons until that editor is closed. Open the rule in the Hubitat UI and finish or cancel the open action editor, then retry. Button clicks, updateRule and an in-place restore do not clear it; as a last resort delete the rule and hub_restore_backup(scope='source', backupKey='<a recent rm-rule snapshot>', confirm=true) recreates it with fresh state.".toString()
 }
 
 // Delete a single trigger at a specific index. The per-row delete button on
@@ -4549,13 +4473,9 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     ]
     def cfg = _rmFetchConfigJson(appId)
     def committedSettings = (cfg?.settings instanceof Map) ? (cfg.settings as Map) : [:]
-    // Guard reads use String-coerced subscript keys (parsed-JSON maps carry
-    // String keys; a GString subscript misses them). The post-rebuild readback
-    // uses GString PROPERTY access instead, which coerces the name itself --
-    // both are safe; converting the readback to a GString subscript is not.
+    // Parsed-JSON maps carry String keys; a GString subscript misses them.
     def actSubType = committedSettings["actSubType.${actionIdx}".toString()]?.toString()
     if (!actSubType) {
-        // Settings-side list: the lookup that just failed was settings-side too.
         def indices = _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
         throw new IllegalArgumentException("modifyAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${indices.sort().join(', ')}. RM is not touched.")
     }
@@ -4574,24 +4494,18 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     if (mods.isEmpty()) {
         throw new IllegalArgumentException("modifyAction.mods must set at least one of: ${allowedMods.join(', ')}. RM is not touched.")
     }
-    // The rebuild writes the RuleType selector as "Rule Machine" unconditionally
-    // (the only value with in-repo or hub2-source evidence) -- refuse pre-delete
-    // if the committed selector says otherwise, instead of silently retyping it.
     def committedType = committedSettings["${entry.typeField}.${actionIdx}".toString()]?.toString()
     if (committedType != null && committedType != "Rule Machine") {
         throw new IllegalArgumentException("modifyAction cannot preserve action ${actionIdx}'s ${entry.typeField} selector: it reads '${committedType}', and the rebuild only writes 'Rule Machine'. Rebuild this action with removeAction + addAction (or the wizard) instead. RM is not touched.")
     }
-    // Committed single targets may persist as a bare scalar -- tolerate it here
-    // exactly like the post-rebuild readback does.
+    // A single committed target may persist as a bare scalar.
     def committedTargetsRaw = committedSettings["${entry.listField}.${actionIdx}".toString()]
     def committedTargets = (committedTargetsRaw instanceof List) ? committedTargetsRaw
                             : (committedTargetsRaw != null ? [committedTargetsRaw] : null)
     def spec = [capability: entry.capability,
                 ruleIds: mods.containsKey("ruleIds") ? mods.ruleIds : committedTargets]
     if (actSubType == "getPauseResumeRules") {
-        // pR.<N>: true=RESUME, false=Pause (inverted; see the addAction builder).
-        // No silent default: an unreadable committed verb on a preserve-request
-        // would flip a Resume action to Pause -- refuse pre-delete instead.
+        // pR true = resume. No silent default: an unreadable verb would flip the action.
         def committedPr = committedSettings["pR.${actionIdx}".toString()]
         if (mods.containsKey("action")) {
             spec.action = mods.action
@@ -4602,8 +4516,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
         }
     }
     if (actSubType == "getSetPrivateBoolean") {
-        // pvTF.<N>: true=FALSE (inverted; see the addAction builder). Same
-        // no-silent-default contract as the pause/resume verb above.
+        // pvTF true = set False.
         def committedPvTF = committedSettings["pvTF.${actionIdx}".toString()]
         if (mods.containsKey("value")) {
             spec.value = mods.value
@@ -4613,24 +4526,15 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
             spec.value = !(committedPvTF.toString() == "true")
         }
     }
-    // A rule-targeting action with no target is a broken row; and an empty/null
-    // ruleIds slips both the empty-mods guard and the existence check (which
-    // early-returns on an empty list) -- refuse it BEFORE the remove.
+    // An empty ruleIds slips the existence check (which early-returns on an empty list).
     if (!(spec.ruleIds instanceof List) || (spec.ruleIds as List).isEmpty()) {
         throw new IllegalArgumentException("modifyAction requires a non-empty ruleIds target (mods.ruleIds was ${mods.containsKey('ruleIds') ? mods.ruleIds.inspect() : 'omitted and no committed target was readable'}). RM is not touched.")
     }
-    // Refuse a dangling target BEFORE the remove wipes the original action.
     _rmValidateRuleTargetExists(entry.capability, spec.ruleIds, null)
-    // Position bookkeeping before mutating: the re-added action lands at the
-    // last position and is walked up past every action after the original slot.
-    // pos < 0 means the settings read and the display order DISAGREE about this
-    // action -- rebuilding would land it at an arbitrary position, so refuse
-    // pre-delete rather than reorder the rule (the delete leg would throw
-    // not-found anyway, but with a misleading roll-back hint).
+    // The re-added action lands last and is walked up past every action after the original slot,
+    // a display-order distance.
     def beforeIndices = _rmOrderedActionIndices(appId)
     if (beforeIndices == null) {
-        // movesUp is a display-order distance; from the unordered settings scan it walks the rebuilt
-        // action to the wrong slot and reorders the rule silently. Refuse before the remove.
         throw new IllegalStateException("modifyAction(${actionIdx}) refused: the compiled action order (ruleBuilderJson actionList) is unavailable for rule ${appId}, so the rebuilt action could not be walked back to its position reliably. Retry once ruleBuilderJson reads, or rebuild with removeAction + addAction. RM is not touched.")
     }
     def pos = beforeIndices.indexOf(actionIdx)
@@ -4638,20 +4542,15 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
         throw new IllegalArgumentException("modifyAction.index ${actionIdx} exists in the rule's settings but not in its display order (${beforeIndices.join(', ')}) -- the index sources disagree, so a rebuild cannot preserve position. Inspect the rule via hub_get_app_config and repair via removeAction + addAction. RM is not touched.")
     }
     int movesUp = beforeIndices.size() - 1 - pos
-    // The re-add's argument checks (an unknown pause/resume verb, ...) run here, before the delete.
+    // The re-add's argument checks run before the delete.
     try { _rmMapActionSpec(appId, new LinkedHashMap(spec), entry.capability.toString(), spec.action?.toString()?.trim()) }
     catch (IllegalArgumentException argExc) { throw new IllegalArgumentException(_rmNotTouched("modifyAction: ${argExc.message}".toString()), argExc) }
     def removeResult = _rmDeleteAction(appId, actionIdx)
-    // From here the original action is GONE. Any throw below must NOT surface a
-    // message carrying the "RM is not touched" sentinel -- the error-response
-    // builder string-matches it into a "nothing needs to be restored" hint,
-    // which would be a lie on every post-delete path.
+    // From here the original action is gone: no message below may carry "RM is not touched".
     def addResult
     try { addResult = _rmAddAction(appId, _rmWithClock(spec, reqT0)) }
     catch (Exception addExc) { throw new IllegalStateException(_rmModifyPostDeleteMsg(actionIdx, "re-add", addExc)) }
     if (addResult?.success == false) {
-        // partial:true -- the rule IS half-mutated (delete committed, add did not),
-        // which must never be shape-identical to a guard refusal that touched nothing.
         return [success: false, partial: true, removedIndex: actionIdx, removeResult: removeResult, addResult: addResult, spec: spec,
                 error: "modifyAction: action ${actionIdx} was removed but the re-add failed -- restore the pre-write snapshot (backup/restoreHint on the outer envelope) or re-issue addAction with the echoed spec."]
     }
@@ -4662,10 +4561,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     int movesDone = 0
     def moveVerifyHint = null
     for (int i = 0; i < movesUp; i++) {
-        // Relay-budget checkpoint: delete + add already consumed real time, and
-        // each move is another wizard round-trip. Stop before the response gets
-        // severed mid-flight -- a severed composite invites a naive retry that
-        // re-runs the destructive delete.
+        // A response severed mid-composite invites a retry that re-runs the delete.
         if (_timeBudgetExceeded(reqT0)) {
             budgetPaused = true
             break
@@ -4676,25 +4572,14 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
         moveResults << mv
         movesDone++
         if (mv?.success == false) {
-            // Soft no-shift (asyncCommitLikely): STOP -- _rmMoveAction's own
-            // verifyHint forbids blind re-clicks (a late-committing click plus
-            // further moves would walk the action PAST its original slot).
+            // A late-committing click plus further moves would walk the action past its slot.
             moveSoftFail = true
             moveVerifyHint = mv?.verifyHint
             break
         }
-        // A move changes the action's POSITION, never its settings index, so
-        // newIdx stays the add's actionIndex. (No index re-resolution from the
-        // move's rich return: indicesAfter is SORTED while afterPosition indexes
-        // the display order -- mixing them corrupts newIdx -- and a true mid-move
-        // renumber would surface as a failed final readback below, which returns
-        // the actionable error instead of a silent wrong index.)
     }
-    // Ground-truth readback: the retarget IS the operation, and _rmAddAction can
-    // report success:true + partial:true with the target field silently skipped.
-    // Compare the persisted list field -- AND the rebuilt verb/value fields, so
-    // a silently-skipped pR/pvTF write can't ride under a verified target.
-    // Skipped on a budget pause (the caller is told to verify + finish instead).
+    // The add can report success with the target field silently skipped, so the persisted
+    // target list and verb/value fields are read back.
     def verifiedTargets = null
     def fieldMismatches = []
     boolean verificationFetchFailed = false
@@ -4808,75 +4693,32 @@ private String _rmModifyPostDeleteMsg(Integer actionIdx, String leg, Exception e
     return "modifyAction: action ${actionIdx} was already removed when the ${leg} leg failed -- the rule IS modified.${rebuilt} Restore the pre-write snapshot via hub_restore_backup with this response's backupKey. Underlying: ${m}"
 }
 
-// Delete every action on a rule via the trashAll → trashActs flow.
-// Verified live:
-//
-// 1. Click button name='trashAll' stateAttribute='trash'. RM enters
-// trash-confirmation mode and exposes a `trashActs` multi-enum
-// whose options are the current action indices.
-// 2. Commit settings[trashActs]=<indices-as-JSON-array> as a FULL page-form
-// submit (the complete form-action envelope + serialized selectActions
-// page state, mirroring the native UI). trashActs has submitOnChange=true,
-// and the full submit makes RM run that handler synchronously during the
-// page re-render, so the selected actions are deleted by the time the POST
-// returns. A bare settings-write of trashActs stores the value but never
-// runs the handler, stranding the delete.
-//
-// Per-row delAct buttons get hidden when only one action remains, so
-// per-row iteration leaves the final action stuck. The trashActs enum
-// path handles any count including deleting down to zero.
-//
-// Returns the list of indices that were marked for deletion.
+// Delete every action: the trashAll click enters trash-confirmation mode, which reveals the
+// trashActs multi-enum; that is committed as a full page-form submit so RM runs its
+// submitOnChange handler in-band (a bare settings write stores the value and deletes nothing).
+// Per-row delAct is hidden when one action remains, so this path is also how the last one goes.
 private List _rmClearActions(Integer appId) {
-    // Trash and verify against every row that EXISTS, not only the compiled view: an un-baked row
-    // never listed in actionList still occupies its index, and clearing only the compiled list
-    // would report success while it survived -- a permanent orphan that every later add stacks above.
+    // Every row that exists, not only the compiled view: an un-baked row still occupies its index.
     def liveBefore = _rmLiveActionIndicesFromSettings(_rmFetchStatusJson(appId))
     def indices = ((_rmOrderedActionIndices(appId) ?: []) + liveBefore).collect { it as Integer }.unique().sort()
     if (!indices) return []
-    // The page can be in two states:
-    //   normal: trashAll button visible, trashActs NOT in schema yet.
-    //   trash-confirmation: trashActs visible, cancelTrash + runAction
-    //                       buttons (no trashAll). We can land here if a
-    //                       previous clearActions attempt clicked trashAll
-    //                       but failed to write trashActs.
-    // Inspect the schema first so we don't double-toggle.
+    // A previous attempt may have left the page in trash-confirmation mode already.
     def cfg = _rmFetchConfigJson(appId, "selectActions")
     def schema = _rmCollectInputSchema(cfg?.configPage)
     if (!schema?.containsKey("trashActs")) {
-        // Normal state -- click trashAll to enter trash-confirmation mode.
         _rmClickAppButton(appId, "trashAll", "trash", "selectActions")
         cfg = _rmFetchConfigJson(appId, "selectActions")
         schema = _rmCollectInputSchema(cfg?.configPage)
     }
     if (!schema?.containsKey("trashActs")) {
-        // RM didn't enter trash mode after the trashAll click. Don't pretend
-        // success -- caller (patches handler, replaceActions, etc.) needs to
-        // know nothing was deleted so success aggregation is correct.
         def actCountMsg = "${indices.size()} ${indices.size() == 1 ? 'action' : 'actions'}"
         throw new IllegalStateException("clearActions: trashActs not in selectActions schema after trashAll click for app ${appId} -- RM didn't enter trash mode. The rule has ${actCountMsg} at indices ${indices.sort()} that were NOT deleted.")
     }
-    // Commit trashActs as a full page-form submit so RM runs its
-    // submitOnChange handler synchronously during the re-render. The handler
-    // is what actually deletes the selected actions; a bare settings-write
-    // stores the value but never runs it, stranding the delete.
     def stringIndices = indices.collect { it.toString() }
     _rmSubmitFullPageForm(appId, "selectActions", cfg, schema, (cfg?.settings ?: [:]),
         ["trashActs": stringIndices])
-    // Post-condition check -- verify the actions actually disappeared. With the
-    // synchronous full-form submit the deletion has committed by the time the
-    // POST returns, so the FIRST check is expected to pass in the common case.
-    // The retry loop is a thin defensive net for two residual edge cases:
-    //   (a) RM has been observed to no-op the trashActs write entirely when
-    //       state.editAct is set, leaving the rule fully unchanged. This is a
-    //       hard failure the retries won't fix, but distinguishing it from (b)
-    //       requires the verification fetch either way.
-    //   (b) a genuinely-rare firmware/timing edge where the handler's write to
-    //       appSettings lags the POST return. Empirically uncommon now that the
-    //       submitOnChange handler runs in-band; the backoff (1s, 3s, 6s)
-    //       absorbs it without adding latency on the common success path.
-    // If the first fetch shows clean, return immediately; only after 4 attempts
-    // do we throw (real (a)-class failure or the rare residual lag).
+    // The first check normally passes; the retries cover a rare commit lag (a stuck editAct no-ops
+    // the write and never passes).
     def remaining = null
     def stillThere = null
     def retryDelaysMs = [1000, 3000, 6000]
@@ -4888,63 +4730,32 @@ private List _rmClearActions(Integer appId) {
     }
     def stillThereCount = stillThere.size()
     def stillThereWord = stillThereCount == 1 ? "action" : "actions"
-    // asyncCommit marker tells the dispatcher catch that this is the
-    // verification-window-exhausted case (HTTP 200 + retries exhausted), not a
-    // hard wizard / schema failure. With synchronous commit this path should
-    // almost never fire -- it stays as a defensive net for the two residual
-    // edge cases above. Distinct from the wizardStuck marker pattern but
-    // follows the same precedent of encoding a recoverable-shape hint in the
-    // exception message. Single source of truth: getAsyncCommitMarker() --
-    // throw and strip sites must agree.
-    throw new IllegalStateException("clearActions: trashActs submit returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries. Likely either state.editAct is set (a cancelAct click was verified live on fw 2.5.1.135 NOT to clear a stale marker -- if set, finish/cancel the open editor in the Hubitat UI, or delete + hub_restore_backup(scope='source') to recreate with fresh state) or a rare RM commit lag. Verify via hub_get_app_config(appId=${appId}) before retrying -- the deletion may commit post-response. Roll back via hub_restore_backup if the ${stillThereWord} really did get clobbered. Note: do NOT use hub_set_rule(button='cancelTrash') as a recovery -- in trash-confirmation mode that button may commit pending deletes rather than abort, potentially wiping additional actions.${getAsyncCommitMarker()}")
+    // The asyncCommit marker tells the dispatcher this is an exhausted verify window, not a wizard
+    // failure (getAsyncCommitMarker is the one spelling the strip site matches).
+    throw new IllegalStateException("clearActions: trashActs submit returned 200 but actions ${stillThere.sort()} still present on rule ${appId} after 10s of retries: either an open action editor (state.editAct) is blocking the delete (finish or cancel it in the Hubitat UI, or delete the rule and hub_restore_backup(scope='source') to recreate it) or RM committed late. Verify via hub_get_app_config(appId=${appId}) before retrying; hub_restore_backup if the ${stillThereWord} really did get clobbered. Do not click cancelTrash as a recovery: in trash-confirmation mode it may commit the pending deletes.${getAsyncCommitMarker()}")
 }
 
-// Move an action one slot in the given direction. Verified live
-// 2026-04-25: per-row up/down arrows have data-stateAttribute='arrowUp'
-// / 'arrowDn' and use the action index as the button name (same
-// convention as delAct). Returns the request response status.
-//
-// Note: RM may renumber actions when moves cross gaps — caller should
-// re-collect indices via _rmCollectActionIndices if subsequent moves
-// depend on positions.
+// Move an action one slot (arrowUp / arrowDn click). Positions come from the compiled action
+// order; appSettings key order is arbitrary and cannot verify a move.
 Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     def stateAttr = direction == "up" ? "arrowUp" : (direction == "down" ? "arrowDn" : null)
     if (!stateAttr) throw new IllegalArgumentException("moveAction direction must be 'up' or 'down'")
-    // Capture pre-move ORDERING from ruleBuilderJson's actionList (RM's own
-    // display-ordered array). appSettings key order is arbitrary -- neither
-    // display nor lexical -- so it can never serve this check; see
-    // _rmCollectActionIndices. The ordered list lets us verify the action's
-    // POSITION moved, not just that the index set is unchanged -- a mid-list
-    // silent no-op leaves both before- and after-sets identical AND positions
-    // identical, but a real move shifts position by exactly one slot.
     def beforeOrderRaw = _rmOrderedActionIndices(appId)
     if (beforeOrderRaw == null) {
-        // The settings scan is not display order; a position computed from it can misclassify a
-        // boundary move or verify the wrong shift, and the rule reorders silently. Refuse pre-write.
         throw new IllegalStateException("moveAction(${actionIdx}) refused: the compiled action order (ruleBuilderJson actionList) is unavailable for rule ${appId}, and positions computed from the settings scan are not display order -- a move verified against them could silently reorder the rule. Retry once ruleBuilderJson reads, or rebuild with removeAction + addAction. RM is not touched.")
     }
     if (!beforeOrderRaw.contains(actionIdx)) {
         throw new IllegalArgumentException("moveAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${beforeOrderRaw.sort().join(', ')}")
     }
-    // Pre-flight: if state.editAct is set, RM will silently no-op the move-arrow
-    // click. Detect and fail immediately with a descriptive error rather than
-    // burning a slow position-shift check and surfacing a confusing failure.
-    // Placed after the index-existence check (mirrors _rmDeleteAction ordering):
-    // an invalid index gets the more actionable IllegalArgumentException first.
     def stuckEditAct = _rmGetStateEditAct(appId)
     if (stuckEditAct != null) {
-        throw new IllegalStateException("moveAction(${actionIdx}, ${direction}) blocked: rule ${appId} has state.editAct=${stuckEditAct} set from a prior interrupted action edit. RM 5.1 silently no-ops move-arrow clicks until this clears. Recovery options: (a) wait ~60s and retry (RM's stale-state timeout -- UNVERIFIED for this marker: an artificially-set editAct observed live did NOT clear after 5+ minutes); (b) open the rule in the Hubitat UI and finish or cancel the open action editor. Verified live on fw 2.5.1.135: cancelBtn/cancelAct clicks, updateRule, and an in-place hub_restore_backup do NOT clear a stuck editAct (restore-in-place rewrites settings, not app state) -- if (a) and (b) fail, delete the rule, then hub_restore_backup(scope='source', backupKey='<a recent rm-rule snapshot for this rule>', confirm=true), which RECREATES it with fresh state.")
+        throw new IllegalStateException(_rmStuckEditActMessage("moveAction(${actionIdx}, ${direction})", appId, stuckEditAct))
     }
     def beforePosition = beforeOrderRaw.indexOf(actionIdx)
     def isBoundary = (direction == "up" && beforePosition == 0) ||
                      (direction == "down" && beforePosition == beforeOrderRaw.size() - 1)
     _rmClickAppButton(appId, actionIdx.toString(), stateAttr, "selectActions")
-    // The compiled order ONLY: the settings fallback is arbitrary key order, and a position taken
-    // from it compared against a compiled-order position can coincidentally show the expected
-    // one-slot shift and report a move that never happened. Unreadable is UNCONFIRMED, and is kept
-    // distinct from a genuinely empty list -- collapsing the two reported a boundary no-op as a
-    // confirmed success carrying indicesAfter:[] and afterPosition:-1, i.e. "the rule has no
-    // actions", for a click nobody could verify.
+    // An unreadable order is unconfirmed, distinct from an empty rule.
     def afterOrderFetched = _rmOrderedActionIndices(appId)
     def afterOrderRaw = afterOrderFetched ?: []
     def afterPosition = afterOrderRaw.indexOf(actionIdx)
@@ -4969,27 +4780,14 @@ Map _rmMoveAction(Integer appId, Integer actionIdx, String direction) {
     if (renderError) {
         throw new IllegalStateException("moveAction(${actionIdx}, ${direction}): click returned 200 but selectActions render now errors: ${renderError}")
     }
-    // Verify position actually shifted, except at boundaries (RM correctly
-    // no-ops a move-up at position 0 or move-down at the last slot).
+    // RM correctly no-ops a move at the boundary. Elsewhere the click can commit a couple of
+    // seconds late, so one short re-check; still unshifted is reported soft (asyncCommitLikely)
+    // because a hard failure would tempt a second move that double-shifts.
     if (!isBoundary) {
         def expectedShift = direction == "up" ? -1 : 1
         def actualShift = afterPosition - beforePosition
-        // The move-arrow click can commit slightly AFTER the immediate re-read
-        // (observed live on a slow hub: the position flips a couple seconds
-        // post-click, so the first check still sees the pre-move order). Do ONE
-        // short re-check to catch a fast-late commit, kept well under the cloud
-        // relay's ~10s window so the call itself does not 504 (a long in-handler
-        // poll would). If it STILL has not shifted, return a SOFT
-        // asyncCommitLikely result (mirroring clearActions/replaceActions)
-        // rather than a hard throw: a late commit reported as a hard failure is
-        // a false-negative that tempts a caller into a second move that
-        // double-shifts the action.
         if (actualShift != expectedShift) {
             pauseExecution(1500)
-            // The re-check read is the one fetch in this otherwise verify-tolerant
-            // path; if it throws (transient relay flake), treat the move as
-            // unconfirmed -- fall through to the soft asyncCommitLikely return
-            // rather than hard-throwing out of the function.
             try {
                 afterOrderRaw = _rmOrderedActionIndices(appId) ?: []
                 afterPosition = afterOrderRaw.indexOf(actionIdx)
@@ -5757,9 +5555,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             case "on":
                 actSubType = "getOnOffSwitch"
                 fields = ["onOffSwitch.@N": deviceIds, "onOff.@N": true]
-                // optSwitch ("Command only switches that are off/on?") reveals ONLY after a
-                // device is selected in onOffSwitch, so it must be written AFTER it -- keep
-                // it last in the insertion-ordered fields map.
+                // optSwitch reveals only after a device is selected, so it stays last.
                 if (actionSpec.onlyIfChanged == true) fields["optSwitch.@N"] = true
                 break
             case "off":
@@ -5774,27 +5570,8 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             case "flash":
                 actSubType = "getFlashSwitch"
                 fields = ["flashSwitch.@N": deviceIds]
-                // FOLLOW-UP (verified live): RM 5.1's switchActs
-                // category exposes getFlashSwitch (start flashing) but NO
-                // matching "stop flashing" subtype. Calling switch.on/.off
-                // afterward DOES NOT cancel the flash schedule — the device
-                // keeps pulsing on/off until something explicitly calls its
-                // .flashOff() command (verified: rule that did Flash → Delay
-                // 5s → On left lights flashing for ~90s after the rule
-                // completed, until I sent .flashOff() directly via
-                // hub_call_device_command).
-                //
-                // To cancel a running flash from within a rule, use
-                // capability='runCommand' (mapped below) with command=
-                // 'flashOff' on the same device list — that drives
-                // modeActs/getDefinedAction internally.
                 break
             case "setPerMode":
-                // switchActs/getModeSwitch — same device list, per-mode on/off.
-                // Wire format (verified live):
-                //   switchM.<N>      = devices (capability.switch multi)
-                //   switchModes.<N>  = mode IDs (enum multi, JSON-array)
-                //   switch<modeID>.<N> = "on" | "off" for each selected mode
                 actSubType = "getModeSwitch"
                 if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
                     throw new IllegalArgumentException("switch.setPerMode requires perMode={modeIdOrName: 'on'|'off', ...}")
@@ -5807,11 +5584,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 }
                 break
             case "choosePerMode":
-                // switchActs/getChooseSwitch — different device lists per mode for ON / OFF.
-                // Wire format (verified live):
-                //   chooseModes.<N>     = mode IDs
-                //   chooseSwOn<modeID>.<N>  = devices to turn ON for that mode
-                //   chooseSwOff<modeID>.<N> = devices to turn OFF for that mode
                 actSubType = "getChooseSwitch"
                 if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
                     throw new IllegalArgumentException("switch.choosePerMode requires perMode={modeIdOrName: {on: [devIds], off: [devIds]}, ...}")
@@ -5827,8 +5599,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 }
                 break
             default:
-                // 'command' is the device-command tools' field name; steer the mix-up
-                // by name instead of leaving a bare "Unknown switch action 'null'".
                 if (action == null && actionSpec.command != null) {
                     throw new IllegalArgumentException("switch actions use the 'action' field, not 'command' (got command='${actionSpec.command}'). Supported: on, off, toggle, flash, setPerMode, choosePerMode")
                 }
@@ -5841,39 +5611,29 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 actSubType = "getSetDimmer"
                 fields = ["dimA.@N": deviceIds]
                 if (actionSpec.levelVariable != null) {
-                    // Variable-sourced level: uVar.<N>=true + xVar.<N>=<varName>
                     fields["uVar.@N"] = true
                     fields["xVar.@N"] = actionSpec.levelVariable
                 } else {
-                    if (actionSpec.level == null) throw new IllegalArgumentException("dimmer.setLevel requires 'level' (0-100) OR 'levelVariable' (hub variable name). Verified live: actionDone never appears until a level source is set.")
+                    if (actionSpec.level == null) throw new IllegalArgumentException("dimmer.setLevel requires 'level' (0-100) or 'levelVariable' (hub variable name).")
                     fields["dimLA.@N"] = actionSpec.level
                 }
                 if (actionSpec.fadeSeconds != null) fields["dimRA.@N"] = actionSpec.fadeSeconds
                 break
             case "toggle":
-                // level IS required by RM 5.1's getToggleDimmer wizard — it
-                // is the level the dimmer goes to when toggling FROM off TO on.
-                // Verified live in Chrome (2026-04-25): actionDone button
-                // doesn't appear in the schema until 'To this level (0..100)*'
-                // is filled. The * indicates required.
-                if (actionSpec.level == null) throw new IllegalArgumentException("dimmer.toggle requires 'level' (0-100) -- the level to set when toggling from off to on. Verified live: actionDone never appears in the schema until level is set (the wizard input is marked required with *).")
+                if (actionSpec.level == null) throw new IllegalArgumentException("dimmer.toggle requires 'level' (0-100), the level to set when toggling from off to on.")
                 actSubType = "getToggleDimmer"
                 fields = ["dimA.@N": deviceIds, "dimLA.@N": actionSpec.level]
                 if (actionSpec.fadeSeconds != null) fields["dimRA.@N"] = actionSpec.fadeSeconds
                 break
             case "adjust":
-                // adjustBy IS required — the +/- amount (-100..100). Without
-                // it, actionDone never appears (same pattern as toggle).
-                if (actionSpec.adjustBy == null) throw new IllegalArgumentException("dimmer.adjust requires 'adjustBy' (signed integer -100..100). Without it the wizard's actionDone button never renders.")
+                if (actionSpec.adjustBy == null) throw new IllegalArgumentException("dimmer.adjust requires 'adjustBy' (signed integer -100..100).")
                 actSubType = "getAdjustDimmer"
                 fields = ["dimA.@N": deviceIds, "dimAdj.@N": actionSpec.adjustBy]
                 if (actionSpec.fadeSeconds != null) fields["dimAdjR.@N"] = actionSpec.fadeSeconds
                 break
             case "fade":
-                // Fade dimmer over time (raise OR lower) — getFadeDimmer.
-                // dimFadeUp.<N>: true=Raise, false=Lower
-                if (actionSpec.targetLevel == null) throw new IllegalArgumentException("dimmer.fade requires 'targetLevel' (0-100). Without it the wizard's actionDone button never renders.")
-                if (actionSpec.minutes == null) throw new IllegalArgumentException("dimmer.fade requires 'minutes' (over how long to fade). Without it the wizard's actionDone button never renders.")
+                if (actionSpec.targetLevel == null) throw new IllegalArgumentException("dimmer.fade requires 'targetLevel' (0-100).")
+                if (actionSpec.minutes == null) throw new IllegalArgumentException("dimmer.fade requires 'minutes' (how long the fade takes).")
                 actSubType = "getFadeDimmer"
                 fields = ["dimFade.@N": deviceIds, "dimFadeUp.@N": (actionSpec.direction == "raise"), "dimFadeTarget.@N": actionSpec.targetLevel, "dimFadeTime.@N": actionSpec.minutes]
                 if (actionSpec.intervalSeconds != null) fields["dimFadeInterval.@N"] = actionSpec.intervalSeconds
@@ -5882,9 +5642,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 actSubType = "getStopFade"; fields = [:]
                 break
             case "startRaiseLower":
-                // dimRL.<N>: true=LOWER, false=Raise (verified live
-                // sweep — the boolean is inverted relative to the
-                // intuition the field name suggests).
+                // dimRL true = lower.
                 actSubType = "getRLDimmer"
                 fields = ["dimRL.@N": (actionSpec.direction != "raise"), "dimRaiseLower.@N": deviceIds]
                 break
@@ -5892,12 +5650,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 actSubType = "getStopDimmer"; fields = ["dimStop.@N": deviceIds]
                 break
             case "setLevelPerMode":
-                // dimmerActs/getDimmersPerMode — same dimmer device list, per-mode level.
-                // Field naming (verified live):
-                //   dimM.<N>           = devices (capability.switchLevel multi)
-                //   dimmerModes.<N>    = mode IDs
-                //   level<modeID>.<N>  = number 0-100 for each mode
-                //   dimMR.<N>          = optional fade seconds
                 actSubType = "getDimmersPerMode"
                 if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
                     throw new IllegalArgumentException("dimmer.setLevelPerMode requires perMode={modeIdOrName: level (0-100), ...}")
@@ -5914,37 +5666,22 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 throw new IllegalArgumentException("Unknown dimmer action '${action}' -- supported: setLevel, toggle, adjust, fade, stopFade, startRaiseLower, stopChanging, setLevelPerMode")
         }
     } else if (cap == "color") {
-        // Color (RGBW) family — capability.colorControl.
         actType = "dimmerActs"
         switch (action) {
             case "setColor":
-                // Verified live: with no color source the action registers (bulbs.<N>
-                // written) but never bakes. Require colorName OR a rawSettings color value.
-                if (actionSpec.colorName == null && !(actionSpec.rawSettings instanceof Map)) throw new IllegalArgumentException("color.setColor requires 'colorName' (e.g. 'Red'), OR a custom HSV color supplied via rawSettings (colorH.<N>). Without a color source the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.colorName == null && !(actionSpec.rawSettings instanceof Map)) throw new IllegalArgumentException("color.setColor requires 'colorName' (e.g. 'Red') or a custom HSV color via rawSettings (colorH.@N).")
                 actSubType = "getSetColor"
                 fields = ["bulbs.@N": deviceIds]
                 if (actionSpec.colorName != null) fields["color.@N"] = actionSpec.colorName
                 if (actionSpec.level != null) fields["colorLevel.@N"] = actionSpec.level
-                // For custom HSV: pass hue/saturation/level via rawSettings (colorH.<N> takes a JSON-encoded color picker value)
                 break
             case "toggleColor":
-                // Verified live: getToggleColor's actionDone button
-                // doesn't render until colorName AND level are set. Without
-                // them the action never bakes — the row stays in atomicState
-                // but actions[] doesn't advance, so the next addAction's
-                // index discovery returns the same idx and overwrites.
-                if (actionSpec.colorName == null) throw new IllegalArgumentException("color.toggleColor requires 'colorName' (e.g. 'Red'). Without it, actionDone never appears in the schema and the action silently fails to bake.")
-                if (actionSpec.level == null) throw new IllegalArgumentException("color.toggleColor requires 'level' (0-100). Without it, actionDone never appears in the schema and the action silently fails to bake.")
+                if (actionSpec.colorName == null) throw new IllegalArgumentException("color.toggleColor requires 'colorName' (e.g. 'Red').")
+                if (actionSpec.level == null) throw new IllegalArgumentException("color.toggleColor requires 'level' (0-100).")
                 actSubType = "getToggleColor"
                 fields = ["bulbsTog.@N": deviceIds, "colorTog.@N": actionSpec.colorName, "colorTogLevel.@N": actionSpec.level]
                 break
             case "setColorPerMode":
-                // dimmerActs/getColorPerMode — per-mode color + level (RGBW bulbs).
-                // Wire format (verified live):
-                //   bulbsM.<N>             = devices (capability.colorControl multi)
-                //   colorModes.<N>         = mode IDs
-                //   color<modeID>.<N>      = color enum (Red/Green/Blue/etc.) per mode
-                //   colorLevel<modeID>.<N> = bulb level (0-100) per mode
                 actSubType = "getColorPerMode"
                 if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
                     throw new IllegalArgumentException("color.setColorPerMode requires perMode={modeIdOrName: {color: 'Red', level: 70}, ...}")
@@ -5963,31 +5700,22 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 throw new IllegalArgumentException("Unknown color action '${action}' -- supported: setColor, toggleColor, setColorPerMode")
         }
     } else if (cap == "colorTemp") {
-        // Color temperature family — capability.colorTemperature.
         actType = "dimmerActs"
         switch (action) {
             case "setColorTemp":
-                // Verified live: without kelvin the action registers (ct.<N> written)
-                // but never bakes -- mainPage keeps the 'Define Actions' placeholder.
-                // Fail fast rather than returning a confusing silent partial.
-                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.setColorTemp requires 'kelvin' (color temperature in K, e.g. 2700). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.setColorTemp requires 'kelvin' (e.g. 2700).")
                 actSubType = "getSetColorTemp"
                 fields = ["ct.@N": deviceIds, "ctL.@N": actionSpec.kelvin]
                 if (actionSpec.level != null) fields["ctLevel.@N"] = actionSpec.level
                 break
             case "toggleColorTemp":
-                // Verified live: without kelvin the action never bakes (same silent
-                // partial as setColorTemp). Fail fast.
-                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.toggleColorTemp requires 'kelvin' (color temperature in K, e.g. 2700). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.toggleColorTemp requires 'kelvin' (e.g. 2700).")
                 actSubType = "getToggleColorTemp"
                 fields = ["ctTog.@N": deviceIds, "ctLTog.@N": actionSpec.kelvin]
                 if (actionSpec.level != null) fields["ctTogLevel.@N"] = actionSpec.level
                 break
             case "fadeColorTemp":
-                // Verified live: without targetKelvin + minutes the action never bakes
-                // (only ctFade/ctFadeUp get written). Fail fast. direction (raise/lower)
-                // defaults to lower when omitted, mirroring dimmer.fade.
-                if (actionSpec.targetKelvin == null || actionSpec.minutes == null) throw new IllegalArgumentException("colorTemp.fadeColorTemp requires 'targetKelvin' (target color temp in K) and 'minutes' (fade duration). Without them the action registers but never bakes. Optional 'direction' (raise/lower) defaults to lower. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.targetKelvin == null || actionSpec.minutes == null) throw new IllegalArgumentException("colorTemp.fadeColorTemp requires 'targetKelvin' and 'minutes'; optional 'direction' (raise/lower) defaults to lower.")
                 actSubType = "getFadeCT"
                 fields = ["ctFade.@N": deviceIds, "ctFadeUp.@N": (actionSpec.direction == "raise"), "ctFadeTarget.@N": actionSpec.targetKelvin, "ctFadeTime.@N": actionSpec.minutes]
                 if (actionSpec.intervalSeconds != null) fields["ctFadeInterval.@N"] = actionSpec.intervalSeconds
@@ -5998,13 +5726,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 actSubType = "getStopCTFade"; fields = [:]
                 break
             case "setColorTempPerMode":
-                // dimmerActs/getColorTempPerMode — per-mode kelvin + level.
-                // Wire format quirk: the LEVEL field name is ctMode<modeID>.<N>Level
-                // (the "Level" suffix appended after the action index).
-                //   ctM.<N>                     = devices (capability.colorTemperature multi)
-                //   ctModes.<N>                 = mode IDs
-                //   ctMode<modeID>.<N>          = kelvin per mode
-                //   ctMode<modeID>.<N>Level     = bulb level per mode  (note suffix order)
                 actSubType = "getColorTempPerMode"
                 if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
                     throw new IllegalArgumentException("colorTemp.setColorTempPerMode requires perMode={modeIdOrName: {kelvin: 2700, level: 70}, ...}")
@@ -6015,8 +5736,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                     def cfg = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
                     if (cfg instanceof Map) {
                         if (cfg.kelvin != null) fields["ctMode${mid}.@N"] = cfg.kelvin
-                        // Level suffix goes AFTER the action index — encode the @N substitution
-                        // and append "Level" so the final key is ctMode<mid>.<idx>Level.
+                        // RM's level key really is ctMode<mode>.<idx>Level, suffix after the index.
                         if (cfg.level != null) fields["ctMode${mid}.@NLevel"] = cfg.level
                     }
                 }
@@ -6025,8 +5745,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 throw new IllegalArgumentException("Unknown colorTemp action '${action}' -- supported: setColorTemp, toggleColorTemp, fadeColorTemp, stopColorTempFade, setColorTempPerMode")
         }
     } else if (cap == "lock") {
-        // lockRL.<N>: true=UNLOCK, false=Lock (verified live --
-        // boolean is inverted relative to field-name intuition).
+        // lockRL true = unlock.
         actType = "lockActs"
         actSubType = "getLULock"
         switch (action) {
@@ -6035,12 +5754,9 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             default: throw new IllegalArgumentException("Unknown lock action '${action}' -- supported: lock, unlock")
         }
     } else if (cap == "thermostat") {
-        // Thermostat with optional mode, fan, heating/cooling setpoints.
-        // Verified live: a thermostat action with NO setting registers (thermo.<N>
-        // written) but never bakes. Require at least one setting. Fail fast.
         if (actionSpec.mode == null && actionSpec.fanMode == null && actionSpec.heatingSetpoint == null &&
             actionSpec.adjustHeating == null && actionSpec.coolingSetpoint == null && actionSpec.adjustCooling == null) {
-            throw new IllegalArgumentException("thermostat action requires at least one setting: 'mode', 'fanMode', 'heatingSetpoint', 'adjustHeating', 'coolingSetpoint', or 'adjustCooling'. Without any, the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+            throw new IllegalArgumentException("thermostat action requires at least one setting: 'mode', 'fanMode', 'heatingSetpoint', 'adjustHeating', 'coolingSetpoint' or 'adjustCooling'.")
         }
         actType = "lockActs"
         actSubType = "getSetThermostat"
@@ -6052,9 +5768,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         if (actionSpec.coolingSetpoint != null)   fields["thermoSetCool.@N"] = actionSpec.coolingSetpoint
         if (actionSpec.adjustCooling != null)     fields["thermoAdjCool.@N"] = actionSpec.adjustCooling
     } else if (cap == "hsm") {
-        // Hubitat Safety Monitor arm/disarm. lockActs/getSetHSM; the single revealed
-        // field is alarm.<N>, an enum of bare HSM command tokens (NOT the vue hsmArm*
-        // tokens). getSetHSM is present only when HSM is installed on the hub.
+        // alarm.<N> takes RM's bare HSM tokens, not the hsmArm* tokens of the Vue UI.
         actType = "lockActs"
         actSubType = "getSetHSM"
         def hsmCmd = actionSpec.command?.toString()
@@ -6063,16 +5777,13 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         }
         fields = ["alarm.@N": hsmCmd]
     } else if (cap == "shade") {
-        // shadeRL.<N>: true=CLOSE, false=Open (verified live --
-        // boolean is inverted relative to field-name intuition).
+        // shadeRL true = close.
         actType = "sceneActs"
         switch (action) {
             case "open":  actSubType = "getRLShade"; fields = ["shadeRL.@N": false, "shadeOpenClose.@N": deviceIds]; break
             case "close": actSubType = "getRLShade"; fields = ["shadeRL.@N": true,  "shadeOpenClose.@N": deviceIds]; break
             case "setPosition":
-                // Verified live: without position the action registers (shadePosition.<N>
-                // written) but never bakes. Fail fast.
-                if (actionSpec.position == null) throw new IllegalArgumentException("shade.setPosition requires 'position' (0-100). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.position == null) throw new IllegalArgumentException("shade.setPosition requires 'position' (0-100).")
                 actSubType = "getShadePosition"
                 fields = ["shadePosition.@N": deviceIds, "shadeLevel.@N": actionSpec.position]
                 break
@@ -6083,9 +5794,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actType = "sceneActs"
         switch (action) {
             case "setSpeed":
-                // Verified live: without speed the action registers (fanDevice.<N>
-                // written) but never bakes. Fail fast.
-                if (actionSpec.speed == null) throw new IllegalArgumentException("fan.setSpeed requires 'speed' (e.g. low / medium-low / medium / medium-high / high / on / auto / off). Without it the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+                if (actionSpec.speed == null) throw new IllegalArgumentException("fan.setSpeed requires 'speed' (low / medium-low / medium / medium-high / high / on / auto / off).")
                 actSubType = "getFanSpeed"
                 fields = ["fanDevice.@N": deviceIds, "fanSpeed.@N": actionSpec.speed]
                 break
@@ -6105,8 +5814,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         if (actionSpec.modeId != null) {
             modeValue = actionSpec.modeId
         } else {
-            // Resolve modeName -> mode ID. Writing the name literal produces Mode: null
-            // in the RM render because the mode.<N> input expects an integer ID.
             def name = actionSpec.modeName.toString()
             def hubModes = location?.modes ?: []
             def matched = hubModes.find { it?.name?.toString()?.equalsIgnoreCase(name) }
@@ -6121,54 +5828,18 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         }
         fields = ["mode.@N": modeValue]
     } else if (cap == "variable" || cap == "setVariable" || cap == "setLocalVariable") {
-        // modeActs/getSetVariable -- Set Hub Variable OR rule-local variable to a value.
-        // RM exposes locals and globals through the SAME getSetVariable action and the SAME
-        // xVarV picker (locals appear in the picker alongside globals), so the wire path is
-        // identical -- the only difference is WHICH variable namespace the target name is
-        // validated against. setLocalVariable validates against the rule's local variables
-        // (state.allLocalVars) so it cannot silently target a same-named hub global; the
-        // value/sourceVariable/fromDevice/math source modes and every post-write reveal block
-        // are shared verbatim with the global path.
-        // Verified wire format (RM 5.1, actType=modeActs, actSubType=getSetVariable):
-        //   xVarV.<N>       = hub variable name (enum from hub variables list). GATES the
-        //                     numOp.<N> reveal -- numOp does not render until xVarV is set, so
-        //                     xVarV must be written before numOp.
-        //   numOp.<N>       = source mode enum, rendered only for a Number/Decimal target.
-        //                     Supported here: "number" (constant), "add number" (add a
-        //                     constant), "variable" (copy from another variable), "device
-        //                     attribute" (read a device's attribute), "variable math"
-        //                     (structured math). Default: "number"
-        //   valNumber.<N>   = value when numOp="number" or "add number" (constant form)
-        //   valStringOp.<N> = "Copy variable" for a copy into a String target (no numOp there).
-        //   xVar3.<N>       = source variable name for a copy (numOp=variable or valStringOp=Copy variable).
-        //                     Schema-gated: RM only reveals xVar3.<N> AFTER that selector lands.
-        //                     Discovered from the live schema, not hardcoded. Post-write block:
-        //                     __setVariableSourceVar.
-        //   valOffset.<N>   = 0 after xVar3 for a Number/Decimal copy (the RM UI default).
-        //   customDev.<N>   = source device when numOp="device attribute" (capability.* single-
-        //                     device picker, multiple=false). Reveals tCustomAttr.<N>.
-        //   tCustomAttr.<N> = source attribute (enum FILTERED to the selected device's live
-        //                     attributes). Both are schema-gated after numOp; post-write block:
-        //                     __setVariableFromDevice.
-        //   xVar3.<N>/valConst.<N> + valMathOp.<N> + xVar4.<N>/valConst2.<N> = structured math
-        //                     operands when numOp="variable math". xVar3/valMathOp reveal after
-        //                     numOp; a binary operator reveals the second operand. Operand value
-        //                     "(constant)" reveals the matching valConst slot. Post-write block:
-        //                     __setVariableMath.
-        // Source mode is exactly one of value | sourceVariable | fromDevice | math; numOp is
-        // honored only with value.
+        // Locals and globals share RM's getSetVariable action and xVarV picker; only the
+        // namespace the target name is validated against differs. xVarV gates numOp, numOp gates
+        // the source-mode fields (xVar3, customDev/tCustomAttr, the math operands), which the
+        // __setVariable* post-write blocks discover from the live schema.
         actType = "modeActs"
         actSubType = "getSetVariable"
-        // setLocalVariable targets the rule's LOCAL variable namespace; setVariable/variable
-        // target hub GLOBALS. capLabel keeps the caller-facing error text aligned with the
-        // capability they actually called; isLocalVar selects the validation namespace below.
         boolean isLocalVar = (cap == "setLocalVariable")
         String capLabel = isLocalVar ? "setLocalVariable" : "setVariable"
         if (!actionSpec.variable) {
             throw new IllegalArgumentException("${capLabel} action requires 'variable' (${isLocalVar ? "local variable name" : "hub variable name"})")
         }
-        // != null (not truthiness): value=0 is a valid numeric constant that a truthy-check would wrongly reject.
-        // Count the source modes provided: exactly one is required.
+        // != null: value 0 is a valid constant.
         def srcModes = []
         if (actionSpec.value != null) srcModes << "value"
         if (actionSpec.sourceVariable != null) srcModes << "sourceVariable"
@@ -6180,14 +5851,9 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         if (srcModes.isEmpty()) {
             throw new IllegalArgumentException("${capLabel} action requires exactly one source mode: 'value' (numeric constant), 'sourceVariable' (variable name to copy from), 'fromDevice' ({deviceId, attribute}), or 'math' ({left, op, right})")
         }
-        // valNumber.<N> is a numeric field; writing a non-numeric value produces a broken action
-        // that RM silently accepts but renders incorrectly. Reject early so the caller gets a
-        // clear message rather than a broken rule.
         if (actionSpec.value != null && !(actionSpec.value instanceof Number)) {
             throw new IllegalArgumentException("${capLabel}: 'value' must be a numeric constant (Integer, Long, BigDecimal, etc.); got '${actionSpec.value}' -- use a number literal, not a string")
         }
-        // fromDevice shape + math shape/arity validation happen up-front so bad inputs fail
-        // before any hub write, mirroring the runCommand parameter pre-validation pattern.
         def mathLeft = null, mathOp = null, mathRight = null
         boolean mathRightProvided = false
         if (actionSpec.fromDevice != null) {
@@ -6198,13 +5864,8 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             def fdAttr = actionSpec.fromDevice.attribute
             if (fdDev == null) throw new IllegalArgumentException("${capLabel} fromDevice requires 'deviceId' (the source device id)")
             if (!fdAttr?.toString()?.trim()) throw new IllegalArgumentException("${capLabel} fromDevice requires 'attribute' (the device attribute name to read)")
-            // deviceId must be a positive WHOLE-number id. Not validated against findDevice():
-            // RM's customDev.<N> picker spans ALL hub devices, while findDevice() only sees the
-            // MCP-exposed selectedDevices set -- gating here would falsely reject a valid hub
-            // device. RM's filtered picker is the authoritative check (post-write reveal).
-            // Accept any whole number regardless of how it arrives -- a bare Integer/Long, a
-            // BigDecimal with no fractional part (72.0), or a digit string -- via _rmAsPositiveDeviceId,
-            // which returns null for non-integers / non-positive / non-numeric so only those are rejected.
+            // Not checked against findDevice(): RM's customDev picker spans ALL hub devices, not
+            // just the MCP-exposed ones; RM's revealed picker is the authoritative check.
             if (_rmAsPositiveDeviceId(fdDev) == null) {
                 throw new IllegalArgumentException("${capLabel} fromDevice: 'deviceId' must be a positive integer device id; got '${fdDev}'")
             }
@@ -6213,8 +5874,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             if (!(actionSpec.math instanceof Map)) {
                 throw new IllegalArgumentException("${capLabel}: 'math' must be a Map {left, op, right}; got '${actionSpec.math}'")
             }
-            // Trim string operands so " temp " resolves to the "temp" variable (mirrors op.trim()).
-            // Number operands pass through unchanged (a Number has no surrounding whitespace).
             def _trimOperand = { o -> (o instanceof CharSequence) ? o.toString().trim() : o }
             mathLeft = _trimOperand(actionSpec.math.left)
             mathOp = actionSpec.math.op?.toString()?.trim()
@@ -6233,49 +5892,28 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             if (isUnary && mathRightProvided) {
                 throw new IllegalArgumentException("${capLabel} math: unary operator '${mathOp}' takes no second operand -- remove 'right'")
             }
-            // Each operand is either a number (becomes a constant) or a String (a hub variable
-            // name). Reject any other type (e.g. Boolean, Map, List) up-front with a precise
-            // message rather than coercing it to a string and blaming a nonexistent variable.
             [[role: "left", operand: mathLeft], [role: "right", operand: mathRight]].each { o ->
                 if (o.operand != null && !(o.operand instanceof Number) && !(o.operand instanceof CharSequence)) {
                     throw new IllegalArgumentException("${capLabel} math: ${o.role} operand must be a number or a hub variable name; got '${o.operand}'")
                 }
             }
         }
-        // Reject the xVarV picker's two sentinel header rows as targets. RM emits the
-        // leading-space strings " --LOCAL VARIABLES--" / " --HUB VARIABLES--" as selectable
-        // enum values; they are section headers, not real variable names, and writing one
-        // produces a broken action. Guard before any namespace lookup so the message is precise.
+        // RM's xVarV picker lists its section headers as selectable values.
         def pickerSectionHeaders = [" --LOCAL VARIABLES--", " --HUB VARIABLES--"]
         if (actionSpec.variable?.toString() in pickerSectionHeaders) {
             throw new IllegalArgumentException("${capLabel}: '${actionSpec.variable}' is a picker section header, not a variable name. Pass a real variable name.")
         }
-        // Validate the target variable (and sourceVariable / math operands) against the
-        // appropriate namespace. setVariable/variable validate against hub GLOBALS via
-        // getAllGlobalVars(); setLocalVariable validates against the rule's LOCALS via the
-        // statusJson appState.allLocalVars map. Both are normalized to {name -> [type:<token>]}
-        // so the shared name + numeric-target checks below read identically.
-        // Fail loud: an unknown variable name causes the hub to silently reject the write,
-        // producing a broken-looking action with no caller-visible error.
-        // Source unavailable -> skip validation and log warn (null sentinel).
-        // Source empty -> every name is invalid -> validate and fail.
+        // Both namespaces are normalized to {name -> [type: token]}; null = source unavailable
+        // (validation skipped, flagged in skipped), empty = every name invalid.
         def varDisplayKind = isLocalVar ? "local variables" : "hub variables"
         def emptyDisplay = isLocalVar ? "(none -- rule has no local variables defined)" : "(none -- hub has no variables defined)"
         def allVars = null
-        // Which picker names a copy-from-variable source. RM renders numOp.<N> only for a
-        // Number/Decimal target; a String target gets valStringOp.<N>, whose "Copy variable"
-        // option reveals the same xVar3.<N> source enum (captured from the RM UI, fw 2.5.1.183).
+        // A String target has no numOp; its copy selector is valStringOp="Copy variable".
         String copyOpField = "numOp"
         if (isLocalVar) {
-            // Read state.allLocalVars (the rule-local namespace) from the rule's statusJson
-            // appState. Normalize to the same {name -> [type:<token>]} shape getAllGlobalVars
-            // returns so the downstream checks are namespace-agnostic. The stored type token
-            // ('integer'/'bigdecimal'/'string'/...) matches what _rmIsNumericVarType expects.
-            // No rule yet (a create's pre-flight): a new rule has no local variables, as
-            // addLocalVariable only runs on an existing rule.
+            // A create's pre-flight has no rule yet, and a new rule has no locals.
             def localsRead = appId != null ? _rmReadLocalVarsMap(appId) : [ok: true, vars: [:]]
             if (localsRead?.ok) {
-                // statusJson answered (an empty map means the rule simply has no locals).
                 allVars = [:]
                 localsRead.vars.each { lvName, lvMeta ->
                     allVars.put(lvName?.toString(), [type: (lvMeta instanceof Map ? lvMeta?.type?.toString() : null)])
@@ -6287,9 +5925,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         } else {
             try { allVars = getAllGlobalVars() } catch (Exception e) {
                 mcpLog("warn", "rm-native", "setVariable: getAllGlobalVars() unavailable (${e.class.simpleName}: ${e.message ?: e.toString()}) -- variable-name validation skipped; write will proceed unvalidated")
-                // Signal to the caller that validation was bypassed. The partial=true plumbing at
-                // result assembly treats any non-empty skipped list as "incomplete"; the sentinel key
-                // is distinct from field-write skips so the caller can distinguish the two.
                 skipped << [key: "variable-validation", reason: "api_unavailable"]
             }
         }
@@ -6300,32 +5935,15 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 def available = allVarNames.isEmpty() ? emptyDisplay : allVarNames.sort().join(', ')
                 throw new IllegalArgumentException("${capLabel}: variable '${targetVar}' not found. Available ${varDisplayKind}: ${available}")
             }
-            // The value (numeric constant), device-attribute (fromDevice), and variable-math (math)
-            // source modes are all NUMERIC-TARGET-ONLY. value writes numOp=number + valNumber.<N>,
-            // and RM renders numOp/valNumber ONLY for a Number/Decimal target -- against a
-            // String/Boolean/DateTime target those fields never reveal, so the write skips them and
-            // bakes a partial:true action with no assigned value. fromDevice/math have the same gate:
-            // numOp never reveals their source option for a non-numeric target, so the reveal walk
-            // fails deep with a misleading not-in-schema message. Fail loud HERE, before any hub
-            // write, with the actual requirement and the ONE supported alternative (sourceVariable,
-            // which copies into a Number, Decimal or String target). (Type is read
-            // from the same namespace map already fetched for name validation; an unavailable map
-            // skips this with everything else.)
-            // The INTERNAL type token (NOT the UI label) is what both namespaces store: a Number var is
-            // "integer", a Decimal var is "bigdecimal" (the two numeric kinds), and String/Boolean/
-            // DateTime report "string"/"boolean"/"datetime" (live-confirmed). _rmIsNumericVarType is
-            // the single source of truth. Fail CLOSED: the target var's name is already validated to
-            // exist, so a null or non-numeric token means we cannot prove it is numeric -- reject
-            // rather than silently allowing an un-typeable target through to a doomed reveal walk.
+            // RM renders numOp (and so value / fromDevice / math) only for a Number or Decimal
+            // target; against any other target those fields never reveal. Fail closed on an
+            // unreadable type token.
             if (actionSpec.value != null || actionSpec.fromDevice != null || actionSpec.math != null) {
                 def targetMeta = allVars.get(targetVar)
                 def targetType = (targetMeta instanceof Map) ? targetMeta?.type?.toString() : null
                 if (!_rmIsNumericVarType(targetType)) {
                     def modeName = actionSpec.value != null ? "numeric-constant (value)"
                         : (actionSpec.fromDevice != null ? "device-attribute (fromDevice)" : "variable-math (math)")
-                    // Distinguish a recognized-but-non-numeric type (string/boolean/datetime)
-                    // from metadata we could not parse a type out of at all -- the latter is a
-                    // shape problem, not a "this variable is the wrong type" problem.
                     def typeDisplay = targetType ? "of type '${targetType}'" : "of an unreadable type (its variable metadata did not carry a recognizable type token)"
                     throw new IllegalArgumentException("${capLabel}: the ${modeName} source mode requires a Number or Decimal target variable; '${targetVar}' is ${typeDisplay}. To assign a String target use 'sourceVariable' (copy from another variable); a Boolean/DateTime target is not supported by these source modes, so build it in the RM UI.")
                 }
@@ -6336,21 +5954,13 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 if (copyTargetType == "string") {
                     copyOpField = "valStringOp"
                 } else if (copyTargetType in ["boolean", "datetime"]) {
-                    // Their copy picker has not been captured; refusing here leaves no action row.
                     throw new IllegalArgumentException("${capLabel}: sourceVariable copy into a ${copyTargetType} target ('${targetVar}') is not supported yet -- its copy picker has not been mapped yet. Copy into a Number, Decimal or String variable, or build this action in the RM UI.")
                 } else if (!_rmIsNumericVarType(copyTargetType)) {
-                    // Fail closed like the numeric-only modes above: the selector depends on the type.
                     throw new IllegalArgumentException("${capLabel}: cannot read the type of target variable '${targetVar}' (its variable metadata did not carry a recognizable type token), so the copy selector cannot be chosen: numOp for a Number/Decimal target, valStringOp for a String target.")
                 }
             }
-            // sourceVariable + math-operand names: pre-validate against the global namespace for
-            // setVariable only; for setLocalVariable the pre-check is SKIPPED entirely.
-            // RM's source/operand pickers (xVar3/xVar4) span BOTH locals and globals, so a local
-            // target legitimately copies from a global source -- pre-checking a setLocalVariable
-            // source against the locals-only map would falsely reject that. For setLocalVariable
-            // the authoritative check is the live revealed-enum validation in the
-            // __setVariableSourceVar / __setVariableMath post-write blocks (which read the actual
-            // picker spanning both namespaces); skip the pre-check here so it never over-rejects.
+            // RM's source/operand pickers span both namespaces, so a local target may copy from a
+            // global: for setLocalVariable only the revealed picker (post-write) checks sources.
             if (!isLocalVar && actionSpec.sourceVariable != null) {
                 def srcVar = actionSpec.sourceVariable.toString()
                 if (!allVarNames.any { it?.toString() == srcVar }) {
@@ -6358,8 +5968,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                     throw new IllegalArgumentException("${capLabel}: sourceVariable '${srcVar}' not found. Available ${varDisplayKind}: ${available}")
                 }
             }
-            // Math operands that are variable names (non-Number operands) must also exist.
-            // A Number operand becomes a (constant) and needs no variable-list check.
             if (!isLocalVar && actionSpec.math != null) {
                 [[role: "left", operand: mathLeft], [role: "right", operand: mathRight]].each { o ->
                     if (o.operand != null && !(o.operand instanceof Number)) {
@@ -6373,83 +5981,46 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             }
         }
         fields = ["xVarV.@N": actionSpec.variable.toString()]
-        // Stash the capability label so the schema-gated post-write blocks
-        // (__setVariableSourceVar / __setVariableMath, which run after fields.each and
-        // are out of capLabel's scope) name the ACTUAL capability the caller invoked --
-        // a setLocalVariable caller must not see "setVariable:" in a deferred error.
+        // The post-write blocks run outside capLabel's scope.
         actionSpec.__setVariableCapLabel = capLabel
         if (actionSpec.sourceVariable != null) {
-            // Write numOp=variable (the full word -- "var" is rejected by RM 5.1 live), or for a
-            // String target valStringOp="Copy variable". Either way the source-variable field
-            // (xVar3.<N>) is schema-gated and only revealed after that write. Discovery and
-            // write happen in the __setVariableSourceVar post-write block below (after fields.each).
+            // numOp takes the full word "variable"; "var" is rejected.
             if (copyOpField == "valStringOp") fields["valStringOp.@N"] = "Copy variable"
             else fields["numOp.@N"] = "variable"
             actionSpec.__setVariableSourceOp = copyOpField
             actionSpec.__setVariableSourceTypeUnread = (allVars == null)
             actionSpec.__setVariableSourceVar = actionSpec.sourceVariable.toString()
         } else if (actionSpec.fromDevice != null) {
-            // Write numOp="device attribute". The device picker (customDev.<N>) and the
-            // attribute enum (tCustomAttr.<N>) are schema-gated and revealed in sequence after
-            // numOp lands. Discovery and writes happen in the __setVariableFromDevice block.
             fields["numOp.@N"] = "device attribute"
-            // Normalize to the canonical integer string so customDev gets "72", not "72.0".
             actionSpec.__setVariableFromDevice = [
                 deviceId: _rmAsPositiveDeviceId(actionSpec.fromDevice.deviceId).toString(),
                 attribute: actionSpec.fromDevice.attribute.toString()
             ]
         } else if (actionSpec.math != null) {
-            // Write numOp="variable math". The operand fields (xVar3/valConst, valMathOp,
-            // xVar4/valConst2) are schema-gated and revealed in sequence after numOp lands.
-            // Discovery and writes happen in the __setVariableMath block. Binary-ness is
-            // recomputed in that block from the operator via _rmMathBinaryOps().
             fields["numOp.@N"] = "variable math"
             actionSpec.__setVariableMath = [
                 left: mathLeft, op: mathOp, right: mathRight
             ]
         } else {
-            // "add number" reveals the same valNumber slot and renders "Add <n> to <var>".
             fields["numOp.@N"] = _rmSetVariableValueNumOp(actionSpec)
             fields["valNumber.@N"] = actionSpec.value
         }
     } else if (cap == "runCommand") {
-        // modeActs/getDefinedAction — Run Custom Action. Multi-step:
-        //   useLastDev.<N>  = false (use selected devices, not the trigger device)
-        //   myCapab.<N>     = a key of RM's capability picker; the device picker is filtered on it
-        //   devices.<N>     = device list (capability.<key-lowercased>), revealed after myCapab
-        //   cCmd.<N>        = command name, an enum RM builds from the selected devices'
-        //                     commands, revealed after devices
-        // myCapab, devices and cCmd are each validated against RM's live picker and written
-        // in _rmWriteRunCommandFields.
-        // Per-parameter wire sequence (live-verified, see __runCommandExtraParams block):
-        //   moreParams button click  -> reveals cpType<P>.<N> (P = RM-assigned, starts at 2)
-        //   cpType<P>.<N>            = type (number/decimal/string) -> reveals uVar<P>+cpVal<P>
-        //   literal value:  cpVal<P>.<N> = value
-        //   hub variable:   uVar<P>.<N> = "true" -> reveals xVar<P>.<N> (enum) -> write varName
+        // myCapab, devices and cCmd each reveal the next and are validated against RM's live
+        // pickers in _rmWriteRunCommandFields; parameters in _rmWriteRunCommandParams.
         actType = "modeActs"
         actSubType = "getDefinedAction"
         if (!actionSpec.command) throw new IllegalArgumentException("runCommand requires 'command' (the device driver method name)")
         fields = ["useLastDev.@N": (actionSpec.useLastEventDevice == true)]
-        // Parameter slot allocation: moreParams click is required for ALL params
-        // (P is RM-assigned, starts at 2; P=1 is never used). Full live-verified
-        // sequence in the __runCommandExtraParams block below.
         if (actionSpec.parameters instanceof List && !actionSpec.parameters.isEmpty()) {
-            // Validate all parameters up-front so bad inputs fail fast before any hub writes.
-            // Parameter entries: {type, value} for literal, {type, variable} for hub-variable.
-            // Legacy scalar entries (bare String/Number) are passed through unchanged.
-            // The actual per-parameter write is driven by the moreParams/P-discovery sequence
-            // in the __runCommandExtraParams block after all base fields are written.
             actionSpec.parameters.eachWithIndex { p, paramIdx ->
-                if (!(p instanceof Map)) return  // scalar (legacy) entries skip Map-level guards
+                if (!(p instanceof Map)) return  // bare scalar entries pass through
                 def pType = p.type
                 def pValue = p.value
                 def pVariable = p.variable
-                // value/variable mutex: providing both is ambiguous. Mirrors the setVariable guard.
                 if (pValue != null && pVariable != null) {
                     throw new IllegalArgumentException("runCommand parameter slot ${paramIdx + 1}: provide 'value' OR 'variable', not both")
                 }
-                // A Map entry with neither value nor variable writes only cpType<P>; RM bakes a
-                // half-formed action with no actual parameter content.
                 if (pValue == null && pVariable == null) {
                     throw new IllegalArgumentException("runCommand parameter slot ${paramIdx + 1}: Map entry must include 'value' (literal) or 'variable' (hub variable name)")
                 }
@@ -6458,30 +6029,20 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                     if (!(t in ["string", "number", "decimal"])) {
                         throw new IllegalArgumentException("runCommand parameter type '${pType}' invalid -- must be 'string', 'number', or 'decimal'")
                     }
-                    // A non-numeric value for a numeric type produces cpVal<P> written with the
-                    // wrong type, which RM silently accepts but renders incorrectly.
                     if (pValue != null && t in ["number", "decimal"] && !(pValue instanceof Number)) {
                         throw new IllegalArgumentException("runCommand parameter slot ${paramIdx + 1}: type '${t}' requires a numeric 'value' (Integer, Long, BigDecimal, etc.); got '${pValue}' -- use a number literal, not a string")
                     }
                 }
-                // Variable name is NOT pre-checked against getAllGlobalVars() here.
-                // Validation happens post-reveal against the live xVar<P>.<N> enum in the
-                // __runCommandExtraParams block, which is the authoritative constraint (RM
-                // controls the scope). A pre-check would add a full hub API round-trip before
-                // the moreParams/P-discovery sequence and still defer to the enum post-reveal,
-                // buying only an earlier failure for obviously-unknown names at the cost of
-                // additional complexity and an extra hub call per parameter.
+                // A variable name is checked against the revealed xVar<P> enum, RM's own scope.
             }
             actionSpec.__runCommandExtraParams = actionSpec.parameters
         }
     } else if (cap == "fileWrite") {
-        // modeActs/getWriteLocalFile — write content to a local file (overwrite).
         actType = "modeActs"
         actSubType = "getWriteLocalFile"
         fields = ["localFile.@N": (actionSpec.fileName ?: ""), "fileContents.@N": (actionSpec.content ?: "")]
     } else if (cap == "fileAppend") {
-        // modeActs/getAppendLocalFile — append content to existing file.
-        // localFile.<N> is an enum (existing files only), not a free-text input.
+        // localFile.<N> is an enum of existing files here.
         actType = "modeActs"
         actSubType = "getAppendLocalFile"
         fields = ["localFile.@N": (actionSpec.fileName ?: ""), "fileContents.@N": (actionSpec.content ?: "")]
@@ -6490,10 +6051,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actSubType = "getDeleteLocalFile"
         fields = ["deleteFile.@N": (actionSpec.fileName ?: "")]
     } else if (cap == "zwavePoll") {
-        // deviceActs/getStartStopZPoll — start or stop Z-Wave polling on switches/dimmers.
-        //   ssZ.<N>     = true (start) | false (stop)
-        //   ssSD.<N>    = true (Switches) | false (Dimmers)
-        //   ssZPoll.<N> = devices (device.GenericZ-WaveSwitch) — Z-Wave devices only
+        // ssZ true = start; ssSD true = switches, false = dimmers.
         actType = "deviceActs"
         actSubType = "getStartStopZPoll"
         fields = [
@@ -6505,19 +6063,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actType = "switchActs"
         switch (action) {
             case "push":
-                // switchActs/getPushButton — push a specific button on a button device.
-                // Verified live by capturing the working UI's
-                // settings after a manual walkthrough:
-                //   pushButton.<N>  = devices (capability.pushableButton, multiple=false)
-                //   pushButNo.<N>   = button number (e.g. "1")
-                //   pushButOp.<N>   = button operation: "push" (default),
-                //                     "hold", "doubleTap", "release"
-                //   varButNo.<N>    = (optional) toggle to use a hub variable
-                //                     for the button number; left empty/false here
-                //
-                // Earlier code used a guessed "ButtonpushButton<N>" (no dot)
-                // that doesn't exist; RM silently dropped it and the page
-                // render fell into a broken code path. Don't blame RM.
                 actSubType = "getPushButton"
                 if (actionSpec.buttonNumber == null) throw new IllegalArgumentException("button.push requires 'buttonNumber' (Integer)")
                 fields = [
@@ -6527,10 +6072,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 ]
                 break
             case "pushPerMode":
-                // switchActs/getPushButtonPerMode — push different buttons per mode.
-                //   pushMBtn.<N>   = devices
-                //   buttonModes.<N>= mode IDs
-                //   button<modeID>.<N> = button number per mode
                 actSubType = "getPushButtonPerMode"
                 if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
                     throw new IllegalArgumentException("button.pushPerMode requires perMode={modeIdOrName: buttonNumber, ...}")
@@ -6543,10 +6084,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 }
                 break
             case "choosePerMode":
-                // switchActs/getChooseButton — different DEVICES per mode, all push the same button.
-                //   chooseButtonModes.<N>     = mode IDs
-                //   chooseButton<modeID>.<N>  = devices for that mode
-                //   chooseButtonNum.<N>       = button number
                 actSubType = "getChooseButton"
                 if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
                     throw new IllegalArgumentException("button.choosePerMode requires perMode={modeIdOrName: [deviceIds], ...}")
@@ -6611,8 +6148,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         fields = ["siren.@N": deviceIds]
         if (actionSpec.sirenAction != null) fields["sirenAct.@N"] = actionSpec.sirenAction
     } else if (cap == "privateBoolean") {
-        // pvTF.<N>: true=FALSE, false=True (verified live --
-        // boolean is inverted relative to its field name).
+        // pvTF true = set False.
         actType = "rulesActs"
         actSubType = "getSetPrivateBoolean"
         fields = [
@@ -6635,8 +6171,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             "stopAct.@N": _rmNormalizeRuleIdsForWrite(actionSpec.ruleIds ?: deviceIds)
         ]
     } else if (cap == "pauseRule") {
-        // pR.<N>: true=RESUME, false=Pause (verified live --
-        // boolean is inverted relative to its field name).
+        // pR true = resume.
         actType = "rulesActs"
         actSubType = "getPauseResumeRules"
         def pauseRuleIds = _rmNormalizeRuleIdsForWrite(actionSpec.ruleIds ?: deviceIds)
@@ -6662,23 +6197,18 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actSubType = "getPollSwitch"
         fields = ["poll.@N": deviceIds]
     } else if (cap == "disableDevice") {
-        // disEn.<N>: true=ENABLE, false=Disable (verified live --
-        // boolean is inverted relative to its field name).
+        // disEn true = enable.
         actType = "deviceActs"
         actSubType = "getDisable"
         fields = ["disEn.@N": (action != "disable"), "devDisable.@N": deviceIds]
     } else if (cap == "delay") {
-        // Verified live: a delay with no duration (no hours/minutes/seconds and no
-        // variable source) registers but never bakes. Fail fast.
         if (actionSpec.variable == null && actionSpec.hours == null && actionSpec.minutes == null && actionSpec.seconds == null) {
-            throw new IllegalArgumentException("delay action requires a duration: 'hours', 'minutes', and/or 'seconds' (or 'variable' for a variable-sourced delay). Without any, the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+            throw new IllegalArgumentException("delay action requires a duration: 'hours', 'minutes' and/or 'seconds', or 'variable' (a hub variable holding the seconds).")
         }
         actType = "delayActs"
         actSubType = "getDelay"
         fields = [:]
         if (actionSpec.variable != null) {
-            // Variable-sourced delay: uVar.<N>=true + xVar.<N>=<varName> picks the
-            // hub variable that supplies the seconds value at fire time.
             fields["uVar.@N"] = true
             fields["xVar.@N"] = actionSpec.variable
         } else {
@@ -6689,13 +6219,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         if (actionSpec.cancelable != null) fields["cancelAct.@N"] = actionSpec.cancelable
         if (actionSpec.random != null) fields["randomAct.@N"] = actionSpec.random
     } else if (cap == "delayPerMode") {
-        // delayActs/getDelayPerMode — different delay durations per mode.
-        // Field naming uses mode NAMES (Day/Away/etc), NOT mode IDs:
-        //   delayModes.<N>            = mode IDs (the picker still uses IDs)
-        //   delayHour<ModeName>.<N>   = hours for that mode
-        //   delayMinute<ModeName>.<N> = minutes for that mode
-        //   delaySecond<ModeName>.<N> = seconds for that mode (decimal)
-        //   uVar<ModeName>.<N>        = bool, optional variable-source toggle
+        // The per-mode fields are keyed by mode NAME; only delayModes takes ids.
         actType = "delayActs"
         actSubType = "getDelayPerMode"
         if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
@@ -6721,20 +6245,15 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actSubType = "getExitRule"
         fields = [:]
     } else if (cap == "comment") {
-        // Verified live (2.5.1.177): RM does not bake a comment with empty text -- the row registers
-        // (actType/actSubType land) and never becomes an action, so the write would report success
-        // and leave an orphaned row behind. Fail fast, the way repeat does without an interval.
         if (!(actionSpec.text?.toString()?.trim())) {
-            throw new IllegalArgumentException("comment action requires 'text' (the comment itself). RM does not bake an empty comment: the row would register but never become an action.")
+            throw new IllegalArgumentException("comment action requires 'text' (the comment itself).")
         }
         actType = "delayActs"
         actSubType = "getComment"
         fields = ["comment.@N": actionSpec.text.toString()]
     } else if (cap == "repeat") {
-        // Verified live: a repeat with no interval (hours/minutes/seconds) registers
-        // but never bakes -- 'times' alone is NOT enough. Fail fast.
         if (actionSpec.hours == null && actionSpec.minutes == null && actionSpec.seconds == null) {
-            throw new IllegalArgumentException("repeat action requires an interval: 'hours', 'minutes', and/or 'seconds' (how often to repeat). 'times' alone does not bake. Without an interval the action registers but never bakes. See hub_get_tool_guide(section='set_rule_create_reference').")
+            throw new IllegalArgumentException("repeat action requires an interval: 'hours', 'minutes' and/or 'seconds'; 'times' alone is not enough.")
         }
         actType = "repeatActs"
         actSubType = "getRepeat"
@@ -6749,18 +6268,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actSubType = "getStopRepeat"
         fields = [:]
     } else if (cap == "repeatWhile") {
-        // Repeat While Expression — repeatActs/getWhile. Embeds an
-        // expression (same wizard as ifThen) PLUS interval/Stoppable
-        // fields (same as basic repeat). Verified live the
-        // doActPage schema after actSubType=getWhile exposes:
-        //   cond (expression builder)
-        //   uVar.<idx> (Variable repeat interval? bool)
-        //   repeatHour/Minute/Second.<idx>
-        //   uVar2.<idx> (Repeat variable n times? bool)
-        //   repeatN.<idx>
-        //   stopRepeat.<idx>
-        // RM 5.1 has no "Repeat Until Expression" — use repeatWhile
-        // with NOT on the expression for the inverse semantic.
         actType = "repeatActs"
         actSubType = "getWhile"
         fields = [:]
@@ -6773,16 +6280,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             throw new IllegalArgumentException("repeatWhile action requires expression={conditions:[...], operator?:..., operators?:[...]}")
         }
     } else if (cap == "waitEvents") {
-        // Wait for Events — delayActs/getWaitEvents. Each event row uses
-        // dash-separated index: tCapab-<slot>, tDev-<slot>, tstate-<slot>.
-        // After actSubType=getWaitEvents the wizard exposes the first event's
-        // tCapab slot; writing it reveals tDev; writing devices reveals tstate;
-        // writing state advances to the next event slot OR exposes timeout/done.
-        // The first slot number is NOT always 1 and is NOT the action index: a
-        // Required Expression (and/or prior actions) advances an internal wizard
-        // counter, so the first event field can render at tCapab-2 (etc.) with no
-        // predictable relationship to actType.<N>. The event loop reads the exposed
-        // base slot from the schema rather than assuming 1. Verified live.
         actType = "delayActs"
         actSubType = "getWaitEvents"
         fields = [:]
@@ -6790,11 +6287,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             throw new IllegalArgumentException("waitEvents action requires events=[{capability, deviceIds, state}, ...] (non-empty)")
         }
     } else if (cap == "waitExpression") {
-        // Wait for Expression — delayActs/getWaitRule. Embeds an
-        // expression PLUS optional timeout (uses delayAct.<idx> +
-        // delayHor/Min/Sec.<idx> — same fields as the regular Delay
-        // modifier on actions) and durChoice.<idx> for Use Duration mode.
-        // Verified live.
         actType = "delayActs"
         actSubType = "getWaitRule"
         fields = [:]
@@ -6802,15 +6294,9 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             throw new IllegalArgumentException("waitExpression action requires expression={conditions:[...], operator?:..., operators?:[...]}")
         }
     } else if (cap == "ifThen" || cap == "elseIf") {
-        // IF Expression THEN / ELSE-IF Expression THEN — embeds an
-        // expression (same shape as Required Expression) inside the
-        // action. After actType=condActs + actSubType=getIfThen/getElseIf,
-        // the wizard exposes the cond enum and we walk the expression
-        // identically to STPage. The expression spec lives on the
-        // actionSpec as `expression: {conditions: [...], operator/operators}`.
         actType = "condActs"
         actSubType = (cap == "ifThen") ? "getIfThen" : "getElseIf"
-        fields = [:]  // expression-walking happens AFTER actSubType write
+        fields = [:]
         if (!(actionSpec.expression instanceof Map)) {
             throw new IllegalArgumentException("${cap} action requires expression={conditions:[...], operator?:..., operators?:[...]}")
         }
@@ -6870,34 +6356,22 @@ private Map _rmWithClock(Map spec, Long reqT0) {
 // limit: every check here refuses a bad spec BEFORE any wizard write, so RM is genuinely
 // untouched on a throw.
 private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleIds) {
-    // Pre-validate device IDs exist on the hub. RM 5.1 silently stores
-    // {<bogusId>: null} for unknown IDs in any device-bearing setting and
-    // the action renders as broken with no execution. Validate the top-
-    // level deviceIds list (used by switch / dimmer / lock / shade /
-    // thermostat / messaging / etc.) and any waitEvents events[].deviceIds.
+    // RM stores an unknown device id as {id: null} and renders the action broken.
     _rmValidateDeviceIdsExist("addAction.deviceIds", actionSpec.deviceIds)
     if (cap in ["variable", "setVariable", "setLocalVariable"]) _rmSetVariableValueNumOp(actionSpec)
-    // A hub-variable copy into a Boolean/DateTime target has no captured picker, so refuse it
-    // before the selectActions page-init POST. The builder repeats the check for locals, whose
-    // types are only readable from the rule itself.
+    // Locals are re-checked in the mapping, where the rule's own types are readable.
     if ((cap == "variable" || cap == "setVariable") && actionSpec.sourceVariable != null && actionSpec.variable != null) {
         def targetType = null
         try {
             def meta = getAllGlobalVars()?.get(actionSpec.variable.toString())
             targetType = (meta instanceof Map) ? meta?.type?.toString()?.toLowerCase() : null
         } catch (Exception e) {
-            // Unreadable here: the builder reads the list again and refuses or warns from there.
             mcpLog("debug", "rm-native", "setVariable pre-check: target type unreadable (${e.class.simpleName}: ${e.message}), deferred to the builder")
         }
         if (targetType in ["boolean", "datetime"]) {
             throw new IllegalArgumentException("setVariable: sourceVariable copy into a ${targetType} target ('${actionSpec.variable}') is not supported yet -- its copy picker has not been mapped yet. Copy into a Number, Decimal or String variable, or build this action in the RM UI.")
         }
     }
-    // Pre-validate a rule-targeting action's target rule id BEFORE any wizard write
-    // (including the add's selectActions page-init POST), so a bogus target is
-    // refused with RM genuinely untouched. Capability-gated so only the rule-
-    // targeting subtypes pay the rule-list resolve; validRuleIds is threaded by
-    // bulk callers so a batch resolves the set once.
     if (_rmSpecTargetsRule(actionSpec)) {
         _rmValidateRuleTargetExists(cap, actionSpec.ruleIds ?: actionSpec.deviceIds, validRuleIds)
     }
@@ -6911,25 +6385,13 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
     if (actionSpec.expression instanceof Map) {
         def exprConds = (actionSpec.expression as Map).conditions
         if (exprConds instanceof List) {
-            // Pre-pass: reject nested subExpression at the top level rather than
-            // recursing into a shape the doActPage walker does not yet support. The
-            // walker also rejects subExpression with a targeted message at the first
-            // condition site, but catching it here is cheaper and produces a clearer
-            // error before any wizard write hits the hub, so RM's wizard state
-            // stays untouched. _rmAddRequiredExpression
-            // supports nested subExpression today; _rmAddAction's doActPage walker
-            // is flat-only.
+            // The doActPage condition walker is flat-only.
             exprConds.eachWithIndex { entry, idx ->
                 if (entry instanceof Map && (entry as Map).subExpression != null) {
                     throw new IllegalArgumentException("addAction.expression.conditions[${idx}]: nested subExpression is not yet supported on this action type. Either flatten the condition list, or move the nested expression into a Required Expression (addRequiredExpression supports nesting).")
                 }
             }
-            // Normalize singular deviceId -> deviceIds before pre-validation **because**
-            // _rmBuildCondition's internal normalization runs too late to protect
-            // _rmValidateDeviceIdsExist; the validator below sees the raw deviceIds list
-            // and would silently skip a singular deviceId.
-            // Flat-only normalization; subExpression is rejected at the pre-pass above --
-            // if that gate is ever relaxed, restore a recursive walk-in here.
+            // Singular deviceId is normalized here so the id check below sees it.
             exprConds.each { entry ->
                 if (!(entry instanceof Map)) return
                 def em = entry as Map
@@ -6940,8 +6402,6 @@ private void _rmPrevalidateActionSpec(Map actionSpec, String cap, Set validRuleI
             exprConds.eachWithIndex { c, cIdx ->
                 if (c instanceof Map) {
                     _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].deviceIds", (c as Map).deviceIds)
-                    // compareToDevice reference device: existence-validated up front, before
-                    // the walker opens the slot, so a nonexistent reference id fails loud.
                     def cm = c as Map
                     if (cm.compareToDevice instanceof Map && (cm.compareToDevice as Map).deviceId != null) {
                         _rmValidateDeviceIdsExist("addAction.expression.conditions[${cIdx}].compareToDevice.deviceId", [(cm.compareToDevice as Map).deviceId])
@@ -7026,28 +6486,16 @@ private String _rmSetVariableValueNumOp(Map actionSpec) {
 // Extracted from _rmAddAction for the same bytecode budget. Returns the action index RM
 // actually allocated (its high-water mark), falling back to the caller's computed idx.
 private Integer _rmResolveAllocatedActionIdx(Integer appId, Integer idx, Long reqT0) {
-    // Re-read the index RM actually allocated. RM keeps a high-water mark
-    // (state.actNdx) — even after clearActions deletes all actions, the
-    // next "Create New Action" click allocates idx = high_water + 1,
-    // not idx = 1. Verified live: a rule that had actions
-    // 1/2/3 deleted then opens the wizard with actType.4 (not actType.1).
-    // Use the schema's freshly-exposed actType.<N> as ground truth.
+    // RM allocates from its high-water mark (state.actNdx), so the opened slot is read back.
     def doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
     def doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
     def actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
     if (!actTypeField && doActPageCfg?.configPage?.error == null && !_timeBudgetExceeded(reqT0)) {
-        // RM occasionally renders doActPage EMPTY right after the "Create New Action" click
-        // (seen on the CI test hub under load: no actType.<N> in the schema, so every later
-        // write landed not_in_schema and the action came back partial). That is not an error
-        // page -- those carry configPage.error and are reported as they are -- so one re-read
-        // after a short pause; a second empty render flows into the schema-gated writes, which
-        // report it the way they always have.
+        // Under load RM sometimes renders doActPage empty right after the click (no error
+        // page); one re-read after a pause, and a failed re-read keeps the original read.
         mcpLog("warn", "rm-native", "addAction: doActPage rendered with no actType field for app ${appId} after the Create New Action click; re-reading it once")
         pauseExecution(_rmEmptyRenderPauseMs())
         try {
-            // _rmFetchConfigJson THROWS on an empty body -- the very transient this block exists to
-            // survive -- so a failed re-read degrades to the original read (schema-gated writes then
-            // report it as they always have) instead of failing the add with "app N may not exist".
             doActPageCfg = _rmFetchConfigJson(appId, "doActPage")
             doActSchema = _rmCollectInputSchema(doActPageCfg?.configPage)
             actTypeField = doActSchema?.keySet()?.find { it.toString() ==~ /^actType\.\d+$/ }
@@ -7078,18 +6526,12 @@ private String _rmAddActionNote(Map r) {
     return "Action ${r?.actionIndex} added and baked (no trailing updateRule needed; the action editor finalizes it)."
 }
 
-// Replaces the 6-7 manual wizard calls with one orchestrated call.
-// Wire-format quirks and capability families: docs/rm_wire_format.md#_rmAddAction.
-// Returns: [success, actionIndex, capability, action, settingsApplied, configPageError]
+// One orchestrated add through RM's new-action editor (doActPage).
 Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null) {
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
-    // Read the clock only AFTER the shape guard, and only when it is a positive Number: this key
-    // rides a client-supplied nested spec, where a string would surface as a bare parser message
-    // and a 0 would silently mark the budget spent.
+    // __reqT0 rides a client-supplied map: only a positive Number is a clock.
     Long reqT0 = (actionSpec.__reqT0 instanceof Number && ((Number) actionSpec.__reqT0).longValue() > 0) ?
             ((Number) actionSpec.__reqT0).longValue() : null
-    // Discover mode -- return static schema without touching the hub.
-    // No capability field required; no Write master gate; no backup.
     if (actionSpec.discover == true || actionSpec.discover instanceof Map) {
         return _rmActionDiscover(actionSpec.discover)
     }
@@ -7097,45 +6539,18 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     def action = actionSpec.action?.toString()?.trim()
     if (!cap) throw new IllegalArgumentException("addAction.capability is required (e.g. 'switch'). Common values: switch, dimmer, color, log, notification, mode, setVariable, runCommand, delay, repeat, ifThen. Pass {discover: true} to get the full structured schema.")
 
-    // 'action' is required only for capabilities that have multiple action
-    // variants (e.g. switch needs on/off/toggle/flash). Single-action
-    // capabilities (log, mode, delay, comment, exitRule, capture, restore,
-    // refresh, poll, runRule, cancelTimers, etc.) accept a null/missing
-    // action — each capability's branch validates as needed.
-
     _rmValidateRoundZeroActionSpec(actionSpec)
 
-    // A disabled app's config page renders only "App is disabled / Enable", so the page-walking
-    // add gets an empty schema and dies partway with an opaque "rCapab_<N> not in doActPage
-    // schema", having half-driven the wizard and left a condition slot open. _applyNativeAppEdit
-    // hoists this same refusal ahead of its snapshot; this copy covers the patch / createRule
-    // intra-batch callers that reach _rmAddAction directly. Skipped intra-batch because those
-    // callers already passed the hoisted gate (or are createRule on a rule too new to be
-    // disabled), and re-checking per action spent 11 loopback GETs on a 10-action replaceActions.
+    // A disabled app renders an empty page. Intra-batch callers already passed this gate.
     if (!intraBatch) _rmRejectDisabledAppEdit(appId, "addAction")
 
-    // Pre-flight: refuse closers (endIf / stopRepeat) and orphan branch
-    // keywords (elseIf / else) that would render as orphaned because they
-    // have no matching opener / containing IF block. Asymmetric on purpose:
-    // openers (ifThen / repeat / repeatWhile) added alone are allowed —
-    // they're a normal multi-step build state and the caller will add the
-    // matching closer in a follow-up call. Set-diff (projected MINUS
-    // current) catches the case where the new action would introduce a
-    // new structural-balance issue without flagging deletions that
-    // merely improve an already-broken rule.
+    // Closers and branch keywords are refused when they would be orphaned; openers added alone
+    // are a normal build state. Only NEW issues count, so a rule already broken is not blocked.
     def preflightCap = _rmStructuralPairForCapability(cap)
     def closerOrBranchKeywords = ["endIf", "stopRepeat", "elseIf", "else"]
     if (cap in closerOrBranchKeywords && preflightCap != null) {
         def settingsByName = _rmFetchSettingsByName(appId)
-        // Scoped to the rule's own actions for the same reason as the delete
-        // pre-flight: a leftover settings row must not decide whether a closer
-        // is orphaned. When the compiled list is unreadable the scan widens to
-        // every settings row -- unlike the delete path, which refuses there,
-        // because an add's worst case is a rejected or extra row the caller can
-        // remove, while a delete's is a structural row that is simply gone.
         def currentSeq = _rmStructuralSequenceFromSettings(settingsByName, ([] as Set), _rmOrderedActionIndices(appId))
-        // The projected idx only matters for issue-message construction;
-        // any value not in current works for the walker.
         def projectedSeq = currentSeq + [[idx: -1, actType: preflightCap[0], actSubType: preflightCap[1]]]
         def currentIssues = _rmStructuralIssuesFromSequence(currentSeq)
         def projectedIssues = _rmStructuralIssuesFromSequence(projectedSeq)
@@ -7148,29 +6563,14 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         }
     }
 
-    // Everything that must be refused with RM genuinely untouched, before any wizard write.
     _rmPrevalidateActionSpec(actionSpec, cap, validRuleIds)
 
-    // Discover next action index from SETTINGS, not the compiled action list:
-    // an un-baked row occupies its index without appearing in actionList, so
-    // allocating from the compiled view could hand out an index already in use.
+    // From settings, not the compiled list: an un-baked row still occupies its index.
     def existing = _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
     def idx = (existing ? existing.max() + 1 : 1)
 
-    // RM 5.1 platform limitation: waitEvents actions share GLOBAL event-row
-    // settings (tCapab-N, tDev-N, tstate-N, stays-N) — there is no per-action
-    // event storage. Adding a second waitEvents action causes the wizard to
-    // inherit action 1's event configuration as defaults, and any field
-    // change overwrites action 1's events. The Hubitat web UI exhibits the
-    // same bug — verified live via Chrome XHR capture against
-    // rule 227 (test hub) plus manual UI walk: the rule rendered "Wait for
-    // event: <DeviceA>" twice for what was supposed to be two distinct
-    // waits, because setting action 2's device silently overwrote action 1's
-    // tDev-1. Settings dump confirmed: actType.1=delayActs, actType.2=delayActs,
-    // BUT only one tCapab-1/tDev-1/tstate-1 record shared by both actions.
-    //
-    // Until Hubitat fixes this at the platform level, fail-loud rather than
-    // silently corrupt the rule.
+    // RM keeps wait-event rows (tCapab-N, tDev-N, tstate-N) per rule, not per action, so a
+    // second Wait for Events action overwrites the first one's events.
     if (cap == "waitEvents" && existing) {
         def status = _rmFetchStatusJson(appId)
         def existingWaitIdx = (status?.appSettings ?: []).findResult { s ->
@@ -7183,21 +6583,15 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         }
         if (existingWaitIdx != null) {
             throw new IllegalArgumentException(
-                "RM 5.1 platform limitation: only one Wait for Events action is supported per rule " +
-                "(an existing waitEvents action is at index ${existingWaitIdx}). RM stores wait-event " +
-                "capability/device/state in global per-rule settings (tCapab-N, tDev-N, tstate-N), NOT " +
-                "in per-action storage — adding a second waitEvents action would silently overwrite " +
-                "the first action's event configuration. Verified live: the Hubitat web UI " +
-                "exhibits the same bug. Workarounds: (a) put all wait events into a SINGLE waitEvents " +
-                "action via the 'events' array (events=[{...}, {...}]); (b) split into two rules " +
-                "chained via Run Actions; (c) wait at the platform level via separate triggers."
+                "Rule Machine supports one Wait for Events action per rule (an existing one is at index ${existingWaitIdx}): " +
+                "a second would overwrite the first one's events. Put every event into that one action's 'events' list, " +
+                "or split the rule in two and chain them with Run Actions."
             )
         }
     }
 
-    // Map (capability, action) → (actType, actSubType, fields). Reads only; the create and
-    // replaceActions pre-flights also run it, and here it gates this add's first write. Inside a
-    // batch an earlier item may already be written, so only a standalone add claims "not touched".
+    // Inside a batch an earlier item may already be written, so only a standalone add claims
+    // "not touched".
     def mapped
     try { mapped = _rmMapActionSpec(appId, actionSpec, cap, action) }
     catch (IllegalArgumentException argExc) {
@@ -7208,59 +6602,37 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     def actSubType = mapped.actSubType
     def fields = mapped.fields
     def deviceIds = actionSpec.deviceIds
-    // applied/skipped track what was written vs. silently bypassed; the mapping may already have
-    // pushed a sentinel skip.
     def applied = []
     def skipped = mapped.skipped
 
-    // The first writes, deferred until every argument check above has passed so a refused spec
-    // leaves the rule untouched: a pending predCapabs clear left by a preceding
-    // addRequiredExpression (run before this action lands, or it is wrapped in
-    // IF(**Broken Condition**); a no-op when nothing is pending), then initializing state.actNdx
-    // (avoids the doActPage 'startsWith on null' error on an empty rule).
+    // First writes: a pending predCapabs clear from a preceding addRequiredExpression (else the
+    // action is wrapped in IF(**Broken Condition**)), then state.actNdx initialization.
     _rmRunPendingPredCapabsClear(appId)
     _rmInitSelectActionsPage(appId)
 
-    // Open the new-action editor.
-    // CRITICAL: stateAttribute must be 'doActN' (concatenated), not 'doAct'.
-    // Verified live: stateAttribute=doAct sets state.doAct='N' which leaves
-    // state.doActN null, and doActPage's renderer NPEs with startsWith on
-    // null. The Hubitat UI's buttonClick(this) handler concatenates the
-    // data-stateAttribute='doAct' attribute with the button name 'N' before
-    // POSTing — so we mirror the post-concatenation form here.
+    // The UI's button handler concatenates stateAttribute 'doAct' + button 'N'; 'doAct' alone
+    // leaves state.doActN null and doActPage NPEs.
     _rmClickAppButton(appId, "N", "doActN", "selectActions")
 
-    // RM allocates the action index off its own high-water mark, so the slot the wizard just
-    // opened is read back from doActPage rather than assumed.
     idx = _rmResolveAllocatedActionIdx(appId, idx, reqT0)
 
-    // Set actType + actSubType. Each write re-fetches the schema, so the
-    // subsequent fields appear as the wizard expands. From the first write here through the
-    // rawSettings block below, the doActPage editor is open on this row: any refusal must
-    // cancel it (RM otherwise reopens the row, stale fields included, on the next add).
+    // From here to the rawSettings block the editor is open on this row: any refusal must
+    // cancel it, or RM reopens the row with its stale fields on the next add.
     try {
         _rmWriteSettingOnPage(appId, "doActPage", "actType.${idx}", actType, applied, null, skipped)
         _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${idx}", actSubType, applied, null, skipped)
 
-        // Pre-emptive cond=[] write (schema-gated). For expression-type actions
-        // (getIfThen/getElseIf/getWhile/getWaitRule), this resets any stale cond
-        // accumulator before the expression builder writes cond=a. For non-expression
-        // actions, cond is not in doActPage's schema, so this write is silently
-        // skipped -- the atomicState.predCapabs context for non-expression actions
-        // was already cleared by _rmClearPredCapabsViaGhostIfThen (called from
-        // _rmAddRequiredExpression after the expression-builder hasRule click) before
-        // this method was called.
+        // Expression actions: reset a stale cond accumulator before cond=a. Not in the schema
+        // for other actions, so silently skipped there.
         def condContextClear = []
         _rmWriteSettingOnPage(appId, "doActPage", "cond", [], applied, null, condContextClear)
         if (!condContextClear.isEmpty()) {
-            mcpLog("debug", "rm-native", "_rmAddAction: cond not in doActPage schema after actType/actSubType for app ${appId} action ${idx} (${condContextClear[0]?.reason}) -- skipped (non-expression action; predCapabs already cleared via ghost ifThen in addRequiredExpression)")
+            mcpLog("debug", "rm-native", "_rmAddAction: cond not in doActPage schema after actType/actSubType for app ${appId} action ${idx} (${condContextClear[0]?.reason}) -- skipped (non-expression action)")
         }
 
         if (cap == "fileAppend" || cap == "fileDelete") {
             _rmRequireExistingHubFile(appId, idx, cap == "fileAppend" ? "localFile" : "deleteFile", actionSpec.fileName, cap.toString())
         }
-        // Type-specific fields. The @N placeholder in keys is substituted with
-        // the action index here.
         fields.each { rawKey, value ->
             if (value != null) {
                 def fieldName = rawKey.toString().replace("@N", idx.toString())
@@ -7273,40 +6645,17 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         _rmCancelRefusedActionEditor(appId, idx, preExprExc)
     }
 
-    // Action subtypes that embed an expression. The cond enum is exposed
-    // after actType+actSubType writes, identical to STPage's Required
-    // Expression wizard. Walk each condition (cond=a → rCapab_<X> →
-    // rDev_<X> → state_<X> → hasAll) with optional joining operators
-    // (oper between conditions), then hasRule to commit. Subtypes:
-    //   condActs/getIfThen, condActs/getElseIf — full IF/ELSE-IF
-    //   repeatActs/getWhile — Repeat While Expression
-    //   delayActs/getWaitRule — Wait for Expression
+    // Expression actions walk each condition (cond=a -> rCapab_<X> -> rDev_<X> -> state_<X> ->
+    // hasAll), with oper between conditions, then hasRule. A throw while the opener row is
+    // committed would leave an orphan block opener, so the catch rolls the opener back.
+    // actCondWizardOpen is true only while a condition slot is open and not yet cancelled or
+    // committed, so the rollback issues cancelCapab exactly when one needs closing.
     def expressionSubtypes = ["getIfThen", "getElseIf", "getWhile", "getWaitRule"]
-    // Atomic-reject wrapper: the action opener (actType/actSubType) is already committed above, so ANY
-    // throw while building the expression (a rejected condition capability, a device that does not
-    // exist, an operators-length mismatch, ...) would otherwise leave an orphan block opener -- a
-    // success:false call that mutated the rule into a structural imbalance. On a throw, roll the opener
-    // back so the reject is atomic, then re-raise. If the rollback cannot confirm removal, strip any
-    // "RM is not touched" claim (it is no longer true) and mark the orphan stuck so the response steers
-    // to recovery. Applies to all four expression-bearing subtypes (they share this block).
-    //
-    // Tracks whether a condition sub-wizard is currently OPEN and NOT yet cancelled, so the rollback
-    // issues its own cancelCapab ONLY when one genuinely needs closing. It flips true right after cond=a
-    // opens a condition slot and false the moment that slot is cancelled (walker/outer-catch path) or
-    // committed. Without it the rollback would fire a SECOND cancelCapab on the walker-thrown path (the
-    // walker already issued exactly one) or a spurious no-op click on the early-guard path (which throws
-    // before cond=a, so no wizard is open).
     def actCondWizardOpen = false
     try {
     if (expressionSubtypes.contains(actSubType)) {
-        // Pre-expression timeout/duration writes for getWaitRule. The
-        // wizard's schema shows cond + durChoice + delayAct together
-        // BEFORE hasRule, but hasRule advances past them. So write
-        // timeout fields here (while they're still in schema) — for
-        // delayAct/delayHor/Min/Sec the existing actionSpec.delay
-        // path runs AFTER the expression block, which is too late.
-        // Workaround: peek at actionSpec.delay here and write the
-        // delay-modifier fields up-front for getWaitRule.
+        // getWaitRule's timeout fields are in the schema only before hasRule, so they are
+        // written here rather than by the delay-modifier pass after the expression.
         if (actSubType == "getWaitRule") {
             if (actionSpec.useDuration != null) {
                 _rmWriteSettingOnPage(appId, "doActPage", "durChoice.${idx}", actionSpec.useDuration, applied, "bool", skipped)
@@ -7322,17 +6671,13 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                     if (d.minutes != null) _rmWriteSettingOnPage(appId, "doActPage", "delayMin.${idx}", d.minutes, applied, null, skipped)
                     if (d.seconds != null) _rmWriteSettingOnPage(appId, "doActPage", "delaySec.${idx}", d.seconds, applied, null, skipped)
                 }
-                // Mark the delay-modifier as already-handled so the
-                // generic delay-modifier path below skips it.
                 actionSpec.__delayHandledForWaitRule = true
             }
         }
-        // The expression's shape was checked with the mapping (_rmValidateActionExpressionShape).
         def exprSpec = actionSpec.expression as Map
         def conditions = exprSpec.conditions
         def operator = exprSpec.operator?.toString()?.toUpperCase()
         def opsList = (exprSpec.operators instanceof List) ? (exprSpec.operators as List).collect { it?.toString()?.toUpperCase() } : null
-        // Pre-validate device existence per condition (same as STPage).
         conditions.eachWithIndex { c, i ->
             if (!(c instanceof Map)) return
             def ids = (c as Map).deviceIds
@@ -7350,25 +6695,12 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                 }
             }
         }
-        // writeAct: doActPage field-write closure -- same signature as writeST (STPage
-        // caller), with hrefParams accepted and ignored since _rmWriteSettingOnPage
-        // derives page context from its pageName argument. Routes into the shared
-        // applied/skipped accumulators owned by _rmAddAction's outer scope.
+        // Same signature as the STPage writer; hrefParams is unused on doActPage.
         def writeAct = { Map params, String fieldKey, Object fieldValue, String label = null ->
             _rmWriteSettingOnPage(appId, "doActPage", fieldKey, fieldValue, applied, null, skipped)
         }
-        // cancelInFlightActCond: cancel the in-flight condition wizard on doActPage.
-        // Invoked by _rmWalkConditionReveal before throwing on validation failure so
-        // the caller does not leave the wizard half-open. Track cleanup failure so the
-        // outer error result can surface wizardStuck for the caller.
-        // actCancelledByWalker mirrors STPage's cancelledByWalker flag -- without it,
-        // a walker-side throw + outer-catch fallback would issue two cancelCapab clicks
-        // back-to-back (the walker's own call inside cancelInFlightActCond, then the
-        // outer catch's redundant call). The second always fails (nothing to cancel),
-        // setting actWizardCleanupFailed=true and surfacing a false wizardStuck=true.
-        // currentActCondIdx is updated by the per-condition loop below so cancel-cleanup
-        // warn messages name the in-flight condition index -- without it, N back-to-back
-        // failures produce N indistinguishable log entries.
+        // The walker cancels the open condition slot before it throws; actCancelledByWalker keeps
+        // the outer catch from issuing a second cancelCapab (which fails and would read as stuck).
         def actWizardCleanupFailed = false
         def actWizardCleanupErr = null
         def actCancelledByWalker = false
@@ -7381,49 +6713,26 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                 actWizardCleanupErr = cancelExc.message
                 mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on doActPage at conditions[${currentActCondIdx}]: ${cancelExc.message} -- wizard may stay open and confuse subsequent edits; result will carry wizardStuck=true")
             }
-            // This cancelCapab is the ONE the invariant allows -- the rollback must not re-issue it.
-            // Cleared even on a failed click: re-trying a stuck cancelCapab is the double-fire the spec
-            // forbids (a failed cancel is surfaced via actWizardCleanupFailed -> wizardStuck instead).
+            // Cleared even on a failed click: a retry is the double fire; the failure is
+            // surfaced as wizardStuck instead.
             actCondWizardOpen = false
         }
-        // doActPage condition-wizard walk: write cond=a, discover the firmware-assigned
-        // cIdx from the schema (the slot number RM assigns is unpredictable), validate
-        // the capability option, then delegate the per-capability reveal sequence to
-        // _rmWalkConditionReveal (handles rCapab->rDev->comparator->state->hasAll in
-        // the correct progressive-disclosure order, same invariants as STPage).
-        // The condition-wizard field names are identical on both pages (RelrDev_<N>,
-        // rCustomAttr_<N>, state_<N>, etc.) -- only the page name differs.
+        // The condition-wizard fields are the same on doActPage and STPage; the slot number RM
+        // assigns is read from the schema after cond=a.
         conditions.eachWithIndex { condRaw, i ->
             currentActCondIdx = i
             if (!(condRaw instanceof Map)) {
                 throw new IllegalArgumentException("${cap}.expression.conditions[${i}] is not a Map")
             }
             def cond = condRaw as Map
-            // Reject subExpression on this path until the recursive walker lands -- the
-            // doActPage walker only handles the flat condition shape today (the pre-pass in
-            // `_rmAddAction`'s subExpression rejection also catches this before reaching
-            // here, but this in-walker check is the defense-in-depth half of the gate).
-            // Surface a targeted message rather
-            // than the generic "capability is required" that the next check would produce.
-            // _rmAddRequiredExpression (STPage) supports nested subExpression today.
             if (cond.subExpression != null) {
                 throw new IllegalArgumentException("${cap}.expression.conditions[${i}]: nested subExpression on this row is not yet supported. _rmAddRequiredExpression (addRequiredExpression) supports nested expressions; on ${cap} rows, either flatten the condition list, or capture the sub-expression as a Required Expression instead.")
             }
             def ccap = cond.capability?.toString()?.trim()
             if (!ccap) throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability is required")
-            // Defense-in-depth backstop: the top-of-function pre-flight hoist already rejects these
-            // unwalkable caps (Last Event Device, Lock codes, date/day) from the raw requested name
-            // before any opener commit, so this walker-side reject is normally unreachable. It stays
-            // as a backstop so the tailored steer -- not the generic "not in option list" the picker
-            // resolution below would otherwise throw -- is guaranteed even if a caller reaches the walk
-            // with an unwalkable cap the hoist did not see. If it does fire here, the just-opened action
-            // opener is rolled back by the expression-block catch, keeping the reject atomic.
             _rmRejectUnwalkableConditionCapability(ccap)
             _rmWriteSettingOnPage(appId, "doActPage", "cond", "a", applied, null, skipped)
-            // A condition slot is now open on doActPage -- a throw before it is committed/cancelled below
-            // leaves a wizard the rollback must close (see actCondWizardOpen).
             actCondWizardOpen = true
-            // Discover the live condition index from the schema.
             def cfg = _rmFetchConfigJson(appId, "doActPage")
             def cInputs = (cfg?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
             def rCapabInput = cInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
@@ -7455,26 +6764,16 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                     skipped: skipped
                 ], cond, cIdx)
             } catch (Exception perCondExc) {
-                // Mirror STPage outer-catch symmetry: only cancel if the walker did not
-                // already do so before throwing. _rmFetchConfigJson exceptions from inside
-                // _rmRevealStep propagate out of the walker WITHOUT calling cancelInFlightCondition,
-                // so the outer catch must issue the cancel itself. Without this fallback the
-                // wizard stays half-open and the next addAction starts in a broken state.
+                // A fetch failure inside the walker propagates without its cancel.
                 if (!actCancelledByWalker) {
                     cancelInFlightActCond()
                 }
                 if (actWizardCleanupFailed) {
-                    // Both the per-condition write AND the cancel cleanup failed --
-                    // embed the marker so the dispatcher's catch can surface wizardStuck.
                     throw new IllegalStateException("${perCondExc.message} [wizardStuck -- cancelCapab cleanup also failed: ${actWizardCleanupErr}]")
                 }
                 throw perCondExc
             }
-            // The walker committed this condition (its hasAll click closed the slot), so no wizard is
-            // open going into the next iteration -- a later throw must not make the rollback cancelCapab
-            // a slot this one already sealed.
             actCondWizardOpen = false
-            // Joining operator for non-last conditions.
             if (i < conditions.size() - 1) {
                 def gapOp = opsList ? opsList[i] : operator
                 if (gapOp) {
@@ -7482,46 +6781,23 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                 }
             }
         }
-        // hasRule SEALS the expression to this action (binds the conds
-        // we just walked to actType.<idx>'s expression scope). Without
-        // it, RM's paragraph render conflates conds across multiple
-        // IF/ELSE-IF actions because there's no per-action expression
-        // binding in the settings (verified live: rule with
-        // ifThen + elseIf both rendered as "(Sw1 is on Sw2 is on)" —
-        // both conds appearing in BOTH branches because hasRule was
-        // skipped on single-cond expressions).
-        //
-        // Always click hasRule. RM tolerates the click even when the
-        // button isn't yet visible in the schema (the click endpoint
-        // accepts the button name regardless; if RM has nothing to do
-        // it's a no-op). For multi-cond expressions hasRule appears
-        // immediately after the last hasAll; for single-cond it appears
-        // only on the post-hasAll schema after a settle. The
-        // try/catch handles the rare case where the wizard isn't in a
-        // state where hasRule is a valid click target.
+        // hasRule binds the walked conditions to this action; skipping it on a single-condition
+        // expression makes RM render the conditions in every IF/ELSE-IF branch. The click is a
+        // no-op when the button is not yet rendered.
         try {
             _rmClickAppButton(appId, "hasRule", null, "doActPage")
-        } catch (Exception ignored) { /* tolerated — wizard may already be sealed */ }
-
-        // (Timeout/durChoice for getWaitRule are written BEFORE the
-        // expression walk above — see pre-expression block.)
+        } catch (Exception ignored) { }
     }
     } catch (Exception exprExc) {
-        // Roll the just-opened block opener back so the reject is atomic (a capability-name reject
-        // already carries the "RM is not touched" sentinel, accurate net of a confirmed rollback).
         _rmCancelRefusedActionEditor(appId, idx, exprExc, actCondWizardOpen,
             "orphan action ${idx} (the expression block opener) could not be automatically rolled back and may persist".toString())
     }
 
-    // Every write below happens with the doActPage new-action editor still open on this row.
-    // A refusal thrown mid-edit must cancel that editor -- RM otherwise reopens the row,
-    // stale fields included, on the next add. _rmCancelRefusedActionEditor never returns.
+    // The editor is still open on this row; _rmCancelRefusedActionEditor never returns.
     try {
         _rmWriteActionDelayModifier(appId, idx, actionSpec, applied, skipped)
         _rmWriteRunCommandParams(appId, idx, actionSpec, applied, skipped)
-        // setVariable source modes (sourceVariable / fromDevice / math): schema-gated deferred writes.
         _rmWriteSetVariableSourceModes(appId, idx, actionSpec, applied, skipped)
-        // Caller escape hatch.
         if (actionSpec.rawSettings instanceof Map) {
             actionSpec.rawSettings.each { k, v ->
                 if (v != null) {
@@ -7534,32 +6810,11 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         _rmCancelRefusedActionEditor(appId, idx, postOpenExc)
     }
 
-    // The predCapabs condition-context leak from a preceding
-    // addRequiredExpression is cleared by _rmClearPredCapabsViaGhostIfThen
-    // (called from _rmAddRequiredExpression after the expression-builder hasRule
-    // click) before control returns here. By the time _rmAddAction runs,
-    // atomicState.predCapabs is already clean regardless of whether this is
-    // an expression or plain action type. No per-action
-    // clearing is needed here.
-
-    // Click actionDone (with form context) to commit.
+    // RM bakes the action on the navigation off doActPage that follows the actionDone click;
+    // no updateRule is needed.
     _rmClickAppButton(appId, "actionDone", null, "doActPage")
-
-    // Navigate back to selectActions to commit the in-flight action.
-    // Verified live in Chrome (2026-04-25) on a clean rule walkthrough:
-    // the UI's "Done with Action" click triggers (1) the actionDone
-    // button POST, then (2) full doActPage form submissions that carry
-    // a `_action_href_name|selectActions|<idx>` navigation marker. The
-    // server bakes the action when transitioning OFF doActPage. After
-    // that sequence completes, state.actionList contains the new index,
-    // state.actNdx is advanced, and NO updateRule is required.
-    //
-    // Mirror the navigation by POSTing to selectActions's update/json
-    // endpoint with a minimal form body -- the server will commit the
-    // action's settings and bake into actions[].
     _rmNavigateToPage(appId, "doActPage", "selectActions", 0, "name", null, null, null, false, true)
 
-    // Final config-error check.
     def finalConfig
     def verificationFetchFailed = false
     try { finalConfig = _rmFetchConfigJson(appId, "selectActions") }
@@ -7572,39 +6827,22 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
 
     def health = _rmCheckRuleHealth(appId)
     if (intraBatch && health instanceof Map && (health.structuralIssues as List)) {
-        // Bundled multi-action build (hub_set_rule create actions[], addActions,
-        // replaceActions, patches): an open block (IF before its END-IF, Repeat
-        // before its End-Repeat) is legitimately unbalanced until the closer
-        // bakes later in the SAME call, so the structural-imbalance signal on
-        // this INTERMEDIATE per-action snapshot is a transient false alarm that
-        // nudges a needless hub_restore_backup. Drop ONLY structuralIssues from
-        // this snapshot (plus the single combined "structural imbalance..." line
-        // in issues, and recompute ok) -- brokenMarkers / multipleFlagPoison /
-        // configPageError are kept, partial keys off brokenMarkers not this, and
-        // the caller's FINAL post-batch _rmCheckRuleHealth still asserts any real,
-        // persisting imbalance. Single addAction passes the default
-        // intraBatch=false, so a lone unclosed block still surfaces correctly.
+        // Inside a batch an open block is unbalanced until its closer bakes later in the same
+        // call, so only the structural signal is dropped from this intermediate snapshot; the
+        // caller's final health check still reports a real imbalance. ok is recomputed with
+        // _rmCheckRuleHealth's own predicate.
         def filteredIssues = ((health.issues as List) ?: []).findAll {
             !(it?.toString()?.startsWith("structural imbalance in action block nesting"))
         }
-        // Recompute ok with the SAME predicate _rmCheckRuleHealth uses (issues + broken +
-        // validationErrors), not issues alone, so the two ok derivations can't drift if the
-        // broken/validationErrors issue strings ever change.
         health = health + [structuralIssues: [], issues: filteredIssues,
                            ok: filteredIssues.isEmpty() && health.broken != true && ((health.validationErrors as List) ?: []).isEmpty()]
     }
 
-    // Post-commit silent-failure detection. Same class of issue as
-    // addTrigger / addRequiredExpression: RM 5.1's doActPage silently
-    // accepts invalid inputs at the field-write level without erroring,
-    // and the action row may not bake — leaving mainPage's "Define
-    // Actions" placeholder. The hub itself isn't erroring, so the LLM
-    // needs the signal to self-correct. Verified.
+    // RM accepts invalid field writes without error and then does not bake the row: mainPage
+    // keeps its "Define Actions" placeholder.
     def actionNotBaked = false
     try {
         def mainCfg = _rmFetchConfigJson(appId, "mainPage")
-        // Read BOTH paragraph formats the hub emits. Mirrors the dual-read
-        // in _rmAddTrigger and _rmCheckRuleHealth -- see trigger site comment.
         def mainParagraphs = (mainCfg?.configPage?.sections ?: []).collectMany { sect ->
             def fromBody = (sect?.body ?: [])
                 .findAll { b -> b instanceof Map && (b.element == "paragraph" || b.element == "href") }
@@ -7619,26 +6857,9 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         mcpLog("warn", "rm-native", "_rmAddAction: post-commit mainPage paragraph fetch failed for app ${appId} (${verifyExc.message}) -- action-baked check skipped")
     }
 
-    // Partial-success signal: any skipped settings indicate a field the
-    // caller asked for that didn't land. The action is still committed
-    // (actType/actSubType set, row in actions[]), but it's incomplete and
-    // worth retrying via hub_set_rule(walkStep) or replaceActions.
-    // health.brokenMarkers non-empty means a PRIOR action/trigger is already
-    // broken; the new action committed but the rule is in a known-bad state.
-    // INFORMATIONAL sentinels (reveal_fallback_to_existing_field) are excluded
-    // from the partial computation -- they signal a static-schema or already-
-    // revealed-field walker path, NOT a genuine field-write failure. Mirrors
-    // the exemption in _rmAddRequiredExpression's partial gate; the shared
-    // _rmWalkConditionReveal walker emits the same sentinels on both pages,
-    // so both call sites need the same exemption to match the documented
-    // "INFORMATIONAL -- does NOT flip partial by itself" contract. Set sourced
-    // from _rmInformationalSkippedReasons() so a future addition lands in one
-    // place rather than requiring lockstep edits in both helpers.
-    // A device picker written last in an action's field sequence reveals no further schema,
-    // so _rmWriteSettingOnPage tags it silent_rejection even when the IDs committed. Re-tag
-    // those to an informational reason (value-echo-gated against statusJson) BEFORE the
-    // partial computation, so a fully-baked shade/lock/switch/thermostat action does not
-    // report a cosmetic partial while a genuinely-failed device write still does.
+    // A device picker written last reveals no further schema and is tagged silent_rejection even
+    // when its ids committed; re-tag those (value-echo-gated) before the partial computation.
+    // Informational sentinels never flip partial; brokenMarkers (a prior broken row) do.
     _rmReclassifyDeviceListSkips(appId, skipped)
     def informationalReasons = _rmInformationalSkippedReasons()
     def genuineSkipped = (skipped ?: []).findAll {
@@ -7648,10 +6869,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                   ((health?.brokenMarkers as List)?.size() > 0)
     def hubRenderError = err != null || (genuineSkipped.any { it?.available != null && (it.available as List).isEmpty() } as Boolean) || actionNotBaked
     def repairHints = []
-    // A row RM could not render (its editor errored) or did not bake is not an added action: it
-    // is the half-built row that crashes the rule's action editor until it is removed. Remove it
-    // here and report the add as failed, instead of calling it committed and leaving the repair
-    // to the caller.
+    // A row RM's editor errored on or did not bake is the half-built row that crashes the rule's
+    // action editor until it is removed: remove it and report the add as failed.
     def rolledBack = false
     if (actionNotBaked || err != null) {
         rolledBack = _rmRollbackInFlightAction(appId, idx, false)
@@ -7668,38 +6887,26 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             : "Action ${idx} was not added: ${why}, and its row could not be removed. Remove it with hub_set_rule(removeAction:{index:${idx}}, confirm:true), verify with hub_get_rule_health(appId=${appId}), then retry.").toString()
     }
     if (partial && !(actionNotBaked || err != null)) {
-        // Use genuineSkipped (excluding informational sentinels) so the repair
-        // hint only names keys that actually failed to land. An informational
-        // fallback entry would otherwise be reported as "didn't land" when in
-        // fact the field was written via the already-revealed path.
-        // comparator_force_written_unverified is written-but-unverified, NOT lost (the
-        // walker's exposure-probe-failure fallback force-wrote the comparator and it IS in
-        // settingsApplied). comparator_not_representable_for_enum_attribute is genuinely
-        // unrepresentable. Both get their own specific hint below, so split them out so the
-        // generic "didn't land -- introspect and re-write" hint does not mislead.
+        // A force-written comparator is written but unverified, not lost; it gets its own hint.
         def forceWrittenKeys = genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_force_written_unverified" }*.key.findAll { it != null }
         def specificHintReasons = ["comparator_force_written_unverified", "comparator_not_representable_for_enum_attribute"]
         def lostSkipped = genuineSkipped.findAll { !(it instanceof Map && it.reason in specificHintReasons) }
         if (!lostSkipped.isEmpty()) {
             def skippedKeys = lostSkipped*.key.findAll { it != null }.join(', ')
             def settingWord = lostSkipped.size() == 1 ? "setting" : "settings"
-            repairHints << "Some ${settingWord} didn't land: ${skippedKeys}. Use hub_set_rule(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial action construction, no longer in the live input list). Verify via hub_get_app_config(appId) -- if the action paragraph renders the value correctly, the partial flag is cosmetic and the action is fully baked. Skip the repair."
+            repairHints << "Some ${settingWord} didn't land: ${skippedKeys}. Check the action's paragraph via hub_get_app_config(appId): if it renders the value, the field was write-only during construction and the partial flag is cosmetic. Otherwise hub_set_rule(walkStep={page:'doActPage', operation:'introspect'}) shows the live schema (each skipped item's 'available' list is what was in it at the time) for writing the missing fields one at a time."
             if (hubRenderError) {
-                repairHints << "WARNING: a skipped field had an empty available list, so doActPage may have rendered without its inputs. This is a hub-side issue, not a wire-format problem. The action baked; if it renders wrong, hub_set_rule(removeAction:{index:${idx}}, confirm:true) clears it, then retry with different deviceIds or a different action shape."
+                repairHints << "A skipped field had an empty available list, so doActPage may have rendered without its inputs (a hub-side issue). If the action renders wrong, hub_set_rule(removeAction:{index:${idx}}, confirm:true) clears it; then retry with different deviceIds or a different action shape."
             }
             repairHints << "If retries still fail, hub_set_rule(removeAction:{index:${idx}}, confirm:true) to clean up, then call addAction again with corrections."
         }
-        // getSetHSM reveals its single alarm.<N> command field ONLY when Hubitat Safety
-        // Monitor is installed on the hub. Without HSM the field never enters the schema,
-        // so the lockActs row is stranded with no command and the generic "didn't land"
-        // hint above cannot name the cause. Name it here so the operator knows why.
         if (cap == "hsm" && genuineSkipped.any { it instanceof Map && it.key?.toString()?.startsWith("alarm.") }) {
-            repairHints << "The HSM command field (alarm.${idx}) never appeared in the schema. HSM may not be installed: getSetHSM reveals its command field only when Hubitat Safety Monitor is installed on the hub, so the lockActs action row is stranded with no command. Install the built-in Hubitat Safety Monitor app, then hub_set_rule(removeAction:{index:${idx}}, confirm:true) and re-add the hsm action; or run that removeAction to clear the empty row if HSM is not wanted."
+            repairHints << "The HSM command field (alarm.${idx}) never appeared. HSM may not be installed: Rule Machine shows that field only when Hubitat Safety Monitor is installed, so this row has no command. Install Hubitat Safety Monitor, then hub_set_rule(removeAction:{index:${idx}}, confirm:true) and re-add the hsm action; or run that removeAction if HSM is not wanted."
         }
         if (!forceWrittenKeys.isEmpty()) {
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
             def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
-            repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the action paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
+            repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written after a transient re-fetch failure and could not be schema-confirmed; the value IS in settingsApplied. Check the action paragraph via hub_get_app_config(appId). Do NOT re-write; re-add via hub_set_rule(walkStep={...}) only if the comparator is missing there."
         }
         genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_not_representable_for_enum_attribute" }.each { sk ->
             repairHints << _rmNotRepresentableEnumComparatorHint(
@@ -7709,13 +6916,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             repairHints << "Rule has pre-existing broken markers: ${(health.brokenMarkers as List).unique().join(', ')}. The new action committed, but run hub_get_rule_health(${appId}) and repair the existing broken trigger/action rows before this rule fires correctly."
         }
     }
-    // success=true when: the API call completed without an error AND at least
-    // one setting was written to the rule (actType.N or actSubType.N landed).
-    // partial=true is an orthogonal caller-actionable signal -- the row exists
-    // but some fields didn't land. Decoupling success from partial means the
-    // caller checks success for "did anything happen" then partial for "is more
-    // work needed" -- avoiding the false success=false when the row exists but
-    // is incomplete.
+    // success = the row baked; partial = it baked with fields missing.
     def uniqueApplied = []
     applied.each { key -> if (!uniqueApplied.contains(key)) uniqueApplied << key }
     return [
@@ -11099,28 +10300,12 @@ private void _rmWriteMathOperand(Integer appId, int idx, Object operandValue, St
 
 // Extracted from _rmAddAction to keep it under the JVM's 64KB per-method bytecode limit.
 private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, String actSubType, List applied, List skipped) {
-    // Wait for Events: walk each event row using tCapab-<N>/tDev-<N>/
-    // tstate-<N> (dash-separated index). A Mode event is the exception:
-    // it uses a discovered modesX-<N>-family picker (mode IDs) with no
-    // tDev-<N>/tstate-<N>, same as the trigger/condition Mode paths.
-    // After the event's value field is written,
-    // a hasAll button appears ("Done with this Wait Event"). Click it
-    // to commit the event and reveal tCapab-<N+1> for the next event.
-    // Without the hasAll click, multi-event rules fail because tCapab-2
-    // never appears in schema. Verified live.
-    // Optional timeout via the existing delay-modifier path.
+    // Event rows are tCapab-<N>/tDev-<N>/tstate-<N> (a Mode event uses a modesX-<N> picker and
+    // no tDev/tstate); hasAll commits a row and anotherWait reveals the next.
     if (actSubType == "getWaitEvents") {
         def events = actionSpec.events as List
-        // Detect the base event-capability slot from the schema. The first event field does
-        // NOT render at tCapab-1, nor reliably at the action index -- the Required Expression
-        // wizard (and prior actions) advance an internal counter, so the slot number is not
-        // predictable and MUST be read from what the wizard actually exposes. After the
-        // getWaitEvents subtype write the wizard exposes exactly ONE un-filled tCapab-<N> for
-        // the first event, so find-first over the schema is unambiguous here (subsequent event
-        // rows appear one at a time only after each hasAll click). Raw inputs are read (not
-        // _rmCollectInputSchema, which drops the option list) because the per-event loop below
-        // reuses this fetch to validate the event capability. Retry briefly -- the subtype
-        // write may need a tick before the field appears.
+        // The first slot number comes from an internal RM counter, not the action index, so it
+        // is read from the one unfilled tCapab-<N> the subtype write reveals (after a tick).
         Integer baseN = null
         def baseInputs = null
         def baseCapField = null
@@ -11145,14 +10330,7 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
             def evCap = ev.capability?.toString()?.trim()
             if (!evCap) throw new IllegalArgumentException("waitEvents.events[${evIdx}].capability is required")
             def n = baseN + evIdx
-            // Validate + canonicalize capability against the live enum.
-            // For the first event (evIdx==0, n==baseN) reuse the base-detection
-            // fetch (baseInputs + the already-located tCapab-<baseN> field) rather
-            // than re-fetching the same page. For later events, retry briefly: after
-            // the prior anotherWait click, RM's state.actNdx advance is observable via
-            // plain GET but occasionally the first fetch races with the click's commit
-            // (server processes the click before persisting the new schema). Retrying
-            // once after a short pause gives the hub a tick to catch up.
+            // The first event reuses the base fetch; later ones can race the anotherWait commit.
             def cfg = null
             def inputs = (evIdx == 0) ? baseInputs : null
             def capInput = (evIdx == 0) ? baseCapField : null
@@ -11173,20 +10351,10 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
                 def didYouMean = suggestion ? " Did you mean '${suggestion}'?" : ""
                 throw new IllegalArgumentException("waitEvents.events[${evIdx}].capability '${evCap}' not in option list.${didYouMean} Valid: ${opts.collect { it.toString() }.sort().join(', ')}")
             }
-            // A Mode event's INPUT checks (neither-provided, deviceIds-rejection,
-            // mode NAME resolution) run BEFORE the tCapab-<N> POST -- they need
-            // only location.modes, not the revealed schema, so an invalid or
-            // absent mode fails loud without leaving a half-written event row.
-            // The schema-dependent guards (the picker-missing throw and the
-            // resolved-ID cross-check) necessarily run AFTER the tCapab-<N>=Mode
-            // write, since they need the revealed picker; both stay fail-loud, and
-            // a backup exists.
+            // Mode input checks run before the tCapab write so a bad mode leaves no row.
             def isMode = canon.toString().equalsIgnoreCase("Mode")
             def modeIds = null
             if (isMode) {
-                // Mode is hub-state, not device-based -- reject deviceIds rather
-                // than silently ignoring them (matches the trigger/condition Mode
-                // paths' no-tDev rule and the fail-loud theme).
                 if (ev.deviceIds != null) {
                     throw new IllegalArgumentException("waitEvents.events[${evIdx}]: a Mode event is hub-state, not device-based -- remove 'deviceIds'.")
                 }
@@ -11201,20 +10369,7 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
             }
             _rmWriteSettingOnPage(appId, "doActPage", "tCapab-${n}", canon, applied, null, skipped)
             if (isMode) {
-                // Mode event: RM does NOT use tstate-<N>. Writing tCapab-<N>=Mode
-                // reveals a mode picker keyed by mode ID (dash-indexed for the
-                // waitEvents row, mirroring the trigger's modesX<N> and the
-                // condition's modes<N>). Writing tstate-<N> here is silently
-                // ignored, leaving the event with no mode selected -- the wait
-                // renders with a dangling OR and that event effectively drops.
-                // The exact field name is firmware-assigned. DISCOVER it from the
-                // post-tCapab schema rather than hardcoding, because a firmware
-                // rename then fails loud (below) instead of silently dropping the
-                // event. The reveal-trigger write (tCapab-<N>=Mode) was already
-                // issued above, so a direct re-fetch finds the now-visible picker
-                // -- no _rmRevealStep round-trip is needed here. Same retry
-                // rationale as the tCapab-<N> discovery (the prior write's
-                // re-render can lag one fetch behind the click that reveals it).
+                // The mode picker's exact name is firmware-assigned, so it is discovered.
                 def modeField = null
                 def modeOptions = null
                 def modeInputs = []
@@ -11228,17 +10383,8 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
                 if (!modeField) {
                     throw new IllegalStateException("waitEvents.events[${evIdx}]: Mode picker (expected a modesX-${n} family field) did not appear after writing tCapab-${n}=Mode. Schema seen: ${modeInputs.empty ? "(none returned)" : modeInputs.collect { it?.name }.findAll { it }.join(', ')}")
                 }
-                // Cross-check each resolved mode ID against the valid ID set.
-                // _rmResolveModeIds passes integer IDs through unvalidated, so an
-                // ID no real mode carries would otherwise be silently skipped --
-                // committing a Mode row with no mode selected, the same dangling-OR
-                // drop the discovery guard prevents. Two-tier validation, fail SAFE:
-                // prefer the discovered picker's options (the option keys ARE the
-                // mode IDs). On a live hub the picker can reveal with an empty/
-                // not-yet-populated options list; rather than skip the check (which
-                // would let a bogus integer ID through), fall back to the hub's own
-                // location.modes IDs. Names are already resolved+validated above, so
-                // the fallback only needs to catch raw integer IDs passed directly.
+                // _rmResolveModeIds passes integer ids through unvalidated; check them against
+                // the picker's options, or the hub's modes when the picker reveals empty.
                 def pickerIds = []
                 if (modeOptions instanceof Map) {
                     pickerIds = (modeOptions as Map).keySet().collect { it?.toString() }
@@ -11261,9 +10407,6 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
                 if (!badIds.isEmpty()) {
                     throw new IllegalArgumentException("waitEvents.events[${evIdx}]: mode ID(s) ${badIds.join(', ')} not offered by the ${validSource}. Valid IDs: ${validIds.sort().join(', ')}")
                 }
-                // Mode is hub-state, not device-based -- no tDev-<N> (matches the
-                // trigger and condition Mode paths). Write the resolved mode ID
-                // list to the discovered picker.
                 _rmWriteSettingOnPage(appId, "doActPage", modeField, modeIds, applied, null, skipped)
             } else {
                 if (ev.deviceIds != null) {
@@ -11273,20 +10416,9 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
                     _rmWriteSettingOnPage(appId, "doActPage", "tstate-${n}", ev.state, applied, null, skipped)
                 }
             }
-            // Optional 'and stays that way for' duration. Accept either a bare `true`
-            // (toggle on, zero duration) or a {hours,minutes,seconds} Map. Writing
-            // stays-<N>=true reveals three DASH-indexed duration fields SHours-/SMins-/
-            // SSecs-<N> (the trigger's andStays uses the no-dash SHours<N>, because the
-            // doActPage and selectTriggers wizards name these fields differently); write all
-            // three (default 0) for a clean total-wait computation even though waitEvents,
-            // unlike the trigger, does not NPE on a partial duration.
+            // stays-<N>=true reveals dash-indexed SHours-/SMins-/SSecs-<N> (the trigger's are
+            // undashed); all three are written so the total is clean.
             def andStays = ev.andStays
-            // RM only honours andStays as a toggle (true) or a duration Map. A number,
-            // string, or any other value would fall through the write below and be
-            // silently dropped (no stays row, no error) -- reject it loudly so the
-            // caller learns the duration was ignored instead of shipping a rule that
-            // waits with no dwell time. Matches the codebase's fail-loud-on-bad-arg
-            // convention.
             if (andStays != null && andStays != true && !(andStays instanceof Map)) {
                 throw new IllegalArgumentException("waitEvents.events[${evIdx}].andStays must be boolean true or a {hours,minutes,seconds} map; got '${andStays}'. A numeric or other value is silently ignored by RM -- pass andStays:true for a zero dwell or andStays:{seconds:5} for a duration.")
             }
@@ -11297,23 +10429,8 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
                 _rmWriteSettingOnPage(appId, "doActPage", "SMins-${n}", dur.minutes != null ? dur.minutes : 0, applied, null, skipped)
                 _rmWriteSettingOnPage(appId, "doActPage", "SSecs-${n}", dur.seconds != null ? dur.seconds : 0, applied, null, skipped)
             }
-            // Click hasAll to commit this event. Verified live:
-            // after hasAll, the schema replaces tCapab-<N>/tDev/tstate
-            // with two new buttons:
-            //   - anotherWait  ("Add another Wait Event")
-            //   - doneWaits    ("Done with Wait Events")
-            // For non-last events, clicking anotherWait reveals tCapab-<N+1>
-            // and the wizard loop continues. The last event leaves the
-            // wizard in the 'doneWaits' state — the existing actionDone
-            // click below handles the final commit.
-            //
-            // anotherWait MUST carry stateAttribute=anotherWait — Chrome XHR
-            // capture 2026-04-26 (rule 1381 doActPage probe) showed the
-            // live UI POSTs `stateAttribute=anotherWait` alongside
-            // `settings[anotherWait]=clicked`. Without it the click is
-            // accepted (200 OK) but RM doesn't advance state.actNdx for
-            // the new event row, so the next tCapab-<N+1> never appears
-            // in the schema and event 2/3/N silently drops.
+            // anotherWait needs stateAttribute=anotherWait or RM accepts the click and reveals
+            // nothing.
             _rmClickAppButton(appId, "hasAll", null, "doActPage")
             if (evIdx < events.size() - 1) {
                 _rmClickAppButton(appId, "anotherWait", "anotherWait", "doActPage")
@@ -11324,17 +10441,6 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
 
 // Extracted from _rmAddAction to keep it under the JVM's 64KB per-method bytecode limit.
 private void _rmWriteActionDelayModifier(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
-    // Optional Delay? modifier on an action. Verified live:
-    //   delayAct.<N> options: ["none", "hrs:min:sec", "variable"]
-    //   After delayAct=hrs:min:sec the schema exposes:
-    //     delayHor.<N>  (number)  Hours
-    //     delayMin.<N>  (number)  Minutes
-    //     delaySec.<N>  (decimal) Seconds
-    //     randomAct.<N> (bool)    Random?
-    //     cancelAct.<N> (bool)    Cancelable?
-    //   After delayAct=variable the schema exposes:
-    //     xVarD.<N>     (enum)    Select variable (hub variable name)
-    //     randomAct.<N>, cancelAct.<N>
     if (actionSpec.delay instanceof Map && !actionSpec.__delayHandledForWaitRule) {
         def d = actionSpec.delay as Map
         if (d.variable != null) {
@@ -11390,23 +10496,9 @@ private void _rmWriteRunCommandFields(Integer appId, Integer idx, Map actionSpec
 }
 
 private void _rmWriteRunCommandParams(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
-    // runCommand parameters. Live-verified wire sequence (RM 5.1):
-    //   For each parameter (including the first):
-    //   1. Click the "moreParams" button -- this allocates the next param slot.
-    //      RM assigns a param-number P starting at 2 for the first param; P is
-    //      NOT predictable -- always discover it from the schema (see step 2).
-    //   2. Re-introspect doActPage. Find the newly-revealed cpType<P>.<N> field
-    //      by scanning for names matching /^cpType(\d+)\.N$/. P is RM-assigned.
-    //   3. Write cpType<P>.<N> = type (lowercase: number/decimal/string).
-    //      This reveals uVar<P>.<N> (bool toggle) and cpVal<P>.<N> (literal text).
-    //   4. Variable-sourced param: write uVar<P>.<N>="true" -> re-introspect ->
-    //      xVar<P>.<N> appears (an ENUM of live hub-variable names) and cpVal<P>.<N>
-    //      disappears. Validate the target var is among xVar's options; fail loud if absent.
-    //      Write xVar<P>.<N> = variableName.
-    //      Literal-value param: write cpVal<P>.<N> = value directly.
-    //   5. Repeat steps 1-4 for each subsequent parameter.
-    //   Persisted result for a variable param: cpType<P>.N=type, uVar<P>.N="true",
-    //   xVar<P>.N=varName -- renders "setLevel(<varName>) on <device>".
+    // Per parameter: a moreParams click allocates slot P (RM-assigned, read from the revealed
+    // cpType<P>.<N>); cpType reveals uVar<P>/cpVal<P>; uVar<P>=true swaps cpVal for the
+    // xVar<P> variable enum.
     if (actionSpec.__runCommandExtraParams instanceof List && !actionSpec.__runCommandExtraParams.isEmpty()) {
         actionSpec.__runCommandExtraParams.eachWithIndex { p, paramIdx ->
             def pType, pValue, pVariable
@@ -11427,35 +10519,23 @@ private void _rmWriteRunCommandParams(Integer appId, Integer idx, Map actionSpec
                 pType = "string"
             }
 
-            // Step 1+2: snapshot doActPage schema, click moreParams to allocate the next
-            // param slot, re-fetch and identify the newly-revealed cpType<P>.N field.
-            // _rmRevealStep encapsulates the pre-snapshot/trigger/post-fetch/diff sequence.
             def cpTypeReveal = _rmRevealStep(appId, "doActPage", "cpType\\d+\\.${idx}".toString(), {
                 _rmClickAppButton(appId, "moreParams", null, "doActPage")
             })
             def newCpTypeField = cpTypeReveal.input?.name?.toString()
             if (!newCpTypeField) {
                 mcpLog("warn", "rm-native", "runCommand[${actionSpec.command}]: moreParams click did not reveal a new cpType<P> field for action ${idx} param ${paramIdx + 1}; param skipped")
-                // Add a sentinel so skipped is non-empty, which drives partial=true at result assembly.
                 skipped << [key: "param${paramIdx + 1}", reason: "moreParams_no_reveal"]
                 return
             }
-            // Extract the cpType<P> base name (e.g. "cpType2" from "cpType2.1").
             def cpTypeBase = newCpTypeField.toString().replaceAll("\\.\\d+\$", "")
-            // Extract P (the RM-assigned param number, e.g. 2 from "cpType2").
             def pNumStr = cpTypeBase.replaceAll("^cpType", "")
 
-            // Step 3: write cpType<P>.N = type. This reveals uVar<P>.N and cpVal<P>.N.
             _rmWriteSettingOnPage(appId, "doActPage", "${cpTypeBase}.${idx}".toString(), pType, applied, null, skipped)
 
             if (pVariable != null) {
-                // Step 4 (variable path): write uVar<P>.N="true" to switch the param
-                // slot into variable-source mode, then discover and write xVar<P>.N.
-                // uVar<P>.N stores as the string "true" (bool fields echo-match OK this way).
                 def uVarField = "uVar${pNumStr}.${idx}".toString()
                 _rmWriteSettingOnPage(appId, "doActPage", uVarField, "true", applied, "bool", skipped)
-                // Re-introspect: xVar<P>.N (an enum of hub variable names) now appears;
-                // cpVal<P>.N disappears. Validate the target variable is in the enum options.
                 def xVarCfg = _rmFetchConfigJson(appId, "doActPage")
                 def xVarField = "xVar${pNumStr}.${idx}".toString()
                 def xVarInput = (xVarCfg?.configPage?.sections ?: []).collectMany { sec ->
@@ -11464,12 +10544,7 @@ private void _rmWriteRunCommandParams(Integer appId, Integer idx, Map actionSpec
                 if (!xVarInput) {
                     throw new IllegalArgumentException("runCommand: xVar field not revealed after enabling variable mode for param slot ${pNumStr} (expected '${xVarField}') -- hub may not support variable-sourced parameters for command '${actionSpec.command}'")
                 }
-                // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps),
-                // shared with the setVariable source-variable + fromDevice/math modes so all enum reads match.
                 def xVarOpts = _rmReadPickerOptionStrings(xVarInput)
-                // Fail loud when options are absent or unreadable: writing an unvalidated
-                // variable name would produce a silently-broken action. The canonical reader
-                // returns a non-null list, so the idiomatic truthiness check covers empty/absent.
                 if (!xVarOpts) {
                     throw new IllegalArgumentException("runCommand: xVar${pNumStr}.${idx} revealed but has no enumerable options -- cannot validate variable name '${pVariable}'. Hub may not expose variable list for command '${actionSpec.command}'")
                 }
@@ -11478,7 +10553,6 @@ private void _rmWriteRunCommandParams(Integer appId, Integer idx, Map actionSpec
                 }
                 _rmWriteSettingOnPage(appId, "doActPage", xVarField, pVariable.toString(), applied, null, skipped)
             } else if (pValue != null) {
-                // Step 4 (literal path): write cpVal<P>.N directly.
                 def cpValField = "cpVal${pNumStr}.${idx}".toString()
                 _rmWriteSettingOnPage(appId, "doActPage", cpValField, pValue, applied, null, skipped)
             }
@@ -11522,27 +10596,16 @@ private void _rmCancelRefusedActionEditor(Integer appId, Integer idx, Exception 
 
 // Extracted from _rmAddAction to keep it under the JVM's 64KB per-method bytecode limit.
 private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
-    // setVariable copy-from-variable: source-variable field is schema-gated.
-    // RM 5.1 reveals the source-variable enum ONLY after the copy selector lands:
-    // numOp.<N>="variable" for a Number/Decimal target, valStringOp.<N>="Copy variable" for a String.
-    // Discover the actual field name from the live schema (observed as xVar3.<N>) rather
-    // than hardcoding it -- RM's field naming is firmware-version-specific.
-    // Fail loud if the reveal does not materialise: a missing field means the write
-    // would silently be skipped, leaving an action that bakes without a source variable.
+    // Copy from a variable: the source enum (seen as xVar3.<N>) is revealed by the copy
+    // selector and its slot number is discovered; xVarV/xVarD do not match \d+.
     if (actionSpec.__setVariableSourceVar != null) {
         def srcVar = actionSpec.__setVariableSourceVar.toString()
-        // Name the actual capability the caller invoked (setVariable vs setLocalVariable),
-        // stashed when the markers were set; defaults to setVariable for safety.
         def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
-        // The copy selector must have landed for the schema-gated source-variable field to appear.
         def copyOp = (actionSpec.__setVariableSourceOp ?: "numOp").toString()
         def copyMode = actionSpec.__setVariableSourceTypeUnread ? "source-variable (the variable list was unreadable, so the target type is unknown and numOp was assumed; a String target needs valStringOp)" : "source-variable"
         _rmAssertSelectorLanded(idx, applied, skipped, copyMode, copyOp, capLbl)
         def srcCfg = _rmFetchConfigJson(appId, "doActPage")
         def srcInputs = (srcCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
-        // Match xVar<digits>.<N> -- the source-variable enum for getSetVariable.
-        // xVarV.<N> (target field, already written) and xVarD.<N> (delay-variable) don't match
-        // \d+ because 'V' and 'D' are not digits, so the pattern naturally excludes them.
         def xVarMatches = srcInputs.findAll { inp ->
             inp?.name?.toString()?.matches("xVar\\d+\\.${idx}")
         }
@@ -11551,18 +10614,12 @@ private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map acti
             throw new IllegalArgumentException("${capLbl}: source-variable field was not revealed after writing ${copyOp == 'valStringOp' ? 'valStringOp=Copy variable' : 'numOp=variable'} for action ${idx} -- hub may not support copy-from-variable at this action position. Expected a field matching xVar<digits>.${idx}. Visible fields: ${visibleNames}")
         }
         if (xVarMatches.size() > 1) {
-            // More than one numeric xVar at this action slot is unexpected. Surface it loudly
-            // so the caller can inspect the schema rather than silently picking the first.
             def allNames = xVarMatches.collect { it?.name?.toString() }.join(', ')
             throw new IllegalArgumentException("${capLbl}: schema contains ${xVarMatches.size()} candidate source-variable fields for action ${idx} (${allNames}); expected exactly one. Use rawSettings to write the correct field explicitly.")
         }
         def xVar3Input = xVarMatches[0]
         def xVar3Field = xVar3Input.name.toString()
-        // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps),
-        // shared with the fromDevice/math source modes so all three read enums identically.
         def xVar3Opts = _rmReadPickerOptionStrings(xVar3Input)
-        // Fail loud when the revealed enum is empty: an unvalidated write would produce a
-        // silently-broken action with no source variable persisted.
         if (xVar3Opts == null || xVar3Opts.isEmpty()) {
             throw new IllegalArgumentException("${capLbl}: revealed field '${xVar3Field}' has no enumerable options -- cannot validate sourceVariable '${srcVar}'. Hub may not expose the variable list at this action position.")
         }
@@ -11571,49 +10628,31 @@ private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map acti
         }
         _rmWriteSettingOnPage(appId, "doActPage", xVar3Field, srcVar, applied, null, skipped)
         if (copyOp == "numOp") {
-            // A Number copy is source + valOffset.<N>; the RM UI stores 0 by default. Without it the
-            // rule throws "Ambiguous method overloading for method java.lang.Long#plus" when it runs.
+            // The UI stores valOffset 0; without it the rule throws on Long#plus at run time.
             _rmWriteSettingOnPage(appId, "doActPage", "valOffset.${idx}".toString(), 0, applied, null, skipped)
         }
     }
 
-    // setVariable from-device: the device picker (customDev.<N>) and the attribute enum
-    // (tCustomAttr.<N>) are schema-gated. RM reveals customDev.<N> only after
-    // numOp.<N>="device attribute" lands, and tCustomAttr.<N> only after the device is
-    // written (the attribute enum is FILTERED to the selected device's live attributes).
-    // Field names are validated against the live schema before writing (existence check
-    // gates each write). The names are fixed by RM's UI contract for these slots, so they
-    // are hardcoded -- unlike __setVariableSourceVar, whose copy-variable slot number can
-    // vary by firmware and is therefore regex-discovered.
+    // From a device attribute: numOp reveals customDev.<N>, the device reveals tCustomAttr.<N>
+    // (filtered to that device's attributes).
     if (actionSpec.__setVariableFromDevice != null) {
         def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
         def fd = actionSpec.__setVariableFromDevice
         def fdDeviceId = fd.deviceId.toString()
         def fdAttr = fd.attribute.toString()
-        // numOp must have landed for the gated fields to appear.
         _rmAssertSelectorLanded(idx, applied, skipped, "device-attribute", "numOp", capLbl)
-        // Step 1: customDev.<N> (capability.* single-device picker) must be revealed.
         def customDevField = "customDev.${idx}".toString()
         _rmRevealedInputOrThrow(appId, customDevField,
             "device picker '${customDevField}' was not revealed after writing numOp=device attribute for action ${idx} -- hub may not support read-from-device at this action position.")
-        // Write the device id. The writer reads multiple=false from the schema and emits the
-        // capability.* single-device 3-field contract. RM's picker spans all hub devices, so an
-        // unknown id does not land; the next step's tCustomAttr reveal then fails loud
-        // (success=false) because the attribute enum never appears without a selected device.
         _rmWriteSettingOnPage(appId, "doActPage", customDevField, [fdDeviceId], applied, null, skipped)
-        // Step 2: tCustomAttr.<N> (attribute enum, filtered to the device) appears after the
-        // device write. Validate the requested attribute against the revealed enum.
         def tCustomAttrField = "tCustomAttr.${idx}".toString()
         def tCustomAttrInput = _rmRevealedInputOrThrow(appId, tCustomAttrField,
             "attribute enum '${tCustomAttrField}' was not revealed after writing device '${fdDeviceId}' for action ${idx} -- the device id may not be in RM's picker (RM's customDev picker spans all hub devices; confirm the id exists).")
-        // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps).
         def attrOpts = _rmReadPickerOptionStrings(tCustomAttrInput)
         if (attrOpts == null || attrOpts.isEmpty()) {
             throw new IllegalArgumentException("${capLbl}: revealed attribute enum '${tCustomAttrField}' has no enumerable options -- cannot validate attribute '${fdAttr}'. Device '${fdDeviceId}' may expose no readable attributes at this action position.")
         }
-        // Match case-insensitively, then write the CANONICAL enum option (the hub's exact casing),
-        // not the caller's -- RM stores the option verbatim, so the caller's casing could bake a
-        // value the enum does not contain.
+        // RM stores the option verbatim, so the enum's casing is written.
         def canonicalAttr = attrOpts.find { it?.equalsIgnoreCase(fdAttr) }
         if (canonicalAttr == null) {
             throw new IllegalArgumentException("${capLbl} fromDevice: attribute '${fdAttr}' is not in the device's attribute enum for action ${idx}. Available: ${attrOpts.sort().join(', ')}")
@@ -11621,23 +10660,13 @@ private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map acti
         _rmWriteSettingOnPage(appId, "doActPage", tCustomAttrField, canonicalAttr, applied, null, skipped)
     }
 
-    // setVariable variable-math: operands are schema-gated. RM reveals the first operand
-    // (xVar3.<N>) and the operator (valMathOp.<N>) after numOp.<N>="variable math" lands.
-    // A "(constant)" first operand reveals valConst.<N>. A binary operator reveals the second
-    // operand (xVar4.<N>); a "(constant)" second operand reveals valConst2.<N>. Unary operators
-    // take no second operand. Field names are validated against the live schema before writing
-    // (existence check gates each write). The names are fixed by RM's UI contract for these
-    // math slots, so they are hardcoded (unlike __setVariableSourceVar's regex-discovered slot).
+    // Variable math: numOp reveals xVar3.<N> and valMathOp.<N>; "(constant)" reveals valConst;
+    // a binary operator reveals xVar4.<N> (and valConst2 for a constant).
     if (actionSpec.__setVariableMath != null) {
         def capLbl = actionSpec.__setVariableCapLabel ?: "setVariable"
         def m = actionSpec.__setVariableMath
         _rmAssertSelectorLanded(idx, applied, skipped, "variable-math", "numOp", capLbl)
-        // Canonical reader handles every option shape (Map container, scalar, List-of-value-Maps),
-        // returning [] for absent/unreadable options. assertInEnum's empty-list guard covers that.
         def optsOf = { inp -> _rmReadPickerOptionStrings(inp) }
-        // Fail loud if the requested operand/operator value is not in the revealed field's enum,
-        // mirroring the sibling source-var/attribute validation. An unvalidated write would bake
-        // a silently-broken action with the wrong (or no) operand/operator. role describes the slot.
         def assertInEnum = { String field, Object input, String wanted, String role ->
             def opts = optsOf(input)
             if (opts == null || opts.isEmpty()) {
@@ -11647,7 +10676,6 @@ private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map acti
                 throw new IllegalArgumentException("${capLbl} math: ${role} '${wanted}' is not in the revealed enum for '${field}'. Available: ${opts.sort().join(', ')}")
             }
         }
-        // Step 1: first operand (xVar3.<N>) + operator (valMathOp.<N>) appear after numOp.
         def mCfg = _rmFetchConfigJson(appId, "doActPage")
         def mInputs = (mCfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
         def xVar3Field = "xVar3.${idx}".toString()
@@ -11658,17 +10686,10 @@ private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map acti
             def visibleNames = mInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
             throw new IllegalArgumentException("${capLbl}: variable-math operand/operator fields ('${xVar3Field}' + '${valMathOpField}') were not revealed after writing numOp=variable math for action ${idx} -- hub may not support variable math at this action position. Visible fields: ${visibleNames}")
         }
-        // Validate the operator against valMathOp's options up-front (the field is already
-        // revealed). _rmMathBinaryOps/_rmMathUnaryOps is the project's known partition, but the
-        // live enum is the hub's authority -- a firmware that drops an operator is caught here.
         assertInEnum(valMathOpField, valMathOpInput, m.op.toString(), "operator")
-        // Write the first operand: a Number becomes (constant)+valConst.<N>, else the var name.
-        // _rmWriteMathOperand validates the chosen xVar3 option and writes verbatim constants.
         _rmWriteMathOperand(appId, idx, m.left, xVar3Field, "valConst.${idx}".toString(),
             "first operand", assertInEnum, xVar3Input, applied, skipped)
-        // Write the operator. (Validated against the live enum above; arity in the handler.)
         _rmWriteSettingOnPage(appId, "doActPage", valMathOpField, m.op.toString(), applied, null, skipped)
-        // Binary operator: write the second operand (xVar4.<N>), revealed after the op write.
         if (_rmMathBinaryOps().contains(m.op.toString())) {
             def xVar4Field = "xVar4.${idx}".toString()
             def xVar4Input = _rmRevealedInputOrThrow(appId, xVar4Field,
@@ -11700,16 +10721,10 @@ private Map _rmRevealStep(Integer appId, String page, String pattern, Closure tr
         n && n.matches(pattern)
     }
     def revealed = revealedNew ?: revealedAny
-    // fallbackToExisting signals "matched only via revealedAny" -- the field was already
-    // visible BEFORE the trigger closure ran. Callers that care (e.g. a walker tracking
-    // whether a trigger write actually advanced the schema vs returning a stale leftover
-    // from a prior slot/run) can surface this as an informational sentinel. Does NOT
-    // imply failure: static-schema firmware legitimately exposes always-visible fields
-    // and this path is the only way the walker reaches them.
+    // fallbackToExisting: the field was already visible before the trigger (normal on a static
+    // schema; informational for the walker). postInputs lets a caller read a sibling's options
+    // from the same fetch.
     def fallbackToExisting = (revealedNew == null) && (revealedAny != null)
-    // postInputs is the full post-trigger input-object list (not just names) so a caller
-    // that already drove a reveal can read a sibling field's options from the SAME fetch
-    // rather than re-probing the schema (e.g. the Custom Attribute enum no-RHS route).
     return [input: revealed, visibleNames: postInputs.collect { it?.name?.toString() }.findAll { it },
             postInputs: postInputs, fallbackToExisting: fallbackToExisting]
 }
