@@ -8,7 +8,7 @@ import support.ToolSpecBase
  * under the hub's 124,000-byte response cap. hub_set_rule alone is ~33 KB
  * (27% of the catalog), most of which is static capability enumeration that's
  * either (a) covered by the tool's {discover: true} mode or (b) documented in
- * TOOL_GUIDE.md / docs/rm_action_subtype_schemas.md.
+ * TOOL_GUIDE.md / the served discover schema.
  *
  * The fix is a flat-mode-only transform: `[[FLAT_TRIM]] ... [[/FLAT_TRIM]]`
  * markers in the schema descriptions are STRIPPED WITH CONTENT in flat mode
@@ -437,10 +437,8 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         hpmPackagesDef.description =~ pointerPattern
         createNativeDef.description =~ pointerPattern
 
-        and: 'addAction continues to rely on {discover: true} + docs/rm_action_subtype_schemas.md (separate path; covered for completeness)'
-        addActionDesc.contains('{discover: true}')
-        addActionDesc.contains('docs/rm_action_subtype_schemas.md')
-        new File('docs/rm_action_subtype_schemas.md').exists()
+        and: 'addAction points at the discover operation for its per-capability schema (separate path; covered for completeness)'
+        addActionDesc.contains("operation:'discover'")
 
         and: 'the two new sections this PR added are present and non-empty'
         validSections.contains('set_rule_reference')

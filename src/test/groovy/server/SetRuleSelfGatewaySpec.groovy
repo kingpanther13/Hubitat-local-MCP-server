@@ -154,6 +154,8 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         script._setRuleFromEnvelope([operation: 'guide']).args == [guide: true]
         script._setRuleFromEnvelope([operation: 'discover']).args == [addAction: [discover: true]]
         script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'trigger']]).args == [addTrigger: [discover: true]]
+        script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'action', capability: 'switch', action: 'on']]).args == [addAction: [discover: [capability: 'switch', action: 'on']]]
+        script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'trigger', capability: 'Switch']]).args == [addTrigger: [discover: true]]
     }
 
     def "an unknown operation is rejected with the valid list"() {

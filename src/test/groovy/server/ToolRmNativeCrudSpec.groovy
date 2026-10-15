@@ -23095,7 +23095,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -23203,7 +23203,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -23321,7 +23321,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                                   options: ["getDefinedAction": "Run Custom Action"]],
                                  [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                                  [name: "devices.1", type: "capability.switch", multiple: true],
-                                 [name: "cCmd.1", type: "text"],
+                                 [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                                  [name: "moreParams", type: "button"],
                                  [name: "actionDone", type: "button"]
                              ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
@@ -27017,7 +27017,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27123,7 +27123,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27209,7 +27209,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27292,7 +27292,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27370,7 +27370,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27457,7 +27457,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27538,7 +27538,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                                  [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                                  [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                                  [name: "devices.1", type: "capability.switch", multiple: true],
-                                 [name: "cCmd.1", type: "text"],
+                                 [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                                  [name: "moreParams", type: "button"],
                                  [name: "actionDone", type: "button"]
                                  // cpType<P>.N intentionally never appears
@@ -27618,7 +27618,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -27717,7 +27717,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
                 [name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]],
                 [name: "devices.1", type: "capability.switch", multiple: true],
-                [name: "cCmd.1", type: "text"],
+                [name: "cCmd.1", type: "enum", options: ["setLevel": "setLevel", "setMode": "setMode", "on": "on", "refresh": "refresh", "cmd": "cmd", "mixedCmd": "mixedCmd", "noParamCmd": "noParamCmd"]],
                 [name: "moreParams", type: "button"],
                 [name: "actionDone", type: "button"]
             ]
@@ -48247,6 +48247,361 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def done = posts.find { it.body?._action_previous == "Done" }
         done.body["settings[luxOff]"] == "100"
         done.body["settings[illumsOff]"] == "696"
+    }
+
+
+    // ---------- source-trusted action catalog, runCommand capability/command checks, honest finalization ----------
+
+    private String runCommandDoActPageJson(int ruleId, int seqNum, Map runCapOptions = ["Switch": "Switch", "SwitchLevel": "Dimmer"], List cmds = ["setLevel", "on", "off"]) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "doActPage", title: "T", install: false, error: null,
+                         sections: [[title: "", input: [
+                             [name: "actType.1", type: "enum", options: ["modeActs": "Run Custom Action"]],
+                             [name: "actSubType.1", type: "enum", options: ["getDefinedAction": "Run Custom Action"]],
+                             [name: "myCapab.1", type: "enum", options: runCapOptions],
+                             [name: "devices.1", type: "capability.switch", multiple: true],
+                             [name: "cCmd.1", type: "enum", options: cmds.collectEntries { [(it): it] }],
+                             [name: "moreParams", type: "button"],
+                             [name: "actionDone", type: "button"],
+                             [name: "actionCancel", type: "button"]
+                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
+            settings: [:], childApps: []
+        ])
+    }
+
+    private String bakedMainPageJson(int ruleId, String paragraph) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
+                         sections: [[title: "", input: [], paragraphs: [paragraph]]]],
+            settings: [:], childApps: []
+        ])
+    }
+
+    def "native action catalog pins RM's action groups, sub-types and Run Custom Action capabilities"() {
+        when:
+        def cat = script._rmNativeActionCatalog()
+        def subTypeMap = script._rmActionSubTypeMap()
+        def allSubTypes = (cat.actSubTypes as Map).values().collectMany { (it as Map).keySet().toList() }
+
+        then: "twelve groups, each with its sub-types"
+        (cat.actTypes as Map).size() == 12
+        (cat.actSubTypes as Map).keySet() == (cat.actTypes as Map).keySet()
+        allSubTypes.size() == 71
+        allSubTypes.unique().size() == 71
+
+        and: "every device-picker capability names a real sub-type"
+        (cat.subTypeCapability as Map).keySet().every { it in allSubTypes }
+        cat.subTypeCapability.getOnOffSwitch == "Switch"
+        cat.subTypeCapability.getSetVolume == "AudioVolume"
+
+        and: "the Run Custom Action picker offers these capabilities and nothing else"
+        (cat.runCommandCapabilities as Map).size() == 32
+        cat.runCommandCapabilities.SwitchLevel == "Dimmer"
+        cat.runCommandCapabilities.SpeechSynthesis == "Speech device"
+        !(cat.runCommandCapabilities as Map).containsKey("ColorControl")
+        !(cat.runCommandCapabilities as Map).containsKey("AudioVolume")
+
+        and: "every addAction capability/action drives a sub-type the catalog knows"
+        subTypeMap.every { cap, actions -> (actions as Map).values().every { it in allSubTypes } }
+        subTypeMap["switch"]["on"] == "getOnOffSwitch"
+        subTypeMap.runCommand["*"] == "getDefinedAction"
+    }
+
+    @Unroll
+    def "runCommand capabilityFilter '#raw' resolves to the key RM stores (#expected)"() {
+        expect:
+        script._rmResolveRunCommandCapability(raw) == expected
+
+        where:
+        raw             | expected
+        null            | "Switch"
+        ""              | "Switch"
+        "Switch"        | "Switch"
+        "switch"        | "Switch"
+        "SwitchLevel"   | "SwitchLevel"
+        "switch level"  | "SwitchLevel"
+        "Dimmer"        | "SwitchLevel"
+        "dimmer"        | "SwitchLevel"
+        "Speech device" | "SpeechSynthesis"
+        "Window Shade"  | "WindowShade"
+        "Fan Control"   | "FanControl"
+    }
+
+    @Unroll
+    def "runCommand capabilityFilter '#raw' is refused with RM's own list"() {
+        when:
+        script._rmResolveRunCommandCapability(raw)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("capabilityFilter '${raw}' is not a capability Rule Machine's Run Custom Action offers")
+        e.message.contains("SwitchLevel")
+        e.message.contains("RM is not touched")
+
+        where:
+        raw << ["Initialize", "ColorControl", "AudioVolume", "Color Temperature"]
+    }
+
+    def "addAction runCommand with a capabilityFilter RM does not offer is refused before any hub write"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "runCommand", command: "initialize", capabilityFilter: "Initialize", deviceIds: [42]],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error?.contains("capabilityFilter 'Initialize' is not a capability Rule Machine's Run Custom Action offers")
+        result.restoreHint?.toLowerCase()?.contains("not touched")
+
+        and: "no wizard click and no settings write reached the hub"
+        posts.isEmpty()
+    }
+
+    def "addAction runCommand writes the capability key RM stores for a picker label and the command RM lists"() {
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def writtenFields = [:]
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v -> def key = _settingKeyOf(k); if (key != null) writtenFields[key] = v }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Run Custom Action"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> fetchSeq++; runCommandDoActPageJson(100, fetchSeq) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPageJson(100, "setLevel() on Device1") }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "runCommand", command: "SETLEVEL", capabilityFilter: "Dimmer", deviceIds: [42]],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.rolledBack == false
+        result.note?.contains("added and baked")
+        writtenFields["myCapab.1"] == "SwitchLevel"
+
+        and: "the command is written in RM's own casing"
+        writtenFields["cCmd.1"] == "setLevel"
+    }
+
+    def "addAction runCommand refuses a command RM does not list for the devices and rolls the opened row back"() {
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Run Custom Action"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> fetchSeq++; runCommandDoActPageJson(100, fetchSeq) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPageJson(100, "Define Actions") }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "runCommand", command: "fakeCmd", deviceIds: [42]],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error?.contains("'fakeCmd' is not a command of the selected device(s)")
+        result.error?.contains("RM offers: off, on, setLevel")
+        result.error?.contains("rolled back")
+
+        and: "the command was never written and the editor was cancelled"
+        !posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[cCmd.1]") }
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+    }
+
+    def "addAction switch onlyIfChanged writes optSwitch after the device picker"() {
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def writes = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/update/json") {
+                body?.each { k, v -> def key = _settingKeyOf(k); if (key != null) writes << [key: key, value: v] }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetchSeq++
+            JsonOutput.toJson([
+                app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
+                      appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", title: "T", install: false, error: null,
+                             sections: [[title: "", input: [
+                                 [name: "actType.1", type: "enum", options: ["switchActs": "Switches"]],
+                                 [name: "actSubType.1", type: "enum", options: ["getOnOffSwitch": "Turn switches on/off"]],
+                                 [name: "onOffSwitch.1", type: "capability.switch", multiple: true],
+                                 [name: "onOff.1", type: "bool"],
+                                 [name: "optSwitch.1", type: "bool"],
+                                 [name: "actionDone", type: "button"]
+                             ], paragraphs: ["seq ${fetchSeq}".toString()]]]],
+                settings: [:], childApps: []
+            ])
+        }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPageJson(100, "On: S1 (Command only switches that are off)") }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "switch", action: "on", deviceIds: [8], onlyIfChanged: true],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        writes.find { it.key == "optSwitch.1" }?.value?.toString() == "true"
+        writes.findIndexOf { it.key == "optSwitch.1" } > writes.findIndexOf { it.key == "onOffSwitch.1" }
+    }
+
+    def "addAction switch refuses the old onlyOn name before any hub write"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "switch", action: "off", deviceIds: [8], onlyOn: true],
+            confirm: true
+        ])
+
+        then:
+        result.success == false
+        result.error?.contains("'onlyOn' is now 'onlyIfChanged'")
+        posts.isEmpty()
+    }
+
+    def "addAction that RM does not bake is rolled back and reported as not added"() {
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> fetchSeq++; doActPageSchemaJson(100, fetchSeq) }
+        // mainPage still shows the placeholder: RM did not bake the row.
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPageJson(100, "Define Actions") }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when:
+        def result = script.toolSetRule([
+            appId: 100,
+            addAction: [capability: "switch", action: "on", deviceIds: [8]],
+            confirm: true
+        ])
+
+        then: "the add is reported as failed, not as committed"
+        result.success == false
+        result.rolledBack == true
+        result.note?.contains("Action not added")
+        !result.note?.contains("committed")
+        result.repairHints?.any { it.toString().contains("Action 1 was not added") && it.toString().contains("The row was removed") }
+
+        and: "the editor was cancelled"
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
+    }
+
+    def "discover narrows to one capability and names the RM sub-type it drives"() {
+        when:
+        def one = script._rmAddAction(100, [discover: [capability: "runCommand"]])
+        def onAction = script._rmAddAction(100, [discover: [capability: "Switch", action: "on"]])
+        def all = script._rmAddAction(100, [discover: true])
+
+        then:
+        one.capability.name == "runCommand"
+        one.capability.rm["*"].actSubType == "getDefinedAction"
+        one.capability.rm["*"].actType == "modeActs"
+        one.capability.rm["*"].label == "Run Custom Action"
+        one.runCommandCapabilities.SwitchLevel == "Dimmer"
+        !one.containsKey("capabilities")
+
+        and: "a selector with an action echoes it and reports the device capability RM filters on"
+        onAction.action == "on"
+        onAction.capability.rm.on.actSubType == "getOnOffSwitch"
+        onAction.capability.rm.on.deviceCapability == "Switch"
+        !onAction.containsKey("runCommandCapabilities")
+
+        and: "the full schema is decorated the same way"
+        (all.capabilities as List).find { (it as Map).name == "switch" }.rm.off.actSubType == "getOnOffSwitch"
+        all.runCommandCapabilities.size() == 32
+    }
+
+    @Unroll
+    def "discover refuses an unknown #what"() {
+        when:
+        script._rmAddAction(100, [discover: selector])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains(needle)
+
+        where:
+        what         | selector                                  | needle
+        "capability" | [capability: "teleport"]                  | "'teleport' is not an addAction capability"
+        "action"     | [capability: "switch", action: "blink"]   | "'blink' is not an action of 'switch'"
     }
 
 }

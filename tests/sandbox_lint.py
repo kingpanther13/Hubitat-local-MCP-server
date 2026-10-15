@@ -1967,8 +1967,8 @@ def check_discrete_event_caps_doc_parity(
     Production code's authoritative class predicate lives in the
     DISCRETE_EVENT_CAPS map literal in hubitat-mcp-server.groovy. Doc surfaces
     that list capabilities as discrete-event (the inline addRE schema
-    description, the inline get_tool_guide content block, TOOL_GUIDE.md, and
-    docs/rm_action_subtype_schemas.md) MUST cite a subset of that production
+    description, the inline get_tool_guide content block and TOOL_GUIDE.md;
+    a docs/rm_action_subtype_schemas.md is scanned if present) MUST cite a subset of that production
     set -- otherwise agents copy a doc example that the live walker rejects.
 
     Scope of what this rule catches: capability-NAME presence parity ONLY.

@@ -6193,6 +6193,17 @@ class TestRunner:
                  ("armaway", "armrules")),
                 ({"addAction": {"capability": "colorTemp", "action": "setColorTemp"}},
                  ("kelvin",)),
+                # Pre-write: capabilityFilter is checked against the capabilities RM's Run Custom
+                # Action picker offers. RM would otherwise store the value, render no device picker
+                # and crash the rule's action editor until the row is removed.
+                ({"addAction": {"capability": "runCommand", "command": "initialize", "capabilityFilter": "Initialize",
+                    "deviceIds": [int(self.get_test_switch_id())]}},
+                 ("capabilityfilter 'initialize' is not a capability", "run custom action offers")),
+                # Not pre-write: the command is checked against the commands RM lists for the selected
+                # devices; a miss rolls the opened row back (asserted below with the file actions).
+                ({"addAction": {"capability": "runCommand", "command": "noSuchCommandE2E",
+                    "deviceIds": [int(self.get_test_switch_id())]}},
+                 ("is not a command of the selected device", "rolled back")),
                 # Not pre-write: the row opens, the picker check refuses, and the row is rolled back
                 # (asserted below). RM would otherwise store the name and mark the rule broken.
                 ({"addAction": {"capability": "fileAppend", "fileName": missing_file, "content": "x"}},
@@ -6243,6 +6254,18 @@ class TestRunner:
                 "tool": "hub_get_rule_health", "args": {"appId": app_id}})
             assert file_health.get("ok") is not False and not file_health.get("orphanedActionRows"), \
                 f"refused file actions left the rule unhealthy or with orphaned rows: {file_health}"
+            # Accept-path parity for runCommand: a capability the picker offers (given by its label)
+            # and a command RM lists for the device commit, bake and render as RM renders them.
+            run_ok = self._rm_call_soft(
+                {"appId": app_id, "addAction": {"capability": "runCommand", "command": "off",
+                 "capabilityFilter": "switch", "deviceIds": [int(self.get_test_switch_id())]},
+                 "confirm": True},
+                strict=True)
+            assert run_ok.get("success") is True and not run_ok.get("partial") \
+                and run_ok.get("rolledBack") is not True, \
+                f"runCommand off on the test switch should commit and bake, got: {run_ok}"
+            assert "off() on" in self._rule_page_text(app_id), \
+                f"the runCommand action did not render on the rule page after: {run_ok}"
             # Mixed EDIT shortcuts used to apply only the first branch while reporting success.
             # The guard must reject the full call before the backup snapshot or any wizard write.
             try:
@@ -6714,12 +6737,16 @@ class TestRunner:
         target = "off" if (cur.get("value") if isinstance(cur, dict) else None) == "on" else "on"
         app_id = self._create_native_rule("BtnProvenance", {
             "addTrigger": {"capability": "Button", "deviceIds": [int(button)], "buttonNumber": 1, "state": "pushed"},
-            "addActions": [{"capability": "switch", "action": target, "deviceIds": [int(switch)]}],
+            # onlyIfChanged is RM's "Command only switches that are off/on?" option; the switch is
+            # driven to the opposite state, so the command still fires through it.
+            "addActions": [{"capability": "switch", "action": target, "deviceIds": [int(switch)], "onlyIfChanged": True}],
         })
         try:
             rule_label = self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": int(app_id)}}).get("app", {}).get("label")
             assert rule_label, f"could not read the provenance rule's label (app {app_id})"
+            assert "Command only switches that are" in self._rule_page_text(app_id), \
+                f"onlyIfChanged did not render as RM's command-only option on rule {app_id}"
             pressed = self.client.call_tool("hub_call_device_command", {
                 "deviceId": button, "command": "push", "parameters": [1]})
             assert isinstance(pressed, dict) and pressed.get("success") is True, f"button push failed: {pressed}"

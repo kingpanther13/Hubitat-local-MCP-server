@@ -169,7 +169,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     addAction: [
                         type: "object",
-                        description: """Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type` (`{type:'log'}` is rejected); returns actionIndex (no trailing updateRule — doActPage self-bakes). Capability names: switch, dimmer, color, colorTemp, button, runCommand, lock, thermostat, hsm, shade, fan, mode, setVariable/setLocalVariable, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, fileWrite/fileAppend/fileDelete, zwavePoll; flow control — delay, delayPerMode, cancelDelay, repeat, stopRepeat, repeatWhile, waitExpression, waitEvents, ifThen, elseIf, else, endIf, exitRule, comment. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}. LIMIT: only ONE waitEvents per rule. Rule-targeting caps (runRule/cancelTimers/pauseRule/privateBoolean) validate each ruleIds entry against the live RM rule list before any write; a rule id that is not an existing rule is rejected -- use hub_list_rules for valid ids. privateBoolean also takes '*', RM's "this rule" target, alone or mixed (e.g. ['*', 1809]). (On a hub whose rule list can't be resolved -- RM not installed or app-tree unreadable -- the check is skipped; a hub with zero rules instead rejects every rule target.) Per-condition shape: {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array — a bare integer silently stores {N:null}); nested subExpression not supported here (use addRequiredExpression). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the auto action index (e.g. {'flashRate.@N':750}). Per-field specs, the shape guards, and variable-sourced values: pass {discover: true} for the live schema, hub_get_tool_guide(section='set_rule_reference_actions'), or docs/rm_action_subtype_schemas.md. Extended expression shapes (Mode, Between two times, Variable, compareToDevice): section='set_rule_reference_conditions'."""
+                        description: """Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type`; returns actionIndex (no trailing updateRule — the action editor finalizes it). The capability list with each one's fields and the RM sub-type it drives comes from hub_set_rule(operation:'discover', args:{kind:'action'}); add capability (and action) to the args for one entry. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}; per-condition shape {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array); nested subExpression only in addRequiredExpression. LIMIT: one waitEvents per rule. Rule-targeting caps (runRule/cancelTimers/pauseRule/privateBoolean) check ruleIds against the live rule list (hub_list_rules); privateBoolean also takes '*' (this rule). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the action index. A spec RM cannot bake is refused before any write, or rolled back when only RM's editor can tell: success:false means nothing was added. Extended expression shapes: hub_get_tool_guide(section='set_rule_reference_conditions')."""
                     ],
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
@@ -3323,6 +3323,148 @@ private Map _rmTriggerSchemaForDiscover() {
 // Called when addAction: {discover: true} is passed -- no hub mutation, no
 // confirm/backup required. Content is sourced from the inline capability-family
 // reference in the hub_set_rule tool description.
+// Rule Machine 5.1's own action catalog: the action-type groups and sub-types its action editor
+// offers (keys are the actType / actSubType values it stores, labels are what its pickers show),
+// the device capability each sub-type's device picker filters on, and the capability list its
+// Run Custom Action picker offers. Static in RM; the editor only prunes groups whose capability
+// no installed device reports (plus the few that need a system app installed).
+private Map _rmNativeActionCatalog() {
+    return [
+        actTypes: [
+            condActs: "Conditional Actions", switchActs: "Control Switches, Push Buttons",
+            dimmerActs: "Set Dimmers and Bulbs", sceneActs: "Adjust Shades/Blinds or Fans",
+            lockActs: "Control HSM, Garage Doors, Locks, Valves or Thermostats",
+            messageActs: "Send Message: Notify, Speak, Log; HTTP Request",
+            soundActs: "Control Music Player, Volume, Sounds",
+            modeActs: "Set Variable, Mode or File, Run Custom Action",
+            rulesActs: "Set Private Boolean, Run/Cancel/Pause Rules",
+            deviceActs: "Capture/Restore, Device Refresh or Polling",
+            repeatActs: "Repeat Actions", delayActs: "Delay, Wait, Exit or Comment"
+        ],
+        actSubTypes: [
+            condActs: [getIfThen: "IF Expression THEN", getElseIf: "ELSE-IF Expression THEN", getElse: "ELSE", getEndIf: "END-IF", getCondAct: "Simple Conditional Action"],
+            switchActs: [getOnOffSwitch: "Turn switches on/off", getToggleSwitch: "Toggle switches", getFlashSwitch: "Flash switches", getModeSwitch: "Set switches per mode", getChooseSwitch: "Choose switches by mode", getPushButton: "Push button", getPushButtonPerMode: "Push button per mode", getChooseButton: "Choose button by mode"],
+            dimmerActs: [getSetDimmer: "Set dimmer", getToggleDimmer: "Toggle dimmer", getAdjustDimmer: "Adjust dimmer", getDimmersPerMode: "Set dimmer per mode", getFadeDimmer: "Fade dimmer over time", getStopFade: "Stop dimmer fade", getRLDimmer: "Start raising/lowering dimmer", getStopDimmer: "Stop changing dimmer", getSetColor: "Set color", getToggleColor: "Toggle color", getColorPerMode: "Set color per mode", getSetColorTemp: "Set color temperature", getToggleColorTemp: "Toggle color temperature", getColorTempPerMode: "Set color temperature per mode", getFadeCT: "Change color temperature over time", getStopCTFade: "Stop changing color temperature"],
+            sceneActs: [getRLShade: "Open/Close shades/blinds", getShadePosition: "Set shade/blind position", getBlindTilt: "Set blind tilt", getStopShade: "Stop shade/blind", getFanSpeed: "Set fan speed", getAdjustFan: "Cycle fans", getActivateScene: "Activate scenes", getActivateScenePerMode: "Activate scenes per mode"],
+            lockActs: [getSetHSM: "Control Hubitat Safety Monitor", getOCGarage: "Open/Close garage door", getLULock: "Lock/Unlock locks", getOCValve: "Open/Close valves", getSetThermostat: "Set thermostats", getSetThermostatScheduler: "Set Thermostat Scheduler", getSetThermController: "Set Thermostat Controller Sensors"],
+            messageActs: [getMsg: "Send/Speak a Message", getLogMsg: "Log Message", getHTTPGet: "Send HTTP Get", getHTTPPost: "Send HTTP Post", getPingIP: "Ping IP address"],
+            soundActs: [getSetMusicPlayer: "Control Music Player", getSetVolume: "Set Volume", getMuteUnmute: "Mute/Unmute", getTone: "Sound Tone", getChime: "Sound Chime", getSiren: "Control Siren"],
+            modeActs: [getSetVariable: "Set Variable", getSetMode: "Set Mode", getDefinedAction: "Run Custom Action", getWriteLocalFile: "Write to local file", getAppendLocalFile: "Append to local file", getDeleteLocalFile: "Delete local file", getReturnValue: "Return value from Rule Function"],
+            rulesActs: [getSetPrivateBoolean: "Set Private Booleans", getRuleActions: "Run Rule Actions", getStopActions: "Cancel Rule Timers", getPauseResumeRules: "Pause/Resume Rules", getRLActivate: "Activate Room Lights for Mode/Period", getRLTurnOff: "Turn Off Room Lights"],
+            deviceActs: [getCapture: "Capture Devices", getRestore: "Restore Devices", getRefreshSwitch: "Refresh devices", getPollSwitch: "Poll devices", getDisable: "Disable/Enable devices", getStartStopZPoll: "Start/Stop Z-Wave polling"],
+            repeatActs: [getRepeat: "Repeat Actions", getWhile: "Repeat While Expression", getStopRepeat: "Stop Repeating Actions"],
+            delayActs: [getDelay: "Delay Actions", getDelayPerMode: "Delay Actions Per Mode", getCancelDelay: "Cancel Delayed Actions", getWaitEvents: "Wait for Events", getWaitRule: "Wait for Expression", getExitRule: "Exit Rule", getComment: "Comment"]
+        ],
+        // The capability a sub-type's device picker is filtered on (sub-types without a device
+        // picker are absent).
+        subTypeCapability: [
+            getOnOffSwitch: "Switch", getToggleSwitch: "Switch", getFlashSwitch: "Switch", getModeSwitch: "Switch", getChooseSwitch: "Switch",
+            getPushButton: "PushableButton", getPushButtonPerMode: "PushableButton", getChooseButton: "PushableButton", getStartStopZPoll: "Switch",
+            getSetDimmer: "SwitchLevel", getToggleDimmer: "SwitchLevel", getAdjustDimmer: "SwitchLevel", getDimmersPerMode: "SwitchLevel", getFadeDimmer: "SwitchLevel", getRLDimmer: "SwitchLevel", getStopDimmer: "SwitchLevel", getStopFade: "SwitchLevel",
+            getSetColor: "ColorControl", getToggleColor: "ColorControl", getColorPerMode: "ColorControl",
+            getSetColorTemp: "ColorTemperature", getToggleColorTemp: "ColorTemperature", getColorTempPerMode: "ColorTemperature", getFadeCT: "ColorTemperature", getStopCTFade: "ColorTemperature",
+            getBlindTilt: "WindowBlind", getFanSpeed: "FanControl", getAdjustFan: "FanControl", getOCGarage: "GarageDoorControl", getLULock: "Lock", getOCValve: "Valve", getSetThermostat: "Thermostat",
+            getSetMusicPlayer: "MusicPlayer", getTone: "Tone", getChime: "Chime", getSetVolume: "AudioVolume", getMuteUnmute: "AudioVolume", getSiren: "Alarm"
+        ],
+        // The Run Custom Action capability picker: key = the value RM stores in myCapab.<N> and
+        // filters its device picker on, label = what the picker shows.
+        runCommandCapabilities: [
+            AccelerationSensor: "Acceleration", Actuator: "Actuator", PushableButton: "Button",
+            CarbonMonoxideDetector: "Carbon monoxide detector", ContactSensor: "Contact", SwitchLevel: "Dimmer",
+            DoorControl: "Door", EnergyMeter: "Energy meter", GarageDoorControl: "Garage door", ShockSensor: "Shock sensor",
+            RelativeHumidityMeasurement: "Humidity", IlluminanceMeasurement: "Illuminance", Lock: "Lock", Valve: "Valve",
+            MotionSensor: "Motion", PowerMeter: "Power meter", PresenceSensor: "Presence", SmokeDetector: "Smoke detector",
+            Switch: "Switch", TemperatureMeasurement: "Temperature", SoundSensor: "Sound", PowerSource: "Power source",
+            GasDetector: "Gas detector", Thermostat: "Thermostat", WaterSensor: "Water sensor", MusicPlayer: "Music player",
+            Tone: "Tone", SpeechSynthesis: "Speech device", SecurityKeypad: "Security keypad", WindowShade: "Window Shade",
+            WindowBlind: "Window Blind", FanControl: "Fan Control"
+        ]
+    ]
+}
+
+// Resolves a runCommand capabilityFilter to the value RM's Run Custom Action picker stores. Accepts
+// the stored key (any case, spaces ignored) or the picker label; anything else is refused before
+// any write, because RM stores an unknown value as-is and then renders no device picker for it,
+// leaving a half-built row that crashes the action editor.
+private String _rmResolveRunCommandCapability(Object raw) {
+    Map options = _rmNativeActionCatalog().runCommandCapabilities as Map
+    if (raw == null || !raw.toString().trim()) return "Switch"
+    String wanted = raw.toString().trim()
+    String key = options.keySet().find { it.toString() == wanted }
+    if (key == null) {
+        String folded = wanted.replaceAll(/\s+/, "").toLowerCase()
+        key = options.find { k, v ->
+            k.toString().toLowerCase() == folded || v.toString().replaceAll(/\s+/, "").toLowerCase() == folded
+        }?.key
+    }
+    if (key == null) {
+        throw new IllegalArgumentException("runCommand: capabilityFilter '${wanted}' is not a capability Rule Machine's Run Custom Action offers. Valid values: ${options.keySet().sort().join(', ')} (their picker labels, e.g. 'Dimmer' or 'Speech device', are accepted too). RM is not touched.")
+    }
+    return key.toString()
+}
+
+// The discover response: the full action schema, or one capability's entry when a selector
+// {capability, action?} is given. Each entry carries, under rm, the RM sub-type(s) it drives and the
+// device capability RM filters that sub-type's picker on.
+private Map _rmActionDiscover(Object selector) {
+    Map full = _rmActionSchemaForDiscover()
+    Map catalog = _rmNativeActionCatalog()
+    Map subTypeLabels = [:]
+    (catalog.actSubTypes as Map).each { actType, subs -> (subs as Map).each { k, v -> subTypeLabels[k] = [actType: actType, label: v] } }
+    def decorate = { Map entry ->
+        Map rmInfo = [:]
+        (_rmActionSubTypeMap()[entry.name] ?: [:]).each { action, subType ->
+            Map info = [actSubType: subType] + (subTypeLabels[subType] ?: [:])
+            def devCap = (catalog.subTypeCapability as Map)[subType]
+            if (devCap) info.deviceCapability = devCap
+            rmInfo[action] = info
+        }
+        rmInfo ? (entry + [rm: rmInfo]) : entry
+    }
+    if (!(selector instanceof Map) || !(selector as Map).capability) {
+        return full + [capabilities: (full.capabilities as List).collect { decorate(it as Map) },
+                       runCommandCapabilities: catalog.runCommandCapabilities]
+    }
+    String wanted = (selector as Map).capability.toString().trim()
+    Map entry = (full.capabilities as List).find { (it as Map).name?.toString()?.equalsIgnoreCase(wanted) } as Map
+    if (entry == null) {
+        throw new IllegalArgumentException("discover: '${wanted}' is not an addAction capability. Valid: ${(full.capabilities as List).collect { (it as Map).name }.join(', ')}.")
+    }
+    def action = (selector as Map).action?.toString()?.trim()
+    if (action && entry.actions instanceof List && !(entry.actions as List).any { it.toString() == action }) {
+        throw new IllegalArgumentException("discover: '${action}' is not an action of '${entry.name}'. Valid: ${(entry.actions as List).join(', ')}.")
+    }
+    Map out = [discriminator: full.discriminator, capability: decorate(entry)]
+    if (action) out.action = action
+    if (entry.name == "runCommand") out.runCommandCapabilities = catalog.runCommandCapabilities
+    return out
+}
+
+// addAction capability (+ action) -> the RM sub-type _rmMapActionSpec drives. "*" = every action
+// of that capability. Mirrors the mapping branches; the catalog spec pins the two in step.
+private Map _rmActionSubTypeMap() {
+    return [
+        "switch": [on: "getOnOffSwitch", off: "getOnOffSwitch", toggle: "getToggleSwitch", flash: "getFlashSwitch", setPerMode: "getModeSwitch", choosePerMode: "getChooseSwitch"],
+        dimmer: [setLevel: "getSetDimmer", toggle: "getToggleDimmer", adjust: "getAdjustDimmer", fade: "getFadeDimmer", stopFade: "getStopFade", startRaiseLower: "getRLDimmer", stopChanging: "getStopDimmer", setLevelPerMode: "getDimmersPerMode"],
+        color: [setColor: "getSetColor", toggleColor: "getToggleColor", setColorPerMode: "getColorPerMode"],
+        colorTemp: [setColorTemp: "getSetColorTemp", toggleColorTemp: "getToggleColorTemp", fadeColorTemp: "getFadeCT", stopColorTempFade: "getStopCTFade", setColorTempPerMode: "getColorTempPerMode"],
+        button: [push: "getPushButton", pushPerMode: "getPushButtonPerMode", choosePerMode: "getChooseButton"],
+        shade: [open: "getRLShade", close: "getRLShade", setPosition: "getShadePosition", stop: "getStopShade"],
+        fan: [setSpeed: "getFanSpeed", cycle: "getAdjustFan"],
+        lock: ["*": "getLULock"], thermostat: ["*": "getSetThermostat"], hsm: ["*": "getSetHSM"], mode: ["*": "getSetMode"],
+        setVariable: ["*": "getSetVariable"], setLocalVariable: ["*": "getSetVariable"], runCommand: ["*": "getDefinedAction"],
+        fileWrite: ["*": "getWriteLocalFile"], fileAppend: ["*": "getAppendLocalFile"], fileDelete: ["*": "getDeleteLocalFile"],
+        zwavePoll: ["*": "getStartStopZPoll"], log: ["*": "getLogMsg"], notification: ["*": "getMsg"], httpGet: ["*": "getHTTPGet"],
+        httpPost: ["*": "getHTTPPost"], ping: ["*": "getPingIP"], volume: ["*": "getSetVolume"], mute: ["*": "getMuteUnmute"],
+        chime: ["*": "getChime"], siren: ["*": "getSiren"], privateBoolean: ["*": "getSetPrivateBoolean"], runRule: ["*": "getRuleActions"],
+        cancelTimers: ["*": "getStopActions"], pauseRule: ["*": "getPauseResumeRules"], capture: ["*": "getCapture"], restore: ["*": "getRestore"],
+        refresh: ["*": "getRefreshSwitch"], poll: ["*": "getPollSwitch"], disableDevice: ["*": "getDisable"], delay: ["*": "getDelay"],
+        delayPerMode: ["*": "getDelayPerMode"], cancelDelay: ["*": "getCancelDelay"], exitRule: ["*": "getExitRule"], comment: ["*": "getComment"],
+        repeat: ["*": "getRepeat"], stopRepeat: ["*": "getStopRepeat"], repeatWhile: ["*": "getWhile"], waitEvents: ["*": "getWaitEvents"],
+        waitExpression: ["*": "getWaitRule"], ifThen: ["*": "getIfThen"], elseIf: ["*": "getElseIf"], "else": ["*": "getElse"], endIf: ["*": "getEndIf"]
+    ]
+}
+
 private Map _rmActionSchemaForDiscover() {
     return [
         discriminator: "capability",
@@ -3341,11 +3483,11 @@ private Map _rmActionSchemaForDiscover() {
                 ],
                 optionalFields: [
                     [name: "perMode", type: "Map", description: "For setPerMode: {modeIdOrName: 'on'|'off', ...}. For choosePerMode: {modeIdOrName: {on: [devIds], off: [devIds]}, ...}"],
-                    [name: "onlyOn", type: "Boolean", description: "For on/off: RM's 'command only switches that are on?' toggle -- writes optSwitch. When true, the command is sent ONLY to switches currently ON: action='off' turns off just the on switches (skips already-off ones); action='on' re-sends on only to already-on switches (a no-op refresh)."],
+                    [name: "onlyIfChanged", type: "Boolean", description: "For on/off: RM's 'Command only switches that are off?' (on) / '... that are on?' (off) option, stored as optSwitch. When true the command goes only to switches not already in the requested state."],
                     [name: "delay", type: "Map", description: "{hours?, minutes?, seconds?, cancelable?}"],
                     [name: "rawSettings", type: "Map"]
                 ],
-                notes: "flash starts a flash schedule; use capability='runCommand' with command='flashOff' to stop it. onlyOn applies to on/off only.",
+                notes: "flash starts a flash schedule; use capability='runCommand' with command='flashOff' to stop it. onlyIfChanged applies to on/off only.",
                 conditionalRequired: [
                     setPerMode: "perMode",
                     choosePerMode: "perMode"
@@ -3533,7 +3675,7 @@ private Map _rmActionSchemaForDiscover() {
                     [name: "deviceIds", type: "List<Integer>"]
                 ],
                 optionalFields: [
-                    [name: "capabilityFilter", type: "String", description: "Default 'Switch'"],
+                    [name: "capabilityFilter", type: "String", description: "The capability RM filters the device picker on; default 'Switch'. One of the keys in runCommandCapabilities (their labels are accepted too); any other value is refused before the hub is touched."],
                     [name: "parameters", type: "List", description: "Parameter list. Each entry is {type, value} for a literal (e.g. {type: 'number', value: 75}) or {type, variable} for a hub-variable-sourced value (e.g. {type: 'number', variable: 'myVar'}). Type is lowercase: 'number', 'decimal', or 'string'. Variable-sourced params wire via uVar<P>/xVar<P> -- see docs/rm_wire_format.md for the wire sequence. Fails loud if the hub does not reveal the xVar<P> enum after enabling variable mode (returns success=false with a descriptive error)."],
                     [name: "useLastEventDevice", type: "Boolean"],
                     [name: "delay", type: "Map"],
@@ -5704,19 +5846,22 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
 
     if (cap == "switch") {
         actType = "switchActs"
+        if (actionSpec.containsKey("onlyOn")) {
+            throw new IllegalArgumentException("switch: 'onlyOn' is now 'onlyIfChanged' -- RM's \"Command only switches that are off?\" (for on) / \"... that are on?\" (for off) option sends the command only to switches not already in the requested state. RM is not touched.")
+        }
         switch (action) {
             case "on":
                 actSubType = "getOnOffSwitch"
                 fields = ["onOffSwitch.@N": deviceIds, "onOff.@N": true]
-                // optSwitch ("command only switches that are on/off") reveals ONLY after a
+                // optSwitch ("Command only switches that are off/on?") reveals ONLY after a
                 // device is selected in onOffSwitch, so it must be written AFTER it -- keep
                 // it last in the insertion-ordered fields map.
-                if (actionSpec.onlyOn == true) fields["optSwitch.@N"] = true
+                if (actionSpec.onlyIfChanged == true) fields["optSwitch.@N"] = true
                 break
             case "off":
                 actSubType = "getOnOffSwitch"
                 fields = ["onOffSwitch.@N": deviceIds, "onOff.@N": false]
-                if (actionSpec.onlyOn == true) fields["optSwitch.@N"] = true
+                if (actionSpec.onlyIfChanged == true) fields["optSwitch.@N"] = true
                 break
             case "toggle":
                 actSubType = "getToggleSwitch"
@@ -6366,15 +6511,12 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
     } else if (cap == "runCommand") {
         // modeActs/getDefinedAction — Run Custom Action. Multi-step:
         //   useLastDev.<N>  = false (use selected devices, not the trigger device)
-        //   myCapab.<N>     = Hubitat capability CLASS NAME (verified live):
-        //                     'Switch', 'SwitchLevel' (Dimmer), 'Lock',
-        //                     'PushableButton' (Button), 'ColorControl',
-        //                     'ColorTemperature', 'WindowShade', 'WindowBlind',
-        //                     'FanControl', 'MusicPlayer', 'AudioVolume',
-        //                     'GarageDoorControl', 'DoorControl', 'Valve',
-        //                     'Lock', 'Thermostat', 'Tone', 'SpeechSynthesis', etc.
-        //   devices.<N>     = device list (capability.<key-lowercased>)
-        //   cCmd.<N>        = command name (one of the device driver's commands)
+        //   myCapab.<N>     = one of RM's Run Custom Action capability keys (catalog
+        //                     runCommandCapabilities); the device picker is filtered on it
+        //   devices.<N>     = device list (capability.<key-lowercased>), revealed after myCapab
+        //   cCmd.<N>        = command name, an enum RM builds from the selected devices'
+        //                     commands, revealed after devices; written and validated in
+        //                     _rmWriteRunCommandCommand against that live enum
         // Per-parameter wire sequence (live-verified, see __runCommandExtraParams block):
         //   moreParams button click  -> reveals cpType<P>.<N> (P = RM-assigned, starts at 2)
         //   cpType<P>.<N>            = type (number/decimal/string) -> reveals uVar<P>+cpVal<P>
@@ -6383,32 +6525,12 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actType = "modeActs"
         actSubType = "getDefinedAction"
         if (!actionSpec.command) throw new IllegalArgumentException("runCommand requires 'command' (the device driver method name)")
-        // Friendly names → Hubitat capability class keys
-        def friendlyToKey = [
-            "switch": "Switch", "Switch": "Switch",
-            "dimmer": "SwitchLevel", "Dimmer": "SwitchLevel", "switchLevel": "SwitchLevel", "SwitchLevel": "SwitchLevel", "Switch Level": "SwitchLevel",
-            "color": "ColorControl", "Color": "ColorControl", "ColorControl": "ColorControl",
-            "colorTemp": "ColorTemperature", "ColorTemperature": "ColorTemperature", "Color Temperature": "ColorTemperature",
-            "lock": "Lock", "Lock": "Lock",
-            "button": "PushableButton", "Button": "PushableButton", "PushableButton": "PushableButton",
-            "shade": "WindowShade", "WindowShade": "WindowShade", "Window Shade": "WindowShade",
-            "blind": "WindowBlind", "WindowBlind": "WindowBlind", "Window Blind": "WindowBlind",
-            "fan": "FanControl", "FanControl": "FanControl", "Fan Control": "FanControl",
-            "music": "MusicPlayer", "MusicPlayer": "MusicPlayer", "Music Player": "MusicPlayer",
-            "garage": "GarageDoorControl", "GarageDoorControl": "GarageDoorControl", "Garage door": "GarageDoorControl",
-            "door": "DoorControl", "DoorControl": "DoorControl",
-            "valve": "Valve", "Valve": "Valve",
-            "thermostat": "Thermostat", "Thermostat": "Thermostat",
-            "tone": "Tone", "Tone": "Tone",
-            "speech": "SpeechSynthesis", "SpeechSynthesis": "SpeechSynthesis"
-        ]
-        def capFilterRaw = actionSpec.capabilityFilter ?: "Switch"
-        def capFilter = friendlyToKey.get(capFilterRaw.toString()) ?: capFilterRaw.toString()
+        def capFilter = _rmResolveRunCommandCapability(actionSpec.capabilityFilter)
+        actionSpec.__runCommandCapability = capFilter
         fields = [
             "useLastDev.@N": (actionSpec.useLastEventDevice == true),
             "myCapab.@N": capFilter,
-            "devices.@N": deviceIds,
-            "cCmd.@N": actionSpec.command
+            "devices.@N": deviceIds
         ]
         // Parameter slot allocation: moreParams click is required for ALL params
         // (P is RM-assigned, starts at 2; P=1 is never used). Full live-verified
@@ -7048,6 +7170,16 @@ private Integer _rmResolveAllocatedActionIdx(Integer appId, Integer idx, Long re
     return idx
 }
 
+// One sentence that matches what _rmAddAction's result says happened.
+private String _rmAddActionNote(Map r) {
+    if (r?.success == false) {
+        return r.rolledBack == true ? "Action not added: the half-built row was removed; see repairHints." :
+            "Action not added and its row could not be removed; see repairHints."
+    }
+    if (r?.partial == true) return "Action ${r.actionIndex} added and baked, but some fields did not land; see settingsSkipped / repairHints."
+    return "Action ${r?.actionIndex} added and baked (no trailing updateRule needed; the action editor finalizes it)."
+}
+
 // Replaces the 6-7 manual wizard calls with one orchestrated call.
 // Wire-format quirks and capability families: docs/rm_wire_format.md#_rmAddAction.
 // Returns: [success, actionIndex, capability, action, settingsApplied, configPageError]
@@ -7060,8 +7192,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             ((Number) actionSpec.__reqT0).longValue() : null
     // Discover mode -- return static schema without touching the hub.
     // No capability field required; no Write master gate; no backup.
-    if (actionSpec.discover == true) {
-        return _rmActionSchemaForDiscover()
+    if (actionSpec.discover == true || actionSpec.discover instanceof Map) {
+        return _rmActionDiscover(actionSpec.discover)
     }
     def cap = actionSpec.capability?.toString()?.trim()
     def action = actionSpec.action?.toString()?.trim()
@@ -7237,6 +7369,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                 _rmWriteSettingOnPage(appId, "doActPage", fieldName, value, applied, null, skipped)
             }
         }
+        if (cap == "runCommand") _rmWriteRunCommandCommand(appId, idx, actionSpec, applied, skipped)
         _rmWriteWaitEventRows(appId, idx, actionSpec, actSubType, applied, skipped)
     } catch (Exception preExprExc) {
         _rmCancelRefusedActionEditor(appId, idx, preExprExc)
@@ -7617,10 +7750,25 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                   ((health?.brokenMarkers as List)?.size() > 0)
     def hubRenderError = err != null || (genuineSkipped.any { it?.available != null && (it.available as List).isEmpty() } as Boolean) || actionNotBaked
     def repairHints = []
-    if (actionNotBaked) {
-        repairHints << "Action did not bake — mainPage still shows 'Define Actions' placeholder. Common causes: required field for the (capability, action) pair was omitted (e.g. dimmer.setLevel needs 'level'; switch.setPerMode needs 'perMode'; runCommand needs 'command'), invalid deviceIds, or value out of range. Inspect the rule via hub_get_app_config(includeSettings=true) — settings.actType.<idx> set without matching subtype-specific fields means the action was registered but not committed. Use removeAction(${idx}) to clean up, then rebuild."
+    // A row RM could not render (its editor errored) or did not bake is not an added action: it
+    // is the half-built row that crashes the rule's action editor until it is removed. Remove it
+    // here and report the add as failed, instead of calling it committed and leaving the repair
+    // to the caller.
+    def rolledBack = false
+    if (actionNotBaked || err != null) {
+        rolledBack = _rmRollbackInFlightAction(appId, idx, false)
+        if (rolledBack) {
+            try { health = _rmCheckRuleHealth(appId) } catch (Exception healthExc) {
+                mcpLog("debug", "rm-native", "_rmAddAction: post-rollback health re-read failed for app ${appId} (${healthExc.message})")
+            }
+        }
+        def why = err != null ? "RM's action editor reported an error (${err})" : "RM did not bake the action (mainPage still shows the 'Define Actions' placeholder)"
+        def lost = genuineSkipped.findAll { it instanceof Map && it.key != null }*.key.join(', ')
+        repairHints << (rolledBack
+            ? "Action ${idx} was not added: ${why}${lost ? "; fields that did not land: ${lost}" : ""}. The row was removed, so nothing is left to repair. Check the spec (required fields for the capability/action pair, deviceIds, value ranges) via hub_set_rule(operation:'discover', args:{kind:'action', capability:'${cap}'}) and retry."
+            : "Action ${idx} was not added: ${why}${lost ? "; fields that did not land: ${lost}" : ""}, and its row could not be removed. Remove it with hub_set_rule(removeAction:{index:${idx}}, confirm:true), verify with hub_get_rule_health(appId=${appId}), then retry.").toString()
     }
-    if (partial) {
+    if (partial && !(actionNotBaked || err != null)) {
         // Use genuineSkipped (excluding informational sentinels) so the repair
         // hint only names keys that actually failed to land. An informational
         // fallback entry would otherwise be reported as "didn't land" when in
@@ -7638,16 +7786,16 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             def settingWord = lostSkipped.size() == 1 ? "setting" : "settings"
             repairHints << "Some ${settingWord} didn't land: ${skippedKeys}. Use hub_set_rule(walkStep={page:'doActPage', operation:'introspect'}) to see the LIVE schema, then write the missing fields one at a time. The 'available' list on each skipped item shows what fields ARE in the schema right now. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial action construction, no longer in the live input list). Verify via hub_get_app_config(appId) -- if the action paragraph renders the value correctly, the partial flag is cosmetic and the action is fully baked. Skip the repair."
             if (hubRenderError) {
-                repairHints << "WARNING: doActPage may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue, not a wire-format problem. The action partially committed; consider removeAction(${idx}) to clear the broken row, then retry with different deviceIds or a different action shape."
+                repairHints << "WARNING: a skipped field had an empty available list, so doActPage may have rendered without its inputs. This is a hub-side issue, not a wire-format problem. The action baked; if it renders wrong, hub_set_rule(removeAction:{index:${idx}}, confirm:true) clears it, then retry with different deviceIds or a different action shape."
             }
-            repairHints << "If retries still fail, removeAction(index:${idx}) to clean up, then call addAction again with corrections."
+            repairHints << "If retries still fail, hub_set_rule(removeAction:{index:${idx}}, confirm:true) to clean up, then call addAction again with corrections."
         }
         // getSetHSM reveals its single alarm.<N> command field ONLY when Hubitat Safety
         // Monitor is installed on the hub. Without HSM the field never enters the schema,
         // so the lockActs row is stranded with no command and the generic "didn't land"
         // hint above cannot name the cause. Name it here so the operator knows why.
         if (cap == "hsm" && genuineSkipped.any { it instanceof Map && it.key?.toString()?.startsWith("alarm.") }) {
-            repairHints << "The HSM command field (alarm.${idx}) never appeared in the schema. HSM may not be installed: getSetHSM reveals its command field only when Hubitat Safety Monitor is installed on the hub, so the lockActs action row is stranded with no command. Install the built-in Hubitat Safety Monitor app, then removeAction(${idx}) and re-add the hsm action; or removeAction(${idx}) to clear the empty row if HSM is not wanted."
+            repairHints << "The HSM command field (alarm.${idx}) never appeared in the schema. HSM may not be installed: getSetHSM reveals its command field only when Hubitat Safety Monitor is installed on the hub, so the lockActs action row is stranded with no command. Install the built-in Hubitat Safety Monitor app, then hub_set_rule(removeAction:{index:${idx}}, confirm:true) and re-add the hsm action; or run that removeAction to clear the empty row if HSM is not wanted."
         }
         if (!forceWrittenKeys.isEmpty()) {
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
@@ -7672,8 +7820,9 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     def uniqueApplied = []
     applied.each { key -> if (!uniqueApplied.contains(key)) uniqueApplied << key }
     return [
-        success: !err && !applied.isEmpty(),
+        success: !err && !actionNotBaked && !applied.isEmpty(),
         partial: partial,
+        rolledBack: rolledBack,
         hubRenderError: hubRenderError,
         actionIndex: idx,
         capability: cap,
@@ -9579,7 +9728,7 @@ def _setRuleFlatTool() {
         inputSchema: [
             type: "object",
             properties: [
-                operation: [type: "string", enum: _setRuleOperations(), description: "What to do. Call WITHOUT confirm to get this operation's argument schema back (argsSchema + usage; no mutation), then call again with args + confirm:true. 'create' = new rule (omit appId); all others edit an existing rule (need appId) except guide/discover/buttonRule, which omit it. On a create, partial bakes are reported via partial/repairHints; full create+repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). 'guide' returns the full capability reference; 'discover' returns the live per-capability field schema (args={kind:'trigger'|'action'})."],
+                operation: [type: "string", enum: _setRuleOperations(), description: "What to do. Call WITHOUT confirm to get this operation's argument schema back (argsSchema + usage; no mutation), then call again with args + confirm:true. 'create' = new rule (omit appId); all others edit an existing rule (need appId) except guide/discover/buttonRule, which omit it. On a create, partial bakes are reported via partial/repairHints; full create+repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). 'guide' returns the full capability reference; 'discover' returns the per-capability field schema (args={kind:'trigger'|'action'}; for actions add capability and optionally action to get one entry with the RM sub-type it drives)."],
                 appId: [type: "integer", description: "RM rule ID. OMIT for create/guide/discover/buttonRule; PROVIDE for every other (edit) operation (appId is the create-vs-edit switch)."],
                 args: [type: ["object", "array", "boolean"], description: "Arguments for the chosen operation — the exact shape comes from the schema probe (call without confirm first). Most ops take an object; the list ops (addTriggers/addActions/replaceActions/patches) take a bare array and clearActions takes true. For 'create' args holds name + optional addTriggers/addActions/addRequiredExpression. Pass the bare operation payload (e.g. {capability:'switch',...}), not wrapped under the operation name."],
                 confirm: [type: "boolean", description: "Set true to APPLY the operation (any write). Omit (or false) to get the schema back instead (a no-mutation probe). Writes also need the Write master + a recent backup."]
@@ -9669,7 +9818,10 @@ Map _setRuleFromEnvelope(Map env) {
             throw new IllegalArgumentException("hub_set_rule operation='discover': args.kind must be 'trigger' or 'action' (got '${kind}').")
         }
         def kn = (kind == 'trigger') ? 'addTrigger' : 'addAction'
-        return [args: [(kn): [discover: true]]]
+        // An action selector narrows the response to one capability (and checks its action).
+        def selector = (kind == 'action' && payload instanceof Map && payload.capability != null) ?
+            [capability: payload.capability, action: payload.action] : true
+        return [args: [(kn): [discover: selector]]]
     }
     // No confirm -> probe (return the op's arg schema, no mutation).
     if (env.confirm != true) {
@@ -11011,13 +11163,13 @@ private void _rmAssertSelectorLanded(int idx, List applied, List skipped, String
 // human phrase for the error (e.g. "device picker", "second-operand field"); the caller supplies
 // the full "<role> '<field>' was not revealed ..." suffix via missSuffix so each mode keeps its
 // existing wording. Returns the input Map (never null).
-private Map _rmRevealedInputOrThrow(Integer appId, String fieldName, String missSuffix) {
+private Map _rmRevealedInputOrThrow(Integer appId, String fieldName, String missSuffix, String capLbl = "setVariable") {
     def cfg = _rmFetchConfigJson(appId, "doActPage")
     def inputs = (cfg?.configPage?.sections ?: []).collectMany { sec -> (sec?.input ?: []) }
     def input = inputs.find { it?.name?.toString() == fieldName }
     if (!input) {
         def visibleNames = inputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
-        throw new IllegalArgumentException("setVariable: ${missSuffix} Visible fields: ${visibleNames}")
+        throw new IllegalArgumentException("${capLbl}: ${missSuffix} Visible fields: ${visibleNames}")
     }
     return input
 }
@@ -11301,6 +11453,34 @@ private void _rmWriteActionDelayModifier(Integer appId, Integer idx, Map actionS
 }
 
 // Extracted from _rmAddAction to keep it under the JVM's 64KB per-method bytecode limit.
+// runCommand's command picker (cCmd.<N>) is an enum RM builds from the commands of the devices
+// selected in devices.<N>, so it only appears once RM accepted at least one of them for the
+// chosen capability. Both the reveal and the command are checked against RM's own list; a miss
+// throws inside the editor try-block, which rolls the opened row back (nothing half-built stays).
+private void _rmWriteRunCommandCommand(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
+    String capKey = actionSpec.__runCommandCapability?.toString() ?: "Switch"
+    String cmd = actionSpec.command.toString().trim()
+    boolean useLast = actionSpec.useLastEventDevice == true
+    String devicesKey = "devices.${idx}".toString()
+    if (!useLast && skipped.any { it instanceof Map && it.key?.toString() == devicesKey }) {
+        throw new IllegalArgumentException("runCommand: RM revealed no device picker for capability '${capKey}' on action ${idx}, so deviceIds could not be written. The opened action row was rolled back.")
+    }
+    String cmdKey = "cCmd.${idx}".toString()
+    def ids = (actionSpec.deviceIds instanceof List) ? (actionSpec.deviceIds as List).join(", ") : actionSpec.deviceIds?.toString()
+    def cmdInput = _rmRevealedInputOrThrow(appId, cmdKey,
+        "the command picker '${cmdKey}' was not revealed after writing ${useLast ? 'useLastDev=true' : "deviceIds [${ids}]"} for capability '${capKey}' on action ${idx} -- RM lists commands only for devices it accepted into that capability's picker (check that the devices report '${capKey}'). The opened action row was rolled back.".toString(),
+        "runCommand")
+    List opts = _rmReadPickerOptionStrings(cmdInput)
+    if (!opts) {
+        throw new IllegalArgumentException("runCommand: RM found no commands for the selected device(s) on action ${idx} (its picker shows 'No commands found'). The opened action row was rolled back.")
+    }
+    String canonical = opts.find { it == cmd } ?: opts.find { it?.equalsIgnoreCase(cmd) }
+    if (canonical == null) {
+        throw new IllegalArgumentException("runCommand: '${cmd}' is not a command of the selected device(s) on action ${idx}. RM offers: ${opts.sort().join(', ')}. The opened action row was rolled back.")
+    }
+    _rmWriteSettingOnPage(appId, "doActPage", cmdKey, canonical, applied, null, skipped)
+}
+
 private void _rmWriteRunCommandParams(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
     // runCommand parameters. Live-verified wire sequence (RM 5.1):
     //   For each parameter (including the first):
@@ -15718,10 +15898,11 @@ def _applyNativeAppEdit(args) {
             settingsSkipped: actResult?.settingsSkipped,
             configPageError: actResult?.configPageError,
             hubRenderError: actResult?.hubRenderError,
+            rolledBack: actResult?.rolledBack,
             repairHints: actResult?.repairHints,
             health: actResult?.health,
             verificationFetchFailed: actResult?.verificationFetchFailed,
-            note: "Action added + committed (baked into actions[] map). No trailing updateRule needed; doActPage->selectActions navigation finalizes."
+            note: _rmAddActionNote(actResult)
         ]
     }
 
