@@ -12,8 +12,11 @@ Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `.
 
 The [ephemeral hub lane](ephemeral-hub-e2e.md) runs the full E2E registry and the SDK
 conformance script against a disposable test hub that an external workflow boots for each
-run. It runs on every PR, forks included, without approval or label gates, because the job
-that runs PR code holds no secrets. `E2E_LANE=ephemeral` only redacts hub identity from logs.
+run. It runs on every PR, forks included, without label gates, because the job that runs PR
+code holds no secrets. PR code runs only under `pull_request` in `hub-e2e-ephemeral.yml`; the
+`pull_request_target` workflow `hub-e2e-ephemeral-request.yml` requests the hub from base code,
+so PR code never runs in the base branch's cache scope. `E2E_LANE=ephemeral` only redacts hub
+identity from logs.
 
 ## Additive hub-closer lanes
 

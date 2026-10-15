@@ -1,0 +1,138 @@
+name: Hub E2E (ephemeral test hub) request
+
+# Requests the disposable test hub for a PR's run of hub-e2e-ephemeral.yml (docs/ephemeral-hub-e2e.md).
+# pull_request_target supplies the secrets, so this workflow checks out and runs base code only and
+# never decrypts: the session goes to the test run's public key. PR code runs only in that test run.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hub-e2e-ephemeral-request-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    name: Ephemeral lane gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+      sha: ${{ steps.decide.outputs.sha }}
+      repo: ${{ steps.decide.outputs.repo }}
+      fork: ${{ steps.decide.outputs.fork }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - id: lane
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node .github/scripts/lane_gate.js
+      - id: decide
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONFIGURED: ${{ secrets.PRIVATE_CI_TOKEN != '' && secrets.SOFTWARE_HUB_PROVIDER != '' }}
+          LANE_RUN: ${{ steps.lane.outputs.run }}
+          LANE_SKIP: ${{ steps.lane.outputs.skip }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          set -euo pipefail
+          # The test run reads this reason from the `ephemeral-hub-unavailable` artifact and skips.
+          skip() {
+            mkdir -p "$RUNNER_TEMP/unavailable"; echo "$1" > "$RUNNER_TEMP/unavailable/reason.txt"
+            echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0
+          }
+          [ "$CONFIGURED" = true ] || skip "Ephemeral hub lane not configured."
+          # e2e:skip holds only the physical-hub lane; dependency-only bot PRs skip both lanes.
+          [ "$LANE_RUN" = true ] || [ "$LANE_SKIP" = true ] || skip "Ephemeral hub E2E not required for this PR."
+          [[ "$PR_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::unexpected head SHA shape"; exit 1; }
+          [[ "$PR_HEAD_REPO" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { echo "::error::unexpected head repo shape"; exit 1; }
+          # Fails safe: an unreadable file list runs the lane.
+          if files="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[].filename')"; then
+            relevant=false
+            while IFS= read -r f; do
+              case "$f" in
+                hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|libraries/*|packageManifest.json|tools/build-release-app.py|tools/strip_source.py|tools/groovy_lex.py|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk_conformance_helpers.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e-ephemeral.yml|.github/workflows/hub-e2e-ephemeral-request.yml|.github/scripts/request_ephemeral_hub.sh|.github/scripts/publish_fork_bundle.sh|.github/scripts/lane_gate.js)
+                  relevant=true ;;
+              esac
+            done <<< "$files"
+            [ "$relevant" = true ] || skip "Ephemeral hub E2E not run: no hub-relevant files changed."
+          fi
+          {
+            echo "run=true"; echo "sha=$PR_HEAD_SHA"; echo "repo=$PR_HEAD_REPO"
+            echo "fork=$([ "$PR_HEAD_REPO" != "$GITHUB_REPOSITORY" ] && echo true || echo false)"
+          } >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        if: steps.decide.outputs.run == 'false'
+        with:
+          name: ephemeral-hub-unavailable
+          path: ${{ runner.temp }}/unavailable/reason.txt
+          retention-days: 1
+          overwrite: true
+
+  request-hub:
+    name: Request ephemeral hub
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write   # publish_fork_bundle.sh pushes shas/<sha>/ to bundle-artifacts
+      actions: read
+    steps:
+      # Base ref only: nothing from the PR head is executed here.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        if: needs.gate.outputs.fork == 'true'
+        with:
+          python-version: '3.x'
+      - name: Publish fork PR release artifact
+        if: needs.gate.outputs.fork == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          PR_HEAD_REPO: ${{ needs.gate.outputs.repo }}
+          PR_HEAD_SHA: ${{ needs.gate.outputs.sha }}
+        run: bash .github/scripts/publish_fork_bundle.sh
+      - name: Wait for this revision's published release files
+        env:
+          PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
+        run: bash .github/scripts/request_ephemeral_hub.sh release "$PUBLIC_SHA"
+      - name: Find the test run and its public key
+        id: consumer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
+        run: bash .github/scripts/request_ephemeral_hub.sh consumer "$PUBLIC_SHA" "$RUNNER_TEMP/pub"
+      - name: Dispatch the hub and fetch its encrypted session
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_CI_TOKEN }}
+          PROVIDER: ${{ secrets.SOFTWARE_HUB_PROVIDER }}
+          PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
+          PUBLIC_REPO: ${{ needs.gate.outputs.repo }}
+          CONSUMER_RUN_ID: ${{ steps.consumer.outputs.run_id }}
+        run: bash .github/scripts/request_ephemeral_hub.sh hub "$RUNNER_TEMP/pub/session-pub.pem" "$RUNNER_TEMP/session"
+      # Still encrypted to the test run's key, so the public artifact reveals nothing.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ephemeral-hub-session-${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}
+          path: |
+            ${{ runner.temp }}/session/session.key.enc
+            ${{ runner.temp }}/session/session.json.enc
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true

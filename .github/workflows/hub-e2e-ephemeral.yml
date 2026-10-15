@@ -2,20 +2,18 @@ name: Hub E2E (ephemeral test hub)
 
 # Runs tests/e2e_test.py and the SDK conformance script against a disposable test hub that an
 # external workflow boots for this run and ends when this run completes (docs/ephemeral-hub-e2e.md).
-# Fork PRs run without approval: the hub is thrown away and the job that runs PR code holds no secrets.
 #
-# The `e2e` job generates the session keypair and publishes only the public key; `request-hub`
-# dispatches the provider with it and relays the still-encrypted session back as an artifact.
-# Hub credentials therefore never cross a job boundary in clear text (a masked value cannot be a
-# job output, and an unmasked one would print in the consuming step's header).
+# PR code runs only here, under `pull_request`: no secrets, read-only token, no base-branch cache
+# scope. For PRs the hub is requested by hub-e2e-ephemeral-request.yml (pull_request_target, base
+# code only); for push and dispatch the `request-hub` job below does it. Either way the `e2e` job
+# generates the session keypair, publishes only the public key, and receives the session encrypted.
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened]
   push:
     # feat/emulated-e2e-lane: temporary, validates the lane on PR 545 before it exists on main.
     branches: [main, feat/emulated-e2e-lane]
-  # Dispatch tests the dispatched ref itself; fork heads run only through pull_request_target.
   workflow_dispatch:
 
 permissions:
@@ -26,179 +24,69 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  gate:
-    name: Ephemeral lane gate
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      pull-requests: read
-    outputs:
-      run: ${{ steps.decide.outputs.run }}
-      sha: ${{ steps.decide.outputs.sha }}
-      repo: ${{ steps.decide.outputs.repo }}
-      fork: ${{ steps.decide.outputs.fork }}
-    steps:
-      # Base ref under pull_request_target: the decision never runs PR code.
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - id: lane
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node .github/scripts/lane_gate.js
-      - id: decide
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          CONFIGURED: ${{ secrets.PRIVATE_CI_TOKEN != '' && secrets.SOFTWARE_HUB_PROVIDER != '' }}
-          LANE_RUN: ${{ steps.lane.outputs.run }}
-          LANE_SKIP: ${{ steps.lane.outputs.skip }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-        run: |
-          set -euo pipefail
-          skip() { echo "$1"; echo "$1" >> "$GITHUB_STEP_SUMMARY"; echo "run=false" >> "$GITHUB_OUTPUT"; exit 0; }
-          [ "$CONFIGURED" = true ] || skip "Ephemeral hub lane not configured."
-          # e2e:skip holds only the physical-hub lane; dependency-only bot PRs skip both lanes.
-          [ "$LANE_RUN" = true ] || [ "$LANE_SKIP" = true ] || skip "Ephemeral hub E2E not required for this PR."
-          if [ "$EVENT_NAME" = pull_request_target ]; then
-            sha="$PR_HEAD_SHA"; repo="$PR_HEAD_REPO"
-          else
-            sha="$GITHUB_SHA"; repo="$GITHUB_REPOSITORY"
-          fi
-          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::unexpected head SHA shape"; exit 1; }
-          [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || { echo "::error::unexpected head repo shape"; exit 1; }
-          if [ "$EVENT_NAME" = pull_request_target ]; then
-            # Fails safe: an unreadable file list runs the lane.
-            if files="$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER/files" --jq '.[].filename')"; then
-              relevant=false
-              while IFS= read -r f; do
-                case "$f" in
-                  hubitat-mcp-server.groovy|hubitat-mcp-rule.groovy|libraries/*|packageManifest.json|tools/build-release-app.py|tools/strip_source.py|tools/groovy_lex.py|tests/e2e_test.py|tests/sdk_conformance_test.py|tests/sdk_conformance_helpers.py|tests/sdk-conformance-requirements.txt|.github/workflows/hub-e2e-ephemeral.yml|.github/scripts/publish_fork_bundle.sh|.github/scripts/lane_gate.js)
-                    relevant=true ;;
-                esac
-              done <<< "$files"
-              [ "$relevant" = true ] || skip "Ephemeral hub E2E not run: no hub-relevant files changed."
-            fi
-          fi
-          {
-            echo "run=true"; echo "sha=$sha"; echo "repo=$repo"
-            echo "fork=$([ "$repo" != "$GITHUB_REPOSITORY" ] && echo true || echo false)"
-          } >> "$GITHUB_OUTPUT"
-
   request-hub:
     name: Request ephemeral hub
-    needs: gate
-    if: needs.gate.outputs.run == 'true'
+    # Trusted refs only; PR runs get their hub from hub-e2e-ephemeral-request.yml.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:
-      contents: write   # publish_fork_bundle.sh pushes shas/<sha>/ to bundle-artifacts
+      contents: read
       actions: read
-    outputs:
-      provider_run_id: ${{ steps.provider.outputs.run_id }}
     steps:
       - uses: actions/checkout@v7
-        if: needs.gate.outputs.fork == 'true'
         with:
           persist-credentials: false
-      - uses: actions/setup-python@v7
-        if: needs.gate.outputs.fork == 'true'
+      - id: configured
+        env:
+          CONFIGURED: ${{ secrets.PRIVATE_CI_TOKEN != '' && secrets.SOFTWARE_HUB_PROVIDER != '' }}
+        run: |
+          if [ "$CONFIGURED" = true ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          mkdir -p "$RUNNER_TEMP/unavailable"
+          echo "Ephemeral hub lane not configured." | tee "$RUNNER_TEMP/unavailable/reason.txt" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: steps.configured.outputs.ready != 'true'
         with:
-          python-version: '3.x'
-      - name: Publish fork PR release artifact
-        if: needs.gate.outputs.fork == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_REPO: ${{ github.repository }}
-          EVENT_NAME: ${{ github.event_name }}
-          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
-          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: bash .github/scripts/publish_fork_bundle.sh
+          name: ephemeral-hub-unavailable
+          path: ${{ runner.temp }}/unavailable/reason.txt
+          retention-days: 1
+          overwrite: true
       - name: Wait for this revision's published release files
-        # publish-bundle-artifact.yml writes shas/<sha>/ on the same push that opened this run; the
-        # provider installs from there, so do not request a hub before the files exist.
-        env:
-          PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
-        run: |
-          for attempt in $(seq 1 24); do
-            if curl -fsS --max-time 20 "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/bundle-artifacts/shas/${PUBLIC_SHA}/hubitat-mcp-server.groovy.size" >/dev/null; then
-              exit 0
-            fi
-            sleep 10
-          done
-          echo "::error::Release files for ${PUBLIC_SHA} were not published within 4 minutes."
-          exit 1
+        if: steps.configured.outputs.ready == 'true'
+        run: bash .github/scripts/request_ephemeral_hub.sh release "$GITHUB_SHA"
       - name: Wait for the test job's public key
+        if: steps.configured.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          deadline=$((SECONDS + 600))
-          until gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-              --name "ephemeral-hub-pubkey-$GITHUB_RUN_ATTEMPT" --dir "$RUNNER_TEMP/pub" >/dev/null 2>&1; do
-            [ "$SECONDS" -lt "$deadline" ] || { echo "::error::The e2e job published no public key within 10 minutes."; exit 1; }
-            sleep 10
-          done
+        run: bash .github/scripts/request_ephemeral_hub.sh key "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_TEMP/pub"
       - name: Dispatch the hub and fetch its encrypted session
-        id: provider
+        if: steps.configured.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_CI_TOKEN }}
           PROVIDER: ${{ secrets.SOFTWARE_HUB_PROVIDER }}
-          PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
-          PUBLIC_REPO: ${{ needs.gate.outputs.repo }}
-        run: |
-          set -euo pipefail
-          since="$(date -u -d '-30 seconds' +%Y-%m-%dT%H:%M:%SZ)"
-          gh workflow run ephemeral-hub.yml --repo "$PROVIDER" \
-            -f public_key="$(base64 -w0 "$RUNNER_TEMP/pub/session-pub.pem")" \
-            -f public_sha="$PUBLIC_SHA" -f public_repo="$PUBLIC_REPO" \
-            -f consumer_repo="$GITHUB_REPOSITORY" -f consumer_run_id="$GITHUB_RUN_ID" \
-            -f seconds=7200 -f watchdog=false >/dev/null
-          export TITLE="Ephemeral hub ${PUBLIC_SHA:0:8} for ${GITHUB_REPOSITORY}#${GITHUB_RUN_ID}" SINCE="$since"
-          deadline=$((SECONDS + 1500))
-          run_id=""
-          while [ -z "$run_id" ]; do
-            [ "$SECONDS" -lt "$deadline" ] || { echo "::error::The hub provider run did not start within 25 minutes."; exit 1; }
-            sleep 10
-            run_id="$(gh run list --repo "$PROVIDER" --workflow ephemeral-hub.yml --limit 50 \
-              --json databaseId,displayTitle,status,createdAt \
-              --jq '[.[] | select(.displayTitle == $ENV.TITLE and .createdAt >= $ENV.SINCE)] | first | .databaseId // empty' || true)"
-          done
-          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          export ARTIFACT="ephemeral-hub-$run_id"
-          until [ -n "$(gh api "repos/$PROVIDER/actions/runs/$run_id/artifacts" \
-              --jq '.artifacts[] | select(.name == $ENV.ARTIFACT) | .id' || true)" ]; do
-            [ "$SECONDS" -lt "$deadline" ] || { echo "::error::No hub session within 25 minutes."; exit 1; }
-            if [ "$(gh run view "$run_id" --repo "$PROVIDER" --json status --jq .status || true)" = completed ]; then
-              echo "::error::The hub provider run ended without a session."; exit 1
-            fi
-            sleep 15
-          done
-          gh run download "$run_id" --repo "$PROVIDER" --name "$ARTIFACT" --dir "$RUNNER_TEMP/session"
-          test -s "$RUNNER_TEMP/session/session.key.enc" && test -s "$RUNNER_TEMP/session/session.json.enc"
+          PUBLIC_SHA: ${{ github.sha }}
+          PUBLIC_REPO: ${{ github.repository }}
+          CONSUMER_RUN_ID: ${{ github.run_id }}
+        run: bash .github/scripts/request_ephemeral_hub.sh hub "$RUNNER_TEMP/pub/session-pub.pem" "$RUNNER_TEMP/session"
       # Still encrypted to the e2e job's key, so the public artifact reveals nothing.
       - uses: actions/upload-artifact@v7
+        if: steps.configured.outputs.ready == 'true'
         with:
-          name: ephemeral-hub-session-${{ github.run_attempt }}
+          name: ephemeral-hub-session-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/session/session.key.enc
             ${{ runner.temp }}/session/session.json.enc
           retention-days: 1
           if-no-files-found: error
+          overwrite: true
 
   e2e:
     name: e2e (ephemeral hub)
-    needs: gate
-    if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
       contents: read
-      actions: read   # read this run's artifacts and request-hub's status, before any PR code runs
+      actions: read   # read the session artifact and the request run's status
     steps:
       - name: Generate session keypair
         run: |
@@ -208,24 +96,52 @@ jobs:
           openssl pkey -in "$RUNNER_TEMP/session-priv.pem" -pubout -out "$RUNNER_TEMP/pub/session-pub.pem"
       - uses: actions/upload-artifact@v7
         with:
-          name: ephemeral-hub-pubkey-${{ github.run_attempt }}
+          name: ephemeral-hub-public-key-${{ github.run_attempt }}
           path: ${{ runner.temp }}/pub/session-pub.pem
           retention-days: 1
           if-no-files-found: error
       - name: Receive and decrypt the hub session
+        id: session
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          deadline=$((SECONDS + 2700)); done_polls=0
-          until gh run download "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY" \
-              --name "ephemeral-hub-session-$GITHUB_RUN_ATTEMPT" --dir "$RUNNER_TEMP/session" >/dev/null 2>&1; do
-            state="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" \
-              --jq '.jobs[] | select(.name == "Request ephemeral hub") | .conclusion // ""' || true)"
-            if [ -n "$state" ] && [ "$state" != success ]; then echo "::error::Request ephemeral hub ended: $state"; exit 1; fi
-            # A success carried over from an earlier attempt uploaded nothing for this one.
-            [ "$state" != success ] || done_polls=$((done_polls + 1))
-            [ "$done_polls" -lt 4 ] || { echo "::error::No session for this attempt; use Re-run all jobs."; exit 1; }
+          export SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          deadline=$((SECONDS + 2700)); first_seen=$((SECONDS + 600)); grace=0
+          while :; do
+            if [ "$EVENT_NAME" = pull_request ]; then
+              # hub-e2e-ephemeral-request.yml requests PR hubs from the base branch for this head.
+              info="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow hub-e2e-ephemeral-request.yml \
+                --event pull_request_target --commit "$HEAD_SHA" --limit 1 --json databaseId,status,conclusion \
+                --jq 'first | select(.) | "\(.databaseId) \(.status) \(.conclusion)"' || true)"
+              read -r src state conclusion <<< "$info" || true
+              [ -n "${src:-}" ] || [ "$SECONDS" -lt "$first_seen" ] \
+                || { echo "::error::No hub request run for this head within 10 minutes."; exit 1; }
+            else
+              src="$GITHUB_RUN_ID"
+              conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" \
+                --jq '.jobs[] | select(.name == "Request ephemeral hub") | .conclusion // ""' || true)"
+              state="$([ -n "$conclusion" ] && echo completed || echo pending)"
+            fi
+            if [ -n "${src:-}" ]; then
+              names="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$src/artifacts" --jq '.artifacts[].name' || true)"
+              if grep -qxF "$SESSION" <<< "$names"; then
+                gh run download "$src" --repo "$GITHUB_REPOSITORY" --name "$SESSION" --dir "$RUNNER_TEMP/session"
+                break
+              fi
+              if [ "$state" = completed ]; then
+                if [ "$conclusion" = success ] && grep -qxF ephemeral-hub-unavailable <<< "$names"; then
+                  gh run download "$src" --repo "$GITHUB_REPOSITORY" --name ephemeral-hub-unavailable --dir "$RUNNER_TEMP/unavailable"
+                  reason="$(head -n1 "$RUNNER_TEMP/unavailable/reason.txt")"
+                  echo "$reason"; echo "$reason" >> "$GITHUB_STEP_SUMMARY"
+                  echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
+                fi
+                grace=$((grace + 1))
+                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without a session for this attempt. Retry with a new commit or close and reopen the PR; for push or dispatch use Re-run all jobs."; exit 1; }
+              fi
+            fi
             [ "$SECONDS" -lt "$deadline" ] || { echo "::error::No hub session within 45 minutes."; exit 1; }
             sleep 15
           done
@@ -245,8 +161,10 @@ jobs:
           {
             echo "HUBITAT_HUB_URL=$hub_url"; echo "HUBITAT_APP_ID=$app_id"; echo "HUBITAT_ACCESS_TOKEN=$token"
           } >> "$GITHUB_ENV"
+          echo "ready=true" >> "$GITHUB_OUTPUT"
           echo "Hub session received."
       - name: Mask hub identity
+        if: steps.session.outputs.ready == 'true'
         run: |
           set -euo pipefail
           curl -sS --fail --retry 3 --max-time 60 -X POST \
@@ -260,20 +178,22 @@ jobs:
                 | .[] | select(. != null) | tostring | select(length > 3 and . != "unavailable")' \
             | while IFS= read -r v; do echo "::add-mask::$v"; printf '%s\n' "$v" >> "$RUNNER_TEMP/masks"; done
       - uses: actions/checkout@v7
+        if: steps.session.outputs.ready == 'true'
         with:
-          ref: ${{ needs.gate.outputs.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
-          # Fork heads run here without approval: this job holds no secrets and the hub is disposable.
-          allow-unsafe-pr-checkout: true
       - uses: actions/setup-python@v7
+        if: steps.session.outputs.ready == 'true'
         with:
           python-version: '3.x'
       - name: Install Python dependencies
         id: deps
+        if: steps.session.outputs.ready == 'true'
         run: |
           pip install requests
           pip install -r tests/sdk-conformance-requirements.txt
       - name: Run E2E tests
+        if: steps.session.outputs.ready == 'true'
         env:
           E2E_LANE: ephemeral
           E2E_DEFER_NATIVE_DELETES: '1'

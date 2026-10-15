@@ -1,46 +1,78 @@
 # Ephemeral hub E2E
 
-`.github/workflows/hub-e2e-ephemeral.yml` ("Hub E2E (ephemeral test hub)") runs the full
-`tests/e2e_test.py` registry and then `tests/sdk_conformance_test.py` against a disposable test
-hub. An external workflow boots that hub for one run and ends it when the run completes. The lane
-runs on every pull request, forks included, on pushes to `main`, and on manual dispatch of a
-branch (dispatch tests that branch's own head; fork heads run only through `pull_request_target`). It has no approval environment and no label gate. `e2e:skip` holds only the
-physical-hub lane. Docs-only PRs and verified dependency-only bot PRs skip it.
+The ephemeral lane runs the full `tests/e2e_test.py` registry and then
+`tests/sdk_conformance_test.py` against a disposable test hub. An external workflow boots that hub
+for one run and ends it when the run completes. The lane runs on every pull request, forks
+included, on pushes to `main`, and on manual dispatch of a branch. It has no approval environment
+and no label gate of its own. `e2e:skip` holds only the physical-hub lane. Docs-only PRs and
+verified dependency-only bot PRs skip it.
+
+## Two workflows
+
+- `.github/workflows/hub-e2e-ephemeral.yml` ("Hub E2E (ephemeral test hub)") is the test
+  workflow. It runs on `pull_request`, push and dispatch, holds no secrets in the job that runs
+  the head's code, and is the only place PR code runs.
+- `.github/workflows/hub-e2e-ephemeral-request.yml` ("Hub E2E (ephemeral test hub) request") is
+  the trusted side for pull requests. It runs on `pull_request_target`, checks out the base branch
+  only, and never decrypts anything.
+
+The split exists because a `pull_request_target` job runs in the base branch's Actions cache
+scope. A job there that checked out and ran PR code could write a cache entry that `main`'s
+workflows later restore, which CodeQL reports as cache poisoning. Under `pull_request`, PR code
+gets a read-only token, no secrets and its own cache scope.
+
+`.github/scripts/request_ephemeral_hub.sh` holds the steps both sides share: waiting for the
+revision's published release files, finding the test run, fetching its public key, dispatching
+the external workflow and downloading the encrypted session.
 
 ## How a hub is requested
 
-1. `gate` runs base code. It applies `.github/scripts/lane_gate.js`, checks that both secrets are
-   set, skips PRs that change no hub-relevant file, and resolves the head SHA and repository.
-2. `e2e` generates a throwaway RSA-4096 keypair and uploads only the public key as an artifact.
-3. `request-hub` runs base code. For a fork head it first publishes the head's release artifact
-   with `.github/scripts/publish_fork_bundle.sh`. It then dispatches the external workflow with
-   the public key, head SHA, head repository and this run's ID, and waits up to 25 minutes for
-   the hub's session artifact. It relays that artifact into this run without decrypting it.
-4. `e2e` decrypts the session, masks it, reads `hub_get_info` once to mask the hub's identity,
+1. The test workflow's `e2e` job generates a throwaway RSA-4096 keypair and uploads only the
+   public key as artifact `ephemeral-hub-public-key-<attempt>`.
+2. For a pull request, the request workflow's `gate` job applies `.github/scripts/lane_gate.js`,
+   checks that both secrets are set and skips PRs that change no hub-relevant file. When the lane
+   should not run, it uploads artifact `ephemeral-hub-unavailable` with the reason. For a push or
+   dispatch, the test workflow's own `request-hub` job does the secrets check.
+3. `request-hub` publishes a fork head's release files with `.github/scripts/publish_fork_bundle.sh`
+   and waits until the revision's files are served. For a pull request it then finds the running
+   `pull_request` test run for the same head SHA, waiting up to 10 minutes.
+4. It dispatches the external workflow with the public key, head SHA, head repository and the
+   test run's ID, and waits up to 25 minutes for the hub's session. It relays that session, still
+   encrypted, as artifact `ephemeral-hub-session-<test run id>-<attempt>`.
+5. `e2e` waits up to 45 minutes for that artifact, in its own run or in the request run for its
+   head SHA. A request run that reports the lane unavailable makes `e2e` skip with that reason.
+   A request run that ends without either artifact fails `e2e`.
+6. `e2e` decrypts the session, masks it, reads `hub_get_info` once to mask the hub's identity,
    checks out the head, runs both scripts and uploads their redacted logs.
 
-There is no teardown call. To retry, use **Re-run all jobs**: re-running only the failed `e2e`
-job has no hub, because the earlier attempt's hub ended with that attempt.
+There is no teardown call: the hub ends with the test run. To retry a pull request, push a commit
+or close and reopen the PR so both workflows start again. Re-running only the test run gets no
+hub. To retry a push or dispatch, use **Re-run all jobs**.
 
 ## Why fork PRs run without approval
 
-The hub is disposable and serves only the run that requested it. The job that runs PR code holds
-no secrets: its token can read this run's artifacts and job status, and it uses that token only
-before checkout. The two secrets reach only `request-hub`, which never executes PR code. A fork
-can therefore reach nothing beyond its own throwaway hub. The repository's workflows use no
-Actions caches, so a cache write from PR code has no consumer. Keep it that way, and never add a
-secret, a write permission or a cache to the `e2e` job.
+The hub is disposable and serves only the test run that requested it. The job that runs PR code
+holds no secrets. Its token can only read this repository's contents and Actions artifacts and
+run status. The two secrets reach only `request-hub`, which never executes PR code. A fork can
+therefore reach nothing beyond its own throwaway hub. Never add a secret, a write permission or a
+cache to the `e2e` job, and never check out or run PR code in the request workflow. The
+repository's own setting for approving first-time contributors' `pull_request` runs still
+applies; a run held for approval past the request workflow's 10-minute wait needs a retry.
 
-Under `pull_request_target` the workflow file comes from `main`. Validate a change to it with
-`gh workflow run hub-e2e-ephemeral.yml --ref <branch>`.
+## Validating changes
+
+Under `pull_request` the test workflow comes from the PR head, so its changes run in-PR. The
+request workflow and the copy of the shared script it runs come from `main`. Validate a change
+to either with `gh workflow run hub-e2e-ephemeral.yml --ref <branch>`, which runs the branch's
+own request path.
 
 ## Repository secrets
 
 - `PRIVATE_CI_TOKEN` can dispatch the external workflow, list its runs and download its artifacts.
 - `SOFTWARE_HUB_PROVIDER` names the repository (`owner/name`) that hosts that workflow.
 
-When either is empty, `gate` prints `Ephemeral hub lane not configured.` and the lane skips
-without failing.
+When either is empty, the lane prints `Ephemeral hub lane not configured.` and skips without
+failing.
 
 ## Masking
 

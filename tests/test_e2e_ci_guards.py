@@ -196,20 +196,21 @@ def test_focused_coverage_includes_shared_device_access_and_watchdog():
 
 
 EPHEMERAL = (ROOT / ".github/workflows/hub-e2e-ephemeral.yml").read_text()
-FORK_SHA, MAIN_SHA = "b" * 40, "c" * 40
+REQUEST = (ROOT / ".github/workflows/hub-e2e-ephemeral-request.yml").read_text()
+FORK_SHA = "b" * 40
 
 
-@pytest.mark.parametrize("case, event, files, expected", [
-    ("unconfigured", "pull_request_target", "hubitat-mcp-server.groovy", "Ephemeral hub lane not configured."),
-    ("docs", "pull_request_target", "docs/testing.md\nREADME.md", "no hub-relevant files changed"),
-    ("dependency", "pull_request_target", "hubitat-mcp-server.groovy", "not required"),
-    ("code", "pull_request_target", "docs/a.md\nlibraries/mcp-rooms-lib.groovy", f"sha={FORK_SHA}"),
-    ("e2e-skip-label", "pull_request_target", "tests/e2e_test.py", f"sha={FORK_SHA}"),
-    ("unreadable", "pull_request_target", None, f"sha={FORK_SHA}"),
-    ("push", "push", None, f"sha={MAIN_SHA}"),
+@pytest.mark.parametrize("case, files, expected", [
+    ("unconfigured", "hubitat-mcp-server.groovy", "Ephemeral hub lane not configured."),
+    ("docs", "docs/testing.md\nREADME.md", "no hub-relevant files changed"),
+    ("dependency", "hubitat-mcp-server.groovy", "not required"),
+    ("code", "docs/a.md\nlibraries/mcp-rooms-lib.groovy", f"sha={FORK_SHA}"),
+    ("request-script", ".github/scripts/request_ephemeral_hub.sh", f"sha={FORK_SHA}"),
+    ("e2e-skip-label", "tests/e2e_test.py", f"sha={FORK_SHA}"),
+    ("unreadable", None, f"sha={FORK_SHA}"),
 ])
-def test_ephemeral_gate_skips_cleanly_and_resolves_the_tested_head(case, event, files, expected, tmp_path):
-    step = EPHEMERAL.split("      - id: decide\n", 1)[1].split("\n  request-hub:", 1)[0]
+def test_ephemeral_gate_skips_cleanly_and_resolves_the_tested_head(case, files, expected, tmp_path):
+    step = REQUEST.split("      - id: decide\n", 1)[1].split("\n      - uses: actions/upload-artifact", 1)[0]
     command = textwrap.dedent(step.split("        run: |\n", 1)[1])
     script = '''
 gh() {
@@ -221,33 +222,107 @@ gh() {
     env = {**os.environ, "CONFIGURED": "false" if case == "unconfigured" else "true",
            "LANE_RUN": "false" if case in ("dependency", "e2e-skip-label") else "true",
            "LANE_SKIP": "true" if case == "e2e-skip-label" else "false",
-           "EVENT_NAME": event, "PR_NUMBER": "42" if event == "pull_request_target" else "",
-           "PR_HEAD_SHA": FORK_SHA, "PR_HEAD_REPO": "contributor/fork",
-           "GITHUB_SHA": MAIN_SHA, "GITHUB_REPOSITORY": "owner/repo", "CHANGED_FILES": files or "",
+           "PR_NUMBER": "42", "PR_HEAD_SHA": FORK_SHA, "PR_HEAD_REPO": "contributor/fork",
+           "GITHUB_REPOSITORY": "owner/repo", "CHANGED_FILES": files or "", "RUNNER_TEMP": str(tmp_path),
            "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
     result = subprocess.run([shutil.which("bash") or "bash", "-eo", "pipefail", "-c", script],
                             env=env, capture_output=True, text=True, check=True)
     outputs = output.read_text()
     assert expected in result.stdout + outputs
-    runs = case in ("code", "e2e-skip-label", "unreadable", "push")
+    runs = case in ("code", "request-script", "e2e-skip-label", "unreadable")
     assert ("run=true" in outputs) is runs and ("run=false" in outputs) is not runs
     if runs:
-        assert f"fork={'false' if event == 'push' else 'true'}" in outputs
+        assert "fork=true" in outputs and not (tmp_path / "unavailable").exists()
     else:
+        # The test run skips on this reason instead of waiting for a hub.
         assert expected in summary.read_text()
+        assert expected in (tmp_path / "unavailable" / "reason.txt").read_text()
 
 
-def test_ephemeral_test_job_holds_no_secrets_and_runs_after_the_key_exchange():
-    head, jobs = EPHEMERAL.split("\njobs:\n", 1)
+def _jobs(workflow):
+    head, body = workflow.split("\njobs:\n", 1)
+    return head, dict(re.findall(r"^  ([\w-]+):\n((?:    .*\n|\n)*)", body + "\n", re.M))
+
+
+def test_ephemeral_pr_code_runs_only_under_pull_request():
+    head, jobs = _jobs(EPHEMERAL)
     assert "\npermissions:\n  contents: read\n" in head
-    assert "pull_request_target:\n    types: [opened, synchronize, reopened]" in head
-    gate, rest = jobs.split("\n  request-hub:\n", 1)
-    request, e2e = rest.split("\n  e2e:\n", 1)
-    assert "secrets." not in e2e and "environment:" not in EPHEMERAL
+    triggers = head.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+    assert "  pull_request:\n    types: [opened, synchronize, reopened]" in triggers and "pull_request_target" not in triggers
+    assert set(jobs) == {"request-hub", "e2e"}
+    request, e2e = jobs["request-hub"], jobs["e2e"]
+    assert "if: github.event_name != 'pull_request'" in request and "contents: write" not in EPHEMERAL
+    assert "secrets." not in e2e and "environment:" not in EPHEMERAL and "allow-unsafe-pr-checkout" not in EPHEMERAL
     assert "permissions:\n      contents: read\n      actions: read" in e2e
-    assert e2e.index("ephemeral-hub-pubkey-") < e2e.index("ephemeral-hub-session-") < e2e.index("actions/checkout")
+    assert e2e.index("ephemeral-hub-public-key-") < e2e.index("ephemeral-hub-session-") < e2e.index("actions/checkout")
     assert e2e.index("Mask hub identity") < e2e.index("actions/checkout")
+    assert "--workflow hub-e2e-ephemeral-request.yml" in e2e and "ephemeral-hub-unavailable" in e2e
     assert "E2E_LANE: ephemeral" in e2e and "python tests/sdk_conformance_test.py" in e2e
-    # The provider token is used only by the step that talks to the provider.
-    assert request.count("secrets.PRIVATE_CI_TOKEN") == 1 and "contents: write" in request
-    assert "python tests/" not in gate + request
+    assert request.count("secrets.PRIVATE_CI_TOKEN") == 2  # the configured check and the provider step
+    assert "python tests/" not in request
+
+
+def test_ephemeral_request_workflow_never_runs_pr_code():
+    head, jobs = _jobs(REQUEST)
+    assert "on:\n  pull_request_target:\n    types: [opened, synchronize, reopened]\n\npermissions:" in head
+    assert "\npermissions:\n  contents: read\n" in head
+    assert set(jobs) == {"gate", "request-hub"}
+    # Base checkouts only, and nothing that installs or runs the head's Python.
+    assert "ref:" not in REQUEST and "allow-unsafe-pr-checkout" not in REQUEST
+    assert "python tests/" not in REQUEST and "pip install" not in REQUEST and "cache" not in REQUEST
+    assert "contents: write" in jobs["request-hub"] and "contents: write" not in jobs["gate"]
+    assert jobs["request-hub"].count("secrets.PRIVATE_CI_TOKEN") == 1
+    assert "openssl" not in REQUEST and "session-priv" not in REQUEST
+    assert "request_ephemeral_hub.sh consumer" in jobs["request-hub"]
+    assert "ephemeral-hub-session-${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}" in REQUEST
+
+
+def test_ephemeral_artifact_names_agree_across_workflows():
+    script = (ROOT / ".github/scripts/request_ephemeral_hub.sh").read_text()
+    # Both sides key the public key and the session by the test run and its attempt.
+    assert '"ephemeral-hub-public-key-$2"' in script and "ephemeral-hub-public-key-${{ github.run_attempt }}" in EPHEMERAL
+    assert 'SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"' in EPHEMERAL
+    assert "ephemeral-hub-session-${{ github.run_id }}-${{ github.run_attempt }}" in EPHEMERAL
+    assert "--workflow hub-e2e-ephemeral.yml --event pull_request" in script
+    assert "-f seconds=7200 -f watchdog=false" in script and 'consumer_run_id="$CONSUMER_RUN_ID"' in script
+
+
+@pytest.mark.parametrize("event, request_state, artifacts, outcome", [
+    ("pull_request", "7 completed success", "ephemeral-hub-unavailable", "skip"),
+    ("pull_request", "7 in_progress ", "ephemeral-hub-session-100-1", "session"),
+    ("pull_request", "7 completed success", "ephemeral-hub-session-100-2", "fail"),  # served another attempt
+    ("pull_request", "7 completed failure", "", "fail"),
+    ("pull_request", "", "", "fail"),  # no request run ever appears
+    ("push", "success", "ephemeral-hub-unavailable", "skip"),
+    ("push", "", "ephemeral-hub-session-100-1", "session"),
+    ("push", "failure", "ephemeral-hub-unavailable", "fail"),  # stale reason from an earlier attempt
+])
+def test_ephemeral_test_job_waits_for_its_own_session_or_a_skip_reason(event, request_state, artifacts, outcome, tmp_path):
+    step = EPHEMERAL.split("        id: session\n", 1)[1].split("\n      - name: Mask hub identity", 1)[0]
+    loop = textwrap.dedent(step.split("        run: |\n", 1)[1]).split("\nkey=", 1)[0]
+    script = '''
+sleep() { SECONDS=$((SECONDS + 600)); }
+gh() {
+  case "$1 $2" in
+    "run list") printf '%s\\n' "$REQUEST_STATE" ;;
+    "api repos/owner/repo/actions/runs/100/attempts/1/jobs") printf '%s\\n' "$REQUEST_STATE" ;;
+    "api repos/owner/repo/actions/runs/"*/artifacts) printf '%s\\n' "$ARTIFACTS" ;;
+    "run download")
+      shift 2; while [ "$1" != --dir ]; do shift; done
+      mkdir -p "$2"; echo "Ephemeral hub lane not configured." > "$2/reason.txt" ;;
+    *) return 1 ;;
+  esac
+}
+''' + loop + "\necho FOUND\n"
+    output, summary = tmp_path / "output", tmp_path / "summary"
+    env = {**os.environ, "EVENT_NAME": event, "HEAD_SHA": FORK_SHA, "GITHUB_REPOSITORY": "owner/repo",
+           "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "1", "REQUEST_STATE": request_state, "ARTIFACTS": artifacts,
+           "RUNNER_TEMP": str(tmp_path), "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
+    result = subprocess.run([shutil.which("bash") or "bash", "-c", script], env=env, capture_output=True, text=True)
+    if outcome == "fail":
+        assert result.returncode == 1 and "::error::" in result.stdout and "FOUND" not in result.stdout
+    elif outcome == "skip":
+        assert result.returncode == 0 and "ready=false" in output.read_text()
+        assert "not configured" in summary.read_text() and "FOUND" not in result.stdout
+    else:
+        assert result.returncode == 0 and "FOUND" in result.stdout and not output.exists()

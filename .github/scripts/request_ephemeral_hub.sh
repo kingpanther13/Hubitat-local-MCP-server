@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# Requests an ephemeral test hub (docs/ephemeral-hub-e2e.md). Trusted callers only: the base checkout
+# in hub-e2e-ephemeral-request.yml, and push/dispatch runs of hub-e2e-ephemeral.yml.
+#
+#   release SHA              wait until bundle-artifacts serves shas/SHA/ (the provider installs it)
+#   consumer HEAD_SHA DIR    find the running pull_request run of hub-e2e-ephemeral.yml for HEAD_SHA,
+#                            write run_id/attempt to $GITHUB_OUTPUT and fetch its public key into DIR
+#   key RUN_ID ATTEMPT DIR   fetch that run attempt's public key into DIR
+#   hub KEY_FILE DIR         dispatch the provider and download the still-encrypted session into DIR
+#
+# Env: GITHUB_REPOSITORY; GH_TOKEN (actions:read, or the provider token for `hub`);
+#      `hub` also needs PROVIDER, PUBLIC_SHA, PUBLIC_REPO, CONSUMER_RUN_ID.
+set -euo pipefail
+
+fail() { echo "::error::$1"; exit 1; }
+
+release() {
+  for _ in $(seq 1 24); do
+    curl -fsS --max-time 20 -o /dev/null \
+      "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/bundle-artifacts/shas/$1/hubitat-mcp-server.groovy.size" && return 0
+    sleep 10
+  done
+  fail "Release files for $1 were not published within 4 minutes."
+}
+
+key() {
+  local deadline=$((SECONDS + 600))
+  until gh run download "$1" --repo "$GITHUB_REPOSITORY" --name "ephemeral-hub-public-key-$2" --dir "$3" >/dev/null 2>&1; do
+    [ "$SECONDS" -lt "$deadline" ] || fail "Run $1 published no public key within 10 minutes."
+    sleep 10
+  done
+  # The key comes from a run of PR-controlled code: pass it on only if it is one.
+  openssl pkey -pubin -in "$3/session-pub.pem" -noout 2>/dev/null || fail "Run $1 published no valid public key."
+}
+
+consumer() {
+  local deadline=$((SECONDS + 600)) found=""
+  # Only a run still in progress can decrypt: a finished run's private key is gone.
+  until [ -n "$found" ]; do
+    [ "$SECONDS" -lt "$deadline" ] || fail "No running test run for $1 within 10 minutes."
+    sleep 10
+    found="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow hub-e2e-ephemeral.yml --event pull_request \
+      --commit "$1" --limit 10 --json databaseId,status,attempt \
+      --jq '[.[] | select(.status != "completed")] | first | select(.) | "\(.databaseId) \(.attempt)"' || true)"
+  done
+  read -r run_id attempt <<< "$found"
+  [[ "$run_id" =~ ^[0-9]+$ && "$attempt" =~ ^[0-9]+$ ]] || fail "Unexpected test run lookup result."
+  printf 'run_id=%s\nattempt=%s\n' "$run_id" "$attempt" >> "$GITHUB_OUTPUT"
+  key "$run_id" "$attempt" "$2"
+}
+
+hub() {
+  : "${PROVIDER:?}" "${PUBLIC_SHA:?}" "${PUBLIC_REPO:?}" "${CONSUMER_RUN_ID:?}"
+  local since run_id="" deadline=$((SECONDS + 1500))
+  since="$(date -u -d '-30 seconds' +%Y-%m-%dT%H:%M:%SZ)"
+  gh workflow run ephemeral-hub.yml --repo "$PROVIDER" \
+    -f public_key="$(base64 -w0 "$1")" -f public_sha="$PUBLIC_SHA" -f public_repo="$PUBLIC_REPO" \
+    -f consumer_repo="$GITHUB_REPOSITORY" -f consumer_run_id="$CONSUMER_RUN_ID" \
+    -f seconds=7200 -f watchdog=false >/dev/null
+  export TITLE="Ephemeral hub ${PUBLIC_SHA:0:8} for ${GITHUB_REPOSITORY}#${CONSUMER_RUN_ID}" SINCE="$since"
+  while [ -z "$run_id" ]; do
+    [ "$SECONDS" -lt "$deadline" ] || fail "The hub provider run did not start within 25 minutes."
+    sleep 10
+    run_id="$(gh run list --repo "$PROVIDER" --workflow ephemeral-hub.yml --limit 50 \
+      --json databaseId,displayTitle,createdAt \
+      --jq '[.[] | select(.displayTitle == $ENV.TITLE and .createdAt >= $ENV.SINCE)] | first | .databaseId // empty' || true)"
+  done
+  echo "Provider run $run_id."
+  export ARTIFACT="ephemeral-hub-$run_id"
+  until [ -n "$(gh api "repos/$PROVIDER/actions/runs/$run_id/artifacts" \
+      --jq '.artifacts[] | select(.name == $ENV.ARTIFACT) | .id' || true)" ]; do
+    [ "$SECONDS" -lt "$deadline" ] || fail "No hub session within 25 minutes."
+    [ "$(gh run view "$run_id" --repo "$PROVIDER" --json status --jq .status || true)" != completed ] \
+      || fail "The hub provider run ended without a session."
+    sleep 15
+  done
+  gh run download "$run_id" --repo "$PROVIDER" --name "$ARTIFACT" --dir "$2"
+  test -s "$2/session.key.enc" && test -s "$2/session.json.enc" || fail "The hub session is incomplete."
+}
+
+case "${1:-}" in
+  release) release "$2" ;;
+  consumer) consumer "$2" "$3" ;;
+  key) key "$2" "$3" "$4" ;;
+  hub) hub "$2" "$3" ;;
+  *) fail "usage: $0 release|consumer|key|hub ..." ;;
+esac
