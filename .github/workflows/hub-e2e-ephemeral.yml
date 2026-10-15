@@ -125,6 +125,20 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash .github/scripts/publish_fork_bundle.sh
+      - name: Wait for this revision's published release files
+        # publish-bundle-artifact.yml writes shas/<sha>/ on the same push that opened this run; the
+        # provider installs from there, so do not request a hub before the files exist.
+        env:
+          PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          for attempt in $(seq 1 24); do
+            if curl -fsS --max-time 20 "https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/bundle-artifacts/shas/${PUBLIC_SHA}/hubitat-mcp-server.groovy.size" >/dev/null; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::Release files for ${PUBLIC_SHA} were not published within 4 minutes."
+          exit 1
       - name: Wait for the test job's public key
         env:
           GH_TOKEN: ${{ github.token }}
@@ -150,7 +164,7 @@ jobs:
             -f public_key="$(base64 -w0 "$RUNNER_TEMP/pub/session-pub.pem")" \
             -f public_sha="$PUBLIC_SHA" -f public_repo="$PUBLIC_REPO" \
             -f consumer_repo="$GITHUB_REPOSITORY" -f consumer_run_id="$GITHUB_RUN_ID" \
-            -f seconds=3600 -f watchdog=false >/dev/null
+            -f seconds=7200 -f watchdog=false >/dev/null
           export TITLE="Ephemeral hub ${PUBLIC_SHA:0:8} for ${GITHUB_REPOSITORY}#${GITHUB_RUN_ID}" SINCE="$since"
           deadline=$((SECONDS + 1500))
           run_id=""
