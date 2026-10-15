@@ -57,15 +57,25 @@ consumer() {
 
 # The provider ran the suite next to the hub; its scrubbed results appear once its run completes.
 results() {
-  local deadline=$((SECONDS + 2400))
-  until [ "$(gh run view "$1" --repo "$PROVIDER" --json status --jq .status || true)" = completed ]; do
-    [ "$SECONDS" -lt "$deadline" ] || fail "The hub provider run did not complete within 40 minutes."
-    sleep 30
-  done
+  local deadline=$((SECONDS + 2400)) polls=0
   export ARTIFACT="ephemeral-hub-results-$1"
-  [ -n "$(gh api "repos/$PROVIDER/actions/runs/$1/artifacts" \
-      --jq '.artifacts[] | select(.name == $ENV.ARTIFACT) | .id' || true)" ] \
-    || fail "The hub provider run completed without suite results."
+  has_results() {
+    [ -n "$(gh api "repos/$PROVIDER/actions/runs/$1/artifacts" \
+      --jq '.artifacts[] | select(.name == $ENV.ARTIFACT) | .id' || true)" ]
+  }
+  # Results land at the end of a suite of eight minutes or more: wait five, then read once a
+  # minute, checking every fifth read whether the run ended without them.
+  sleep 300
+  until has_results "$1"; do
+    [ "$SECONDS" -lt "$deadline" ] || fail "The hub provider run did not complete within 40 minutes."
+    polls=$((polls + 1))
+    if [ $((polls % 5)) -eq 0 ] \
+        && [ "$(gh run view "$1" --repo "$PROVIDER" --json status --jq .status || true)" = completed ]; then
+      has_results "$1" || fail "The hub provider run completed without suite results."
+      break
+    fi
+    sleep 60
+  done
   gh run download "$1" --repo "$PROVIDER" --name "$ARTIFACT" --dir "$2"
   local entry name
   shopt -s nullglob dotglob
@@ -103,7 +113,7 @@ hub() {
   export MATCH=" for ${GITHUB_REPOSITORY}#${CONSUMER_RUN_ID} (${kind}," SINCE="$since"
   while [ -z "$run_id" ]; do
     [ "$SECONDS" -lt "$deadline" ] || fail "The hub provider run did not start within 25 minutes."
-    sleep 10
+    sleep 20
     run_id="$(gh run list --repo "$PROVIDER" --workflow ephemeral-hub.yml --limit 50 \
       --json databaseId,displayTitle,createdAt \
       --jq '[.[] | select((.displayTitle | contains($ENV.MATCH)) and .createdAt >= $ENV.SINCE)] | first | .databaseId // empty' || true)"
@@ -116,7 +126,7 @@ hub() {
     [ "$SECONDS" -lt "$deadline" ] || fail "No hub session within 25 minutes."
     [ "$(gh run view "$run_id" --repo "$PROVIDER" --json status --jq .status || true)" != completed ] \
       || fail "The hub provider run ended without a session."
-    sleep 15
+    sleep 30
   done
   gh run download "$run_id" --repo "$PROVIDER" --name "$ARTIFACT" --dir "$2"
   test -s "$2/session.key.enc" && test -s "$2/session.json.enc" || fail "The hub session is incomplete."

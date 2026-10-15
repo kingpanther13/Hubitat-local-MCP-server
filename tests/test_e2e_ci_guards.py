@@ -508,7 +508,7 @@ gh() {
 
 
 PROVIDER_RESULTS = {
-    "schema_version": 1, "kind": "jvm", "public_sha": FORK_SHA, "public_repo": "contributor/fork",
+    "schema_version": 1, "kind": "jvm-runtime", "public_sha": FORK_SHA, "public_repo": "contributor/fork",
     "started_at": "2026-10-15T10:00:00Z", "finished_at": "2026-10-15T10:12:00Z",
     "e2e": {"status": "passed", "exit_code": 0, "passed": 300, "failed": 0, "skipped": 4, "total": 304,
             "failed_tests": []},
@@ -526,7 +526,8 @@ FAILED_E2E = {"status": "failed", "exit_code": 1, "passed": 298, "failed": 2, "s
     ("sdk-failed", {"sdk": {"status": "failed", "exit_code": 1, "passed": 11, "failed": 1,
                             "failed_tests": [{"name": "test_sdk_gamma", "message": "y"}]}}, False),
     ("other-revision", {"public_sha": "c" * 40}, False),
-    ("other-kind", {"kind": "os"}, False),
+    ("other-kind", {"kind": "native-os-container"}, False),
+    ("short-kind", {"kind": "jvm"}, False),
     ("schema", {"schema_version": 2}, False),
     ("missing", None, False),
     ("unexpected-file", {}, False),
@@ -557,7 +558,7 @@ def test_ephemeral_provider_results_print_and_gate(case, changes, passes, tmp_pa
     assert out.index("::stop-commands::") < out.index("::error::from a test") < out.index(f"::{stop}::")
     assert "SDK OK" in out and "stage: suite finished" in out and "PASS via *** ***" in out
     assert "PASS via *** ***" in (results / "e2e.log").read_text()
-    if case in ("other-revision", "other-kind", "schema"):
+    if case in ("other-revision", "other-kind", "short-kind", "schema"):
         assert not summary.exists() and "::error::" in out.split(f"::{stop}::")[-1]
         return
     text = summary.read_text()

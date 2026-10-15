@@ -146,9 +146,15 @@ jobs:
           export JOB="Request ephemeral hub ($KIND)"
           # Provider-run results arrive only after the whole suite has run.
           wait=2700; [ "$EPHEMERAL_RUN_SUITE" != true ] || wait=5400
-          deadline=$((SECONDS + wait)); first_seen=$((SECONDS + 600)); grace=0
+          deadline=$((SECONDS + wait)); first_seen=$((SECONDS + 600)); grace=0; polls=0
+          # One artifact read per minute; the request run's state is re-read every fifth poll.
+          # A provider-run suite takes at least eight minutes, so the first read waits five.
+          [ "$EPHEMERAL_RUN_SUITE" != true ] || sleep 300
           while :; do
-            if [ "$EVENT_NAME" = pull_request ]; then
+            polls=$((polls + 1))
+            if [ -n "${src:-}" ] && [ "$state" != completed ] && [ $((polls % 5)) -ne 0 ]; then
+              :
+            elif [ "$EVENT_NAME" = pull_request ]; then
               # hub-e2e-ephemeral-request.yml requests PR hubs from the base branch for this head.
               info="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow hub-e2e-ephemeral-request.yml \
                 --event pull_request_target --commit "$HEAD_SHA" --limit 1 --json databaseId,status,conclusion \
@@ -187,7 +193,7 @@ jobs:
               fi
             fi
             [ "$SECONDS" -lt "$deadline" ] || { echo "::error::No hub results or session within $((wait / 60)) minutes."; exit 1; }
-            sleep 15
+            sleep 60
           done
           key="$RUNNER_TEMP/session.key"; session="$RUNNER_TEMP/session.json"
           openssl pkeyutl -decrypt -inkey "$RUNNER_TEMP/session-priv.pem" -pkeyopt rsa_padding_mode:oaep \
@@ -238,7 +244,8 @@ jobs:
           jq -e '.schema_version == 1' results.json >/dev/null || { echo "::error::Unsupported results.json schema."; exit 1; }
           jq -e --arg sha "$EXPECTED_SHA" '.public_sha == $sha' results.json >/dev/null \
             || { echo "::error::The provider-run results are for another revision."; exit 1; }
-          jq -e --arg kind "$KIND" '.kind == $kind' results.json >/dev/null \
+          # The provider names its kinds jvm-runtime and native-os-container.
+          jq -e --arg kind "$KIND" '.kind == ({jvm: "jvm-runtime", os: "native-os-container"}[$kind])' results.json >/dev/null \
             || { echo "::error::The provider-run results are for another hub kind."; exit 1; }
           jq -r '"### Ephemeral hub E2E (provider-run, \(.kind) hub)", "",
             "E2E \(.e2e.status): passed \(.e2e.passed), failed \(.e2e.failed), skipped \(.e2e.skipped) of \(.e2e.total), exit \(.e2e.exit_code).", "",
