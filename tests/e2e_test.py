@@ -6339,59 +6339,18 @@ class TestRunner:
             return [str(x) for x in value]
         return [str(value)]
 
-    @staticmethod
-    def _sentinel_precedes_run_actions(page_json_text: str, sentinel_msg: str) -> bool:
-        """True when the order sentinel renders BEFORE the Run-Rule row -- i.e. the
-        reposition has NOT landed. Shared by the recovered504 and moveSoftFail probes."""
-        return 0 <= page_json_text.find(sentinel_msg) < page_json_text.find("Run Actions:")
-
-    def _finish_move_up(self, app_id: int, idx: int, sentinel_msg: str) -> None:
-        """Reposition action `idx` one row up, following the moveAction envelope's own
-        verifyHint protocol: probe the rendered order FIRST (a soft-failed arrow click
-        usually COMMITTED LATE), move only when the row provably still sits below the
-        sentinel, and tolerate a moveSoftFail envelope on the move itself by re-probing
-        instead of raising -- a raw strict _set_rule would hard-fail on the soft
-        contract's success:false, which is exactly the envelope's "verify before
-        retrying" instruction telling us NOT to. Bounded at one verified retry."""
-        for _ in range(2):
-            cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
-                "args": {"appId": app_id}})
-            if not self._sentinel_precedes_run_actions(json.dumps(cfg.get("page", {})), sentinel_msg):
-                print("    [MOVE-VERIFY] order readback shows the row already above the "
-                      "sentinel -- committed (possibly late), no move issued")
-                return
-            print("    [MOVE-VERIFY] row still below the sentinel -- issuing verified move-up")
-            env = self._rm_call_soft(
-                {"appId": app_id, "moveAction": {"index": idx, "direction": "up"}, "confirm": True},
-                strict=True)
-            if env.get("success") is not False:
-                return
-            assert env.get("verifyHint") or env.get("asyncCommitLikely"), \
-                f"moveAction(up) hard-failed with a non-soft envelope: {env}"
-            # soft-fail: loop back to the probe -- if this click committed late the
-            # next readback sees the shift and returns without a blind second move
-        cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
-            "args": {"appId": app_id}})
-        assert not self._sentinel_precedes_run_actions(json.dumps(cfg.get("page", {})), sentinel_msg), \
-            "moveAction(up) never landed: the row still renders below the sentinel after verified retries"
-
     @test("native_apps")
     def test_set_rule_modifyaction_retarget(self) -> None:
-        # modifyAction retargets a rule-targeting action in ONE op -- the staged-migration
-        # caller-retarget shape -- via a position-preserving rebuild (remove + re-add + walk
-        # the row back up). Its own tiny rules per AGENTS.md: the classic wizard re-sends the
-        # whole rule page on every submitOnChange POST, so per-edit cost grows with rule size,
-        # and this test runs several edits plus a two-id pause batch. Targets A and B are empty
+        # modifyAction edits a committed action in place through RM's own row editor: the index,
+        # the position and the untouched settings stay, and every value reads back. Its own tiny
+        # rules per AGENTS.md: the classic wizard re-sends the whole rule page on every
+        # submitOnChange POST, so per-edit cost grows with rule size. Targets A and B are empty
         # shells -- a runRule target only has to EXIST, and a pause target only has to be a rule.
         target_a = self._create_native_rule("MaTargetA")
         target_b = None
         caller_id = None
         try:
             target_b = self._create_native_rule("MaTargetB")
-            # The runRule row and its order sentinel are setup for modifyAction, so create
-            # them in the rule-create envelope. The returned per-action results retain the
-            # actionIndex contract; a relay-dropped create response falls back to the
-            # authoritative persisted settings, never a guessed counter.
             sentinel_msg = "E2E order sentinel post-action"
             caller_id, caller_create = self._create_native_rule("MaCaller", {
                 "addActions": [
@@ -6422,93 +6381,46 @@ class TestRunner:
                 assert ma_idx is not None and sentinel_idx is not None and ma_idx != sentinel_idx, \
                     f"create did not persist two distinct modifyAction setup rows: {setup_settings}"
 
-            # The sentinel follows the runRule row so the retargeted action is NOT last:
-            # the rebuild must walk the re-added row back up (movesUp=1), which is the
-            # reposition leg the position-preservation claim rests on.
-
+            # The sentinel follows the runRule row, so the edited action is NOT last: the order
+            # readback below proves the edit left it where it was.
             ma = self._rm_call_soft(
                 {"appId": caller_id, "modifyAction": {"index": ma_idx, "mods": {"ruleIds": [target_b]}},
                  "confirm": True}, strict=True, recover_504=True)
-            if ma.get("recovered504"):
-                # Replay came up empty and the helper fell back to config-verify: the
-                # composite committed hub-side but its envelope is gone. Recover the rebuilt
-                # action's index from the committed settings (the ruleAct key now holding
-                # target_b), finish one move-up only if the order readback proves the row
-                # sits below the sentinel, and re-initialize. The order assertions below
-                # then judge the final state exactly like every other branch.
-                cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
-                    "args": {"appId": caller_id, "includeSettings": True}})
-                new_idx = next((k.split(".")[1] for k, v in (cfg.get("settings") or {}).items()
-                                if k.startswith("ruleAct.")
-                                and self._normalize_ruleact_ids(v) == [str(target_b)]),
-                               None)
-                assert new_idx is not None, \
-                    f"recovered504: no committed ruleAct.<N> holds [{target_b}] -- the retarget did not land: {cfg.get('settings')}"
-                ma = dict(ma)
-                ma["newActionIndex"] = int(new_idx)
-                self._finish_move_up(caller_id, int(new_idx), sentinel_msg)
-                self._set_rule(caller_id, {"button": "updateRule"}, strict=True)
-            assert ma.get("newActionIndex") is not None, \
-                f"modifyAction retarget should carry a newActionIndex on every outcome, got: {ma}"
-            if ma.get("budgetPaused"):
-                # The composite's documented slow-hub contract: delete+add consumed the
-                # response budget, so the reposition was deliberately NOT started and the
-                # envelope hands back finish-up steps. Follow them exactly as a real client
-                # would -- this branch IS the recovery path the contract exists for, and the
-                # order readback below then proves the finished result either way.
-                print(f"    [BUDGET-PAUSED] modifyAction paused with {ma.get('movesRemaining')} "
-                      "move(s) remaining -- finishing per the envelope's own guidance")
-                assert ma.get("success") is False and ma.get("partial") is True, \
-                    f"budgetPaused must never ride under success:true, got: {ma}"
-                assert ma.get("subscriptionsNotLive") is True, \
-                    f"a paused composite skipped updateRule, so subscriptionsNotLive must be true, got: {ma}"
-                for _ in range(int(ma.get("movesRemaining") or 0)):
-                    self._finish_move_up(caller_id, ma["newActionIndex"], sentinel_msg)
-                self._set_rule(caller_id, {"button": "updateRule"}, strict=True)
-            elif ma.get("moveSoftFail"):
-                # The arrow click's shift couldn't be confirmed in the verify window
-                # (asyncCommitLikely) -- live-verified on fw 2.5.1.135 that this usually
-                # means the click COMMITTED LATE. Follow the envelope's own verifyHint:
-                # verify order first, retry the single move ONLY if it genuinely dropped.
-                assert ma.get("success") is False and ma.get("verifyHint"), \
-                    f"moveSoftFail must ride success:false with a verifyHint, got: {ma}"
-                self._finish_move_up(caller_id, ma["newActionIndex"], sentinel_msg)
-            elif not ma.get("recovered504"):
-                # Full envelope, no pause, no soft-fail: the composite finished in-budget.
-                assert ma.get("success") is True, \
-                    f"modifyAction retarget should succeed with a newActionIndex, got: {ma}"
-                assert ma.get("movesUp") == 1 and ma.get("movesDone") == 1, \
-                    f"retarget of a non-last action should reposition with exactly one confirmed move-up, got: {ma}"
+            if not ma.get("recovered504"):
+                assert ma.get("success") is True and ma.get("modifiedIndex") == ma_idx, \
+                    f"modifyAction should edit action {ma_idx} in place, got: {ma}"
+                assert ma.get("applied") is True and ma.get("activated") is True and ma.get("verified") is True, \
+                    f"an in-place edit must report applied, activated and verified, got: {ma}"
+                assert "newActionIndex" not in ma, f"an in-place edit must not allocate a new index: {ma}"
 
             ma_cfg = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config",
                 "args": {"appId": caller_id, "includeSettings": True}})
-            committed = (ma_cfg.get("settings") or {}).get(f"ruleAct.{ma.get('newActionIndex')}")
-            # Shared shape normalization (list / scalar / CSV) -- iterating a bare string
-            # would compare CHARACTERS and turn a shape change into a misleading failure.
+            committed = (ma_cfg.get("settings") or {}).get(f"ruleAct.{ma_idx}")
             committed_ids = self._normalize_ruleact_ids(committed)
             assert committed_ids == [str(target_b)], \
-                f"retargeted runRule action should commit ruleAct.{ma.get('newActionIndex')}=[{target_b}], got: {committed!r}"
+                f"the edited runRule action should hold ruleAct.{ma_idx}=[{target_b}], got: {committed!r}"
+            # Settings and the compiled list keep the same two indices.
+            ma_health = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_get_rule_health", "args": {"appId": caller_id}})
+            assert ma_health.get("ok") is not False and not ma_health.get("orphanedActionRows"), \
+                f"the in-place edit left the rule unhealthy: {ma_health}"
 
-            # Ground-truth ORDER readback: the rendered page lists actions in display order,
-            # so the retargeted Run-Rule row must render BEFORE the sentinel log. Serialize
-            # ONLY the page -- the settings blob carries ruleAct.<N> keys whose text would
-            # shift both offsets and make the comparison meaningless. Each marker gets its own
-            # assert first, because find() returns -1 when absent and -1 < anything, so a
-            # renamed RM label would otherwise turn "not rendered at all" into a green compare.
+            # Ground-truth ORDER readback: the rendered page lists actions in display order, so
+            # the edited Run-Rule row must still render BEFORE the sentinel log.
             page_text = json.dumps(ma_cfg.get("page", {}))
             run_pos = page_text.find("Run Actions:")
             sentinel_pos = page_text.find(sentinel_msg)
             assert run_pos != -1, \
-                f"the retargeted Run-Rule row did not render on the page at all: {page_text[:400]}"
+                f"the edited Run-Rule row did not render on the page at all: {page_text[:400]}"
             assert sentinel_pos != -1, \
                 f"the order sentinel did not render on the page at all: {page_text[:400]}"
             assert run_pos < sentinel_pos, \
                 f"position not preserved: Run Actions at {run_pos}, sentinel at {sentinel_pos}"
+            assert page_text.count("Run Actions:") == 1, \
+                f"the edit duplicated the Run-Rule row on the page: {page_text[:600]}"
 
-            # RM's own "this rule" target: it must write verbatim and survive a modifyAction
-            # that changes only the boolean value (issue #434). The rebuild lands a NEW index,
-            # so the old privateT/pvTF keys must be gone and the new pair must hold "*" + the
-            # flipped value -- re-reading the old index would pass on a no-op.
+            # RM's own "this rule" target must survive an edit that changes only the boolean
+            # value: the same index keeps privateT="*" and pvTF flips.
             pb_added = self._set_rule(caller_id, {
                 "addAction": {"capability": "privateBoolean", "ruleIds": ["*"], "value": False}},
                 strict=True)
@@ -6525,29 +6437,22 @@ class TestRunner:
 
             pb_mod = self._set_rule(caller_id, {
                 "modifyAction": {"index": int(pb_idx), "mods": {"value": True}}}, strict=True)
-            pb_new_idx = pb_mod.get("newActionIndex")
-            assert pb_new_idx is not None, f"privateBoolean modifyAction carried no newActionIndex: {pb_mod}"
-            assert pb_mod.get("verifiedTargets") == ["*"], \
-                f"modifyAction did not verify the this-rule target through the rebuild: {pb_mod}"
+            assert pb_mod.get("success") is True and pb_mod.get("modifiedIndex") == int(pb_idx), \
+                f"privateBoolean modifyAction did not edit index {pb_idx} in place: {pb_mod}"
             pb_after = self._get_persisted_rule_config(caller_id).get("settings") or {}
-            assert self._normalize_ruleact_ids(pb_after.get(f"privateT.{pb_new_idx}")) == ["*"], \
-                f"the rebuilt action lost the this-rule target: {pb_after}"
-            assert str(pb_after.get(f"pvTF.{pb_new_idx}")).lower() == "false", \
-                f"modifyAction did not flip pvTF on the rebuilt action: {pb_after}"
-            assert f"privateT.{pb_idx}" not in pb_after, \
-                f"the pre-rebuild privateBoolean row survived the retarget: {pb_after}"
+            assert self._normalize_ruleact_ids(pb_after.get(f"privateT.{pb_idx}")) == ["*"], \
+                f"the edit lost the this-rule target: {pb_after}"
+            assert str(pb_after.get(f"pvTF.{pb_idx}")).lower() == "false", \
+                f"modifyAction did not flip pvTF in place: {pb_after}"
 
-            # The same rebuild as a patches op, finalised by the batch's one updateRule.
+            # The same edit as a patches op, finalised by the batch's one updateRule.
             pb_patch = self._patch_rule(caller_id, [
-                {"modifyAction": {"index": int(pb_new_idx), "mods": {"value": False}}}])
+                {"modifyAction": {"index": int(pb_idx), "mods": {"value": False}}}])
             assert [e.get("op") for e in pb_patch] == ["modifyAction"] and pb_patch[0].get("success") is True, \
                 f"patches modifyAction did not succeed: {pb_patch}"
-            pb_patched_idx = pb_patch[0].get("newActionIndex")
             pb_patched = self._get_persisted_rule_config(caller_id).get("settings") or {}
-            assert pb_patched_idx is not None \
-                and str(pb_patched.get(f"pvTF.{pb_patched_idx}")).lower() == "true" \
-                and f"privateT.{pb_new_idx}" not in pb_patched, \
-                f"patches modifyAction did not rebuild the action with value False: {pb_patch} / {pb_patched}"
+            assert str(pb_patched.get(f"pvTF.{pb_idx}")).lower() == "true", \
+                f"patches modifyAction did not set value False in place: {pb_patch} / {pb_patched}"
 
             # Keep one live >1 ruleId request: a successful call proves the batch envelope and
             # exact echoed ids; a platform load-limiter refusal proves the parsed array reached

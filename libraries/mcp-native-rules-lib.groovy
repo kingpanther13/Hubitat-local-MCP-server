@@ -161,7 +161,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     modifyAction: [
                         type: "object",
-                        description: "Retarget a rule-targeting action in one op: {index:<N>, mods:{ruleIds:[...]}} — e.g. point a Run Rule Actions caller at a replacement rule during a staged migration. Supported on runRule/cancelTimers/pauseRule (mods also: action 'pause'|'resume') and privateBoolean (mods also: value bool) actions; other action shapes are rejected toward removeAction + addAction. Implemented as a position-preserving rebuild (remove + re-add + reposition), so the action's settings index changes while its position is kept."
+                        description: "Edit a committed action in place through RM's own row editor: {index:<N>, mods:{<field>: <value>, ...}}. mods take the action's fields as discover lists them (e.g. ruleIds, deviceIds, level, value) plus action for a variant that shares the committed RM action (on -> off, pause -> resume). The index, position and untouched settings are kept, and every value is read back. Expression-bearing actions (ifThen, elseIf, repeatWhile, waitExpression, waitEvents) are rebuilt with removeAction + addAction instead."
                     ],
                     walkStep: [
                         type: "object",
@@ -3369,656 +3369,254 @@ private Map _rmActionDiscover(Object selector) {
     return out
 }
 
-private Map _rmActionSchemaForDiscover() {
+// The addAction catalog: for each capability (and action), the Rule Machine action group and
+// sub-type it drives and the settings RM's editor takes, in write order (@N = the action index).
+// It is the one source for the mapping (_rmMapActionSpec), the discover schema and the argument
+// checks. Field entries: name (spec field), key (RM setting), type, required, desc; const = always
+// written (no spec field); default; whenTrue = written only when true; direction = written as
+// (direction == 'raise') or, when false, (direction != 'raise'); nonBlank = must have text.
+// custom = handled by the dedicated code in _rmMapActionSpec (the catalog still describes it).
+private Map _rmActionCatalog() {
+    def dev = { String key, String desc = null -> def f = [name: "deviceIds", key: key, type: "List<Integer>", required: true]; if (desc) f.desc = desc; f }
+    def delay = [name: "delay", type: "Map", desc: "{hours?, minutes?, seconds?, cancelable?, random?} or {variable}"]
+    def raw = [name: "rawSettings", type: "Map"]
     return [
-        discriminator: "capability",
-        note: "Pass the chosen capability name (case-insensitive) as addAction.capability in the real call. 'action' is required for multi-variant capabilities (switch, dimmer, etc.); optional or absent for single-variant ones (log, mode, delay, etc.).",
-        conditionFields: [
-            [name: "not", type: "Boolean", description: "Applies inside an expression CONDITION list (addAction expression conditions[] for ifThen/elseIf/repeatWhile/waitExpression, and addRequiredExpression.conditions[]). not:true negates the condition (e.g. Time NOT between, mode is NOT Night, does-not-contain via not:true + comparator:'*contains*')."]
-        ],
-        capabilities: [
-            [
-                name: "switch",
-                family: "device",
-                actions: ["on", "off", "toggle", "flash", "setPerMode", "choosePerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["on", "off", "toggle", "flash", "setPerMode", "choosePerMode"]],
-                    [name: "deviceIds", type: "List<Integer>", description: "Required for on/off/toggle/flash/setPerMode/choosePerMode"]
-                ],
-                optionalFields: [
-                    [name: "perMode", type: "Map", description: "For setPerMode: {modeIdOrName: 'on'|'off', ...}. For choosePerMode: {modeIdOrName: {on: [devIds], off: [devIds]}, ...}"],
-                    [name: "onlyIfChanged", type: "Boolean", description: "For on/off: RM's 'Command only switches that are off?' (on) / '... that are on?' (off) option, stored as optSwitch. When true the command goes only to switches not already in the requested state."],
-                    [name: "delay", type: "Map", description: "{hours?, minutes?, seconds?, cancelable?}"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                notes: "flash starts a flash schedule; use capability='runCommand' with command='flashOff' to stop it. onlyIfChanged applies to on/off only.",
-                conditionalRequired: [
-                    setPerMode: "perMode",
-                    choosePerMode: "perMode"
-                ]
-            ],
-            [
-                name: "dimmer",
-                family: "device",
-                actions: ["setLevel", "toggle", "adjust", "fade", "stopFade", "startRaiseLower", "stopChanging", "setLevelPerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["setLevel", "toggle", "adjust", "fade", "stopFade", "startRaiseLower", "stopChanging", "setLevelPerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "level", type: "Integer", description: "0-100, required for setLevel/toggle"],
-                    [name: "adjustBy", type: "Integer", description: "-100..100, required for adjust"],
-                    [name: "fadeSeconds", type: "Integer", description: "Optional for setLevel/toggle/adjust"],
-                    [name: "targetLevel", type: "Integer", description: "Required for fade"],
-                    [name: "minutes", type: "Integer", description: "Required for fade"],
-                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Optional for fade and startRaiseLower; defaults to lower"],
-                    [name: "intervalSeconds", type: "Integer", description: "Optional for fade"],
-                    [name: "perMode", type: "Map", description: "For setLevelPerMode: {modeIdOrName: level, ...}"],
-                    [name: "levelVariable", type: "String", description: "Hub variable name -- use instead of level for variable-sourced setLevel"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setLevel: "level (or levelVariable for a variable-sourced level)",
-                    toggle: "level (the on-level used when toggling from off)",
-                    adjust: "adjustBy",
-                    fade: "targetLevel + minutes",
-                    setLevelPerMode: "perMode"
-                ]
-            ],
-            [
-                name: "color",
-                family: "device",
-                notes: "RGBW bulbs.",
-                actions: ["setColor", "toggleColor", "setColorPerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["setColor", "toggleColor", "setColorPerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "colorName", type: "String", description: "Color name (e.g. 'Red') -- required for setColor (or supply a custom HSV color via rawSettings) and for toggleColor"],
-                    [name: "level", type: "Integer", description: "0-100, required for toggleColor"],
-                    [name: "perMode", type: "Map", description: "For setColorPerMode: {modeIdOrName: {color: 'Red', level: 70}, ...}"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setColor: "colorName (or a custom HSV color via rawSettings)",
-                    toggleColor: "colorName + level",
-                    setColorPerMode: "perMode"
-                ]
-            ],
-            [
-                name: "colorTemp",
-                family: "device",
-                actions: ["setColorTemp", "toggleColorTemp", "fadeColorTemp", "stopColorTempFade", "setColorTempPerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["setColorTemp", "toggleColorTemp", "fadeColorTemp", "stopColorTempFade", "setColorTempPerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "kelvin", type: "Integer", description: "Color temperature in Kelvin -- required for setColorTemp and toggleColorTemp"],
-                    [name: "targetKelvin", type: "Integer", description: "Target color temperature in Kelvin -- required for fadeColorTemp (NOT 'kelvin')"],
-                    [name: "level", type: "Integer"],
-                    [name: "minutes", type: "Integer", description: "Required for fadeColorTemp"],
-                    [name: "direction", type: "enum", values: ["raise", "lower"], description: "Optional for fadeColorTemp -- defaults to lower"],
-                    [name: "perMode", type: "Map", description: "For setColorTempPerMode: {modeIdOrName: {kelvin: 2700, level: 70}, ...}"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setColorTemp: "kelvin",
-                    toggleColorTemp: "kelvin",
-                    fadeColorTemp: "targetKelvin + minutes",
-                    setColorTempPerMode: "perMode"
-                ]
-            ],
-            [
-                name: "lock",
-                family: "device",
-                actions: ["lock", "unlock"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["lock", "unlock"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "hsm",
-                family: "hub",
-                notes: "Hubitat Safety Monitor arm/disarm/alert-cancel. No deviceIds. getSetHSM appears only when HSM is installed on the hub. There is no 'armAll' -- use 'armRules'.",
-                requiredFields: [
-                    [name: "command", type: "enum", values: _rmHsmCommands(), description: "HSM command. Labels: Arm Away / Arm Home / Arm Night / Disarm / Re-Arm Water-Smoke-Gas-CO / Disarm All / Arm All HSM Rules / Cancel All Alerts."]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "thermostat",
-                family: "device",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "action", type: "String"],
-                    [name: "mode", type: "String"],
-                    [name: "fanMode", type: "String"],
-                    [name: "heatingSetpoint", type: "Number"],
-                    [name: "coolingSetpoint", type: "Number"],
-                    [name: "adjustHeating", type: "Number"],
-                    [name: "adjustCooling", type: "Number"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                notes: "Requires at least one setting (mode / fanMode / heatingSetpoint / adjustHeating / coolingSetpoint / adjustCooling) -- a thermostat action with deviceIds but no setting does not bake."
-            ],
-            [
-                name: "shade",
-                family: "device",
-                actions: ["open", "close", "stop", "setPosition"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["open", "close", "stop", "setPosition"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "position", type: "Integer", description: "0-100, required for setPosition"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setPosition: "position"
-                ]
-            ],
-            [
-                name: "fan",
-                family: "device",
-                actions: ["setSpeed", "cycle"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["setSpeed", "cycle"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "speed", type: "String", description: "low/med/high/auto/etc., required for setSpeed"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    setSpeed: "speed"
-                ]
-            ],
-            [
-                name: "button",
-                family: "device",
-                actions: ["push", "pushPerMode", "choosePerMode"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["push", "pushPerMode", "choosePerMode"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "buttonNumber", type: "Integer", description: "Required for push and choosePerMode (pushPerMode carries the per-mode button numbers inside perMode)"],
-                    [name: "perMode", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ],
-                conditionalRequired: [
-                    push: "buttonNumber",
-                    pushPerMode: "perMode",
-                    choosePerMode: "perMode + buttonNumber"
-                ]
-            ],
-            [
-                name: "runCommand",
-                family: "device",
-                notes: "Calls any device-driver command not exposed by higher-level capability mappings (e.g. flashOff, custom verbs).",
-                requiredFields: [
-                    [name: "command", type: "String", description: "Driver command name (e.g. 'flashOff', 'refresh', 'setLevel')"],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "capabilityFilter", type: "String", description: "The capability RM's Run Custom Action picker filters the device picker on, by stored key or picker label (e.g. 'SwitchLevel' or 'Dimmer'); default 'Switch'. A value RM's picker does not offer is refused with RM's list and the row rolled back."],
-                    [name: "parameters", type: "List", description: "Each entry is {type, value} for a literal (e.g. {type: 'number', value: 75}) or {type, variable} for a hub-variable value; type is 'number', 'decimal' or 'string'. A variable not in RM's picker is refused."],
-                    [name: "useLastEventDevice", type: "Boolean"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "mode",
-                family: "hub",
-                requiredFields: [],
-                optionalFields: [
-                    [name: "modeId", type: "Integer", description: "Mode ID; provide this or modeName"],
-                    [name: "modeName", type: "String", description: "Mode name (case-insensitive), resolved to its ID; an unknown name is refused with the hub's mode list"]
-                ],
-                notes: "Exactly one of modeId or modeName is required."
-            ],
-            [
-                name: "setVariable",
-                family: "hub",
-                notes: "Set a hub variable from exactly one source: value, sourceVariable, fromDevice or math. Also accepted as capability='variable'. value, fromDevice and math need a Number or Decimal target; sourceVariable also copies into a String target. Boolean and DateTime targets are refused.",
-                requiredFields: [
-                    [name: "variable", type: "String", description: "Target hub variable name; must exist"]
-                ],
-                optionalFields: [
-                    [name: "value", type: "Number", description: "Numeric constant to assign"],
-                    [name: "numOp", type: "String", description: "Only with value: 'number' (default) sets the variable; 'add number' adds to it"],
-                    [name: "sourceVariable", type: "String", description: "Hub variable to copy from; must exist"],
-                    [name: "fromDevice", type: "Map", description: "{deviceId, attribute}: read a device attribute. Any hub device; the attribute must be one RM lists for it."],
-                    [name: "math", type: "Map", description: "{left, op, right}: operands are a Number (constant) or a variable name. Binary ops + - * / % need right; unary ops (negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees) take none."],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "setLocalVariable",
-                family: "hub",
-                notes: "Same as setVariable, but the target is one of this rule's local variables (create one with addLocalVariable first). Sources may be local or hub variables.",
-                requiredFields: [
-                    [name: "variable", type: "String", description: "Target local variable name; must exist on this rule"]
-                ],
-                optionalFields: [
-                    [name: "value", type: "Number"],
-                    [name: "numOp", type: "String", description: "As setVariable"],
-                    [name: "sourceVariable", type: "String", description: "Local or hub variable to copy from"],
-                    [name: "fromDevice", type: "Map", description: "As setVariable"],
-                    [name: "math", type: "Map", description: "As setVariable"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "log",
-                family: "messaging",
-                requiredFields: [
-                    [name: "message", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "notification",
-                family: "messaging",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Notification device IDs"],
-                    [name: "message", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "httpGet",
-                family: "messaging",
-                requiredFields: [
-                    [name: "url", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "httpPost",
-                family: "messaging",
-                requiredFields: [
-                    [name: "url", type: "String"],
-                    [name: "body", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "contentType", type: "String"],
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "ping",
-                family: "messaging",
-                requiredFields: [
-                    [name: "ip", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "volume",
-                family: "media",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "level", type: "Integer", description: "Volume level 0-100"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "mute",
-                family: "media",
-                actions: ["mute", "unmute"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["mute", "unmute"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "chime",
-                family: "media",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "playStop", type: "String"],
-                    [name: "soundNumber", type: "Integer"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "siren",
-                family: "media",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "sirenAction", type: "String"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "privateBoolean",
-                family: "rules",
-                requiredFields: [
-                    [name: "ruleIds", type: "List<Integer | \"*\">", description: "\"*\" is RM's this-rule target and may stand alone or sit beside numeric rule ids"],
-                    [name: "value", type: "Boolean"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "runRule",
-                family: "rules",
-                requiredFields: [
-                    [name: "ruleIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "cancelTimers",
-                family: "rules",
-                requiredFields: [
-                    [name: "ruleIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "pauseRule",
-                family: "rules",
-                actions: ["pause", "resume"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["pause", "resume"]],
-                    [name: "ruleIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "capture",
-                family: "device-control",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "restore",
-                family: "device-control",
-                notes: "No fields required -- restores previously captured device state.",
-                requiredFields: [],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "refresh",
-                family: "device-control",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "poll",
-                family: "device-control",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "disableDevice",
-                family: "device-control",
-                actions: ["disable", "enable"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["disable", "enable"]],
-                    [name: "deviceIds", type: "List<Integer>"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "delay",
-                family: "flow",
-                notes: "Pause execution for a fixed or variable duration.",
-                requiredFields: [],
-                optionalFields: [
-                    [name: "hours", type: "Integer"],
-                    [name: "minutes", type: "Integer"],
-                    [name: "seconds", type: "Integer"],
-                    [name: "cancelable", type: "Boolean"],
-                    [name: "random", type: "Boolean"],
-                    [name: "variable", type: "String", description: "Hub variable name -- use instead of hours/minutes/seconds for variable-sourced delay"]
-                ]
-            ],
-            [
-                name: "delayPerMode",
-                family: "flow",
-                requiredFields: [
-                    [name: "perMode", type: "Map", description: "{modeIdOrName: {hours?, minutes?, seconds?}, ...}"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "cancelDelay",
-                family: "flow",
-                notes: "No fields required.",
-                requiredFields: [],
-                optionalFields: []
-            ],
-            [
-                name: "exitRule",
-                family: "flow",
-                notes: "No fields required.",
-                requiredFields: [],
-                optionalFields: []
-            ],
-            [
-                name: "comment",
-                family: "flow",
-                requiredFields: [
-                    [name: "text", type: "String"]
-                ],
-                optionalFields: []
-            ],
-            [
-                name: "repeat",
-                family: "flow",
-                requiredFields: [
-                    [name: "hours", type: "Integer", description: "At least one of hours/minutes/seconds required"],
-                    [name: "minutes", type: "Integer"],
-                    [name: "seconds", type: "Integer"]
-                ],
-                optionalFields: [
-                    [name: "times", type: "Integer"],
-                    [name: "stoppable", type: "Boolean"]
-                ]
-            ],
-            [
-                name: "stopRepeat",
-                family: "flow",
-                notes: "No fields required.",
-                requiredFields: [],
-                optionalFields: []
-            ],
-            [
-                name: "repeatWhile",
-                family: "flow",
-                requiredFields: [
-                    [name: "expression", type: "Map", description: "{conditions: [...], operator?: 'AND'|'OR'|'XOR', operators?: [...]}"]
-                ],
-                optionalFields: [
-                    [name: "hours", type: "Integer"],
-                    [name: "minutes", type: "Integer"],
-                    [name: "seconds", type: "Integer"],
-                    [name: "times", type: "Integer"],
-                    [name: "stoppable", type: "Boolean"]
-                ]
-            ],
-            [
-                name: "waitExpression",
-                family: "flow",
-                requiredFields: [
-                    [name: "expression", type: "Map", description: "{conditions: [...], operator?, operators?}"]
-                ],
-                optionalFields: [
-                    [name: "delay", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "useDuration", type: "Boolean"]
-                ]
-            ],
-            [
-                name: "waitEvents",
-                family: "flow",
-                requiredFields: [
-                    [name: "events", type: "List<Map>", description: "Each: {capability, deviceIds, state, andStays?}. andStays is either true (wait until the state has held, zero extra duration; an empty map {} is equivalent) OR {hours?, minutes?, seconds?} to require it hold that long (writes SHours-/SMins-/SSecs-<N>). Mode event: {capability:'Mode', state:<mode name or list of names>} or {capability:'Mode', modeIds:[...]} -- deviceIds is rejected on a Mode event; the mode value is written to the mode picker, not tstate."]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "ifThen",
-                family: "flow",
-                notes: "Opens an IF block. Close with capability='endIf'. Use 'elseIf'/'else' for branches.",
-                requiredFields: [
-                    [name: "expression", type: "Map", description: "{conditions: [...], operator?, operators?}"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "elseIf",
-                family: "flow",
-                notes: "Continues an IF block. Needs a preceding ifThen.",
-                requiredFields: [
-                    [name: "expression", type: "Map"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "else",
-                family: "flow",
-                notes: "No fields required. Needs a preceding ifThen or elseIf.",
-                requiredFields: [],
-                optionalFields: []
-            ],
-            [
-                name: "endIf",
-                family: "flow",
-                notes: "No fields required. Closes the IF block.",
-                requiredFields: [],
-                optionalFields: []
-            ],
-            [
-                name: "fileWrite",
-                family: "file",
-                requiredFields: [
-                    [name: "fileName", type: "String"],
-                    [name: "content", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "fileAppend",
-                family: "file",
-                notes: "File must already exist.",
-                requiredFields: [
-                    [name: "fileName", type: "String"],
-                    [name: "content", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "fileDelete",
-                family: "file",
-                requiredFields: [
-                    [name: "fileName", type: "String"]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "zwavePoll",
-                family: "device-control",
-                actions: ["start", "stop"],
-                requiredFields: [
-                    [name: "action", type: "enum", values: ["start", "stop"]]
-                ],
-                optionalFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Z-Wave switches/dimmers to poll -- omit to poll all eligible devices"],
-                    [name: "target", type: "enum", values: ["switches", "dimmers"], description: "Defaults to 'switches' when omitted"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ]
-        ]
+        "switch": [actType: "switchActs", family: "device", actions: [
+            on:     [sub: "getOnOffSwitch", fields: [dev("onOffSwitch.@N"), [key: "onOff.@N", fixed: true],
+                     [name: "onlyIfChanged", key: "optSwitch.@N", type: "Boolean", whenTrue: true, desc: "Command only switches that are off (RM's optSwitch)"]]],
+            off:    [sub: "getOnOffSwitch", fields: [dev("onOffSwitch.@N"), [key: "onOff.@N", fixed: false],
+                     [name: "onlyIfChanged", key: "optSwitch.@N", type: "Boolean", whenTrue: true, desc: "Command only switches that are on (RM's optSwitch)"]]],
+            toggle: [sub: "getToggleSwitch", fields: [dev("toggleSwitch.@N")]],
+            flash:  [sub: "getFlashSwitch", fields: [dev("flashSwitch.@N")], notes: "RM has no stop-flash action; stop it with runCommand command 'flashOff'"],
+            setPerMode:    [sub: "getModeSwitch", custom: true, fields: [dev("switchM.@N"), [name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: 'on'|'off', ...}"]]],
+            choosePerMode: [sub: "getChooseSwitch", custom: true, fields: [[name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: {on: [deviceIds], off: [deviceIds]}, ...}"]]]
+        ], common: [delay, raw]],
+        dimmer: [actType: "dimmerActs", family: "device", actions: [
+            setLevel: [sub: "getSetDimmer", custom: true, requires: "level (or levelVariable)", fields: [dev("dimA.@N"), [name: "level", key: "dimLA.@N", type: "Integer", desc: "0-100; or levelVariable"],
+                       [name: "levelVariable", key: "xVar.@N", type: "String", desc: "hub variable holding the level"], [name: "fadeSeconds", key: "dimRA.@N", type: "Integer"]]],
+            toggle:   [sub: "getToggleDimmer", fields: [dev("dimA.@N"), [name: "level", key: "dimLA.@N", type: "Integer", required: true, desc: "0-100, the level when toggling on"], [name: "fadeSeconds", key: "dimRA.@N", type: "Integer"]]],
+            adjust:   [sub: "getAdjustDimmer", fields: [dev("dimA.@N"), [name: "adjustBy", key: "dimAdj.@N", type: "Integer", required: true, desc: "-100..100"], [name: "fadeSeconds", key: "dimAdjR.@N", type: "Integer"]]],
+            fade:     [sub: "getFadeDimmer", fields: [dev("dimFade.@N"), [name: "direction", key: "dimFadeUp.@N", type: "enum", values: ["raise", "lower"], direction: true, desc: "default lower"],
+                       [name: "targetLevel", key: "dimFadeTarget.@N", type: "Integer", required: true, desc: "0-100"], [name: "minutes", key: "dimFadeTime.@N", type: "Integer", required: true, desc: "how long the fade takes"],
+                       [name: "intervalSeconds", key: "dimFadeInterval.@N", type: "Integer"]]],
+            stopFade: [sub: "getStopFade", fields: []],
+            startRaiseLower: [sub: "getRLDimmer", fields: [[name: "direction", key: "dimRL.@N", type: "enum", values: ["raise", "lower"], direction: false, desc: "default lower"], dev("dimRaiseLower.@N")]],
+            stopChanging: [sub: "getStopDimmer", fields: [dev("dimStop.@N")]],
+            setLevelPerMode: [sub: "getDimmersPerMode", custom: true, fields: [dev("dimM.@N"), [name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: level, ...}"], [name: "fadeSeconds", key: "dimMR.@N", type: "Integer"]]]
+        ], common: [delay, raw]],
+        color: [actType: "dimmerActs", family: "device", actions: [
+            setColor:    [sub: "getSetColor", custom: true, requires: "colorName (or a custom HSV color via rawSettings)", fields: [dev("bulbs.@N"), [name: "colorName", key: "color.@N", type: "String", desc: "e.g. 'Red'; or a custom HSV color via rawSettings colorH.@N"], [name: "level", key: "colorLevel.@N", type: "Integer"]]],
+            toggleColor: [sub: "getToggleColor", fields: [dev("bulbsTog.@N"), [name: "colorName", key: "colorTog.@N", type: "String", required: true, desc: "e.g. 'Red'"], [name: "level", key: "colorTogLevel.@N", type: "Integer", required: true, desc: "0-100"]]],
+            setColorPerMode: [sub: "getColorPerMode", custom: true, fields: [dev("bulbsM.@N"), [name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: {color: 'Red', level: 70}, ...}"]]]
+        ], common: [delay, raw]],
+        colorTemp: [actType: "dimmerActs", family: "device", actions: [
+            setColorTemp:    [sub: "getSetColorTemp", fields: [dev("ct.@N"), [name: "kelvin", key: "ctL.@N", type: "Integer", required: true, desc: "e.g. 2700"], [name: "level", key: "ctLevel.@N", type: "Integer"]]],
+            toggleColorTemp: [sub: "getToggleColorTemp", fields: [dev("ctTog.@N"), [name: "kelvin", key: "ctLTog.@N", type: "Integer", required: true, desc: "e.g. 2700"], [name: "level", key: "ctTogLevel.@N", type: "Integer"]]],
+            fadeColorTemp:   [sub: "getFadeCT", fields: [dev("ctFade.@N"), [name: "direction", key: "ctFadeUp.@N", type: "enum", values: ["raise", "lower"], direction: true, desc: "default lower"],
+                              [name: "targetKelvin", key: "ctFadeTarget.@N", type: "Integer", required: true], [name: "minutes", key: "ctFadeTime.@N", type: "Integer", required: true],
+                              [name: "intervalSeconds", key: "ctFadeInterval.@N", type: "Integer"], [name: "changeLevel", key: "bothCTandL.@N", type: "Boolean"], [name: "targetLevel", key: "ctFadeLevel.@N", type: "Integer"]]],
+            stopColorTempFade: [sub: "getStopCTFade", fields: []],
+            setColorTempPerMode: [sub: "getColorTempPerMode", custom: true, fields: [dev("ctM.@N"), [name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: {kelvin: 2700, level: 70}, ...}"]]]
+        ], common: [delay, raw]],
+        lock: [actType: "lockActs", family: "device", actions: [
+            lock:   [sub: "getLULock", fields: [[key: "lockRL.@N", fixed: false], dev("lockLockUnlock.@N")]],
+            unlock: [sub: "getLULock", fields: [[key: "lockRL.@N", fixed: true], dev("lockLockUnlock.@N")]]
+        ], common: [delay, raw]],
+        hsm: [actType: "lockActs", sub: "getSetHSM", family: "hub", custom: true, notes: "Shown by RM only when Hubitat Safety Monitor is installed",
+              fields: [[name: "command", key: "alarm.@N", type: "enum", values: _rmHsmCommands(), required: true, desc: "Arm Away / Arm Home / Arm Night / Disarm / Re-Arm Water-Smoke-Gas-CO / Disarm All / Arm All HSM Rules / Cancel All Alerts; no armAll (use armRules)"]], common: [delay, raw]],
+        thermostat: [actType: "lockActs", sub: "getSetThermostat", family: "device", custom: true, notes: "At least one setting is required",
+              fields: [dev("thermo.@N"), [name: "mode", key: "thermoMode.@N", type: "String"], [name: "fanMode", key: "thermoFan.@N", type: "String"],
+                       [name: "heatingSetpoint", key: "thermoSetHeat.@N", type: "Number"], [name: "adjustHeating", key: "thermoAdjHeat.@N", type: "Number"],
+                       [name: "coolingSetpoint", key: "thermoSetCool.@N", type: "Number"], [name: "adjustCooling", key: "thermoAdjCool.@N", type: "Number"]], common: [delay, raw]],
+        shade: [actType: "sceneActs", family: "device", actions: [
+            open:  [sub: "getRLShade", fields: [[key: "shadeRL.@N", fixed: false], dev("shadeOpenClose.@N")]],
+            close: [sub: "getRLShade", fields: [[key: "shadeRL.@N", fixed: true], dev("shadeOpenClose.@N")]],
+            setPosition: [sub: "getShadePosition", fields: [dev("shadePosition.@N"), [name: "position", key: "shadeLevel.@N", type: "Integer", required: true, desc: "0-100"]]],
+            stop:  [sub: "getStopShade", fields: [dev("shadeStop.@N")]]
+        ], common: [delay, raw]],
+        fan: [actType: "sceneActs", family: "device", actions: [
+            setSpeed: [sub: "getFanSpeed", fields: [dev("fanDevice.@N"), [name: "speed", key: "fanSpeed.@N", type: "enum", values: ["low", "medium-low", "medium", "medium-high", "high", "on", "off", "auto"], required: true]]],
+            cycle:    [sub: "getAdjustFan", fields: [dev("fanAdjust.@N")]]
+        ], common: [delay, raw]],
+        mode: [actType: "modeActs", sub: "getSetMode", family: "hub", custom: true, notes: "Exactly one of modeId or modeName",
+               fields: [[name: "modeId", key: "mode.@N", type: "Integer"], [name: "modeName", type: "String", desc: "resolved to its id; unknown names are refused with the hub's list"]], common: [delay, raw]],
+        setVariable: [actType: "modeActs", sub: "getSetVariable", family: "hub", custom: true,
+               notes: "One source: value, sourceVariable, fromDevice or math. value, fromDevice and math need a Number or Decimal target; sourceVariable also copies into a String target. Also accepted as capability 'variable'.",
+               fields: [[name: "variable", key: "xVarV.@N", type: "String", required: true, desc: "target hub variable; must exist"],
+                        [name: "value", key: "valNumber.@N", type: "Number"], [name: "numOp", key: "numOp.@N", type: "enum", values: ["number", "add number"], desc: "with value only; 'add number' adds to the variable"],
+                        [name: "sourceVariable", type: "String", desc: "hub variable to copy from"],
+                        [name: "fromDevice", type: "Map", desc: "{deviceId, attribute}; the attribute must be one RM lists for the device"],
+                        [name: "math", type: "Map", desc: "{left, op, right}; operands are a Number or a variable name; binary + - * / % need right, unary negate absolute round random sqrt sin cos tan asin acos atan log toRadians toDegrees take none"]],
+               common: [delay, raw]],
+        setLocalVariable: [actType: "modeActs", sub: "getSetVariable", family: "hub", custom: true,
+               notes: "As setVariable, for one of this rule's local variables (create it with addLocalVariable first); sources may be local or hub variables",
+               fields: [[name: "variable", key: "xVarV.@N", type: "String", required: true], [name: "value", type: "Number"], [name: "numOp", type: "String"],
+                        [name: "sourceVariable", type: "String"], [name: "fromDevice", type: "Map"], [name: "math", type: "Map"]], common: [delay, raw]],
+        runCommand: [actType: "modeActs", sub: "getDefinedAction", family: "device", custom: true, notes: "Any command of the selected devices, e.g. flashOff or a driver's custom command",
+               fields: [[name: "command", key: "cCmd.@N", type: "String", required: true, desc: "checked against the commands RM lists for the devices"], dev("devices.@N"),
+                        [name: "capabilityFilter", key: "myCapab.@N", type: "String", desc: "a capability RM's picker offers, by key or label (e.g. SwitchLevel or Dimmer); default Switch"],
+                        [name: "parameters", type: "List", desc: "each {type, value} or {type, variable}; type number, decimal or string"],
+                        [name: "useLastEventDevice", key: "useLastDev.@N", type: "Boolean"]], common: [delay, raw]],
+        fileWrite:  [actType: "modeActs", sub: "getWriteLocalFile", family: "hub", fields: [[name: "fileName", key: "localFile.@N", type: "String", required: true, dflt: ""], [name: "content", key: "fileContents.@N", type: "String", dflt: ""]], common: [delay, raw]],
+        fileAppend: [actType: "modeActs", sub: "getAppendLocalFile", family: "hub", notes: "The file must exist", fields: [[name: "fileName", key: "localFile.@N", type: "String", required: true, dflt: ""], [name: "content", key: "fileContents.@N", type: "String", dflt: ""]], common: [delay, raw]],
+        fileDelete: [actType: "modeActs", sub: "getDeleteLocalFile", family: "hub", notes: "The file must exist", fields: [[name: "fileName", key: "deleteFile.@N", type: "String", required: true, dflt: ""]], common: [delay, raw]],
+        zwavePoll: [actType: "deviceActs", sub: "getStartStopZPoll", family: "device", custom: true, actions: [start: [:], stop: [:]],
+               fields: [[name: "target", type: "enum", values: ["switches", "dimmers"], desc: "default switches"], dev("ssZPoll.@N", "Z-Wave devices")], common: [raw]],
+        button: [actType: "switchActs", family: "device", actions: [
+            push: [sub: "getPushButton", fields: [dev("pushButton.@N"), [name: "buttonNumber", key: "pushButNo.@N", type: "Integer", required: true], [name: "operation", key: "pushButOp.@N", type: "enum", values: ["push", "hold", "doubleTap", "release"], dflt: "push"]]],
+            pushPerMode:   [sub: "getPushButtonPerMode", custom: true, fields: [dev("pushMBtn.@N"), [name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: buttonNumber, ...}"]]],
+            choosePerMode: [sub: "getChooseButton", custom: true, fields: [[name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: [deviceIds], ...}"], [name: "buttonNumber", key: "chooseButtonNum.@N", type: "Integer", required: true]]]
+        ], common: [raw]],
+        log:          [actType: "messageActs", sub: "getLogMsg", family: "messaging", fields: [[name: "message", key: "logmsg.@N", type: "String", required: true, dflt: ""]], common: [delay, raw]],
+        notification: [actType: "messageActs", sub: "getMsg", family: "messaging", fields: [[name: "message", key: "msg.@N", type: "String", required: true, dflt: ""], dev("note.@N", "notification devices")], common: [delay, raw]],
+        httpGet:  [actType: "messageActs", sub: "getHTTPGet", family: "messaging", fields: [[name: "url", key: "httper.@N", type: "String", required: true, dflt: ""]], common: [delay, raw]],
+        httpPost: [actType: "messageActs", sub: "getHTTPPost", family: "messaging", fields: [[name: "url", key: "httper.@N", type: "String", required: true, dflt: ""], [name: "body", key: "httpPostBody.@N", type: "String", required: true, dflt: ""],
+                   [name: "contentType", key: "httpPostType.@N", type: "String", dflt: "application/x-www-form-urlencoded"]], common: [delay, raw]],
+        ping:     [actType: "messageActs", sub: "getPingIP", family: "messaging", fields: [[name: "ip", key: "pingIP.@N", type: "String", required: true, dflt: ""]], common: [raw]],
+        volume: [actType: "soundActs", sub: "getSetVolume", family: "media", fields: [dev("volume.@N"), [name: "level", key: "volumeVal.@N", type: "Integer", required: true, desc: "0-100"]], common: [delay, raw]],
+        mute: [actType: "soundActs", family: "media", actions: [
+            mute:   [sub: "getMuteUnmute", fields: [[key: "mU.@N", fixed: true], dev("muteUnmute.@N")]],
+            unmute: [sub: "getMuteUnmute", fields: [[key: "mU.@N", fixed: false], dev("muteUnmute.@N")]]
+        ], common: [delay, raw]],
+        chime: [actType: "soundActs", sub: "getChime", family: "media", fields: [dev("chime.@N"), [name: "playStop", key: "chimePlayStop.@N", type: "String"], [name: "soundNumber", key: "chimePlaySound.@N", type: "Integer"]], common: [raw]],
+        siren: [actType: "soundActs", sub: "getSiren", family: "media", fields: [dev("siren.@N"), [name: "sirenAction", key: "sirenAct.@N", type: "String"]], common: [raw]],
+        privateBoolean: [actType: "rulesActs", sub: "getSetPrivateBoolean", family: "rules", custom: true,
+               fields: [[name: "ruleIds", key: "privateT.@N", type: "List<Integer | \"*\">", required: true, desc: "\"*\" is this rule"], [name: "value", key: "pvTF.@N", type: "Boolean", required: true]], common: [raw]],
+        runRule:      [actType: "rulesActs", sub: "getRuleActions", family: "rules", custom: true, fields: [[name: "ruleIds", key: "ruleAct.@N", type: "List<Integer>", required: true]], common: [raw]],
+        cancelTimers: [actType: "rulesActs", sub: "getStopActions", family: "rules", custom: true, fields: [[name: "ruleIds", key: "stopAct.@N", type: "List<Integer>", required: true]], common: [raw]],
+        pauseRule: [actType: "rulesActs", sub: "getPauseResumeRules", family: "rules", custom: true,
+               actions: [pause: [fields: [[key: "pR.@N", fixed: false]]], resume: [fields: [[key: "pR.@N", fixed: true]]]],
+               fields: [[name: "ruleIds", key: "pauseRule.@N", type: "List<Integer>", required: true]], common: [raw]],
+        capture: [actType: "deviceActs", sub: "getCapture", family: "device-control", fields: [dev("capture.@N")], common: [raw]],
+        restore: [actType: "deviceActs", sub: "getRestore", family: "device-control", notes: "Restores the captured state", fields: [], common: [raw]],
+        refresh: [actType: "deviceActs", sub: "getRefreshSwitch", family: "device-control", fields: [dev("refresh.@N")], common: [raw]],
+        poll:    [actType: "deviceActs", sub: "getPollSwitch", family: "device-control", fields: [dev("poll.@N")], common: [raw]],
+        disableDevice: [actType: "deviceActs", family: "device-control", actions: [
+            disable: [sub: "getDisable", fields: [[key: "disEn.@N", fixed: false], dev("devDisable.@N")]],
+            enable:  [sub: "getDisable", fields: [[key: "disEn.@N", fixed: true], dev("devDisable.@N")]]
+        ], common: [raw]],
+        delay: [actType: "delayActs", sub: "getDelay", family: "flow", custom: true, notes: "hours, minutes and/or seconds, or variable",
+               fields: [[name: "hours", key: "delayHour.@N", type: "Integer"], [name: "minutes", key: "delayMinute.@N", type: "Integer"], [name: "seconds", key: "delaySecond.@N", type: "Integer"],
+                        [name: "variable", key: "xVar.@N", type: "String", desc: "hub variable holding the seconds"], [name: "cancelable", key: "cancelAct.@N", type: "Boolean"], [name: "random", key: "randomAct.@N", type: "Boolean"]]],
+        delayPerMode: [actType: "delayActs", sub: "getDelayPerMode", family: "flow", custom: true, fields: [[name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: {hours?, minutes?, seconds?}, ...}"]], common: [raw]],
+        cancelDelay: [actType: "delayActs", sub: "getCancelDelay", family: "flow", fields: []],
+        exitRule:    [actType: "delayActs", sub: "getExitRule", family: "flow", fields: []],
+        comment:     [actType: "delayActs", sub: "getComment", family: "flow", fields: [[name: "text", key: "comment.@N", type: "String", required: true, nonBlank: true, desc: "the comment itself"]]],
+        repeat: [actType: "repeatActs", sub: "getRepeat", family: "flow", custom: true, notes: "hours, minutes and/or seconds are required; times alone is not enough",
+               fields: [[name: "hours", key: "repeatHour.@N", type: "Integer"], [name: "minutes", key: "repeatMinute.@N", type: "Integer"], [name: "seconds", key: "repeatSecond.@N", type: "Integer"],
+                        [name: "times", key: "repeatN.@N", type: "Integer"], [name: "stoppable", key: "stopRepeat.@N", type: "Boolean"]]],
+        stopRepeat:  [actType: "repeatActs", sub: "getStopRepeat", family: "flow", fields: []],
+        repeatWhile: [actType: "repeatActs", sub: "getWhile", family: "flow", custom: true,
+               fields: [[name: "expression", type: "Map", required: true, desc: "{conditions: [...], operator?: 'AND'|'OR'|'XOR', operators?: [...]}"],
+                        [name: "hours", key: "repeatHour.@N", type: "Integer"], [name: "minutes", key: "repeatMinute.@N", type: "Integer"], [name: "seconds", key: "repeatSecond.@N", type: "Integer"],
+                        [name: "times", key: "repeatN.@N", type: "Integer"], [name: "stoppable", key: "stopRepeat.@N", type: "Boolean"]]],
+        waitEvents: [actType: "delayActs", sub: "getWaitEvents", family: "flow", custom: true, notes: "One per rule: RM keeps the event rows per rule",
+               fields: [[name: "events", type: "List", required: true, desc: "[{capability, deviceIds?, state?, modeIds?, andStays?: true|{hours,minutes,seconds}}, ...]"], delay]],
+        waitExpression: [actType: "delayActs", sub: "getWaitRule", family: "flow", custom: true,
+               fields: [[name: "expression", type: "Map", required: true, desc: "{conditions: [...], operator?, operators?}"], [name: "useDuration", key: "durChoice.@N", type: "Boolean"], [name: "delay", type: "Map", desc: "timeout {hours?, minutes?, seconds?} or {variable}"]]],
+        ifThen: [actType: "condActs", sub: "getIfThen", family: "flow", custom: true, fields: [[name: "expression", type: "Map", required: true, desc: "{conditions: [...], operator?, operators?}"]]],
+        elseIf: [actType: "condActs", sub: "getElseIf", family: "flow", custom: true, fields: [[name: "expression", type: "Map", required: true, desc: "{conditions: [...], operator?, operators?}"]]],
+        "else": [actType: "condActs", sub: "getElse", family: "flow", fields: []],
+        endIf:  [actType: "condActs", sub: "getEndIf", family: "flow", fields: []]
     ]
 }
 
-// Scan an RM rule's appSettings for tCapab<N> entries and return the
-// Set of trigger indices currently in use. Used by _rmAddTrigger to pick
-// the next free index without colliding with existing triggers.
+// The per-condition fields an expression's conditions[] takes; shared with the trigger schema.
+private List _rmActionConditionFields() {
+    [[name: "not", type: "Boolean", description: "Applies inside an expression condition list (ifThen/elseIf/repeatWhile/waitExpression conditions[], and addRequiredExpression.conditions[]). not:true negates the condition."]]
+}
+
+// Discover: the catalog as a machine-readable schema. One entry per capability, with its actions,
+// the fields every action takes (requiredFields) and the rest (optionalFields, saying which
+// action needs each), the sub-type RM stores for each action, and an example.
+private Map _rmActionSchemaForDiscover() {
+    def entries = []
+    _rmActionCatalog().each { String cap, Map entry ->
+        def perAction = (entry.actions instanceof Map) ? (entry.actions as Map) : [(null): entry]
+        def actions = perAction.keySet().findAll { it != null }.collect { it.toString() }
+        def fieldSpecs = [:]
+        def requiredBy = [:]
+        perAction.each { act, Map ae ->
+            def fieldList = (act == null) ? ((entry.fields ?: []) as List) : (((entry.fields ?: []) as List) + ((ae.fields ?: []) as List))
+            fieldList.each { Map f ->
+                if (f.name == null) return
+                def spec = fieldSpecs[f.name]
+                if (spec == null) {
+                    spec = [name: f.name, type: f.type]
+                    if (f.values instanceof List) spec.values = f.values
+                    if (f.desc) spec.description = f.desc
+                    fieldSpecs[f.name] = spec
+                } else if (f.desc && !spec.description) spec.description = f.desc
+                if (f.required) requiredBy[f.name] = (requiredBy[f.name] ?: []) + [act]
+            }
+        }
+        def required = []
+        def optional = []
+        def conditional = [:]
+        if (actions) required << [name: "action", type: "enum", values: actions]
+        fieldSpecs.each { name, Map spec ->
+            def by = requiredBy[name] ?: []
+            if (by.size() == perAction.size()) required << spec
+            else {
+                by.each { act -> conditional[act.toString()] = conditional[act.toString()] ? "${conditional[act.toString()]} + ${name}".toString() : name.toString() }
+                optional << spec
+            }
+        }
+        perAction.each { act, Map ae -> if (act != null && ae.requires) conditional[act.toString()] = ae.requires.toString() }
+        (entry.common ?: []).each { Map c -> optional << [name: c.name, type: c.type] + (c.desc ? [description: c.desc] : [:]) }
+        def subTypes = (entry.actions instanceof Map) ? perAction.collectEntries { act, Map ae -> [(act.toString()): ae.sub ?: entry.sub] } : entry.sub
+        def example = [capability: cap]
+        if (actions) example.action = actions[0]
+        required.each { Map r -> if (r.name != "action") example[r.name] = _rmExampleValue(r) }
+        def out = [name: cap, family: entry.family, actType: entry.actType, actSubType: subTypes, requiredFields: required, optionalFields: optional, example: example]
+        if (actions) out.actions = actions
+        if (conditional) out.conditionalRequired = conditional
+        def notes = [entry.notes] + perAction.collect { act, Map ae -> ae.notes ? "${act}: ${ae.notes}".toString() : null }
+        notes = notes.findAll { it }
+        if (notes) out.notes = notes.join(". ")
+        entries << out
+    }
+    return [discriminator: "capability", note: "Pass capability (case-insensitive) and, for a capability with actions, action; the other fields are per entry. A spec RM cannot bake is refused before any write, or rolled back when only RM's editor can tell.",
+            conditionFields: _rmActionConditionFields(), capabilities: entries]
+}
+
+private Object _rmExampleValue(Map field) {
+    if (field.values instanceof List) return field.values[0]
+    switch (field.type?.toString()) {
+        case "List<Integer>": return [123]
+        case ~/List.*/: return ["*"]
+        case "Integer": case "Number": return 50
+        case "Boolean": return true
+        case "Map": return [:]
+        dflt: return "..."
+    }
+}
+
+// Maps a catalog-described action to RM's settings. The custom entries are handled by the code
+// that follows in _rmMapActionSpec; this covers every entry the catalog fully describes.
+private Map _rmMapCatalogAction(String cap, String action, Map actionSpec, Map entry, Map actionEntry) {
+    def fields = [:]
+    String label = action ? "${cap}.${action}" : "${cap} action"
+    def fieldList = (actionEntry.is(entry)) ? ((entry.fields ?: []) as List) : (((entry.fields ?: []) as List) + ((actionEntry.fields ?: []) as List))
+    fieldList.each { Map f ->
+        def key = f.key?.toString()
+        if (key == null) return
+        def value
+        if (f.containsKey("fixed")) value = f.fixed
+        else {
+            value = actionSpec[f.name]
+            if (f.direction != null) value = (f.direction == true) ? (actionSpec.direction == "raise") : (actionSpec.direction != "raise")
+            else if (value == null && f.containsKey("dflt")) value = f.dflt
+        }
+        if (f.required && f.name != "deviceIds" && (value == null || (f.nonBlank && !value.toString().trim()))) {
+            throw new IllegalArgumentException("${label} requires '${f.name}'${f.desc ? ' (' + f.desc + ')' : ''}.".toString())
+        }
+        if (f.whenTrue && value != true) return
+        if (value != null) fields[key] = value
+    }
+    return [actType: entry.actType, actSubType: actionEntry.sub ?: entry.sub, fields: fields, skipped: []]
+}
+
 private List _rmCollectTriggerIndices(Integer appId) {
     def status = _rmFetchStatusJson(appId)
     def out = []
@@ -4446,184 +4044,161 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     ]
 }
 
-// Modify a single committed action via position-preserving rebuild: remove the
-// action at `index`, re-add the merged spec (committed values overlaid with
-// mods), then walk the new row back to the original position with move-up
-// clicks. RM 5.1 has no workable headless in-place action editor -- the
-// doActPage edit flow depends on a browser-side btnDone auto-click (verified
-// live on fw 2.5.1.135) -- so the rebuild composes the proven
-// removeAction/addAction/moveAction primitives instead.
-//
-// Scope: rule-targeting actions only (actType rulesActs), the family whose
-// committed VALUE fields round-trip to an addAction spec:
-//   getRuleActions       (runRule)         ruleAct.<N>  + runRuleType.<N>
-//   getStopActions       (cancelTimers)    stopAct.<N>  + stopRuleType.<N>
-//   getPauseResumeRules  (pauseRule)       pauseRule.<N> + pR.<N> (true=RESUME) + pauseRuleType.<N>
-//   getSetPrivateBoolean (privateBoolean)  privateT.<N> + pvTF.<N> (true=FALSE) + pvRuleType.<N>
-// The RuleType selector is verified pre-delete: the rebuild writes "Rule
-// Machine" unconditionally, so a committed selector with any OTHER value
-// refuses loudly instead of being silently converted. Other action shapes
-// refuse toward removeAction + addAction.
+// Edit a committed action in place through RM's own row editor. The row's Edit link is the doAct
+// button named "<index>.<condition>.<conditional>"; it reopens doActPage on that index with its
+// settings loaded, so the index, the position and every untouched setting are kept. mods name
+// the action's spec fields as discover lists them, plus action for a capability whose variants
+// share a sub-type (on -> off). Expression-bearing actions are rebuilt with removeAction + addAction.
 private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long reqT0 = null) {
-    def reverse = [
-        getRuleActions:       [capability: "runRule",        listField: "ruleAct",   typeField: "runRuleType"],
-        getStopActions:       [capability: "cancelTimers",   listField: "stopAct",   typeField: "stopRuleType"],
-        getPauseResumeRules:  [capability: "pauseRule",      listField: "pauseRule", typeField: "pauseRuleType"],
-        getSetPrivateBoolean: [capability: "privateBoolean", listField: "privateT",  typeField: "pvRuleType"]
-    ]
-    def cfg = _rmFetchConfigJson(appId)
-    def committedSettings = (cfg?.settings instanceof Map) ? (cfg.settings as Map) : [:]
-    // Parsed-JSON maps carry String keys; a GString subscript misses them.
-    def actSubType = committedSettings["actSubType.${actionIdx}".toString()]?.toString()
-    if (!actSubType) {
-        def indices = _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
+    Map plan = _rmPlanModifyAction(appId, actionIdx, mods)
+    String cap = plan.cap
+    String action = plan.action
+    Map writes = plan.writes as Map
+    List fieldDefs = plan.fieldDefs as List
+    def before = _rmOrderedActionIndices(appId)
+    _rmClickAppButton(appId, "${actionIdx}.0.false".toString(), "doAct", "selectActions")
+    def applied = []
+    def skipped = []
+    try {
+        _rmRevealedInputOrThrow(appId, "actSubType.${actionIdx}".toString(),
+            "RM did not open its editor on action ${actionIdx}.".toString(), "modifyAction")
+        writes.each { String key, value -> _rmWriteSettingOnPage(appId, "doActPage", key, value, applied, null, skipped) }
+        def missed = skipped.findAll { it instanceof Map && writes.containsKey(it.key?.toString()) && it.reason == "not_in_schema" }*.key
+        if (missed) throw new IllegalArgumentException("modifyAction: RM's editor for action ${actionIdx} has no field ${missed.join(', ')}, so that value does not apply to this action as committed.")
+    } catch (Exception editExc) {
+        // The editor stays open on the row otherwise; a cancel keeps the row. Settings already
+        // written stay written, so the message says which.
+        try { _rmClickAppButton(appId, "actionCancel", null, "doActPage") } catch (Exception ignored) { }
+        def landed = applied.findAll { writes.containsKey(it?.toString()) }
+        throw new IllegalStateException("${editExc.message ?: editExc}${landed ? ' Fields already written before the stop: ' + landed.join(', ') + ' (check the action with hub_get_app_config).' : ' RM is not touched.'}".toString(), editExc)
+    }
+    _rmClickAppButton(appId, "actionDone", null, "doActPage")
+    _rmNavigateToPage(appId, "doActPage", "selectActions", 0, "name", null, null, null, false, true)
+    // Readback: every value echoes from the committed settings, and the action list kept its
+    // shape (RM's editor re-registers the index it edited).
+    _rmReclassifyDeviceListSkips(appId, skipped)
+    def genuineSkipped = skipped.findAll { !(it instanceof Map && it.reason in _rmInformationalSkippedReasons()) }
+    def after = null
+    boolean verificationFetchFailed = false
+    try { after = _rmFetchConfigJson(appId)?.settings } catch (Exception verifyExc) {
+        verificationFetchFailed = true
+        mcpLog("warn", "rm-native", "modifyAction: readback failed for app ${appId} (${verifyExc.message})")
+    }
+    def deviceKeys = fieldDefs.findAll { it.type == "List<Integer>" }.collect { it.key.toString().replace("@N", actionIdx.toString()) }
+    def mismatches = (after instanceof Map) ? writes.findAll { k, v -> !(k in deviceKeys) && !_rmSettingEchoes((after as Map)[k], v) }.keySet().toList() : []
+    def orderAfter = _rmOrderedActionIndices(appId)
+    def duplicates = (orderAfter == null) ? [] : orderAfter.countBy { it }.findAll { k, n -> n > 1 }.keySet().toList()
+    boolean verified = !verificationFetchFailed && orderAfter != null && orderAfter == before && mismatches.isEmpty() && duplicates.isEmpty() && genuineSkipped.isEmpty()
+    def out = [success: verified, partial: !verified, modifiedIndex: actionIdx, capability: cap, action: action,
+               settingsApplied: applied, settingsSkipped: skipped, writes: writes,
+               readbackMismatches: mismatches ?: null, actionOrder: orderAfter, duplicateIndices: duplicates ?: null,
+               verificationFetchFailed: verificationFetchFailed ?: null]
+    if (!verified) {
+        out.error = verificationFetchFailed ? "modifyAction: the edit committed but the readback failed; verify action ${actionIdx} with hub_get_app_config(appId=${appId})."
+            : (duplicates ? "modifyAction: after the edit the action list carries index ${duplicates.join(', ')} more than once; inspect the rule with hub_get_app_config and restore the pre-edit backup if it renders wrong."
+            : (orderAfter != before ? "modifyAction: the action order changed from ${before} to ${orderAfter}; inspect the rule and restore the pre-edit backup if it renders wrong."
+            : "modifyAction: ${mismatches ? mismatches.join(', ') + ' did not read back as written' : 'a field was skipped: ' + genuineSkipped*.key.join(', ')}; verify action ${actionIdx} with hub_get_app_config(appId=${appId}) and restore the pre-edit backup if needed.")).toString()
+    }
+    return out.findAll { k, v -> v != null }
+}
+
+// The argument checks and the settings an in-place edit will write, decided from the committed
+// rule and read-only lookups only, so a refusal happens before any backup or write.
+private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
+    if (!(mods instanceof Map) || mods.isEmpty()) {
+        throw new IllegalArgumentException("modifyAction.mods must set at least one of the action's fields. RM is not touched.")
+    }
+    def status = _rmFetchStatusJson(appId)
+    def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+    def committed = { String key -> settingsByName["${key}.${actionIdx}".toString()]?.value }
+    String subType = committed("actSubType")?.toString()
+    if (!subType) {
+        def indices = _rmActionIndicesFromSettings(status)
         throw new IllegalArgumentException("modifyAction.index ${actionIdx} not found in rule ${appId}. Existing indices: ${indices.sort().join(', ')}. RM is not touched.")
     }
-    def entry = reverse.get(actSubType)
-    def actType = committedSettings["actType.${actionIdx}".toString()]?.toString()
-    if (actType != "rulesActs" || entry == null) {
-        throw new IllegalArgumentException("modifyAction currently supports only rule-targeting actions (runRule, cancelTimers, pauseRule, privateBoolean). Action ${actionIdx} is actType='${actType}' actSubType='${actSubType}'. Rebuild other action shapes with removeAction + addAction in an ordered patches call; earlier edits remain if a later edit fails. RM is not touched.")
+    def editAct = (status?.appState ?: []).find { it?.name?.toString() == "editAct" }?.value
+    if (editAct != null) throw new IllegalStateException(_rmStuckEditActMessage("modifyAction(${actionIdx})", appId, editAct))
+    Map target = _rmCatalogEntryForSubType(subType, committed)
+    if (target == null) {
+        throw new IllegalArgumentException("modifyAction: action ${actionIdx} (${subType}) cannot be edited in place; rebuild it with removeAction + addAction. RM is not touched.")
     }
-    def allowedMods = ["ruleIds"]
-    if (actSubType == "getPauseResumeRules") allowedMods << "action"
-    if (actSubType == "getSetPrivateBoolean") allowedMods << "value"
-    def unsupported = mods.keySet() - allowedMods
-    if (unsupported) {
-        throw new IllegalArgumentException("modifyAction on a '${entry.capability}' action supports mods: ${allowedMods.join(', ')}. Unsupported: ${unsupported.sort().join(', ')}. RM is not touched.")
-    }
-    if (mods.isEmpty()) {
-        throw new IllegalArgumentException("modifyAction.mods must set at least one of: ${allowedMods.join(', ')}. RM is not touched.")
-    }
-    def committedType = committedSettings["${entry.typeField}.${actionIdx}".toString()]?.toString()
-    if (committedType != null && committedType != "Rule Machine") {
-        throw new IllegalArgumentException("modifyAction cannot preserve action ${actionIdx}'s ${entry.typeField} selector: it reads '${committedType}', and the rebuild only writes 'Rule Machine'. Rebuild this action with removeAction + addAction (or the wizard) instead. RM is not touched.")
-    }
-    // A single committed target may persist as a bare scalar.
-    def committedTargetsRaw = committedSettings["${entry.listField}.${actionIdx}".toString()]
-    def committedTargets = (committedTargetsRaw instanceof List) ? committedTargetsRaw
-                            : (committedTargetsRaw != null ? [committedTargetsRaw] : null)
-    def spec = [capability: entry.capability,
-                ruleIds: mods.containsKey("ruleIds") ? mods.ruleIds : committedTargets]
-    if (actSubType == "getPauseResumeRules") {
-        // pR true = resume. No silent default: an unreadable verb would flip the action.
-        def committedPr = committedSettings["pR.${actionIdx}".toString()]
-        if (mods.containsKey("action")) {
-            spec.action = mods.action
-        } else if (committedPr == null) {
-            throw new IllegalArgumentException("modifyAction cannot preserve action ${actionIdx}'s pause/resume verb: pR.${actionIdx} is unreadable. Pass mods.action ('pause'|'resume') explicitly. RM is not touched.")
-        } else {
-            spec.action = (committedPr.toString() == "true") ? "resume" : "pause"
+    String cap = target.cap
+    Map entry = target.entry
+    Map actionEntry = target.actionEntry
+    String action = target.action
+    Map actions = (entry.actions instanceof Map) ? (entry.actions as Map) : null
+    def writes = [:]
+    if (mods.containsKey("action")) {
+        String newAction = mods.action?.toString()
+        Map newEntry = (actions != null) ? (actions[newAction] as Map) : null
+        if (newEntry == null) {
+            throw new IllegalArgumentException("Unknown ${cap} action '${newAction}' -- supported: ${actions != null ? actions.keySet().join(', ') : '(none: ' + cap + ' has no action variants)'}. RM is not touched.")
         }
-    }
-    if (actSubType == "getSetPrivateBoolean") {
-        // pvTF true = set False.
-        def committedPvTF = committedSettings["pvTF.${actionIdx}".toString()]
-        if (mods.containsKey("value")) {
-            spec.value = mods.value
-        } else if (committedPvTF == null) {
-            throw new IllegalArgumentException("modifyAction cannot preserve action ${actionIdx}'s boolean value: pvTF.${actionIdx} is unreadable. Pass mods.value (true|false) explicitly. RM is not touched.")
-        } else {
-            spec.value = !(committedPvTF.toString() == "true")
+        if ((newEntry.sub ?: entry.sub) != subType) {
+            throw new IllegalArgumentException("modifyAction: ${cap}.${newAction} is a different Rule Machine action (${newEntry.sub}) from the committed one (${subType}); rebuild it with removeAction + addAction. RM is not touched.")
         }
+        actionEntry = newEntry
+        action = newAction
+        ((actionEntry.fields ?: []) as List).each { Map f -> if (f.containsKey("fixed")) writes[f.key.toString().replace("@N", actionIdx.toString())] = f.fixed }
     }
-    // An empty ruleIds slips the existence check (which early-returns on an empty list).
-    if (!(spec.ruleIds instanceof List) || (spec.ruleIds as List).isEmpty()) {
-        throw new IllegalArgumentException("modifyAction requires a non-empty ruleIds target (mods.ruleIds was ${mods.containsKey('ruleIds') ? mods.ruleIds.inspect() : 'omitted and no committed target was readable'}). RM is not touched.")
-    }
-    _rmValidateRuleTargetExists(entry.capability, spec.ruleIds, null)
-    // The re-added action lands last and is walked up past every action after the original slot,
-    // a display-order distance.
-    def beforeIndices = _rmOrderedActionIndices(appId)
-    if (beforeIndices == null) {
-        throw new IllegalStateException("modifyAction(${actionIdx}) refused: the compiled action order (ruleBuilderJson actionList) is unavailable for rule ${appId}, so the rebuilt action could not be walked back to its position reliably. Retry once ruleBuilderJson reads, or rebuild with removeAction + addAction. RM is not touched.")
-    }
-    def pos = beforeIndices.indexOf(actionIdx)
-    if (pos < 0) {
-        throw new IllegalArgumentException("modifyAction.index ${actionIdx} exists in the rule's settings but not in its display order (${beforeIndices.join(', ')}) -- the index sources disagree, so a rebuild cannot preserve position. Inspect the rule via hub_get_app_config and repair via removeAction + addAction. RM is not touched.")
-    }
-    int movesUp = beforeIndices.size() - 1 - pos
-    // The re-add's argument checks run before the delete.
-    try { _rmMapActionSpec(appId, new LinkedHashMap(spec), entry.capability.toString(), spec.action?.toString()?.trim()) }
-    catch (IllegalArgumentException argExc) { throw new IllegalArgumentException(_rmNotTouched("modifyAction: ${argExc.message}".toString()), argExc) }
-    def removeResult = _rmDeleteAction(appId, actionIdx)
-    // From here the original action is gone: no message below may carry "RM is not touched".
-    def addResult
-    try { addResult = _rmAddAction(appId, _rmWithClock(spec, reqT0)) }
-    catch (Exception addExc) { throw new IllegalStateException(_rmModifyPostDeleteMsg(actionIdx, "re-add", addExc)) }
-    if (addResult?.success == false) {
-        return [success: false, partial: true, removedIndex: actionIdx, removeResult: removeResult, addResult: addResult, spec: spec,
-                error: "modifyAction: action ${actionIdx} was removed but the re-add failed -- restore the pre-write snapshot (backup/restoreHint on the outer envelope) or re-issue addAction with the echoed spec."]
-    }
-    def newIdx = addResult?.actionIndex as Integer
-    def moveResults = []
-    boolean moveSoftFail = false
-    boolean budgetPaused = false
-    int movesDone = 0
-    def moveVerifyHint = null
-    for (int i = 0; i < movesUp; i++) {
-        // A response severed mid-composite invites a retry that re-runs the delete.
-        if (_timeBudgetExceeded(reqT0)) {
-            budgetPaused = true
-            break
+    List fieldDefs = (((entry.fields ?: []) as List) + ((actionEntry.fields ?: []) as List)).findAll { it.key && it.name }
+    def editable = fieldDefs*.name + (actions != null ? ["action"] : [])
+    mods.each { k, v ->
+        String name = k.toString()
+        if (name == "action") return
+        Map f = fieldDefs.find { it.name == name } as Map
+        if (f == null) {
+            throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: '${name}' is not a field that can be edited in place. Editable: ${editable.join(', ')}. RM is not touched.")
         }
-        def mv
-        try { mv = _rmMoveAction(appId, newIdx, "up") }
-        catch (Exception mvExc) { throw new IllegalStateException(_rmModifyPostDeleteMsg(actionIdx, "reposition", mvExc, newIdx)) }
-        moveResults << mv
-        movesDone++
-        if (mv?.success == false) {
-            // A late-committing click plus further moves would walk the action past its slot.
-            moveSoftFail = true
-            moveVerifyHint = mv?.verifyHint
-            break
+        def value = v
+        if (f.direction != null) value = (f.direction == true) ? (v == "raise") : (v != "raise")
+        else if (name == "ruleIds") value = _rmNormalizeRuleIdsForWrite(v, subType == "getSetPrivateBoolean")
+        else if (name == "value" && subType == "getSetPrivateBoolean") value = !(v as Boolean)
+        if (name == "deviceIds") _rmValidateDeviceIdsExist("modifyAction.deviceIds", v)
+        if (name == "ruleIds") _rmValidateRuleTargetExists(cap, v, null)
+        if (value == null || (f.nonBlank && !value.toString().trim())) {
+            throw new IllegalArgumentException("modifyAction: '${name}' needs a value. RM is not touched.")
         }
+        writes[f.key.toString().replace("@N", actionIdx.toString())] = value
     }
-    // The add can report success with the target field silently skipped, so the persisted
-    // target list and verb/value fields are read back.
-    def verifiedTargets = null
-    def fieldMismatches = []
-    boolean verificationFetchFailed = false
-    if (!budgetPaused) {
-        try {
-            def verifyCfg = _rmFetchConfigJson(appId)
-            def raw = verifyCfg?.settings?."${entry.listField}.${newIdx}"
-            verifiedTargets = (raw instanceof List) ? raw.collect { it?.toString() } : (raw != null ? [raw.toString()] : null)
-            if (actSubType == "getPauseResumeRules") {
-                def prNow = verifyCfg?.settings?."pR.${newIdx}"?.toString()
-                def prWant = (spec.action == "resume") ? "true" : "false"
-                if (prNow != prWant) fieldMismatches << "pR.${newIdx} reads ${prNow?.inspect() ?: 'absent'}, wanted ${prWant} (${spec.action})"
+    if (writes.isEmpty()) throw new IllegalArgumentException("modifyAction.mods changes nothing on action ${actionIdx}. RM is not touched.")
+    return [cap: cap, action: action, subType: subType, writes: writes, fieldDefs: fieldDefs]
+}
+
+// The catalog entry (and action variant) a committed sub-type belongs to. Variants that share a
+// sub-type are told apart by their fixed settings. Null when the catalog names no settings for it
+// or the action embeds an expression (its editor needs the condition context).
+private Map _rmCatalogEntryForSubType(String subType, Closure committed) {
+    if (subType in ["getIfThen", "getElseIf", "getWhile", "getUntil", "getWaitRule", "getWaitEvents"]) return null
+    Map found = null
+    _rmActionCatalog().each { String cap, Map entry ->
+        if (found != null) return
+        if (entry.actions instanceof Map) {
+            (entry.actions as Map).each { act, Map ae ->
+                if (found != null || (ae.sub ?: entry.sub) != subType) return
+                def fixed = ((ae.fields ?: []) as List).findAll { it.containsKey("fixed") }
+                if (fixed.every { Map f -> committed(f.key.toString().replace(".@N", ""))?.toString() == f.fixed.toString() }) {
+                    found = [cap: cap, action: act.toString(), entry: entry, actionEntry: ae]
+                }
             }
-            if (actSubType == "getSetPrivateBoolean") {
-                def pvNow = verifyCfg?.settings?."pvTF.${newIdx}"?.toString()
-                def pvWant = (spec.value as Boolean) ? "false" : "true"
-                if (pvNow != pvWant) fieldMismatches << "pvTF.${newIdx} reads ${pvNow?.inspect() ?: 'absent'}, wanted ${pvWant} (value=${spec.value})"
-            }
-        } catch (Exception verifyExc) {
-            verificationFetchFailed = true
-            mcpLog("warn", "rm-native", "_rmModifyAction: post-rebuild readback failed for app ${appId} (${verifyExc.message}) -- cannot verify the new target landed")
+        } else if (entry.sub == subType) {
+            found = [cap: cap, action: null, entry: entry, actionEntry: entry]
         }
     }
-    def expectedTargets = _rmNormalizeRuleIdsForWrite(spec.ruleIds, actSubType == "getSetPrivateBoolean").collect { it?.toString() }.sort(false)
-    boolean targetsVerified = !budgetPaused && !verificationFetchFailed && verifiedTargets != null &&
-        verifiedTargets.sort(false) == expectedTargets && fieldMismatches.isEmpty()
-    int movesRemaining = movesUp - movesDone
-    def out = [success: targetsVerified && !moveSoftFail && !budgetPaused,
-            partial: (addResult?.partial == true) || moveSoftFail || verificationFetchFailed || budgetPaused,
-            removedIndex: actionIdx, newActionIndex: newIdx, movesUp: movesUp, movesDone: movesDone,
-            budgetPaused: budgetPaused, movesRemaining: budgetPaused ? movesRemaining : null,
-            moveSoftFail: moveSoftFail, verifyHint: moveVerifyHint,
-            verifiedTargets: verifiedTargets, verificationFetchFailed: verificationFetchFailed,
-            settingsSkipped: addResult?.settingsSkipped,
-            removeResult: removeResult, addResult: addResult, moveResults: moveResults, spec: spec,
-            error: targetsVerified ? null : (budgetPaused
-                ? "modifyAction: the rebuild committed but the response budget ran out with ${movesRemaining} reposition move(s) unapplied and the readback unverified. Finish with ${movesRemaining} x hub_set_rule(appId=${appId}, moveAction={index:${newIdx}, direction:'up'}), then hub_set_rule(appId=${appId}, button='updateRule') to re-initialize, and verify ${entry.listField}.${newIdx} via hub_get_app_config(appId=${appId}). Do NOT re-issue modifyAction -- it would delete the rebuilt action again."
-                : (verificationFetchFailed
-                    ? "modifyAction: the rebuild committed but the post-rebuild readback failed -- verify ${entry.listField}.${newIdx} via hub_get_app_config(appId=${appId}) before trusting the retarget."
-                    : (!fieldMismatches.isEmpty() && verifiedTargets != null && verifiedTargets.sort(false) == expectedTargets
-                        ? "modifyAction: the target list landed but the rebuilt action's field(s) did not: ${fieldMismatches.join('; ')}. Restore the pre-write snapshot (backup on the outer envelope) or repair via removeAction + addAction."
-                        : "modifyAction: the rebuilt action's ${entry.listField}.${newIdx} reads ${verifiedTargets?.inspect() ?: 'absent'} instead of ${expectedTargets.inspect()}${fieldMismatches ? ' (also: ' + fieldMismatches.join('; ') + ')' : ''} -- the target did not land. Restore the pre-write snapshot (backup on the outer envelope) or re-issue addAction with the echoed spec.")))]
-    // A success shape carries no error/verifyHint/movesRemaining keys at all.
-    return out.findAll { k, v -> v != null }
+    if (found == null) return null
+    def keyed = (((found.entry.fields ?: []) as List) + ((found.actionEntry.fields ?: []) as List)).any { it.key && it.name }
+    return keyed ? found : null
+}
+
+// Whether a committed setting carries the value that was written (settings echo as strings).
+private boolean _rmSettingEchoes(Object stored, Object wanted) {
+    if (wanted instanceof List) {
+        def want = (wanted as List).collect { it?.toString() }.sort(false)
+        def have = (stored instanceof List) ? (stored as List).collect { it?.toString() }.sort(false)
+            : (stored instanceof Map ? (stored as Map).keySet().collect { it?.toString() }.sort(false) : (stored != null ? [stored.toString()] : []))
+        return want == have
+    }
+    return stored != null && stored.toString().trim() == wanted.toString().trim()
 }
 
 private List _rmPatchModifyOpKeys() { ["removeTrigger", "modifyTrigger", "modifyAction"] }
@@ -4681,16 +4256,6 @@ private Map _rmPatchModifyOp(Integer appId, Map pm, Long reqT0) {
         return [op: op] + mtRes + [partial: _rmModifyTriggerInnerPartial(mtRes)]
     }
     return [op: op] + (_rmModifyAction(appId, index, spec.mods as Map, reqT0) ?: [:])
-}
-
-// Message for a throw AFTER modifyAction's delete leg committed. Neutralizes
-// any nested "RM is not touched" sentinel (true for the inner helper's own
-// pre-flight, a lie for the composed operation) so the error-response builder
-// cannot route a post-delete failure to the nothing-to-restore hint.
-private String _rmModifyPostDeleteMsg(Integer actionIdx, String leg, Exception e, Integer rebuiltIdx = null) {
-    def m = (e.message ?: e.toString()).replace("RM is not touched", "the original action WAS already removed")
-    def rebuilt = rebuiltIdx != null ? " The rebuilt action IS in the rule at settings index ${rebuiltIdx} (position NOT restored)." : ""
-    return "modifyAction: action ${actionIdx} was already removed when the ${leg} leg failed -- the rule IS modified.${rebuilt} Restore the pre-write snapshot via hub_restore_backup with this response's backupKey. Underlying: ${m}"
 }
 
 // Delete every action: the trashAll click enters trash-confirmation mode, which reveals the
@@ -5546,31 +5111,29 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
     def deviceIds = actionSpec.deviceIds
     def skipped = []
 
+    if (cap == "switch" && actionSpec.containsKey("onlyOn")) {
+        throw new IllegalArgumentException("switch: 'onlyOn' is now 'onlyIfChanged' -- RM's \"Command only switches that are off?\" (for on) / \"... that are on?\" (for off) option sends the command only to switches not already in the requested state. RM is not touched.")
+    }
+    Map catalog = _rmActionCatalog()
+    Map catEntry = catalog[cap == "variable" ? "setVariable" : cap] as Map
+    if (catEntry == null) {
+        throw new IllegalArgumentException("Unsupported capability '${cap}' -- supported: ${catalog.keySet().join(', ')}. For an action RM offers that none of these maps, use rawSettings={fieldName: value, ...} with the @N index placeholder.")
+    }
+    Map catActions = (catEntry.actions instanceof Map) ? (catEntry.actions as Map) : null
+    Map catAction = (catActions != null) ? (catActions[action] as Map) : catEntry
+    if (catActions != null && catAction == null) {
+        if (action == null && actionSpec.command != null) {
+            throw new IllegalArgumentException("${cap} actions use the 'action' field, not 'command' (got command='${actionSpec.command}'). Supported: ${catActions.keySet().join(', ')}")
+        }
+        throw new IllegalArgumentException("Unknown ${cap} action '${action}' -- supported: ${catActions.keySet().join(', ')}")
+    }
+    if (!(catEntry.custom == true || catAction.custom == true)) {
+        return _rmMapCatalogAction(cap, action, actionSpec, catEntry, catAction)
+    }
+
     if (cap == "switch") {
         actType = "switchActs"
-        if (actionSpec.containsKey("onlyOn")) {
-            throw new IllegalArgumentException("switch: 'onlyOn' is now 'onlyIfChanged' -- RM's \"Command only switches that are off?\" (for on) / \"... that are on?\" (for off) option sends the command only to switches not already in the requested state. RM is not touched.")
-        }
         switch (action) {
-            case "on":
-                actSubType = "getOnOffSwitch"
-                fields = ["onOffSwitch.@N": deviceIds, "onOff.@N": true]
-                // optSwitch reveals only after a device is selected, so it stays last.
-                if (actionSpec.onlyIfChanged == true) fields["optSwitch.@N"] = true
-                break
-            case "off":
-                actSubType = "getOnOffSwitch"
-                fields = ["onOffSwitch.@N": deviceIds, "onOff.@N": false]
-                if (actionSpec.onlyIfChanged == true) fields["optSwitch.@N"] = true
-                break
-            case "toggle":
-                actSubType = "getToggleSwitch"
-                fields = ["toggleSwitch.@N": deviceIds]
-                break
-            case "flash":
-                actSubType = "getFlashSwitch"
-                fields = ["flashSwitch.@N": deviceIds]
-                break
             case "setPerMode":
                 actSubType = "getModeSwitch"
                 if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
@@ -5598,11 +5161,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                     }
                 }
                 break
-            default:
-                if (action == null && actionSpec.command != null) {
-                    throw new IllegalArgumentException("switch actions use the 'action' field, not 'command' (got command='${actionSpec.command}'). Supported: on, off, toggle, flash, setPerMode, choosePerMode")
-                }
-                throw new IllegalArgumentException("Unknown switch action '${action}' -- supported: on, off, toggle, flash, setPerMode, choosePerMode")
         }
     } else if (cap == "dimmer") {
         actType = "dimmerActs"
@@ -5619,36 +5177,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 }
                 if (actionSpec.fadeSeconds != null) fields["dimRA.@N"] = actionSpec.fadeSeconds
                 break
-            case "toggle":
-                if (actionSpec.level == null) throw new IllegalArgumentException("dimmer.toggle requires 'level' (0-100), the level to set when toggling from off to on.")
-                actSubType = "getToggleDimmer"
-                fields = ["dimA.@N": deviceIds, "dimLA.@N": actionSpec.level]
-                if (actionSpec.fadeSeconds != null) fields["dimRA.@N"] = actionSpec.fadeSeconds
-                break
-            case "adjust":
-                if (actionSpec.adjustBy == null) throw new IllegalArgumentException("dimmer.adjust requires 'adjustBy' (signed integer -100..100).")
-                actSubType = "getAdjustDimmer"
-                fields = ["dimA.@N": deviceIds, "dimAdj.@N": actionSpec.adjustBy]
-                if (actionSpec.fadeSeconds != null) fields["dimAdjR.@N"] = actionSpec.fadeSeconds
-                break
-            case "fade":
-                if (actionSpec.targetLevel == null) throw new IllegalArgumentException("dimmer.fade requires 'targetLevel' (0-100).")
-                if (actionSpec.minutes == null) throw new IllegalArgumentException("dimmer.fade requires 'minutes' (how long the fade takes).")
-                actSubType = "getFadeDimmer"
-                fields = ["dimFade.@N": deviceIds, "dimFadeUp.@N": (actionSpec.direction == "raise"), "dimFadeTarget.@N": actionSpec.targetLevel, "dimFadeTime.@N": actionSpec.minutes]
-                if (actionSpec.intervalSeconds != null) fields["dimFadeInterval.@N"] = actionSpec.intervalSeconds
-                break
-            case "stopFade":
-                actSubType = "getStopFade"; fields = [:]
-                break
-            case "startRaiseLower":
-                // dimRL true = lower.
-                actSubType = "getRLDimmer"
-                fields = ["dimRL.@N": (actionSpec.direction != "raise"), "dimRaiseLower.@N": deviceIds]
-                break
-            case "stopChanging":
-                actSubType = "getStopDimmer"; fields = ["dimStop.@N": deviceIds]
-                break
             case "setLevelPerMode":
                 actSubType = "getDimmersPerMode"
                 if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
@@ -5662,8 +5190,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 }
                 if (actionSpec.fadeSeconds != null) fields["dimMR.@N"] = actionSpec.fadeSeconds
                 break
-            default:
-                throw new IllegalArgumentException("Unknown dimmer action '${action}' -- supported: setLevel, toggle, adjust, fade, stopFade, startRaiseLower, stopChanging, setLevelPerMode")
         }
     } else if (cap == "color") {
         actType = "dimmerActs"
@@ -5674,12 +5200,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 fields = ["bulbs.@N": deviceIds]
                 if (actionSpec.colorName != null) fields["color.@N"] = actionSpec.colorName
                 if (actionSpec.level != null) fields["colorLevel.@N"] = actionSpec.level
-                break
-            case "toggleColor":
-                if (actionSpec.colorName == null) throw new IllegalArgumentException("color.toggleColor requires 'colorName' (e.g. 'Red').")
-                if (actionSpec.level == null) throw new IllegalArgumentException("color.toggleColor requires 'level' (0-100).")
-                actSubType = "getToggleColor"
-                fields = ["bulbsTog.@N": deviceIds, "colorTog.@N": actionSpec.colorName, "colorTogLevel.@N": actionSpec.level]
                 break
             case "setColorPerMode":
                 actSubType = "getColorPerMode"
@@ -5696,35 +5216,10 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                     }
                 }
                 break
-            default:
-                throw new IllegalArgumentException("Unknown color action '${action}' -- supported: setColor, toggleColor, setColorPerMode")
         }
     } else if (cap == "colorTemp") {
         actType = "dimmerActs"
         switch (action) {
-            case "setColorTemp":
-                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.setColorTemp requires 'kelvin' (e.g. 2700).")
-                actSubType = "getSetColorTemp"
-                fields = ["ct.@N": deviceIds, "ctL.@N": actionSpec.kelvin]
-                if (actionSpec.level != null) fields["ctLevel.@N"] = actionSpec.level
-                break
-            case "toggleColorTemp":
-                if (actionSpec.kelvin == null) throw new IllegalArgumentException("colorTemp.toggleColorTemp requires 'kelvin' (e.g. 2700).")
-                actSubType = "getToggleColorTemp"
-                fields = ["ctTog.@N": deviceIds, "ctLTog.@N": actionSpec.kelvin]
-                if (actionSpec.level != null) fields["ctTogLevel.@N"] = actionSpec.level
-                break
-            case "fadeColorTemp":
-                if (actionSpec.targetKelvin == null || actionSpec.minutes == null) throw new IllegalArgumentException("colorTemp.fadeColorTemp requires 'targetKelvin' and 'minutes'; optional 'direction' (raise/lower) defaults to lower.")
-                actSubType = "getFadeCT"
-                fields = ["ctFade.@N": deviceIds, "ctFadeUp.@N": (actionSpec.direction == "raise"), "ctFadeTarget.@N": actionSpec.targetKelvin, "ctFadeTime.@N": actionSpec.minutes]
-                if (actionSpec.intervalSeconds != null) fields["ctFadeInterval.@N"] = actionSpec.intervalSeconds
-                if (actionSpec.changeLevel != null) fields["bothCTandL.@N"] = actionSpec.changeLevel
-                if (actionSpec.targetLevel != null) fields["ctFadeLevel.@N"] = actionSpec.targetLevel
-                break
-            case "stopColorTempFade":
-                actSubType = "getStopCTFade"; fields = [:]
-                break
             case "setColorTempPerMode":
                 actSubType = "getColorTempPerMode"
                 if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
@@ -5741,17 +5236,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                     }
                 }
                 break
-            default:
-                throw new IllegalArgumentException("Unknown colorTemp action '${action}' -- supported: setColorTemp, toggleColorTemp, fadeColorTemp, stopColorTempFade, setColorTempPerMode")
-        }
-    } else if (cap == "lock") {
-        // lockRL true = unlock.
-        actType = "lockActs"
-        actSubType = "getLULock"
-        switch (action) {
-            case "lock":   fields = ["lockRL.@N": false, "lockLockUnlock.@N": deviceIds]; break
-            case "unlock": fields = ["lockRL.@N": true,  "lockLockUnlock.@N": deviceIds]; break
-            default: throw new IllegalArgumentException("Unknown lock action '${action}' -- supported: lock, unlock")
         }
     } else if (cap == "thermostat") {
         if (actionSpec.mode == null && actionSpec.fanMode == null && actionSpec.heatingSetpoint == null &&
@@ -5776,34 +5260,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             throw new IllegalArgumentException("hsm action requires 'command' as one of: ${_rmHsmCommands().join(', ')}. Got '${hsmCmd}'. (No 'armAll' -- use 'armRules'. getSetHSM appears only when HSM is installed on the hub.)")
         }
         fields = ["alarm.@N": hsmCmd]
-    } else if (cap == "shade") {
-        // shadeRL true = close.
-        actType = "sceneActs"
-        switch (action) {
-            case "open":  actSubType = "getRLShade"; fields = ["shadeRL.@N": false, "shadeOpenClose.@N": deviceIds]; break
-            case "close": actSubType = "getRLShade"; fields = ["shadeRL.@N": true,  "shadeOpenClose.@N": deviceIds]; break
-            case "setPosition":
-                if (actionSpec.position == null) throw new IllegalArgumentException("shade.setPosition requires 'position' (0-100).")
-                actSubType = "getShadePosition"
-                fields = ["shadePosition.@N": deviceIds, "shadeLevel.@N": actionSpec.position]
-                break
-            case "stop": actSubType = "getStopShade"; fields = ["shadeStop.@N": deviceIds]; break
-            default: throw new IllegalArgumentException("Unknown shade action '${action}' -- supported: open, close, setPosition, stop")
-        }
-    } else if (cap == "fan") {
-        actType = "sceneActs"
-        switch (action) {
-            case "setSpeed":
-                if (actionSpec.speed == null) throw new IllegalArgumentException("fan.setSpeed requires 'speed' (low / medium-low / medium / medium-high / high / on / auto / off).")
-                actSubType = "getFanSpeed"
-                fields = ["fanDevice.@N": deviceIds, "fanSpeed.@N": actionSpec.speed]
-                break
-            case "cycle":
-                actSubType = "getAdjustFan"
-                fields = ["fanAdjust.@N": deviceIds]
-                break
-            default: throw new IllegalArgumentException("Unknown fan action '${action}' -- supported: setSpeed, cycle")
-        }
     } else if (cap == "mode") {
         actType = "modeActs"
         actSubType = "getSetMode"
@@ -6037,19 +5493,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
             }
             actionSpec.__runCommandExtraParams = actionSpec.parameters
         }
-    } else if (cap == "fileWrite") {
-        actType = "modeActs"
-        actSubType = "getWriteLocalFile"
-        fields = ["localFile.@N": (actionSpec.fileName ?: ""), "fileContents.@N": (actionSpec.content ?: "")]
-    } else if (cap == "fileAppend") {
-        // localFile.<N> is an enum of existing files here.
-        actType = "modeActs"
-        actSubType = "getAppendLocalFile"
-        fields = ["localFile.@N": (actionSpec.fileName ?: ""), "fileContents.@N": (actionSpec.content ?: "")]
-    } else if (cap == "fileDelete") {
-        actType = "modeActs"
-        actSubType = "getDeleteLocalFile"
-        fields = ["deleteFile.@N": (actionSpec.fileName ?: "")]
     } else if (cap == "zwavePoll") {
         // ssZ true = start; ssSD true = switches, false = dimmers.
         actType = "deviceActs"
@@ -6062,15 +5505,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
     } else if (cap == "button") {
         actType = "switchActs"
         switch (action) {
-            case "push":
-                actSubType = "getPushButton"
-                if (actionSpec.buttonNumber == null) throw new IllegalArgumentException("button.push requires 'buttonNumber' (Integer)")
-                fields = [
-                    "pushButton.@N": deviceIds,
-                    "pushButNo.@N": actionSpec.buttonNumber,
-                    "pushButOp.@N": (actionSpec.operation ?: "push")
-                ]
-                break
             case "pushPerMode":
                 actSubType = "getPushButtonPerMode"
                 if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
@@ -6096,57 +5530,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                     if (devs != null) fields["chooseButton${mid}.@N"] = devs
                 }
                 break
-            default:
-                throw new IllegalArgumentException("Unknown button action '${action}' -- supported: push, pushPerMode, choosePerMode")
         }
-    } else if (cap == "log") {
-        actType = "messageActs"
-        actSubType = "getLogMsg"
-        fields = ["logmsg.@N": (actionSpec.message ?: "")]
-    } else if (cap == "notification") {
-        actType = "messageActs"
-        actSubType = "getMsg"
-        fields = ["msg.@N": (actionSpec.message ?: ""), "note.@N": deviceIds]
-    } else if (cap == "httpGet") {
-        actType = "messageActs"
-        actSubType = "getHTTPGet"
-        fields = ["httper.@N": (actionSpec.url ?: "")]
-    } else if (cap == "httpPost") {
-        actType = "messageActs"
-        actSubType = "getHTTPPost"
-        fields = [
-            "httper.@N": (actionSpec.url ?: ""),
-            "httpPostBody.@N": (actionSpec.body ?: ""),
-            "httpPostType.@N": (actionSpec.contentType ?: "application/x-www-form-urlencoded")
-        ]
-    } else if (cap == "ping") {
-        actType = "messageActs"
-        actSubType = "getPingIP"
-        fields = ["pingIP.@N": (actionSpec.ip ?: "")]
-    } else if (cap == "volume") {
-        actType = "soundActs"
-        actSubType = "getSetVolume"
-        fields = ["volume.@N": deviceIds]
-        if (actionSpec.level != null) fields["volumeVal.@N"] = actionSpec.level
-    } else if (cap == "mute") {
-        actType = "soundActs"
-        actSubType = "getMuteUnmute"
-        switch (action) {
-            case "mute":   fields = ["mU.@N": true, "muteUnmute.@N": deviceIds]; break
-            case "unmute": fields = ["mU.@N": false, "muteUnmute.@N": deviceIds]; break
-            default: throw new IllegalArgumentException("Unknown mute action '${action}' -- supported: mute, unmute")
-        }
-    } else if (cap == "chime") {
-        actType = "soundActs"
-        actSubType = "getChime"
-        fields = ["chime.@N": deviceIds]
-        if (actionSpec.playStop != null) fields["chimePlayStop.@N"] = actionSpec.playStop
-        if (actionSpec.soundNumber != null) fields["chimePlaySound.@N"] = actionSpec.soundNumber
-    } else if (cap == "siren") {
-        actType = "soundActs"
-        actSubType = "getSiren"
-        fields = ["siren.@N": deviceIds]
-        if (actionSpec.sirenAction != null) fields["sirenAct.@N"] = actionSpec.sirenAction
     } else if (cap == "privateBoolean") {
         // pvTF true = set False.
         actType = "rulesActs"
@@ -6178,29 +5562,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         switch (action) {
             case "pause":  fields = ["pR.@N": false, "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": pauseRuleIds]; break
             case "resume": fields = ["pR.@N": true,  "pauseRuleType.@N": "Rule Machine", "pauseRule.@N": pauseRuleIds]; break
-            default: throw new IllegalArgumentException("Unknown pauseRule action '${action}' -- supported: pause, resume")
         }
-    } else if (cap == "capture") {
-        actType = "deviceActs"
-        actSubType = "getCapture"
-        fields = ["capture.@N": deviceIds]
-    } else if (cap == "restore") {
-        actType = "deviceActs"
-        actSubType = "getRestore"
-        fields = [:]
-    } else if (cap == "refresh") {
-        actType = "deviceActs"
-        actSubType = "getRefreshSwitch"
-        fields = ["refresh.@N": deviceIds]
-    } else if (cap == "poll") {
-        actType = "deviceActs"
-        actSubType = "getPollSwitch"
-        fields = ["poll.@N": deviceIds]
-    } else if (cap == "disableDevice") {
-        // disEn true = enable.
-        actType = "deviceActs"
-        actSubType = "getDisable"
-        fields = ["disEn.@N": (action != "disable"), "devDisable.@N": deviceIds]
     } else if (cap == "delay") {
         if (actionSpec.variable == null && actionSpec.hours == null && actionSpec.minutes == null && actionSpec.seconds == null) {
             throw new IllegalArgumentException("delay action requires a duration: 'hours', 'minutes' and/or 'seconds', or 'variable' (a hub variable holding the seconds).")
@@ -6236,21 +5598,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
                 if (cfg.seconds != null) fields["delaySecond${mname}.@N"] = cfg.seconds
             }
         }
-    } else if (cap == "cancelDelay") {
-        actType = "delayActs"
-        actSubType = "getCancelDelay"
-        fields = [:]
-    } else if (cap == "exitRule") {
-        actType = "delayActs"
-        actSubType = "getExitRule"
-        fields = [:]
-    } else if (cap == "comment") {
-        if (!(actionSpec.text?.toString()?.trim())) {
-            throw new IllegalArgumentException("comment action requires 'text' (the comment itself).")
-        }
-        actType = "delayActs"
-        actSubType = "getComment"
-        fields = ["comment.@N": actionSpec.text.toString()]
     } else if (cap == "repeat") {
         if (actionSpec.hours == null && actionSpec.minutes == null && actionSpec.seconds == null) {
             throw new IllegalArgumentException("repeat action requires an interval: 'hours', 'minutes' and/or 'seconds'; 'times' alone is not enough.")
@@ -6263,10 +5610,6 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         if (actionSpec.seconds != null) fields["repeatSecond.@N"] = actionSpec.seconds
         if (actionSpec.times != null) fields["repeatN.@N"] = actionSpec.times
         if (actionSpec.stoppable != null) fields["stopRepeat.@N"] = actionSpec.stoppable
-    } else if (cap == "stopRepeat") {
-        actType = "repeatActs"
-        actSubType = "getStopRepeat"
-        fields = [:]
     } else if (cap == "repeatWhile") {
         actType = "repeatActs"
         actSubType = "getWhile"
@@ -6300,16 +5643,8 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         if (!(actionSpec.expression instanceof Map)) {
             throw new IllegalArgumentException("${cap} action requires expression={conditions:[...], operator?:..., operators?:[...]}")
         }
-    } else if (cap == "else") {
-        actType = "condActs"
-        actSubType = "getElse"
-        fields = [:]
-    } else if (cap == "endIf") {
-        actType = "condActs"
-        actSubType = "getEndIf"
-        fields = [:]
     } else {
-        throw new IllegalArgumentException("Unsupported capability '${cap}' -- supported: switch, dimmer, color, colorTemp, lock, thermostat, hsm, shade, fan, mode, setVariable, setLocalVariable, runCommand, log, notification, httpGet, httpPost, ping, volume, mute, chime, siren, privateBoolean, runRule, cancelTimers, pauseRule, capture, restore, refresh, poll, disableDevice, delay, cancelDelay, exitRule, comment, repeat, stopRepeat, repeatWhile, ifThen, elseIf, else, endIf, waitExpression, waitEvents. For not-yet-mapped subtypes (per-mode/per-button/etc.), use rawSettings={fieldName: value, ...} with @N placeholder.")
+        throw new IllegalStateException("addAction: the catalog marks '${cap}' custom but no mapping handles it")
     }
     if (actSubType in ["getIfThen", "getElseIf", "getWhile", "getWaitRule"]) _rmValidateActionExpressionShape(cap, actionSpec.expression as Map)
     return [actType: actType, actSubType: actSubType, fields: fields, skipped: skipped]
@@ -8913,9 +8248,11 @@ Map _setRuleFromEnvelope(Map env) {
     // guide/discover are always schema/meta (no mutation), regardless of confirm.
     if (op == 'guide') return [args: [guide: true]]
     if (op == 'discover') {
-        def kind = (payload instanceof Map && payload.kind != null) ? payload.kind.toString().toLowerCase() : 'action'
+        // kind (or operation) names what to describe: 'trigger'/'addTrigger' or 'action'/'addAction'.
+        def kindRaw = (payload instanceof Map) ? (payload.kind ?: payload.operation) : null
+        def kind = kindRaw != null ? kindRaw.toString().toLowerCase().replaceFirst(/^add/, '') : 'action'
         if (kind != 'trigger' && kind != 'action') {
-            throw new IllegalArgumentException("hub_set_rule operation='discover': args.kind must be 'trigger' or 'action' (got '${kind}').")
+            throw new IllegalArgumentException("hub_set_rule operation='discover': args.kind must be 'trigger' or 'action' (got '${kindRaw}').")
         }
         def kn = (kind == 'trigger') ? 'addTrigger' : 'addAction'
         // An action selector narrows the response to one capability (and checks its action).
@@ -9093,9 +8430,26 @@ def toolSetRule(args) {
         if (trigs) createArgs.triggers = trigs
         if (acts) createArgs.actions = acts
         if (args?.addRequiredExpression instanceof Map) createArgs.requiredExpression = args.addRequiredExpression
-        return _createNativeAppShell(createArgs)
+        return _rmStampOutcome(_createNativeAppShell(createArgs))
     }
-    return _applyNativeAppEdit(args)
+    return _rmStampOutcome(_applyNativeAppEdit(args))
+}
+
+// Every write response says the same three things: applied (something was written and stays),
+// activated (the rule runs with it: its re-initialization was not skipped or rejected) and
+// verified (the readback and health check confirmed it). Schema and probe results are left alone.
+Map _rmStampOutcome(Object result) {
+    if (!(result instanceof Map) || !(result as Map).containsKey("success")) return result as Map
+    Map r = result as Map
+    boolean applied = r.rolledBack != true && (r.success == true || r.partial == true)
+    boolean activated = applied && r.updateRuleFailed != true && r.subscriptionsNotLive != true &&
+        r.mainPageDoneFailed != true && r.mainPageDoneSkipped != true && r.finalisationNotAttempted != true
+    boolean verified = r.success == true && r.verificationFetchFailed != true && r.healthUnverified != true &&
+        (r.health == null || ((r.health as Map).ok == true && (r.health as Map).unreadable != true))
+    r.applied = applied
+    r.activated = activated
+    r.verified = verified
+    return r
 }
 
 def toolSetNativeApp(args) {
@@ -14058,6 +13412,18 @@ def _applyNativeAppEdit(args) {
         if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
         addActionsList?.each { if (it instanceof Map) _rmRejectUnwalkableExpressionConditions(it as Map) }
         if (patchesList != null) _rmRejectMultiOpPatchItems(patchesList)
+        // Every check decidable from the arguments (and read-only lookups) runs before the backup,
+        // so a refused call never takes a snapshot it then tells the caller not to restore.
+        def preActs = (addActionSpec ? [addActionSpec] : []) + (addActionsList ?: []) + (replaceActionsList ?: [])
+        if (preActs) _rmPrevalidateActionSpecList(preActs, addActionSpec ? "addAction" : (addActionsList ? "addActions" : "replaceActions"),
+            _rmSpecListTargetsRule(preActs) ? _rmValidRuleIds() : null, appId)
+        def preTrigs = (addTriggerSpec ? [addTriggerSpec] : []) + (addTriggersList ?: [])
+        if (preTrigs) _rmPrevalidateTriggerSpecList(preTrigs, addTriggerSpec ? "addTrigger" : "addTriggers")
+        if (modifyActionSpec) {
+            if (modifyActionSpec.index == null) throw new IllegalArgumentException("modifyAction.index is required. RM is not touched.")
+            if (!(modifyActionSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyAction.mods is required: the fields to change, e.g. {ruleIds: [123]}. RM is not touched.")
+            _rmPlanModifyAction(appId, _rmPatchOpIndex("modifyAction", modifyActionSpec.index), modifyActionSpec.mods as Map)
+        }
         // Same pre-snapshot slot, covering EVERY edit shape: Hubitat renders no configuration page
         // for a disabled app and every branch below drives that page. Unconditional because the
         // unguarded paths are worse than a refusal -- verified live on fw 2.5.1.177: removeAction
@@ -14171,15 +13537,9 @@ def _applyNativeAppEdit(args) {
         }
     }
 
-    // Action mutation paths — single delete, clear-all, replace-all, move.
-    // All re-fire updateRule at the end so the rule re-subscribes from a
-    // fully-loaded state (actions self-bake via doActPage->selectActions
-    // per-item).
-    // Action mutation path five: position-preserving single-action rebuild
-    // (modifyAction) -- delete + re-add + reposition with readback verification.
+    // modifyAction: an in-place edit through RM's row editor. Actions are read when the rule
+    // runs, so no updateRule follows (the same as addAction).
     if (modifyActionSpec) {
-        if (modifyActionSpec.index == null) throw new IllegalArgumentException("modifyAction.index is required")
-        if (!(modifyActionSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyAction.mods is required and must be a Map (e.g. {ruleIds: [123]})")
         def maResult
         try {
             maResult = _rmModifyAction(appId, modifyActionSpec.index as Integer, modifyActionSpec.mods as Map, args?.__reqT0 as Long)
@@ -14187,105 +13547,23 @@ def _applyNativeAppEdit(args) {
             mcpLogError("rm-native", "modifyAction failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup)
         }
-        // Trailing updateRule so the rebuilt action's wiring re-initializes; same
-        // failure-propagation slots as the sibling mutation branches. Skipped when
-        // the re-add failed (the caller is being told to restore, not re-init) and
-        // on a budget pause (already past the ceiling; the error text's finish-up
-        // steps include the updateRule click). In BOTH skip cases the delete
-        // already committed without a re-init, so subscriptionsNotLive is TRUE.
-        def updateRuleFailed = false
-        def updateRuleError = null
-        boolean updateRuleAttempted = (maResult?.addResult?.success != false) && (maResult?.budgetPaused != true)
-        if (updateRuleAttempted) {
-            try { _rmClickAppButton(appId, "updateRule") }
-            catch (Exception updateExc) {
-                updateRuleFailed = true
-                updateRuleError = updateExc.message
-                mcpLog("warn", "rm-native", "modifyAction: trailing updateRule click failed for app ${appId}: ${updateExc.message}")
-            }
-        }
-        def maRepairHints = []
-        if (updateRuleFailed) {
-            maRepairHints << "updateRule click was rejected after the rebuilt action committed. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
-        }
-        if (maResult?.moveSoftFail && maResult?.verifyHint) {
-            maRepairHints << maResult.verifyHint.toString()
-        }
-        if (maResult?.addResult?.partial == true) {
-            maRepairHints << "The re-add reported partial -- drill into addResult.settingsSkipped for per-field silent_rejection reasons before trusting the rebuilt action."
-        }
-        // Health gate, sibling pattern (_rmHealthGatePass ANDs into success).
-        // A probe failure yields the unreadable shape -- gate-passing, never a
-        // silent null (gate(null) is false and would false-fail a clean rebuild).
-        // Shed entirely on a budget pause (same diagnostics-shedding pattern as
-        // walkStep's budget path) -- the unreadable shape keeps the gate honest.
         def maHealth
-        if (maResult?.budgetPaused == true) {
-            maHealth = [ok: false, unreadable: true, skipped: true, checkErrors: ["health probe shed: response budget exhausted"]]
-        } else {
-            try { maHealth = _rmCheckRuleHealth(appId) }
-            catch (Exception healthExc) {
-                maHealth = [ok: false, unreadable: true, checkErrors: [healthExc.message ?: healthExc.toString()]]
-                mcpLog("warn", "rm-native", "modifyAction: post-rebuild health probe failed for app ${appId}: ${healthExc.message}")
-            }
+        try { maHealth = _rmCheckRuleHealth(appId) }
+        catch (Exception healthExc) {
+            maHealth = [ok: false, unreadable: true, checkErrors: [healthExc.message ?: healthExc.toString()]]
+            mcpLog("warn", "rm-native", "modifyAction: post-edit health probe failed for app ${appId}: ${healthExc.message}")
         }
-        boolean maOk = (maResult?.success == true) && !updateRuleFailed && _rmHealthGatePass(maHealth)
-        boolean maPartial = (maResult?.partial == true) || updateRuleFailed
-        // Every failure cause gets a REAL error string -- three causes live
-        // outside _rmModifyAction's own error slot (a rejected trailing
-        // updateRule, a failed health gate, a soft-failed reposition on an
-        // otherwise-verified rebuild) and must not return success:false with
-        // an empty error.
-        def maError = maResult?.error
-        if (!maOk && maError == null) {
-            if (updateRuleFailed) {
-                maError = "modifyAction: the rebuild committed and verified, but the trailing updateRule click was rejected (${updateRuleError}) -- the rule never re-initialized. Retry hub_set_rule(appId=${appId}, button='updateRule', confirm=true)."
-            } else if (!_rmHealthGatePass(maHealth)) {
-                maError = "modifyAction: the rebuild committed and verified, but the post-rebuild health check reports the rule broken -- inspect health.issues/brokenMarkers and restore via backup if the damage is real."
-                maRepairHints << "Health gate failed after the rebuild. Inspect the health block; hub_restore_backup with this response's backupKey rolls the rule back."
-            } else if (maResult?.moveSoftFail) {
-                maError = "modifyAction: the retarget verified but the reposition could not be confirmed (see verifyHint) -- the action may sit below its original slot. Verify order via hub_get_app_config before any retry."
-            } else {
-                maError = "modifyAction did not complete cleanly -- inspect this envelope's flags."
-            }
-        }
-        def maOut = [
-            success: maOk,
-            partial: maPartial,
-            appId: appId,
-            backup: backup,
-            modifiedIndex: maResult?.removedIndex,
-            newActionIndex: maResult?.newActionIndex,
-            movesUp: maResult?.movesUp,
-            movesDone: maResult?.movesDone,
-            budgetPaused: maResult?.budgetPaused,
-            movesRemaining: maResult?.movesRemaining,
-            moveSoftFail: maResult?.moveSoftFail,
-            verifyHint: maResult?.verifyHint,
-            verifiedTargets: maResult?.verifiedTargets,
-            verificationFetchFailed: maResult?.verificationFetchFailed,
-            settingsSkipped: maResult?.settingsSkipped,
-            spec: maResult?.spec,
-            removeResult: maResult?.removeResult,
-            addResult: maResult?.addResult,
-            moveResults: maResult?.moveResults,
-            error: maError,
-            restoreHint: maOk ? null : "Backup baseline available. Call hub_restore_backup with backupKey='${backup?.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.",
-            updateRuleFailed: updateRuleFailed,
-            // TRUE whenever the rule mutated without a successful re-init: a
-            // rejected click, or a skipped click after the delete committed
-            // (re-add failure / budget pause).
-            subscriptionsNotLive: updateRuleFailed || !updateRuleAttempted,
-            updateRuleError: updateRuleError,
-            repairHints: maRepairHints,
+        boolean maOk = (maResult?.success == true) && _rmHealthGatePass(maHealth)
+        def maOut = [success: maOk, partial: !maOk, appId: appId, backup: backup] + (maResult ?: [:]) + [
             health: maHealth,
-            note: maOk
-                ? "Action ${modifyActionSpec.index} rebuilt (remove + re-add + reposition); updateRule fired once; new target verified by readback. The action's settings index changed to ${maResult?.newActionIndex}; its position in the rule is unchanged."
-                : "modifyAction did NOT complete cleanly -- see error/repairHints. The original action ${modifyActionSpec.index} was removed; the rebuilt action is index ${maResult?.newActionIndex}."
+            error: maOk ? null : (maResult?.error ?: "modifyAction: the edit committed but the health check reports the rule broken -- inspect health.issues and restore via backup if the damage is real."),
+            restoreHint: maOk ? null : "Backup baseline available. Call hub_restore_backup with backupKey='${backup?.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.".toString(),
+            note: maOk ? "Action ${modifyActionSpec.index} edited in place; its index and position are unchanged and the new values read back.".toString()
+                       : "modifyAction did not verify cleanly -- see error.".toString()
         ]
-        // Omit error/restoreHint/verifyHint/updateRuleError on the success shape.
         return maOut.findAll { k, v -> v != null }
     }
+
 
     if (removeActionSpec || clearActionsFlag || replaceActionsList != null || moveActionSpec) {
         // Hoisted out of the try block — Groovy `def` is block-scoped, so
