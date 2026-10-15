@@ -8,12 +8,12 @@ Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `.
 - **Build:** Gradle 9.5.1 via wrapper (`./gradlew test`)
 - **Python tests and E2E:** Python 3.11 or newer. The suite imports `datetime.UTC` and uses union type annotations and strict `zip`; CI selects the current Python 3 release.
 
-## Software E2E lane
+## Ephemeral hub E2E lane
 
-The independent [Software E2E lane](emulated-hub-ci.md) consumes the exact revision's
-public result for production MCP tests over HTTP in an external software environment.
-It uses no hub secrets or label gates. The existing Python E2E registry and official
-SDK provide its assertions.
+The [ephemeral hub lane](ephemeral-hub-e2e.md) runs the full E2E registry and the SDK
+conformance script against a disposable test hub that an external workflow boots for each
+run. It runs on every PR, forks included, without approval or label gates, because the job
+that runs PR code holds no secrets. `E2E_LANE=ephemeral` only redacts hub identity from logs.
 
 ## Additive hub-closer lanes
 
