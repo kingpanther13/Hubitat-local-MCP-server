@@ -12,8 +12,7 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
   push:
-    # feat/emulated-e2e-lane: temporary, validates the lane on PR 545 before it exists on main.
-    branches: [main, feat/emulated-e2e-lane]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
