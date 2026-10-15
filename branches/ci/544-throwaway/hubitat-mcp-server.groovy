@@ -14988,7 +14988,7 @@ def _hubVarsNativeModel() {
     }
     return model
 }
-private boolean _hubVarsNativeAvailable() {
+boolean _hubVarsNativeAvailable() {
     def raw
     try { raw = hubInternalGet("/hub2/variables") }
     catch (Exception e) {
