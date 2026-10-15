@@ -13346,12 +13346,12 @@ class TestRunner:
         assert isinstance(info, dict), f"hub_get_info returned {type(info).__name__}"
         net = info.get("network")
         assert isinstance(net, dict), f"hub_get_info(includeNetwork) missing the network block: {sorted(info.keys())}"
-        assert net.get("success") is True, f"network block did not succeed: {net}"
+        assert net.get("success") is True, f"network block did not succeed: {redact_hub_payload(net, 'network')}"
         # Live network fields present and shaped as expected.
         assert net.get("ipMode") in ("dhcp", "static", "unknown"), \
             f"ipMode should be dhcp|static|unknown, got: {net.get('ipMode')}"
         for key in ("activeDnsServers", "staticNameServers", "dhcpNameServers"):
-            assert isinstance(net.get(key), list), f"{key} should be a list, got: {net.get(key)!r}"
+            assert isinstance(net.get(key), list), f"{key} should be a list, got: {redact_hub_payload(net.get(key), 'network')!r}"
         # The projection carries the config knobs (values may be null on a given hub, but the keys exist).
         for key in ("staticGateway", "staticSubnetMask", "ethernetAutoneg", "wifiSsid",
                     "hasEthernet", "hasWiFi", "currentWifiAddress"):
@@ -13365,7 +13365,7 @@ class TestRunner:
             assert "password" not in low and "psk" not in low, \
                 f"network block leaked a secret-shaped key: {key}"
         serialized = json.dumps(net).lower()
-        assert "psk" not in serialized, f"network block contains a psk token: {net}"
+        assert "psk" not in serialized, f"network block contains a psk token: {redact_hub_payload(net, 'network')}"
         # includeNetwork is opt-in: a plain hub_get_info omits the block.
         plain = self.client.call_tool("hub_get_info")
         assert "network" not in plain, f"hub_get_info returned a network block without includeNetwork: {sorted(plain.keys())}"
@@ -13728,12 +13728,12 @@ class TestRunner:
         result = self.client.call_tool("hub_get_info")
         assert result is not None, "hub_get_info returned None"
         assert isinstance(result, dict), f"hub_get_info returned {type(result)}"
-        assert result.get("setupCurrent") is True, f"server setup is incomplete: {result}"
+        assert result.get("setupCurrent") is True, f"server setup is incomplete: {redact_hub_payload(result)}"
         assert result.get("setupVersion") == result.get("mcpServerVersion"), \
-            f"setup did not complete for the running server version: {result}"
+            f"setup did not complete for the running server version: {redact_hub_payload(result)}"
         repeated = self.client.call_tool("hub_get_info")
         assert repeated.get("setupCurrent") is True and repeated.get("setupVersion") == result["setupVersion"], \
-            f"ordinary requests must retain completed setup: {repeated}"
+            f"ordinary requests must retain completed setup: {redact_hub_payload(repeated)}"
         # Folded from test_hub_get_info_platform_update_and_safemode (the SAME default hub_get_info call):
         # #12/#13 -- platformUpdate + safeMode resolve from /hub2/hubData; the full alerts block stays out.
         assert "platformUpdate" in result, f"hub_get_info missing platformUpdate: {sorted(result)}"
@@ -14177,9 +14177,9 @@ class TestRunner:
         ha = info.get("healthAlerts")
         assert ha is not None, f"includeHealthAlerts=true but healthAlerts absent/null: {sorted(info)}"
         for k in ("safeMode", "active", "details"):
-            assert k in ha, f"healthAlerts missing '{k}': {ha}"
+            assert k in ha, f"healthAlerts missing '{k}': {redact_hub_payload(ha, 'healthAlerts')}"
         assert isinstance(ha["active"], list), f"healthAlerts.active not a list: {ha['active']}"
-        assert isinstance(ha["details"], dict), f"healthAlerts.details not a dict: {ha['details']}"
+        assert isinstance(ha["details"], dict), f"healthAlerts.details not a dict: {redact_hub_payload(ha['details'], 'healthAlerts')}"
         # platform-update fields are surfaced via platformUpdate, not duplicated in the alert details
         assert "platformUpdateAvailable" not in ha["details"], \
             f"platformUpdate leaked into healthAlerts.details: {sorted(ha['details'])}"
@@ -14187,12 +14187,12 @@ class TestRunner:
         items = ha["details"].get("alertItems")
         if isinstance(items, list):
             keys = sorted({str(i["key"]) for i in items if isinstance(i, dict) and i.get("key")})
-            assert ha["active"] == keys, f"healthAlerts.active must list the alert item keys {keys}: {ha}"
+            assert ha["active"] == keys, f"healthAlerts.active must list the alert item keys {keys}: {redact_hub_payload(ha, 'healthAlerts')}"
             # 2.5.2.129: each item is also served as a dismissal handle for hub_set_system_settings.
             assert [i.get("key") for i in ha.get("items") or []] == [i.get("key") for i in items if isinstance(i, dict) and i.get("key")], \
-                f"healthAlerts.items must mirror the alert items: {ha.get('items')}"
+                f"healthAlerts.items must mirror the alert items: {redact_hub_payload(ha.get('items'), 'healthAlerts')}"
             assert all(isinstance(i.get("dismissible"), bool) for i in ha.get("items") or []), \
-                f"alert items must carry a dismissible flag: {ha.get('items')}"
+                f"alert items must carry a dismissible flag: {redact_hub_payload(ha.get('items'), 'healthAlerts')}"
         # includeSubscriptions (same opt-in call): the four subscriptions, or an explicit error on old firmware.
         subs = info.get("subscriptions") or {}
         assert "error" in subs or "hubProtect" in subs, f"subscriptions block has neither data nor an error: {subs}"
@@ -14270,7 +14270,7 @@ class TestRunner:
         res = self.client.call_tool("hub_manage_diagnostics", {"tool": "hub_get_metrics"})
         assert "healthAlerts" in res, f"hub_get_metrics missing healthAlerts: {sorted(res)}"
         ha = res["healthAlerts"]
-        assert ha is not None and "active" in ha and "safeMode" in ha, f"healthAlerts shape wrong: {ha}"
+        assert ha is not None and "active" in ha and "safeMode" in ha, f"healthAlerts shape wrong: {redact_hub_payload(ha, 'healthAlerts')}"
 
     @test("system_tools")
     def test_get_memory_history(self) -> None:
@@ -18312,6 +18312,79 @@ def _inject_device_id(obj: dict, dev_id: str) -> dict:
 
 TEST_HUB_LEASE_VARIABLE = "_TEST_HUB_LEASED_BY"
 
+# E2E_LANE=ephemeral (hub-e2e-ephemeral.yml) runs on a public log; it changes log redaction only.
+EPHEMERAL_HUB_URL = re.compile(r"^https://[a-z0-9-]+\.trycloudflare\.com$")
+_REDACTED = "<redacted>"
+_IDENTITY_KEYS = frozenset({"localIP", "hubData", "hubUID", "zigbeeId", "network"})
+_MAC = re.compile(r"\b[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}\b")
+_TUNNEL_HOST = re.compile(r"[A-Za-z0-9-]+\.trycloudflare\.com")
+_IPV4 = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+_ephemeral_literals: set[str] = set()
+
+
+def ephemeral_lane() -> bool:
+    return os.environ.get("E2E_LANE") == "ephemeral"
+
+
+def hub_label(hub_url: str) -> str:
+    return "ephemeral test hub" if ephemeral_lane() else hub_url
+
+
+def redact_hub_payload(value, key: str | None = None):
+    """Ephemeral lane: a hub_get_info-shaped payload minus identity fields; alert text becomes a count."""
+    if not ephemeral_lane():
+        return value
+    if key in _IDENTITY_KEYS:
+        return _REDACTED
+    if key == "healthAlerts":
+        return f"<{len(value)} health-alert entries>" if isinstance(value, (dict, list)) else _REDACTED
+    if isinstance(value, dict):
+        return {k: redact_hub_payload(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact_hub_payload(v) for v in value]
+    return scrub_ephemeral_text(value) if isinstance(value, str) else value
+
+
+def register_ephemeral_identity(info, key: str | None = None, within: str | None = None) -> None:
+    """Learn the literal values the log scrubber must hide from one hub_get_info payload."""
+    within = within or (key if key in ("network", "hubData", "healthAlerts") else None)
+    if isinstance(info, dict):
+        for k, v in info.items():
+            register_ephemeral_identity(v, k, within)
+    elif isinstance(info, list):
+        for v in info:
+            register_ephemeral_identity(v, key, within)
+    elif isinstance(info, str) and len(info) >= 4 and info != "unavailable" and (
+            key in ("localIP", "hubUID", "zigbeeId") or _MAC.search(info)
+            or (within in ("network", "hubData") and _IPV4.match(info))
+            or (within == "healthAlerts" and " " in info.strip())):
+        _ephemeral_literals.add(info)
+
+
+def scrub_ephemeral_text(text: str) -> str:
+    for literal in sorted(_ephemeral_literals, key=len, reverse=True):
+        text = text.replace(literal, _REDACTED)
+    return _TUNNEL_HOST.sub(_REDACTED, _MAC.sub(_REDACTED, text))
+
+
+class _RedactingStream:
+    """Backstop for every print, assertion and traceback the ephemeral lane writes."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        self._stream.write(scrub_ephemeral_text(text))
+        return len(text)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def install_ephemeral_redaction() -> None:
+    if ephemeral_lane() and not isinstance(sys.stdout, _RedactingStream):
+        sys.stdout, sys.stderr = _RedactingStream(sys.stdout), _RedactingStream(sys.stderr)
+
 
 def _refuse(reasons: list[str]) -> None:
     print("REFUSED: tests/e2e_test.py runs ONLY in the GitHub Actions e2e job against the sacrificial test hub.")
@@ -18342,8 +18415,11 @@ def refuse_unless_ci_test_hub(hub_url: str) -> None:
     reasons = []
     if os.environ.get("GITHUB_ACTIONS") != "true":
         reasons.append("GITHUB_ACTIONS is not 'true' (not running inside the GitHub Actions e2e job)")
-    if not re.match(r"^https://cloud\.hubitat\.com/api/[^/]+$", hub_url or ""):
-        reasons.append(f"hub_url {hub_url!r} is not the CI cloud-relay base (https://cloud.hubitat.com/api/<uuid>)")
+    # The ephemeral lane's disposable hub is reached through its own tunnel host.
+    if not (re.match(r"^https://cloud\.hubitat\.com/api/[^/]+$", hub_url or "")
+            or EPHEMERAL_HUB_URL.match(hub_url or "")):
+        reasons.append(f"hub_url {hub_label(hub_url)!r} is not the CI cloud-relay base "
+                       "(https://cloud.hubitat.com/api/<uuid>) or an ephemeral test hub tunnel")
     if reasons:
         _refuse(reasons)
 
@@ -18457,6 +18533,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config()
+    install_ephemeral_redaction()
     # Refused before anything is built: this runner (every mode, --cleanup-only included) sweeps
     # and pins settings, and it does that on the sacrificial test hub only.
     refuse_unless_ci_test_hub(config["hub_url"])
@@ -18466,7 +18543,7 @@ def main() -> None:
     print("=" * 60)
     print("Hubitat MCP Server — E2E Test Runner")
     print("=" * 60)
-    print(f"  Hub:   {config['hub_url']}")
+    print(f"  Hub:   {hub_label(config['hub_url'])}")
     print(f"  App:   {config['app_id']}")
     print(f"  Token: {masked_token}")
     print()
@@ -18486,6 +18563,12 @@ def main() -> None:
     # transport failure. TestRunner's constructor touches no hub.
     if not args.cleanup_only:
         refuse_unless_leased_test_hub(client)
+    if ephemeral_lane():
+        try:
+            register_ephemeral_identity(client.call_tool(
+                "hub_get_info", {"includeHealthAlerts": True, "includeNetwork": True}))
+        except Exception as exc:
+            print(f"  [WARN] hub identity unreadable ({type(exc).__name__}); log redaction is pattern-only")
 
     if args.setup_perm_fixtures:
         # Bootstrap a test hub for the permanent-fixture model, WITHOUT running any test. Separated
@@ -18568,7 +18651,7 @@ def main() -> None:
         assert discovery.get("supportedVersions", [None])[0] == MODERN_PROTOCOL_VERSION
         print("  Hub is reachable. MCP server responded to modern discovery.\n")
     except requests.exceptions.ConnectionError:
-        print(f"  ERROR: Cannot connect to hub at {config['hub_url']}")
+        print(f"  ERROR: Cannot connect to hub at {hub_label(config['hub_url'])}")
         print("  Check that the hub is online and the URL is correct.")
         sys.exit(1)
     except Exception as exc:

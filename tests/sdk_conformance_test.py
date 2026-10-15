@@ -175,6 +175,7 @@ def _load_hub_config() -> dict:
             "Install its dependency with `pip install requests`."
         ) from exc
     config = e2e_test.load_config()
+    e2e_test.install_ephemeral_redaction()
     client = e2e_test.HubitatMcpClient(
         hub_url=config["hub_url"], app_id=config["app_id"], access_token=config["access_token"]
     )
