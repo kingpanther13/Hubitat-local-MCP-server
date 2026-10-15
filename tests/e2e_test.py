@@ -328,6 +328,12 @@ def _tool_failure_log_expectation(tool_name: str, payload: Any,
     return f"Tool {leaf} returned a failure result"
 
 
+def _rule_patch_rows(result: dict) -> list:
+    """hub_set_rule patch rows. A continued call's patchResults already holds every slice and
+    patches mirrors it, so read one key, never both."""
+    return result.get("patchResults") or result.get("patches") or []
+
+
 def _decode_mcp1_envelope(raw_message: str) -> dict | None:
     """Decode only a complete MCP envelope at a native log prefix boundary."""
     marker = "[MCP1] "
@@ -7525,19 +7531,14 @@ class TestRunner:
 
     def _patch_rule(self, app_id: Any, patches: list[dict],
                     expected_refusals: int = 0) -> list[dict]:
-        """Apply ordered RM edits in one logical MRTR call and return every op result.
-
-        A continued patches call exposes completed slices as patchResults and the terminal
-        slice as patches. Keep both in order so live tests can assert each operation without
-        turning each wizard operation into a separate cloud request.
-        """
+        """Apply ordered RM edits in one logical MRTR call and return every op result, so live
+        tests can assert each operation without one cloud request per wizard operation."""
         result = self.client.call_tool("hub_manage_rule_machine", {
             "tool": "hub_set_rule",
             "args": {"appId": app_id, "patches": patches, "confirm": True},
         })
         self._cache_write_health(app_id, result)
-        entries = [entry for key in ("patchResults", "patches")
-                   for entry in (result.get(key) or []) if isinstance(entry, dict)]
+        entries = [entry for entry in _rule_patch_rows(result) if isinstance(entry, dict)]
         assert len(entries) == len(patches), \
             f"patch response omitted operation results: expected {len(patches)}, got {entries}; outer={result}"
         assert result.get("updateRuleFailed") is not True \
@@ -9122,7 +9123,7 @@ class TestRunner:
             assert result.get("success") is not False, \
                 f"MRTR rule edit failed: {result}"
             assert not result.get("partial"), f"MRTR rule edit was partial: {result}"
-            patch_results = result.get("patchResults") or result.get("patches") or []
+            patch_results = _rule_patch_rows(result)
             assert all(isinstance(patch, dict) and patch.get("success") is not False
                        for patch in patch_results), (
                 f"MRTR rule edit contained a failed patch: {patch_results}"
@@ -10454,7 +10455,7 @@ class TestRunner:
                      "attribute": "switch", "comparator": "*changed*"}]}},
                 {"addAction": {"capability": "log", "message": op_skipped}},
             ]})
-            op_rows = partial_stop.get("patchResults") or partial_stop.get("patches") or []
+            op_rows = _rule_patch_rows(partial_stop)
             assert len(op_rows) == 3 and op_rows[0].get("success") is not False \
                 and op_rows[1].get("op") == "addRequiredExpression" \
                 and op_rows[1].get("success") is not False and op_rows[1].get("partial") is True \
@@ -10474,7 +10475,7 @@ class TestRunner:
                 ]},
                 {"addAction": {"capability": "log", "message": later_skipped}},
             ]})
-            inner_rows = inner_stop.get("patchResults") or inner_stop.get("patches") or []
+            inner_rows = _rule_patch_rows(inner_stop)
             # A checkpoint inside the inner list splits that op across rows; read its items in order.
             inner_items = [item for row in inner_rows if row.get("op") == "addActions"
                            for item in (row.get("results") or [])]

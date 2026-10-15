@@ -2051,19 +2051,23 @@ def test_create_native_rule_return_result_preserves_create_envelope():
 def test_patch_rule_returns_all_checkpointed_entries_from_one_logical_call():
     calls = []
 
+    rows = [{"op": "addAction", "success": True, "actionIndex": 3},
+            {"op": "addAction", "success": False, "error": "refused"},
+            {"op": "addAction", "success": False, "notAttempted": True,
+             "error": "not attempted: bulk stopped after patches[1] failed or was partial"}]
+
     class FakeClient:
         def call_tool(self, name, arguments):
             calls.append((name, arguments))
+            # The continued terminal carries every slice in patchResults and mirrors it in patches.
             return {
                 "success": False,
                 "partial": True,
                 "bulkStoppedAfter": "patches[1]",
                 "finalisationNotAttempted": True,
                 "error": "Stopped after patches[1] failed: refused. Later items were not attempted and finalisation was not fired.",
-                "patchResults": [{"op": "addAction", "success": True, "actionIndex": 3}],
-                "patches": [{"op": "addAction", "success": False, "error": "refused"},
-                            {"op": "addAction", "success": False, "notAttempted": True,
-                             "error": "not attempted: bulk stopped after patches[1] failed or was partial"}],
+                "patchResults": rows,
+                "patches": list(rows),
                 "health": {"ok": True},
             }
 
@@ -3357,3 +3361,13 @@ def test_redaction_is_inert_outside_the_ephemeral_lane(monkeypatch):
     monkeypatch.setattr(sys, "stdout", out)
     et.install_ephemeral_redaction()
     assert sys.stdout is out
+
+
+def test_rule_patch_rows_reads_one_key_so_continued_rows_are_not_doubled():
+    slices = [{"op": "addActions", "results": [{}, {}]}, {"op": "addAction"}]
+    # Continued terminal: patchResults holds every slice and patches mirrors it.
+    assert et._rule_patch_rows({"patchResults": slices, "patches": list(slices)}) == slices
+    assert et._rule_patch_rows({"patches": slices}) == slices
+    assert et._rule_patch_rows({"patchResults": slices}) == slices
+    assert et._rule_patch_rows({"patchResults": [], "patches": slices}) == slices
+    assert et._rule_patch_rows({"success": False}) == []
