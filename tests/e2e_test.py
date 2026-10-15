@@ -15102,7 +15102,9 @@ class TestRunner:
                 worker.start()
                 try:
                     assert started.wait(timeout=10), "the background write did not start"
-                    # No fixed head start: the holder can finish in under a second; the retry covers a probe that wins.
+                    # Attempt 1 probes at once (a fast hub finishes the holder in under a second);
+                    # each retry gives the holder a longer head start for the relay-latency case.
+                    time.sleep(0.4 * (attempt - 1))
                     deadline = time.monotonic() + 60
                     while worker.is_alive() and time.monotonic() < deadline:
                         probes += 1
