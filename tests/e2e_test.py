@@ -18304,14 +18304,20 @@ class TestRunner:
         # precondition, a failed upstream create, etc.) -- it is NOT a pass. The run fails on any
         # skip so the e2e can never go green while silently not validating something.
         skips = [r for r in self.results if r["status"] == "skip"]
-        if skips:
+        accepted = [r for r in skips if accepted_skip(r["message"])]
+        unaccepted = [r for r in skips if r not in accepted]
+        if accepted:
+            print("\nSkipped (accepted on the ephemeral test hub):")
+            for r in accepted:
+                print(f"  - {r['name']}: {r['message']}")
+        if unaccepted:
             print("\nSkipped (treated as FAILURES -- nothing may be silently skipped):")
-            for r in skips:
+            for r in unaccepted:
                 print(f"  - {r['name']}: {r['message']}")
 
         print("=" * 60)
         # A passing run must also leave the permanent fixtures ready for the next run.
-        return total_fail == 0 and total_skip == 0 and not self._fixture_reset_failures
+        return total_fail == 0 and not unaccepted and not self._fixture_reset_failures
 
 
 # ---------------------------------------------------------------------------
@@ -18350,6 +18356,15 @@ _MAC = re.compile(r"\b[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}\b")
 _TUNNEL_HOST = re.compile(r"[A-Za-z0-9-]+\.trycloudflare\.com")
 _IPV4 = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
 _ephemeral_literals: set[str] = set()
+
+
+# The ephemeral test hub has no watchdog and may report its Z-Wave radio offline; only these
+# documented skips pass there. Every other skip, and every skip on the physical hub, still fails.
+EPHEMERAL_ACCEPTED_SKIPS = ("WATCHDOG_URL/HUBITAT_APP_ID not set", "Z-Wave radio offline on this hub")
+
+
+def accepted_skip(message: str) -> bool:
+    return ephemeral_lane() and str(message).startswith(EPHEMERAL_ACCEPTED_SKIPS)
 
 
 def ephemeral_lane() -> bool:

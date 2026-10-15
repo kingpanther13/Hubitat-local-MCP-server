@@ -3395,3 +3395,17 @@ def test_zwave_radio_offline_needs_the_hubs_own_disabled_or_unhealthy_report(det
 ])
 def test_radio_unavailable_error_accepts_only_503_or_unavailable(error, unavailable):
     assert et._radio_unavailable_error(error) is unavailable
+
+
+@pytest.mark.parametrize("lane, message, expected", [
+    ("ephemeral", "WATCHDOG_URL/HUBITAT_APP_ID not set", True),
+    ("ephemeral", "Z-Wave radio offline on this hub", True),
+    ("ephemeral", "some other reason", False),
+    ("", "WATCHDOG_URL/HUBITAT_APP_ID not set", False),
+])
+def test_accepted_skip_passes_only_documented_ephemeral_reasons(monkeypatch, lane, message, expected):
+    if lane:
+        monkeypatch.setenv("E2E_LANE", lane)
+    else:
+        monkeypatch.delenv("E2E_LANE", raising=False)
+    assert et.accepted_skip(message) is expected
