@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import re
+import shutil
 import subprocess
 import textwrap
 from pathlib import Path
@@ -192,3 +193,61 @@ def test_focused_coverage_includes_shared_device_access_and_watchdog():
     # e2e never deploys the watchdog app, so mapping its sources would run tests that cannot see them.
     assert not any(source.startswith("e2e-deadman-watchdog") for source in scope.FILE_GROUP_MAP)
     assert "error_verification" in scope.SMOKE_GROUPS
+
+
+EPHEMERAL = (ROOT / ".github/workflows/hub-e2e-ephemeral.yml").read_text()
+FORK_SHA, MAIN_SHA = "b" * 40, "c" * 40
+
+
+@pytest.mark.parametrize("case, event, files, expected", [
+    ("unconfigured", "pull_request_target", "hubitat-mcp-server.groovy", "Ephemeral hub lane not configured."),
+    ("docs", "pull_request_target", "docs/testing.md\nREADME.md", "no hub-relevant files changed"),
+    ("dependency", "pull_request_target", "hubitat-mcp-server.groovy", "not required"),
+    ("code", "pull_request_target", "docs/a.md\nlibraries/mcp-rooms-lib.groovy", f"sha={FORK_SHA}"),
+    ("e2e-skip-label", "pull_request_target", "tests/e2e_test.py", f"sha={FORK_SHA}"),
+    ("unreadable", "pull_request_target", None, f"sha={FORK_SHA}"),
+    ("push", "push", None, f"sha={MAIN_SHA}"),
+])
+def test_ephemeral_gate_skips_cleanly_and_resolves_the_tested_head(case, event, files, expected, tmp_path):
+    step = EPHEMERAL.split("      - id: decide\n", 1)[1].split("\n  request-hub:", 1)[0]
+    command = textwrap.dedent(step.split("        run: |\n", 1)[1])
+    script = '''
+gh() {
+  [ -n "$CHANGED_FILES" ] || return 1
+  printf '%s\\n' "$CHANGED_FILES"
+}
+''' + command
+    output, summary = tmp_path / "output", tmp_path / "summary"
+    env = {**os.environ, "CONFIGURED": "false" if case == "unconfigured" else "true",
+           "LANE_RUN": "false" if case in ("dependency", "e2e-skip-label") else "true",
+           "LANE_SKIP": "true" if case == "e2e-skip-label" else "false",
+           "EVENT_NAME": event, "PR_NUMBER": "42" if event == "pull_request_target" else "",
+           "PR_HEAD_SHA": FORK_SHA, "PR_HEAD_REPO": "contributor/fork",
+           "GITHUB_SHA": MAIN_SHA, "GITHUB_REPOSITORY": "owner/repo", "CHANGED_FILES": files or "",
+           "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
+    result = subprocess.run([shutil.which("bash") or "bash", "-eo", "pipefail", "-c", script],
+                            env=env, capture_output=True, text=True, check=True)
+    outputs = output.read_text()
+    assert expected in result.stdout + outputs
+    runs = case in ("code", "e2e-skip-label", "unreadable", "push")
+    assert ("run=true" in outputs) is runs and ("run=false" in outputs) is not runs
+    if runs:
+        assert f"fork={'false' if event == 'push' else 'true'}" in outputs
+    else:
+        assert expected in summary.read_text()
+
+
+def test_ephemeral_test_job_holds_no_secrets_and_runs_after_the_key_exchange():
+    head, jobs = EPHEMERAL.split("\njobs:\n", 1)
+    assert "\npermissions:\n  contents: read\n" in head
+    assert "pull_request_target:\n    types: [opened, synchronize, reopened]" in head
+    gate, rest = jobs.split("\n  request-hub:\n", 1)
+    request, e2e = rest.split("\n  e2e:\n", 1)
+    assert "secrets." not in e2e and "environment:" not in EPHEMERAL
+    assert "permissions:\n      contents: read\n      actions: read" in e2e
+    assert e2e.index("ephemeral-hub-pubkey-") < e2e.index("ephemeral-hub-session-") < e2e.index("actions/checkout")
+    assert e2e.index("Mask hub identity") < e2e.index("actions/checkout")
+    assert "E2E_LANE: ephemeral" in e2e and "python tests/sdk_conformance_test.py" in e2e
+    # The provider token is used only by the step that talks to the provider.
+    assert request.count("secrets.PRIVATE_CI_TOKEN") == 1 and "contents: write" in request
+    assert "python tests/" not in gate + request
