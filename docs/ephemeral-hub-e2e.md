@@ -106,9 +106,12 @@ applies; a run held for approval past the request workflow's 10-minute wait need
 ## Validating changes
 
 Under `pull_request` the test workflow comes from the PR head, so its changes run in-PR. The
-request workflow and the copy of the shared script it runs come from `main`. Validate a change
-to either with `gh workflow run hub-e2e-ephemeral.yml --ref <branch>`, which runs the branch's
-own request path.
+request workflow and the copy of the shared script it runs come from `main`. A dispatch,
+`gh workflow run hub-e2e-ephemeral.yml --ref <branch>`, exercises the branch's test workflow,
+its copy of the shared script and the provider contract through the push/dispatch request job;
+it never runs `hub-e2e-ephemeral-request.yml`, whose only trigger is `pull_request_target` from
+the base branch. A change to that file is therefore proven only after it is on `main`, by the
+next PR's run.
 
 ## Repository secrets
 
