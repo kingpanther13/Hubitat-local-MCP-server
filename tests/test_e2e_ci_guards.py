@@ -244,6 +244,21 @@ def _jobs(workflow):
     return head, dict(re.findall(r"^  ([\w-]+):\n((?:    .*\n|\n)*)", body + "\n", re.M))
 
 
+def _run_block(workflow, marker):
+    """The dedented `run: |` body of the first step at or after marker."""
+    body = workflow.split(marker, 1)[1].split("        run: |\n", 1)[1]
+    lines = []
+    for line in body.splitlines():
+        if line.strip() and not line.startswith("          "):
+            break
+        lines.append(line)
+    return textwrap.dedent("\n".join(lines)) + "\n"
+
+
+def _bash():
+    return shutil.which("bash") or "bash"
+
+
 def test_ephemeral_pr_code_runs_only_under_pull_request():
     head, jobs = _jobs(EPHEMERAL)
     assert "\npermissions:\n  contents: read\n" in head
@@ -260,6 +275,28 @@ def test_ephemeral_pr_code_runs_only_under_pull_request():
     assert "E2E_LANE: ephemeral" in e2e and "python tests/sdk_conformance_test.py" in e2e
     assert request.count("secrets.PRIVATE_CI_TOKEN") == 2  # the configured check and the provider step
     assert "python tests/" not in request
+    # Provider-run results skip the head checkout, the Python install and the hub_get_info read.
+    report = e2e.split("name: Report provider-run results\n", 1)[1].split("\n      - ", 1)[0]
+    assert "if: steps.session.outputs.suite == 'true'" in report
+    assert not any(word in report for word in ("checkout", "pip install", "python", "curl"))
+    assert e2e.index("Report provider-run results") < e2e.index("Mask hub identity")
+    for step in ("name: Mask hub identity", "uses: actions/checkout", "uses: actions/setup-python",
+                 "name: Install Python dependencies", "name: Run E2E tests"):
+        assert "if: steps.session.outputs.ready == 'true'" in e2e.split(step, 1)[1].split("\n      - ", 1)[0], step
+    assert "(steps.deps.outcome == 'success' || steps.session.outputs.suite == 'true')" in e2e
+
+
+def test_ephemeral_mode_toggles_agree_and_reach_the_script():
+    toggles = "\nenv:\n  EPHEMERAL_RUN_SUITE: 'true'\n  EPHEMERAL_HUB_KIND: 'jvm'\n"
+    for workflow in (EPHEMERAL, REQUEST):
+        head, jobs = _jobs(workflow)
+        assert toggles in head
+        request = jobs["request-hub"]
+        assert "HUB_KIND: ${{ env.EPHEMERAL_HUB_KIND }}" in request and "RUN_SUITE: ${{ env.EPHEMERAL_RUN_SUITE }}" in request
+        # Exactly one relay per mode: the results, or the encrypted session.
+        assert request.count("env.EPHEMERAL_RUN_SUITE == 'true'") == 1 and request.count("env.EPHEMERAL_RUN_SUITE != 'true'") == 1
+    script = (ROOT / ".github/scripts/request_ephemeral_hub.sh").read_text()
+    assert 'kind="${HUB_KIND:-jvm}" suite="${RUN_SUITE:-true}"' in script
 
 
 def test_ephemeral_request_workflow_never_runs_pr_code():
@@ -275,6 +312,7 @@ def test_ephemeral_request_workflow_never_runs_pr_code():
     assert "openssl" not in REQUEST and "session-priv" not in REQUEST
     assert "request_ephemeral_hub.sh consumer" in jobs["request-hub"]
     assert "ephemeral-hub-session-${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}" in REQUEST
+    assert "ephemeral-hub-results-${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}" in REQUEST
 
 
 def test_ephemeral_artifact_names_agree_across_workflows():
@@ -285,6 +323,9 @@ def test_ephemeral_artifact_names_agree_across_workflows():
     assert "ephemeral-hub-session-${{ github.run_id }}-${{ github.run_attempt }}" in EPHEMERAL
     assert "--workflow hub-e2e-ephemeral.yml --event pull_request" in script
     assert "-f seconds=7200 -f watchdog=false" in script and 'consumer_run_id="$CONSUMER_RUN_ID"' in script
+    assert 'RESULTS="ephemeral-hub-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"' in EPHEMERAL
+    assert "ephemeral-hub-results-${{ github.run_id }}-${{ github.run_attempt }}" in EPHEMERAL
+    assert '"ephemeral-hub-results-$1"' in script and '-f kind="$kind" -f run_suite="$suite"' in script
 
 
 @pytest.mark.parametrize("event, base, request_state, artifacts, outcome", [
@@ -300,8 +341,42 @@ def test_ephemeral_artifact_names_agree_across_workflows():
     ("push", "present", "failure", "ephemeral-hub-unavailable", "fail"),  # stale reason from an earlier attempt
 ])
 def test_ephemeral_test_job_waits_for_its_own_session_or_a_skip_reason(event, base, request_state, artifacts, outcome, tmp_path):
-    step = EPHEMERAL.split("        id: session\n", 1)[1].split("\n      - name: Mask hub identity", 1)[0]
-    loop = textwrap.dedent(step.split("        run: |\n", 1)[1]).split("\nkey=", 1)[0]
+    result, output, summary = _wait_for_hub(tmp_path, event, base, request_state, artifacts, "false")
+    if outcome == "fail":
+        assert result.returncode == 1 and "::error::" in result.stdout and "FOUND" not in result.stdout
+    elif outcome == "skip":
+        assert result.returncode == 0 and "ready=false" in output.read_text()
+        assert "not configured" in summary.read_text() and "FOUND" not in result.stdout
+    elif outcome == "base-skip":
+        message = "Ephemeral hub lane: request workflow not on the base branch; skipped."
+        assert result.returncode == 0 and "ready=false" in output.read_text() and message in result.stdout
+        assert message in summary.read_text() and "FOUND" not in result.stdout
+    else:
+        assert result.returncode == 0 and "FOUND" in result.stdout and not output.exists()
+
+
+@pytest.mark.parametrize("event, request_state, artifacts, run_suite, outcome", [
+    ("pull_request", "7 in_progress ", "ephemeral-hub-results-100-1", "true", "results"),
+    ("pull_request", "7 in_progress ", "ephemeral-hub-results-100-1", "false", "results"),  # base requests the other mode
+    ("push", "", "ephemeral-hub-results-100-1", "true", "results"),
+    ("pull_request", "7 completed success", "ephemeral-hub-results-100-2", "true", "ended"),  # another attempt's results
+    ("push", "failure", "", "true", "ended"),
+    ("pull_request", "7 in_progress ", "", "true", "90 minutes"),
+    ("pull_request", "7 in_progress ", "", "false", "45 minutes"),
+])
+def test_ephemeral_test_job_takes_provider_run_results(event, request_state, artifacts, run_suite, outcome, tmp_path):
+    result, output, _ = _wait_for_hub(tmp_path, event, "present", request_state, artifacts, run_suite)
+    if outcome == "results":
+        assert result.returncode == 0 and "suite=true" in output.read_text() and "FOUND" not in result.stdout
+        assert (tmp_path / "results" / "reason.txt").exists() and not (tmp_path / "session").exists()
+    elif outcome == "ended":
+        assert result.returncode == 1 and "without results or a session for this attempt" in result.stdout
+    else:
+        assert result.returncode == 1 and f"No hub results or session within {outcome}." in result.stdout
+
+
+def _wait_for_hub(tmp_path, event, base, request_state, artifacts, run_suite):
+    loop = _run_block(EPHEMERAL, "        id: session\n").split("\nkey=", 1)[0]
     script = '''
 sleep() { SECONDS=$((SECONDS + 600)); }
 gh() {
@@ -326,16 +401,137 @@ gh() {
     env = {**os.environ, "EVENT_NAME": event, "HEAD_SHA": FORK_SHA, "GITHUB_REPOSITORY": "owner/repo",
            "BASE": base, "BASE_REF": "base-branch",
            "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "1", "REQUEST_STATE": request_state, "ARTIFACTS": artifacts,
+           "EPHEMERAL_RUN_SUITE": run_suite,
            "RUNNER_TEMP": str(tmp_path), "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
-    result = subprocess.run([shutil.which("bash") or "bash", "-c", script], env=env, capture_output=True, text=True)
-    if outcome == "fail":
-        assert result.returncode == 1 and "::error::" in result.stdout and "FOUND" not in result.stdout
-    elif outcome == "skip":
-        assert result.returncode == 0 and "ready=false" in output.read_text()
-        assert "not configured" in summary.read_text() and "FOUND" not in result.stdout
-    elif outcome == "base-skip":
-        message = "Ephemeral hub lane: request workflow not on the base branch; skipped."
-        assert result.returncode == 0 and "ready=false" in output.read_text() and message in result.stdout
-        assert message in summary.read_text() and "FOUND" not in result.stdout
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    return result, output, summary
+
+
+PROVIDER_RESULTS = {
+    "schema_version": 1, "kind": "jvm", "public_sha": FORK_SHA, "public_repo": "contributor/fork",
+    "started_at": "2026-10-15T10:00:00Z", "finished_at": "2026-10-15T10:12:00Z",
+    "e2e": {"status": "passed", "exit_code": 0, "passed": 300, "failed": 0, "skipped": 4, "total": 304,
+            "failed_tests": []},
+    "sdk": {"status": "passed", "exit_code": 0, "passed": 12, "failed": 0, "failed_tests": []},
+}
+FAILED_E2E = {"status": "failed", "exit_code": 1, "passed": 298, "failed": 2, "skipped": 4, "total": 304,
+              "failed_tests": [{"name": "test_alpha", "message": "boom\ntrace"}, {"name": "test_beta", "message": "x"}]}
+
+
+@pytest.mark.parametrize("case, changes, passes", [
+    ("passed", {}, True),
+    ("sdk-not-run", {"sdk": {"status": "not_run", "exit_code": None, "passed": 0, "failed": 0, "failed_tests": []}}, True),
+    ("e2e-failed", {"e2e": FAILED_E2E}, False),
+    ("e2e-error", {"e2e": {**PROVIDER_RESULTS["e2e"], "status": "error", "exit_code": 2}}, False),
+    ("sdk-failed", {"sdk": {"status": "failed", "exit_code": 1, "passed": 11, "failed": 1,
+                            "failed_tests": [{"name": "test_sdk_gamma", "message": "y"}]}}, False),
+    ("other-revision", {"public_sha": "c" * 40}, False),
+    ("schema", {"schema_version": 2}, False),
+    ("missing", None, False),
+    ("unexpected-file", {}, False),
+])
+def test_ephemeral_provider_results_print_and_gate(case, changes, passes, tmp_path):
+    results = tmp_path / "results"
+    results.mkdir()
+    if changes is not None:
+        (results / "results.json").write_text(json.dumps({**PROVIDER_RESULTS, **changes}))
+    if case == "unexpected-file":
+        (results / "extra.sh").write_text("echo hi\n")
+    (results / "e2e.log").write_text("PASS via abc-12.trycloudflare.com aa:bb:cc:dd:ee:ff\n::error::from a test\n")
+    (results / "sdk.log").write_text("SDK OK\n")
+    (results / "harness.log").write_text("stage: suite finished\n")
+    summary = tmp_path / "summary"
+    env = {**os.environ, "RUNNER_TEMP": str(tmp_path), "EXPECTED_SHA": FORK_SHA, "GITHUB_STEP_SUMMARY": str(summary)}
+    result = subprocess.run([_bash(), "-c", _run_block(EPHEMERAL, "name: Report provider-run results\n")],
+                            env=env, capture_output=True, text=True)
+    out = result.stdout
+    assert (result.returncode == 0) is passes, out + result.stderr
+    if case in ("missing", "unexpected-file"):
+        message = "have no results.json" if case == "missing" else "hold an unexpected entry"
+        assert f"::error::The provider-run results {message}." in out and "SDK OK" not in out
+        return
+    # All three logs print with workflow commands off, and the uploaded copies carry the same scrub.
+    stop = re.search(r"^::stop-commands::(\w+)$", out, re.M).group(1)
+    assert out.index("::stop-commands::") < out.index("::error::from a test") < out.index(f"::{stop}::")
+    assert "SDK OK" in out and "stage: suite finished" in out and "PASS via *** ***" in out
+    assert "PASS via *** ***" in (results / "e2e.log").read_text()
+    if case in ("other-revision", "schema"):
+        assert not summary.exists() and "::error::" in out.split(f"::{stop}::")[-1]
+        return
+    text = summary.read_text()
+    e2e, sdk = {**PROVIDER_RESULTS, **changes}["e2e"], {**PROVIDER_RESULTS, **changes}["sdk"]
+    assert f"E2E {e2e['status']}: passed {e2e['passed']}, failed {e2e['failed']}, skipped 4 of 304" in text
+    assert f"SDK conformance {sdk['status']}: passed {sdk['passed']}" in text
+    if case == "sdk-not-run":
+        assert "exit none." in text
+    if case == "e2e-failed":
+        assert "- test_alpha: boom\n" in text and "- test_beta: x" in text
+    if case == "sdk-failed":
+        assert "- test_sdk_gamma: y" in text
+    if not passes:
+        assert "::error::The provider-run suite failed; the step summary lists the failed tests." in out
+
+
+@pytest.mark.parametrize("case", ["results", "no-results", "no-results-json", "unexpected-file",
+                                  "unsafe-name", "nested-dir", "session", "bad-kind"])
+def test_ephemeral_request_script_relays_provider_results_or_session(case, tmp_path):
+    script = '''
+gh() {
+  case "$1 $2" in
+    "workflow run") printf '%s\\n' "$@" > "$STUB/dispatch" ;;
+    "run list") echo 555 ;;
+    "run view") echo completed ;;
+    "api repos/owner/provider/actions/runs/555/artifacts") [[ " $PROVIDER_ARTIFACTS " != *" $ARTIFACT "* ]] || echo 9 ;;
+    "run download")
+      shift 2; while [ "$1" != --dir ]; do shift; done; mkdir -p "$2"
+      if [ "$ARTIFACT" = ephemeral-hub-555 ]; then printf x > "$2/session.key.enc"; printf x > "$2/session.json.enc"
+      else
+        for f in e2e.log sdk.log harness.log; do echo "$f from owner/provider with tok-secret" > "$2/$f"; done
+        [ "$CASE" = no-results-json ] || echo '{"schema_version": 1}' > "$2/results.json"
+        case "$CASE" in
+          unexpected-file) echo hi > "$2/extra.sh" ;;
+          unsafe-name) echo hi > "$2/evil name;x.log" ;;
+          nested-dir) mkdir "$2/nested" ;;
+        esac
+      fi ;;
+    *) return 1 ;;
+  esac
+}
+sleep() { :; }
+export -f gh sleep
+bash "$SCRIPT" hub "$STUB/key.pem" "$STUB/out"
+'''
+    (tmp_path / "key.pem").write_text("public key")
+    artifacts = "ephemeral-hub-555" if case == "session" else "" if case == "no-results" else "ephemeral-hub-results-555"
+    env = {**os.environ, "STUB": str(tmp_path), "CASE": case, "PROVIDER_ARTIFACTS": artifacts,
+           "SCRIPT": str(ROOT / ".github/scripts/request_ephemeral_hub.sh"), "GITHUB_REPOSITORY": "owner/repo",
+           "GH_TOKEN": "tok-secret", "PROVIDER": "owner/provider", "PUBLIC_SHA": FORK_SHA,
+           "PUBLIC_REPO": "contributor/fork", "CONSUMER_RUN_ID": "100",
+           "HUB_KIND": "arm" if case == "bad-kind" else "os", "RUN_SUITE": "false" if case == "session" else "true"}
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    out, dispatch, relayed = result.stdout, tmp_path / "dispatch", tmp_path / "out"
+    if case == "bad-kind":
+        assert result.returncode == 1 and "HUB_KIND must be jvm or os" in out and not dispatch.exists()
+        return
+    args = dispatch.read_text().splitlines()
+    assert "kind=os" in args and f"run_suite={env['RUN_SUITE']}" in args
+    expected_error = {
+        "no-results": "The hub provider run completed without suite results.",
+        "no-results-json": "The provider's suite results have no results.json.",
+        "unexpected-file": "The provider's suite results hold an unexpected file: extra.sh",
+        # A name outside the safe set is never echoed.
+        "unsafe-name": "The provider's suite results hold an entry that is not a plain, safely named file.",
+        "nested-dir": "The provider's suite results hold an entry that is not a plain, safely named file.",
+    }.get(case)
+    if expected_error:
+        assert result.returncode == 1 and f"::error::{expected_error}" in out and "evil" not in out
+        # Rejected before the scrub ran.
+        assert case == "no-results" or "tok-secret" in (relayed / "e2e.log").read_text()
+    elif case == "results":
+        assert result.returncode == 0, out + result.stderr
+        for f in ("e2e.log", "sdk.log", "harness.log"):
+            assert (relayed / f).read_text() == f"{f} from *** with ***\n"
+        assert sorted(p.name for p in relayed.iterdir()) == ["e2e.log", "harness.log", "results.json", "sdk.log"]
     else:
-        assert result.returncode == 0 and "FOUND" in result.stdout and not output.exists()
+        assert result.returncode == 0, out + result.stderr
+        assert (relayed / "session.key.enc").exists() and not (relayed / "results.json").exists()

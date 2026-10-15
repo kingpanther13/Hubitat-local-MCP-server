@@ -15,7 +15,10 @@ conformance script against a disposable test hub that an external workflow boots
 run. It runs on every PR, forks included, without label gates, because the job that runs PR
 code holds no secrets. PR code runs only under `pull_request` in `hub-e2e-ephemeral.yml`; the
 `pull_request_target` workflow `hub-e2e-ephemeral-request.yml` requests the hub from base code,
-so PR code never runs in the base branch's cache scope. `E2E_LANE=ephemeral` only redacts hub
+so PR code never runs in the base branch's cache scope. By default the provider runs both scripts
+next to the hub and returns scrubbed logs and a `results.json` that the test run reports and gates
+on; `EPHEMERAL_RUN_SUITE: 'false'` in both workflows restores the test run driving the hub over the
+tunnel. `E2E_LANE=ephemeral` only redacts hub
 identity from logs.
 
 ## Additive hub-closer lanes

@@ -2,7 +2,8 @@ name: Hub E2E (ephemeral test hub) request
 
 # Requests the disposable test hub for a PR's run of hub-e2e-ephemeral.yml (docs/ephemeral-hub-e2e.md).
 # pull_request_target supplies the secrets, so this workflow checks out and runs base code only and
-# never decrypts: the session goes to the test run's public key. PR code runs only in that test run.
+# never decrypts: the session goes to the test run's public key. PR code runs only in that test run,
+# or with EPHEMERAL_RUN_SUITE inside the provider's credential-less environment.
 
 on:
   pull_request_target:
@@ -10,6 +11,11 @@ on:
 
 permissions:
   contents: read
+
+# Keep in lockstep with hub-e2e-ephemeral.yml. EPHEMERAL_RUN_SUITE 'false' hands the hub to the test run.
+env:
+  EPHEMERAL_RUN_SUITE: 'true'
+  EPHEMERAL_HUB_KIND: 'jvm'
 
 concurrency:
   group: hub-e2e-ephemeral-request-${{ github.event.pull_request.number }}
@@ -86,7 +92,7 @@ jobs:
     needs: gate
     if: needs.gate.outputs.run == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: write   # publish_fork_bundle.sh pushes shas/<sha>/ to bundle-artifacts
       actions: read
@@ -118,21 +124,33 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
         run: bash .github/scripts/request_ephemeral_hub.sh consumer "$PUBLIC_SHA" "$RUNNER_TEMP/pub"
-      - name: Dispatch the hub and fetch its encrypted session
+      - name: Dispatch the hub and fetch its results or encrypted session
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_CI_TOKEN }}
           PROVIDER: ${{ secrets.SOFTWARE_HUB_PROVIDER }}
           PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
           PUBLIC_REPO: ${{ needs.gate.outputs.repo }}
           CONSUMER_RUN_ID: ${{ steps.consumer.outputs.run_id }}
-        run: bash .github/scripts/request_ephemeral_hub.sh hub "$RUNNER_TEMP/pub/session-pub.pem" "$RUNNER_TEMP/session"
+          HUB_KIND: ${{ env.EPHEMERAL_HUB_KIND }}
+          RUN_SUITE: ${{ env.EPHEMERAL_RUN_SUITE }}
+        run: bash .github/scripts/request_ephemeral_hub.sh hub "$RUNNER_TEMP/pub/session-pub.pem" "$RUNNER_TEMP/hub"
+      # Scrubbed by the provider and by the script.
+      - uses: actions/upload-artifact@v7
+        if: env.EPHEMERAL_RUN_SUITE == 'true'
+        with:
+          name: ephemeral-hub-results-${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}
+          path: ${{ runner.temp }}/hub/
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
       # Still encrypted to the test run's key, so the public artifact reveals nothing.
       - uses: actions/upload-artifact@v7
+        if: env.EPHEMERAL_RUN_SUITE != 'true'
         with:
           name: ephemeral-hub-session-${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}
           path: |
-            ${{ runner.temp }}/session/session.key.enc
-            ${{ runner.temp }}/session/session.json.enc
+            ${{ runner.temp }}/hub/session.key.enc
+            ${{ runner.temp }}/hub/session.json.enc
           retention-days: 1
           if-no-files-found: error
           overwrite: true

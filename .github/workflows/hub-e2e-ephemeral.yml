@@ -7,6 +7,7 @@ name: Hub E2E (ephemeral test hub)
 # scope. For PRs the hub is requested by hub-e2e-ephemeral-request.yml (pull_request_target, base
 # code only); for push and dispatch the `request-hub` job below does it. Either way the `e2e` job
 # generates the session keypair, publishes only the public key, and receives the session encrypted.
+# With EPHEMERAL_RUN_SUITE the provider runs both scripts itself and `e2e` only reports their results.
 
 on:
   pull_request:
@@ -18,6 +19,11 @@ on:
 permissions:
   contents: read
 
+# Keep in lockstep with hub-e2e-ephemeral-request.yml. EPHEMERAL_RUN_SUITE 'false' hands the hub to `e2e`.
+env:
+  EPHEMERAL_RUN_SUITE: 'true'
+  EPHEMERAL_HUB_KIND: 'jvm'
+
 concurrency:
   group: hub-e2e-ephemeral-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -28,7 +34,7 @@ jobs:
     # Trusted refs only; PR runs get their hub from hub-e2e-ephemeral-request.yml.
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     permissions:
       contents: read
       actions: read
@@ -58,7 +64,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: bash .github/scripts/request_ephemeral_hub.sh key "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_TEMP/pub"
-      - name: Dispatch the hub and fetch its encrypted session
+      - name: Dispatch the hub and fetch its results or encrypted session
         if: steps.configured.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_CI_TOKEN }}
@@ -66,15 +72,26 @@ jobs:
           PUBLIC_SHA: ${{ github.sha }}
           PUBLIC_REPO: ${{ github.repository }}
           CONSUMER_RUN_ID: ${{ github.run_id }}
-        run: bash .github/scripts/request_ephemeral_hub.sh hub "$RUNNER_TEMP/pub/session-pub.pem" "$RUNNER_TEMP/session"
+          HUB_KIND: ${{ env.EPHEMERAL_HUB_KIND }}
+          RUN_SUITE: ${{ env.EPHEMERAL_RUN_SUITE }}
+        run: bash .github/scripts/request_ephemeral_hub.sh hub "$RUNNER_TEMP/pub/session-pub.pem" "$RUNNER_TEMP/hub"
+      # Scrubbed by the provider and by the script.
+      - uses: actions/upload-artifact@v7
+        if: steps.configured.outputs.ready == 'true' && env.EPHEMERAL_RUN_SUITE == 'true'
+        with:
+          name: ephemeral-hub-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/hub/
+          retention-days: 1
+          if-no-files-found: error
+          overwrite: true
       # Still encrypted to the e2e job's key, so the public artifact reveals nothing.
       - uses: actions/upload-artifact@v7
-        if: steps.configured.outputs.ready == 'true'
+        if: steps.configured.outputs.ready == 'true' && env.EPHEMERAL_RUN_SUITE != 'true'
         with:
           name: ephemeral-hub-session-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            ${{ runner.temp }}/session/session.key.enc
-            ${{ runner.temp }}/session/session.json.enc
+            ${{ runner.temp }}/hub/session.key.enc
+            ${{ runner.temp }}/hub/session.json.enc
           retention-days: 1
           if-no-files-found: error
           overwrite: true
@@ -85,7 +102,7 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: read
-      actions: read   # read the session artifact and the request run's status
+      actions: read   # read the results or session artifact and the request run's status
     steps:
       - name: Generate session keypair
         run: |
@@ -114,8 +131,10 @@ jobs:
             msg="Ephemeral hub lane: request workflow not on the base branch; skipped."
             echo "$msg"; echo "$msg" >> "$GITHUB_STEP_SUMMARY"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          export SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
-          deadline=$((SECONDS + 2700)); first_seen=$((SECONDS + 600)); grace=0
+          export SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" RESULTS="ephemeral-hub-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          # Provider-run results arrive only after the whole suite has run.
+          wait=2700; [ "$EPHEMERAL_RUN_SUITE" != true ] || wait=5400
+          deadline=$((SECONDS + wait)); first_seen=$((SECONDS + 600)); grace=0
           while :; do
             if [ "$EVENT_NAME" = pull_request ]; then
               # hub-e2e-ephemeral-request.yml requests PR hubs from the base branch for this head.
@@ -133,6 +152,11 @@ jobs:
             fi
             if [ -n "${src:-}" ]; then
               names="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$src/artifacts" --jq '.artifacts[].name' || true)"
+              # Whichever artifact arrives sets the mode, so a PR whose base requests the other mode still runs.
+              if grep -qxF "$RESULTS" <<< "$names"; then
+                gh run download "$src" --repo "$GITHUB_REPOSITORY" --name "$RESULTS" --dir "$RUNNER_TEMP/results"
+                echo "suite=true" >> "$GITHUB_OUTPUT"; echo "Provider-run results received."; exit 0
+              fi
               if grep -qxF "$SESSION" <<< "$names"; then
                 gh run download "$src" --repo "$GITHUB_REPOSITORY" --name "$SESSION" --dir "$RUNNER_TEMP/session"
                 break
@@ -145,10 +169,10 @@ jobs:
                   echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
                 fi
                 grace=$((grace + 1))
-                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without a session for this attempt. Retry with a new commit or close and reopen the PR; for push or dispatch use Re-run all jobs."; exit 1; }
+                [ "$grace" -lt 4 ] || { echo "::error::The hub request ended ($conclusion) without results or a session for this attempt. Retry with a new commit or close and reopen the PR; for push or dispatch use Re-run all jobs."; exit 1; }
               fi
             fi
-            [ "$SECONDS" -lt "$deadline" ] || { echo "::error::No hub session within 45 minutes."; exit 1; }
+            [ "$SECONDS" -lt "$deadline" ] || { echo "::error::No hub results or session within $((wait / 60)) minutes."; exit 1; }
             sleep 15
           done
           key="$RUNNER_TEMP/session.key"; session="$RUNNER_TEMP/session.json"
@@ -168,6 +192,43 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "ready=true" >> "$GITHUB_OUTPUT"
           echo "Hub session received."
+      # The provider scrubbed these files; the shapes the session path masks are scrubbed once more.
+      - name: Report provider-run results
+        if: steps.session.outputs.suite == 'true'
+        env:
+          EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/results"
+          shopt -s nullglob dotglob
+          for entry in *; do
+            case "$entry" in
+              results.json|e2e.log|sdk.log|harness.log) [ -f "$entry" ] && [ ! -L "$entry" ] && continue ;;
+            esac
+            echo "::error::The provider-run results hold an unexpected entry."; exit 1
+          done
+          [ -s results.json ] || { echo "::error::The provider-run results have no results.json."; exit 1; }
+          for f in results.json e2e.log sdk.log harness.log; do
+            [ -f "$f" ] || continue
+            perl -pe 's/[a-z0-9-]+\.trycloudflare\.com/***/g; s/\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/***/g' < "$f" > "$f.tmp"
+            mv -- "$f.tmp" "$f"
+          done
+          # The logs carry PR-controlled output, so workflow commands stay off while they print.
+          stop="$(openssl rand -hex 16)"
+          for f in e2e.log sdk.log harness.log; do
+            echo "===== $f ====="
+            if [ -f "$f" ]; then echo "::stop-commands::$stop"; cat "$f"; echo; echo "::$stop::"
+            else echo "::warning::$f is missing from the provider-run results."; fi
+          done
+          jq -e '.schema_version == 1' results.json >/dev/null || { echo "::error::Unsupported results.json schema."; exit 1; }
+          jq -e --arg sha "$EXPECTED_SHA" '.public_sha == $sha' results.json >/dev/null \
+            || { echo "::error::The provider-run results are for another revision."; exit 1; }
+          jq -r '"### Ephemeral hub E2E (provider-run, \(.kind) hub)", "",
+            "E2E \(.e2e.status): passed \(.e2e.passed), failed \(.e2e.failed), skipped \(.e2e.skipped) of \(.e2e.total), exit \(.e2e.exit_code).", "",
+            "SDK conformance \(.sdk.status): passed \(.sdk.passed), failed \(.sdk.failed), exit \(.sdk.exit_code // "none").", "",
+            ((.e2e.failed_tests[]?, .sdk.failed_tests[]?) | "- \(.name): \(.message // "" | split("\n")[0])")' results.json >> "$GITHUB_STEP_SUMMARY"
+          jq -e '.e2e.status == "passed" and .sdk.status != "failed"' results.json >/dev/null \
+            || { echo "::error::The provider-run suite failed; the step summary lists the failed tests."; exit 1; }
       - name: Mask hub identity
         if: steps.session.outputs.ready == 'true'
         run: |
@@ -238,7 +299,7 @@ jobs:
                   f.write(text)
           EOF
       - uses: actions/upload-artifact@v7
-        if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
+        if: ${{ !cancelled() && (steps.deps.outcome == 'success' || steps.session.outputs.suite == 'true') }}
         with:
           name: ephemeral-e2e-results-${{ github.run_attempt }}
           path: ${{ runner.temp }}/results/

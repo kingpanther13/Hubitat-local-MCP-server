@@ -6,10 +6,12 @@
 #   consumer HEAD_SHA DIR    find the running pull_request run of hub-e2e-ephemeral.yml for HEAD_SHA,
 #                            write run_id/attempt to $GITHUB_OUTPUT and fetch its public key into DIR
 #   key RUN_ID ATTEMPT DIR   fetch that run attempt's public key into DIR
-#   hub KEY_FILE DIR         dispatch the provider and download the still-encrypted session into DIR
+#   hub KEY_FILE DIR         dispatch the provider and download into DIR its suite results
+#                            (RUN_SUITE=true) or the still-encrypted session (RUN_SUITE=false)
 #
 # Env: GITHUB_REPOSITORY; GH_TOKEN (actions:read, or the provider token for `hub`);
-#      `hub` also needs PROVIDER, PUBLIC_SHA, PUBLIC_REPO, CONSUMER_RUN_ID.
+#      `hub` also needs PROVIDER, PUBLIC_SHA, PUBLIC_REPO, CONSUMER_RUN_ID, and takes
+#      HUB_KIND (jvm|os, default jvm) and RUN_SUITE (true|false, default true).
 set -euo pipefail
 
 fail() { echo "::error::$1"; exit 1; }
@@ -49,14 +51,49 @@ consumer() {
   key "$run_id" "$attempt" "$2"
 }
 
+# The provider ran the suite next to the hub; its scrubbed results appear once its run completes.
+results() {
+  local deadline=$((SECONDS + 2400))
+  until [ "$(gh run view "$1" --repo "$PROVIDER" --json status --jq .status || true)" = completed ]; do
+    [ "$SECONDS" -lt "$deadline" ] || fail "The hub provider run did not complete within 40 minutes."
+    sleep 30
+  done
+  export ARTIFACT="ephemeral-hub-results-$1"
+  [ -n "$(gh api "repos/$PROVIDER/actions/runs/$1/artifacts" \
+      --jq '.artifacts[] | select(.name == $ENV.ARTIFACT) | .id' || true)" ] \
+    || fail "The hub provider run completed without suite results."
+  gh run download "$1" --repo "$PROVIDER" --name "$ARTIFACT" --dir "$2"
+  local entry name
+  shopt -s nullglob dotglob
+  for entry in "$2"/*; do
+    name="${entry##*/}"
+    # Checked before the name is printed: a downloaded name never reaches a log or a command unchecked.
+    [[ "$name" =~ ^[A-Za-z0-9._-]+$ && -f "$entry" && ! -L "$entry" ]] \
+      || fail "The provider's suite results hold an entry that is not a plain, safely named file."
+    case "$name" in
+      results.json|e2e.log|sdk.log|harness.log) ;;
+      *) fail "The provider's suite results hold an unexpected file: $name" ;;
+    esac
+  done
+  shopt -u nullglob dotglob
+  test -s "$2/results.json" || fail "The provider's suite results have no results.json."
+  # The relayed artifact bypasses log masking, so scrub what GitHub masks in this job's log.
+  for name in results.json e2e.log sdk.log harness.log; do
+    [ -f "$2/$name" ] || continue
+    perl -pe 's/\Q$ENV{PROVIDER}\E/***/g; s/\Q$ENV{GH_TOKEN}\E/***/g' < "$2/$name" > "$2/$name.tmp"
+    mv -- "$2/$name.tmp" "$2/$name"
+  done
+}
+
 hub() {
-  : "${PROVIDER:?}" "${PUBLIC_SHA:?}" "${PUBLIC_REPO:?}" "${CONSUMER_RUN_ID:?}"
-  local since run_id="" deadline=$((SECONDS + 1500))
+  : "${PROVIDER:?}" "${PUBLIC_SHA:?}" "${PUBLIC_REPO:?}" "${CONSUMER_RUN_ID:?}" "${GH_TOKEN:?}"
+  local kind="${HUB_KIND:-jvm}" suite="${RUN_SUITE:-true}" since run_id="" deadline=$((SECONDS + 1500))
+  [[ "$kind" =~ ^(jvm|os)$ && "$suite" =~ ^(true|false)$ ]] || fail "HUB_KIND must be jvm or os, RUN_SUITE true or false."
   since="$(date -u -d '-30 seconds' +%Y-%m-%dT%H:%M:%SZ)"
   gh workflow run ephemeral-hub.yml --repo "$PROVIDER" \
     -f public_key="$(base64 -w0 "$1")" -f public_sha="$PUBLIC_SHA" -f public_repo="$PUBLIC_REPO" \
     -f consumer_repo="$GITHUB_REPOSITORY" -f consumer_run_id="$CONSUMER_RUN_ID" \
-    -f seconds=7200 -f watchdog=false >/dev/null
+    -f seconds=7200 -f watchdog=false -f kind="$kind" -f run_suite="$suite" >/dev/null
   # The provider's run-name ends with "for <consumer repo>#<consumer run id>".
   export SUFFIX=" for ${GITHUB_REPOSITORY}#${CONSUMER_RUN_ID}" SINCE="$since"
   while [ -z "$run_id" ]; do
@@ -67,6 +104,7 @@ hub() {
       --jq '[.[] | select((.displayTitle | endswith($ENV.SUFFIX)) and .createdAt >= $ENV.SINCE)] | first | .databaseId // empty' || true)"
   done
   echo "Provider run $run_id."
+  if [ "$suite" = true ]; then results "$run_id" "$2"; return; fi
   export ARTIFACT="ephemeral-hub-$run_id"
   until [ -n "$(gh api "repos/$PROVIDER/actions/runs/$run_id/artifacts" \
       --jq '.artifacts[] | select(.name == $ENV.ARTIFACT) | .id' || true)" ]; do
