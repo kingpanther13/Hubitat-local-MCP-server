@@ -508,7 +508,7 @@ gh() {
 
 
 PROVIDER_RESULTS = {
-    "schema_version": 1, "kind": "jvm-runtime", "public_sha": FORK_SHA, "public_repo": "contributor/fork",
+    "schema_version": 1, "kind": "jvm", "public_sha": FORK_SHA, "public_repo": "contributor/fork",
     "started_at": "2026-10-15T10:00:00Z", "finished_at": "2026-10-15T10:12:00Z",
     "e2e": {"status": "passed", "exit_code": 0, "passed": 300, "failed": 0, "skipped": 4, "total": 304,
             "failed_tests": []},
@@ -526,8 +526,7 @@ FAILED_E2E = {"status": "failed", "exit_code": 1, "passed": 298, "failed": 2, "s
     ("sdk-failed", {"sdk": {"status": "failed", "exit_code": 1, "passed": 11, "failed": 1,
                             "failed_tests": [{"name": "test_sdk_gamma", "message": "y"}]}}, False),
     ("other-revision", {"public_sha": "c" * 40}, False),
-    ("other-kind", {"kind": "native-os-container"}, False),
-    ("short-kind", {"kind": "jvm"}, False),
+    ("other-kind", {"kind": "os"}, False),
     ("schema", {"schema_version": 2}, False),
     ("missing", None, False),
     ("unexpected-file", {}, False),
@@ -541,7 +540,6 @@ def test_ephemeral_provider_results_print_and_gate(case, changes, passes, tmp_pa
         (results / "extra.sh").write_text("echo hi\n")
     (results / "e2e.log").write_text("PASS via abc-12.trycloudflare.com aa:bb:cc:dd:ee:ff\n::error::from a test\n")
     (results / "sdk.log").write_text("SDK OK\n")
-    (results / "harness.log").write_text("stage: suite finished\n")
     summary = tmp_path / "summary"
     env = {**os.environ, "RUNNER_TEMP": str(tmp_path), "EXPECTED_SHA": FORK_SHA, "KIND": "jvm",
            "GITHUB_STEP_SUMMARY": str(summary)}
@@ -556,9 +554,9 @@ def test_ephemeral_provider_results_print_and_gate(case, changes, passes, tmp_pa
     # All three logs print with workflow commands off, and the uploaded copies carry the same scrub.
     stop = re.search(r"^::stop-commands::(\w+)$", out, re.M).group(1)
     assert out.index("::stop-commands::") < out.index("::error::from a test") < out.index(f"::{stop}::")
-    assert "SDK OK" in out and "stage: suite finished" in out and "PASS via *** ***" in out
+    assert "SDK OK" in out and "PASS via *** ***" in out
     assert "PASS via *** ***" in (results / "e2e.log").read_text()
-    if case in ("other-revision", "other-kind", "short-kind", "schema"):
+    if case in ("other-revision", "other-kind", "schema"):
         assert not summary.exists() and "::error::" in out.split(f"::{stop}::")[-1]
         return
     text = summary.read_text()
@@ -634,9 +632,10 @@ bash "$SCRIPT" hub "$STUB/key.pem" "$STUB/out"
         assert case == "no-results" or "tok-secret" in (relayed / "e2e.log").read_text()
     elif case == "results":
         assert result.returncode == 0, out + result.stderr
-        for f in ("e2e.log", "sdk.log", "harness.log"):
+        for f in ("e2e.log", "sdk.log"):
             assert (relayed / f).read_text() == f"{f} from *** with ***\n"
-        assert sorted(p.name for p in relayed.iterdir()) == ["e2e.log", "harness.log", "results.json", "sdk.log"]
+        # The provider's stage log is accepted but never relayed.
+        assert sorted(p.name for p in relayed.iterdir()) == ["e2e.log", "results.json", "sdk.log"]
     else:
         assert result.returncode == 0, out + result.stderr
         assert (relayed / "session.key.enc").exists() and not (relayed / "results.json").exists()

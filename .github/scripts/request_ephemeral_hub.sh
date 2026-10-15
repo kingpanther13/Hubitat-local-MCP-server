@@ -91,8 +91,10 @@ results() {
   done
   shopt -u nullglob dotglob
   test -s "$2/results.json" || fail "The provider's suite results have no results.json."
+  # The provider's own stage log stays private; only the suite's results are relayed.
+  rm -f -- "$2/harness.log"
   # The relayed artifact bypasses log masking, so scrub what GitHub masks in this job's log.
-  for name in results.json e2e.log sdk.log harness.log; do
+  for name in results.json e2e.log sdk.log; do
     [ -f "$2/$name" ] || continue
     perl -pe 's/\Q$ENV{PROVIDER}\E/***/g; s/\Q$ENV{GH_TOKEN}\E/***/g' < "$2/$name" > "$2/$name.tmp"
     mv -- "$2/$name.tmp" "$2/$name"

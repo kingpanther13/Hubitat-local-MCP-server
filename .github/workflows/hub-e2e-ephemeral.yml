@@ -224,19 +224,19 @@ jobs:
           shopt -s nullglob dotglob
           for entry in *; do
             case "$entry" in
-              results.json|e2e.log|sdk.log|harness.log) [ -f "$entry" ] && [ ! -L "$entry" ] && continue ;;
+              results.json|e2e.log|sdk.log) [ -f "$entry" ] && [ ! -L "$entry" ] && continue ;;
             esac
             echo "::error::The provider-run results hold an unexpected entry."; exit 1
           done
           [ -s results.json ] || { echo "::error::The provider-run results have no results.json."; exit 1; }
-          for f in results.json e2e.log sdk.log harness.log; do
+          for f in results.json e2e.log sdk.log; do
             [ -f "$f" ] || continue
             perl -pe 's/[a-z0-9-]+\.trycloudflare\.com/***/g; s/\b(?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}\b/***/g' < "$f" > "$f.tmp"
             mv -- "$f.tmp" "$f"
           done
           # The logs carry PR-controlled output, so workflow commands stay off while they print.
           stop="$(openssl rand -hex 16)"
-          for f in e2e.log sdk.log harness.log; do
+          for f in e2e.log sdk.log; do
             echo "===== $f ====="
             if [ -f "$f" ]; then echo "::stop-commands::$stop"; cat "$f"; echo; echo "::$stop::"
             else echo "::warning::$f is missing from the provider-run results."; fi
@@ -244,10 +244,9 @@ jobs:
           jq -e '.schema_version == 1' results.json >/dev/null || { echo "::error::Unsupported results.json schema."; exit 1; }
           jq -e --arg sha "$EXPECTED_SHA" '.public_sha == $sha' results.json >/dev/null \
             || { echo "::error::The provider-run results are for another revision."; exit 1; }
-          # The provider names its kinds jvm-runtime and native-os-container.
-          jq -e --arg kind "$KIND" '.kind == ({jvm: "jvm-runtime", os: "native-os-container"}[$kind])' results.json >/dev/null \
+          jq -e --arg kind "$KIND" '.kind == $kind' results.json >/dev/null \
             || { echo "::error::The provider-run results are for another hub kind."; exit 1; }
-          jq -r '"### Ephemeral hub E2E (provider-run, \(.kind) hub)", "",
+          jq -r --arg kind "$KIND" '"### Ephemeral hub E2E (provider-run, \($kind) hub)", "",
             "E2E \(.e2e.status): passed \(.e2e.passed), failed \(.e2e.failed), skipped \(.e2e.skipped) of \(.e2e.total), exit \(.e2e.exit_code).", "",
             "SDK conformance \(.sdk.status): passed \(.sdk.passed), failed \(.sdk.failed), exit \(.sdk.exit_code // "none").", "",
             ((.e2e.failed_tests[]?, .sdk.failed_tests[]?) | "- \(.name): \(.message // "" | split("\n")[0])")' results.json >> "$GITHUB_STEP_SUMMARY"

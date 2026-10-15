@@ -87,7 +87,6 @@ relays it as `ephemeral-hub-results-<test run id>-<attempt>-<kind>`. The artifac
   `finished_at`, and an `e2e` and an `sdk` object. Each carries `status`, `exit_code`, the
   counts and `failed_tests`.
 - `e2e.log` and `sdk.log`, the scrubbed output of the two scripts.
-- `harness.log`, the provider's driver stages.
 
 `request-hub` rejects the artifact when it holds any other entry or a name outside
 `[A-Za-z0-9._-]`. It then replaces its own secret values in each expected file, because an
