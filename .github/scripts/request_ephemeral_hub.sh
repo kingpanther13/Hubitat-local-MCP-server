@@ -57,13 +57,14 @@ hub() {
     -f public_key="$(base64 -w0 "$1")" -f public_sha="$PUBLIC_SHA" -f public_repo="$PUBLIC_REPO" \
     -f consumer_repo="$GITHUB_REPOSITORY" -f consumer_run_id="$CONSUMER_RUN_ID" \
     -f seconds=7200 -f watchdog=false >/dev/null
-  export TITLE="Ephemeral hub ${PUBLIC_SHA:0:8} for ${GITHUB_REPOSITORY}#${CONSUMER_RUN_ID}" SINCE="$since"
+  # The provider's run-name ends with "for <consumer repo>#<consumer run id>".
+  export SUFFIX=" for ${GITHUB_REPOSITORY}#${CONSUMER_RUN_ID}" SINCE="$since"
   while [ -z "$run_id" ]; do
     [ "$SECONDS" -lt "$deadline" ] || fail "The hub provider run did not start within 25 minutes."
     sleep 10
     run_id="$(gh run list --repo "$PROVIDER" --workflow ephemeral-hub.yml --limit 50 \
       --json databaseId,displayTitle,createdAt \
-      --jq '[.[] | select(.displayTitle == $ENV.TITLE and .createdAt >= $ENV.SINCE)] | first | .databaseId // empty' || true)"
+      --jq '[.[] | select((.displayTitle | endswith($ENV.SUFFIX)) and .createdAt >= $ENV.SINCE)] | first | .databaseId // empty' || true)"
   done
   echo "Provider run $run_id."
   export ARTIFACT="ephemeral-hub-$run_id"
