@@ -18,7 +18,7 @@ removing the last one neither runs nor cancels anything. A PR that changes no hu
 gets the status as success without a run. `e2e:skip` cancels the in-flight run and holds the
 status pending, and `workflow_dispatch` always runs. The decision lives in `.github/scripts/lane_gate.js`
 and is tested by `tests/lane_gate_test.js`.
-Because the trigger is `pull_request_target`, the base branch's copy of the workflow and of
+Because the trigger is `pull_request_target`, the default branch's copy of the workflow and of
 `lane_gate.js` decides, so a PR's change to this behaviour applies only after it merges.
 
 ## Ephemeral hub E2E lane
@@ -26,7 +26,7 @@ Because the trigger is `pull_request_target`, the base branch's copy of the work
 The [ephemeral hub lane](ephemeral-hub-e2e.md) runs the full E2E registry and the SDK
 conformance script against disposable test hubs that an external workflow boots for each
 run. It runs on every PR, forks included, without label gates, because the job that runs PR
-code holds no secrets. Each run tests two hub kinds as separate jobs: `os`, the more complete
+code holds no secrets; a first-time contributor's hub waits for a maintainer's approval. Each run tests two hub kinds as separate jobs: `os`, the more complete
 hub, whose verdict matters most, and `jvm`, a lighter hub that finishes in about ten minutes and
 gives the early signal. PR code runs only under `pull_request` in `hub-e2e-ephemeral.yml`; the
 `pull_request_target` workflow `hub-e2e-ephemeral-request.yml` requests the hub from base code,

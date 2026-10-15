@@ -76,9 +76,23 @@ jobs:
           retention-days: 1
           overwrite: true
 
+  # pull_request_target runs whatever the fork-approval setting says, so a first-time contributor's
+  # hub waits here until a maintainer approves the e2e-approval deployment.
+  approve:
+    name: Ephemeral lane approval
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    environment:
+      name: ${{ contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.pull_request.author_association) && 'e2e-auto' || 'e2e-approval' }}
+    steps:
+      - run: echo "Ephemeral hub approved for this revision."
+
   request-hub:
     name: Request ephemeral hub (${{ matrix.kind }})
-    needs: gate
+    needs: [gate, approve]
     if: needs.gate.outputs.run == 'true'
     strategy:
       fail-fast: false

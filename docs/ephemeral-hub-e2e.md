@@ -47,7 +47,8 @@ These steps describe hold mode, where the test run drives the hub. The default
 2. For a pull request, the request workflow's `gate` job applies the dependency-only bot
    exemption from `.github/scripts/lane_gate.js`, checks that both secrets are set and skips PRs
    that change no file `.github/scripts/hub_relevant_paths.json` lists for this lane. When the lane should not run, it uploads artifact
-   `ephemeral-hub-unavailable` with the reason, once for both kinds. For a push or dispatch, the test workflow's own `request-hub` job does the secrets check
+   `ephemeral-hub-unavailable` with the reason, once for both kinds. Its `approve` job then
+   holds a first-time contributor's PR for [approval](#first-time-contributors). For a push or dispatch, the test workflow's own `request-hub` job does the secrets check
    and uploads `ephemeral-hub-unavailable-<kind>`.
 3. `request-hub` publishes a fork head's release files with `.github/scripts/publish_fork_bundle.sh`
    and waits until the revision's files are served. For a pull request it then finds the running
@@ -58,8 +59,9 @@ These steps describe hold mode, where the test run drives the hub. The default
    `ephemeral-hub-session-<test run id>-<attempt>-<kind>`.
 5. `e2e` waits up to 45 minutes for its own kind's artifact, in its own run or in the request run
    for its head SHA. A request run that reports the lane unavailable makes `e2e` skip with that reason.
-   A request run that ends without either artifact fails `e2e`. A PR whose base branch has no
-   request workflow skips the lane, because nothing would request its hub.
+   A request run that ends without either artifact fails `e2e`. While the default branch has no
+   request workflow the lane skips on PRs, because `pull_request_target` always runs the default
+   branch's workflows and nothing would request the hub, whatever the PR's base branch.
 6. `e2e` decrypts the session, masks it, reads `hub_get_info` once to mask the hub's identity,
    checks out the head, runs both scripts and uploads their redacted logs.
 
@@ -102,17 +104,25 @@ session path masks them.
 Under the provider-run suite, PR test code runs inside the provider's isolated environment, which
 holds no credentials, and only scrubbed logs come back. The request side still runs base code
 only, and the `e2e` job still holds no secrets. The `e2e` job takes whichever artifact arrives, so
-a PR whose base branch still requests the other mode keeps working.
+a PR keeps working while the default branch still requests the other mode.
 
-## Why fork PRs run without approval
+## First-time contributors
+
+The repository's setting for approving first-time contributors holds the `pull_request` test
+run, but `pull_request_target` runs regardless of it, so the request workflow gates itself. Its
+`approve` job uses the `e2e-auto` environment when the PR's author association is `OWNER`,
+`MEMBER`, `COLLABORATOR` or `CONTRIBUTOR` (a change already merged here), and the
+reviewer-protected `e2e-approval` environment otherwise. No hub boots and none of the PR's code
+runs until a maintainer approves both: **Approve workflows to run** on the PR, then **Review
+deployments** on the request run. The request side waits 10 minutes for the test run to start and
+the test run 90 minutes for results, so approve the two together; after a timeout, push a commit
+or close and reopen the PR. A rejected deployment fails `e2e`.
 
 The hub is disposable and serves only the test run that requested it. The job that runs PR code
 holds no secrets. Its token can only read this repository's contents and Actions artifacts and
-run status. The two secrets reach only `request-hub`, which never executes PR code. A fork can
-therefore reach nothing beyond its own throwaway hub. Never add a secret, a write permission or a
-cache to the `e2e` job, and never check out or run PR code in the request workflow. The
-repository's own setting for approving first-time contributors' `pull_request` runs still
-applies; a run held for approval past the request workflow's 10-minute wait needs a retry.
+run status. The two secrets reach only `request-hub`, which never executes PR code. Never add a
+secret, a write permission or a cache to the `e2e` job, and never check out or run PR code in the
+request workflow.
 
 ## Validating changes
 
@@ -120,8 +130,8 @@ Under `pull_request` the test workflow comes from the PR head, so its changes ru
 request workflow and the copy of the shared script it runs come from `main`. A dispatch,
 `gh workflow run hub-e2e-ephemeral.yml --ref <branch>`, exercises the branch's test workflow,
 its copy of the shared script and the provider contract through the push/dispatch request job;
-it never runs `hub-e2e-ephemeral-request.yml`, whose only trigger is `pull_request_target` from
-the base branch. A change to that file is therefore proven only after it is on `main`, by the
+it never runs `hub-e2e-ephemeral-request.yml`, whose only trigger is `pull_request_target`,
+which always runs `main`'s copy. A change to that file is therefore proven only after it is on `main`, by the
 next PR's run.
 
 ## Repository secrets

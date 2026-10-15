@@ -374,7 +374,13 @@ def test_ephemeral_request_workflow_never_runs_pr_code():
     head, jobs = _jobs(REQUEST)
     assert "on:\n  pull_request_target:\n    types: [opened, synchronize, reopened]\n\npermissions:" in head
     assert "\npermissions:\n  contents: read\n" in head
-    assert set(jobs) == {"gate", "request-hub"}
+    assert set(jobs) == {"gate", "approve", "request-hub"}
+    # Only contributors with a merged change skip the reviewer-gated environment, and no hub is
+    # requested before that job succeeds.
+    trusted = """contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.pull_request.author_association)"""
+    assert f"      name: ${{{{ {trusted} && 'e2e-auto' || 'e2e-approval' }}}}\n" in jobs["approve"]
+    assert "    permissions: {}\n" in jobs["approve"] and "secrets." not in jobs["approve"]
+    assert "    needs: [gate, approve]\n" in jobs["request-hub"] and "always()" not in jobs["request-hub"]
     # Base checkouts only, and nothing that installs or runs the head's Python.
     assert "ref:" not in REQUEST and "allow-unsafe-pr-checkout" not in REQUEST
     assert "python tests/" not in REQUEST and "pip install" not in REQUEST and "cache" not in REQUEST
@@ -429,7 +435,7 @@ bash "$SCRIPT" key 100 2 "$STUB/pub"
     ("pull_request", "present", "7 completed success", "ephemeral-hub-session-100-1-jvm", "fail"),  # served the other kind
     ("pull_request", "present", "7 completed failure", "", "fail"),
     ("pull_request", "present", "", "", "fail"),  # no request run ever appears
-    ("pull_request", "absent", "", "", "base-skip"),  # base predates the request workflow
+    ("pull_request", "absent", "", "", "base-skip"),  # the default branch predates the request workflow
     ("pull_request", "error", "7 in_progress ", "ephemeral-hub-session-100-1-os", "session"),  # lookup error waits as usual
     ("push", "success", "success", "ephemeral-hub-unavailable-jvm\nephemeral-hub-unavailable-os", "skip"),
     ("push", "success", "success", "ephemeral-hub-unavailable-jvm", "fail"),  # only the other kind's reason
@@ -446,7 +452,7 @@ def test_ephemeral_test_job_waits_for_its_own_session_or_a_skip_reason(event, ba
         assert "not configured" in summary.read_text() and "FOUND" not in result.stdout
         assert "-jvm" not in downloads
     elif outcome == "base-skip":
-        message = "Ephemeral hub lane: request workflow not on the base branch; skipped."
+        message = "Ephemeral hub lane: request workflow not on the default branch; skipped."
         assert result.returncode == 0 and "ready=false" in output.read_text() and message in result.stdout
         assert message in summary.read_text() and "FOUND" not in result.stdout
     else:
@@ -482,7 +488,7 @@ sleep() { SECONDS=$((SECONDS + 600)); }
 gh() {
   case "$1 $2" in
     "api repos/owner/repo/contents/.github/workflows/hub-e2e-ephemeral-request.yml")
-      [[ " $* " == *" ref=base-branch "* ]] || { echo "gh: missing ref" >&2; return 1; }
+      [[ " $* " == *" ref=default-branch "* ]] || { echo "gh: missing ref" >&2; return 1; }
       case "$BASE" in
         absent) echo "gh: Not Found (HTTP 404)" >&2; return 1 ;;
         error) echo "gh: Server Error (HTTP 502)" >&2; return 1 ;;
@@ -499,7 +505,7 @@ gh() {
 ''' + loop + "\necho FOUND\n"
     output, summary = tmp_path / "output", tmp_path / "summary"
     env = {**os.environ, "EVENT_NAME": event, "HEAD_SHA": FORK_SHA, "GITHUB_REPOSITORY": "owner/repo",
-           "BASE": base, "BASE_REF": "base-branch", "KIND": "os",
+           "BASE": base, "DEFAULT_BRANCH": "default-branch", "KIND": "os",
            "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "1", "REQUEST_STATE": request_state, "ARTIFACTS": artifacts,
            "EPHEMERAL_RUN_SUITE": run_suite,
            "RUNNER_TEMP": str(tmp_path), "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
