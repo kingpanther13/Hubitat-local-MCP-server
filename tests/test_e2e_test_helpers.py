@@ -705,18 +705,26 @@ def test_watchdog_hub_logs_fails_closed_on_unusable_payload(monkeypatch, respons
 
 
 @pytest.mark.parametrize(
-    ("test_status", "reset_failures", "expected"),
+    ("lane", "test_status", "reset_failures", "expected"),
     [
-        pytest.param("pass", [], True, id="all-tests-pass"),
-        pytest.param("fail", [], False, id="test-failed"),
-        pytest.param("skip", [], False, id="test-skipped"),
-        pytest.param("pass", ["5329 via off: response lost"], False,
+        pytest.param("", "pass", [], True, id="all-tests-pass"),
+        pytest.param("", "fail", [], False, id="test-failed"),
+        pytest.param("", "skip", [], False, id="test-skipped"),
+        pytest.param("", "pass", ["5329 via off: response lost"], False,
                      id="fixture-reset-unresolved"),
+        pytest.param("ephemeral", "pass", ["5329 via off: response lost"], True,
+                     id="fixture-reset-reported-only-on-ephemeral-hub"),
+        pytest.param("ephemeral", "skip", [], False,
+                     id="undocumented-skip-still-fails-on-ephemeral-hub"),
     ],
 )
 def test_print_summary_requires_tests_and_fixture_resets_to_succeed(
-    test_status, reset_failures, expected, capsys,
+    lane, test_status, reset_failures, expected, capsys, monkeypatch,
 ):
+    if lane:
+        monkeypatch.setenv("E2E_LANE", lane)
+    else:
+        monkeypatch.delenv("E2E_LANE", raising=False)
     runner = object.__new__(et.TestRunner)
     runner.results = [{
         "group": "isolated", "name": "summary_probe", "status": test_status,

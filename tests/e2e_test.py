@@ -18211,7 +18211,9 @@ class TestRunner:
                   "the individual test results above record the outcome.")
 
         if self._fixture_reset_failures:
-            print(f"\n  [FIXTURE-RESET] {len(self._fixture_reset_failures)} permanent-fixture reset(s) FAILED -- "
+            # A disposable hub has no next run, so its reset failures are reported, not counted.
+            verdict = "reported only (disposable hub)" if ephemeral_lane() else "FAILED"
+            print(f"\n  [FIXTURE-RESET] {len(self._fixture_reset_failures)} permanent-fixture reset(s) {verdict} -- "
                   "the next run starts from carried-over state, which can make level/threshold "
                   "assertions vacuous:")
             for line in self._fixture_reset_failures:
@@ -18317,7 +18319,7 @@ class TestRunner:
 
         print("=" * 60)
         # A passing run must also leave the permanent fixtures ready for the next run.
-        return total_fail == 0 and not unaccepted and not self._fixture_reset_failures
+        return total_fail == 0 and not unaccepted and (not self._fixture_reset_failures or ephemeral_lane())
 
 
 # ---------------------------------------------------------------------------
