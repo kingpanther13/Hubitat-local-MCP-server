@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.7.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.7.2 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -14313,8 +14313,8 @@ def getSupportedVirtualDeviceTypes() {
         "Virtual Switch", "Virtual Button", "Virtual Contact Sensor",
         "Virtual Motion Sensor", "Virtual Presence", "Virtual Lock",
         "Virtual Temperature Sensor", "Virtual Humidity Sensor", "Virtual Dimmer",
-        "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Opener",
-        "Virtual Water Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
+        "Virtual RGBW Light", "Virtual Shade", "Virtual Garage Door Controller",
+        "Virtual Leak Sensor", "Virtual Omni Sensor", "Virtual Fan Controller"
     ]
 }
 private Map resolveDriverSpec(args) {
@@ -14988,6 +14988,16 @@ def _hubVarsNativeModel() {
     }
     return model
 }
+private boolean _hubVarsNativeAvailable() {
+    def raw
+    try { raw = hubInternalGet("/hub2/variables") }
+    catch (Exception e) {
+        if (_httpStatusOf(e) == 404) return false
+        throw e
+    }
+    if (!raw?.toString()?.trim()) throw new IllegalStateException("Hub Variables returned an empty response")
+    return true
+}
 private Map _hubVarsNativeRow(Map model, String name) {
     def row = model.variables.find { it instanceof Map && it.name?.toString() == name }
     if (row == null) throw new IllegalStateException("Hub Variables JSON model does not list '${name}'")
@@ -15065,10 +15075,10 @@ def toolCreateVariable(args) {
     catch (Exception e) {
         mcpLog("debug", "hub-vars", "hub_create_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
-    def nativeModel
-    try { nativeModel = _hubVarsNativeModel() }
+    boolean hasNative
+    try { hasNative = _hubVarsNativeAvailable() }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", _hubVarsModelError(e), true) }
-    if (nativeModel == null) return _createOneVariable(_findHubVariablesAppId(), name, type, value)
+    if (!hasNative) return _createOneVariable(_findHubVariablesAppId(), name, type, value)
     try { return _createOneVariable(null, name, type, value) }
     catch (IllegalArgumentException e) { throw e }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", e.message ?: e.class.simpleName) }
@@ -15183,10 +15193,10 @@ private Map _createVariablesBulk(variables) {
     if (!(variables instanceof List) || variables.isEmpty()) {
         throw new IllegalArgumentException("variables must be a non-empty array of {name, type, value} objects.")
     }
-    def nativeModel
-    try { nativeModel = _hubVarsNativeModel() }
+    boolean hasNative
+    try { hasNative = _hubVarsNativeAvailable() }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", _hubVarsModelError(e), true) }
-    def appId = nativeModel != null ? null : _findHubVariablesAppId()
+    def appId = hasNative ? null : _findHubVariablesAppId()
     def results = []
     int createdCount = 0
     int failedCount = 0
@@ -15712,6 +15722,7 @@ def toolDeleteHubVariable(args) {
     String registryError = null
     def linkedMirrorRow = null
     def nativeModel = null
+    boolean nativeRead = false
     if (isHubVar) {
         Map meshJson = _meshJson()
         def meshRows = (meshJson?.localLinkedHubVariables instanceof List) ? meshJson.localLinkedHubVariables : null
@@ -15720,6 +15731,7 @@ def toolDeleteHubVariable(args) {
         }
         try {
             nativeModel = _hubVarsNativeModel()
+            nativeRead = true
             if (nativeModel != null) {
                 registryApps = _hubVarsNativeAppsUsing(_hubVarsNativeRow(nativeModel, varName)).all
                 platformInUse = !registryApps.isEmpty()
@@ -15765,7 +15777,7 @@ def toolDeleteHubVariable(args) {
         def previousValue = hubVar.value
         def previousType  = hubVar.type
         def hadConnector  = hubVar.deviceId != null
-        if (nativeModel == null) {
+        if (!nativeRead) {
             try { nativeModel = _hubVarsNativeModel() }
             catch (Exception e) { return _hubVarsNativeFailure("hub_delete_variable", _hubVarsModelError(e), true) }
         }
@@ -39373,7 +39385,7 @@ private Map _rmForceDeleteApp(Integer appId) {
     return resp
 }
 def currentVersion() {
-    return "4.7.1"
+    return "4.7.2"
 }
 def hubBpsGuideKey(String section, Long atMs = null) {
     long bucket = ((atMs != null ? atMs : now()) as long).intdiv(3600000L)
@@ -39976,8 +39988,8 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 | Virtual Dimmer | switch + level 0-100 | Dimmable light simulation |
 | Virtual RGBW Light | color-controllable | Color light simulation |
 | Virtual Shade | open/close + position | Window shade control |
-| Virtual Garage Door Opener | open/close | Garage door state |
-| Virtual Water Sensor | wet/dry | Water leak simulation |
+| Virtual Garage Door Controller | open/close | Garage door state |
+| Virtual Leak Sensor | wet/dry | Water leak simulation |
 | Virtual Omni Sensor | multi-purpose | Combined sensor types |
 | Virtual Fan Controller | fan speed | Fan simulation |
 
