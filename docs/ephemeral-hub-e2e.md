@@ -11,10 +11,8 @@ verified dependency-only bot PRs skip it.
 
 Every run tests two kinds of hub side by side, one matrix job per kind:
 
-- `os` boots the full hub operating system. It is slower and the faithful one, so its verdict
-  matters most.
-- `jvm` boots a lighter runtime in about a minute and finishes in about ten. It is the early
-  signal.
+- `os` is the more complete hub. It is slower, and its verdict matters most.
+- `jvm` is a lighter hub that finishes in about ten minutes. It is the early signal.
 
 Each kind has its own request job, `Request ephemeral hub (<kind>)`, and its own test job,
 `e2e (ephemeral hub, <kind>)`. Every per-run artifact name ends in `-<kind>`, so each test job

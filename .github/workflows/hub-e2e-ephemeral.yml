@@ -8,7 +8,7 @@ name: Hub E2E (ephemeral test hub)
 # code only); for push and dispatch the `request-hub` job below does it. Either way the `e2e` job
 # generates the session keypair, publishes only the public key, and receives the session encrypted.
 # With EPHEMERAL_RUN_SUITE the provider runs both scripts itself and `e2e` only reports their results.
-# Each run requests one hub per kind: `os`, the full hub operating system, and `jvm`, a light runtime.
+# Each run requests one hub per kind: `os`, the more complete hub, and `jvm`, a lighter one.
 
 on:
   pull_request:
