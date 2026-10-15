@@ -48281,40 +48281,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
     }
 
-    def "native action catalog pins RM's action groups, sub-types and Run Custom Action capabilities"() {
-        when:
-        def cat = script._rmNativeActionCatalog()
-        def subTypeMap = script._rmActionSubTypeMap()
-        def allSubTypes = (cat.actSubTypes as Map).values().collectMany { (it as Map).keySet().toList() }
-
-        then: "twelve groups, each with its sub-types"
-        (cat.actTypes as Map).size() == 12
-        (cat.actSubTypes as Map).keySet() == (cat.actTypes as Map).keySet()
-        allSubTypes.size() == 71
-        allSubTypes.unique().size() == 71
-
-        and: "every device-picker capability names a real sub-type"
-        (cat.subTypeCapability as Map).keySet().every { it in allSubTypes }
-        cat.subTypeCapability.getOnOffSwitch == "Switch"
-        cat.subTypeCapability.getSetVolume == "AudioVolume"
-
-        and: "the Run Custom Action picker offers these capabilities and nothing else"
-        (cat.runCommandCapabilities as Map).size() == 32
-        cat.runCommandCapabilities.SwitchLevel == "Dimmer"
-        cat.runCommandCapabilities.SpeechSynthesis == "Speech device"
-        !(cat.runCommandCapabilities as Map).containsKey("ColorControl")
-        !(cat.runCommandCapabilities as Map).containsKey("AudioVolume")
-
-        and: "every addAction capability/action drives a sub-type the catalog knows"
-        subTypeMap.every { cap, actions -> (actions as Map).values().every { it in allSubTypes } }
-        subTypeMap["switch"]["on"] == "getOnOffSwitch"
-        subTypeMap.runCommand["*"] == "getDefinedAction"
-    }
+    private static final Map RUN_CAP_PICKER = ["Switch": "Switch", "SwitchLevel": "Dimmer", "SpeechSynthesis": "Speech device",
+                                               "WindowShade": "Window Shade", "FanControl": "Fan Control"]
 
     @Unroll
-    def "runCommand capabilityFilter '#raw' resolves to the key RM stores (#expected)"() {
+    def "runCommand capabilityFilter '#raw' resolves against RM's picker to the key RM stores (#expected)"() {
         expect:
-        script._rmResolveRunCommandCapability(raw) == expected
+        script._rmResolveRunCommandCapability(raw, RUN_CAP_PICKER) == expected
 
         where:
         raw             | expected
@@ -48332,30 +48305,49 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @Unroll
-    def "runCommand capabilityFilter '#raw' is refused with RM's own list"() {
+    def "runCommand capabilityFilter '#raw' is refused with the list RM's picker shows"() {
         when:
-        script._rmResolveRunCommandCapability(raw)
+        script._rmResolveRunCommandCapability(raw, RUN_CAP_PICKER)
 
         then:
         def e = thrown(IllegalArgumentException)
         e.message.contains("capabilityFilter '${raw}' is not a capability Rule Machine's Run Custom Action offers")
-        e.message.contains("SwitchLevel")
-        e.message.contains("RM is not touched")
+        e.message.contains("RM offers: FanControl, SpeechSynthesis, Switch, SwitchLevel, WindowShade")
+        e.message.contains("rolled back")
 
         where:
         raw << ["Initialize", "ColorControl", "AudioVolume", "Color Temperature"]
     }
 
-    def "addAction runCommand with a capabilityFilter RM does not offer is refused before any hub write"() {
+    @Unroll
+    def "picker option labels are read from a #shape enum"() {
+        expect:
+        script._rmReadPickerOptionLabels([options: options]) == expected
+
+        where:
+        shape          | options                                                        | expected
+        "Map"          | ["Switch": "Switch", "SwitchLevel": "Dimmer"]                  | ["Switch": "Switch", "SwitchLevel": "Dimmer"]
+        "value/text"   | [[value: "Switch", text: "Switch"], [value: "Lock", text: "Lock"]] | ["Switch": "Switch", "Lock": "Lock"]
+        "bare string"  | ["on", "off"]                                                  | ["on": "on", "off": "off"]
+        "empty"        | null                                                           | [:]
+    }
+
+    def "addAction runCommand with a capabilityFilter RM's picker does not offer is refused and the row rolled back"() {
         given:
         enableWrite()
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def fetchSeq = 0
         def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
             [status: 200, location: null, data: '']
         }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["modeActs": "Run Custom Action"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> fetchSeq++; runCommandDoActPageJson(100, fetchSeq) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPageJson(100, "Define Actions") }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         hubGet.register('/device/fullJson/42') { params -> '{"id":"42","name":"Device1"}' }
 
@@ -48369,10 +48361,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         result.success == false
         result.error?.contains("capabilityFilter 'Initialize' is not a capability Rule Machine's Run Custom Action offers")
-        result.restoreHint?.toLowerCase()?.contains("not touched")
+        result.error?.contains("RM offers: Switch, SwitchLevel")
 
-        and: "no wizard click and no settings write reached the hub"
-        posts.isEmpty()
+        and: "the unknown value was never stored and the editor was cancelled"
+        !posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[myCapab.1]") }
+        !posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[devices.1]") }
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
     }
 
     def "addAction runCommand writes the capability key RM stores for a picker label and the command RM lists"() {
@@ -48408,6 +48402,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.rolledBack == false
         result.note?.contains("added and baked")
         writtenFields["myCapab.1"] == "SwitchLevel"
+        writtenFields["devices.1"] == "42"
 
         and: "the command is written in RM's own casing"
         writtenFields["cCmd.1"] == "setLevel"
@@ -48564,7 +48559,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         posts.any { it.path == "/installedapp/btn" && it.body?.name == "actionCancel" }
     }
 
-    def "discover narrows to one capability and names the RM sub-type it drives"() {
+    def "discover narrows to one capability"() {
         when:
         def one = script._rmAddAction(100, [discover: [capability: "runCommand"]])
         def onAction = script._rmAddAction(100, [discover: [capability: "Switch", action: "on"]])
@@ -48572,21 +48567,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         one.capability.name == "runCommand"
-        one.capability.rm["*"].actSubType == "getDefinedAction"
-        one.capability.rm["*"].actType == "modeActs"
-        one.capability.rm["*"].label == "Run Custom Action"
-        one.runCommandCapabilities.SwitchLevel == "Dimmer"
+        one.discriminator == "capability"
         !one.containsKey("capabilities")
 
-        and: "a selector with an action echoes it and reports the device capability RM filters on"
+        and: "a selector with an action echoes it"
         onAction.action == "on"
-        onAction.capability.rm.on.actSubType == "getOnOffSwitch"
-        onAction.capability.rm.on.deviceCapability == "Switch"
-        !onAction.containsKey("runCommandCapabilities")
+        onAction.capability.name == "switch"
 
-        and: "the full schema is decorated the same way"
-        (all.capabilities as List).find { (it as Map).name == "switch" }.rm.off.actSubType == "getOnOffSwitch"
-        all.runCommandCapabilities.size() == 32
+        and: "no selector returns the full schema"
+        (all.capabilities as List).any { (it as Map).name == "switch" }
     }
 
     @Unroll

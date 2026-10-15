@@ -6193,12 +6193,13 @@ class TestRunner:
                  ("armaway", "armrules")),
                 ({"addAction": {"capability": "colorTemp", "action": "setColorTemp"}},
                  ("kelvin",)),
-                # Pre-write: capabilityFilter is checked against the capabilities RM's Run Custom
-                # Action picker offers. RM would otherwise store the value, render no device picker
+                # Not pre-write: capabilityFilter is checked against the capabilities RM's own Run
+                # Custom Action picker offers for the opened row, and a miss rolls the row back
+                # (asserted below). RM would otherwise store the value, render no device picker
                 # and crash the rule's action editor until the row is removed.
                 ({"addAction": {"capability": "runCommand", "command": "initialize", "capabilityFilter": "Initialize",
                     "deviceIds": [int(self.get_test_switch_id())]}},
-                 ("capabilityfilter 'initialize' is not a capability", "run custom action offers")),
+                 ("capabilityfilter 'initialize' is not a capability", "rm offers:", "rolled back")),
                 # Not pre-write: the command is checked against the commands RM lists for the selected
                 # devices; a miss rolls the opened row back (asserted below with the file actions).
                 ({"addAction": {"capability": "runCommand", "command": "noSuchCommandE2E",
