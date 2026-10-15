@@ -41,7 +41,8 @@ the external workflow and downloading the encrypted session.
    encrypted, as artifact `ephemeral-hub-session-<test run id>-<attempt>`.
 5. `e2e` waits up to 45 minutes for that artifact, in its own run or in the request run for its
    head SHA. A request run that reports the lane unavailable makes `e2e` skip with that reason.
-   A request run that ends without either artifact fails `e2e`.
+   A request run that ends without either artifact fails `e2e`. A PR whose base branch has no
+   request workflow skips the lane, because nothing would request its hub.
 6. `e2e` decrypts the session, masks it, reads `hub_get_info` once to mask the hub's identity,
    checks out the head, runs both scripts and uploads their redacted logs.
 

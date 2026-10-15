@@ -287,23 +287,31 @@ def test_ephemeral_artifact_names_agree_across_workflows():
     assert "-f seconds=7200 -f watchdog=false" in script and 'consumer_run_id="$CONSUMER_RUN_ID"' in script
 
 
-@pytest.mark.parametrize("event, request_state, artifacts, outcome", [
-    ("pull_request", "7 completed success", "ephemeral-hub-unavailable", "skip"),
-    ("pull_request", "7 in_progress ", "ephemeral-hub-session-100-1", "session"),
-    ("pull_request", "7 completed success", "ephemeral-hub-session-100-2", "fail"),  # served another attempt
-    ("pull_request", "7 completed failure", "", "fail"),
-    ("pull_request", "", "", "fail"),  # no request run ever appears
-    ("push", "success", "ephemeral-hub-unavailable", "skip"),
-    ("push", "", "ephemeral-hub-session-100-1", "session"),
-    ("push", "failure", "ephemeral-hub-unavailable", "fail"),  # stale reason from an earlier attempt
+@pytest.mark.parametrize("event, base, request_state, artifacts, outcome", [
+    ("pull_request", "present", "7 completed success", "ephemeral-hub-unavailable", "skip"),
+    ("pull_request", "present", "7 in_progress ", "ephemeral-hub-session-100-1", "session"),
+    ("pull_request", "present", "7 completed success", "ephemeral-hub-session-100-2", "fail"),  # served another attempt
+    ("pull_request", "present", "7 completed failure", "", "fail"),
+    ("pull_request", "present", "", "", "fail"),  # no request run ever appears
+    ("pull_request", "absent", "", "", "base-skip"),  # base predates the request workflow
+    ("pull_request", "error", "7 in_progress ", "ephemeral-hub-session-100-1", "session"),  # lookup error waits as usual
+    ("push", "success", "success", "ephemeral-hub-unavailable", "skip"),
+    ("push", "absent", "", "ephemeral-hub-session-100-1", "session"),  # no base check outside PRs
+    ("push", "present", "failure", "ephemeral-hub-unavailable", "fail"),  # stale reason from an earlier attempt
 ])
-def test_ephemeral_test_job_waits_for_its_own_session_or_a_skip_reason(event, request_state, artifacts, outcome, tmp_path):
+def test_ephemeral_test_job_waits_for_its_own_session_or_a_skip_reason(event, base, request_state, artifacts, outcome, tmp_path):
     step = EPHEMERAL.split("        id: session\n", 1)[1].split("\n      - name: Mask hub identity", 1)[0]
     loop = textwrap.dedent(step.split("        run: |\n", 1)[1]).split("\nkey=", 1)[0]
     script = '''
 sleep() { SECONDS=$((SECONDS + 600)); }
 gh() {
   case "$1 $2" in
+    "api repos/owner/repo/contents/.github/workflows/hub-e2e-ephemeral-request.yml")
+      [[ " $* " == *" ref=base-branch "* ]] || { echo "gh: missing ref" >&2; return 1; }
+      case "$BASE" in
+        absent) echo "gh: Not Found (HTTP 404)" >&2; return 1 ;;
+        error) echo "gh: Server Error (HTTP 502)" >&2; return 1 ;;
+      esac ;;
     "run list") printf '%s\\n' "$REQUEST_STATE" ;;
     "api repos/owner/repo/actions/runs/100/attempts/1/jobs") printf '%s\\n' "$REQUEST_STATE" ;;
     "api repos/owner/repo/actions/runs/"*/artifacts) printf '%s\\n' "$ARTIFACTS" ;;
@@ -316,6 +324,7 @@ gh() {
 ''' + loop + "\necho FOUND\n"
     output, summary = tmp_path / "output", tmp_path / "summary"
     env = {**os.environ, "EVENT_NAME": event, "HEAD_SHA": FORK_SHA, "GITHUB_REPOSITORY": "owner/repo",
+           "BASE": base, "BASE_REF": "base-branch",
            "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "1", "REQUEST_STATE": request_state, "ARTIFACTS": artifacts,
            "RUNNER_TEMP": str(tmp_path), "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
     result = subprocess.run([shutil.which("bash") or "bash", "-c", script], env=env, capture_output=True, text=True)
@@ -324,5 +333,9 @@ gh() {
     elif outcome == "skip":
         assert result.returncode == 0 and "ready=false" in output.read_text()
         assert "not configured" in summary.read_text() and "FOUND" not in result.stdout
+    elif outcome == "base-skip":
+        message = "Ephemeral hub lane: request workflow not on the base branch; skipped."
+        assert result.returncode == 0 and "ready=false" in output.read_text() and message in result.stdout
+        assert message in summary.read_text() and "FOUND" not in result.stdout
     else:
         assert result.returncode == 0 and "FOUND" in result.stdout and not output.exists()

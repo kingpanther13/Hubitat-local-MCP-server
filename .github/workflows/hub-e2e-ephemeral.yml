@@ -106,8 +106,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
+          # A base branch without the request workflow never requests a hub for this PR.
+          if [ "$EVENT_NAME" = pull_request ] && ! err="$(gh api "repos/$GITHUB_REPOSITORY/contents/.github/workflows/hub-e2e-ephemeral-request.yml" \
+              -X GET -f ref="$BASE_REF" 2>&1 >/dev/null)" && grep -q "HTTP 404" <<< "$err"; then
+            msg="Ephemeral hub lane: request workflow not on the base branch; skipped."
+            echo "$msg"; echo "$msg" >> "$GITHUB_STEP_SUMMARY"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
           export SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           deadline=$((SECONDS + 2700)); first_seen=$((SECONDS + 600)); grace=0
           while :; do
