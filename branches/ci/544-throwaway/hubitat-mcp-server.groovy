@@ -22602,7 +22602,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "RM rule ID (the rule's installed-app id). OMIT to CREATE a new rule (then `name` is required); PROVIDE to EDIT an existing rule."],
-                    name: [type: "string", description: "Label for the new rule (shown in Hubitat's Rule Machine app list). Required on CREATE (when appId is omitted); ignored when appId is provided. To RENAME an existing rule, do not pass name -- write the new label as a setting: settings:{origLabel:'New Name'} (a mainPage settings write auto-commits via updateRule, which copies origLabel to the display label; passing button:'updateRule' too is harmless but redundant)."],
+                    name: [type: "string", description: "Label for the new rule. Required on CREATE; ignored on edit. To RENAME a rule, pass settings:{origLabel:'New Name'} instead (the mainPage write runs updateRule, which copies it to the label)."],
                     settings: [type: "object", description: "Map {inputName: value}: scalars for bool/enum/text/number inputs, list of device IDs for multi-device inputs, capability.* or driver-specific device.* (the multiple=true 3-field contract is emitted and verified automatically — you don't manage it)."],
                     button: [type: "string", description: "Page-transition button name (e.g. updateRule, editCond, pausRule for RM; discover others via hub_get_app_config)."],
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
@@ -22679,7 +22679,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                         type: "object",
                         description: """Add an RM action; returns actionIndex (the action editor finalizes it, no updateRule). `capability` and `action` are Rule Machine's; their fields: hub_set_rule(operation:'discover', args:{kind:'action', capability, action?}). ifThen/elseIf/repeatWhile/waitExpression take expression={conditions:[...], operator|operators}, each condition a kind:'condition' spec; nested subExpression only in addRequiredExpression. One waitEvents per rule. ruleIds of runRule/cancelTimers/pauseRule/privateBoolean must be existing rules; privateBoolean also takes '*' (this rule). Optional: delay {hours, minutes, seconds, cancelable}, rawSettings {field: value} with @N = the action index. A spec RM cannot bake is refused or rolled back: success:false means nothing was added."""
                     ],
-                    guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
+                    guide: [type: "boolean", description: "Set true to return the hub_set_rule reference inline (hub_get_tool_guide section 'set_rule_reference'). Changes no rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
                     confirm: [type: "boolean", description: "Must be true."]
                 ],
@@ -31419,7 +31419,7 @@ def _applyNativeAppEdit(args) {
         } catch (Exception e) {
             mcpLogError("rm-native", "trigger mutation failed for app ${appId}", e)
             def isPreflightRefusal = e.message?.contains("RM is not touched")
-            def isRetryExhaustion = e.message?.contains("one verified re-click")
+            def isRetryExhaustion = e.message?.contains("after a re-click")
             def trigResult = [
                 success: false,
                 appId: appId,
