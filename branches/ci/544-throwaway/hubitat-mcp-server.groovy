@@ -22677,7 +22677,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     addAction: [
                         type: "object",
-                        description: """Add an RM ACTION (structured). DISCRIMINATOR: use `capability` NOT `type`; returns actionIndex (no trailing updateRule — the action editor finalizes it). The capability list with each one's fields comes from hub_set_rule(operation:'discover', args:{kind:'action'}); add capability (and action) to the args for one entry. Expression-based ones (ifThen/elseIf/repeatWhile/waitExpression) take expression={conditions:[...], operator|operators}; per-condition shape {capability, deviceIds:[N], state?, comparator?, value?, attribute?, not?, rawSettings?} (deviceIds MUST be an array); nested subExpression only in addRequiredExpression. LIMIT: one waitEvents per rule. Rule-targeting caps (runRule/cancelTimers/pauseRule/privateBoolean) check ruleIds against the live rule list (hub_list_rules); privateBoolean also takes '*' (this rule). Optional: delay {hours, minutes, seconds, cancelable}; rawSettings {field:value} with @N = the action index. A spec RM cannot bake is refused before any write, or rolled back when only RM's editor can tell: success:false means nothing was added. Extended expression shapes: hub_get_tool_guide(section='set_rule_reference_conditions')."""
+                        description: """Add an RM action; returns actionIndex (the action editor finalizes it, no updateRule). `capability` and `action` are Rule Machine's; their fields: hub_set_rule(operation:'discover', args:{kind:'action', capability, action?}). ifThen/elseIf/repeatWhile/waitExpression take expression={conditions:[...], operator|operators}, each condition a kind:'condition' spec; nested subExpression only in addRequiredExpression. One waitEvents per rule. ruleIds of runRule/cancelTimers/pauseRule/privateBoolean must be existing rules; privateBoolean also takes '*' (this rule). Optional: delay {hours, minutes, seconds, cancelable}, rawSettings {field: value} with @N = the action index. A spec RM cannot bake is refused or rolled back: success:false means nothing was added."""
                     ],
                     guide: [type: "boolean", description: "Set true to return the full hub_set_rule capability reference inline (same content as hub_get_tool_guide(section='set_rule_reference')), without a separate call. Makes NO change to any rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
@@ -23539,7 +23539,7 @@ String _rmNormalizeComparator(Object raw) {
 private List _rmHsmCommands() {
     ["armAway", "armHome", "armNight", "disarm", "rearm", "disarmAll", "armRules", "cancelAlerts"]
 }
-private List<String> _rmRhsOptionalComparatorMarkers() { ["changed", "became"] }
+private List<String> _rmRhsOptionalComparatorMarkers() { ["changed"] }
 boolean _rmComparatorIsRhsOptional(Object rawComparator) {
     def token = _rmComparatorToken(rawComparator)
     if (token == null) return false
@@ -24292,7 +24292,8 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     List names = (kind == "condition" ? t.condition : t.trigger) as List
     String cap = names.find { it.toString().equalsIgnoreCase(raw) }
     if (cap == null) {
-        throw new IllegalArgumentException("${where}.capability '${raw}' is not a Rule Machine ${kind} capability. Valid: ${names.join(', ')}. RM is not touched.".toString())
+        def near = _rmSuggestTriggerCapability(raw, names)
+        throw new IllegalArgumentException("${where}.capability '${raw}' is not a Rule Machine ${kind} capability.${near ? " Did you mean '" + near + "'?" : ''} Valid: ${names.join(', ')}. RM is not touched.".toString())
     }
     spec.capability = cap
     String fam = _rmCondFamily(cap)
@@ -24300,21 +24301,22 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     if (kind == "condition" && cap in _rmCondNotModelled()) {
         throw new IllegalArgumentException("${where}: '${cap}' is a Rule Machine condition this tool does not model; set it with rawSettings or walkStep. RM is not touched.".toString())
     }
+    if (spec.compareToDevice != null && fam != "numeric") {
+        throw new IllegalArgumentException("${where}: compareToDevice applies only to Rule Machine's numeric capabilities (${(t.numeric as List).join(', ')}). ${hint}".toString())
+    }
     if (spec.comparator != null) {
         String cmp = _rmNormalizeComparator(spec.comparator)?.toString()
         boolean change = _rmComparatorIsRhsOptional(spec.comparator)
         List allowed = null
-        if (fam == "numeric") allowed = (t.numericOps as List) + (kind == "trigger" ? (t.changeOps as List) + (t.overOps as List) : [])
-        else if (fam == "variable") allowed = ((t.variableOps as List) + (t.stringOps as List)).unique() - (kind == "condition" ? (t.changeOps as List) + (t.overOps as List) : [])
+        boolean trigChange = kind == "trigger" && spec.allOfThese != true
+        if (fam == "numeric") allowed = (t.numericOps as List) + (trigChange ? (t.changeOps as List) + (t.overOps as List) : [])
+        else if (fam == "variable") allowed = (((t.variableOps as List) - (kind == "condition" ? (t.changeOps as List) + (t.overOps as List) : [])) + (t.stringOps as List)).unique()
         else if (fam == "custom-attribute") allowed = ((t.numericOps as List) + (t.stringOps as List)).unique() - (kind == "condition" ? ["*changed*"] : [])
-        else if (fam == "device-state" && kind == "trigger" && change) allowed = null
-        else throw new IllegalArgumentException("${where}: Rule Machine has no comparator for a ${cap} ${kind}${kind == 'trigger' && fam == 'device-state' ? " other than '*changed*'" : ''}; pass state. ${hint}".toString())
-        if (allowed != null && !(cmp in allowed) && !(kind == "trigger" && change)) {
+        else if ((fam == "device-state" || cap == "Mode") && kind == "trigger" && change) allowed = null
+        else throw new IllegalArgumentException("${where}: Rule Machine has no comparator for a ${cap} ${kind}${kind == 'trigger' && (fam == 'device-state' || cap == 'Mode') ? " other than '*changed*'" : ''}; pass state. ${hint}".toString())
+        if (allowed != null && !(cmp in allowed) && !(fam == "numeric" && trigChange && change)) {
             throw new IllegalArgumentException("${where}: comparator '${spec.comparator}' is not one Rule Machine offers for a ${cap} ${kind}: ${allowed.join(' ')}. ${hint}".toString())
         }
-    }
-    if (spec.compareToDevice != null && fam != "numeric") {
-        throw new IllegalArgumentException("${where}: compareToDevice applies only to Rule Machine's numeric capabilities (${(t.numeric as List).join(', ')}). ${hint}".toString())
     }
     if (spec.andStays != null && (kind != "trigger" || cap in (t.noDuration as List))) {
         throw new IllegalArgumentException("${where}: Rule Machine has no 'and stays' duration for a ${cap} ${kind}. ${hint}".toString())
@@ -24357,14 +24359,15 @@ private Map _rmCondEntry(String cap, String kind) {
             break
         case "variable":
             req << f("variable", "String", [description: "hub variable name"])
-            opt << f("comparator", "enum", [values: trig ? t.variableOps : ((t.variableOps as List) - (t.changeOps as List) - (t.overOps as List)), description: "a String variable takes ${(t.stringOps as List).join(' ')}".toString()])
+            opt << f("comparator", "enum", [values: (((t.variableOps as List) - (trig ? [] : (t.changeOps as List) + (t.overOps as List))) + (t.stringOps as List)).unique(),
+                                            description: "a String variable takes ${(t.stringOps as List).join(' ')}".toString()])
             opt << f("value", "Number or String")
             if (!trig) opt << f("compareToVariable", "String", [description: "another hub variable instead of value"])
             break
         case "custom-attribute":
             req << f("deviceIds", "List<Integer>")
             req << f("attribute", "String")
-            opt << f("comparator", "enum", [values: ((t.numericOps as List) + (t.stringOps as List)).unique()])
+            opt << f("comparator", "enum", [values: ((t.numericOps as List) + (t.stringOps as List)).unique() - (trig ? [] : ["*changed*"])])
             opt << f("value", "Number or String")
             break
         case "button":
@@ -24376,6 +24379,7 @@ private Map _rmCondEntry(String cap, String kind) {
             if (cap == "Mode") {
                 opt << f("state", "String or List<String>", [description: "mode name(s); this or modeIds"])
                 opt << f("modeIds", "List")
+                if (trig) opt << f("comparator", "enum", [values: ["*changed*"], description: "instead of a mode: any mode change"])
             }
             break
         case "time":
@@ -25093,6 +25097,9 @@ private Map _rmCatalogEntryForSubType(String subType, Closure committed) {
     return keyed ? found : null
 }
 private boolean _rmSettingEchoes(Object stored, Object wanted) {
+    if (wanted instanceof List && stored instanceof CharSequence && stored.toString().trim().startsWith("[")) {
+        try { stored = new groovy.json.JsonSlurper().parseText(stored.toString()) } catch (Exception ignored) { }
+    }
     if (wanted instanceof List) {
         def want = (wanted as List).collect { it?.toString() }.sort(false)
         def have = (stored instanceof List) ? (stored as List).collect { it?.toString() }.sort(false)
@@ -26515,7 +26522,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                 cancelInFlightActCond()
                 def suggestion = _rmSuggestTriggerCapability(ccap, capOptions)
                 def didYouMean = suggestion ? " Did you mean '${suggestion}'?" : ""
-                throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability '${ccap}' not in doActPage option list.${didYouMean} Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
+                throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability '${ccap}' is not in Rule Machine's condition list on this hub (RM lists a capability only when the hub has a device or app for it).${didYouMean} RM offers: ${capOptions.collect { it.toString() }.sort().join(', ')}")
             }
             actCancelledByWalker = false
             try {
@@ -26768,29 +26775,6 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
                 } else if (!valuePickerExposed) {
                     _rmWriteSettingOnPage(appId, "selectTriggers", "RelrDev_${idx}", _rmNormalizeComparator(condSpec.comparator), applied, null, skipped)
                 } else {
-                    if (_rmComparatorIsRhsOptional(condSpec.comparator)) {
-                        def cStateVal = condSpec.state != null ? condSpec.state : condSpec.value
-                        if (cStateVal != null) {
-                            if (skipped == null) {
-                                throw new IllegalStateException("_rmBuildCondition: informational skip for RelrDev_${idx} has nowhere to land -- the 'skipped' accumulator was not supplied. The degradation-surfacing path requires it; pass a non-null List.")
-                            }
-                            skipped << [key: "RelrDev_${idx}".toString(), reason: "state_change_comparator_ignored_explicit_value",
-                                        value: _rmNormalizeComparator(condSpec.comparator), attribute: condSpec.attribute?.toString()]
-                        } else {
-                            def pickerInput = afterAttrInputs.find { it?.name == "state_${idx}".toString() }
-                            def reqToken = _rmComparatorToken(condSpec.comparator)
-                            def changeOption = _rmReadPickerOptionStrings(pickerInput).find { _rmComparatorTokenMatchesOption(reqToken, it) }
-                            if (changeOption != null) {
-                                condSpec.state = changeOption
-                            } else {
-                                if (skipped == null) {
-                                    throw new IllegalStateException("_rmBuildCondition: not-representable skip for RelrDev_${idx} has nowhere to land -- the 'skipped' accumulator was not supplied. The degradation-surfacing path requires it; pass a non-null List.")
-                                }
-                                skipped << [key: "RelrDev_${idx}".toString(), reason: "comparator_not_representable_for_enum_attribute",
-                                            value: _rmNormalizeComparator(condSpec.comparator), attribute: condSpec.attribute?.toString()]
-                            }
-                        }
-                    }
                 }
             }
         } else {
@@ -27975,7 +27959,22 @@ def toolSetRule(args) {
         if (args?.addRequiredExpression instanceof Map) createArgs.requiredExpression = args.addRequiredExpression
         return _rmStampOutcome(_createNativeAppShell(createArgs))
     }
-    return _rmStampOutcome(_applyNativeAppEdit(args instanceof Map ? (new LinkedHashMap(args) + [__rmRule: true]) : args))
+    Integer editId = null
+    try { editId = (args?.appId != null && args?.confirm == true) ? (args.appId as Integer) : null } catch (Exception ignored) { }
+    Boolean wasStopped = null
+    if (editId != null) {
+        try { wasStopped = _readAppStateBoolean(_rmFetchStatusJson(editId), "stopped", null) } catch (Exception ignored) { }
+    }
+    def out = _rmStampOutcome(_applyNativeAppEdit(args instanceof Map ? (new LinkedHashMap(args) + [__rmRule: true]) : args))
+    if (wasStopped == true && out instanceof Map) {
+        Boolean stillStopped = null
+        try { stillStopped = _readAppStateBoolean(_rmFetchStatusJson(editId), "stopped", null) } catch (Exception ignored) { }
+        if (stillStopped == false) {
+            out.restartedStoppedRule = true
+            out.note = ((out.note ? out.note.toString() + " " : "") + "The rule was stopped; Rule Machine's update restarted it and set its private boolean to true.").toString()
+        }
+    }
+    return out
 }
 Map _rmStampOutcome(Object result) {
     if (!(result instanceof Map) || !(result as Map).containsKey("success")) return result as Map
@@ -28184,7 +28183,7 @@ def _createNativeAppShell(args) {
                     try {
                         actionResults << _rmAddAction(newId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, actionsValidRuleIds)
                     } catch (Exception ae) {
-                        actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
+                        actionResults << (_rmAddRefusalResult(ae) + [specCapability: spec.capability, specAction: spec.action])
                         mcpLog("warn", "rm-native", "hub_set_rule: action ${i} (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                     }
                 }
@@ -28717,7 +28716,7 @@ private void _rmWriteWaitEventRows(Integer appId, Integer idx, Map actionSpec, S
             if (!canon) {
                 def suggestion = _rmSuggestTriggerCapability(evCap, opts)
                 def didYouMean = suggestion ? " Did you mean '${suggestion}'?" : ""
-                throw new IllegalArgumentException("waitEvents.events[${evIdx}].capability '${evCap}' not in option list.${didYouMean} Valid: ${opts.collect { it.toString() }.sort().join(', ')}")
+                throw new IllegalArgumentException("waitEvents.events[${evIdx}].capability '${evCap}' is not in Rule Machine's list on this hub (RM lists a capability only when the hub has a device or app for it).${didYouMean} RM offers: ${opts.collect { it.toString() }.sort().join(', ')}")
             }
             def isMode = canon.toString().equalsIgnoreCase("Mode")
             def modeIds = null
@@ -28826,7 +28825,7 @@ private void _rmWriteRunCommandFields(Integer appId, Integer idx, Map actionSpec
     if (actionSpec.deviceIds != null) {
         _rmWriteSettingOnPage(appId, "doActPage", devicesKey, actionSpec.deviceIds, applied, null, skipped)
     }
-    if (!useLast && skipped.any { it instanceof Map && it.key?.toString() == devicesKey }) {
+    if (!useLast && skipped.any { it instanceof Map && it.key?.toString() == devicesKey && it.reason == "not_in_schema" }) {
         throw new IllegalArgumentException("runCommand: RM revealed no device picker for capability '${capFilter}' on action ${idx}, so deviceIds could not be written. The opened action row was rolled back.")
     }
     String cmdKey = "cCmd.${idx}".toString()
@@ -28913,6 +28912,12 @@ private void _rmRequireExistingHubFile(Integer appId, Integer idx, String field,
         throw new IllegalArgumentException("${capLabel}: '${fileName}' is not a file on the hub, and ${capLabel} only works on an existing file. Check the name with hub_list_files, or create the file first (fileWrite action or hub_write_file).")
     }
 }
+private Map _rmAddRefusalResult(Exception e) {
+    String msg = e.message ?: e.toString()
+    def r = [success: false, error: msg]
+    if (msg.contains("row was rolled back")) r.rolledBack = true
+    return r
+}
 private void _rmCancelRefusedActionEditor(Integer appId, Integer idx, Exception refusal,
                                           boolean condWizardOpen = false, String stuckWhat = null) {
     boolean cleaned = false
@@ -28921,7 +28926,11 @@ private void _rmCancelRefusedActionEditor(Integer appId, Integer idx, Exception 
     } catch (Exception rollbackExc) {
         mcpLog("warn", "rm-native", "_rmCancelRefusedActionEditor: rollback threw for app ${appId} action ${idx} (${rollbackExc.message ?: rollbackExc.toString()})")
     }
-    if (cleaned) throw refusal
+    if (cleaned) {
+        String m = refusal.message ?: refusal.toString()
+        if (m.contains("row was rolled back") || !(refusal instanceof IllegalArgumentException)) throw refusal
+        throw new IllegalArgumentException("${m.replace(' RM is not touched.', '')} The opened action row was rolled back.".toString(), refusal)
+    }
     String what = stuckWhat ?: "action ${idx}'s editor or row could not be confirmed removed after the refusal, and the next add can reopen it pre-filled".toString()
     mcpLog("warn", "rm-native", "_rmCancelRefusedActionEditor: app ${appId}: ${what}")
     throw new IllegalStateException("${(refusal.message ?: refusal.toString()).replace(" RM is not touched.", "")} [wizardStuck -- ${what}; first close the editor with hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true), verify via hub_get_app_config(appId=${appId}), then remove any surviving row with hub_set_rule(removeAction:{index:${idx}}, confirm:true) or restore the pre-write backup]")
@@ -29437,25 +29446,6 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                     writeST(hrefParams, stateKey, condStateOrValue)
                 }
             } else if (relrReveal.visibleNames?.contains(stateKey)) {
-                if (_rmComparatorIsRhsOptional(cond.comparator)) {
-                    if (condStateOrValue != null) {
-                        skippedAccum << [key: "RelrDev_${cIdx}".toString(), reason: "state_change_comparator_ignored_explicit_value",
-                                         value: _rmNormalizeComparator(cond.comparator), attribute: cond.attribute?.toString()]
-                        writeST(hrefParams, stateKey, condStateOrValue)
-                    } else {
-                        def pickerInput = (relrReveal.postInputs ?: []).find { it?.name?.toString() == stateKey }
-                        def reqToken = _rmComparatorToken(cond.comparator)
-                        def changeOption = _rmReadPickerOptionStrings(pickerInput).find { _rmComparatorTokenMatchesOption(reqToken, it) }
-                        if (changeOption != null) {
-                            writeST(hrefParams, stateKey, changeOption)
-                        } else {
-                            skippedAccum << [key: "RelrDev_${cIdx}".toString(), reason: "comparator_not_representable_for_enum_attribute",
-                                             value: _rmNormalizeComparator(cond.comparator), attribute: cond.attribute?.toString()]
-                        }
-                    }
-                } else if (condStateOrValue != null) {
-                    writeST(hrefParams, stateKey, condStateOrValue)
-                }
             } else {
                 cancelInFlightCond()
                 def visible = relrReveal.visibleNames?.join(', ') ?: "(none)"
@@ -29585,28 +29575,13 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                     writeST(hrefParams, "RelrDev_${cIdx}".toString(), _rmNormalizeComparator(cond.comparator.toString()))
                 } else {
                     def bStateVal = cond.state != null ? cond.state : cond.value
-                    if (_rmComparatorIsRhsOptional(cond.comparator)) {
-                        if (bStateVal != null) {
-                            skippedAccum << [key: "RelrDev_${cIdx}".toString(), reason: "state_change_comparator_ignored_explicit_value",
-                                             value: _rmNormalizeComparator(cond.comparator.toString()), attribute: cond.attribute?.toString()]
-                        } else {
-                            def pickerInput = afterAttrInputs.find { it?.name?.toString() == "state_${cIdx}".toString() }
-                            def reqToken = _rmComparatorToken(cond.comparator)
-                            def changeOption = _rmReadPickerOptionStrings(pickerInput).find { _rmComparatorTokenMatchesOption(reqToken, it) }
-                            if (changeOption != null) {
-                                cond.state = changeOption
-                            } else {
-                                skippedAccum << [key: "RelrDev_${cIdx}".toString(), reason: "comparator_not_representable_for_enum_attribute",
-                                                 value: _rmNormalizeComparator(cond.comparator.toString()), attribute: cond.attribute?.toString()]
-                            }
-                        }
-                    }
                 }
             }
         } else {
             String relrKey = "RelrDev_${cIdx}".toString()
             def wr = writeST(hrefParams, relrKey, _rmNormalizeComparator(cond.comparator.toString()))
-            def miss = (wr?.persisted || wr?.verifyFetchFailed) ? null : (skippedAccum ?: []).reverse().find { it instanceof Map && it.key == relrKey }
+            boolean landed = (wr instanceof Map) && ((wr as Map).persisted || (wr as Map).verifyFetchFailed)
+            def miss = landed ? null : (skippedAccum ?: []).reverse().find { it instanceof Map && it.key == relrKey }
             if (miss && miss.available instanceof Collection && !(miss.available as Collection).contains(relrKey)) {
                 miss.reason = "comparator_not_offered"
                 miss.capability = cond.capability?.toString()
@@ -29749,7 +29724,7 @@ private Integer _rmWalkNewConditionSlot(Integer appId, Map cond, int i, Map ctx)
     if (!capCanonical) {
         def suggestion = _rmSuggestTriggerCapability(cap, capOptions)
         def didYouMean = suggestion ? " Did you mean '${suggestion}'?" : ""
-        throw new IllegalArgumentException("conditions[${i}].capability '${cap}' not in STPage option list.${didYouMean} Valid: ${capOptions.collect { it.toString() }.sort().join(', ')}")
+        throw new IllegalArgumentException("conditions[${i}].capability '${cap}' is not in Rule Machine's condition list on this hub (RM lists a capability only when the hub has a device or app for it).${didYouMean} RM offers: ${capOptions.collect { it.toString() }.sort().join(', ')}")
     }
     def skipped = ctx.skipped as List
     def skippedBefore = skipped.size()
@@ -31287,7 +31262,7 @@ def _applyNativeAppEdit(args) {
                     if (replaceStopAfter) { addedResults << _rmBulkNotAttempted(replaceStopAfter); return }
                     try { addedResults << _rmAddAction(appId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, replaceValidRuleIds) }
                     catch (Exception ae) {
-                        addedResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
+                        addedResults << (_rmAddRefusalResult(ae) + [specCapability: spec.capability, specAction: spec.action])
                         mcpLog("warn", "rm-native", "hub_set_rule: replaceActions[${i}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                     }
                     if (_rmBulkItemBlocks(addedResults.last())) { replaceStopAfter = "replaceActions[${i}]".toString(); replaceStopItem = addedResults.last() }
@@ -31643,7 +31618,7 @@ def _applyNativeAppEdit(args) {
                                 break
                             }
                             try { innerResults << _rmAddTrigger(appId, tspec as Map) }
-                            catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
+                            catch (Exception e) { innerResults << _rmAddRefusalResult(e) }
                             if (_rmBulkItemBlocks(innerResults.last())) {
                                 innerStopAfter = "patches[${pi}].addTriggers[${ii}]".toString()
                                 innerStopItem = innerResults.last()
@@ -31673,7 +31648,7 @@ def _applyNativeAppEdit(args) {
                                 break
                             }
                             try { innerResults << _rmAddAction(appId, _rmWithClock(aspec as Map, args?.__reqT0 as Long), true, patchValidRuleIds) }
-                            catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
+                            catch (Exception e) { innerResults << _rmAddRefusalResult(e) }
                             if (_rmBulkItemBlocks(innerResults.last())) {
                                 innerStopAfter = "patches[${pi}].addActions[${ii}]".toString()
                                 innerStopItem = innerResults.last()
@@ -31783,7 +31758,7 @@ def _applyNativeAppEdit(args) {
                             ri++
                             if (innerStopAfter) { innerResults << _rmBulkNotAttempted(innerStopAfter); continue }
                             try { innerResults << _rmAddAction(appId, _rmWithClock(aspec as Map, args?.__reqT0 as Long), true, patchValidRuleIds) }
-                            catch (Exception e) { innerResults << [success: false, error: e.message ?: e.toString()] }
+                            catch (Exception e) { innerResults << _rmAddRefusalResult(e) }
                             if (_rmBulkItemBlocks(innerResults.last())) {
                                 innerStopAfter = "patches[${pi}].replaceActions[${ri}]".toString()
                                 innerStopItem = innerResults.last()
@@ -31983,7 +31958,7 @@ def _applyNativeAppEdit(args) {
                 } else {
                     try { actionResults << _rmAddAction(appId, _rmWithClock(spec as Map, args?.__reqT0 as Long), true, addActionsValidRuleIds) }
                     catch (Exception ae) {
-                        actionResults << [success: false, error: ae.message, specCapability: spec.capability, specAction: spec.action]
+                        actionResults << (_rmAddRefusalResult(ae) + [specCapability: spec.capability, specAction: spec.action])
                         mcpLog("warn", "rm-native", "hub_set_rule: addActions[${ai}] (${spec.capability}/${spec.action}) failed -- ${ae.message}")
                     }
                 }
@@ -40785,6 +40760,8 @@ Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch
 ### Responses: applied, activated, verified
 
 Every write answers `success`, `partial` and three outcome flags: `applied` (something was written and stays; a refused or rolled-back call is `applied:false`), `activated` (the rule runs with it: the re-initialization that follows a trigger, expression or variable change was fired and accepted, and for actions nothing more was needed) and `verified` (the readback and the health check confirmed it). When `activated` is false the response names why (`updateRuleFailed` with `updateRuleError` and the part that is not live: `subscriptionsNotLive`, `expressionNotLive`, `variableNotLive` or `patchesNotLive`; or `finalisationNotAttempted` after a stopped batch) and `repairHints` says what to run, normally `hub_set_rule(button='updateRule', confirm=true)` once the rule is complete.
+
+A trigger, expression or local-variable edit runs Rule Machine's update, which rebuilds the rule's subscriptions: a paused rule stays paused, and a stopped rule is restarted with its private boolean set to true (`restartedStoppedRule:true`). An action edit runs no update.
 
 `settingsSkipped[]` lists each field that did not land as RM's editor showed it, with a `reason` and, where one applies, a `hint`; informational entries (`reveal_fallback_to_existing_field`, `useST_idempotent_noop`, `device_list_committed_schema_unchanged`, `state_change_comparator_ignored_explicit_value`) do not make the call `partial`. An action RM does not bake is removed by the add and reported `success:false, rolledBack:true`. A bulk add, `replaceActions` or `patches` stops at the first failed or partial item: later items are `notAttempted`, `bulkStoppedAfter` names the stop, and earlier items stay written (it is not a transaction), so repair the stopping item and add the rest, or restore `backup.backupKey`.
 
