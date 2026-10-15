@@ -1139,12 +1139,11 @@ def toolRemoveConnector(args) {
         consumersUnknown: (force && nativeModel != null && connectorApps == null) ?: null,
         message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged."
     ]
-    // Known Hubitat platform bug (confirmed 2026-06-02, fw 2.5.0.143, via the UI's "Remove Device"): removing
-    // the connector device makes the built-in "Variable Connectors" driver log a StackOverflowError in
-    // childRemoved(); the device is removed either way, so say so rather than let it read as our failure.
-    if (nativeModel == null) {
-        result.note = "A java.lang.StackOverflowError from Hubitat's built-in 'Variable Connectors' driver (childRemoved) may appear in the hub log during this removal. It is a known Hubitat platform bug -- the same crash occurs via the UI's Remove Device button -- and is harmless: the connector is removed regardless."
-    }
+    // Known Hubitat platform bug (confirmed 2026-06-02 on 2.5.0.143 via the UI's "Remove Device", and again
+    // 2026-10-15 on 2.5.2.135 via the Hub Variables removal): removing the connector makes the built-in
+    // "Variable Connectors" driver log a StackOverflowError in childRemoved(); the connector is removed
+    // either way, so say so rather than let it read as our failure.
+    result.note = "A java.lang.StackOverflowError from Hubitat's built-in 'Variable Connectors' driver (childRemoved) may appear in the hub log during this removal. It is a known Hubitat platform bug -- the same crash occurs via the UI's Remove Device button -- and is harmless: the connector is removed regardless."
     return result
 }
 

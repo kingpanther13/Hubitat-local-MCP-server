@@ -185,7 +185,7 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         def removed = script.toolRemoveConnector([confirm: true, name: 'Counter'])
         then:
         removed.success
-        removed.note == null
+        removed.note.contains('StackOverflowError')
         removed.brokenConsumers == null
         removed.consumersUnknown == null
         variables.Counter.sdk.deviceId == null
