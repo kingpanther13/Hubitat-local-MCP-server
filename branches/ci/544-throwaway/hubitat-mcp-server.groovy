@@ -22522,7 +22522,7 @@ def _getAllToolDefinitions_partNativeRM() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    labelFilter: [type: "string", description: "Only rules whose label contains this text (case-insensitive), e.g. to resolve a rule name to its id."],
+                    labelFilter: [type: "string", description: "Only rules whose label contains this text (any case)."],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ]
@@ -22589,7 +22589,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
         ],
         [
             name: "hub_set_rule",
-            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. In trigger/action/condition specs use `capability` NOT `type`. RM-only — for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; each edit ensures a File Manager baseline exists (same-rule baselines are reused for one hour by default; backup.backupKey restores it through hub_manage_backup).
+            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. Fields per capability: operation:'discover'. RM-only — for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; each edit keeps a File Manager baseline (backup.backupKey; reused for an hour).
 
 ALWAYS prefer the one-call shortcuts (addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, remove/modify/move/clear, addLocalVariable/removeLocalVariable, patches); walkStep and raw settings+button are LAST RESORTS.[[FLAT_TRIM]] Each shortcut orchestrates the full RM 5.1 wizard in one call; walkStep (one wizard page per call) covers capabilities no shortcut can represent.
 
@@ -23744,6 +23744,7 @@ private void _rmValidateRoundZeroActionSpec(Map actionSpec) {
     }
 }
 private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
+    def editorOpen = [false]
     def _impl = {
     if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec. RM is not touched.")
     if (_rmIsDiscoverSpec(triggerSpec)) {
@@ -23771,6 +23772,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     }
     def existing = _rmCollectTriggerIndices(appId)
     _rmClickAppButton(appId, "true", "moreCond", "selectTriggers")
+    editorOpen[0] = true
     def conditionSpec = (triggerSpec.condition instanceof Map) ? (triggerSpec.condition as Map) : null
     def conditionId = null
     def applied = []
@@ -23930,7 +23932,10 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     }
     if (capCanonical == "Mode") {
         def rawModeIds = []
-        if (triggerSpec.modeIds instanceof List) {
+        boolean anyModeChange = triggerSpec.modeIds == null && triggerSpec.state == null && _rmComparatorIsRhsOptional(triggerSpec.comparator)
+        if (anyModeChange) {
+            rawModeIds = ["0"]
+        } else if (triggerSpec.modeIds instanceof List) {
             rawModeIds = (triggerSpec.modeIds as List).collect { it?.toString() }.findAll { it }
         } else {
             def nameInput = triggerSpec.state
@@ -23953,7 +23958,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         if (rawModeIds.isEmpty()) {
             throw new IllegalArgumentException("addTrigger Mode: no mode IDs resolved -- pass state with valid mode name(s) or modeIds with mode ID(s)")
         }
-        def modeCheck = _rmBadModeIds(rawModeIds, null)
+        def modeCheck = anyModeChange ? [bad: []] : _rmBadModeIds(rawModeIds, null)
         if (modeCheck.bad) {
             throw new IllegalArgumentException("addTrigger Mode: mode ID(s) ${modeCheck.bad.join(', ')} not offered by ${modeCheck.source}. Valid IDs: ${modeCheck.valid.sort().join(', ')}")
         }
@@ -24146,6 +24151,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         }
     }
     _rmClickAppButton(appId, "hasAll", null, "selectTriggers")
+    editorOpen[0] = false
     if (conditionSpec == null && triggerSpec.conditional != true) {
         try {
             _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", false, applied, null, skipped)
@@ -24247,7 +24253,14 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (conditionId != null) result.conditionId = conditionId
     return result
     }
-    return _impl()
+    try {
+        return _impl()
+    } catch (IllegalArgumentException refused) {
+        if (editorOpen[0]) {
+            try { _rmClickAppButton(appId, "cancelCapab", null, "selectTriggers") } catch (Exception ignored) { }
+        }
+        throw refused
+    }
 }
 private Map _rmCondTables() {
     [trigger: ["Acceleration", "Battery", "Button", "Carbon monoxide detector", "Carbon dioxide sensor", "Certain Time (and optional date)", "Periodic Schedule", "Contact", "Dimmer", "Energy meter", "Garage door", "Humidity", "Illuminance", "Lock", "Physical Lock", "Valve", "Mode", "Motion", "Digital Switch", "Variable", "Physical dimmer level", "Physical Switch", "Power meter", "Presence", "Rule paused", "Smoke detector", "Switch", "Fan Speed", "Sound", "Shock sensor", "Temperature", "Door", "HSM Status", "HSM Alert", "Thermostat mode", "Thermostat state", "Thermostat heat setpoint", "Thermostat cool setpoint", "Gas detector", "Water sensor", "Private Boolean", "Music player", "Location Event", "Cloud End Point", "Local End Point", "Security keypad", "Tamper alert", "Power source", "Keypad codes", "Lock codes", "Button LED", "Thermostat fan mode", "Custom Attribute", "Days of Week Schedule", "Last Event Device", "Window Shade", "Window Blind"],
@@ -24317,6 +24330,9 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
         if (allowed != null && !(cmp in allowed) && !(fam == "numeric" && trigChange && change)) {
             throw new IllegalArgumentException("${where}: comparator '${spec.comparator}' is not one Rule Machine offers for a ${cap} ${kind}: ${allowed.join(' ')}. ${hint}".toString())
         }
+    }
+    if (cap == "Mode" && spec.state == null && spec.modeIds == null && !(kind == "trigger" && spec.comparator != null)) {
+        throw new IllegalArgumentException("${where}: a Mode ${kind} needs state (mode names) or modeIds${kind == 'trigger' ? ", or comparator:'*changed*' for any change" : ''}. ${hint}".toString())
     }
     if (spec.andStays != null && (kind != "trigger" || cap in (t.noDuration as List))) {
         throw new IllegalArgumentException("${where}: Rule Machine has no 'and stays' duration for a ${cap} ${kind}. ${hint}".toString())
@@ -27960,7 +27976,9 @@ def toolSetRule(args) {
         return _rmStampOutcome(_createNativeAppShell(createArgs))
     }
     Integer editId = null
-    try { editId = (args?.appId != null && args?.confirm == true) ? (args.appId as Integer) : null } catch (Exception ignored) { }
+    boolean finalizes = args instanceof Map && (args as Map).keySet().any { it in ["addTrigger", "addTriggers", "removeTrigger", "modifyTrigger",
+        "addRequiredExpression", "replaceRequiredExpression", "addLocalVariable", "removeLocalVariable", "settings", "button", "patches", "walkStep"] }
+    try { editId = (finalizes && args?.appId != null && args?.confirm == true) ? (args.appId as Integer) : null } catch (Exception ignored) { }
     Boolean wasStopped = null
     if (editId != null) {
         try { wasStopped = _readAppStateBoolean(_rmFetchStatusJson(editId), "stopped", null) } catch (Exception ignored) { }
@@ -29367,7 +29385,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         def stateReveal = revealStep(appId, page, /state_\d+/, {
             writeST(hrefParams, relrField, normalizedComparator)
         })
-        if (!stateReveal.input) {
+        if (!stateReveal.input && !(condStateOrValue == null && _rmComparatorIsRhsOptional(normalizedComparator))) {
             cancelInFlightCond()
             def visible = stateReveal.visibleNames?.join(', ') ?: "(none)"
             throw new IllegalStateException("conditions[${condIdx}]: Variable: state_<N> (value field) not revealed after RelrDev write. Visible fields: ${visible}")
@@ -29446,6 +29464,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                     writeST(hrefParams, stateKey, condStateOrValue)
                 }
             } else if (relrReveal.visibleNames?.contains(stateKey)) {
+                if (condStateOrValue != null) writeST(hrefParams, stateKey, condStateOrValue)
             } else {
                 cancelInFlightCond()
                 def visible = relrReveal.visibleNames?.join(', ') ?: "(none)"
@@ -31324,7 +31343,7 @@ def _applyNativeAppEdit(args) {
                 return shape
             }
             def result = _rmBuildUpdateErrorResponse(appId, e.message, backup)
-            def isRetryExhaustion = e.message?.contains("one verified re-click")
+            def isRetryExhaustion = e.message?.contains("one re-click")
             if (isRetryExhaustion) {
                 result.restoreHint = "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')."
                 result.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
