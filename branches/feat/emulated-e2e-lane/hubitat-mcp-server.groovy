@@ -15523,9 +15523,7 @@ def toolRemoveConnector(args) {
         consumersUnknown: (force && nativeModel != null && connectorApps == null) ?: null,
         message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged."
     ]
-    if (nativeModel == null) {
-        result.note = "A java.lang.StackOverflowError from Hubitat's built-in 'Variable Connectors' driver (childRemoved) may appear in the hub log during this removal. It is a known Hubitat platform bug -- the same crash occurs via the UI's Remove Device button -- and is harmless: the connector is removed regardless."
-    }
+    result.note = "A java.lang.StackOverflowError from Hubitat's built-in 'Variable Connectors' driver (childRemoved) may appear in the hub log during this removal. It is a known Hubitat platform bug -- the same crash occurs via the UI's Remove Device button -- and is harmless: the connector is removed regardless."
     return result
 }
 private Map _incrementHubVariable(String name, increment) {
