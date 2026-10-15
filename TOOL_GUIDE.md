@@ -1950,7 +1950,7 @@ If eight owner slices leave work unfinished, the terminal `continuation_limit` r
 
 ### Client retry limits and resume
 
-The official Python SDK pinned by this project (2.0.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
+The official Python SDK pinned by this project (2.2.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
 
 For integrations that control the SDK, configure `Client(..., input_required_max_rounds=...)` for the expected operation size, or use `client.session.call_tool(..., allow_input_required=True)` and retain each returned `request_state` before the next request. Resume with the same outer tool, original arguments and exact state; do not send only the remaining arguments. Hubitat keeps one state string for the logical call. The SDK also accepts `client.call_tool(..., request_state=saved_state)` to resume its automatic loop. Choose state capture before starting: `InputRequiredRoundsExceededError` does not contain the last state. A worked example and offline SDK coverage are in `docs/testing.md`, "Client retry policy".
 

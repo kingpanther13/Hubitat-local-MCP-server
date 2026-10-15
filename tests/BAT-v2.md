@@ -4571,7 +4571,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ```json
 {
-  "setup_prompt": "Create one uniquely named BAT_E2E_SDK_MRTR_<random> Rule Machine rule through the official mcp==2.0.0 high-level client and retain its returned appId.",
+  "setup_prompt": "Create one uniquely named BAT_E2E_SDK_MRTR_<random> Rule Machine rule through the official mcp==2.2.0 high-level client and retain its returned appId.",
   "test_prompt": "Make one high-level Client.call_tool Rule Machine edit that adds six deterministic log actions, allowing the SDK's standard Streamable HTTP client to complete every state-only continuation automatically.",
   "teardown_prompt": "In a finally block, delete only the exact appId created for this run. If creation lost its response, use a bounded settle/retry to adopt at most one exact random-name match before deleting it. Refuse ambiguous matches. Never sweep existing apps or delete backup artifacts."
 }

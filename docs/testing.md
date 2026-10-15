@@ -502,7 +502,7 @@ The validator is `com.networknt:json-schema-validator`, a `testImplementation` d
 
 ### Client retry policy (offline SDK and server coverage)
 
-The pinned [Python SDK 2.0.0 retry driver](https://github.com/modelcontextprotocol/python-sdk/blob/v2.0.0/src/mcp/client/_input_required.py)
+The pinned [Python SDK 2.2.0 retry driver](https://github.com/modelcontextprotocol/python-sdk/blob/v2.2.0/src/mcp/client/_input_required.py)
 allows ten retries after an initial `input_required` response. Reservation and worker-observation
 responses count toward this client limit even though they do not commit a server work slice.
 `mrtr.rounds` measures owner slices; the server's eight-slice cap cannot guarantee completion
