@@ -79,7 +79,7 @@ failing.
 
 The `e2e` job masks the hub URL, its hostname, the access token and the gate password from the
 session. It then reads `hub_get_info` with health alerts once and masks the hub's `hubUID`,
-`zigbeeId`, `localIP`, name, every MAC-shaped value and every health-alert message text. No hub
+`zigbeeId`, `localIP`, every MAC-shaped value and every health-alert message text. No hub
 value is written into the workflow source, because the runner prints step scripts to the public
 log. Uploaded logs bypass log masking, so the job replaces the same values in them before upload.
 

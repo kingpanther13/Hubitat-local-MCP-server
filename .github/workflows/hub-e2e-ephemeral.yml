@@ -179,7 +179,7 @@ jobs:
             -H 'Content-Type: application/json' \
             -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{"includeHealthAlerts":true}}}' \
             | jq -r '.result.content[0].text | fromjson
-                | [(.. | objects | .hubUID?, .zigbeeId?, .localIP?), .name,
+                | [(.. | objects | .hubUID?, .zigbeeId?, .localIP?),
                    (.. | objects | .healthAlerts? | select(. != null) | .. | objects | .message? | strings),
                    (.. | objects | .alertMessages?, .headerMessages? | select(. != null) | .. | strings),
                    (.. | strings | select(test("^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")))]
