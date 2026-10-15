@@ -54,6 +54,7 @@ PREFIX = "BAT_E2E_"
 # fixture is a hub-provisioning problem, not a test bug: the owning scenario says how to recreate it.
 # The watchdog's teardown purge skips the same marker.
 SCAFFOLD_PREFIX = f"{PREFIX}KEEP_"  # "BAT_E2E_KEEP_"
+CONFIGURATION_DASHBOARD = "E2E_PERM_Configuration_Dashboard"
 
 
 def _run_artifact_suffix(env: dict[str, str] | os._Environ[str] = os.environ) -> str:
@@ -3610,12 +3611,24 @@ class TestRunner:
                 except (McpError, McpToolError):
                     pass
 
+    def _configuration_dashboard_ids(self, fallback: list) -> list:
+        """This hub's own configuration dashboard id; the manifest's id only when none is listed."""
+        listed = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})
+        rows = listed.get("dashboards") if isinstance(listed, dict) else None
+        assert isinstance(rows, list), f"Dashboard list is unreadable: {listed}"
+        ids = [int(row["id"]) for row in rows if isinstance(row, dict) and row.get("type") == "legacy"
+               and row.get("name") == CONFIGURATION_DASHBOARD and row.get("id")]
+        assert len(ids) <= 1, f"Provision exactly one legacy '{CONFIGURATION_DASHBOARD}': {ids}"
+        return ids or fallback
+
     @test("devices")
     def test_device_configuration_matrix(self) -> None:
         """Exercise native transport for provisioned child and selected fixtures; bypass reachability only."""
         fixture_dir = Path(__file__).resolve().parent / "fixtures"
         manifest = json.loads((fixture_dir / "device-configuration-manifest.json").read_text(encoding="utf-8"))
         assert manifest["version"] == 3, "Update the configuration fixture manifest and provisioned drivers together"
+        dashboard = manifest["nativeFields"]["dashboardIds"]
+        dashboard["target"] = self._configuration_dashboard_ids(dashboard["target"])
         expected = {
             "probeBool": ("bool", False), "probeNumber": ("number", 3),
             "probeText": ("text", "original saved text"), "probeEnum": ("enum", "eco"),
@@ -16335,6 +16348,9 @@ class TestRunner:
         # headers do not control that cache, so a LegacyEraClient before/after pair
         # can still return the same payload. The watchdog reads /logs/past/json
         # directly and gives this proof an independent native-history observer.
+        if not (self.watchdog_url and self.server_app_id):
+            raise SkipTest("WATCHDOG_URL/HUBITAT_APP_ID not set")
+
         def bps_native_rows(logs: list) -> list:
             expected = "Validation error in hub_create_variable"
             acknowledgment = "Mandatory best-practice acknowledgment"
