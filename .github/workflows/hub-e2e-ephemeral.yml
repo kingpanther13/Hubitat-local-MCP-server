@@ -160,7 +160,6 @@ jobs:
           hub_url="$(jq -r '.hub_url // ""' "$session")"
           token="$(jq -r '.access_token // ""' "$session")"
           mask "$hub_url"; mask "${hub_url#https://}"; mask "$token"; mask "$(jq -r '.password // ""' "$session")"
-          mask 192.168.255.2; mask "Cloud connection is unavailable."; mask "Zigbee network is offline"
           app_id="$(jq -r '.app_id // "" | tostring' "$session")"
           rm -f "$key" "$session" "$RUNNER_TEMP/session-priv.pem"
           [[ "$hub_url" =~ ^https://[a-z0-9-]+\.trycloudflare\.com$ ]] || { echo "::error::Unexpected hub_url shape."; exit 1; }
@@ -178,9 +177,11 @@ jobs:
             "$HUBITAT_HUB_URL/apps/api/$HUBITAT_APP_ID/mcp?access_token=$HUBITAT_ACCESS_TOKEN" \
             -H 'MCP-Protocol-Version: 2026-07-28' -H 'Mcp-Method: tools/call' -H 'Mcp-Name: hub_get_info' \
             -H 'Content-Type: application/json' \
-            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{}}}' \
+            -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hub_get_info","arguments":{"includeHealthAlerts":true}}}' \
             | jq -r '.result.content[0].text | fromjson
                 | [(.. | objects | .hubUID?, .zigbeeId?, .localIP?), .name,
+                   (.. | objects | .alertItems? | arrays | .[] | objects | .message?),
+                   (.. | objects | .alertMessages?, .headerMessages? | select(. != null) | .. | strings),
                    (.. | strings | select(test("^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")))]
                 | .[] | select(. != null) | tostring | select(length > 3 and . != "unavailable")' \
             | while IFS= read -r v; do echo "::add-mask::$v"; printf '%s\n' "$v" >> "$RUNNER_TEMP/masks"; done
