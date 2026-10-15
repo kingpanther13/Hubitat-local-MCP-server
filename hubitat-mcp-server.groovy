@@ -6033,8 +6033,8 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
                 }
                 return toolListVirtualDevices(args)
             }
-            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames)
-        case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.fields, args.cursor)
+            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.get("fields"), args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames)
+        case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.get("fields"), args.cursor)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
         case "hub_call_device_replace": return toolCallDeviceReplace(args)
@@ -8821,19 +8821,21 @@ private Integer _discoverParentAppId(String appType) {
         // Primary: the GET creates the parent server-side -- re-discover it by type.
         parentNode = findParentNode()
         bootstrapDiag += " rediscovered=${parentNode?.id}"
-        if (parentNode?.id == null && created != null) {
+        // The created app's id from a create response: the 302 Location, or the configure page the
+        // client followed to. The install is then committed with Done.
+        def adoptCreated = { resp ->
             // /hub2/appsList can lag right after creation, so extract the new id from the
             // response and use it DIRECTLY. 302: id is in the absolute Location. 200 (the
             // client followed the redirect to the configure page): the classic appUI page
             // injects `appId = <id>` (verified live).
             def newId = null
             def firstPage = null
-            if (created.location) {
-                def lm = (created.location.toString() =~ /\/installedapp\/configure\/(\d+)(?:\/([^\/?#]+))?/)
+            if (resp.location) {
+                def lm = (resp.location.toString() =~ /\/installedapp\/configure\/(\d+)(?:\/([^\/?#]+))?/)
                 if (lm.find()) { newId = lm.group(1) as Integer; firstPage = lm.group(2) }
             }
-            if (newId == null && created.data) {
-                def bs = created.data.toString()
+            if (newId == null && resp.data) {
+                def bs = resp.data.toString()
                 def am = (bs =~ /appId\s*=\s*(\d+)/)
                 if (am.find()) newId = am.group(1) as Integer
                 else {
@@ -8866,7 +8868,23 @@ private Integer _discoverParentAppId(String appType) {
                 }
                 parentNode = [id: newId, installed: true]
             }
-        } else if (parentNode?.id != null && parentNode.installed != true) {
+        }
+        if (parentNode?.id == null && created != null) adoptCreated(created)
+        // Some built-ins (Notifications) have no sysApp alias: install them the way Apps > Add
+        // Built-In App does, by the type id the hub lists in /hub2/appsList systemAppTypes.
+        if (parentNode?.id == null) {
+            def typeId = _systemAppTypeId(parentTypeName)
+            bootstrapDiag += " typeId=${typeId}"
+            if (typeId != null) {
+                def created2 = null
+                try { created2 = hubInternalGetRaw("/installedapp/create/${typeId}") } catch (Exception e2) {
+                    bootstrapDiag += " create threw: ${e2.message}"
+                }
+                parentNode = findParentNode()
+                if (parentNode?.id == null && created2 != null) adoptCreated(created2)
+            }
+        }
+        if (parentNode?.id != null && parentNode.installed != true) {
             // Surfaced but PENDING (installed != true) -- commit via Done so it's usable.
             try {
                 def commit = _commitUserAppInstall(parentNode.id.toString().toInteger(), null)
@@ -8890,7 +8908,7 @@ private Integer _discoverParentAppId(String appType) {
 
     if (parentNode?.id == null) {
         throw new IllegalArgumentException(
-            "[bootstrap ${bootstrapDiag}] '${parentTypeName}' parent not surfaced by /installedapp/sysApp (appType=${appType}); install via Apps > Add Built-In App.")
+            "[bootstrap ${bootstrapDiag}] '${parentTypeName}' parent was not installed by /installedapp/sysApp or by its built-in app type (appType=${appType}); install it via Apps > Add Built-In App.")
     }
     def id = parentNode.id.toString().toInteger()
     if (commitUnverified) {
@@ -8903,6 +8921,19 @@ private Integer _discoverParentAppId(String appType) {
     }
     mcpLog("info", "rm-native", "Discovered ${parentTypeName} parent app id: ${id} (appType=${appType})")
     return id
+}
+
+// The id of a built-in app type as /hub2/appsList systemAppTypes lists it (what Apps > Add Built-In
+// App installs from), or null when the list is unreadable or does not offer the name.
+private Integer _systemAppTypeId(String typeName) {
+    try {
+        def parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/appsList") ?: "{}")
+        def t = (parsed?.systemAppTypes ?: []).find { it instanceof Map && it.name?.toString() == typeName && it.deprecated != true }
+        return t?.id != null ? (t.id.toString() as Integer) : null
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "systemAppTypes lookup for '${typeName}' failed: ${e.message}")
+        return null
+    }
 }
 
 /**
@@ -9364,8 +9395,9 @@ private Map _ruleCompiledState(Integer appId) {
                 // are IF expressions in actions). An eval map without "0" has no committed expression;
                 // no eval map at all leaves it unknown (null), never a false "empty".
                 def reTokens = (parsed.eval instanceof Map) ? ((parsed.eval["0"] instanceof List) ? (parsed.eval["0"] as List).size() : 0) : null
+                // RM writes `paused` only once a rule is first paused; absent means running.
                 return [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
-                        paused: parsed.paused instanceof Boolean ? parsed.paused : null,
+                        paused: parsed.paused == true,
                         predicate: pred, requiredExpressionTokens: reTokens,
                         actionList: (parsed.actionList instanceof List ? parsed.actionList : null),
                         endpoint: "ruleBuilderJson"]
@@ -9685,7 +9717,7 @@ private Map _rmEmptyHealthVerdict(Map overrides) {
     return v
 }
 
-Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
+Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage = null) {
     // Defensive guard: error paths (_rmBuildUpdateErrorResponse and friends) can call in with a
     // null appId if the failure happened before the id resolved. Reading rule state for a null id
     // would fire redundant HTTP calls (/app/ruleBuilderJson/null, /installedapp/configure/json/null)
@@ -9773,7 +9805,10 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
     }
     if (runHtml) {
         try {
-            def cfg = _rmFetchConfigJson(appId)
+            // A non-RM app's default page can reset its own wizard (HPM clears its pending
+            // install settings there), so a caller mid-wizard passes the page it is on; the
+            // settings in the response are app-wide either way.
+            def cfg = (activePage && ruleFormat != "rm") ? _rmFetchConfigJson(appId, activePage) : _rmFetchConfigJson(appId)
             sourcesUsed << "configPage"
             label = cfg?.app?.label?.toString()
             // Same fetch already in hand: reporting the red-X state costs nothing and spares
@@ -11730,7 +11765,7 @@ Each edit response includes the File Manager baseline under `backup.backupKey`. 
 
 ### `addTrigger` capability families
 
-- **Device-state** (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source): `capability`, `deviceIds`, `state` (`'on'`, `'active'`, `'open'`, `'unlocked'`, etc.). To fire on ANY change of the attribute (not one specific value) pass `comparator:'*changed*'` and OMIT `state`: a device-state trigger has no separate comparator field, so the change token rides the value picker (`tstate<N>`); RM renders it as "<device> switch turns *changed*". A bare change token in `state` (`state:'changed'`) is rejected fail-loud, steering you to `comparator:'*changed*'`.
+- **Device-state** (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source): `capability`, `deviceIds`, `state` (`'on'`, `'active'`, `'open'`, `'unlocked'`, etc.). To fire on ANY change of the attribute (not one specific value) pass `comparator:'*changed*'` and OMIT `state`: a device-state trigger has no separate comparator field, so the change token rides the value picker (`tstate<N>`); RM renders it as "<device>(<current value>) turns *changed*", e.g. "Porch(off) turns *changed*". A bare change token in `state` (`state:'changed'`) is rejected fail-loud, steering you to `comparator:'*changed*'`.
 - **Multi-device "all of these"**: add `allOfThese=true` to the device-state spec
 - **Numeric** (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints): `capability`, `deviceIds`, `comparator` (`=`, `<`, `>`, `<=`, `>=`, `*changed*`), `value`
 - **Button** (`capability='Button'`): `deviceIds`, `buttonNumber`, `state` (`pushed` | `held` | `doubleTapped` | `released`)
@@ -11813,7 +11848,7 @@ Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide de
 
 Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expression.conditions[]` (doActPage); the shared walker `_rmWalkConditionReveal` handles every per-capability reveal sequence below. `addTrigger.condition` has a narrower support list (see selectTriggers note below).
 
-- **Mode**: `{capability:'Mode', state:'Night'}` or `{capability:'Mode', modeIds:['3']}`. Walker resolves mode names to IDs via `location.modes` and writes the firmware-assigned `modes<N>` picker discovered from the live schema.
+- **Mode**: `{capability:'Mode', state:'Night'}` or `{capability:'Mode', modeIds:['3']}`. Walker resolves mode names to IDs via `location.modes` and writes the firmware-assigned `modes<N>` picker discovered from the live schema. A `mode` action takes `modeId` or `modeName` instead; a condition or trigger names the mode in `state`.
 - **Between two times**: `{capability:'Between two times', start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}, end:{...same shape}}`. Precondition: hub `location.timeZone` must be configured.
   - `time` (hub-local `HH:mm`) is required when `type:'clock'`, and `offset` (minutes) when `type:'sunrise'|'sunset'`. A missing value is rejected before any write. If the hub timezone is unset, a clock condition throws before the wizard is touched.
 
@@ -11903,7 +11938,7 @@ Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch
 
 ### Responses: applied, activated, verified
 
-Every write answers `success`, `partial` and three outcome flags: `applied` (something was written and stays; a refused or rolled-back call is `applied:false`), `activated` (the rule runs with it: the re-initialization that follows a trigger, expression or variable change was fired and accepted, and for actions nothing more was needed) and `verified` (the readback and the health check confirmed it). When `activated` is false the response names why (`updateRuleFailed` with `updateRuleError`, or `finalisationNotAttempted` after a stopped batch) and `repairHints` says what to run, normally `hub_set_rule(button='updateRule', confirm=true)` once the rule is complete.
+Every write answers `success`, `partial` and three outcome flags: `applied` (something was written and stays; a refused or rolled-back call is `applied:false`), `activated` (the rule runs with it: the re-initialization that follows a trigger, expression or variable change was fired and accepted, and for actions nothing more was needed) and `verified` (the readback and the health check confirmed it). When `activated` is false the response names why (`updateRuleFailed` with `updateRuleError` and the part that is not live: `subscriptionsNotLive`, `expressionNotLive`, `variableNotLive` or `patchesNotLive`; or `finalisationNotAttempted` after a stopped batch) and `repairHints` says what to run, normally `hub_set_rule(button='updateRule', confirm=true)` once the rule is complete.
 
 `settingsSkipped[]` lists each field that did not land as RM's editor showed it, with a `reason` and, where one applies, a `hint`; informational entries (`reveal_fallback_to_existing_field`, `useST_idempotent_noop`, `device_list_committed_schema_unchanged`, `state_change_comparator_ignored_explicit_value`) do not make the call `partial`. An action RM does not bake is removed by the add and reported `success:false, rolledBack:true`. A bulk add, `replaceActions` or `patches` stops at the first failed or partial item: later items are `notAttempted`, `bulkStoppedAfter` names the stop, and earlier items stay written (it is not a transaction), so repair the stopping item and add the rest, or restore `backup.backupKey`.
 

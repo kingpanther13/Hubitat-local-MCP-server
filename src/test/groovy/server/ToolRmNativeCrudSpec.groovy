@@ -317,6 +317,31 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         id == 88
     }
 
+    def "_discoverParentAppId installs a built-in with no sysApp alias by its listed type id (Notifications)"() {
+        given: "sysApp creates nothing; the app list offers Notifications as system app type 24"
+        boolean created = false
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([
+                apps: created ? [[data: [id: 91, name: "Notifications", type: "Notifications", user: false, installed: true, hidden: false], children: []]] : [],
+                systemAppTypes: [[id: 24, name: "Notifications", allowNewInstances: true, deprecated: false]]
+            ])
+        }
+        def rawCalls = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            rawCalls << path
+            if (path == "/installedapp/create/24") created = true
+            [status: 200, location: null, data: path.startsWith("/installedapp/sysApp/") ? "<html>stub</html>" : ""]
+        }
+
+        when:
+        def id = script._discoverParentAppId("notifier")
+
+        then:
+        rawCalls.any { it.startsWith("/installedapp/sysApp/") }
+        rawCalls.contains("/installedapp/create/24")
+        id == 91
+    }
+
     def "_discoverParentAppId commits a freshly-bootstrapped parent that surfaces PENDING (installed != true)"() {
         given:
         // The sysApp GET surfaces the parent but uninstalled -- it must be committed via
@@ -4169,7 +4194,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             if (path == "/installedapp/btn") {
                 (ctl.clicks as List) << [name: body?.name?.toString(), stateAttribute: body?.stateAttribute?.toString()]
                 if (body?.name?.toString() == "actionDone" && ctl.dupOnDone) {
-                    def edited = (ctl.clicks as List).find { it.stateAttribute == "doAct" }?.name?.toString()?.tokenize(".")?.get(0)
+                    def edited = (ctl.clicks as List).find { it.stateAttribute == "doActN" }?.name?.toString()?.tokenize(".")?.get(0)
                     if (edited) ctl.order = (ctl.order as List) + edited.toInteger()
                 }
             }
@@ -4187,12 +4212,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         return ctl
     }
 
+    // RM's editor on an existing row: the row's own fields and actionDone (its "Cancel editing
+    // Action" too); the type pickers and actionCancel appear only for a new row.
     private List runRuleEditor(int idx) {
-        [[name: "actType.${idx}".toString(), type: "enum", options: ["rulesActs": "Rules"]],
-         [name: "actSubType.${idx}".toString(), type: "enum", options: ["getRuleActions": "Run Rule Actions"]],
-         [name: "runRuleType.${idx}".toString(), type: "enum", options: ["Rule Machine": "Rule Machine"]],
+        [[name: "runRuleType.${idx}".toString(), type: "enum", options: ["Rule Machine": "Rule Machine"]],
          [name: "ruleAct.${idx}".toString(), type: "enum", multiple: true, options: ["200": "A", "300": "B"]],
-         [name: "actionDone", type: "button"], [name: "actionCancel", type: "button"]]
+         [name: "actionDone", type: "button"]]
     }
 
     def "modifyAction rejects an index that has no committed action before any hub write"() {
@@ -4275,7 +4300,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def result = script._rmModifyAction(100, 2, [ruleIds: [300]])
 
         then: "RM's row editor was opened on action 2 and closed with actionDone"
-        (ma.clicks as List)[0] == [name: "2.0.false", stateAttribute: "doAct"]
+        (ma.clicks as List)[0] == [name: "2.0.false", stateAttribute: "doActN"]
         (ma.clicks as List).any { it.name == "actionDone" }
         !(ma.clicks as List).any { it.name == "updateRule" }
 
@@ -4362,7 +4387,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error.contains("more than once")
     }
 
-    def "modifyAction closes an editor RM did not open on the row and reports nothing written"() {
+    def "modifyAction clicks nothing when RM's editor did not open on the row, since that editor's cancel would delete its row"() {
         given: "doActPage renders no sub-type picker for the row"
         def settings = ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]
         def ma = wireModifyEditorTransport(100, [1], settings, [[name: "actionDone", type: "button"]])
@@ -4373,8 +4398,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         def ex = thrown(IllegalStateException)
         ex.message.contains("did not open its editor on action 1")
-        ex.message.contains("RM is not touched")
-        (ma.clicks as List).any { it.name == "actionCancel" }
+        ex.message.contains("restore the pre-edit backup")
+        (ma.clicks as List).size() == 1
+        !(ma.clicks as List).any { it.name in ["actionCancel", "actionDone"] }
         (ma.writes as List).isEmpty()
     }
 
@@ -5023,7 +5049,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L
         int snapshots = 0
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason -> snapshots++; [backupKey: "k"] }
+        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason, String activePage = null -> snapshots++; [backupKey: "k"] }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         hubGet.register('/installedapp/json/100') { params ->
@@ -14766,6 +14792,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         null         | false
     }
 
+    def "_rmReadPickerOptionLabels maps the hub's single-entry enum options to their labels"() {
+        expect:
+        script._rmReadPickerOptionLabels([options: [["Switch": "Switch"], ["SwitchLevel": "Dimmer"]]]) == ["Switch": "Switch", "SwitchLevel": "Dimmer"]
+    }
+
     def "_rmReadPickerOptionStrings normalizes every picker option container/shape to value strings"() {
         // Direct edge-table for the shared picker-option reader. The hub renders enum
         // options as bare strings, a LIST of value-key Maps, OR a MAP container keyed by
@@ -14785,6 +14816,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         [options: ["on": "On", "off": "Off"]]                                 | ["on", "off"]
         [options: ["on": "On", "*changed*": "changed"]]                       | ["on", "*changed*"]
         [options: ["on", [value: "off"], "*changed*"]]                        | ["on", "off", "*changed*"]
+        [options: [["Switch": "Switch"], ["SwitchLevel": "Dimmer"]]]          | ["Switch", "SwitchLevel"]
         // Scalar (bare-String) options must be treated as ONE option, never char-iterated
         // into ["o","n"]. The pre-hardening .collect would shatter the String.
         [options: "on"]                                                       | ["on"]
@@ -14832,13 +14864,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "*"              | "*changed*"       | false
     }
 
-    def "_rmNotRepresentableEnumComparatorHint is the single canonical wording -- names the comparator, attribute, workaround + concrete example"() {
-        // #4 unification pin. The three emit sites (trigger / action / required-expression)
-        // hand-duplicated this hint and drifted (some omitted the capability:'Switch'
-        // example). They now all call this one helper, so pinning its wording here pins all
-        // three. Asserts the load-bearing substrings the route/skip integration specs match.
+    def "_rmUnrepresentedComparatorHint is the single canonical wording -- names the comparator, attribute, workaround + concrete example"() {
+        // The trigger, action and Required Expression result paths all call this one helper.
         when:
-        def hint = script._rmNotRepresentableEnumComparatorHint("switch", "*changed*")
+        def hint = script._rmUnrepresentedComparatorHint([reason: "comparator_not_representable_for_enum_attribute", attribute: "switch", value: "*changed*"])
 
         then: "names the requested comparator and the offending attribute"
         hint.contains("'*changed*'")
@@ -14851,6 +14880,33 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "ASCII-only"
         hint.every { (it as char) < 128 }
+    }
+
+    def "_rmCanonicalActionCapability matches the catalog spelling regardless of case and writes it back"() {
+        given:
+        def spec = [capability: capIn]
+
+        expect:
+        script._rmCanonicalActionCapability(spec) == capOut
+        spec.capability == capOut
+
+        where:
+        capIn        | capOut
+        "Switch"     | "switch"
+        "IFTHEN"     | "ifThen"
+        "runCommand" | "runCommand"
+        "teleport"   | "teleport"
+    }
+
+    def "_rmUnrepresentedComparatorHint for a comparator RM does not offer names RM's own fields"() {
+        when:
+        def hint = script._rmUnrepresentedComparatorHint([reason: "comparator_not_offered", capability: "Motion", value: ">",
+                                                          available: ["rDev_3", "state_3", "not3"]])
+
+        then:
+        hint.contains("'>' is not offered for a Motion condition")
+        hint.contains("rDev_3, state_3, not3")
+        hint.contains("not:true")
     }
 
     def "_rmWriteSubPageField: a write into a hidden field with a STABLE render verifies as NOT persisted (no renderShifted mask)"() {
@@ -18177,6 +18233,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "a genuine not-representable skip flips partial"
         ((result.settingsSkipped as List) ?: []).any { it?.key == "RelrDev_1" && it?.reason == "comparator_not_representable_for_enum_attribute" }
         result.partial == true
+        result.success == false
+        result.error.contains("cannot express")
 
         and: "an actionable repair hint names the unrepresentable comparator"
         (result.repairHints as List).any { it?.toString()?.contains("cannot be represented") }
@@ -35480,7 +35538,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def healthCalls = 0
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             healthCalls++
             [ok: true, unreadable: false, broken: false, brokenMarkers: [], orphanedActionRows: [], structuralIssues: [],
              validationErrors: [], multipleFlagPoison: [], issues: [], configPageError: null]
@@ -35521,7 +35579,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                        multipleFlagPoison: [], configPageError: null, structuralIssues: [], issues: []]
         // The pre-drive structural baseline is clean, so every final issue is new to the drive.
         script.metaClass._rmStructuralBaseline = { Integer id -> [] }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" -> verdict }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null -> verdict }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", [[name: "hasAll", type: "button"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -35589,7 +35647,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def baselineCalls = 0
         def renderSources = []
         script.metaClass._rmStructuralBaseline = { Integer id -> baselineCalls++; baseline }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" -> renderSources << source; verdict }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null -> renderSources << source; verdict }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", [[name: "actionDone", type: "button"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -35766,7 +35824,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def useSTWritten = false
         def posts = []
         script.metaClass._rmStructuralBaseline = { Integer id -> [] }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             [ok: true, unreadable: false, broken: false, brokenMarkers: [], orphanedActionRows: [], structuralIssues: [],
              validationErrors: [], multipleFlagPoison: [], issues: [], configPageError: null]
         }
@@ -35808,7 +35866,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def values = [:]
         def posts = []
         script.metaClass._rmStructuralBaseline = { Integer id -> [] }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             [ok: true, unreadable: false, broken: false, brokenMarkers: [], orphanedActionRows: [], structuralIssues: [],
              validationErrors: [], multipleFlagPoison: [], issues: [], configPageError: null]
         }
@@ -35852,7 +35910,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         def posts = []
         script.metaClass._rmStructuralBaseline = { Integer id -> [] }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             [ok: true, unreadable: false, broken: false, brokenMarkers: [], orphanedActionRows: [], structuralIssues: [],
              validationErrors: [], multipleFlagPoison: [], issues: [], configPageError: null]
         }
@@ -35899,7 +35957,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def posts = []
         def recover = true
         script.metaClass._rmStructuralBaseline = { Integer id -> [] }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             [ok: true, unreadable: false, broken: false, brokenMarkers: [], orphanedActionRows: [], structuralIssues: [],
              validationErrors: [], multipleFlagPoison: [], issues: [], configPageError: null]
         }
@@ -35997,7 +36055,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         def healthCalls = 0
         def value = "before"
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             healthCalls++
             [ok: false, structuralIssues: ["missing End-Repeat"]]
         }
@@ -36045,7 +36103,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         def healthCalls = 0
         script.metaClass._rmStructuralBaseline = { Integer id -> [] }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null ->
             healthCalls++
             [ok: true, unreadable: false, broken: false, brokenMarkers: [], orphanedActionRows: [], structuralIssues: [],
              validationErrors: [], multipleFlagPoison: [], issues: [], configPageError: null]
@@ -36087,7 +36145,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def warnings = []
         script.metaClass.mcpLog = { String level, String component, String msg -> if (level == "warn") warnings << msg }
         script.metaClass._rmStructuralBaseline = { Integer id -> throw new IllegalStateException("compiled rule state could not be read: 503 hub busy") }
-        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto" -> verdict }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String source = "auto", String activePage = null -> verdict }
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params -> ruleConfigJson(100, "r", [[name: "actionDone", type: "button"]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -41358,7 +41416,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         def posts = []
         def backups = []
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null ->
             backups << [id: id, reason: reason]
             [backupKey: 'snap']
         }
@@ -41392,10 +41450,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         given:
         enableWrite()
         def clicks = []
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [backupKey: "snap"] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [backupKey: "snap"] }
         script.metaClass._rmClickAppButton = { Integer id, String name, String stateAttr = null,
                                                String pageName = null, Map cache = null -> clicks << name }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
 
         when:
         def result = script.toolSetRule([
@@ -47355,6 +47413,74 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.valueEcho.match == true
         result.silentRejection == false
         result.success == true
+    }
+
+    def "walkStep on a non-RM wizard reads health from the page it is on, never the app's default page"() {
+        given: "an app whose default page clears its pending wizard setting when rendered (HPM's prefOptions)"
+        enableWrite()
+        def stored = [:]
+        def defaultRenders = 0
+        hubGet.register('/installedapp/configure/json/100') { params ->
+            defaultRenders++
+            stored.remove("pkgInstall")
+            ruleConfigJson(100, "pkg", [])
+        }
+        hubGet.register('/installedapp/configure/json/100/prefPkgInstallUrl') { params ->
+            ruleConfigJson(100, "pkg", [[name: "pkgInstall", type: "text", required: true]], null, stored.clone() as Map)
+        }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, stored.collect { k, v -> [name: k, type: "text", value: v] })
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            def key = body.keySet().collect { _settingKeyOf(it) }.find { it != null }
+            if (key != null) stored[key] = body["settings[${key}]".toString()]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def rendersBefore = defaultRenders
+        def result = script.toolSetNativeApp([appId: 100, confirm: true,
+            walkStep: [page: "prefPkgInstallUrl", operation: "write", write: [pkgInstall: "https://example.test/packageManifest.json"]]])
+
+        then: "the write echoes, and the trailing health probe did not render the default page"
+        result.valueEcho.match == true
+        defaultRenders == rendersBefore
+        stored.pkgInstall == "https://example.test/packageManifest.json"
+    }
+
+    def "walkStep shows a wizard page's nextPage and navigating to it presses the page's Next"() {
+        given:
+        enableWrite()
+        def wizardPage = { String name, String next ->
+            JsonOutput.toJson([app: [id: 100, name: "pkg", label: "pkg", trueLabel: "pkg", installed: true, version: 7, appType: [name: "Package Manager", namespace: "x"]],
+                               configPage: [name: name, title: "T", install: false, error: null, nextPage: next,
+                                            sections: [[title: "", input: [[name: "pkgInstall", type: "text"]]]]],
+                               settings: [pkgInstall: "https://example.test/m.json"], childApps: []])
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "pkg", []) }
+        hubGet.register('/installedapp/configure/json/100/prefPkgInstallUrl') { params -> wizardPage("prefPkgInstallUrl", "prefInstallChoices") }
+        hubGet.register('/installedapp/configure/json/100/prefInstallChoices') { params -> wizardPage("prefInstallChoices", null) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: wizardPage("prefInstallChoices", null)]
+        }
+
+        when:
+        def seen = script.toolSetNativeApp([appId: 100, confirm: true, walkStep: [page: "prefPkgInstallUrl", operation: "introspect"]])
+        def moved = script.toolSetNativeApp([appId: 100, confirm: true,
+            walkStep: [page: "prefPkgInstallUrl", operation: "navigate", navigate: [targetPage: "prefInstallChoices"]]])
+
+        then:
+        seen.before.nextPage == "prefInstallChoices"
+        def nav = posts.find { it.path == "/installedapp/update/json" && it.body.containsKey("_action_next") }
+        nav != null
+        nav.body.nextPage == "prefInstallChoices"
+        !nav.body.keySet().any { it.toString().startsWith("_action_href_") }
+        moved.opResult.navigated.to == "prefInstallChoices"
     }
 
     def "walkStep sub-page device pick that committed is not reported as a silent_rejection skip"() {

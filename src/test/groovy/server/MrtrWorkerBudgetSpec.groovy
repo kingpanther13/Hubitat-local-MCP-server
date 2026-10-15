@@ -19,8 +19,8 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         settingsMap.relayBudgetMs = 0
         settingsMap.lanBudgetMs = 0
         stateMap.lastBackupTimestamp = clock.get()
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'baseline'] }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [key: 'baseline'] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validIds = null ->
             actions << new LinkedHashMap(spec)
             clock.addAndGet(itemElapsed.call(actions.size()) as Long)
@@ -223,7 +223,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = false
         Long duringBackup = null
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null ->
             duringBackup = workerClock() as Long
             throw new IllegalStateException('backup storage unavailable')
         }
@@ -247,7 +247,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         settingsMap.useGateways = false
         settingsMap.backupEveryRuleWrite = true
         int backups = 0
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null ->
             backups++
             if (backups > 1) throw new IllegalStateException('backup storage unavailable')
             [key: 'baseline']

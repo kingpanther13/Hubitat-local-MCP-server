@@ -209,7 +209,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
     def "an unreadable baseline health check does not stop the replace"() {
         given:
         int calls = 0
-        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto" ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null ->
             if (++calls == 1) throw new RuntimeException("timeout")
             [ok: true, issues: [], structuralIssues: [], brokenMarkerCounts: [:], checkErrors: []]
         }

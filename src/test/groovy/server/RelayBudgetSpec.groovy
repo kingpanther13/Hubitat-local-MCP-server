@@ -192,7 +192,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         script.metaClass._rmWalkStep = { Integer id, Map step ->
             walkCalls << new LinkedHashMap(step); [page: step.page, success: true]
         }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._timeBudgetExceeded = { Long t0 -> pause }
         return walkCalls
     }
@@ -252,8 +252,8 @@ class RelayBudgetSpec extends ToolSpecBase {
     private void installPatchStubs(List addActionCalls, List clicks, boolean pause) {
         stateMap.lastBackupTimestamp = FIXED_NOW   // requireDestructiveConfirm: backup within 24h
         settingsMap.enableWrite = true
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [key: 'snap'] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validRuleIds = null ->
             addActionCalls << spec; [success: true]
         }
@@ -413,8 +413,8 @@ class RelayBudgetSpec extends ToolSpecBase {
     private void installBulkStubs(List triggerCalls, List actionCalls, List clicks, boolean pause) {
         stateMap.lastBackupTimestamp = FIXED_NOW   // requireDestructiveConfirm: backup within 24h
         settingsMap.enableWrite = true
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [key: 'snap'] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._rmAddTrigger = { Integer id, Map spec -> triggerCalls << spec; [success: true] }
         script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validRuleIds = null ->
             actionCalls << spec; [success: true]
@@ -517,8 +517,8 @@ class RelayBudgetSpec extends ToolSpecBase {
         def clicks = []
         stateMap.lastBackupTimestamp = FIXED_NOW
         settingsMap.enableWrite = true
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [key: 'snap'] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validRuleIds = null ->
             actionCalls << spec
             (actionCalls.size() == 1) ? [success: false, error: 'bad cap'] : [success: true]
@@ -764,7 +764,7 @@ class RelayBudgetSpec extends ToolSpecBase {
     def "_rmWalkStepHealth sheds the probe once the budget is spent"() {
         given:
         def probes = 0
-        script.metaClass._rmCheckRuleHealth = { Integer id -> probes++; [ok: true] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> probes++; [ok: true] }
         script.metaClass._timeBudgetExceeded = { Long t0 -> true }
 
         when:
@@ -780,7 +780,7 @@ class RelayBudgetSpec extends ToolSpecBase {
     def "_rmWalkStepHealth probes normally within budget"() {
         given:
         def probes = 0
-        script.metaClass._rmCheckRuleHealth = { Integer id -> probes++; [ok: true] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> probes++; [ok: true] }
         script.metaClass._timeBudgetExceeded = { Long t0 -> false }
 
         expect:
@@ -794,7 +794,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         script.metaClass._rmWalkStep = { Integer id, Map step ->
             walkCalls << new LinkedHashMap(step); [page: step.page, success: true]
         }
-        script.metaClass._rmCheckRuleHealth = { Integer id ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null ->
             [ok: false, unreadable: true, source: 'none', broken: null,
              issues: ['health check failed: status code: 404, reason phrase: Not Found']]
         }
@@ -816,7 +816,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         given:
         def walkCalls = []
         installWalkerStubs(walkCalls, false)
-        script.metaClass._rmCheckRuleHealth = { Integer id ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null ->
             [ok: false, unreadable: false, broken: true, issues: ['ruleBuilderJson reports broken:true']]
         }
 
@@ -853,7 +853,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         seedWalkStepPage(100)
-        script.metaClass._rmCheckRuleHealth = { Integer id ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null ->
             [ok: false, unreadable: true, source: 'none', broken: null,
              issues: ['health check failed: status code: 404, reason phrase: Not Found']]
         }
@@ -871,7 +871,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         seedWalkStepPage(100)
-        script.metaClass._rmCheckRuleHealth = { Integer id ->
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null ->
             [ok: false, unreadable: false, broken: true, issues: ['ruleBuilderJson reports broken:true']]
         }
 
@@ -887,7 +887,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         settingsMap.enableRead = true
         seedWalkStepPage(100)
         def probes = 0
-        script.metaClass._rmCheckRuleHealth = { Integer id -> probes++; [ok: true] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> probes++; [ok: true] }
         script.metaClass._timeBudgetExceeded = { Long t0 -> t0 != null }
 
         when: 'clock present -- probe shed'
@@ -907,7 +907,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         given:
         stateMap.lastBackupTimestamp = FIXED_NOW
         settingsMap.enableWrite = true
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [key: 'snap'] }
         def captured = [:]
         script.metaClass._rmWalkStep = { Integer id, Map spec -> captured.spec = spec; [page: spec.page, success: true, operation: spec.operation] }
 
@@ -925,7 +925,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         script.metaClass._rmWalkStep = { Integer id, Map step ->
             walkCalls << new LinkedHashMap(step); [page: step.page, success: true]
         }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._timeBudgetExceeded = { Long t0 -> false }
 
         when:
@@ -943,8 +943,8 @@ class RelayBudgetSpec extends ToolSpecBase {
         given: 'a walker that pauses after step 1 (a done op), plus a recorder on the finalizer'
         stateMap.lastBackupTimestamp = FIXED_NOW
         settingsMap.enableWrite = true
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'snap'] }
-        script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [key: 'snap'] }
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
         script.metaClass._rmWalkStep = { Integer id, Map spec ->
             spec.operation == 'drive' ? script._rmDriveWalkSteps(id, spec) : [page: spec.page, success: true]
         }

@@ -158,6 +158,16 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'trigger', capability: 'Switch']]).args == [addTrigger: [discover: true]]
     }
 
+    def "discover with a capability selector and no rule id returns that capability's schema, never the create arm"() {
+        when:
+        def r = script.toolSetRule([operation: 'discover', args: [kind: 'action', capability: 'switch', action: 'on']])
+
+        then:
+        notThrown(IllegalArgumentException)
+        r.toString().contains('switchActs')
+        script._isSetRuleSchemaOnlyCall([addAction: [discover: [capability: 'switch']]])
+    }
+
     def "an unknown operation is rejected with the valid list"() {
         when:
         script._setRuleFromEnvelope([operation: 'frobnicate', confirm: true])

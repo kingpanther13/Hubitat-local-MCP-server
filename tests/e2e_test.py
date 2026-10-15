@@ -7996,6 +7996,18 @@ class TestRunner:
                 f"ruleBuilderJson should report broken:false for a healthy rule: {auto}"
             assert "ruleBuilderJson" in str(auto.get("source") or ""), \
                 f"auto mode should read the preferred ruleBuilderJson source: {auto}"
+            # RM records `paused` only once a rule is first paused; a fresh rule reads as running.
+            assert auto.get("paused") is False, f"a never-paused rule should read paused:false: {auto}"
+            label = f"{PREFIX}RuleHealthSrc"
+            listed = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_list_rules", "args": {"labelFilter": label.lower()},
+            })
+            rules = listed.get("rules") or []
+            assert rules and all(label.lower() in str(r.get("label", "")).lower() for r in rules), \
+                f"labelFilter should return only rules whose label contains {label!r}: {rules}"
+            mine = next((r for r in rules if str(r.get("id")) == str(app_id)), None)
+            assert mine is not None and str(mine.get("type") or "").startswith("Rule-"), \
+                f"the listed rule should carry the hub's app type: {mine}"
 
             # The retained legacy path stays selectable and must NOT read the JSON source.
             html = self.client.call_tool("hub_manage_rule_machine", {
@@ -8725,7 +8737,7 @@ class TestRunner:
         # null" (fires on any event). This proves, end-to-end against a live hub, that the change
         # token ROUTES into tstate<N>: the write echoes a tstate<N> key in settingsApplied, no
         # ReltDev skip is produced (so partial stays false), and the persisted setting reads back
-        # as the change token with the rule healthy -- the "Switch changed" render, not the broken
+        # as the change token with the rule healthy -- the "<device>(<value>) turns *changed*" render, not the broken
         # "turns null" orphan.
         sw = int(self.get_test_switch_id())
         app_id, created = self._create_native_rule("ChangedTrig", {
@@ -10634,6 +10646,37 @@ class TestRunner:
                 "the committed rule was verified and deleted, retry this test with a fresh fixture")
 
     @test("native_apps")
+    def test_set_rule_required_expression_refusals_and_unoffered_comparator(self) -> None:
+        # Argument refusals on a Required Expression come before the pre-edit backup (none is
+        # taken), and a comparator RM's editor does not offer for the condition (a device-state
+        # Switch has no comparator field) is reported as not added as asked, never as success.
+        sw = int(self.get_test_switch_id())
+        app_id = self._create_native_rule("REUnoffered")
+        try:
+            for args in ({"replaceRequiredExpression": {"conditions": [
+                              {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}},
+                         {"addRequiredExpression": {"conditions": [{"deviceIds": [sw], "state": "on"}]}}):
+                try:
+                    refused = self._call_slow_rule(dict(args, appId=app_id))
+                except McpToolError as e:
+                    refused = {"success": False, "error": str(e)}
+                assert refused.get("success") is False, f"expected a refusal for {args}: {refused}"
+                assert not (refused.get("backup") or {}).get("backupKey"), \
+                    f"a refusal took a backup before validating {args}: {refused}"
+            # The action capability is matched to RM's spelling regardless of case.
+            act = self._call_slow_rule({"appId": app_id, "addAction": {
+                "capability": "Switch", "action": "on", "deviceIds": [sw]}})
+            assert act.get("success") is True, f"addAction with capability 'Switch' failed: {act}"
+            bad = self._call_slow_rule({"appId": app_id, "addRequiredExpression": {"conditions": [
+                {"capability": "Switch", "deviceIds": [sw], "comparator": ">", "state": "on"}]}})
+            assert bad.get("success") is False, f"an unoffered comparator was reported as success: {bad}"
+            reasons = [x.get("reason") for x in bad.get("settingsSkipped") or []]
+            assert "comparator_not_offered" in reasons, \
+                f"the skipped comparator should say RM does not offer it: {bad.get('settingsSkipped')}"
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_discover_meta(self) -> None:
         # hub_set_rule meta-call routing: {addTrigger:{discover:true}} returns the live
         # schema with NO appId / NO mutation (routed to the edit engine's short-circuit).
@@ -10654,6 +10697,15 @@ class TestRunner:
         act_cond_fields = act.get("conditionFields") or []
         assert any(f.get("name") == "not" for f in act_cond_fields), \
             f"addAction discover conditionFields missing the 'not' field: {act_cond_fields}"
+        # The operation envelope with a capability selector and no appId returns that one entry
+        # (it used to fall through to the create arm and refuse for a missing capability).
+        one = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule",
+            "args": {"operation": "discover", "args": {"kind": "action", "capability": "Switch", "action": "on"}},
+        })
+        entry = one.get("capability") or {}
+        assert entry.get("name") == "switch" and entry.get("actType") == "switchActs", \
+            f"discover with a capability selector did not return the switch entry: {str(one)[:300]}"
 
     @test("native_apps")
     def test_delete_native_app_from_native_gateway(self) -> None:

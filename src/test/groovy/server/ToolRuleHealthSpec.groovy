@@ -62,7 +62,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "public health preserves a literal pause suffix without positive state evidence (useGateways=#useGateways)"() {
+    def "public health preserves a literal pause suffix and reads a never-paused RM rule as running (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         seedHealthy(100)
@@ -75,7 +75,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         then:
         response.error == null
         health.ok == true
-        health.paused == null
+        health.paused == false
         health.label == 'Living Room (Paused)'
 
         where:
@@ -166,8 +166,8 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
     @spock.lang.Unroll
     def "public health strips only proved markup and preserves the real name (#label)"() {
-        given:
-        seedHealthy(100)
+        given: 'RM compiled state carries paused only for a paused rule'
+        seedHealthy(100, paused ? [paused: true] : [:])
         hubGet.register('/installedapp/configure/json/100') { configJson(100, label) }
         hubGet.register('/installedapp/statusJson/100') { throw new IOException('status unavailable') }
 
@@ -184,11 +184,11 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         where:
         label                                                                                               | expected          | paused | stopped
         'Literal (Paused) <span>(Paused)</span>'                                                             | 'Literal (Paused)'| true   | null
-        'Literal (Stopped) <span>(Stopped)</span>'                                                           | 'Literal (Stopped)'| null  | true
+        'Literal (Stopped) <span>(Stopped)</span>'                                                           | 'Literal (Stopped)'| false | true
         'Literal (Paused) <span>(Paused)</span> <span>(Stopped)</span>'                                       | 'Literal (Paused)'| true   | true
         'Literal (Paused) <span>(Stopped)</span> <span>(Paused)</span>'                                       | 'Literal (Paused)'| true   | true
-        'Literal (Paused)'                                                                                  | 'Literal (Paused)'| null   | null
-        'Literal &lt;span&gt;(Paused)&lt;/span&gt;'                                                           | 'Literal &lt;span&gt;(Paused)&lt;/span&gt;' | null | null
+        'Literal (Paused)'                                                                                  | 'Literal (Paused)'| false  | null
+        'Literal &lt;span&gt;(Paused)&lt;/span&gt;'                                                           | 'Literal &lt;span&gt;(Paused)&lt;/span&gt;' | false | null
     }
 
     def "public config-only health uses the status paused boolean without stripping a literal suffix"() {
@@ -223,7 +223,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
         then:
         health.stopped == expected
-        health.paused == null
+        health.paused == false
         health.label == 'Literal (Stopped)'
 
         where:

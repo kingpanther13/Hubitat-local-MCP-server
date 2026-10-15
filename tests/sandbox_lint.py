@@ -216,9 +216,10 @@ RULES = [
         # The sandbox refuses `x.methods` as a property read, even on a parsed JSON Map ("Subscript
         # property 'methods' is not allowed from app or driver code", live, fw 2.5.2.129) -- the
         # hubitat_ci harness does not, so only a hub catches it. Map.get("methods") is allowed.
+        # `fields` and `declaredFields` fail the same way inside a closure (live, fw 2.5.2.135).
         "id": "SANDBOX-017",
-        "pattern": r"\.methods\b(?!\s*\()",
-        "message": "`.methods` property read is blocked by the Hubitat sandbox at runtime, even on a Map. Use map.get(\"methods\").",
+        "pattern": r"\.(?:methods|fields|declaredFields)\b(?!\s*\()",
+        "message": "`.methods`, `.fields` and `.declaredFields` property reads are blocked by the Hubitat sandbox at runtime, even on a Map. Use map.get(\"<name>\") or another key.",
         "severity": "error",
     },
 ]
@@ -3403,6 +3404,11 @@ SELF_TEST_CASES = [
         "Map.get('methods') is NOT flagged",
         'def ms = page.get("methods")',
         [("SANDBOX-017", False)],
+    ),
+    (
+        "a .fields property read inside a closure is flagged",
+        "entries.each { e -> def f = e.fields }",
+        [("SANDBOX-017", True)],
     ),
     (
         "querystring embedded in a hubInternalGet path is flagged",
