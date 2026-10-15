@@ -13,13 +13,15 @@
 //     neither the sandbox-off Spock harness nor a plain compile enforces. We compile to
 //     CANONICALIZATION (every class reference resolved to its FQN), walk the AST and fail on any
 //     class not in allowed-classes.txt, Hubitat's published list
-//     (https://docs2.hubitat.com/en/developer/allowed-imports). Also allowed by rule: primitives,
-//     Throwable subclasses, the script's own classes, and the hubitat.* / com.hubitat.* namespaces.
+//     (https://docs2.hubitat.com/en/developer/allowed-imports). Also allowed by rule, as the hub
+//     does: primitives, Throwable subclasses, the script's own classes and the hubitat.* namespace;
+//     a com.hubitat.* class only when listed.
 //
-// If CANONICALIZATION can't resolve a class (e.g. a future file references a hub-only type by name),
-// the sandbox check is skipped for that file with a NOTICE and it falls back to the CONVERSION-phase
-// syntax gate. The closure-parameter check still runs on the CONVERSION AST.
+// Hub classes are not on this classpath, so hubitat.* / com.hubitat.* names resolve to stand-ins and
+// the allowlist decides. Any other class CANONICALIZATION cannot resolve fails the file, as it does
+// on the hub.
 
+import org.codehaus.groovy.control.ClassNodeResolver
 import org.codehaus.groovy.control.CompilationUnit
 import org.codehaus.groovy.control.CompilerConfiguration
 import org.codehaus.groovy.control.Phases
@@ -42,6 +44,19 @@ import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
 import org.codehaus.groovy.ast.stmt.CatchStatement
 import org.codehaus.groovy.ast.stmt.ForStatement
+
+class HubNamespaceResolver extends ClassNodeResolver {
+    @Override
+    ClassNodeResolver.LookupResult resolveName(String name, CompilationUnit unit) {
+        def found = super.resolveName(name, unit)
+        String simple = name.substring(name.lastIndexOf('.') + 1)
+        // Only class-shaped names: a lowercase segment is a package the resolver probes on the way.
+        if (found == null && (name.startsWith('hubitat.') || name.startsWith('com.hubitat.')) && simple && Character.isUpperCase(simple.charAt(0))) {
+            found = new ClassNodeResolver.LookupResult(null, new ClassNode(name, 1, ClassHelper.OBJECT_TYPE))
+        }
+        return found
+    }
+}
 
 // Constant-pool budget for one compiled app class, and bytecode budget for one method (the JVM
 // caps both at 65535); see Gate 3 in checkFile.
@@ -79,7 +94,8 @@ if (!allowFile.isFile()) {
 def ALLOWED = allowFile.readLines('UTF-8')*.trim().findAll { it && !it.startsWith('#') }.collect { it.replace('$', '.') } as Set
 def ALLOWED_PACKAGES = ALLOWED.collect { it.substring(0, it.lastIndexOf('.')) } as Set
 def PRIMITIVES = ['boolean', 'byte', 'char', 'short', 'int', 'long', 'float', 'double', 'void'] as Set
-def HUB_PREFIXES = ['hubitat.', 'com.hubitat.']
+// The hub allows the whole hubitat.* namespace; a com.hubitat.* class only by name.
+def HUB_PREFIXES = ['hubitat.']
 ClassNode THROWABLE = ClassHelper.make(Throwable)
 
 def elementType = { ClassNode type ->
@@ -124,19 +140,11 @@ def collectNullParameters = { CompilationUnit cu, Map resolved ->
     return findings
 }
 
-// Compile to CANONICALIZATION and collect references to classes outside the sandbox allowlist.
-// Returns a list of finding strings, or null if CANONICALIZATION could not resolve some class
-// (caller falls back to syntax). Nodes without a source position are compiler-generated and skipped.
+// Compile to CANONICALIZATION and collect references to classes outside the sandbox allowlist; an
+// unresolvable class throws to the caller. Nodes without a source position are compiler-generated.
 def collectBlocked = { CompilationUnit cu, Map resolved ->
-    try {
-        cu.compile(Phases.CANONICALIZATION)
-    } catch (Throwable e) {
-        def msg = (e.message ?: '')
-        if (msg.contains('unable to resolve class') || msg.contains('unable to find')) {
-            return null  // a hub-only type referenced by name -> can't run the check; fall back
-        }
-        throw e          // a genuine compile error -> let the caller report it
-    }
+    cu.setClassNodeResolver(new HubNamespaceResolver())
+    cu.compile(Phases.CANONICALIZATION)
     def findings = new LinkedHashSet()
     def add = { ASTNode node, String name ->
         findings << "${resolverClass.sourceLocation(resolved, node.lineNumber, node.columnNumber)}: blocked class reference ${name}".toString()
@@ -258,9 +266,7 @@ def checkFile = { String path ->
         System.err.println e.message
         return 1
     }
-    if (findings == null) {
-        println "OK   (Groovy ${GroovySystem.version} parse; sandbox check SKIPPED -- unresolved class refs): ${path}"
-    } else if (findings) {
+    if (findings) {
         System.err.println "FAIL (Hubitat sandbox: blocked class reference): ${path}"
         findings.each { System.err.println "  ${it}" }
         System.err.println "  The hub rejects classes outside its sandbox allowlist at parse time (ci/groovy24-parse/allowed-classes.txt). Duck-type or use an allowed class."
@@ -273,12 +279,8 @@ def checkFile = { String path ->
     // compiles the app with every #include inlined into one class: past the cap it refuses to
     // load the app at all ("Class too large"), which no parse-level check sees. The hub's own
     // compile adds entries on top of this count: 65,237 here loaded on a C-8, 65,439 did not.
-    // A file whose classes did not resolve (the syntax-only fallback above) cannot be compiled to
-    // bytecode either, so it is not measured.
-    def size = (findings == null) ? [skipped: true] : classSize(f.name, resolved)
-    if (size.skipped) {
-        println "NOTICE (class size not measured: unresolved class refs): ${path}"
-    } else if (size.tooLarge) {
+    def size = classSize(f.name, resolved)
+    if (size.tooLarge) {
         System.err.println "FAIL (class too large for the JVM): ${path}"
         System.err.println "  ${size.message}"
         rc = 1
@@ -307,6 +309,7 @@ def checkFile = { String path ->
 // bytecode length across every generated class (closures included).
 def classSize(String name, String source) {
     def cu = new CompilationUnit(new CompilerConfiguration())
+    cu.setClassNodeResolver(new HubNamespaceResolver())
     cu.addSource(name, source)
     try {
         cu.compile(Phases.CLASS_GENERATION)

@@ -500,8 +500,8 @@ Deploys every declared library bundle + app from the manifest at `ref`, saving t
 | Virtual Dimmer | switch + level 0-100 | Dimmable light simulation |
 | Virtual RGBW Light | color-controllable | Color light simulation |
 | Virtual Shade | open/close + position | Window shade control |
-| Virtual Garage Door Opener | open/close | Garage door state |
-| Virtual Water Sensor | wet/dry | Water leak simulation |
+| Virtual Garage Door Controller | open/close | Garage door state |
+| Virtual Leak Sensor | wet/dry | Water leak simulation |
 | Virtual Omni Sensor | multi-purpose | Combined sensor types |
 | Virtual Fan Controller | fan speed | Fan simulation |
 

@@ -144,15 +144,14 @@ jobs:
           fi
           export SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND" RESULTS="ephemeral-hub-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND"
           export JOB="Request ephemeral hub ($KIND)"
-          # Provider-run results arrive only after the whole suite has run.
-          wait=2700; [ "$EPHEMERAL_RUN_SUITE" != true ] || wait=5400
+          # Results or a session within 35 minutes in either mode; the slowest suite run took 29.
+          wait=2100
           deadline=$((SECONDS + wait)); first_seen=$((SECONDS + 600)); grace=0; polls=0
-          # One artifact read per minute; the request run's state is re-read every fifth poll.
-          # A provider-run suite takes at least eight minutes, so the first read waits five.
-          [ "$EPHEMERAL_RUN_SUITE" != true ] || sleep 300
+          # One artifact read per minute. The request run's state is re-read every poll for the first
+          # five, so a lane the request side skips ends within a minute or two, then every fifth.
           while :; do
             polls=$((polls + 1))
-            if [ -n "${src:-}" ] && [ "$state" != completed ] && [ $((polls % 5)) -ne 0 ]; then
+            if [ -n "${src:-}" ] && [ "$state" != completed ] && [ "$polls" -gt 5 ] && [ $((polls % 5)) -ne 0 ]; then
               :
             elif [ "$EVENT_NAME" = pull_request ]; then
               # hub-e2e-ephemeral-request.yml requests PR hubs from the base branch for this head.

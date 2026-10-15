@@ -50,14 +50,14 @@ These steps describe hold mode, where the test run drives the hub. The default
    `ephemeral-hub-unavailable` with the reason, once for both kinds. Its `approve` job then
    holds a first-time contributor's PR for [approval](#first-time-contributors). For a push or dispatch, the test workflow's own `request-hub` job does the secrets check
    and uploads `ephemeral-hub-unavailable-<kind>`.
-3. `request-hub` publishes a fork head's release files with `.github/scripts/publish_fork_bundle.sh`
-   and waits until the revision's files are served. For a pull request it then finds the running
+3. For a fork head, the `publish` job publishes its release files once, for both kinds, with
+   `.github/scripts/publish_fork_bundle.sh`. `request-hub` waits until the revision's files are served. For a pull request it then finds the running
    `pull_request` test run for the same head SHA, waiting up to 10 minutes.
 4. It dispatches the external workflow with the public key, head SHA, head repository, the
    test run's ID and its kind, and finds that provider run by the run ID and kind in its name. It
    waits up to 25 minutes for the hub's session and relays it, still encrypted, as artifact
    `ephemeral-hub-session-<test run id>-<attempt>-<kind>`.
-5. `e2e` waits up to 45 minutes for its own kind's artifact, in its own run or in the request run
+5. `e2e` waits up to 35 minutes for its own kind's artifact, in its own run or in the request run
    for its head SHA. A request run that reports the lane unavailable makes `e2e` skip with that reason.
    A request run that ends without either artifact fails `e2e`. While the default branch has no
    request workflow the lane skips on PRs, because `pull_request_target` always runs the default
@@ -92,7 +92,7 @@ relays it as `ephemeral-hub-results-<test run id>-<attempt>-<kind>`. The artifac
 `[A-Za-z0-9._-]`. It then replaces its own secret values in each expected file, because an
 artifact bypasses log masking.
 
-The `e2e` job waits up to 90 minutes for that artifact and applies the same entry check. It prints
+The `e2e` job waits up to 35 minutes for that artifact and applies the same entry check. It prints
 the three logs with workflow commands disabled, writes the counts and failed tests to the step
 summary, and uploads the files as its results. It passes only when `e2e.status` and `sdk.status`
 are both `passed`. An SDK leg that did not run fails the job, because conformance may not skip.
@@ -115,7 +115,7 @@ run, but `pull_request_target` runs regardless of it, so the request workflow ga
 reviewer-protected `e2e-approval` environment otherwise. No hub boots and none of the PR's code
 runs until a maintainer approves both: **Approve workflows to run** on the PR, then **Review
 deployments** on the request run. The request side waits 10 minutes for the test run to start and
-the test run 90 minutes for results, so approve the two together; after a timeout, push a commit
+the test run 35 minutes for results, so approve the two together; after a timeout, push a commit
 or close and reopen the PR. A rejected deployment fails `e2e`.
 
 The hub is disposable and serves only the test run that requested it. The job that runs PR code

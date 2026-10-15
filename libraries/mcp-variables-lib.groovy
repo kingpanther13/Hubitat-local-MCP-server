@@ -454,6 +454,18 @@ def _hubVarsNativeModel() {
     return model
 }
 
+// Whether this firmware serves the native endpoint; a create needs nothing else from the model.
+boolean _hubVarsNativeAvailable() {
+    def raw
+    try { raw = hubInternalGet("/hub2/variables") }
+    catch (Exception e) {
+        if (_httpStatusOf(e) == 404) return false
+        throw e
+    }
+    if (!raw?.toString()?.trim()) throw new IllegalStateException("Hub Variables returned an empty response")
+    return true
+}
+
 private Map _hubVarsNativeRow(Map model, String name) {
     def row = model.variables.find { it instanceof Map && it.name?.toString() == name }
     if (row == null) throw new IllegalStateException("Hub Variables JSON model does not list '${name}'")
@@ -556,10 +568,10 @@ def toolCreateVariable(args) {
         mcpLog("debug", "hub-vars", "hub_create_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
 
-    def nativeModel
-    try { nativeModel = _hubVarsNativeModel() }
+    boolean hasNative
+    try { hasNative = _hubVarsNativeAvailable() }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", _hubVarsModelError(e), true) }
-    if (nativeModel == null) return _createOneVariable(_findHubVariablesAppId(), name, type, value)
+    if (!hasNative) return _createOneVariable(_findHubVariablesAppId(), name, type, value)
     try { return _createOneVariable(null, name, type, value) }
     catch (IllegalArgumentException e) { throw e }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", e.message ?: e.class.simpleName) }
@@ -726,10 +738,10 @@ private Map _createVariablesBulk(variables) {
         throw new IllegalArgumentException("variables must be a non-empty array of {name, type, value} objects.")
     }
 
-    def nativeModel
-    try { nativeModel = _hubVarsNativeModel() }
+    boolean hasNative
+    try { hasNative = _hubVarsNativeAvailable() }
     catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", _hubVarsModelError(e), true) }
-    def appId = nativeModel != null ? null : _findHubVariablesAppId()
+    def appId = hasNative ? null : _findHubVariablesAppId()
     def results = []
     int createdCount = 0
     int failedCount = 0
@@ -1391,6 +1403,7 @@ def toolDeleteHubVariable(args) {
     String registryError = null
     def linkedMirrorRow = null
     def nativeModel = null
+    boolean nativeRead = false
     if (isHubVar) {
         // A linked mirror's display name is DECORATED ("<sourceVar> on <peer>") -- the caller passes that,
         // so match localLinkedHubVariables[].name against varName (the create/link read-back instead keys
@@ -1404,6 +1417,7 @@ def toolDeleteHubVariable(args) {
         }
         try {
             nativeModel = _hubVarsNativeModel()
+            nativeRead = true
             if (nativeModel != null) {
                 registryApps = _hubVarsNativeAppsUsing(_hubVarsNativeRow(nativeModel, varName)).all
                 platformInUse = !registryApps.isEmpty()
@@ -1461,7 +1475,7 @@ def toolDeleteHubVariable(args) {
         def previousValue = hubVar.value
         def previousType  = hubVar.type
         def hadConnector  = hubVar.deviceId != null
-        if (nativeModel == null) {
+        if (!nativeRead) {
             try { nativeModel = _hubVarsNativeModel() }
             catch (Exception e) { return _hubVarsNativeFailure("hub_delete_variable", _hubVarsModelError(e), true) }
         }

@@ -5238,6 +5238,39 @@ class TestRunner:
         )
         assert not still_there, f"{self.virtual_switch_label} ({target_dni}) still present after deletion"
 
+    @test("virtual_device_lifecycle")
+    def test_create_virtual_leak_sensor_and_garage_door_controller(self) -> None:
+        # The supported type list uses the hub's own built-in driver names; each creates a device
+        # with that driver and deletes cleanly.
+        for driver in ("Virtual Leak Sensor", "Virtual Garage Door Controller"):
+            label = f"{PREFIX}{driver.replace(' ', '')}_{_run_artifact_suffix()}"
+            cw = self._soft_write(
+                lambda driver=driver, label=label: self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "create", "deviceType": driver, "deviceLabel": label, "confirm": True}),
+                lambda label=label: self._find_device_dni_by_label(label),
+                f"create {driver}",
+            )
+            if cw["relayDropped"]:
+                assert cw["committed"], f"create {driver} lost to relay 504 and never committed"
+                dni = str(cw["evidence"])
+            else:
+                result = cw["response"]
+                device = result.get("device") or {}
+                assert result.get("success") is True and device.get("driverType") == driver, \
+                    f"create {driver} did not return a device with that driver: {result}"
+                dni = str(device.get("deviceNetworkId"))
+            self.created_device_dnis.append(dni)
+            dw = self._soft_write(
+                lambda dni=dni: self.client.call_tool("hub_manage_virtual_device", {
+                    "action": "delete", "deviceNetworkId": dni, "confirm": True}),
+                lambda dni=dni, label=label: not self._device_dni_present(dni, label),
+                f"delete {driver}",
+            )
+            if dw["relayDropped"]:
+                assert dw["committed"], f"{label} still present after a relay-504 delete"
+            assert not self._device_dni_present(dni, label), f"{label} ({dni}) still present after deletion"
+            self.created_device_dnis.remove(dni)
+
     # -----------------------------------------------------------------------
     # GROUP: dashboards -- Easy Dashboard CRUD (issue #259 item #9)
     # -----------------------------------------------------------------------
@@ -12966,9 +12999,10 @@ class TestRunner:
     @test("hub_variables")
     def test_hub_variable_connector_round_trip(self) -> None:
         # The variable's deviceId linkage is the proof of each connector write; a relay 504
-        # falls back to that read-back. An unknown `force` argument fails the delete.
+        # falls back to that read-back. A connector a rule uses is refused without force, naming the rule.
         var_name = f"{PREFIX}ConnVar_{_run_artifact_suffix()}"
         self._create_hub_variable_visible(var_name, "Number", "0")
+        rule_id = None
 
         def read() -> dict:
             return self.client.call_tool("hub_read_variables", {
@@ -12985,6 +13019,21 @@ class TestRunner:
             linked = read()
             assert linked.get("deviceId") is not None, f"no connector linked to {var_name}: {linked}"
 
+            rule_id = self._create_native_rule("ConnUser", {"addTrigger": {
+                "capability": "Custom Attribute", "deviceIds": [int(linked["deviceId"])],
+                "attribute": "variable", "comparator": "*changed*"}})
+            # The refusal is a validation error (isError), which the client raises.
+            try:
+                refused = str(self._refusal_call("hub_manage_variables", {
+                    "tool": "hub_delete_connector", "args": {"name": var_name, "confirm": True}}))
+            except McpToolError as exc:
+                refused = str(exc)
+            assert "is in use by" in refused and f"(id={rule_id})" in refused, \
+                f"deleting a connector a rule uses should be refused naming the rule: {refused}"
+            assert read().get("deviceId") == linked.get("deviceId"), "the refused delete removed the connector"
+            self._delete_native(rule_id)
+            rule_id = None
+
             removed = self._soft_write(
                 lambda: self.client.call_tool("hub_manage_variables", {
                     "tool": "hub_delete_connector",
@@ -12995,6 +13044,8 @@ class TestRunner:
             cleared = read()
             assert cleared.get("deviceId") is None, f"connector still linked to {var_name}: {cleared}"
         finally:
+            if rule_id:
+                self._delete_native(rule_id)
             self._delete_variable_safe(var_name)
 
     @test("hub_variables")

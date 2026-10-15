@@ -497,12 +497,13 @@ class NativeHubVariablesSpec extends ToolSpecBase {
 
     def 'unreadable Hub Variables model is reported (#label)'() {
         given:
+        seed('Counter')
         modelBody = body
         when:
-        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        def result = script.toolCreateConnector([confirm: true, name: 'Counter'])
         then:
         !result.success
-        result.error == "hub_create_variable: Could not read the Hub Variables model: ${expected}".toString()
+        result.error == "hub_create_connector: Could not read the Hub Variables model: ${expected}".toString()
         posts().isEmpty()
 
         where:
@@ -510,6 +511,17 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         'malformed JSON' | '{"variables": ['       | 'Could not read the Hub Variables JSON model'
         'JSON array'     | '[1, 2]'                | 'Hub Variables returned an unexpected JSON model'
         'no variables'   | '{"variables": "none"}' | 'Hub Variables returned an unexpected JSON model'
+    }
+
+    def 'a create only checks that the endpoint answers: one GET, no model read'() {
+        given:
+        modelBody = '{"variables": ['
+        when:
+        def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
+        then:
+        result.success
+        requests.count { it.method == 'GET' && it.path == '/hub2/variables' } == 1
+        posts()*.path == ['/hub2/variables/create']
     }
 
     def 'endpoint 404 creates through existing wizard primitives'() {

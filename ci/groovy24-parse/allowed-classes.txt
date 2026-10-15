@@ -11,6 +11,10 @@ com.hubitat.app.ParentDeviceWrapper
 com.hubitat.hub.domain.Event
 com.hubitat.hub.domain.Hub
 com.hubitat.hub.domain.Location
+# Accepted by the hub although the page does not list them (checked on a hub):
+com.hubitat.hub.domain.Attribute
+com.hubitat.hub.domain.Capability
+com.hubitat.helper.ConcurrentExpiringHashMap
 com.hubitat.hub.domain.State
 com.hubitat.zigbee.DataType
 com.nimbusds.jose.JOSEObjectType
