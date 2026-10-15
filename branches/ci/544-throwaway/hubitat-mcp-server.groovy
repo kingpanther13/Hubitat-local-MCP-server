@@ -15523,9 +15523,7 @@ def toolRemoveConnector(args) {
         consumersUnknown: (force && nativeModel != null && connectorApps == null) ?: null,
         message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged."
     ]
-    if (nativeModel == null) {
-        result.note = "A java.lang.StackOverflowError from Hubitat's built-in 'Variable Connectors' driver (childRemoved) may appear in the hub log during this removal. It is a known Hubitat platform bug -- the same crash occurs via the UI's Remove Device button -- and is harmless: the connector is removed regardless."
-    }
+    result.note = "A java.lang.StackOverflowError from Hubitat's built-in 'Variable Connectors' driver (childRemoved) may appear in the hub log during this removal. It is a known Hubitat platform bug -- the same crash occurs via the UI's Remove Device button -- and is harmless: the connector is removed regardless."
     return result
 }
 private Map _incrementHubVariable(String name, increment) {
@@ -22484,7 +22482,7 @@ def _getAllToolDefinitions_partDiscovery() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["device_authorization", "best_practice_reference", "tool_access", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "set_rule_reference", "set_rule_reference_overview", "set_rule_reference_triggers", "set_rule_reference_actions", "set_rule_reference_conditions", "set_rule_reference_walkstep", "set_rule_reference_responses", "set_rule_reference_guards", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
+                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["device_authorization", "best_practice_reference", "tool_access", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "set_rule_reference", "set_rule_reference_overview", "set_rule_reference_shapes", "set_rule_reference_conditions", "set_rule_reference_walkstep", "set_rule_reference_responses", "set_rule_create_reference", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
                     cursor: [type: "string", description: "Continue a paged payload: pass the prior call's nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."],
                     platform_api_search: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: search the hub's Groovy API docs, e.g. 'eventsBetween'.[[/FLAT_TRIM]]"],
                     platform_api_page: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]
@@ -22611,7 +22609,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click (e.g. trigger/action index for RM editCond/editAct)."],
                     addTrigger: [
                         type: "object",
-                        description: """Add an RM TRIGGER (structured). DISCRIMINATOR: use `capability` (RM's own picker names, e.g. Switch, Temperature, Button, Custom Attribute, Certain Time (and optional date), Mode, Periodic Schedule) NOT `type`; returns triggerIndex. The capability list with each one's fields comes from hub_set_rule(operation:'discover', args:{kind:'trigger'}). Optional per spec: andStays, allOfThese, condition {capability, deviceIds?, state? | comparator?+value?, attribute?, not?} (a conditional trigger), rawSettings {field:value} with @N = the trigger index. Periodic shape and extended condition shapes: hub_get_tool_guide(section='set_rule_reference_triggers' / 'set_rule_reference_conditions')."""
+                        description: """Add an RM trigger; returns triggerIndex. `capability` is Rule Machine's own name (any case); its fields: hub_set_rule(operation:'discover', args:{kind:'trigger', capability}). Optional: condition (a kind:'condition' spec that gates the trigger), rawSettings {field: value} with @N = the trigger index."""
                     ],
                     addTriggers: [
                         type: "array",
@@ -22620,7 +22618,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     addRequiredExpression: [
                         type: "object",
-                        description: """Add the rule's Required Expression (the gate that decides whether a trigger may fire); returns conditionIndices. Spec: {conditions:[{capability, deviceIds?, state?, comparator?, value?, attribute?, not?, rawSettings?}, ...], operator:'AND'|'OR'|'XOR' or operators:[...] (one per gap; RM evaluates left to right, so group mixed AND/OR with subExpression)}. comparator is required with attribute (Custom Attribute) and with variable+value; ASCII !=/<>/== map to RM's glyphs. Condition capability list and extended shapes (Mode, Between two times, Variable, compareToVariable, compareToDevice, nested subExpression): hub_get_tool_guide(section='set_rule_reference_conditions')."""
+                        description: """Add the rule's Required Expression (the gate a trigger must pass); returns conditionIndices. {conditions:[condition, ...], operator:'AND'|'OR'|'XOR' or operators:[one per gap]}; RM evaluates left to right, so group mixed AND/OR with subExpression. Condition fields: hub_set_rule(operation:'discover', args:{kind:'condition', capability}). Sub-expressions and operators: hub_get_tool_guide(section='set_rule_reference_conditions')."""
                     ],
                     replaceRequiredExpression: [
                         type: "object",
@@ -23587,10 +23585,10 @@ private List<String> _rmUnrepresentedComparatorReasons() {
 private String _rmUnrepresentedComparatorHint(Map sk) {
     def cmp = sk?.value?.toString()
     if (sk?.reason == "comparator_not_offered") {
-        return "Comparator '${cmp}' is not offered for a ${sk.capability ?: 'device-state'} condition: Rule Machine shows only these fields for it: ${(sk.available as List)?.join(', ')}. Match a value with state (e.g. state:'active'), and use not:true for its opposite.".toString()
+        return "Comparator '${cmp}' is not offered for a ${sk.capability ?: 'device-state'} condition; its fields are ${(sk.available as List)?.join(', ')}. Match a value with state; not:true negates it.".toString()
     }
     def attrName = sk?.attribute?.toString()
-    return "Comparator '${cmp}' cannot be represented for the enum-valued Custom Attribute '${attrName}': Rule Machine offers only a value picker (e.g. on/off) for an attribute it recognizes as an enum, with no comparator slot, so a state-change comparator has nowhere to land. Use a non-built-in attribute name, or trigger on the device's native capability instead (e.g. capability:'Switch')."
+    return "Comparator '${cmp}' has no slot on the enum attribute '${attrName}': Rule Machine shows only a value picker for it. Use state, or the device's own capability (e.g. capability:'Switch')."
 }
 private List<String> _rmRecognizedTriggerKeys() {
     ["discover", "capability", "deviceIds", "condition", "conditional",
@@ -23604,32 +23602,18 @@ private boolean _rmLooksLikeStateChangeToken(Object raw) {
     def stems = _rmStateChangeTokenStems().collect { it.toLowerCase() }
     return stems.any { s.contains(it) }
 }
-private String _rmTriggerCapabilityFamily(String cap) {
-    if (!cap) return null
-    def wanted = cap.trim()
-    def match = (_rmTriggerSchemaForDiscover()?.capabilities ?: []).find { c ->
-        (c?.name?.toString()?.equalsIgnoreCase(wanted)) ||
-        (c?.aliases instanceof List && (c.aliases as List).any { it?.toString()?.equalsIgnoreCase(wanted) })
-    }
-    return match?.family?.toString()
-}
 private String _rmSuggestTriggerCapability(String cap, Collection liveOptions = null) {
     def want = cap?.trim()?.toLowerCase()
     if (!want) return null
     def live = (liveOptions ?: []).collect { it?.toString() }.findAll { it }
-    def schemaNames = (_rmTriggerSchemaForDiscover()?.capabilities ?: []).collectMany { c ->
-        def out = []
-        if (c?.name != null) out << c.name.toString()
-        if (c?.aliases instanceof List) (c.aliases as List).each { if (it != null) out << it.toString() }
-        out
-    }
+    def schemaNames = (_rmCondTables().trigger as List) + (_rmCondTables().condition as List)
     def candidates = (live ? live : schemaNames).findAll { it }.unique()
     def exact = candidates.find { it.toLowerCase() == want }
     if (exact) return exact
     return candidates.find { def n = it.toLowerCase(); (want.length() >= 4 && n.contains(want)) || (n.length() >= 4 && want.contains(n)) }
 }
 private boolean _rmStateChangeGuardApplies(String cap) {
-    !(_rmTriggerCapabilityFamily(cap) in ["hub-state", "variable", "custom-attribute", "time", "button"])
+    !(_rmCondFamily(cap) in ["hub-state", "variable", "custom-attribute", "time", "button"])
 }
 private String _rmPeriodicShapeError(String freq, Map per) {
     if (per?.rawSettings instanceof Map && !(per.rawSettings as Map).isEmpty()) return null
@@ -23678,17 +23662,19 @@ private String _rmPeriodicShapeError(String freq, Map per) {
 }
 private void _rmValidateRoundZeroTriggerSpec(Map triggerSpec) {
     if (!(triggerSpec instanceof Map) || _rmIsDiscoverSpec(triggerSpec)) return
+    _rmCheckCondSpec(triggerSpec, "trigger", "addTrigger")
+    if (triggerSpec.condition instanceof Map) _rmCheckCondSpec(triggerSpec.condition as Map, "condition", "addTrigger.condition")
     def cap = triggerSpec.capability?.toString()?.trim()
     if (!cap) return
     def effState = triggerSpec.state != null ? triggerSpec.state : triggerSpec.value
     def offendingField = triggerSpec.state != null ? "state" : "value"
     if (triggerSpec.comparator == null && _rmLooksLikeStateChangeToken(effState) &&
             _rmStateChangeGuardApplies(cap)) {
-        throw new IllegalArgumentException("${offendingField}:'${effState}' is not a valid state value -- for a state-change trigger use comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'), not ${offendingField}. Pass {discover:true} for this capability's field schema. RM is not touched.")
+        throw new IllegalArgumentException("${offendingField}:'${effState}' is a change, not a state: use comparator:'*changed*'. RM is not touched.")
     }
     if (cap.equalsIgnoreCase("Certain Time (and optional date)") && triggerSpec.time != null &&
             !(triggerSpec.time?.toString() in ["A specific time", "Sunrise", "Sunset"])) {
-        throw new IllegalArgumentException("addTrigger.time must be one of ['A specific time', 'Sunrise', 'Sunset']; got '${triggerSpec.time}'. Put the clock time in atTime (e.g. time:'A specific time', atTime:'17:30'). Pass {discover: true} for the full trigger schema. RM is not touched.")
+        throw new IllegalArgumentException("addTrigger.time must be 'A specific time', 'Sunrise' or 'Sunset' (got '${triggerSpec.time}'); the clock time goes in atTime. RM is not touched.")
     }
     if (cap.equalsIgnoreCase("Periodic Schedule") && !(triggerSpec.periodic instanceof Map)) {
         def strayKeys = triggerSpec.keySet().findAll {
@@ -23702,7 +23688,7 @@ private void _rmValidateRoundZeroTriggerSpec(Map triggerSpec) {
         } else {
             detail = ""
         }
-        throw new IllegalArgumentException("Periodic Schedule trigger requires periodic:{frequency:'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String', everyN:<n>, ...}.${detail} Pass {discover:true} for the full periodic field schema. RM is not touched.")
+        throw new IllegalArgumentException("A Periodic Schedule trigger needs periodic:{frequency, ...}.${detail} See discover kind:'trigger', capability:'Periodic Schedule'. RM is not touched.")
     }
 }
 private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
@@ -23712,7 +23698,7 @@ private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
         def periodic = triggerSpec.periodic as Map
         def frequency = periodic.frequency?.toString()
         if (!frequency) {
-            throw new IllegalArgumentException("Periodic Schedule trigger requires periodic.frequency (one of: Seconds, Minutes, Hourly, Daily, Weekly, Monthly, Yearly, 'Cron String'). Pass {discover:true} for the full periodic field schema. RM is not touched.")
+            throw new IllegalArgumentException("periodic.frequency is required: Seconds, Minutes, Hourly, Daily, Weekly, Monthly, Yearly or 'Cron String'. RM is not touched.")
         }
         def periodicKeys = ["frequency", "everyN", "startingTime", "weekdaysOnly", "selectedHours", "selectedMinutes",
                             "selectedDaysOfMonth", "daysOfWeek", "dayOfWeek", "dayOfMonth", "everyNMonths", "months",
@@ -23732,7 +23718,7 @@ private void _rmValidateRoundZeroPeriodicSpec(Map triggerSpec) {
         }
         if (frequency == "Monthly" && periodic.dayOfMonth != null &&
                 periodic.weekOfMonth != null) {
-            throw new IllegalArgumentException("Periodic Monthly: dayOfMonth and weekOfMonth are mutually exclusive -- dayOfMonth selects a calendar day (e.g. the 15th), weekOfMonth selects the Nth weekday (e.g. the Second Monday). Pass one mode's fields, not both. RM is not touched.")
+            throw new IllegalArgumentException("Periodic Monthly takes dayOfMonth or weekOfMonth, not both. RM is not touched.")
         }
         def shapeErr = _rmPeriodicShapeError(frequency, periodic)
         if (shapeErr) {
@@ -23761,7 +23747,8 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     def _impl = {
     if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec. RM is not touched.")
     if (_rmIsDiscoverSpec(triggerSpec)) {
-        return _rmTriggerSchemaForDiscover()
+        def sel = triggerSpec.discover instanceof Map ? triggerSpec.discover as Map : [:]
+        return _rmCondDiscover(sel.kind?.toString() == "condition" ? "condition" : "trigger", sel.capability)
     }
     _rmValidateRoundZeroTriggerSpec(triggerSpec)
     def cap = triggerSpec.capability?.toString()?.trim()
@@ -23820,7 +23807,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     if (!capCanonical) {
         def suggestion = _rmSuggestTriggerCapability(cap, capOptions)
         def didYouMean = suggestion ? " Did you mean '${suggestion}'?" : ""
-        throw new IllegalArgumentException("addTrigger.capability '${cap}' not in Hubitat's trigger capability list.${didYouMean} Valid options: ${capOptions.collect { it.toString() }.sort().join(', ')}. Pass {discover: true} to get the per-capability field schema for each of these.")
+        throw new IllegalArgumentException("addTrigger.capability '${cap}' is not in Rule Machine's trigger list on this hub (RM lists a capability only when the hub has a device or app for it).${didYouMean} RM offers: ${capOptions.collect { it.toString() }.sort().join(', ')}.")
     }
     _rmWriteSettingOnPage(appId, "selectTriggers", "tCapab${idx}", capCanonical, applied, null, skipped)
     def writeIfPresent = { String name, Object value, String typeHint = null ->
@@ -23913,11 +23900,11 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
                         skipped << [key: "tstate${idx}".toString(), reason: "change_comparator_not_representable_for_device_state",
                                     value: _rmNormalizeComparator(triggerSpec.comparator), capability: capCanonical?.toString(),
                                     pickerOptions: pickerOptions,
-                                    hint: "The '${capCanonical}' value picker (tstate${idx}) offers no option matching the change comparator '${_rmNormalizeComparator(triggerSpec.comparator)}' (options: ${pickerOptions}). Write tstate${idx} directly via a walkStep call if the picker uses a change token that this route does not match."]
+                                    hint: "The '${capCanonical}' value picker (tstate${idx}) has no option for '${_rmNormalizeComparator(triggerSpec.comparator)}' (options: ${pickerOptions})."]
                     }
                 }
             } else {
-                def capFamily = _rmTriggerCapabilityFamily(capCanonical?.toString())
+                def capFamily = _rmCondFamily(capCanonical?.toString())
                 if (dsInputs == null) {
                     if (capFamily == "numeric") {
                         _rmForceWriteEnumField(appId, "selectTriggers", "ReltDev${idx}".toString(), _rmNormalizeComparator(triggerSpec.comparator), applied, skipped)
@@ -23925,13 +23912,13 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
                     } else {
                         skipped << [key: "comparator@tstate${idx}".toString(), reason: "state_change_route_unverified_fetch_failed",
                                     value: _rmNormalizeComparator(triggerSpec.comparator), capability: capCanonical?.toString(),
-                                    hint: "The selectTriggers schema could not be re-fetched to place the state-change comparator '${_rmNormalizeComparator(triggerSpec.comparator)}'. Verify via hub_get_app_config(appId); if the change did not land, write tstate${idx} (device-state enum caps) or ReltDev${idx} (numeric caps) directly via a walkStep call."]
+                                    hint: "selectTriggers could not be re-read to place '${_rmNormalizeComparator(triggerSpec.comparator)}'; check the trigger with hub_get_app_config(appId)."]
                     }
                 } else if (capFamily == "hub-state") {
                 } else {
                     skipped << [key: "comparator@tstate${idx}".toString(), reason: "change_comparator_not_representable_for_device_state",
                                 value: _rmNormalizeComparator(triggerSpec.comparator), capability: capCanonical?.toString(),
-                                hint: "The '${capCanonical}' trigger rendered neither a comparator field (ReltDev${idx}) nor a value picker (tstate${idx}) for the state-change comparator '${_rmNormalizeComparator(triggerSpec.comparator)}'. Re-fetch via hub_get_app_config(appId) and author the change directly via a walkStep call."]
+                                hint: "The '${capCanonical}' trigger showed no comparator (ReltDev${idx}) or value picker (tstate${idx}) for '${_rmNormalizeComparator(triggerSpec.comparator)}'."]
                 }
             }
         } else {
@@ -24206,7 +24193,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     def repairHints = []
     def hasBrokenLabel = health?.label?.toString()?.contains("*BROKEN*") as Boolean
     if (triggerNotBaked) {
-        repairHints << "Trigger did not bake — mainPage still shows 'Define Triggers' placeholder. Common causes: state value not in capability's enum (e.g. 'on' is invalid for Motion which uses 'active'/'inactive'), capability/state mismatch, or unknown deviceIds. Verify state value matches the capability's domain (Switch: 'on'/'off'/'*changed*', Motion: 'active'/'inactive', Contact: 'open'/'closed', etc.) and run hub_list_devices to verify deviceIds. Then call removeAction or rebuild the rule."
+        repairHints << "Trigger did not bake: the rule still shows no triggers. Check its fields with discover (kind:'trigger') and the deviceIds with hub_list_devices, remove the row with removeTrigger, then add it again."
     }
     if (partial || hasBrokenLabel) {
         def forceWrittenKeys = genuineSkipped.findAll { it instanceof Map && it.reason == "comparator_force_written_unverified" }*.key.findAll { it != null }
@@ -24216,12 +24203,12 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         if (!lostSkipped.isEmpty()) {
             def skippedKeys = lostSkipped*.key.findAll { it != null }.join(', ')
             def settingWord = lostSkipped.size() == 1 ? "setting" : "settings"
-            repairHints << "Some trigger ${settingWord} didn't land: ${skippedKeys}. Use hub_set_rule(walkStep={page:'selectTriggers', operation:'introspect'}) to see the live schema, then write the missing fields one at a time. CAVEAT: if the introspect call returns an empty schema for the missing field, that field is likely wizard-past-state (write-only during initial trigger construction, no longer in the live input list). Verify via hub_get_app_config(appId) -- if the trigger paragraph renders the value correctly (e.g. 'Certain Time 5:30 PM'), the partial flag is cosmetic and the trigger is fully baked. Skip the repair."
+            repairHints << "Some trigger ${settingWord} did not land: ${skippedKeys}. If the trigger renders right in hub_get_app_config(appId), nothing is missing; otherwise write them with walkStep (page:'selectTriggers')."
         }
         if (!forceWrittenKeys.isEmpty()) {
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
             def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
-            repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the trigger paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
+            repairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} written but could not be read back; check the trigger in hub_get_app_config(appId) before writing again."
         }
         def notRepresentable = genuineSkipped.findAll { it instanceof Map && it.reason in _rmUnrepresentedComparatorReasons() }
         notRepresentable.each { sk ->
@@ -24232,16 +24219,16 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             if (sk.hint) repairHints << sk.hint.toString()
         }
         if (hasBrokenLabel) {
-            repairHints << "Trigger row has *BROKEN* marker -- capability '${cap}' likely needs a capability-specific field (Mode: pass state='ModeName' or modeIds=['id'], NOT rawSettings.tstate; Periodic: pass periodic={} sub-spec). Re-add the trigger with the correct fields."
+            repairHints << "The trigger renders *BROKEN*: '${cap}' needs its own fields (discover kind:'trigger', capability:'${cap}'). Remove it and add it again."
         }
         if ((health?.brokenMarkers as List)?.size() > 0 && !hasBrokenLabel) {
-            repairHints << "Rule has pre-existing broken markers: ${(health.brokenMarkers as List).unique().join(', ')}. The new trigger committed, but run hub_get_rule_health(${appId}) and repair the existing broken trigger/action rows before this rule fires correctly."
+            repairHints << "The rule already had broken rows: ${(health.brokenMarkers as List).unique().join(', ')}. The trigger was added; repair those rows (hub_get_rule_health(${appId}))."
         }
         if (skipped?.any { it?.reason == "periodic_href_unresolved_nonfirst_trigger" }) {
-            repairHints << "The periodic sub-page index could not be resolved for this (non-first) trigger -- its href was absent from the trigger schema, or the href's params.n was malformed -- so its schedule was NOT written, because writing it would have overwritten an earlier periodic trigger's schedule. Retry the add: re-fetch with hub_set_rule(walkStep={page:'selectTriggers', operation:'introspect'}) to confirm the periodic href is present with an integer params.n, or rebuild the rule's triggers in order. If the rule has only one periodic trigger, this should not recur."
+            repairHints << "This periodic trigger's sub-page could not be resolved, so its schedule was not written (writing it could overwrite another periodic trigger). Remove it and add the rule's periodic triggers again in order."
         }
         if (hubRenderError) {
-            repairHints << "WARNING: selectTriggers may have rendered with an error (configPageError=${err}, or skipped items have empty available list). This is a hub-side issue. Consider deleting the trigger and trying with different deviceIds or trigger shape."
+            repairHints << "selectTriggers may have rendered with an error (${err}); remove the trigger and retry with other devices or fields."
         }
     }
     def result = [
@@ -24262,276 +24249,180 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     }
     return _impl()
 }
-private Map _rmTriggerSchemaForDiscover() {
-    return [
-        discriminator: "capability",
-        note: "Pass the chosen capability name (case-insensitive) as addTrigger.capability in the real call.",
-        conditionFields: [
-            [name: "not", type: "Boolean", description: "Applies inside a CONDITION list only (addTrigger.condition, addRequiredExpression.conditions[], addAction expression conditions[]) -- NOT the trigger row itself. not:true negates the condition (e.g. Time NOT between, mode is NOT Night, does-not-contain via not:true + comparator:'*contains*')."]
-        ],
-        capabilities: [
-            [
-                name: "Switch",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Switch device IDs"],
-                    [name: "state", type: "enum", values: ["on", "off"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean", description: "Require ALL selected devices to match (vs. any one)"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?} -- only fire after state has held this long"],
-                    [name: "conditional", type: "Boolean", description: "Make this a conditional trigger (sets isCondTrig)"],
-                    [name: "condition", type: "Map", description: "Inline conditional-trigger gate -- same per-condition shape as addRequiredExpression conditions[]"],
-                    [name: "rawSettings", type: "Map", description: "Escape hatch for fields not yet mapped"]
-                ]
-            ],
-            [
-                name: "Motion",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Motion sensor device IDs"],
-                    [name: "state", type: "enum", values: ["active", "inactive"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean", description: "Require ALL selected devices to match"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Contact",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Contact sensor device IDs"],
-                    [name: "state", type: "enum", values: ["open", "closed"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Lock",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Lock device IDs"],
-                    [name: "state", type: "enum", values: ["locked", "unlocked"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Presence",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Presence sensor device IDs"],
-                    [name: "state", type: "enum", values: ["present", "not present"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map", description: "{hours?, minutes?, seconds?}"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Garage",
-                family: "device-state",
-                aliases: ["Door", "Valve", "Window Shade"],
-                notes: "Also covers Door, Valve, Window Shade -- pass any of these names as capability; use appropriate state values for each device type.",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "state", type: "enum", values: ["open", "closed"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Power source",
-                family: "device-state",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "state", type: "enum", values: ["battery", "dc", "mains", "unknown"], description: "Trigger condition"]
-                ],
-                optionalFields: [
-                    [name: "allOfThese", type: "Boolean"],
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Temperature",
-                family: "numeric",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number", description: "Temperature threshold (omit for *changed*)"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Humidity",
-                family: "numeric",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Battery",
-                family: "numeric",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Illuminance",
-                family: "numeric",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Power",
-                family: "numeric",
-                notes: "Also covers Energy, CO2, Dimmer level, Thermostat setpoints.",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "comparator", type: "enum", values: ["=", "<", ">", "<=", ">=", "*changed*"]],
-                    [name: "value", type: "Number"]
-                ],
-                optionalFields: [
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Button",
-                family: "button",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>", description: "Button-capable device IDs"],
-                    [name: "buttonNumber", type: "Integer"],
-                    [name: "state", type: "enum", values: ["pushed", "held", "doubleTapped", "released"]]
-                ],
-                optionalFields: [
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Custom Attribute",
-                family: "custom-attribute",
-                requiredFields: [
-                    [name: "deviceIds", type: "List<Integer>"],
-                    [name: "attribute", type: "String", description: "The attribute name on the device"],
-                    [name: "comparator", type: "enum", values: ["=", "≠ (or !=)", "<", ">", "<=", ">=", "*changed*", "*contains*"], description: "Numeric attributes use =/</>/etc.; a free-valued (String) attribute also offers '*contains*' (substring match, written verbatim -- keep the asterisks). There is NO 'does not contain': express negation with not:true + '*contains*'."],
-                    [name: "value", type: "String or Number", description: "Comparison value (the substring for '*contains*'; omit for '*changed*')."]
-                ],
-                optionalFields: [
-                    [name: "not", type: "Boolean", description: "Negate the condition (e.g. not:true + comparator:'*contains*' == does-not-contain)."],
-                    [name: "andStays", type: "Map"],
-                    [name: "rawSettings", type: "Map"]
-                ]
-            ],
-            [
-                name: "Certain Time (and optional date)",
-                family: "time",
-                requiredFields: [
-                    [name: "time", type: "enum", values: ["A specific time", "Sunrise", "Sunset"]]
-                ],
-                optionalFields: [
-                    [name: "atTime", type: "String", description: "ISO 8601 datetime (e.g. '2026-04-28T08:00:00') -- required when time='A specific time'; omit for Sunrise/Sunset. Simple forms without timezone use hub local tz."],
-                    [name: "offset", type: "Integer", description: "Minutes offset for Sunrise/Sunset -- omit when time='A specific time'"]
-                ],
-                notes: "atTime is conditionally required: only when time='A specific time'. offset is only applicable for Sunrise/Sunset."
-            ],
-            [
-                name: "Periodic Schedule",
-                family: "time",
-                requiredFields: [
-                    [name: "periodic", type: "Map", description: "{frequency, everyN?, startingTime?, weekdaysOnly?, selectedHours?, selectedMinutes?, selectedDaysOfMonth?, daysOfWeek?, dayOfWeek?, dayOfMonth?, everyNMonths?, months?, weekOfMonth?, minutesOffset?, cronString?, rawSettings?}"]
-                ],
-                notes: "frequency values: 'Seconds', 'Minutes', 'Hourly', 'Daily', 'Weekly', 'Monthly', 'Yearly', 'Cron String'. everyN is REQUIRED even when =1 for Daily's 'every N days' mode -- omitting it renders 'null'; Hourly accepts everyN OR selectedHours. For Seconds and Minutes, everyN is a restricted enum -- one of [1,2,3,4,5,6,10,12,15,20,30] and must be a whole number (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5; anything outside the set fails). Seconds exposes ONLY the count enum -- no toggle and no startingTime. For Hourly-everyN, pass startingTime too -- omitting it renders a cosmetic trailing 'starting at ' blank. Monthly has TWO mutually-exclusive modes: by-day (dayOfMonth + everyNMonths) and nth-weekday (weekOfMonth + dayOfWeek + everyNMonths) -- passing both dayOfMonth and weekOfMonth is rejected. Monthly by-day needs BOTH dayOfMonth AND everyNMonths or it renders 'null'. Monthly 'specific months' ('on day N of selected months') is NOT yet supported (an order-sensitive third sub-mode) -- use rawSettings if needed. Yearly is ALWAYS nth-weekday: weekOfMonth + dayOfWeek + months (single month) -- because RM 5.1 exposes no by-day calendar-day field for Yearly, only the nth-weekday picker; the month alone never completes. A Periodic Schedule spec with no periodic map is rejected up front (success=false, naming the stray keys) rather than committing a phantom '?' row. The helper walks the periodic sub-page automatically.",
-                periodicShape: [
-                    frequency: "Seconds | Minutes | Hourly | Daily | Weekly | Monthly | Yearly | Cron String",
-                    everyN: "Integer -- 'every N <unit>' mode (Seconds/Minutes/Hourly/Daily). REQUIRED even when =1 for Daily's 'every N days' mode (omitting renders null); Hourly accepts everyN OR selectedHours. For Seconds/Minutes restricted to a whole number in [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer. Fractional values truncate, e.g. 5.5 -> 5).",
-                    startingTime: "HH:mm -- start time (Hourly/Daily/Weekly/Monthly/Yearly; Seconds has none). For Hourly-everyN, pass it -- omitting renders a cosmetic trailing 'starting at ' blank.",
-                    weekdaysOnly: "Boolean -- Daily only",
-                    selectedHours: "List<Integer> -- Hourly only, alternative to everyN",
-                    selectedMinutes: "List<Integer> -- Minutes only, 'at specific minutes' mode, alternative to everyN",
-                    selectedDaysOfMonth: "List<Integer> -- Daily only, alternative to everyN/weekdays",
-                    daysOfWeek: "List<String> -- Weekly only, MULTI day-of-week (e.g. ['Monday','Friday'])",
-                    dayOfWeek: "String -- Monthly/Yearly nth-weekday mode, SINGLE day-of-week (e.g. 'Monday'). Distinct from Weekly's daysOfWeek (multi).",
-                    dayOfMonth: "Integer -- Monthly by-day 'on day number' (pair with everyNMonths; mutually exclusive with weekOfMonth)",
-                    everyNMonths: "Integer -- 'of every N months' (Monthly, both modes; free integer)",
-                    months: "String -- Yearly only; the single nth-weekday month (e.g. 'December'). Yearly exposes a single-month picker. (Monthly does NOT take months -- its specific-months sub-mode is unsupported.)",
-                    weekOfMonth: "String -- Monthly/Yearly nth-weekday 'in the week of month' (First | Second | Third | Fourth | Last). Its presence selects nth-weekday mode.",
-                    minutesOffset: "Integer -- Hourly only, when not using everyN",
-                    cronString: "String -- Cron String mode (e.g. '0 * * * *')",
-                    rawSettings: "Map -- escape hatch for periodic-page fields not yet mapped"
-                ]
-            ],
-            [
-                name: "Mode",
-                family: "hub-state",
-                requiredFields: [
-                    [name: "state", type: "String or List<String>", description: "Mode name(s) that trigger the rule (e.g. 'Night' or ['Away', 'Night']). Names are resolved to IDs via location.modes -- must match existing hub modes (case-insensitive). Use hub_list_modes to list available modes and their IDs. Required unless modeIds is provided."]
-                ],
-                optionalFields: [
-                    [name: "modeIds", type: "List<String or Integer>", description: "Mode IDs directly (alternative to state). Use when you already have the ID from hub_list_modes. E.g. ['3'] or ['3', '5']. When provided, state is not required."]
-                ],
-                notes: "No deviceIds required. Triggers when hub mode becomes any of the listed modes. IMPORTANT: internally writes modesX<N> (not tstate<N>) -- passing only rawSettings with tstate will produce a broken trigger."
-            ],
-            [
-                name: "Variable",
-                family: "variable",
-                requiredFields: [
-                    [name: "variable", type: "String", description: "Hub variable name. Use hub_list_variables to discover."]
-                ],
-                optionalFields: [
-                    [name: "comparator", type: "enum", values: ["=", "!= (or ≠)", "<", ">", "<=", ">=", "in", "*contains*", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"], description: "Default: *changed*. ASCII '!=' / '<>' map to Unicode '≠'. '*contains*' (substring match, written verbatim -- keep the asterisks) is for a free-valued (String) variable; a numeric variable uses =/</>/etc. instead."],
-                    [name: "value", type: "Number or String", description: "Comparison value (the substring for '*contains*'; omit for the *changed* family)"],
-                    [name: "conditional", type: "Boolean"],
-                    [name: "condition", type: "Map", description: "Inline conditional gate. For 'Variable A changed ONLY IF A != B': {capability: 'Variable', variable: 'A', comparator: '!=', compareToVariable: 'B'}. condition fields: capability, variable, comparator, value | compareToVariable, not?, rawSettings?."],
-                    [name: "rawSettings", type: "Map", description: "Escape hatch -- '@N' token in field names is replaced with the trigger index (e.g. {'xVar@N': 'myVar'})."]
-                ],
-                notes: "No deviceIds. Fires on hub-variable change. Conditional Variable triggers use condition.compareToVariable for 'A vs B' comparisons."
-            ]
-        ]
-    ]
+private Map _rmCondTables() {
+    [trigger: ["Acceleration", "Battery", "Button", "Carbon monoxide detector", "Carbon dioxide sensor", "Certain Time (and optional date)", "Periodic Schedule", "Contact", "Dimmer", "Energy meter", "Garage door", "Humidity", "Illuminance", "Lock", "Physical Lock", "Valve", "Mode", "Motion", "Digital Switch", "Variable", "Physical dimmer level", "Physical Switch", "Power meter", "Presence", "Rule paused", "Smoke detector", "Switch", "Fan Speed", "Sound", "Shock sensor", "Temperature", "Door", "HSM Status", "HSM Alert", "Thermostat mode", "Thermostat state", "Thermostat heat setpoint", "Thermostat cool setpoint", "Gas detector", "Water sensor", "Private Boolean", "Music player", "Location Event", "Cloud End Point", "Local End Point", "Security keypad", "Tamper alert", "Power source", "Keypad codes", "Lock codes", "Button LED", "Thermostat fan mode", "Custom Attribute", "Days of Week Schedule", "Last Event Device", "Window Shade", "Window Blind"],
+     condition: ["Acceleration", "Battery", "Carbon monoxide detector", "Carbon dioxide sensor", "Contact", "Days of week", "Between two dates", "Dimmer", "Energy meter", "Garage door", "Humidity", "Illuminance", "Lock", "Valve", "Fan Speed", "Mode", "Motion", "Power meter", "Presence", "Rule paused", "Smoke detector", "Sound", "Shock sensor", "Gas detector", "Switch", "Temperature", "Private Boolean", "Door", "HSM Status", "Thermostat mode", "Thermostat state", "Thermostat heat setpoint", "Variable", "Power source", "On a Day", "Thermostat cool setpoint", "Time of day", "Between two times", "Water sensor", "Music player", "Security keypad", "Tamper alert", "Keypad codes", "Lock codes", "Thermostat fan mode", "Custom Attribute", "Last Event Device", "Time Since Event", "Window Shade", "Window Blind"],
+     numeric: ["Battery", "Carbon dioxide sensor", "Dimmer", "Energy meter", "Humidity", "Illuminance", "Physical dimmer level", "Power meter", "Temperature", "Thermostat heat setpoint", "Thermostat cool setpoint"],
+     attribute: ["Physical dimmer level": "level", "Physical Switch": "switch", "Fan Speed": "speed", "Smoke detector": "smoke", "Carbon monoxide detector": "carbonMonoxide", "Carbon dioxide sensor": "carbonDioxide", "Digital Switch": "switch", "Water sensor": "water", "Security keypad": "securityKeypad", "Tamper alert": "tamper", "Garage door": "door", "Door": "door", "Dimmer": "level", "Shock sensor": "shock", "Energy meter": "energy", "Power meter": "power", "Power source": "powerSource", "Temperature": "temperature", "Thermostat mode": "thermostatMode", "Thermostat state": "thermostatOperatingState", "Thermostat fan mode": "thermostatFanMode", "Music player": "status", "Humidity": "humidity", "Battery": "battery", "Illuminance": "illuminance", "Window Shade": "windowShade", "Window Blind": "windowBlind", "Acceleration": "acceleration", "Contact": "contact", "Lock": "lock", "Physical Lock": "lock", "Lock codes": "lockCode", "Valve": "valve", "Motion": "motion", "Presence": "presence", "Switch": "switch", "Sound": "sound", "Thermostat heat setpoint": "heatingSetpoint", "Thermostat cool setpoint": "coolingSetpoint", "Gas detector": "naturalGas"],
+     defaultState: ["Switch": "on", "Physical Switch": "on", "Button LED": "on", "Motion": "active", "Acceleration": "active", "Contact": "open", "Presence": "present", "Garage door": "open", "Gas detector": "detected", "Door": "open", "Lock": "locked", "Physical Lock": "locked", "Valve": "open", "Fan Speed": "off", "Power source": "mains", "Thermostat mode": "heat", "Thermostat state": "heating", "Shock sensor": "detected", "Thermostat fan mode": "auto", "Location Event": "mode", "Location": "mode", "Carbon monoxide detector": "detected", "Smoke detector": "detected", "Sound": "detected", "Water sensor": "wet", "Security keypad": "disarmed", "Tamper alert": "detected", "Rule paused": "true", "Music player": "playing", "Private Boolean": "true", "HSM Status": "disarmed", "Digital Switch": "on", "Window Shade": "open", "Window Blind": "open"],
+     deviceCapability: ["Switch": "switch", "Physical dimmer level": "switchLevel", "Physical Switch": "switch", "Digital Switch": "switch", "Motion": "motionSensor", "Acceleration": "accelerationSensor", "Contact": "contactSensor", "Presence": "presenceSensor", "Garage door": "garageDoorControl", "Door": "doorControl", "Actuator": "actuator", "Button": "pushableButton", "Music player": "musicPlayer", "Lock": "lock", "Physical Lock": "lock", "Valve": "valve", "Fan Speed": "fanControl", "Fan Control": "fanControl", "Power source": "powerSource", "Dimmer": "switchLevel", "Temperature": "temperatureMeasurement", "Thermostat mode": "thermostat", "Thermostat state": "thermostat", "Thermostat fan mode": "thermostat", "Thermostat": "thermostat", "Carbon dioxide sensor": "carbonDioxideMeasurement", "Humidity": "relativeHumidityMeasurement", "Illuminance": "illuminanceMeasurement", "Energy meter": "energyMeter", "Power meter": "powerMeter", "Carbon monoxide detector": "carbonMonoxideDetector", "Smoke detector": "smokeDetector", "Gas detector": "gasDetector", "Shock sensor": "shockSensor", "Water sensor": "waterSensor", "Sound": "soundSensor", "Security keypad": "securityKeypad", "Tamper alert": "tamperAlert", "Time Since Event": "*", "Tone": "tone", "Speech device": "speechSynthesis", "Window Shade": "windowShade", "Window Blind": "windowBlind"],
+     noDuration: ["Button", "Certain Time", "Periodic Schedule", "Mode", "Cloud End Point", "Local End Point", "Security keypad", "Keypad codes", "Lock codes", "Button LED", "Days of Week Schedule", "Last Event Device", "Location Event", "Location", "Certain Time (and optional date)"],
+     numericOps: ["=", "\u2260", "<", ">", "<=", ">=", "in"],
+     changeOps: ["*changed*", "*increased*", "*decreased*"],
+     overOps: ["*increased by over*", "*decreased by over*"],
+     stringOps: ["=", "\u2260", "*contains*", "*changed*", "*is empty*"],
+     variableOps: ["=", "\u2260", "<", ">", "<=", ">=", "in", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"],
+     buttonStates: ["pushed", "held", "doubleTapped", "released"],
+     timeOpts: ["A specific time", "Sunrise", "Sunset"]]
+}
+private String _rmCondCanonical(Object cap) {
+    String want = cap?.toString()?.trim()
+    if (!want) return null
+    Map t = _rmCondTables()
+    return (((t.trigger as List) + (t.condition as List)).find { it.toString().equalsIgnoreCase(want) })?.toString()
+}
+private String _rmCondFamily(Object cap) {
+    String c = _rmCondCanonical(cap)
+    if (c == null) return null
+    if (c in (_rmCondTables().numeric as List)) return "numeric"
+    switch (c) {
+        case "Variable": return "variable"
+        case ["Custom Attribute", "Last Event Device"]: return "custom-attribute"
+        case ["Button", "Button LED"]: return "button"
+        case ["Certain Time (and optional date)", "Periodic Schedule", "Days of Week Schedule", "Time of day",
+              "Between two times", "Between two dates", "On a Day", "Days of week", "Time Since Event"]: return "time"
+        case ["Mode", "Location Event", "HSM Alert", "Cloud End Point", "Local End Point"]: return "hub-state"
+    }
+    return "device-state"
+}
+private void _rmCheckCondSpec(Map spec, String kind, String where) {
+    String raw = spec?.capability?.toString()?.trim()
+    if (!raw) return
+    Map t = _rmCondTables()
+    List names = (kind == "condition" ? t.condition : t.trigger) as List
+    String cap = names.find { it.toString().equalsIgnoreCase(raw) }
+    if (cap == null) {
+        throw new IllegalArgumentException("${where}.capability '${raw}' is not a Rule Machine ${kind} capability. Valid: ${names.join(', ')}. RM is not touched.".toString())
+    }
+    spec.capability = cap
+    String fam = _rmCondFamily(cap)
+    String hint = "See discover kind:'${kind}', capability:'${cap}'. RM is not touched.".toString()
+    if (kind == "condition" && cap in _rmCondNotModelled()) {
+        throw new IllegalArgumentException("${where}: '${cap}' is a Rule Machine condition this tool does not model; set it with rawSettings or walkStep. RM is not touched.".toString())
+    }
+    if (spec.comparator != null) {
+        String cmp = _rmNormalizeComparator(spec.comparator)?.toString()
+        boolean change = _rmComparatorIsRhsOptional(spec.comparator)
+        List allowed = null
+        if (fam == "numeric") allowed = (t.numericOps as List) + (kind == "trigger" ? (t.changeOps as List) + (t.overOps as List) : [])
+        else if (fam == "variable") allowed = ((t.variableOps as List) + (t.stringOps as List)).unique() - (kind == "condition" ? (t.changeOps as List) + (t.overOps as List) : [])
+        else if (fam == "custom-attribute") allowed = ((t.numericOps as List) + (t.stringOps as List)).unique() - (kind == "condition" ? ["*changed*"] : [])
+        else if (fam == "device-state" && kind == "trigger" && change) allowed = null
+        else throw new IllegalArgumentException("${where}: Rule Machine has no comparator for a ${cap} ${kind}${kind == 'trigger' && fam == 'device-state' ? " other than '*changed*'" : ''}; pass state. ${hint}".toString())
+        if (allowed != null && !(cmp in allowed) && !(kind == "trigger" && change)) {
+            throw new IllegalArgumentException("${where}: comparator '${spec.comparator}' is not one Rule Machine offers for a ${cap} ${kind}: ${allowed.join(' ')}. ${hint}".toString())
+        }
+    }
+    if (spec.compareToDevice != null && fam != "numeric") {
+        throw new IllegalArgumentException("${where}: compareToDevice applies only to Rule Machine's numeric capabilities (${(t.numeric as List).join(', ')}). ${hint}".toString())
+    }
+    if (spec.andStays != null && (kind != "trigger" || cap in (t.noDuration as List))) {
+        throw new IllegalArgumentException("${where}: Rule Machine has no 'and stays' duration for a ${cap} ${kind}. ${hint}".toString())
+    }
+}
+private List _rmCondNotModelled() { ["Between two dates", "Days of week", "On a Day", "Lock codes", "Last Event Device"] }
+private Map _rmCondDiscover(String kind, Object capability = null) {
+    Map t = _rmCondTables()
+    List names = (kind == "condition" ? t.condition : t.trigger) as List
+    Map base = [discriminator: "capability", kind: kind,
+                note: "Rule Machine offers a capability only when the hub has something for it (a device with that capability, Safety Monitor, rules); the write checks RM's live list.",
+                conditionFields: _rmActionConditionFields()]
+    if (capability == null || !capability.toString().trim()) {
+        return base + [capabilities: names.collect { [name: it, family: _rmCondFamily(it)] }]
+    }
+    String cap = names.find { it.toString().equalsIgnoreCase(capability.toString().trim()) }
+    if (cap == null) throw new IllegalArgumentException("discover: '${capability}' is not a Rule Machine ${kind} capability. Valid: ${names.join(', ')}.".toString())
+    return base + [capability: _rmCondEntry(cap, kind)]
+}
+private Map _rmCondEntry(String cap, String kind) {
+    Map t = _rmCondTables()
+    boolean trig = kind == "trigger"
+    String fam = _rmCondFamily(cap)
+    String dev = (t.deviceCapability as Map).get(cap)
+    def req = []
+    def opt = []
+    def f = { String n, String type, Map extra = [:] -> [name: n, type: type] + extra }
+    switch (fam) {
+        case "numeric":
+            req << f("deviceIds", "List<Integer>")
+            req << f("comparator", "enum", [values: (t.numericOps as List) + (trig ? (t.changeOps as List) + (t.overOps as List) : [])])
+            opt << f("value", "Number", [description: "required unless the comparator is a change"])
+            if (!trig) opt << f("compareToDevice", "Map", [description: "{deviceId, offset?}: another device's reading instead of value"])
+            break
+        case "device-state":
+            if (dev) req << f("deviceIds", "List<Integer>")
+            req << f("state", "enum", ["default": (t.defaultState as Map).get(cap), description: "a value RM's picker lists for the chosen devices"])
+            if (dev) opt << f("allOfThese", "Boolean")
+            if (trig) opt << f("comparator", "enum", [values: ["*changed*"], description: "instead of state: any change"])
+            break
+        case "variable":
+            req << f("variable", "String", [description: "hub variable name"])
+            opt << f("comparator", "enum", [values: trig ? t.variableOps : ((t.variableOps as List) - (t.changeOps as List) - (t.overOps as List)), description: "a String variable takes ${(t.stringOps as List).join(' ')}".toString()])
+            opt << f("value", "Number or String")
+            if (!trig) opt << f("compareToVariable", "String", [description: "another hub variable instead of value"])
+            break
+        case "custom-attribute":
+            req << f("deviceIds", "List<Integer>")
+            req << f("attribute", "String")
+            opt << f("comparator", "enum", [values: ((t.numericOps as List) + (t.stringOps as List)).unique()])
+            opt << f("value", "Number or String")
+            break
+        case "button":
+            req << f("deviceIds", "List<Integer>")
+            req << f("state", "enum", [values: t.buttonStates])
+            opt << f("buttonNumber", "Integer", ["default": 1])
+            break
+        case "hub-state":
+            if (cap == "Mode") {
+                opt << f("state", "String or List<String>", [description: "mode name(s); this or modeIds"])
+                opt << f("modeIds", "List")
+            }
+            break
+        case "time":
+            if (cap == "Certain Time (and optional date)") {
+                req << f("time", "enum", [values: t.timeOpts])
+                opt << f("atTime", "String", [description: "ISO date-time, for 'A specific time'"])
+                opt << f("offset", "Integer", [description: "minutes, for Sunrise/Sunset"])
+            } else if (cap == "Periodic Schedule") {
+                req << f("periodic", "Map", [properties: [
+                    f("frequency", "enum", [values: ["Seconds", "Minutes", "Hourly", "Daily", "Weekly", "Monthly", "Yearly", "Cron String"]]),
+                    f("everyN", "Integer", [description: "every N units; Seconds/Minutes take 1, 2, 3, 4, 5, 6, 10, 12, 15, 20 or 30; needed for Daily and Hourly every-N"]),
+                    f("startingTime", "String", [description: "'HH:mm'; not for Seconds"]),
+                    f("weekdaysOnly", "Boolean", [description: "Daily"]),
+                    f("selectedHours", "List<Integer>", [description: "Hourly, instead of everyN"]),
+                    f("minutesOffset", "Integer", [description: "Hourly without everyN"]),
+                    f("selectedMinutes", "List<Integer>", [description: "Minutes, instead of everyN"]),
+                    f("selectedDaysOfMonth", "List<Integer>", [description: "Daily, instead of everyN"]),
+                    f("daysOfWeek", "List<String>", [description: "Weekly"]),
+                    f("dayOfMonth", "Integer", [description: "Monthly by day, with everyNMonths; not with weekOfMonth"]),
+                    f("weekOfMonth", "enum", [values: ["First", "Second", "Third", "Fourth", "Last"], description: "Monthly/Yearly nth weekday, with dayOfWeek"]),
+                    f("dayOfWeek", "String", [description: "Monthly/Yearly nth weekday"]),
+                    f("everyNMonths", "Integer", [description: "Monthly"]),
+                    f("months", "String", [description: "Yearly: one month"]),
+                    f("cronString", "String", [description: "Cron String"]),
+                    f("rawSettings", "Map")]])
+            } else if (cap == "Between two times" && !trig) {
+                req << f("start", "Map", [description: "{type: clock|sunrise|sunset, time?: 'HH:mm', offset?}"])
+                req << f("end", "Map", [description: "same shape as start"])
+            }
+            break
+    }
+    if (trig && !((t.noDuration as List).contains(cap)) && fam != "time") opt << f("andStays", "Map", [description: "{hours?, minutes?, seconds?}"])
+    if (trig) opt << f("condition", "Map", [description: "a condition (discover kind:'condition') gating this trigger"])
+    else opt << f("not", "Boolean")
+    opt << f("rawSettings", "Map", [description: "RM settings for fields not listed; '@N' becomes the row index"])
+    def out = [name: cap, family: fam, requiredFields: req, optionalFields: opt]
+    if (dev) out.deviceCapability = dev
+    def attr = (t.attribute as Map).get(cap)
+    if (attr) out.attribute = attr
+    if (!trig && cap in _rmCondNotModelled()) out.authoring = "not modelled by this tool; use rawSettings or walkStep"
+    def example = [capability: cap]
+    req.each { Map r ->
+        example.put(r.name, r.values instanceof List ? (r.values as List)[0] : (r.get("default") != null ? r.get("default") : _rmExampleValue(r)))
+    }
+    if (fam == "numeric") example.put("value", 50)
+    out.example = example
+    return out
 }
 private Map _rmReadPickerOptionLabels(Object pickerInput) {
     def opts = pickerInput?.options
@@ -24760,12 +24651,17 @@ private Map _rmActionSchemaForDiscover() {
                 optional << spec
             }
         }
-        perAction.each { act, Map ae -> if (act != null && ae.requires) conditional.put(act.toString(), ae.requires.toString()) }
+        perAction.each { act, Map ae ->
+            if (act == null || !ae.requires) return
+            def prior = conditional.get(act.toString())
+            conditional.put(act.toString(), prior ? "${prior} + ${ae.requires}".toString() : ae.requires.toString())
+        }
         (entry.common ?: []).each { Map c -> optional << [name: c.name, type: c.type] + (c.desc ? [description: c.desc] : [:]) }
         def subTypes = (entry.actions instanceof Map) ? perAction.collectEntries { act, Map ae -> [(act.toString()): ae.sub ?: entry.sub] } : entry.sub
         def example = [capability: cap]
         if (actions) example.action = actions[0]
         required.each { Map r -> if (r.name != "action") example.put(r.name, _rmExampleValue(r)) }
+        if (actions) fieldSpecs.each { name, Map spec -> if ((requiredBy.get(name) ?: []).contains(actions[0])) example.put(name, _rmExampleValue(spec)) }
         def out = [name: cap, family: entry.family, actType: entry.actType, actSubType: subTypes, requiredFields: required, optionalFields: optional, example: example]
         if (actions) out.actions = actions
         if (conditional) out.conditionalRequired = conditional
@@ -24998,18 +24894,18 @@ Map _rmRemoveTrigger(Integer appId, Integer triggerIdx) {
             fireDeleteSequence()
         }
     }
-    throw new IllegalStateException("removeTrigger(${triggerIdx}): after the delete click, one verified re-click, and ~8s of polling, trigger ${triggerIdx} is still present in rule ${appId} (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). Recovery (verify-first, do NOT blind-retry): call hub_get_app_config(appId=${appId}) and check trigger ${triggerIdx}. If still present -> safe to call removeTrigger(index:${triggerIdx}) again. If gone -> a click committed late (rare); the removal already succeeded, do not retry. If a retry also fails, hub_restore_backup to the pre-operation snapshot. Indices shift on deletion, so retrying without this check can delete the wrong trigger.")
+    throw new IllegalStateException("removeTrigger(${triggerIdx}): trigger ${triggerIdx} is still in rule ${appId} after a re-click and ~8s (before: ${beforeIndices.sort().join(', ')}; after: ${afterIndices.sort().join(', ')}). Read the rule with hub_get_app_config(appId=${appId}) before retrying: indices shift on delete, so a late commit plus a retry removes the wrong trigger.")
 }
 private String _rmModifyTriggerNoStateMessage(Integer triggerIdx) {
     return "modifyTrigger: trigger ${triggerIdx} has no 'state' value to change -- this trigger does not expose a plain state field. Use removeTrigger + addTrigger to reconfigure it.".toString()
 }
 private String _rmModifyTriggerWizardRecoveryHint(Integer appId) {
-    return "A trigger editor may still be open. Inspect hub_get_app_config(appId=${appId}, pageName='selectTriggers', includeSettings=true) before another edit. Only if the original trigger editor remains open, close it with hub_set_rule(appId=${appId}, button='hasAll', pageName='selectTriggers', confirm=true), then verify it closed with hub_get_app_config. Do not click hasAll again if the editor already closed.".toString()
+    return "A trigger editor may still be open. Check hub_get_app_config(appId=${appId}, pageName='selectTriggers'); only if it is open, close it once with hub_set_rule(appId=${appId}, button='hasAll', pageName='selectTriggers', confirm=true).".toString()
 }
 private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     def unsupported = mods.keySet() - ["state"]
     if (unsupported) {
-        throw new IllegalArgumentException("modifyTrigger currently only supports changing the trigger's state field. Unsupported fields: ${unsupported.sort().join(', ')}. To change capability or deviceIds, use removeTrigger + addTrigger. RM is not touched.")
+        throw new IllegalArgumentException("modifyTrigger changes only a trigger's state (not ${unsupported.sort().join(', ')}); for other fields use removeTrigger + addTrigger. RM is not touched.")
     }
     if (!mods.containsKey("state")) {
         throw new IllegalArgumentException("modifyTrigger.mods must include 'state'. Supported fields: state. RM is not touched.")
@@ -25021,10 +24917,10 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     if (_rmLooksLikeStateChangeToken(mods.state)) {
         def committedCap = triggerCaps.get(triggerIdx)
         if (committedCap != null && _rmStateChangeGuardApplies(committedCap)) {
-            throw new IllegalArgumentException("modifyTrigger.mods.state:'${mods.state}' looks like a state-change comparator token, but modifyTrigger only edits a device-state trigger's value and cannot set a comparator. For a state-change trigger use removeTrigger then addTrigger with comparator:'*changed*' (or '*became*'/'*increased*'/'*decreased*'). RM is not touched.")
+            throw new IllegalArgumentException("modifyTrigger.mods.state:'${mods.state}' is a change, not a state; for a change trigger use removeTrigger + addTrigger with comparator:'*changed*'. RM is not touched.")
         }
     }
-    if (_rmTriggerCapabilityFamily(triggerCaps.get(triggerIdx)) == "time") {
+    if (_rmCondFamily(triggerCaps.get(triggerIdx)) == "time") {
         throw new IllegalArgumentException(_rmModifyTriggerNoStateMessage(triggerIdx) + " RM is not touched.")
     }
     _rmClickAppButton(appId, triggerIdx.toString(), "editCond", "selectTriggers")
@@ -25098,7 +24994,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
         verificationFetchFailed = true
         mcpLog("warn", "rm-native", "modifyAction: readback failed for app ${appId} (${verifyExc.message})")
     }
-    def deviceKeys = fieldDefs.findAll { it.type == "List<Integer>" }.collect { it.key.toString().replace("@N", actionIdx.toString()) }
+    def deviceKeys = fieldDefs.findAll { it.name == "deviceIds" }.collect { it.key.toString().replace("@N", actionIdx.toString()) }
     def mismatches = (after instanceof Map) ? writes.findAll { k, v -> !(k in deviceKeys) && !_rmSettingEchoes((after as Map)[k], v) }.keySet().toList() : []
     def orderAfter = _rmOrderedActionIndices(appId)
     def duplicates = (orderAfter == null) ? [] : orderAfter.countBy { it }.findAll { k, n -> n > 1 }.keySet().toList()
@@ -26400,11 +26296,11 @@ private String _rmSetVariableValueNumOp(Map actionSpec) {
     if (actionSpec.numOp == null) return "number"
     String capLabel = (actionSpec.capability?.toString()?.trim() == "setLocalVariable") ? "setLocalVariable" : "setVariable"
     if (actionSpec.value == null) {
-        throw new IllegalArgumentException("${capLabel}: numOp is only supported with 'value' ('number' sets the variable to value, 'add number' adds value to it). sourceVariable, fromDevice and math select their own numOp -- remove numOp. RM is not touched.")
+        throw new IllegalArgumentException("${capLabel}: numOp goes only with value ('number' sets, 'add number' adds); sourceVariable, fromDevice and math set their own. RM is not touched.")
     }
     String requested = actionSpec.numOp.toString().trim().toLowerCase()
     if (!(requested in ["number", "add number"])) {
-        throw new IllegalArgumentException("${capLabel}: numOp '${actionSpec.numOp}' is not supported with 'value'. Supported: 'number' (default, sets the variable to value) or 'add number' (adds value to its current value). To copy another variable use sourceVariable instead of numOp 'variable'; to read a device attribute use fromDevice instead of numOp 'device attribute'; for arithmetic use math instead of numOp 'variable math'. RM is not touched.")
+        throw new IllegalArgumentException("${capLabel}: numOp '${actionSpec.numOp}' does not go with value; use 'number' or 'add number', or sourceVariable, fromDevice or math instead. RM is not touched.")
     }
     return requested
 }
@@ -26601,7 +26497,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             }
             def ccap = cond.capability?.toString()?.trim()
             if (!ccap) throw new IllegalArgumentException("${cap}.expression.conditions[${i}].capability is required")
-            _rmRejectUnwalkableConditionCapability(ccap)
+            _rmCheckCondSpec(cond, "condition", "${cap}.expression.conditions[${i}]".toString())
             _rmWriteSettingOnPage(appId, "doActPage", "cond", "a", applied, null, skipped)
             actCondWizardOpen = true
             def cfg = _rmFetchConfigJson(appId, "doActPage")
@@ -26781,37 +26677,12 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         verificationFetchFailed: verificationFetchFailed
     ]
 }
-private List _rmUnsupportedDateDayConditionCaps() { ["Between two dates", "Days of week", "On a Day"] }
-private String _rmUnsupportedDateDayConditionMessage(String cap) {
-    "'${cap}' is not yet supported via the structured condition shortcut on any surface (addTrigger.condition, addRequiredExpression, or the addAction expression subtypes ifThen/elseIf/repeatWhile/waitExpression); its date/day picker is not modelled. Author it directly against the wizard via rawSettings or a walkStep call."
-}
-private String _rmChangeComparatorConditionMessage(String cap, Integer condIdx) {
-    def where = condIdx != null ? "conditions[${condIdx}]: " : ""
-    "${where}capability '${cap}' with a state-change comparator ('*changed*'/'*became*') is not valid as a condition -- conditions are evaluated point-in-time (is the state X right now?), so a change comparator has nowhere to apply. Author it as a TRIGGER row instead (addTrigger.capability with comparator:'*changed*'), where device-state change events ARE supported; for a condition, pass an explicit state (e.g. state:'on')."
-}
-private List _rmNonConditionCaps() { ["Last Event Device"] }
-private String _rmNonConditionMessage(String cap) {
-    "'${cap}' is not usable as a condition -- it references the device that fired the rule's trigger and is only meaningful in actions (e.g. run a command on the triggering device), not as a state to test in a Required Expression or condition. Remove it from the expression."
-}
-private List _rmUnconfigurableConditionCaps() { ["Lock codes"] }
-private String _rmUnconfigurableConditionMessage(String cap) {
-    "'${cap}' conditions require selecting a lock device and a specific code name, which this tool's condition path cannot set -- it would commit an incomplete, non-functional condition. Author this condition in the Rule Machine UI, or use a different testable capability."
-}
-private void _rmRejectUnwalkableConditionCapability(String requestedCap) {
-    if (!requestedCap) return
-    def dateDay = _rmUnsupportedDateDayConditionCaps().find { it.equalsIgnoreCase(requestedCap) }
-    if (dateDay) throw new IllegalArgumentException(_rmUnsupportedDateDayConditionMessage(dateDay) + " RM is not touched.")
-    def nonCond = _rmNonConditionCaps().find { it.equalsIgnoreCase(requestedCap) }
-    if (nonCond) throw new IllegalArgumentException(_rmNonConditionMessage(nonCond) + " RM is not touched.")
-    def unconfigurableCond = _rmUnconfigurableConditionCaps().find { it.equalsIgnoreCase(requestedCap) }
-    if (unconfigurableCond) throw new IllegalArgumentException(_rmUnconfigurableConditionMessage(unconfigurableCond) + " RM is not touched.")
-}
 private void _rmRejectUnwalkableExpressionConditions(Map actionSpec) {
     if (!(actionSpec?.expression instanceof Map)) return
     def conds = (actionSpec.expression as Map).conditions
     if (!(conds instanceof List)) return
     (conds as List).each { c ->
-        if (c instanceof Map) _rmRejectUnwalkableConditionCapability((c as Map).capability?.toString()?.trim())
+        if (c instanceof Map && !((c as Map).subExpression instanceof Map)) _rmCheckCondSpec(c as Map, "condition", "addAction.expression.conditions")
     }
 }
 private void _rmPrevalidateConditionList(Map exprSpec, String label) {
@@ -26829,11 +26700,8 @@ private void _rmPrevalidateConditionList(Map exprSpec, String label) {
             }
             String cap = m.capability?.toString()?.trim()
             if (!cap) throw new IllegalArgumentException("${where}.capability is required. RM is not touched.")
-            _rmRejectUnwalkableConditionCapability(cap)
-            if (_rmComparatorIsRhsOptional(m.comparator) && m.state == null && m.value == null && m.attribute == null
-                    && !"Between two times".equalsIgnoreCase(cap) && _rmStateChangeGuardApplies(cap)) {
-                throw new IllegalArgumentException(_rmChangeComparatorConditionMessage(cap, i) + " RM is not touched.")
-            }
+            _rmCheckCondSpec(m, "condition", where)
+            cap = m.capability.toString()
             if (m.compareToDevice instanceof Map) {
                 Map ctd = m.compareToDevice as Map
                 if (ctd.deviceId == null) throw new IllegalArgumentException("${where}: compareToDevice requires 'deviceId' (the reference device ID). RM is not touched.")
@@ -26850,13 +26718,10 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
     def condCap = condSpec.capability?.toString()?.trim()
     if (!condCap) throw new IllegalArgumentException("condition.capability is required")
     if (condCap.equalsIgnoreCase("Between two times")) {
-        throw new IllegalArgumentException("'Between two times' is not supported as a conditional-trigger condition (addTrigger.condition); its start/end time-picker walk is implemented only for Required Expressions (addRequiredExpression) and IF actions (addAction capability:'ifThen'). Use one of those instead. RM is not touched.")
+        throw new IllegalArgumentException("'Between two times' is not modelled as a trigger's condition; use it in addRequiredExpression or an ifThen action. RM is not touched.")
     }
-    _rmRejectUnwalkableConditionCapability(condCap)
-    if (_rmComparatorIsRhsOptional(condSpec.comparator) && condSpec.state == null && condSpec.value == null && condSpec.attribute == null
-            && _rmStateChangeGuardApplies(condCap)) {
-        throw new IllegalArgumentException(_rmChangeComparatorConditionMessage(condCap, null))
-    }
+    _rmCheckCondSpec(condSpec, "condition", "addTrigger.condition")
+    condCap = condSpec.capability?.toString() ?: condCap
     _rmWriteSettingOnPage(appId, "selectTriggers", "isCondTrig.${idx}", true, applied, null, skipped)
     _rmWriteSettingOnPage(appId, "selectTriggers", "condTrig.${idx}", "a", applied, null, skipped)
     _rmWriteSettingOnPage(appId, "selectTriggers", "rCapab_${idx}", condCap, applied, null, skipped)
@@ -26945,7 +26810,7 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
         _rmWriteSettingOnPage(appId, "selectTriggers", "isVar_${idx}", true, applied, null, skipped)
         _rmWriteSettingOnPage(appId, "selectTriggers", "xVarR_${idx}", condSpec.compareToVariable, applied, null, skipped)
         if (!(applied ?: []).contains("xVarR_${idx}".toString())) {
-            throw new IllegalStateException("condition.compareToVariable=${condSpec.compareToVariable} could not be written: xVarR_${idx} not in schema after the comparator + isVar_${idx} writes. Likely cause: condSpec.comparator='${condSpec.comparator}' didn't advance the wizard. Verify the comparator is one of: =, ≠ (or !=), <, >, <=, >=, in.")
+            throw new IllegalStateException("condition.compareToVariable=${condSpec.compareToVariable} could not be written: xVarR_${idx} did not appear after comparator '${condSpec.comparator}'; use one of = ≠ < > <= >= in.")
         }
     }
     def stateValue = condSpec.state != null ? condSpec.state : condSpec.value
@@ -27392,7 +27257,8 @@ Map _rmWalkStep(Integer appId, Map spec) {
     }
     def health = (walkCache != null && operation in ["write", "click", "navigate", "done"]) ?
         _rmEmptyHealthVerdict(ok: true, skipped: true, source: "deferred", note: "health probe deferred to the end of the drive (wizard in progress)") :
-        _rmWalkStepHealth(appId, spec?.__reqT0 as Long, (operation == "navigate" && spec?.navigate instanceof Map) ? (((Map) spec.navigate).targetPage?.toString() ?: page) : page)
+        _rmWalkStepHealth(appId, spec?.__reqT0 as Long, spec?.__activePage != true ? null :
+            ((operation == "navigate" && spec?.navigate instanceof Map) ? (((Map) spec.navigate).targetPage?.toString() ?: page) : page))
     def silentRejection = (operation == "write") &&
         appeared.isEmpty() && disappeared.isEmpty() &&
         valueEcho?.match == false
@@ -27540,6 +27406,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
         }
         def step = new LinkedHashMap((Map) rawStep)
         if (spec?.__reqT0 != null) step.__reqT0 = spec.__reqT0
+        if (spec?.__activePage == true) step.__activePage = true
         step.__pageCache = driveWalkCache
         def stepOp = step.operation?.toString()?.trim() ?: "introspect"
         if (!step.page && currentPage) step.page = currentPage
@@ -27582,7 +27449,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
             if (stopOnError) break
         }
     }
-    def finalHealth = _rmWalkStepHealth(appId, spec?.__reqT0 as Long, currentPage)
+    def finalHealth = _rmWalkStepHealth(appId, spec?.__reqT0 as Long, spec?.__activePage == true ? currentPage : null)
     if (pausedAtStep != null) {
         return [
             success: true,
@@ -27986,13 +27853,12 @@ Map _setRuleFromEnvelope(Map env) {
     if (op == 'discover') {
         def kindRaw = (payload instanceof Map) ? (payload.kind ?: payload.operation) : null
         def kind = kindRaw != null ? kindRaw.toString().toLowerCase().replaceFirst(/^add/, '') : 'action'
-        if (kind != 'trigger' && kind != 'action') {
-            throw new IllegalArgumentException("hub_set_rule operation='discover': args.kind must be 'trigger' or 'action' (got '${kindRaw}').")
+        if (!(kind in ['trigger', 'action', 'condition'])) {
+            throw new IllegalArgumentException("hub_set_rule operation='discover': args.kind must be 'action', 'trigger' or 'condition' (got '${kindRaw}').")
         }
-        def kn = (kind == 'trigger') ? 'addTrigger' : 'addAction'
-        def selector = (kind == 'action' && payload instanceof Map && payload.capability != null) ?
-            [capability: payload.capability, action: payload.action] : true
-        return [args: [(kn): [discover: selector]]]
+        def cap = (payload instanceof Map) ? payload.capability : null
+        if (kind == 'action') return [args: [addAction: [discover: cap != null ? [capability: cap, action: payload.action] : true]]]
+        return [args: [addTrigger: [discover: (cap != null || kind == 'condition') ? [kind: kind, capability: cap] : true]]]
     }
     if (env.confirm != true) {
         return [_schema: _setRuleOperationSchema(op)]
@@ -28109,7 +27975,7 @@ def toolSetRule(args) {
         if (args?.addRequiredExpression instanceof Map) createArgs.requiredExpression = args.addRequiredExpression
         return _rmStampOutcome(_createNativeAppShell(createArgs))
     }
-    return _rmStampOutcome(_applyNativeAppEdit(args))
+    return _rmStampOutcome(_applyNativeAppEdit(args instanceof Map ? (new LinkedHashMap(args) + [__rmRule: true]) : args))
 }
 Map _rmStampOutcome(Object result) {
     if (!(result instanceof Map) || !(result as Map).containsKey("success")) return result as Map
@@ -28515,7 +28381,7 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
             value: value,
             settingsApplied: applied,
             settingsSkipped: skipped,
-            error: "Variable '${name}' did not commit -- state.allLocalVars does not contain it. Common cause: value type mismatch (e.g. writing a string for a Number-type variable). Verify the value matches the declared type.",
+            error: "Variable '${name}' did not commit; check that the value matches the variable's type.",
             repairHints: [
                 "Check the value's type against varType — Number/Decimal want numeric, String wants text, Boolean wants true/false, DateTime wants an ISO-style timestamp.",
                 "Inspect via /installedapp/statusJson/<appId> appState.allLocalVars to see what's currently there."
@@ -28535,7 +28401,7 @@ private Map _rmRemoveLocalVariable(Integer appId, String varName) {
     def name = varName?.toString()?.trim()
     if (!name) throw new IllegalArgumentException("removeLocalVariable.name is required")
     if (name =~ /[\[\]&=]/ || !(name ==~ /\p{ASCII}+/)) {
-        throw new IllegalArgumentException("removeLocalVariable: variable name '${name}' contains characters that are not valid in a Rule Machine local-variable name (no [, ], &, = or non-ASCII characters). Check the name via hub_list_rule_local_variables.")
+        throw new IllegalArgumentException("removeLocalVariable: '${name}' cannot be a Rule Machine local-variable name ([, ], &, = and non-ASCII are not allowed); see hub_list_rule_local_variables.")
     }
     def preRead = _rmReadLocalVarsMap(appId)
     def localVarsBefore = preRead.vars
@@ -28594,7 +28460,7 @@ private Map _rmRemoveLocalVariable(Integer appId, String varName) {
         def error
         def repairHints
         if (readMayHaveSucceeded) {
-            error = "Local variable '${name}' could not be confirmed deleted -- every verify read of state.allLocalVars failed (last error: ${lastFetchErr}). The delete may have succeeded; the verify read did not complete."
+            error = "Local variable '${name}' could not be confirmed deleted: every read back failed (${lastFetchErr}). Check hub_list_rule_local_variables before deleting again."
             repairHints = [
                 "Re-check whether '${name}' is gone via hub_list_rule_local_variables -- the delete may already have committed.",
                 "If it is still present, the delete wizard may have been rejected; remove any expression/condition that references '${name}' and retry."
@@ -29074,7 +28940,7 @@ private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map acti
         }
         if (!xVarMatches) {
             def visibleNames = srcInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
-            throw new IllegalArgumentException("${capLbl}: source-variable field was not revealed after writing ${copyOp == 'valStringOp' ? 'valStringOp=Copy variable' : 'numOp=variable'} for action ${idx} -- hub may not support copy-from-variable at this action position. Expected a field matching xVar<digits>.${idx}. Visible fields: ${visibleNames}")
+            throw new IllegalArgumentException("${capLbl}: the source-variable field (xVar<n>.${idx}) did not appear after ${copyOp == 'valStringOp' ? 'valStringOp=Copy variable' : 'numOp=variable'} on action ${idx}. Visible fields: ${visibleNames}")
         }
         if (xVarMatches.size() > 1) {
             def allNames = xVarMatches.collect { it?.name?.toString() }.join(', ')
@@ -29106,10 +28972,10 @@ private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map acti
         _rmWriteSettingOnPage(appId, "doActPage", customDevField, [fdDeviceId], applied, null, skipped)
         def tCustomAttrField = "tCustomAttr.${idx}".toString()
         def tCustomAttrInput = _rmRevealedInputOrThrow(appId, tCustomAttrField,
-            "attribute enum '${tCustomAttrField}' was not revealed after writing device '${fdDeviceId}' for action ${idx} -- the device id may not be in RM's picker (RM's customDev picker spans all hub devices; confirm the id exists).")
+            "The attribute picker '${tCustomAttrField}' did not appear after device '${fdDeviceId}' on action ${idx}; check that the device exists.")
         def attrOpts = _rmReadPickerOptionStrings(tCustomAttrInput)
         if (attrOpts == null || attrOpts.isEmpty()) {
-            throw new IllegalArgumentException("${capLbl}: revealed attribute enum '${tCustomAttrField}' has no enumerable options -- cannot validate attribute '${fdAttr}'. Device '${fdDeviceId}' may expose no readable attributes at this action position.")
+            throw new IllegalArgumentException("${capLbl}: the attribute picker '${tCustomAttrField}' lists nothing for device '${fdDeviceId}', so '${fdAttr}' cannot be checked.")
         }
         def canonicalAttr = attrOpts.find { it?.equalsIgnoreCase(fdAttr) }
         if (canonicalAttr == null) {
@@ -29139,7 +29005,7 @@ private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map acti
         def valMathOpInput = mInputs.find { it?.name?.toString() == valMathOpField }
         if (!xVar3Input || !valMathOpInput) {
             def visibleNames = mInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none -- schema returned empty)"
-            throw new IllegalArgumentException("${capLbl}: variable-math operand/operator fields ('${xVar3Field}' + '${valMathOpField}') were not revealed after writing numOp=variable math for action ${idx} -- hub may not support variable math at this action position. Visible fields: ${visibleNames}")
+            throw new IllegalArgumentException("${capLbl}: the variable-math fields ('${xVar3Field}', '${valMathOpField}') did not appear on action ${idx}. Visible fields: ${visibleNames}")
         }
         assertInEnum(valMathOpField, valMathOpInput, m.op.toString(), "operator")
         _rmWriteMathOperand(appId, idx, m.left, xVar3Field, "valConst.${idx}".toString(),
@@ -29205,45 +29071,13 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     def discoverField = { Integer aId, String pg, String pattern ->
         return _rmRevealStep(aId, pg, pattern, {}, cache)
     }
-    def DISCRETE_EVENT_CAPS = [
-        "Water sensor":                ["wet", "dry"],
-        "Smoke detector":              ["detected", "clear"],
-        "Carbon monoxide detector":    ["detected", "clear"],
-        "Tamper alert":                ["detected", "clear"],
-        "Acceleration":                ["active", "inactive"]
-    ]
-    def discreteValid = DISCRETE_EVENT_CAPS.get(capCanonical)
-    if (discreteValid != null && cond.comparator != null && !_rmComparatorIsRhsOptional(cond.comparator)
-            && cond.state == null && cond.value == null) {
+    try {
+        _rmCheckCondSpec(cond, "condition", "conditions[${condIdx}]".toString())
+    } catch (IllegalArgumentException refused) {
         cancelInFlightCond()
-        def validValues = discreteValid.collect { "'${it}'" }.join(" or ")
-        throw new IllegalArgumentException("conditions[${condIdx}]: ${capCanonical} is a discrete-event capability -- pass state: ${validValues} instead of a comparator+value pair. The comparator-without-value shape silently degrades on RM 5.1 (no broken marker, but the condition is functionally meaningless). See rCapab_<N> capability list for the full state-value table.")
+        throw refused
     }
-    def COMPARETODEVICE_UNSUPPORTED_CAPS = ["Mode", "Between two times", "Variable", "Custom Attribute"] as Set
-    if (cond.compareToDevice != null && (capCanonical in COMPARETODEVICE_UNSUPPORTED_CAPS)) {
-        cancelInFlightCond()
-        throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice (device-relative RHS) is only supported with numeric device capabilities (e.g. Temperature, Humidity, Illuminance); capability '${capCanonical}' does not support it. Capabilities with dedicated handling instead: Mode, Between two times, Variable, Custom Attribute.")
-    }
-    def unsupportedDateDay = _rmUnsupportedDateDayConditionCaps().find { it.equalsIgnoreCase(capCanonical) }
-    if (unsupportedDateDay) {
-        cancelInFlightCond()
-        throw new IllegalArgumentException("conditions[${condIdx}]: " + _rmUnsupportedDateDayConditionMessage(unsupportedDateDay))
-    }
-    def nonCond = _rmNonConditionCaps().find { it.equalsIgnoreCase(capCanonical) }
-    if (nonCond) {
-        cancelInFlightCond()
-        throw new IllegalArgumentException("conditions[${condIdx}]: " + _rmNonConditionMessage(nonCond))
-    }
-    def unconfigurableCond = _rmUnconfigurableConditionCaps().find { it.equalsIgnoreCase(capCanonical) }
-    if (unconfigurableCond) {
-        cancelInFlightCond()
-        throw new IllegalArgumentException("conditions[${condIdx}]: " + _rmUnconfigurableConditionMessage(unconfigurableCond))
-    }
-    if (_rmComparatorIsRhsOptional(cond.comparator) && cond.state == null && cond.value == null && cond.attribute == null && !"Between two times".equalsIgnoreCase(capCanonical)
-            && _rmStateChangeGuardApplies(capCanonical)) {
-        cancelInFlightCond()
-        throw new IllegalArgumentException(_rmChangeComparatorConditionMessage(capCanonical, condIdx))
-    }
+    capCanonical = cond.capability?.toString() ?: capCanonical
     if (capCanonical == "Mode") {
         def modeIdsToWrite
         if (cond.modeIds != null) {
@@ -29436,7 +29270,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             boolean trueFalseOptions = stateOptions && stateOptions.every { it?.toString()?.toLowerCase() in ["true", "false"] }
             if (stateOptions && !trueFalseOptions) {
                 cancelInFlightCond()
-                throw new IllegalStateException("conditions[${condIdx}]: Variable: state_${cIdx} offers ${stateOptions} rather than true/false and no comparator field (RelrDev_${cIdx}) was revealed, so '${varName}' is neither a Boolean nor a comparison slot. Visible fields: ${relrReveal.visibleNames?.join(', ') ?: '(none)'}")
+                throw new IllegalStateException("conditions[${condIdx}]: Variable '${varName}': state_${cIdx} offers ${stateOptions} and no comparator (RelrDev_${cIdx}) appeared, so it is neither a Boolean nor a comparison. Visible fields: ${relrReveal.visibleNames?.join(', ') ?: '(none)'}")
             }
             if (relrReveal.fallbackToExisting && !trueFalseOptions) {
                 cancelInFlightCond()
@@ -29447,7 +29281,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
                 def echoed = varEcho?.value != null ? varEcho.value : varEcho?.currentValue
                 if (echoed?.toString() != varName) {
                     cancelInFlightCond()
-                    throw new IllegalStateException("conditions[${condIdx}]: Variable: ambiguous schema -- state_${cIdx} was present before '${varName}' was selected and the picker '${varPickerField}' does not echo it (got '${echoed}'). Refusing to guess between a Boolean value field and a leftover slot.")
+                    throw new IllegalStateException("conditions[${condIdx}]: Variable '${varName}': '${varPickerField}' did not echo the selection (got '${echoed}') and state_${cIdx} was already present, so the value field cannot be told apart from a leftover one.")
                 }
             }
             if (cond.compareToVariable != null) {
@@ -29496,7 +29330,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             if (!rhsVarReveal.input) {
                 cancelInFlightCond()
                 def visible = rhsVarReveal.visibleNames?.join(', ') ?: "(none)"
-                throw new IllegalStateException("conditions[${condIdx}]: Variable: right-hand variable picker not revealed after isVar_<N>=true (compareToVariable='${rhsVarName}'). Without it the condition would render '${varName} ${cond.comparator} 0' (numeric default) instead of variable-vs-variable. Visible fields: ${visible}")
+                throw new IllegalStateException("conditions[${condIdx}]: Variable: the right-hand variable picker did not appear after isVar_<N>=true (compareToVariable='${rhsVarName}'). Visible fields: ${visible}")
             }
             def rhsVarField = rhsVarReveal.input.name.toString()
             def rhsOpts = _rmReadPickerOptionStrings(rhsVarReveal.input)
@@ -29532,7 +29366,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         def comparatorIsRhsOptional = _rmComparatorIsRhsOptional(normalizedComparator)
         if (condStateOrValue == null && !comparatorIsRhsOptional) {
             cancelInFlightCond()
-            throw new IllegalArgumentException("conditions[${condIdx}]: Variable: comparator '${cond.comparator}' requires an RHS value, but neither 'state' nor 'value' was provided. Without an RHS, RM renders the comparator against the field default (0). Either supply 'value: <constant>' / 'state: <variableName>' or use a state-change comparator ('*changed*' / '*became*').")
+            throw new IllegalArgumentException("conditions[${condIdx}]: Variable: comparator '${cond.comparator}' needs a value (or compareToVariable).")
         }
         if (condStateOrValue != null) {
             writeST(hrefParams, stateKey, condStateOrValue)
@@ -29549,11 +29383,11 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
     if (capCanonical == "Custom Attribute") {
         if (cond.attribute != null && cond.comparator == null) {
             cancelInFlightCond()
-            throw new IllegalArgumentException("conditions[${condIdx}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got attribute='${cond.attribute}' but comparator was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
+            throw new IllegalArgumentException("conditions[${condIdx}]: a Custom Attribute condition needs both attribute and comparator (comparator missing).")
         }
         if (cond.comparator != null && cond.attribute == null) {
             cancelInFlightCond()
-            throw new IllegalArgumentException("conditions[${condIdx}]: Custom Attribute condition requires both 'attribute' (e.g. 'water') AND 'comparator' (e.g. '=' / '!='). Got comparator='${cond.comparator}' but attribute was not provided. RM 5.1's wizard renders the condition without these values silently if either is missing.")
+            throw new IllegalArgumentException("conditions[${condIdx}]: a Custom Attribute condition needs both attribute and comparator (attribute missing).")
         }
         writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
         if (cond.deviceIds != null) {
@@ -29625,7 +29459,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             } else {
                 cancelInFlightCond()
                 def visible = relrReveal.visibleNames?.join(', ') ?: "(none)"
-                throw new IllegalStateException("conditions[${condIdx}]: Custom Attribute: neither RelrDev_<N> (comparator) nor state_<N> (enum value picker) revealed after rCustomAttr_<N> write (app ${appId}, page ${page}). Visible fields: ${visible}")
+                throw new IllegalStateException("conditions[${condIdx}]: Custom Attribute: neither a comparator (RelrDev_<N>) nor a value picker (state_<N>) appeared after the attribute (app ${appId}, page ${page}). Visible fields: ${visible}")
             }
         } else if (cond.attribute != null) {
             writeST(hrefParams, "rCustomAttr_${cIdx}".toString(), cond.attribute)
@@ -29651,7 +29485,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         }
         if (cond.comparator == null) {
             cancelInFlightCond()
-            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice requires 'comparator' (e.g. '>', '<', '=') -- a device RHS needs an operator. Without it the condition writes the capability and device but no comparison and renders incomplete.")
+            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice needs a comparator.")
         }
         if (cond.state != null || cond.value != null) {
             cancelInFlightCond()
@@ -29659,7 +29493,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         }
         if (cond.compareToVariable != null) {
             cancelInFlightCond()
-            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice (device-relative RHS) cannot be combined with 'compareToVariable' (variable RHS) -- mutually exclusive; either remove compareToVariable (keep compareToDevice) or remove compareToDevice (keep compareToVariable).")
+            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice and compareToVariable cannot both be set.")
         }
         def refDevId = ctd.deviceId.toString()
         writeST(hrefParams, "rCapab_${cIdx}".toString(), capCanonical)
@@ -29676,7 +29510,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (!relrInput) {
             cancelInFlightCond()
             def visible = afterBaseInputs.collect { it?.name?.toString() }.findAll { it }.join(', ') ?: "(none)"
-            throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: RelrDev_<N> not visible after rCapab/rDev/rCustomAttr writes. Visible fields: ${visible} (compareToDevice is only supported on numeric device capabilities; '${capCanonical}' does not render a comparator).")
+            throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: no comparator (RelrDev_<N>) appeared for '${capCanonical}'. Visible fields: ${visible}")
         }
         def normalizedComparator = _rmNormalizeComparator(cond.comparator.toString())
         def isDevKey = "isDev_${cIdx}".toString()
@@ -29687,7 +29521,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (!relDeviceReveal.input) {
             cancelInFlightCond()
             def visible = relDeviceReveal.visibleNames?.join(', ') ?: "(none)"
-            throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: reference-device picker relDevice_<N> not revealed after isDev_<N>=true. Without it the condition would render against a literal value (numeric default) instead of device-relative. Visible fields: ${visible}")
+            throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: the reference-device picker (relDevice_<N>) did not appear after isDev_<N>=true. Visible fields: ${visible}")
         }
         def relDeviceField = relDeviceReveal.input.name.toString()
         def relOptsRaw = relDeviceReveal.input.options
@@ -29702,7 +29536,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         if (relOpts && !relOpts.any { it == refDevId }) {
             cancelInFlightCond()
             def availLabel = relOpts.size() == 1 ? "Available device id" : "Available device ids"
-            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice: reference device '${refDevId}' is not in the relDevice_<N> picker -- the picker is locked to the LHS capability '${capCanonical}', so the reference device must carry that capability. ${availLabel}: ${relOpts.sort().join(', ')}")
+            throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice: device '${refDevId}' is not in the reference picker, which lists only '${capCanonical}' devices. ${availLabel}: ${relOpts.sort().join(', ')}")
         }
         writeST(hrefParams, relDeviceField, refDevId)
         if (ctd.offset != null) {
@@ -29711,7 +29545,7 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             if (offsetReveal.input && offsetReveal.input.name?.toString() == stateKey) {
                 writeST(hrefParams, stateKey, ctd.offset)
             } else {
-                mcpLog("warn", "rm-native", "conditions[${condIdx}] (slot ${cIdx}): compareToDevice: offset field ${stateKey} not visible after reference-device write (firmware may not expose the offset slot for this capability); offset=${ctd.offset} dropped")
+                mcpLog("warn", "rm-native", "conditions[${condIdx}] (slot ${cIdx}): compareToDevice: no offset field (${stateKey}) after the reference device; offset=${ctd.offset} was not written")
                 if (skippedAccum != null) {
                     skippedAccum << [key: "compareToDevice", reason: "offset_field_not_revealed", condIdx: condIdx, offset: ctd.offset]
                 }
@@ -30016,7 +29850,7 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec) {
         if (_rmIsCommittedRETell(preNames, true)) {
             return [
                 success: false,
-                error: "A Required Expression already exists on this rule (app ${appId}). To change it, use replaceRequiredExpression (replaces it in place). To remove it, delete the existing RE in the Rule Machine UI (or hub_restore_backup to a pre-RE snapshot) then re-run addRequiredExpression. Inspect the current expression via hub_get_app_config(appId=${appId}, includeSettings=true).",
+                error: "Rule ${appId} already has a Required Expression; change it with replaceRequiredExpression (see it with hub_get_app_config(appId=${appId}, includeSettings=true)).",
                 requiredExpressionAlreadyExists: true
             ]
         }
@@ -30074,7 +29908,7 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec) {
                 if (!cap) {
                     throw new IllegalArgumentException("conditions[${i}].capability is required")
                 }
-                _rmRejectUnwalkableConditionCapability(cap)
+                _rmCheckCondSpec(cond as Map, "condition", "conditions[${i}]".toString())
                 writeST(hrefParams, "cond", "a", "cond")
                 cancelledByWalker = false
                 try {
@@ -30129,7 +29963,7 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec) {
             conditionIndices: conditionIndices,
             settingsApplied: applied,
             settingsSkipped: skipped,
-            error: "Post-commit verification fetch failed (hub may be under load or session expired). The Required Expression write commands were sent but the result cannot be confirmed. Retry hub_get_app_config(appId=${appId}) -- if the expression paragraph appears, the operation succeeded; if not, re-run addRequiredExpression or hub_restore_backup."
+            error: "The Required Expression was written but could not be read back; check it with hub_get_app_config(appId=${appId}) before retrying."
         ]
     }
     def mainParagraphs = (mainCfg?.configPage?.sections ?: []).collectMany { sect ->
@@ -30146,11 +29980,11 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec) {
             conditionIndices: conditionIndices,
             settingsApplied: applied,
             settingsSkipped: skipped,
-            error: "Required Expression did not bake -- mainPage still shows 'Define Required Expression' placeholder. Common causes: unknown deviceIds (verify via hub_list_devices), state value not in capability's enum (e.g. 'on' is invalid for Motion which uses 'active'/'inactive'), or capability/state mismatch.",
+            error: "The Required Expression did not bake: the rule still shows none. Check the condition fields with discover (kind:'condition') and the deviceIds with hub_list_devices.",
             repairHints: [
                 "Verify every deviceIds entry exists via hub_list_devices.",
                 "Verify the 'state' value matches the capability's domain (Switch: 'on'/'off', Motion: 'active'/'inactive', Contact: 'open'/'closed', Lock: 'locked'/'unlocked', etc.).",
-                "Inspect the rule's actual state via hub_get_app_config(appId, includeSettings=true) — settings.rDev_<N> = {<id>: null} indicates the device wasn't resolved; settings.rCapab_<N> absent means the condition slot wasn't committed. Note: 'cond' is an ephemeral wizard selector (value 'a'/'b') and is NOT present in appSettings after commit -- conditions live in rCapab_N/rDev_N/state_N only."
+                "Read the rule with hub_get_app_config(appId, includeSettings=true): rDev_<N> = {<id>: null} means the device did not resolve; no rCapab_<N> means the condition was not committed."
             ]
         ]
     }
@@ -30170,12 +30004,12 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec) {
             def uniqueCondIdxs = lostEntries.collect { it.condIdx }.findAll { it != null }.unique().size()
             def deg = uniqueCondIdxs > 0 ? uniqueCondIdxs : lostEntries.size()
             def cw = (deg == 1) ? "condition" : "conditions"
-            reRepairHints << "${deg} ${cw} used a degraded write path (e.g. comparator_force_write_failed or offset_field_not_revealed; see settingsSkipped entries with 'reason'). Re-add the affected field(s) via hub_set_rule(walkStep={page:'STPage', operation:'introspect'}) to see the live schema, then write them one at a time -- or rebuild the expression. Verify first via hub_get_app_config(appId, includeSettings=true): if the expression paragraph renders correctly, the partial flag is cosmetic and no repair is needed."
+            reRepairHints << "${deg} ${cw} did not fully land (see each settingsSkipped reason). If the expression renders right in hub_get_app_config(appId), nothing is missing; otherwise replace it with replaceRequiredExpression."
         }
         if (!forceWrittenKeys.isEmpty()) {
             def cmpWord = forceWrittenKeys.size() == 1 ? "Comparator" : "Comparators"
             def cmpVerb = forceWrittenKeys.size() == 1 ? "was" : "were"
-            reRepairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} force-written via a degraded path after a transient re-fetch failure -- the value IS in settingsApplied and success stays true, but it could not be schema-confirmed. Verify via hub_get_app_config(appId): if the expression paragraph renders the comparator correctly, the partial flag is cosmetic. Do NOT re-write -- only re-add via hub_set_rule(walkStep={...}) if the paragraph shows the comparator missing."
+            reRepairHints << "${cmpWord} ${forceWrittenKeys.join(', ')} ${cmpVerb} written but could not be read back; check the expression in hub_get_app_config(appId) before writing again."
         }
         def notRepresentable = degEntries.findAll { it.reason in _rmUnrepresentedComparatorReasons() }
         notRepresentable.each { sk ->
@@ -30190,7 +30024,7 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec) {
             repairHints: reRepairHints
         ]
         if (notRepresentable) {
-            out.error = "addRequiredExpression: condition ${notRepresentable.collect { it.condIdx != null ? it.condIdx + 1 : '?' }.join(', ')} asks for a comparator Rule Machine cannot express on that attribute; the expression was committed without it. Replace it (replaceRequiredExpression) with a condition RM offers, or restore the pre-write backup.".toString()
+            out.error = "addRequiredExpression: condition ${notRepresentable.collect { it.condIdx != null ? it.condIdx + 1 : '?' }.join(', ')} asks for a comparator Rule Machine does not offer there, and was committed without it. Replace the expression (replaceRequiredExpression) or restore the backup.".toString()
         }
         return out
     }
@@ -30249,7 +30083,7 @@ private Map _rmFinalizeRequiredExpressionWrite(Integer appId, Map innerResult, M
     def reCondCount = innerResult?.conditionIndices?.size() ?: 0
     def repairHints = (innerResult?.repairHints as List) ?: []
     if (updateRuleFailed) {
-        repairHints = repairHints + ["updateRule click was rejected after the expression conditions wrote successfully. The condition slots are baked but the rule will not re-evaluate the gate until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
+        repairHints = repairHints + ["The expression is written but updateRule was rejected, so the rule does not use it yet; retry hub_set_rule(button='updateRule', confirm=true)."]
     }
     def baselineHealth = (finalizeOpts?.baselineHealth instanceof Map) ? (finalizeOpts.baselineHealth as Map) : null
     def newHealthIssues = _rmHealthRegressionNewIssues(baselineHealth, health)
@@ -30447,7 +30281,7 @@ private Map _rmRevertRequiredExpression(Integer appId, List origTokens, String e
     }
     mcpLog("error", "rm-native", "replaceRequiredExpression: rollback of app ${appId} failed (${r.error}): ${errMsg}")
     return carry + [requiredExpressionRestored: false, originalPreserved: false, partial: true,
-        error: "${errMsg} Putting the original Required Expression back ALSO failed (${r.error}); the rule may be left without its gate. Inspect it with hub_get_app_config(appId=${appId}) and rebuild it with addRequiredExpression if it is gone."]
+        error: "${errMsg} Putting the original Required Expression back also failed (${r.error}); check the rule with hub_get_app_config(appId=${appId}) and rebuild it with addRequiredExpression if it is gone."]
 }
 private Map _rmConditionTexts(Map state) {
     def out = [:]
@@ -30858,7 +30692,7 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Map backup
         if (item.cond != null) {
             def cap = (item.cond as Map).capability?.toString()?.trim()
             if (!cap) throw new IllegalArgumentException("replaceRequiredExpression: every condition needs a capability")
-            _rmRejectUnwalkableConditionCapability(cap)
+            _rmCheckCondSpec(item.cond as Map, "condition", "replaceRequiredExpression")
         }
     }
     def preNames
@@ -30868,14 +30702,14 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Map backup
         return [
             success: false,
             originalPreserved: true,
-            error: "replaceRequiredExpression: could not read STPage to confirm an existing Required Expression for app ${appId} (${preExc.message ?: preExc}). The hub may be under load or the session expired -- retry, or inspect via hub_get_app_config(appId=${appId}, includeSettings=true)."
+            error: "replaceRequiredExpression: STPage could not be read for app ${appId} (${preExc.message ?: preExc}); retry, or check the rule with hub_get_app_config(appId=${appId})."
         ]
     }
     if (!_rmIsCommittedRETell(preNames)) {
         return [
             success: false,
             requiredExpressionMissing: true,
-            error: "replaceRequiredExpression: no committed Required Expression to replace on app ${appId}. Use addRequiredExpression to create one. Inspect the current expression via hub_get_app_config(appId=${appId}, includeSettings=true)."
+            error: "replaceRequiredExpression: rule ${appId} has no Required Expression; create one with addRequiredExpression."
         ]
     }
     def origTokens = _rmReadExpressionTokens(appId)
@@ -30942,7 +30776,7 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Map backup
             out.error = "replaceRequiredExpression: ${why} The original Required Expression was left in place (nothing was replaced)."
         } else {
             out.partial = true
-            out.error = "replaceRequiredExpression: ${why} Backing out of the edit could not be confirmed -- the original Required Expression may not be intact. Inspect it with hub_get_app_config(appId=${appId}) before anything else, and rebuild it with addRequiredExpression if it is gone."
+            out.error = "replaceRequiredExpression: ${why} Backing out could not be confirmed; check the original expression with hub_get_app_config(appId=${appId}) and rebuild it with addRequiredExpression if it is gone."
         }
         return out
     }
@@ -31321,14 +31155,15 @@ def _applyNativeAppEdit(args) {
         (modifyActionSpec ? "pre-modifyAction" :
         (walkStepSpec ? "pre-walkStep" : "pre-update"))))))))))))))))
     String wsPage = (walkStepSpec instanceof Map) ? ((walkStepSpec.page ?: ((walkStepSpec.steps instanceof List && walkStepSpec.steps) ? (walkStepSpec.steps[0] instanceof Map ? walkStepSpec.steps[0].page : null) : null))?.toString()) : null
-    if (wsPage && _ruleCompiledState(appId)?.ruleFormat == "rm") wsPage = null
+    if (wsPage && (args?.__rmRule == true || _ruleCompiledState(appId)?.ruleFormat == "rm")) wsPage = null
     def backup = wsPage ? _rmBackupBeforeEdit(appId, backupReason, wsPage) : _rmBackupBeforeEdit(appId, backupReason)
     if (walkStepSpec) {
         try {
             def wsSpec = walkStepSpec
-            if (args?.__reqT0 != null) {
+            if (args?.__reqT0 != null || wsPage) {
                 wsSpec = new LinkedHashMap(walkStepSpec)
-                wsSpec.__reqT0 = args.__reqT0
+                if (args?.__reqT0 != null) wsSpec.__reqT0 = args.__reqT0
+                if (wsPage) wsSpec.__activePage = true
             }
             def result = _rmWalkStep(appId, wsSpec)
             result.appId = appId
@@ -40867,110 +40702,17 @@ To READ a rule's current configuration -- before an edit to discover the right i
 
 Each edit response includes the File Manager baseline under `backup.backupKey`. By default the newest same-rule baseline is reused for one hour, so a sequence of small edits does not upload the same rule before every call. Restoring it returns the rule to the baseline timestamp and undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for strict per-write snapshots. Deletes and a standalone Required Expression replacement remain fresh regardless.
 
-### `addTrigger` capability families
+### Shapes come from discover
 
-- **Device-state** (Switch / Motion / Contact / Lock / Garage / Door / Valve / Window Shade / Presence / Power source): `capability`, `deviceIds`, `state` (`'on'`, `'active'`, `'open'`, `'unlocked'`, etc.). To fire on ANY change of the attribute (not one specific value) pass `comparator:'*changed*'` and OMIT `state`: a device-state trigger has no separate comparator field, so the change token rides the value picker (`tstate<N>`); RM renders it as "<device>(<current value>) turns *changed*", e.g. "Porch(off) turns *changed*". A bare change token in `state` (`state:'changed'`) is rejected fail-loud, steering you to `comparator:'*changed*'`.
-- **Multi-device "all of these"**: add `allOfThese=true` to the device-state spec
-- **Numeric** (Temperature / Humidity / Battery / Illuminance / Power / Energy / CO2 / Dimmer / Thermostat setpoints): `capability`, `deviceIds`, `comparator` (`=`, `<`, `>`, `<=`, `>=`, `*changed*`), `value`
-- **Button** (`capability='Button'`): `deviceIds`, `buttonNumber`, `state` (`pushed` | `held` | `doubleTapped` | `released`)
-- **Custom Attribute** (`capability='Custom Attribute'`): `deviceIds`, `attribute` (the attribute name), `comparator`, `value`
-- **And-stays sticky modifier** (any device-state or numeric trigger): add `andStays={hours, minutes, seconds}` to the spec
-- **Conditional trigger**: add `condition={capability, deviceIds?, state?, comparator?, value?, attribute?, variable?, compareToVariable?, not?, rawSettings?}` to a trigger spec. The trigger then fires only while that condition holds. A singular `deviceId` is accepted. The supported shapes are narrower than for Required Expressions (see "Extended per-capability spec shapes" below).
+Trigger, condition and action fields are served, not written here: `hub_set_rule(operation:'discover', args:{kind:'trigger'|'condition'|'action', capability?, action?})`. Without `capability` it lists every capability Rule Machine has for that kind; with one it returns that capability's required and optional fields, Rule Machine's attribute, default state and device picker, and an example. Capability names are Rule Machine's own (any case). Rule Machine offers a capability only when the hub has something for it (a device with that capability, Safety Monitor, rules), and a value its live picker does not list is refused with the picker's list. What the schema cannot carry:
 
-- **Time / Sunrise / Sunset** (`capability='Certain Time (and optional date)'`): `time` (`'A specific time'` | `'Sunrise'` | `'Sunset'`), `atTime`, `offset` (minutes, for sunrise/sunset)
-  - `atTime` semantic: `'HH:mm'` form (e.g. `'17:00'`) = **DAILY-recurring** trigger that fires every day at that wall-clock time. Full ISO datetime (e.g. `'2026-04-29T17:00:00'` or `'2026-04-29T17:00:00.000-0500'`) = **ONE-SHOT dated** trigger that fires once on that specific date. Forms without timezone are auto-normalized to hub local tz; explicit-offset and Zulu forms are normalized to UTC equivalent.
-- **Mode** (`capability='Mode'`): `state='Night'` OR `state=['Away','Night']` (mode names, case-insensitive) OR `modeIds=['3']` OR `modeIds=['3','5']` (IDs directly, from `hub_list_modes`).
-  - **IMPORTANT:** writes `modesX<N>` internally — do NOT pass `tstate` or `rawSettings.tstate` for Mode triggers (silently ignored; renders as Broken Trigger). Use `hub_list_modes` to list valid mode names/IDs.
-- **Periodic Schedule** (`capability='Periodic Schedule'`): recurring schedule via the dedicated periodic sub-page. Spec:
-  ```
-  periodic={
-    frequency: 'Seconds'|'Minutes'|'Hourly'|'Daily'|'Weekly'|'Monthly'|'Yearly'|'Cron String',
-    everyN: <int>,                 // "every N <unit>" mode (Seconds/Minutes/Hourly/Daily)
-                                   //   REQUIRED even when =1 for Daily AND Hourly (omitting renders null)
-                                   //   Seconds/Minutes: whole number from [1,2,3,4,5,6,10,12,15,20,30] (firmware-imposed; Hourly/Daily accept any positive integer; fractional truncates, 5.5->5)
-    startingTime: 'HH:mm',         // start-time (Hourly/Daily/Weekly/Monthly/Yearly; Seconds has none); for Hourly-everyN, pass it (omitting renders a cosmetic trailing "starting at " blank)
-    weekdaysOnly: <bool>,          // Daily-only
-    selectedHours: [9,12],         // Hourly-only, alternative to everyN
-    selectedMinutes: [0,30],       // Minutes-only, "at specific minutes", alternative to everyN
-    selectedDaysOfMonth: [1,15],   // Daily-only, alternative to everyN/weekdays
-    daysOfWeek: ['Monday','Friday'], // Weekly-only, MULTI day-of-week
-    dayOfWeek: 'Monday',           // Monthly/Yearly nth-weekday, SINGLE day-of-week (distinct from daysOfWeek)
-    dayOfMonth: <int>,             // Monthly by-day "on day number" (pair with everyNMonths; exclusive with weekOfMonth)
-    everyNMonths: <int>,           // "of every N months" (Monthly, both modes; free integer)
-    months: 'December',            // Yearly only -- single nth-weekday month (String); Monthly does NOT take months
-    weekOfMonth: 'First',          // Monthly/Yearly nth-weekday: First|Second|Third|Fourth|Last (presence selects nth-weekday)
-    minutesOffset: <int>,          // Hourly-only, when not using everyN (startingHCX<n>)
-    cronString: '0 * * * *',       // Cron String mode
-    rawSettings: {…}               // escape hatch for periodic-page fields not yet mapped
-  }
-  ```
-  Monthly has TWO mutually-exclusive modes: by-day (`dayOfMonth` + `everyNMonths` -- BOTH required or renders null) and nth-weekday (`weekOfMonth` + `dayOfWeek` + `everyNMonths`). Passing both `dayOfMonth` and `weekOfMonth` is rejected. Monthly "specific months" ("on day N of selected months") is NOT yet supported (an order-sensitive third sub-mode) -- use `rawSettings`. Yearly is ALWAYS nth-weekday (`weekOfMonth` + `dayOfWeek` + single `months`) because RM 5.1 exposes no by-day calendar-day field for Yearly -- only the nth-weekday picker. A `Periodic Schedule` with no `periodic` map is rejected up front (`success=false`, naming any stray top-level keys) rather than committing a phantom `?` row. The tool walks the periodic sub-page (`whichPeriod<N>` → `everyN`/select → time → Done, where `<N>` is the per-trigger sub-page index) so the trigger description bakes correctly. Seconds/Minutes `everyN` outside the restricted enum (and Monthly dayOfMonth+weekOfMonth) is rejected with `success=false` and a structured error.
-
-### Fail-loud `addTrigger` shape guards
-
-Both reject before any hub write, returning `success=false` with a structured error rather than committing a broken trigger: (1) a state-change token supplied as `state` with no `comparator` (e.g. `state:'changed'`/`'increased'` on a device-state or numeric trigger) is rejected and steered to `comparator:'*changed*'`; **Mode / Variable / Custom Attribute are exempt** because their `state` legitimately carries a mode name or an enum value. (2) A `Periodic Schedule` with no `periodic` map is rejected, naming the stray top-level keys you passed instead.
-
-### Did-you-mean on unknown capability names
-
-when `addTrigger` (or an `addRequiredExpression` / `ifThen` / `waitEvents` condition) capability name is not in the live picker's option list, the fail-loud error appends a closest-match suggestion drawn from that same list (so the suggested name is one the picker actually accepts).
-
-### Comma-joined mode steer
-
-a mode passed as a single comma-joined string (`state:'Day,Evening'`) is looked up as one nonexistent mode; the unknown-mode error steers to the list shape (`state:['Day','Evening']`) instead of an opaque "unknown mode". Applies across the trigger Mode path, per-mode actions, the `mode` action, and Mode conditions.
-
-### Condition-only rejects
-
-a `*changed*`/`*became*` state-change comparator on a device-state CONDITION capability (with no explicit value) is rejected on every condition surface (`addTrigger.condition`, `addRequiredExpression`, `ifThen`) and steered to a trigger row -- conditions are point-in-time, so a change comparator has no meaning there. The date/day-window condition capabilities (`Between two dates`, `Days of week`, `On a Day`) are unmodelled on every structured condition surface and are rejected up front, steering to `rawSettings`/`walkStep`.
-
-### `addAction` capability families
-
-The per-capability schema is served, not written here: `hub_set_rule(operation:'discover', args:{kind:'action'})` lists every `capability` with its `action` values and required and optional fields; add `capability` (and `action`) to the args for one entry. A spec RM cannot bake is refused before any write, or rolled back when only RM's own editor can tell (`success:false`, `rolledBack:true`): nothing half-built stays on the rule. What the schema cannot say:
-
-- **Flash**: `action='flash'` starts a flash schedule on devices that support `.flash()` (Hue groups, many Z-Wave/Zigbee dimmer modules). RM 5.1 has NO native "stop flash" action subtype — calling `switch.on`/`.off` afterward does NOT cancel the flash schedule. To stop a running flash from within a rule, use `capability='runCommand'` with `command='flashOff'` on the same device list.
-- **Fan speed**: fan `setSpeed` takes a fixed enum speed only (low / medium-low / medium / medium-high / high / on / off / auto); RM has no variable-sourced fan speed (unlike dimmer `setLevel`'s `levelVariable`) because the classic wizard exposes a variable toggle only for numeric/text value fields, not enum pickers. For a variable-driven speed, use `capability='runCommand'` with `command='setSpeed'` + `parameters=[{type:'string', variable:'<varName>'}]` (per-parameter variable sourcing).
-- **Activate a Scene / Room Lighting group**: RM 5.1 has no dedicated activate-scene action subtype. Each Scene / Room Lighting instance spawns an activator device with the switch capability -- activate it via the Switch action: `capability='switch' + action='on' + deviceIds=[<activatorDeviceId>]` (use `action='off'` to send an off/deactivate command, whose effect is configuration-dependent). The `activate_scene` action lives ONLY on the legacy custom rule engine (the `hub_*_custom_rule` tools / `hub_get_tool_guide(section='rules')`), not on this native addAction surface.
-- **Run Custom Action** (`capability='runCommand'`): `capabilityFilter` is matched against the capabilities RM's own picker offers for the row, by stored key or picker label (`'SwitchLevel'` or `'Dimmer'`); a miss is refused with RM's list. `command` is checked against the commands RM lists for the selected devices, in RM's own casing. Each `parameters` entry is a literal (`{type:'number', value:75}`) or variable-sourced (`{type:'number', variable:'myVar'}`); `type` is lowercase `number`, `decimal` or `string`.
-
-### `addRequiredExpression` STPage capability list
-
-RM 5.1 Required Expression conditions accept these `capability` values (per-condition):
-
-- **Device-state**: `Switch`, `Motion`, `Contact`, `Lock`, `Presence`, `Smoke detector`, `Water sensor`, `Tamper alert`, `Acceleration`, `Carbon monoxide detector`, `Carbon dioxide sensor`, `Power source`, `Window Shade`
-- **Numeric**: `Battery`, `Dimmer`, `Energy meter`, `Fan Speed`, `Humidity`, `Illuminance`, `Power meter`, `Temperature`, `Thermostat cool setpoint`, `Thermostat fan mode`, `Thermostat heat setpoint`, `Thermostat mode`, `Thermostat state`
-- **Time-based**: `Days of week`, `Between two dates`, `Between two times`, `On a Day`
-- **Hub state**: `Mode`, `Private Boolean`
-- **Variable comparison**: `Variable`
-- **Custom / other**: `Custom Attribute`, `Last Event Device` (not a condition -- see note below), `Lock codes` (not authorable here -- see note below)
-
-Note: `Last Event Device` appears in the STPage condition picker but is not usable as a condition -- it references the device that fired the rule's trigger (an action-side reference, used in actions such as running a command on the triggering device), not a testable state, and it is not a trigger capability either. It is rejected fail-loud on every structured condition surface (`addRequiredExpression`, `addTrigger.condition`, and the `addAction` expression subtypes); remove it from the expression. `Lock codes` likewise appears in the STPage condition picker but cannot be authored through the structured condition path -- a Lock codes condition needs a lock device plus a specific code name and the tool has no field for either, so it is rejected fail-loud with a pointer to the Rule Machine UI; author it there or use a different testable capability.
-
-Note: `Private Boolean` is only valid in Required Expressions -- it does NOT appear in the IF-expression capability list used by `ifThen`/`elseIf`/`repeatWhile`/`waitExpression`.
-
-Note: some sensor capabilities (Water sensor, Smoke detector, Carbon monoxide detector, Tamper alert, Acceleration) report discrete events rather than a continuous enum state. Pass `state: 'wet'` / `state: 'dry'` for Water sensor, `state: 'detected'` / `state: 'clear'` for detector types (Smoke, CO, Tamper), `state: 'active'` / `state: 'inactive'` for Acceleration -- NOT a comparator-based numeric condition. Carbon dioxide sensor is intentionally EXCLUDED from the discrete-event list: the `CarbonDioxideMeasurement` capability is numeric ppm (use comparator + value), not a discrete enum; the names look superficially symmetric to Carbon monoxide detector but RM 5.1 treats them differently. See `docs/rm_action_subtype_schemas.md` for the full state-value table.
-
-### Extended per-capability spec shapes
-
-Applies to `addRequiredExpression.conditions[]` (STPage) and `addAction.expression.conditions[]` (doActPage); the shared walker `_rmWalkConditionReveal` handles every per-capability reveal sequence below. `addTrigger.condition` has a narrower support list (see selectTriggers note below).
-
-- **Mode**: `{capability:'Mode', state:'Night'}` or `{capability:'Mode', modeIds:['3']}`. Walker resolves mode names to IDs via `location.modes` and writes the firmware-assigned `modes<N>` picker discovered from the live schema. A `mode` action takes `modeId` or `modeName` instead; a condition or trigger names the mode in `state`.
-- **Between two times**: `{capability:'Between two times', start:{type:'clock'|'sunrise'|'sunset', time?:'HH:mm', offset?:<minutes>}, end:{...same shape}}`. Precondition: hub `location.timeZone` must be configured.
-  - `time` (hub-local `HH:mm`) is required when `type:'clock'`, and `offset` (minutes) when `type:'sunrise'|'sunset'`. A missing value is rejected before any write. If the hub timezone is unset, a clock condition throws before the wizard is touched.
-
-- **Variable comparison**: `{capability:'Variable', variable:'<hubVarName>', comparator:'=', value:<v>}` for a constant RHS, OR `{capability:'Variable', variable:'<hubVarName>', comparator:'=', compareToVariable:'<otherHubVarName>'}` for a variable-vs-variable RHS. A free-valued (String) variable (and a free-valued Custom Attribute) also accepts the STRING comparator `*contains*` (substring match, written verbatim -- keep the asterisks; the substring is the `value`); there is no "does not contain" -- negate with `not:true` + `*contains*`. For value-comparison comparators supply exactly one of `value`/`compareToVariable` -- they are mutually exclusive (passing both is rejected); omit the RHS entirely for state-change comparators (`*changed*`/`*became*`). For the variable RHS the walker toggles `isVar_<N>=true` and discovers the firmware-assigned right-hand picker from the live schema -- it does NOT hardcode `xVarR_<N>` because `selectTriggers` consistently exposes `xVarR` but the walker pages (STPage/doActPage) can expose a differently-suffixed field, so the walker resolves whatever the live schema reveals. Fail-loud when a variable name is not in the schema enum AND the option list is non-empty; degrades with an `api_unavailable` sentinel (`variable-validation` for the LHS picker, `compareToVariable-validation` for the RHS picker) when the enum is empty, flipping `partial`. A Boolean variable has no comparator field: pass `value:true|false` (optionally `comparator:'='`, negate with `not:true`); any other comparator, a `compareToVariable`, or a value other than true/false is rejected before the Boolean value is written. The capability and variable pickers are already written by then, so the rejection cancels the in-flight condition. A page that also shows a comparator field is treated as a comparison, not a Boolean.
-- **Device-relative comparison**: `{capability:'Temperature', deviceIds:[N], comparator:'>', compareToDevice:{deviceId:M, attribute?:'temperature', offset?:-2}}`. The RHS is another device's reading on the SAME capability, optionally offset. The walker writes the comparator `RelrDev_<N>`, toggles `isDev_<N>=true` to reveal the SINGLE reference-device picker `relDevice_<N>`, writes the reference id, then writes the optional decimal offset to `state_<N>` (omit -> offset 0). `relDevice_<N>` is a capability.* device picker locked to the LHS capability; on normal firmware RM populates its dropdown client-side, so the schema exposes no options and the empty option list is normal. The reference `deviceId` is existence-validated hub-wide before any write; a nonexistent id is rejected up front. On the rare firmware variant that DOES surface device-picker options, the walker additionally defensively rejects a reference id not in that list. Mutually exclusive with a literal RHS (`state`/`value`) and with `compareToVariable` -- supply exactly one RHS shape. There is NO separate reference-attribute picker: the compared attribute is implied by the shared capability, so `compareToDevice.attribute` is OPTIONAL and informational (no wire consumer; neither validated nor written). Passing compareToDevice on a non-numeric capability (Mode / Between two times / Variable / Custom Attribute) is rejected up front with a fail-loud error naming the capability -- it is NOT silently dropped. **Intentional isDev/isVar asymmetry (do not "fix"):** an EMPTY option list is NORMAL for `compareToDevice`'s `relDevice_<N>` because it is a capability.* DEVICE picker (RM fills it client-side), so no options, no sentinel, no partial. This deliberately differs from `compareToVariable`, whose right-hand picker is an ENUM picker where an empty option list IS an anomaly and emits an `api_unavailable` sentinel with `partial:true`. The divergence reflects picker type (device vs enum), not an oversight.
-- **Sub-expression (parens) -- addRequiredExpression-only**: `{subExpression:{conditions:[...], operator?:'AND'|'OR'|'XOR', operators?:[...]}}`. The STPage walker recursively handles nesting of arbitrary depth. **`addAction` (ifThen/elseIf/repeatWhile/waitExpression) REJECTS nested subExpression** with `"nested subExpression on this row is not yet supported"`. Flatten the conditions list, or move the nested expression to a Required Expression.
-
-`addTrigger.condition` supports a narrower subset: Variable (incl. `compareToVariable`), Custom Attribute, and enum/numeric device-state. Mode-via-picker / Between two times / compareToDevice are NOT yet supported on `selectTriggers` -- the `_rmBuildCondition` helper is a static direct-write path, not the shared `_rmWalkConditionReveal` walker. The time/date-window capabilities reject fail-loud rather than committing a broken condition: `Between two times` steers you to `addRequiredExpression` or an `ifThen` action (where its start/end time-picker walk IS implemented), and `Between two dates` / `Days of week` / `On a Day` -- whose date/day pickers are unmodelled on EVERY structured condition surface -- steer you to author them directly against the wizard via `rawSettings` or a `walkStep` call.
-
-### Supported comparison shapes for a numeric condition
-
-A numeric device condition's right-hand side can be one of these shapes (the RM 5.1 wizard exposes the `isDev_` device-RHS toggle but no `isVar_` toggle on a numeric device condition, so "device attribute vs a hub variable" is NOT a directly-supported shape):
-
-- a) **Device attribute vs literal value** -- `{capability:'Temperature', deviceIds:[N], comparator:'>', value:72}`.
-- b) **Device attribute vs another device's same attribute** (`compareToDevice`, numeric capabilities only) -- `{capability:'Temperature', deviceIds:[N], comparator:'>', compareToDevice:{deviceId:M, offset?:-2}}`. The reference reads the SAME capability; `offset` is optional.
-- c) **Variable vs variable** (`compareToVariable`, Variable-capability LHS only) -- `{capability:'Variable', variable:'<hubVarName>', comparator:'=', compareToVariable:'<otherHubVarName>'}`.
-
-To compare a **device attribute against a hub variable**, there is no direct shape -- read the attribute into a variable first with an `addAction setVariable` using `fromDevice` (`{deviceId, attribute}`), then compare variable-vs-variable per shape (c).
+- **Sub-expression** (`addRequiredExpression` only; nested subExpression is refused on action expressions): `{subExpression:{conditions:[...], operator?, operators?}}`.
+- **Device attribute vs a hub variable** has no direct shape: copy the attribute into a variable with an `addAction setVariable` using `fromDevice`, then compare with `compareToVariable`.
+- **Mode**: names or ids; a comma-joined string is refused toward a list (`state:['Day','Evening']`). A `mode` action takes `modeId` or `modeName`.
+- **Flash**: Rule Machine has no stop-flash action; stop it with `runCommand` `command:'flashOff'`.
+- **Fan speed** takes a fixed speed; for a variable speed use `runCommand` `command:'setSpeed'` with `parameters:[{type:'string', variable:'<name>'}]`.
+- **Scene / Room Lighting**: activate its activator device with the switch action.
+- **Run Custom Action** (`runCommand`): `capabilityFilter` and `command` are checked against Rule Machine's own pickers for the row; each `parameters` entry is a literal (`{type:'number', value:75}`) or variable-sourced (`{type:'number', variable:'myVar'}`), `type` lowercase.
 
 ### `addRequiredExpression` operator contract
 
@@ -41364,16 +41106,11 @@ def getToolGuideSubSections() {
         ],
         set_rule_reference: [
             set_rule_reference_overview: [],
-            set_rule_reference_triggers: ["`addTrigger`", "Fail-loud `addTrigger`"],
-            set_rule_reference_actions: ["`addAction`"],
+            set_rule_reference_shapes: ["Shapes come from discover"],
             set_rule_reference_conditions: ["`addRequiredExpression`", "`replaceRequiredExpression`",
-                                            "Extended per-capability spec shapes",
-                                            "Supported comparison shapes",
                                             "deviceId vs deviceIds normalization"],
             set_rule_reference_walkstep: ["`walkStep`", "Raw `settings`/`button` mode"],
-            set_rule_reference_responses: ["Responses", "Action mutations"],
-            set_rule_reference_guards: ["Did-you-mean on unknown capability names",
-                                        "Comma-joined mode steer", "Condition-only rejects"]
+            set_rule_reference_responses: ["Responses", "Action mutations"]
         ]
     ]
 }
