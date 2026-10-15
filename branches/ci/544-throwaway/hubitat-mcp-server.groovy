@@ -23928,7 +23928,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         }
     }
     if (triggerSpec.buttonNumber != null) {
-        writeIfPresent("ButtontDev${idx}", triggerSpec.buttonNumber)
+        writeIfPresent((capCanonical == "Button LED" ? "ButtonLedtDev" : "ButtontDev") + idx, triggerSpec.buttonNumber)
     }
     if (capCanonical == "Mode") {
         def rawModeIds = []
@@ -23965,6 +23965,18 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         writeIfPresent("modesX${idx}", rawModeIds)
     } else {
         def stateValue = triggerSpec.state != null ? triggerSpec.state : triggerSpec.value
+        if (stateValue instanceof CharSequence) {
+            def stPage = _rmFetchConfigJson(appId, "selectTriggers")
+            def stInput = (stPage?.configPage?.sections ?: []).collectMany { it?.input ?: [] }.find { it?.name == "tstate${idx}".toString() }
+            List stOpts = stInput?.type?.toString() == "enum" ? _rmReadPickerOptionStrings(stInput) : []
+            if (stOpts) {
+                def match = stOpts.find { it.equalsIgnoreCase(stateValue.toString().trim()) }
+                if (match == null) {
+                    throw new IllegalArgumentException("addTrigger.state '${stateValue}' is not a state Rule Machine offers for ${capCanonical}: ${stOpts.join(', ')}.".toString())
+                }
+                stateValue = match
+            }
+        }
         if (stateValue != null) {
             writeIfPresent("tstate${idx}", stateValue)
         }
@@ -24276,6 +24288,8 @@ private Map _rmCondTables() {
      stringOps: ["=", "\u2260", "*contains*", "*changed*", "*is empty*"],
      variableOps: ["=", "\u2260", "<", ">", "<=", ">=", "in", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"],
      buttonStates: ["pushed", "held", "doubleTapped", "released"],
+     buttonLedStates: ["on", "off"],
+     noChangeState: ["Rule paused"],
      timeOpts: ["A specific time", "Sunrise", "Sunset"]]
 }
 private String _rmCondCanonical(Object cap) {
@@ -24291,7 +24305,8 @@ private String _rmCondFamily(Object cap) {
     switch (c) {
         case "Variable": return "variable"
         case ["Custom Attribute", "Last Event Device"]: return "custom-attribute"
-        case ["Button", "Button LED"]: return "button"
+        case "Button": return "button"
+        case "Button LED": return "button-led"
         case ["Certain Time (and optional date)", "Periodic Schedule", "Days of Week Schedule", "Time of day",
               "Between two times", "Between two dates", "On a Day", "Days of week", "Time Since Event"]: return "time"
         case ["Mode", "Location Event", "HSM Alert", "Cloud End Point", "Local End Point"]: return "hub-state"
@@ -24325,8 +24340,8 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
         if (fam == "numeric") allowed = (t.numericOps as List) + (trigChange ? (t.changeOps as List) + (t.overOps as List) : [])
         else if (fam == "variable") allowed = (((t.variableOps as List) - (kind == "condition" ? (t.changeOps as List) + (t.overOps as List) : [])) + (t.stringOps as List)).unique()
         else if (fam == "custom-attribute") allowed = ((t.numericOps as List) + (t.stringOps as List)).unique() - (kind == "condition" ? ["*changed*"] : [])
-        else if ((fam == "device-state" || cap == "Mode") && kind == "trigger" && change) allowed = null
-        else throw new IllegalArgumentException("${where}: Rule Machine has no comparator for a ${cap} ${kind}${kind == 'trigger' && (fam == 'device-state' || cap == 'Mode') ? " other than '*changed*'" : ''}; pass state. ${hint}".toString())
+        else if ((fam in ["device-state", "button-led"] || cap == "Mode") && kind == "trigger" && change && !(cap in (t.noChangeState as List))) allowed = null
+        else throw new IllegalArgumentException("${where}: Rule Machine has no comparator for a ${cap} ${kind}${kind == 'trigger' && (fam in ['device-state', 'button-led'] || cap == 'Mode') && !(cap in (t.noChangeState as List)) ? " other than '*changed*'" : ''}; pass state. ${hint}".toString())
         if (allowed != null && !(cmp in allowed) && !(fam == "numeric" && trigChange && change)) {
             throw new IllegalArgumentException("${where}: comparator '${spec.comparator}' is not one Rule Machine offers for a ${cap} ${kind}: ${allowed.join(' ')}. ${hint}".toString())
         }
@@ -24371,7 +24386,7 @@ private Map _rmCondEntry(String cap, String kind) {
             if (dev) req << f("deviceIds", "List<Integer>")
             req << f("state", "enum", ["default": (t.defaultState as Map).get(cap), description: "a value RM's picker lists for the chosen devices"])
             if (dev) opt << f("allOfThese", "Boolean")
-            if (trig) opt << f("comparator", "enum", [values: ["*changed*"], description: "instead of state: any change"])
+            if (trig && !(cap in (t.noChangeState as List))) opt << f("comparator", "enum", [values: ["*changed*"], description: "instead of state: any change"])
             break
         case "variable":
             req << f("variable", "String", [description: "hub variable name"])
@@ -24390,6 +24405,12 @@ private Map _rmCondEntry(String cap, String kind) {
             req << f("deviceIds", "List<Integer>")
             req << f("state", "enum", [values: t.buttonStates])
             opt << f("buttonNumber", "Integer", ["default": 1])
+            break
+        case "button-led":
+            req << f("deviceIds", "List<Integer>", [description: "one device"])
+            req << f("state", "enum", [values: t.buttonLedStates, "default": "on"])
+            opt << f("buttonNumber", "Integer", ["default": 1])
+            if (trig) opt << f("comparator", "enum", [values: ["*changed*"], description: "instead of state: any change"])
             break
         case "hub-state":
             if (cap == "Mode") {
@@ -29002,7 +29023,7 @@ private void _rmWriteSetVariableSourceModes(Integer appId, Integer idx, Map acti
             "The attribute picker '${tCustomAttrField}' did not appear after device '${fdDeviceId}' on action ${idx}; check that the device exists.")
         def attrOpts = _rmReadPickerOptionStrings(tCustomAttrInput)
         if (attrOpts == null || attrOpts.isEmpty()) {
-            throw new IllegalArgumentException("${capLbl}: the attribute picker '${tCustomAttrField}' lists nothing for device '${fdDeviceId}', so '${fdAttr}' cannot be checked.")
+            throw new IllegalArgumentException("${capLbl} fromDevice: Rule Machine's attribute picker '${tCustomAttrField}' offers no attribute of device '${fdDeviceId}' for this variable's type, so '${fdAttr}' cannot be used.")
         }
         def canonicalAttr = attrOpts.find { it?.equalsIgnoreCase(fdAttr) }
         if (canonicalAttr == null) {
