@@ -328,6 +328,16 @@ def _tool_failure_log_expectation(tool_name: str, payload: Any,
     return f"Tool {leaf} returned a failure result"
 
 
+def _zwave_radio_offline(details: dict) -> bool:
+    """True only when the hub's own Z-Wave details report the radio disabled or unhealthy."""
+    data = details.get("zwaveData")
+    return isinstance(data, dict) and (data.get("enabled") is False or data.get("healthy") is False)
+
+
+def _radio_unavailable_error(error: Any) -> bool:
+    return isinstance(error, str) and ("503" in error or "unavailable" in error.lower())
+
+
 def _rule_patch_rows(result: dict) -> list:
     """hub_set_rule patch rows. A continued call's patchResults already holds every slice and
     patches mirrors it, so read one key, never both."""
@@ -3210,9 +3220,8 @@ class TestRunner:
     def test_radio_details_include_topology(self) -> None:
         # Item 3 (#257): include_topology folds the read-only mesh route map into hub_get_radio_details.
         # The helper always returns a topology object (with at least `endpoint`) when include_topology
-        # is set, so assert it strictly -- on a live hub (every Hubitat has a Z-Wave radio) the route
-        # fetch must succeed, so a route-fetch regression (topology.error, or no route data) fails here
-        # instead of slipping through a best-effort `if present` guard.
+        # is set. With the radio online the route fetch must succeed, so topology.error or missing route
+        # data fails; a radio the hub reports disabled or unhealthy may only answer unavailable, and skips.
         # Combined with include_status + include_firmware: one call returns every fold object, so the
         # three former separate zwave-radio tests share a single round-trip, each keeping its assertion.
         result = self.client.call_tool("hub_get_radio_details", {
@@ -3222,9 +3231,6 @@ class TestRunner:
         assert topo is not None, "include_topology=true did not return a topology object"
         assert "getChildAndRouteInfoJson" in str(topo.get("endpoint", "")), \
             f"include_topology topology missing the route endpoint: {topo}"
-        assert "error" not in topo, f"include_topology route fetch errored (regression): {topo.get('error')}"
-        assert "routes" in topo or "rawRoutes" in topo, \
-            f"include_topology returned no route data: {topo}"
         # include_status fold must not error the call (its former standalone assertion).
         assert "error" not in result or isinstance(result.get("error"), str), \
             f"include_status unexpected error shape: {result}"
@@ -3232,6 +3238,13 @@ class TestRunner:
         status = result.get("status") or {}
         for key in ("zwaveJs", "zwaveLocalBackup", "zwaveFirmwareBatch"):
             assert key in status, f"include_status is missing the {key} poller: {sorted(status)}"
+        if "error" in topo and _zwave_radio_offline(result):
+            assert _radio_unavailable_error(topo["error"]), \
+                f"offline Z-Wave radio's route fetch failed with something other than unavailable: {topo['error']}"
+            raise SkipTest("Z-Wave radio offline on this hub")
+        assert "error" not in topo, f"include_topology route fetch errored (regression): {topo.get('error')}"
+        assert "routes" in topo or "rawRoutes" in topo, \
+            f"include_topology returned no route data: {topo}"
 
     @test("diagnostics")
     def test_radio_details_matter(self) -> None:

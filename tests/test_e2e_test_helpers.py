@@ -3371,3 +3371,27 @@ def test_rule_patch_rows_reads_one_key_so_continued_rows_are_not_doubled():
     assert et._rule_patch_rows({"patchResults": slices}) == slices
     assert et._rule_patch_rows({"patchResults": [], "patches": slices}) == slices
     assert et._rule_patch_rows({"success": False}) == []
+
+
+@pytest.mark.parametrize("details,offline", [
+    ({"zwaveData": {"enabled": False, "healthy": True}}, True),
+    ({"zwaveData": {"enabled": True, "healthy": False}}, True),
+    ({"zwaveData": {"enabled": True, "healthy": True}}, False),
+    ({"zwaveData": {"enabled": True}}, False),
+    ({"zwaveData": {}}, False),
+    # Unreadable details are no evidence of an offline radio, so the test stays strict.
+    ({"source": "sdk_only"}, False),
+    ({"zwaveData": "raw"}, False),
+])
+def test_zwave_radio_offline_needs_the_hubs_own_disabled_or_unhealthy_report(details, offline):
+    assert et._zwave_radio_offline(details) is offline
+
+
+@pytest.mark.parametrize("error,unavailable", [
+    ("Failed to fetch /hub/zwave/getChildAndRouteInfoJson: status code: 503, reason phrase: Service Unavailable", True),
+    ("Failed to fetch /hub/zwave/getChildAndRouteInfoJson: radio unavailable", True),
+    ("Failed to fetch /hub/zwave/getChildAndRouteInfoJson: status code: 500, reason phrase: Server Error", False),
+    (None, False),
+])
+def test_radio_unavailable_error_accepts_only_503_or_unavailable(error, unavailable):
+    assert et._radio_unavailable_error(error) is unavailable
