@@ -1,4 +1,4 @@
-"""Hub-free regressions for focused coverage and fail-closed live label reads."""
+"""Hub-free regressions for the e2e lanes' gates, live label reads and ephemeral hub relay."""
 
 import importlib.util
 import json
@@ -286,17 +286,26 @@ def test_ephemeral_pr_code_runs_only_under_pull_request():
     assert "(steps.deps.outcome == 'success' || steps.session.outputs.suite == 'true')" in e2e
 
 
-def test_ephemeral_mode_toggles_agree_and_reach_the_script():
-    toggles = "\nenv:\n  EPHEMERAL_RUN_SUITE: 'true'\n  EPHEMERAL_HUB_KIND: 'os'\n"
+KIND_MATRIX = "    strategy:\n      fail-fast: false\n      matrix:\n        kind: [os, jvm]\n"
+
+
+def test_ephemeral_mode_toggle_and_kind_matrix_agree_and_reach_the_script():
     for workflow in (EPHEMERAL, REQUEST):
         head, jobs = _jobs(workflow)
-        assert toggles in head
+        assert "\nenv:\n  EPHEMERAL_RUN_SUITE: 'true'\n\n" in head and "EPHEMERAL_HUB_KIND" not in workflow
         request = jobs["request-hub"]
-        assert "HUB_KIND: ${{ env.EPHEMERAL_HUB_KIND }}" in request and "RUN_SUITE: ${{ env.EPHEMERAL_RUN_SUITE }}" in request
+        assert KIND_MATRIX in request and "    name: Request ephemeral hub (${{ matrix.kind }})\n" in request
+        # The key or consumer lookup and the dispatch both take this job's kind.
+        assert request.count("HUB_KIND: ${{ matrix.kind }}") == 2 and "RUN_SUITE: ${{ env.EPHEMERAL_RUN_SUITE }}" in request
         # Exactly one relay per mode: the results, or the encrypted session.
         assert request.count("env.EPHEMERAL_RUN_SUITE == 'true'") == 1 and request.count("env.EPHEMERAL_RUN_SUITE != 'true'") == 1
+    e2e = _jobs(EPHEMERAL)[1]["e2e"]
+    assert KIND_MATRIX in e2e and "    name: e2e (ephemeral hub, ${{ matrix.kind }})\n" in e2e
+    assert "matrix" not in _jobs(REQUEST)[1]["gate"]
+    # The test job finds its own run's request job by the name the matrix renders.
+    assert 'export JOB="Request ephemeral hub ($KIND)"' in e2e and "select(.name == $ENV.JOB)" in e2e
     script = (ROOT / ".github/scripts/request_ephemeral_hub.sh").read_text()
-    assert 'kind="${HUB_KIND:-os}" suite="${RUN_SUITE:-true}"' in script
+    assert 'kind="${HUB_KIND:-os}"' in script and 'suite="${RUN_SUITE:-true}"' in script
 
 
 def test_ephemeral_request_workflow_never_runs_pr_code():
@@ -311,55 +320,84 @@ def test_ephemeral_request_workflow_never_runs_pr_code():
     assert jobs["request-hub"].count("secrets.PRIVATE_CI_TOKEN") == 1
     assert "openssl" not in REQUEST and "session-priv" not in REQUEST
     assert "request_ephemeral_hub.sh consumer" in jobs["request-hub"]
-    assert "ephemeral-hub-session-${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}" in REQUEST
-    assert "ephemeral-hub-results-${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}" in REQUEST
+    run = "${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}-${{ matrix.kind }}"
+    assert f"ephemeral-hub-session-{run}\n" in REQUEST and f"ephemeral-hub-results-{run}\n" in REQUEST
 
 
 def test_ephemeral_artifact_names_agree_across_workflows():
     script = (ROOT / ".github/scripts/request_ephemeral_hub.sh").read_text()
-    # Both sides key the public key and the session by the test run and its attempt.
-    assert '"ephemeral-hub-public-key-$2"' in script and "ephemeral-hub-public-key-${{ github.run_attempt }}" in EPHEMERAL
-    assert 'SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"' in EPHEMERAL
-    assert "ephemeral-hub-session-${{ github.run_id }}-${{ github.run_attempt }}" in EPHEMERAL
+    # Both sides key the public key, the session and the results by the test run, its attempt and the kind.
+    assert '"ephemeral-hub-public-key-$2-$kind"' in script
+    assert "ephemeral-hub-public-key-${{ github.run_attempt }}-${{ matrix.kind }}\n" in EPHEMERAL
+    assert 'SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND"' in EPHEMERAL
+    assert "ephemeral-hub-session-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.kind }}\n" in EPHEMERAL
     assert "--workflow hub-e2e-ephemeral.yml --event pull_request" in script
     assert "-f seconds=7200 -f watchdog=false" in script and 'consumer_run_id="$CONSUMER_RUN_ID"' in script
-    assert 'RESULTS="ephemeral-hub-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"' in EPHEMERAL
-    assert "ephemeral-hub-results-${{ github.run_id }}-${{ github.run_attempt }}" in EPHEMERAL
+    assert 'RESULTS="ephemeral-hub-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND"' in EPHEMERAL
+    assert "ephemeral-hub-results-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.kind }}\n" in EPHEMERAL
+    assert "ephemeral-hub-unavailable-${{ matrix.kind }}\n" in EPHEMERAL
+    assert "ephemeral-e2e-results-${{ github.run_attempt }}-${{ matrix.kind }}\n" in EPHEMERAL
     assert '"ephemeral-hub-results-$1"' in script and '-f kind="$kind" -f run_suite="$suite"' in script
+    # Every artifact either job uploads carries the kind; only the PR gate's shared skip reason does not.
+    for workflow in (EPHEMERAL, REQUEST):
+        for job, body in _jobs(workflow)[1].items():
+            for name in re.findall(r"^          name: (.*)$", body, re.M):
+                assert name.endswith("-${{ matrix.kind }}") or (job, name) == ("gate", "ephemeral-hub-unavailable"), name
+
+
+@pytest.mark.parametrize("kind", ["os", "jvm"])
+def test_ephemeral_request_script_fetches_the_key_of_its_kind(kind, tmp_path):
+    script = '''
+gh() { printf '%s\\n' "$@" > "$STUB/download"; }
+openssl() { :; }
+export -f gh openssl
+bash "$SCRIPT" key 100 2 "$STUB/pub"
+'''
+    env = {**os.environ, "STUB": str(tmp_path), "SCRIPT": str(ROOT / ".github/scripts/request_ephemeral_hub.sh"),
+           "GITHUB_REPOSITORY": "owner/repo", "HUB_KIND": kind}
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"ephemeral-hub-public-key-2-{kind}" in (tmp_path / "download").read_text().splitlines()
 
 
 @pytest.mark.parametrize("event, base, request_state, artifacts, outcome", [
-    ("pull_request", "present", "7 completed success", "ephemeral-hub-unavailable", "skip"),
-    ("pull_request", "present", "7 in_progress ", "ephemeral-hub-session-100-1", "session"),
-    ("pull_request", "present", "7 completed success", "ephemeral-hub-session-100-2", "fail"),  # served another attempt
+    ("pull_request", "present", "7 completed success", "ephemeral-hub-unavailable", "skip"),  # the gate's shared reason
+    ("pull_request", "present", "7 in_progress ", "ephemeral-hub-session-100-1-jvm\nephemeral-hub-session-100-1-os", "session"),
+    ("pull_request", "present", "7 completed success", "ephemeral-hub-session-100-2-os", "fail"),  # served another attempt
+    ("pull_request", "present", "7 completed success", "ephemeral-hub-session-100-1-jvm", "fail"),  # served the other kind
     ("pull_request", "present", "7 completed failure", "", "fail"),
     ("pull_request", "present", "", "", "fail"),  # no request run ever appears
     ("pull_request", "absent", "", "", "base-skip"),  # base predates the request workflow
-    ("pull_request", "error", "7 in_progress ", "ephemeral-hub-session-100-1", "session"),  # lookup error waits as usual
-    ("push", "success", "success", "ephemeral-hub-unavailable", "skip"),
-    ("push", "absent", "", "ephemeral-hub-session-100-1", "session"),  # no base check outside PRs
-    ("push", "present", "failure", "ephemeral-hub-unavailable", "fail"),  # stale reason from an earlier attempt
+    ("pull_request", "error", "7 in_progress ", "ephemeral-hub-session-100-1-os", "session"),  # lookup error waits as usual
+    ("push", "success", "success", "ephemeral-hub-unavailable-jvm\nephemeral-hub-unavailable-os", "skip"),
+    ("push", "success", "success", "ephemeral-hub-unavailable-jvm", "fail"),  # only the other kind's reason
+    ("push", "absent", "", "ephemeral-hub-session-100-1-os", "session"),  # no base check outside PRs
+    ("push", "present", "failure", "ephemeral-hub-unavailable-os", "fail"),  # stale reason from an earlier attempt
 ])
 def test_ephemeral_test_job_waits_for_its_own_session_or_a_skip_reason(event, base, request_state, artifacts, outcome, tmp_path):
     result, output, summary = _wait_for_hub(tmp_path, event, base, request_state, artifacts, "false")
+    downloads = (tmp_path / "downloads").read_text() if (tmp_path / "downloads").exists() else ""
     if outcome == "fail":
         assert result.returncode == 1 and "::error::" in result.stdout and "FOUND" not in result.stdout
     elif outcome == "skip":
         assert result.returncode == 0 and "ready=false" in output.read_text()
         assert "not configured" in summary.read_text() and "FOUND" not in result.stdout
+        assert "-jvm" not in downloads
     elif outcome == "base-skip":
         message = "Ephemeral hub lane: request workflow not on the base branch; skipped."
         assert result.returncode == 0 and "ready=false" in output.read_text() and message in result.stdout
         assert message in summary.read_text() and "FOUND" not in result.stdout
     else:
         assert result.returncode == 0 and "FOUND" in result.stdout and not output.exists()
+        assert downloads.split() == ["--name", "ephemeral-hub-session-100-1-os"]
 
 
 @pytest.mark.parametrize("event, request_state, artifacts, run_suite, outcome", [
-    ("pull_request", "7 in_progress ", "ephemeral-hub-results-100-1", "true", "results"),
-    ("pull_request", "7 in_progress ", "ephemeral-hub-results-100-1", "false", "results"),  # base requests the other mode
-    ("push", "", "ephemeral-hub-results-100-1", "true", "results"),
-    ("pull_request", "7 completed success", "ephemeral-hub-results-100-2", "true", "ended"),  # another attempt's results
+    ("pull_request", "7 in_progress ", "ephemeral-hub-results-100-1-os", "true", "results"),
+    ("pull_request", "7 in_progress ", "ephemeral-hub-results-100-1-os", "false", "results"),  # base requests the other mode
+    ("push", "", "ephemeral-hub-results-100-1-os", "true", "results"),
+    ("pull_request", "7 completed success", "ephemeral-hub-results-100-2-os", "true", "ended"),  # another attempt's results
+    ("pull_request", "7 completed success", "ephemeral-hub-results-100-1-jvm", "true", "ended"),  # the other kind's results
     ("push", "failure", "", "true", "ended"),
     ("pull_request", "7 in_progress ", "", "true", "90 minutes"),
     ("pull_request", "7 in_progress ", "", "false", "45 minutes"),
@@ -391,7 +429,7 @@ gh() {
     "api repos/owner/repo/actions/runs/100/attempts/1/jobs") printf '%s\\n' "$REQUEST_STATE" ;;
     "api repos/owner/repo/actions/runs/"*/artifacts) printf '%s\\n' "$ARTIFACTS" ;;
     "run download")
-      shift 2; while [ "$1" != --dir ]; do shift; done
+      shift 2; while [ "$1" != --dir ]; do [ "$1" != --name ] || echo "$1 $2" >> "$RUNNER_TEMP/downloads"; shift; done
       mkdir -p "$2"; echo "Ephemeral hub lane not configured." > "$2/reason.txt" ;;
     *) return 1 ;;
   esac
@@ -399,7 +437,7 @@ gh() {
 ''' + loop + "\necho FOUND\n"
     output, summary = tmp_path / "output", tmp_path / "summary"
     env = {**os.environ, "EVENT_NAME": event, "HEAD_SHA": FORK_SHA, "GITHUB_REPOSITORY": "owner/repo",
-           "BASE": base, "BASE_REF": "base-branch",
+           "BASE": base, "BASE_REF": "base-branch", "KIND": "os",
            "GITHUB_RUN_ID": "100", "GITHUB_RUN_ATTEMPT": "1", "REQUEST_STATE": request_state, "ARTIFACTS": artifacts,
            "EPHEMERAL_RUN_SUITE": run_suite,
            "RUNNER_TEMP": str(tmp_path), "GITHUB_OUTPUT": str(output), "GITHUB_STEP_SUMMARY": str(summary)}
@@ -426,6 +464,7 @@ FAILED_E2E = {"status": "failed", "exit_code": 1, "passed": 298, "failed": 2, "s
     ("sdk-failed", {"sdk": {"status": "failed", "exit_code": 1, "passed": 11, "failed": 1,
                             "failed_tests": [{"name": "test_sdk_gamma", "message": "y"}]}}, False),
     ("other-revision", {"public_sha": "c" * 40}, False),
+    ("other-kind", {"kind": "os"}, False),
     ("schema", {"schema_version": 2}, False),
     ("missing", None, False),
     ("unexpected-file", {}, False),
@@ -441,7 +480,8 @@ def test_ephemeral_provider_results_print_and_gate(case, changes, passes, tmp_pa
     (results / "sdk.log").write_text("SDK OK\n")
     (results / "harness.log").write_text("stage: suite finished\n")
     summary = tmp_path / "summary"
-    env = {**os.environ, "RUNNER_TEMP": str(tmp_path), "EXPECTED_SHA": FORK_SHA, "GITHUB_STEP_SUMMARY": str(summary)}
+    env = {**os.environ, "RUNNER_TEMP": str(tmp_path), "EXPECTED_SHA": FORK_SHA, "KIND": "jvm",
+           "GITHUB_STEP_SUMMARY": str(summary)}
     result = subprocess.run([_bash(), "-c", _run_block(EPHEMERAL, "name: Report provider-run results\n")],
                             env=env, capture_output=True, text=True)
     out = result.stdout
@@ -455,7 +495,7 @@ def test_ephemeral_provider_results_print_and_gate(case, changes, passes, tmp_pa
     assert out.index("::stop-commands::") < out.index("::error::from a test") < out.index(f"::{stop}::")
     assert "SDK OK" in out and "stage: suite finished" in out and "PASS via *** ***" in out
     assert "PASS via *** ***" in (results / "e2e.log").read_text()
-    if case in ("other-revision", "schema"):
+    if case in ("other-revision", "other-kind", "schema"):
         assert not summary.exists() and "::error::" in out.split(f"::{stop}::")[-1]
         return
     text = summary.read_text()
@@ -539,21 +579,21 @@ bash "$SCRIPT" hub "$STUB/key.pem" "$STUB/out"
         assert (relayed / "session.key.enc").exists() and not (relayed / "results.json").exists()
 
 
-def test_ephemeral_request_script_matches_provider_run_by_consumer_token():
-    """The provider run is found by " for <repo>#<run id>" whatever follows it."""
+@pytest.mark.parametrize("kind, expected", [("os", "3"), ("jvm", "1")])
+def test_ephemeral_request_script_matches_provider_run_by_consumer_token_and_kind(kind, expected):
+    """The provider run is found by " for <repo>#<run id> (<kind>," since both kinds share the run id."""
     script = (ROOT / ".github/scripts/request_ephemeral_hub.sh").read_text()
+    assert 'export MATCH=" for ${GITHUB_REPOSITORY}#${CONSUMER_RUN_ID} (${kind}," SINCE="$since"' in script
     program = re.search(r"--jq '(\[\.\[\] \| select\(\(\.displayTitle.*?)'", script).group(1)
     runs = json.dumps([
         {"databaseId": 1, "createdAt": "2026-10-15T10:00:00Z", "displayTitle": "Ephemeral hub a for o/r#42 (jvm, suite)"},
-        {"databaseId": 2, "createdAt": "2026-10-15T10:00:00Z", "displayTitle": "Ephemeral hub a for o/r#420"},
-        {"databaseId": 3, "createdAt": "2026-10-15T10:00:00Z", "displayTitle": "Ephemeral hub a for o/r#42"},
-        {"databaseId": 4, "createdAt": "2026-10-15T09:00:00Z", "displayTitle": "Ephemeral hub a for o/r#42"},
+        {"databaseId": 2, "createdAt": "2026-10-15T10:00:00Z", "displayTitle": "Ephemeral hub a for o/r#420 (os, suite)"},
+        {"databaseId": 3, "createdAt": "2026-10-15T10:00:00Z", "displayTitle": "Ephemeral hub a for o/r#42 (os, suite)"},
+        {"databaseId": 4, "createdAt": "2026-10-15T09:00:00Z", "displayTitle": "Ephemeral hub a for o/r#42 (os, suite)"},
+        {"databaseId": 5, "createdAt": "2026-10-15T10:00:00Z", "displayTitle": "Ephemeral hub a for o/r#42"},
     ])
     if not shutil.which("jq"):
         pytest.skip("jq is not installed")
-    env = {**os.environ, "SUFFIX": " for o/r#42", "SINCE": "2026-10-15T09:30:00Z"}
+    env = {**os.environ, "MATCH": f" for o/r#42 ({kind},", "SINCE": "2026-10-15T09:30:00Z"}
     picked = subprocess.run(["jq", "-r", program], input=runs, capture_output=True, text=True, env=env, check=True)
-    assert picked.stdout.strip() == "1"
-    picked = subprocess.run(["jq", "-r", program], input=json.dumps(json.loads(runs)[1:]), capture_output=True,
-                            text=True, env=env, check=True)
-    assert picked.stdout.strip() == "3"
+    assert picked.stdout.strip() == expected

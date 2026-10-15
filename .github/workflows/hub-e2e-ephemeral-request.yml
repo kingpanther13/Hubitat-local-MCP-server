@@ -12,10 +12,10 @@ on:
 permissions:
   contents: read
 
-# Keep in lockstep with hub-e2e-ephemeral.yml. EPHEMERAL_RUN_SUITE 'false' hands the hub to the test run.
+# Keep this and the kind matrix in lockstep with hub-e2e-ephemeral.yml. EPHEMERAL_RUN_SUITE 'false'
+# hands the hub to the test run.
 env:
   EPHEMERAL_RUN_SUITE: 'true'
-  EPHEMERAL_HUB_KIND: 'os'
 
 concurrency:
   group: hub-e2e-ephemeral-request-${{ github.event.pull_request.number }}
@@ -88,9 +88,13 @@ jobs:
           overwrite: true
 
   request-hub:
-    name: Request ephemeral hub
+    name: Request ephemeral hub (${{ matrix.kind }})
     needs: gate
     if: needs.gate.outputs.run == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [os, jvm]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -123,6 +127,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
+          HUB_KIND: ${{ matrix.kind }}
         run: bash .github/scripts/request_ephemeral_hub.sh consumer "$PUBLIC_SHA" "$RUNNER_TEMP/pub"
       - name: Dispatch the hub and fetch its results or encrypted session
         env:
@@ -131,14 +136,14 @@ jobs:
           PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
           PUBLIC_REPO: ${{ needs.gate.outputs.repo }}
           CONSUMER_RUN_ID: ${{ steps.consumer.outputs.run_id }}
-          HUB_KIND: ${{ env.EPHEMERAL_HUB_KIND }}
+          HUB_KIND: ${{ matrix.kind }}
           RUN_SUITE: ${{ env.EPHEMERAL_RUN_SUITE }}
         run: bash .github/scripts/request_ephemeral_hub.sh hub "$RUNNER_TEMP/pub/session-pub.pem" "$RUNNER_TEMP/hub"
       # Scrubbed by the provider and by the script.
       - uses: actions/upload-artifact@v7
         if: env.EPHEMERAL_RUN_SUITE == 'true'
         with:
-          name: ephemeral-hub-results-${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}
+          name: ephemeral-hub-results-${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}-${{ matrix.kind }}
           path: ${{ runner.temp }}/hub/
           retention-days: 1
           if-no-files-found: error
@@ -147,7 +152,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: env.EPHEMERAL_RUN_SUITE != 'true'
         with:
-          name: ephemeral-hub-session-${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}
+          name: ephemeral-hub-session-${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}-${{ matrix.kind }}
           path: |
             ${{ runner.temp }}/hub/session.key.enc
             ${{ runner.temp }}/hub/session.json.enc

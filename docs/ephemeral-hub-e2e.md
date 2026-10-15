@@ -7,6 +7,20 @@ included, on pushes to `main`, and on manual dispatch of a branch. It has no app
 and no label gate of its own. `e2e:skip` holds only the physical-hub lane. Docs-only PRs and
 verified dependency-only bot PRs skip it.
 
+## Two hub kinds
+
+Every run tests two kinds of hub side by side, one matrix job per kind:
+
+- `os` boots the full hub operating system. It is slower and the faithful one, so its verdict
+  matters most.
+- `jvm` boots a lighter runtime in about a minute and finishes in about ten. It is the early
+  signal.
+
+Each kind has its own request job, `Request ephemeral hub (<kind>)`, and its own test job,
+`e2e (ephemeral hub, <kind>)`. Every per-run artifact name ends in `-<kind>`, so each test job
+waits only for its own kind's hub. A failure in one kind does not cancel the other. Both
+workflows list the kinds as `matrix: { kind: [os, jvm] }` and must keep the lists equal.
+
 ## Two workflows
 
 - `.github/workflows/hub-e2e-ephemeral.yml` ("Hub E2E (ephemeral test hub)") is the test
@@ -31,19 +45,21 @@ These steps describe hold mode, where the test run drives the hub. The default
 [provider-run suite](#provider-run-suite) shares steps 1 to 3.
 
 1. The test workflow's `e2e` job generates a throwaway RSA-4096 keypair and uploads only the
-   public key as artifact `ephemeral-hub-public-key-<attempt>`.
+   public key as artifact `ephemeral-hub-public-key-<attempt>-<kind>`.
 2. For a pull request, the request workflow's `gate` job applies `.github/scripts/lane_gate.js`,
    checks that both secrets are set and skips PRs that change no hub-relevant file. When the lane
-   should not run, it uploads artifact `ephemeral-hub-unavailable` with the reason. For a push or
-   dispatch, the test workflow's own `request-hub` job does the secrets check.
+   should not run, it uploads artifact `ephemeral-hub-unavailable` with the reason, once for both
+   kinds. For a push or dispatch, the test workflow's own `request-hub` job does the secrets check
+   and uploads `ephemeral-hub-unavailable-<kind>`.
 3. `request-hub` publishes a fork head's release files with `.github/scripts/publish_fork_bundle.sh`
    and waits until the revision's files are served. For a pull request it then finds the running
    `pull_request` test run for the same head SHA, waiting up to 10 minutes.
-4. It dispatches the external workflow with the public key, head SHA, head repository and the
-   test run's ID, and waits up to 25 minutes for the hub's session. It relays that session, still
-   encrypted, as artifact `ephemeral-hub-session-<test run id>-<attempt>`.
-5. `e2e` waits up to 45 minutes for that artifact, in its own run or in the request run for its
-   head SHA. A request run that reports the lane unavailable makes `e2e` skip with that reason.
+4. It dispatches the external workflow with the public key, head SHA, head repository, the
+   test run's ID and its kind, and finds that provider run by the run ID and kind in its name. It
+   waits up to 25 minutes for the hub's session and relays it, still encrypted, as artifact
+   `ephemeral-hub-session-<test run id>-<attempt>-<kind>`.
+5. `e2e` waits up to 45 minutes for its own kind's artifact, in its own run or in the request run
+   for its head SHA. A request run that reports the lane unavailable makes `e2e` skip with that reason.
    A request run that ends without either artifact fails `e2e`. A PR whose base branch has no
    request workflow skips the lane, because nothing would request its hub.
 6. `e2e` decrypts the session, masks it, reads `hub_get_info` once to mask the hub's identity,
@@ -55,19 +71,17 @@ hub. To retry a push or dispatch, use **Re-run all jobs**.
 
 ## Provider-run suite
 
-Two workflow-level values select the mode. Both workflows carry them and must keep them equal.
+The workflow-level value `EPHEMERAL_RUN_SUITE` selects the mode for both kinds. Both workflows
+carry it and must keep it equal. It is `'true'` by default, and `'false'` restores hold mode.
 
-- `EPHEMERAL_RUN_SUITE` is `'true'` by default. `'false'` restores hold mode.
-- `EPHEMERAL_HUB_KIND` is `'os'` by default, a full hub operating system, or `'jvm'`, a lighter runtime that boots in a minute. It picks the kind of hub the provider boots.
-
-The shared script receives them as `RUN_SUITE` and `HUB_KIND` and dispatches them as the
-provider's `run_suite` and `kind` inputs.
+The shared script receives it as `RUN_SUITE` and the job's matrix kind as `HUB_KIND`, and
+dispatches them as the provider's `run_suite` and `kind` inputs.
 
 With `EPHEMERAL_RUN_SUITE: 'true'`, the provider runs `tests/e2e_test.py` and
 `tests/sdk_conformance_test.py` at the head revision next to the hub, so the suite no longer
 crosses a tunnel. The provider run ends with the suite, and `request-hub` waits up to 40 minutes
 for it to complete. It then downloads the artifact `ephemeral-hub-results-<provider run id>` and
-relays it as `ephemeral-hub-results-<test run id>-<attempt>`. The artifact holds:
+relays it as `ephemeral-hub-results-<test run id>-<attempt>-<kind>`. The artifact holds:
 
 - `results.json`, with `schema_version`, `kind`, `public_sha`, `public_repo`, `started_at`,
   `finished_at`, and an `e2e` and an `sdk` object. Each carries `status`, `exit_code`, the
@@ -84,7 +98,7 @@ the three logs with workflow commands disabled, writes the counts and failed tes
 summary, and uploads the files as its results. It passes only when `e2e.status` and `sdk.status`
 are both `passed`. An SDK leg that did not run fails the job, because conformance may not skip.
 The job also fails when `results.json` is missing, has another schema version or names another
-revision. In this mode it does not check out the head, install Python or
+revision or another kind. In this mode it does not check out the head, install Python or
 read `hub_get_info`. It still scrubs tunnel hostnames and MAC-shaped values from the files, as the
 session path masks them.
 

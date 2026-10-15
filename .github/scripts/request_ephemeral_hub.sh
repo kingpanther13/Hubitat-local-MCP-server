@@ -5,16 +5,20 @@
 #   release SHA              wait until bundle-artifacts serves shas/SHA/ (the provider installs it)
 #   consumer HEAD_SHA DIR    find the running pull_request run of hub-e2e-ephemeral.yml for HEAD_SHA,
 #                            write run_id/attempt to $GITHUB_OUTPUT and fetch its public key into DIR
-#   key RUN_ID ATTEMPT DIR   fetch that run attempt's public key into DIR
+#   key RUN_ID ATTEMPT DIR   fetch that run attempt's public key for HUB_KIND into DIR
 #   hub KEY_FILE DIR         dispatch the provider and download into DIR its suite results
 #                            (RUN_SUITE=true) or the still-encrypted session (RUN_SUITE=false)
 #
 # Env: GITHUB_REPOSITORY; GH_TOKEN (actions:read, or the provider token for `hub`);
+#      HUB_KIND (os|jvm, default os) picks the hub and the test run's key;
 #      `hub` also needs PROVIDER, PUBLIC_SHA, PUBLIC_REPO, CONSUMER_RUN_ID, and takes
-#      HUB_KIND (os|jvm, default os) and RUN_SUITE (true|false, default true).
+#      RUN_SUITE (true|false, default true).
 set -euo pipefail
 
 fail() { echo "::error::$1"; exit 1; }
+
+kind="${HUB_KIND:-os}"
+[[ "$kind" =~ ^(jvm|os)$ ]] || fail "HUB_KIND must be jvm or os."
 
 release() {
   for _ in $(seq 1 24); do
@@ -27,7 +31,7 @@ release() {
 
 key() {
   local deadline=$((SECONDS + 600))
-  until gh run download "$1" --repo "$GITHUB_REPOSITORY" --name "ephemeral-hub-public-key-$2" --dir "$3" >/dev/null 2>&1; do
+  until gh run download "$1" --repo "$GITHUB_REPOSITORY" --name "ephemeral-hub-public-key-$2-$kind" --dir "$3" >/dev/null 2>&1; do
     [ "$SECONDS" -lt "$deadline" ] || fail "Run $1 published no public key within 10 minutes."
     sleep 10
   done
@@ -87,21 +91,22 @@ results() {
 
 hub() {
   : "${PROVIDER:?}" "${PUBLIC_SHA:?}" "${PUBLIC_REPO:?}" "${CONSUMER_RUN_ID:?}" "${GH_TOKEN:?}"
-  local kind="${HUB_KIND:-os}" suite="${RUN_SUITE:-true}" since run_id="" deadline=$((SECONDS + 1500))
-  [[ "$kind" =~ ^(jvm|os)$ && "$suite" =~ ^(true|false)$ ]] || fail "HUB_KIND must be jvm or os, RUN_SUITE true or false."
+  local suite="${RUN_SUITE:-true}" since run_id="" deadline=$((SECONDS + 1500))
+  [[ "$suite" =~ ^(true|false)$ ]] || fail "RUN_SUITE must be true or false."
   since="$(date -u -d '-30 seconds' +%Y-%m-%dT%H:%M:%SZ)"
   gh workflow run ephemeral-hub.yml --repo "$PROVIDER" \
     -f public_key="$(base64 -w0 "$1")" -f public_sha="$PUBLIC_SHA" -f public_repo="$PUBLIC_REPO" \
     -f consumer_repo="$GITHUB_REPOSITORY" -f consumer_run_id="$CONSUMER_RUN_ID" \
     -f seconds=7200 -f watchdog=false -f kind="$kind" -f run_suite="$suite" >/dev/null
-  # The provider's run-name carries "for <consumer repo>#<consumer run id>", possibly followed by " (...)".
-  export SUFFIX=" for ${GITHUB_REPOSITORY}#${CONSUMER_RUN_ID}" SINCE="$since"
+  # The provider's run-name carries "for <consumer repo>#<consumer run id> (<kind>, ...)"; both kinds'
+  # runs share the run id, so the kind picks this one.
+  export MATCH=" for ${GITHUB_REPOSITORY}#${CONSUMER_RUN_ID} (${kind}," SINCE="$since"
   while [ -z "$run_id" ]; do
     [ "$SECONDS" -lt "$deadline" ] || fail "The hub provider run did not start within 25 minutes."
     sleep 10
     run_id="$(gh run list --repo "$PROVIDER" --workflow ephemeral-hub.yml --limit 50 \
       --json databaseId,displayTitle,createdAt \
-      --jq '[.[] | select((.displayTitle | endswith($ENV.SUFFIX) or contains($ENV.SUFFIX + " ")) and .createdAt >= $ENV.SINCE)] | first | .databaseId // empty' || true)"
+      --jq '[.[] | select((.displayTitle | contains($ENV.MATCH)) and .createdAt >= $ENV.SINCE)] | first | .databaseId // empty' || true)"
   done
   echo "Provider run $run_id."
   if [ "$suite" = true ]; then results "$run_id" "$2"; return; fi

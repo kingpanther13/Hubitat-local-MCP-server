@@ -8,6 +8,7 @@ name: Hub E2E (ephemeral test hub)
 # code only); for push and dispatch the `request-hub` job below does it. Either way the `e2e` job
 # generates the session keypair, publishes only the public key, and receives the session encrypted.
 # With EPHEMERAL_RUN_SUITE the provider runs both scripts itself and `e2e` only reports their results.
+# Each run requests one hub per kind: `os`, the full hub operating system, and `jvm`, a light runtime.
 
 on:
   pull_request:
@@ -19,10 +20,10 @@ on:
 permissions:
   contents: read
 
-# Keep in lockstep with hub-e2e-ephemeral-request.yml. EPHEMERAL_RUN_SUITE 'false' hands the hub to `e2e`.
+# Keep this and the kind matrices in lockstep with hub-e2e-ephemeral-request.yml. EPHEMERAL_RUN_SUITE
+# 'false' hands the hub to `e2e`.
 env:
   EPHEMERAL_RUN_SUITE: 'true'
-  EPHEMERAL_HUB_KIND: 'os'
 
 concurrency:
   group: hub-e2e-ephemeral-${{ github.event.pull_request.number || github.ref }}
@@ -30,9 +31,13 @@ concurrency:
 
 jobs:
   request-hub:
-    name: Request ephemeral hub
+    name: Request ephemeral hub (${{ matrix.kind }})
     # Trusted refs only; PR runs get their hub from hub-e2e-ephemeral-request.yml.
     if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [os, jvm]
     runs-on: ubuntu-latest
     timeout-minutes: 90
     permissions:
@@ -52,7 +57,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: steps.configured.outputs.ready != 'true'
         with:
-          name: ephemeral-hub-unavailable
+          name: ephemeral-hub-unavailable-${{ matrix.kind }}
           path: ${{ runner.temp }}/unavailable/reason.txt
           retention-days: 1
           overwrite: true
@@ -63,6 +68,7 @@ jobs:
         if: steps.configured.outputs.ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          HUB_KIND: ${{ matrix.kind }}
         run: bash .github/scripts/request_ephemeral_hub.sh key "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" "$RUNNER_TEMP/pub"
       - name: Dispatch the hub and fetch its results or encrypted session
         if: steps.configured.outputs.ready == 'true'
@@ -72,14 +78,14 @@ jobs:
           PUBLIC_SHA: ${{ github.sha }}
           PUBLIC_REPO: ${{ github.repository }}
           CONSUMER_RUN_ID: ${{ github.run_id }}
-          HUB_KIND: ${{ env.EPHEMERAL_HUB_KIND }}
+          HUB_KIND: ${{ matrix.kind }}
           RUN_SUITE: ${{ env.EPHEMERAL_RUN_SUITE }}
         run: bash .github/scripts/request_ephemeral_hub.sh hub "$RUNNER_TEMP/pub/session-pub.pem" "$RUNNER_TEMP/hub"
       # Scrubbed by the provider and by the script.
       - uses: actions/upload-artifact@v7
         if: steps.configured.outputs.ready == 'true' && env.EPHEMERAL_RUN_SUITE == 'true'
         with:
-          name: ephemeral-hub-results-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ephemeral-hub-results-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.kind }}
           path: ${{ runner.temp }}/hub/
           retention-days: 1
           if-no-files-found: error
@@ -88,7 +94,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: steps.configured.outputs.ready == 'true' && env.EPHEMERAL_RUN_SUITE != 'true'
         with:
-          name: ephemeral-hub-session-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ephemeral-hub-session-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.kind }}
           path: |
             ${{ runner.temp }}/hub/session.key.enc
             ${{ runner.temp }}/hub/session.json.enc
@@ -97,7 +103,11 @@ jobs:
           overwrite: true
 
   e2e:
-    name: e2e (ephemeral hub)
+    name: e2e (ephemeral hub, ${{ matrix.kind }})
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [os, jvm]
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -112,7 +122,7 @@ jobs:
           openssl pkey -in "$RUNNER_TEMP/session-priv.pem" -pubout -out "$RUNNER_TEMP/pub/session-pub.pem"
       - uses: actions/upload-artifact@v7
         with:
-          name: ephemeral-hub-public-key-${{ github.run_attempt }}
+          name: ephemeral-hub-public-key-${{ github.run_attempt }}-${{ matrix.kind }}
           path: ${{ runner.temp }}/pub/session-pub.pem
           retention-days: 1
           if-no-files-found: error
@@ -120,6 +130,7 @@ jobs:
         id: session
         env:
           GH_TOKEN: ${{ github.token }}
+          KIND: ${{ matrix.kind }}
           EVENT_NAME: ${{ github.event_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -131,7 +142,8 @@ jobs:
             msg="Ephemeral hub lane: request workflow not on the base branch; skipped."
             echo "$msg"; echo "$msg" >> "$GITHUB_STEP_SUMMARY"; echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          export SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" RESULTS="ephemeral-hub-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          export SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND" RESULTS="ephemeral-hub-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND"
+          export JOB="Request ephemeral hub ($KIND)"
           # Provider-run results arrive only after the whole suite has run.
           wait=2700; [ "$EPHEMERAL_RUN_SUITE" != true ] || wait=5400
           deadline=$((SECONDS + wait)); first_seen=$((SECONDS + 600)); grace=0
@@ -147,7 +159,7 @@ jobs:
             else
               src="$GITHUB_RUN_ID"
               conclusion="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs" \
-                --jq '.jobs[] | select(.name == "Request ephemeral hub") | .conclusion // ""' || true)"
+                --jq '.jobs[] | select(.name == $ENV.JOB) | .conclusion // ""' || true)"
               state="$([ -n "$conclusion" ] && echo completed || echo pending)"
             fi
             if [ -n "${src:-}" ]; then
@@ -162,8 +174,10 @@ jobs:
                 break
               fi
               if [ "$state" = completed ]; then
-                if [ "$conclusion" = success ] && grep -qxF ephemeral-hub-unavailable <<< "$names"; then
-                  gh run download "$src" --repo "$GITHUB_REPOSITORY" --name ephemeral-hub-unavailable --dir "$RUNNER_TEMP/unavailable"
+                # The PR gate writes one reason for both kinds; the push/dispatch request job one per kind.
+                unavailable="$(grep -xE "ephemeral-hub-unavailable(-$KIND)?" <<< "$names" | head -n1 || true)"
+                if [ "$conclusion" = success ] && [ -n "$unavailable" ]; then
+                  gh run download "$src" --repo "$GITHUB_REPOSITORY" --name "$unavailable" --dir "$RUNNER_TEMP/unavailable"
                   reason="$(head -n1 "$RUNNER_TEMP/unavailable/reason.txt")"
                   echo "$reason"; echo "$reason" >> "$GITHUB_STEP_SUMMARY"
                   echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
@@ -197,6 +211,7 @@ jobs:
         if: steps.session.outputs.suite == 'true'
         env:
           EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          KIND: ${{ matrix.kind }}
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/results"
@@ -223,6 +238,8 @@ jobs:
           jq -e '.schema_version == 1' results.json >/dev/null || { echo "::error::Unsupported results.json schema."; exit 1; }
           jq -e --arg sha "$EXPECTED_SHA" '.public_sha == $sha' results.json >/dev/null \
             || { echo "::error::The provider-run results are for another revision."; exit 1; }
+          jq -e --arg kind "$KIND" '.kind == $kind' results.json >/dev/null \
+            || { echo "::error::The provider-run results are for another hub kind."; exit 1; }
           jq -r '"### Ephemeral hub E2E (provider-run, \(.kind) hub)", "",
             "E2E \(.e2e.status): passed \(.e2e.passed), failed \(.e2e.failed), skipped \(.e2e.skipped) of \(.e2e.total), exit \(.e2e.exit_code).", "",
             "SDK conformance \(.sdk.status): passed \(.sdk.passed), failed \(.sdk.failed), exit \(.sdk.exit_code // "none").", "",
@@ -303,7 +320,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: ${{ !cancelled() && (steps.deps.outcome == 'success' || steps.session.outputs.suite == 'true') }}
         with:
-          name: ephemeral-e2e-results-${{ github.run_attempt }}
+          name: ephemeral-e2e-results-${{ github.run_attempt }}-${{ matrix.kind }}
           path: ${{ runner.temp }}/results/
           retention-days: 14
           if-no-files-found: warn
