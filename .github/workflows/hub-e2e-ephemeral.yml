@@ -13,18 +13,16 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened]
   push:
-    branches: [main]
+    # feat/emulated-e2e-lane: temporary, validates the lane on PR 545 before it exists on main.
+    branches: [main, feat/emulated-e2e-lane]
+  # Dispatch tests the dispatched ref itself; fork heads run only through pull_request_target.
   workflow_dispatch:
-    inputs:
-      pr_number:
-        description: 'PR number to test (blank = current ref)'
-        required: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: hub-e2e-ephemeral-${{ github.event.pull_request.number || inputs.pr_number || github.ref }}
+  group: hub-e2e-ephemeral-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -57,7 +55,7 @@ jobs:
           LANE_RUN: ${{ steps.lane.outputs.run }}
           LANE_SKIP: ${{ steps.lane.outputs.skip }}
           EVENT_NAME: ${{ github.event_name }}
-          PR_NUMBER: ${{ github.event.pull_request.number || inputs.pr_number }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
@@ -68,10 +66,6 @@ jobs:
           [ "$LANE_RUN" = true ] || [ "$LANE_SKIP" = true ] || skip "Ephemeral hub E2E not required for this PR."
           if [ "$EVENT_NAME" = pull_request_target ]; then
             sha="$PR_HEAD_SHA"; repo="$PR_HEAD_REPO"
-          elif [ -n "$PR_NUMBER" ]; then
-            [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || { echo "::error::pr_number must be numeric"; exit 1; }
-            head="$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '"\(.head.sha) \(.head.repo.full_name)"')"
-            sha="${head% *}"; repo="${head#* }"
           else
             sha="$GITHUB_SHA"; repo="$GITHUB_REPOSITORY"
           fi
@@ -121,7 +115,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASE_REPO: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
-          PR_INPUT: ${{ inputs.pr_number }}
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: bash .github/scripts/publish_fork_bundle.sh

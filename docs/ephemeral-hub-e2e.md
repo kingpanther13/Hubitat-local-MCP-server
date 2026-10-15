@@ -3,8 +3,8 @@
 `.github/workflows/hub-e2e-ephemeral.yml` ("Hub E2E (ephemeral test hub)") runs the full
 `tests/e2e_test.py` registry and then `tests/sdk_conformance_test.py` against a disposable test
 hub. An external workflow boots that hub for one run and ends it when the run completes. The lane
-runs on every pull request, forks included, on pushes to `main`, and on manual dispatch with an
-optional `pr_number`. It has no approval environment and no label gate. `e2e:skip` holds only the
+runs on every pull request, forks included, on pushes to `main`, and on manual dispatch of a
+branch (dispatch tests that branch's own head; fork heads run only through `pull_request_target`). It has no approval environment and no label gate. `e2e:skip` holds only the
 physical-hub lane. Docs-only PRs and verified dependency-only bot PRs skip it.
 
 ## How a hub is requested
