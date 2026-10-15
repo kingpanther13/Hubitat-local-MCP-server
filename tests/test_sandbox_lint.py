@@ -1716,8 +1716,8 @@ def getToolGuideSections() {
     return [
         best_practice_reference: '''If you are calling one of these tools, you must read its section for that section's key:
 native Rule Machine.''',
-        set_rule_reference: '''setVariable modeName discrete events Variable comparison lowercase
-Extended per-capability spec shapes selectTriggers nested subExpression expressionNotLive subscriptionsNotLive''',
+        set_rule_reference: '''operation:'discover' setVariable modeName lowercase
+selectTriggers nested subExpression expressionNotLive subscriptionsNotLive''',
         device_authorization: '''## Device Authorization (CRITICAL)
 Body.''',
         virtual_devices: _virtualDevicesGuideSection(),
@@ -1780,9 +1780,8 @@ def test_check_tool_guide_generated_unresolvable_section_method_flagged(monkeypa
 @pytest.mark.parametrize("anchor", [
     "If you are calling one of these tools, you must read its section for that section's key:",
     "native Rule Machine",
-    "setVariable", "modeName", "discrete events", "Variable comparison", "lowercase",
-    "Extended per-capability spec shapes", "selectTriggers", "nested subExpression",
-    "expressionNotLive", "subscriptionsNotLive",
+    "operation:'discover'", "setVariable", "modeName", "lowercase", "selectTriggers",
+    "nested subExpression", "expressionNotLive", "subscriptionsNotLive",
 ])
 def test_regenerating_guide_cannot_hide_missing_served_api_guidance(monkeypatch, tmp_path, anchor):
     _write_generated_tree(monkeypatch, tmp_path)

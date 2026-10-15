@@ -470,10 +470,10 @@ class RelayBudgetSpec extends ToolSpecBase {
         def clicks = []
         installBulkStubs(triggerCalls, actionCalls, clicks, true)
 
-        when: 'trigger[0] is a non-Map (recorded inline, no _rmAddTrigger call) while the budget reports exhausted'
+        when: 'trigger[0] fails in the hub (its rule pages are not served) while the budget reports exhausted'
         def result = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 2000L,
             addTriggers: [
-                'not-a-map',
+                [capability: 'Switch', state: 'on', deviceIds: [8]],
                 [capability: 'Switch', state: 'off', deviceIds: [9]],
                 [capability: 'Motion', state: 'active', deviceIds: [10]],
             ],
@@ -502,7 +502,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         and: 'the stop is named and the trailing updateRule is not fired'
         result.bulkStoppedAfter == 'addTriggers[0]'
         result.finalisationNotAttempted == true
-        result.error?.startsWith('Stopped after addTriggers[0] failed: addTriggers[0] is not a Map')
+        result.error?.startsWith('Stopped after addTriggers[0] failed:')
         !clicks.contains('updateRule')
 
         and: 'no internal budget marker is echoed back'

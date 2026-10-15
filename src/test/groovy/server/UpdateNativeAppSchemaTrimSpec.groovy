@@ -224,17 +224,15 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !addAction.contains('Capability families and the spec fields each accepts')
         !addRequiredExpression.contains("RM's STPage capability list")
 
-        and: 'they keep a capability-name summary + a guide pointer (agent never blind)'
-        addTrigger.contains('Periodic Schedule')
-        addTrigger.contains("hub_get_tool_guide(section='set_rule_reference_triggers')")
+        and: 'they point at discover, which serves the per-capability fields'
+        addTrigger.contains("operation:'discover'")
         addAction.contains('ifThen')
+        addRequiredExpression.contains("operation:'discover'")
         addRequiredExpression.contains("hub_get_tool_guide(section='set_rule_reference_conditions')")
 
-        and: 'the full per-capability reference lives in the set_rule_reference guide'
-        guide.contains('`addTrigger` capability families')
-        guide.contains('`addAction` capability families')
-        guide.contains('`addRequiredExpression` STPage capability list')
-        guide.contains('Periodic Schedule')
+        and: 'the guide names discover instead of listing capabilities'
+        guide.contains('Shapes come from discover')
+        !guide.contains('`addTrigger` capability families')
 
         and: 'no marker tokens leaked into the response'
         !addTrigger.contains(OPEN_MARKER) && !addTrigger.contains(CLOSE_MARKER)
@@ -419,19 +417,17 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // actually reachable through the MCP layer at runtime. This is the test that
         // proves flat-mode callers can fetch the reference content the trim points them at.
         //
-        // 5 unique keys across the 5 trimmed description sites -- issue #392 retargeted the
-        // ones whose parent was oversized at the narrower sub-key that actually answers them:
-        // - set_rule_reference_triggers (addTrigger)
+        // The trimmed description sites point at these sub-keys (trigger fields come from discover):
         // - set_rule_reference_conditions (addRequiredExpression)
         // - performance_devices (hub_list_devices top-level + .fields property)
         // - builtin_app_tools_apps (hub_list_hpm_packages -- drift prose lives here post-merge)
         // - set_rule_create_reference (hub_set_rule create paragraph; parent is already small)
-        pointerSections.containsAll(['set_rule_reference_triggers', 'set_rule_reference_conditions',
+        pointerSections.containsAll(['set_rule_reference_conditions',
                                      'performance_devices', 'builtin_app_tools_apps', 'set_rule_create_reference'])
         pointerSections.every { it in validSections }
 
         and: 'each of the 4 trimmed tools carries at least one valid hub_get_tool_guide pointer in its flat-mode reachable description text'
-        addTriggerDesc =~ pointerPattern
+        addTriggerDesc.contains("operation:'discover'")
         addRequiredExprDesc =~ pointerPattern
         listDevicesDef.description =~ pointerPattern
         hpmPackagesDef.description =~ pointerPattern
@@ -486,14 +482,9 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         createNativeResult.section == 'set_rule_create_reference'
 
         and: 'content carries sentinel phrases unique to each section -- catches drift to a stub even if the map key survives'
-        // set_rule_reference must include all three sub-headings (catches
-        // a stub-replacement that drops one of the three families).
-        updateNativeResult.content.contains('`addTrigger` capability families')
-        updateNativeResult.content.contains('`addAction` capability families')
-        updateNativeResult.content.contains('`addRequiredExpression` STPage capability list')
-        // Plus a few specific capability names from the deepest bullets so a
-        // halving of the body during refactor would show up here.
-        updateNativeResult.content.contains('Periodic Schedule')
+        updateNativeResult.content.contains('Shapes come from discover')
+        updateNativeResult.content.contains('`addRequiredExpression` operator contract')
+        updateNativeResult.content.contains('`walkStep` schema-aware wizard walker')
         updateNativeResult.content.contains('Custom Attribute')
 
         and: 'set_rule_create_reference must include both subsections'
@@ -653,11 +644,8 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         !ex.message.contains(OPEN_MARKER)
         !ex.message.contains(CLOSE_MARKER)
 
-        and: 'the capability-name summary + guide pointers from BOTH addTrigger and addRequiredExpression survive'
-        // The exhaustive families moved to the set_rule_reference guide; the param
-        // descriptions retain the capability-name summary + guide pointer, which is what the
-        // hint surfaces (token-only strip). An AND assertion catches one going stale.
-        ex.message.contains('Periodic Schedule')      // addTrigger name summary
+        and: 'the discover and guide pointers from addTrigger and addRequiredExpression survive the strip'
+        ex.message.contains("kind:'trigger'")      // addTrigger discover pointer
         ex.message.contains("hub_get_tool_guide(section='set_rule_reference_conditions')")  // addRequiredExpression guide pointer
     }
 

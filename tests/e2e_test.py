@@ -6160,7 +6160,7 @@ class TestRunner:
             bad_time = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                 "args": {"appId": app_id, "addTrigger": {"capability": "Certain Time (and optional date)",
                          "time": "17:30"}, "confirm": True}})
-            assert bad_time.get("success") is False and "addTrigger.time must be one of" in str(bad_time.get("error", "")), \
+            assert bad_time.get("success") is False and "addTrigger.time must be 'A specific time', 'Sunrise' or 'Sunset'" in str(bad_time.get("error", "")), \
                 f"a Certain Time time outside its options should be refused, got: {bad_time}"
             # The remaining handler-level validators run as ordered patches in one logical
             # continuation-aware call. Each is pre-write, so the batch may continue after a
@@ -6178,17 +6178,17 @@ class TestRunner:
                 ({"addAction": {"capability": "runRule", "ruleIds": ["*"]}},
                  ('"this rule" target', "privateBoolean")),
                 ({"addRequiredExpression": {"conditions": [{"capability": "Days of week"}]}},
-                 ("structured condition shortcut",)),
+                 ("this tool does not model",)),
                 ({"addRequiredExpression": {"conditions": [{"capability": "Lock codes"}]}},
-                 ("lock device", "code name")),
+                 ("this tool does not model",)),
                 ({"addRequiredExpression": {"conditions": [{"capability": "Switch",
                     "deviceIds": [int(self.get_test_switch_id())], "comparator": "*changed*"}]}},
-                 ("not valid as a condition", "trigger row")),
-                ({"addRequiredExpression": {"conditions": [{"capability": "Water Sensor",
-                    "comparator": "*changed*"}]}}, ("not valid as a condition", "trigger row")),
+                 ("has no comparator for a switch condition",)),
+                ({"addRequiredExpression": {"conditions": [{"capability": "Water sensor",
+                    "comparator": "*changed*"}]}}, ("has no comparator for a water sensor condition",)),
                 ({"addTrigger": {"capability": "Switch",
                     "deviceIds": [int(self.get_test_switch_id())], "state": "on",
-                    "condition": {"capability": "Lock codes"}}}, ("lock device",)),
+                    "condition": {"capability": "Lock codes"}}}, ("this tool does not model",)),
                 ({"addAction": {"capability": "hsm", "command": "armEverything"}},
                  ("armaway", "armrules")),
                 ({"addAction": {"capability": "colorTemp", "action": "setColorTemp"}},
@@ -6213,14 +6213,14 @@ class TestRunner:
                  ("is not a file on the hub",)),
                 ({"addAction": {"capability": "ifThen", "expression": {
                     "conditions": [{"capability": "Last Event Device"}]}}},
-                 ("not usable as a condition",)),
+                 ("this tool does not model",)),
                 ({"replaceRequiredExpression": {"conditions": [{"capability": "Switch",
                     "deviceIds": [int(self.get_test_switch_id())], "state": "on"}]}},
                  ("addrequiredexpression",)),
                 ({"addAction": {"capability": "switch", "state": "on"}},
                  ("action:",)),
                 ({"addRequiredExpression": {"conditions": [{"capability": "Last Event Device"}]}},
-                 ("not usable as a condition", "in actions")),
+                 ("this tool does not model",)),
             ]
             # One batch per refusal: the first refused op stops a patches batch, so a combined batch
             # would only ever validate its first spec.
@@ -6244,9 +6244,8 @@ class TestRunner:
                 f"switch addAction with state: should fail loud steering to action:, got: {action_state}"
             last_event_cond = refusal_entries[-1]
             assert last_event_cond.get("success") is False \
-                and "not usable as a condition" in str(last_event_cond.get("error", "")).lower() \
-                and "in actions" in str(last_event_cond.get("error", "")).lower(), \
-                f"Last Event Device condition should fail loud as a non-condition, got: {last_event_cond}"
+                and "this tool does not model" in str(last_event_cond.get("error", "")).lower(), \
+                f"Last Event Device condition should be refused as not modelled, got: {last_event_cond}"
             # The refused fileAppend/fileDelete rows were rolled back: the rule still renders, no row
             # names the file, and none is orphaned. Checked before the runRule accept below adds a row.
             assert missing_file not in self._rule_page_text(app_id), \
@@ -6605,8 +6604,7 @@ class TestRunner:
                 "args": {"appId": app_id, "addAction": {"capability": "ifThen",
                          "expression": {"conditions": [{"capability": "Lock codes"}]}}, "confirm": True}})
             assert if_lock.get("success") is False \
-                and "lock device" in str(if_lock.get("error", "")).lower() \
-                and "code name" in str(if_lock.get("error", "")).lower() \
+                and "this tool does not model" in str(if_lock.get("error", "")).lower() \
                 and "not in doactpage option list" not in str(if_lock.get("error", "")).lower(), \
                 f"ifThen Lock codes condition should fail loud with the tailored unconfigurable steer, got: {if_lock}"
             assert "not touched" in str(if_lock.get("restoreHint", "")).lower(), \
@@ -8260,7 +8258,9 @@ class TestRunner:
         finally:
             if new_id:
                 self._delete_native(new_id)
-            self._delete_native(app_id)
+            # The native restore deletes the old rule itself.
+            if self._app_still_present(app_id):
+                self._delete_native(app_id)
 
     @test("native_apps")
     def test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy(self) -> None:
@@ -8630,7 +8630,7 @@ class TestRunner:
             stopped = self._rm_stop_call(app_id, {
                 "addTriggers": [
                     {"capability": "Switch", "deviceIds": [sw], "state": "off"},
-                    {"capability": "Temperature", "value": "increased"},
+                    {"capability": "Switch", "deviceIds": [sw], "state": "purple"},
                     {"capability": "Switch", "deviceIds": [sw], "state": "on"},
                 ],
                 "addActions": [{"capability": "log", "message": skipped_msg}],
@@ -8639,7 +8639,8 @@ class TestRunner:
             actions = stopped.get("actions") or []
             assert len(triggers) == 3 and len(actions) == 1 \
                 and triggers[0].get("success") is not False and not triggers[0].get("partial") \
-                and triggers[1].get("success") is False, \
+                and triggers[1].get("success") is False \
+                and "is not a state Rule Machine offers for Switch" in str(triggers[1].get("error", "")), \
                 f"expected a clean trigger, then the refusal, then the skipped tail: {stopped}"
             self._assert_bulk_stop(stopped, "addTriggers[1]", triggers[2:] + actions)
             states_after = _switch_trigger_states()
@@ -8933,7 +8934,7 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_rule_switch_only_on_and_device_list_no_false_partial(self) -> None:
-        # switch off with onlyOn=true writes optSwitch.<N> (revealed only AFTER the device
+        # switch off with onlyIfChanged=true writes optSwitch.<N> (revealed only AFTER the device
         # picker, so it must be written last). NOTE: a switch action does NOT exercise the
         # device-list partial re-tag -- its device picker (onOffSwitch.<N>) is followed by
         # onOff/optSwitch, so it advances the schema and never gets a cosmetic silent_rejection.
@@ -8941,14 +8942,14 @@ class TestRunner:
         sw = int(self.get_test_switch_id())
         app_id, created = self._create_native_rule("SwitchOnlyOn", {
             "addActions": [
-                {"capability": "switch", "action": "off", "deviceIds": [sw], "onlyOn": True}],
+                {"capability": "switch", "action": "off", "deviceIds": [sw], "onlyIfChanged": True}],
         }, return_result=True)
         try:
             if created is not None:
                 actions = created.get("actions") or []
                 assert len(actions) == 1, f"create did not return the bundled switch action: {created}"
                 assert actions[0].get("success") is not False, \
-                    f"switch onlyOn addAction reported failure: {actions[0]}"
+                    f"switch onlyIfChanged addAction reported failure: {actions[0]}"
 
             cfg = self._get_persisted_rule_config(app_id)
             settings = cfg.get("settings") or {}
@@ -8958,7 +8959,7 @@ class TestRunner:
             assert any(str(settings.get(f"onOff.{slot}")).lower() in ("false", "off")
                        and str(settings.get(f"optSwitch.{slot}")).lower() in ("true", "on")
                        for slot in switch_slots), \
-                f"switch device/off/onlyOn did not persist together in one action slot: {settings}"
+                f"switch device/off/onlyIfChanged did not persist together in one action slot: {settings}"
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
@@ -9350,43 +9351,20 @@ class TestRunner:
 
     @test("native_apps")
     def test_set_rule_re_custom_attribute_enum_changed_not_representable(self) -> None:
-        # hub_set_rule edit -> addRequiredExpression with an ENUM-recognized Custom
-        # Attribute condition and a no-value state-change comparator ('*changed*'). On
-        # the Required Expression surface, the live hub's value picker offers on/off only
-        # (NO change-equivalent option), so '*changed*' is genuinely unrepresentable: the
-        # fix records a comparator_not_representable_for_enum_attribute skip, flips
-        # partial:true, and emits an actionable repairHint, never silently dropping the
-        # comparator as a clean success. The comparator field (RelrDev_<N>) is never
-        # falsely claimed applied. This is the client-observable not-representable
-        # behaviour, pinned end-to-end against a live hub. (The TRIGGER surface routes
-        # instead, because its picker has a change option; see the sibling trigger scenario.)
+        # Rule Machine's condition comparators for a Custom Attribute leave out '*changed*' (only a
+        # trigger can watch for a change), so the tool refuses it before any write, naming RM's list.
         sw = int(self.get_test_switch_id())
         app_id = self._create_native_rule("CustEnumChangedRE")
         try:
-            result = self._call_slow_rule({
-                "appId": app_id,
+            result = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": int(app_id), "confirm": True,
                 "addRequiredExpression": {"conditions": [
                     {"capability": "Custom Attribute", "deviceIds": [sw],
                      "attribute": "switch", "comparator": "*changed*"}]},
-            })
-            # The add still commits the rest of the condition (success is not a hard failure) ...
-            assert result.get("success") is not False, f"addRequiredExpression reported failure: {result}"
-            # ... but the unrepresentable comparator must NOT be falsely claimed applied.
-            applied = result.get("settingsApplied") or []
-            assert not any(str(k).startswith("RelrDev") for k in applied), \
-                f"unrepresentable comparator was falsely claimed applied: settingsApplied={applied}"
-            # The discriminating contract: a genuine not-representable skip flips partial.
-            skipped = result.get("settingsSkipped") or []
-            not_repr = [s for s in skipped if isinstance(s, dict)
-                        and s.get("reason") == "comparator_not_representable_for_enum_attribute"]
-            assert not_repr, \
-                f"missing comparator_not_representable_for_enum_attribute skip (the silent-drop bug): {result}"
-            assert result.get("partial") is True, \
-                f"unrepresentable comparator did not flip partial=true (silent false-success): {result}"
-            # An actionable repair hint must be present and name the cause.
-            hints = result.get("repairHints") or []
-            assert any("cannot be represented" in str(h) for h in hints), \
-                f"missing actionable repairHint for the unrepresentable comparator: hints={hints}"
+            }})
+            err = str(result.get("error", ""))
+            assert result.get("success") is False                 and "comparator '*changed*' is not one Rule Machine offers for a Custom Attribute condition" in err                 and "RM is not touched" in err and result.get("backup") is None,                 f"a Custom Attribute *changed* condition should be refused before any write: {result}"
+            assert (result.get("health") or {}).get("requiredExpressionTokens") == 0,                 f"the refused Required Expression changed the rule: {result.get('health')}"
         finally:
             self._delete_native(app_id)
 
@@ -9472,7 +9450,7 @@ class TestRunner:
                     "conditions": [{"capability": "Mode", "state": f"{PREFIX}NoSuchMode"}]}}})
             assert refused.get("success") is False and "NoSuchMode" in str(refused.get("error")), \
                 f"a replace naming an unknown mode was not refused by name: {refused}"
-            assert "No changes were made" in str(refused.get("restoreHint")), refused
+            assert "the app was not touched" in str(refused.get("restoreHint")), refused
             blob = str(self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_get_app_config", "args": {"appId": app_id}})).lower()
             assert "is off" in blob, f"the refused replace changed the expression: {blob[:600]}"
@@ -9779,10 +9757,10 @@ class TestRunner:
             # The type filter rejects 'switch' for a numeric var one of two ways, depending on
             # whether the device exposes ANY numeric attribute: if some remain, 'switch' is "not
             # in the device's attribute enum" (with the available list); if none do, the filtered
-            # enum is empty ("no enumerable options"). Both are the correct fail-loud verdict for
+            # enum is empty ("offers no attribute"). Both are the correct fail-loud verdict for
             # the excluded attribute -- accept either, and confirm the requested attribute is named.
             assert ("not in the device's attribute enum" in neg_err
-                    or "no enumerable options" in neg_err), \
+                    or "offers no attribute" in neg_err), \
                 f"negative type-filter rejection did not name a filtered-attribute-enum frame: {neg}"
             assert "tCustomAttr" in neg_err or "switch" in neg_err, \
                 f"negative rejection should name the attribute field or the requested attribute; error={neg_err}"
@@ -10245,10 +10223,11 @@ class TestRunner:
             self._set_rule(app_id, {"replaceActions": [{"capability": "log", "message": "final"}]}, strict=True)
             self._assert_rule_healthy(app_id)
 
-            # Fail-closed bulk actions: the clean first action lands, the switch state: steer refuses
-            # the second, and the third is never written. The refusal is decided per item inside the
-            # add, so it stops the batch rather than refusing the call up front.
-            refused_spec = {"capability": "switch", "state": "on", "deviceIds": [int(self.get_test_switch_id())]}
+            # Fail-closed bulk actions: the clean first action lands, the second is refused by RM's
+            # live Run Custom Action capability list (only the live page can decide it, so it stops the
+            # batch rather than refusing the call up front), and the third is never written.
+            refused_spec = {"capability": "runCommand", "command": "on", "capabilityFilter": "E2E Not A Capability",
+                            "deviceIds": [int(self.get_test_switch_id())]}
             bulk_kept, bulk_skipped = "E2E bulk stop kept", "E2E bulk stop skipped"
             bulk_stop = self._rm_stop_call(app_id, {"addActions": [
                 {"capability": "log", "message": bulk_kept},
@@ -10258,8 +10237,8 @@ class TestRunner:
             bulk_rows = bulk_stop.get("actions") or []
             assert len(bulk_rows) == 3 and bulk_rows[0].get("success") is not False \
                 and not bulk_rows[0].get("partial") and bulk_rows[1].get("success") is False \
-                and "action:" in str(bulk_rows[1].get("error", "")), \
-                f"expected a clean action, then the state: refusal, then the skipped tail: {bulk_stop}"
+                and "Run Custom Action offers" in str(bulk_rows[1].get("error", "")), \
+                f"expected a clean action, then the capability-filter refusal, then the skipped tail: {bulk_stop}"
             self._assert_bulk_stop(bulk_stop, "addActions[1]", bulk_rows[2:])
             page = self._rule_page_text(app_id)
             assert bulk_kept in page and bulk_skipped not in page, \
@@ -10270,7 +10249,7 @@ class TestRunner:
             repl_kept, repl_skipped = "E2E replace stop kept", "E2E replace stop skipped"
             pre_clear = self._rm_stop_call(app_id, {"replaceActions": [
                 {"capability": "log", "message": repl_kept},
-                refused_spec,
+                {"capability": "switch", "state": "on", "deviceIds": [int(self.get_test_switch_id())]},
                 {"capability": "log", "message": repl_skipped},
             ]})
             assert pre_clear.get("success") is False and not pre_clear.get("addedActions") \
@@ -10402,25 +10381,6 @@ class TestRunner:
                 f"refused origLabel object changed the rule label: {label_before!r} -> {label_after!r}"
 
             sw = int(self.get_test_switch_id())
-            # A success:true + partial:true op stops the batch too. The enum Custom Attribute
-            # '*changed*' Required Expression is the live-proven partial (see
-            # test_set_rule_re_custom_attribute_enum_changed_not_representable).
-            op_kept, op_skipped = "E2E patch stop kept", "E2E patch stop skipped"
-            partial_stop = self._rm_stop_call(app_id, {"patches": [
-                {"addAction": {"capability": "log", "message": op_kept}},
-                {"addRequiredExpression": {"conditions": [
-                    {"capability": "Custom Attribute", "deviceIds": [sw],
-                     "attribute": "switch", "comparator": "*changed*"}]}},
-                {"addAction": {"capability": "log", "message": op_skipped}},
-            ]})
-            op_rows = _rule_patch_rows(partial_stop)
-            assert len(op_rows) == 3 and op_rows[0].get("success") is not False \
-                and op_rows[1].get("op") == "addRequiredExpression" \
-                and op_rows[1].get("success") is not False and op_rows[1].get("partial") is True \
-                and op_rows[2].get("op") == "addAction", \
-                f"expected a clean op, then the partial Required Expression, then the skipped op: {partial_stop}"
-            self._assert_bulk_stop(partial_stop, "patches[1]", op_rows[2:], partial_item=True)
-
             # An op's inner list stops at its own failed item and names the inner position; the later
             # inner item and the later op are both skipped.
             inner_kept, inner_skipped, later_skipped = \
@@ -10444,8 +10404,8 @@ class TestRunner:
             self._assert_bulk_stop(inner_stop, "patches[0].addActions[1]", inner_items[2:] + later_rows)
 
             page = self._rule_page_text(app_id)
-            assert op_kept in page and inner_kept in page \
-                and not any(marker in page for marker in (op_skipped, inner_skipped, later_skipped)), \
+            assert inner_kept in page \
+                and not any(marker in page for marker in (inner_skipped, later_skipped)), \
                 f"stopped patches must keep their clean prefixes and never write the skipped items: {page}"
         finally:
             self._delete_native(app_id)
@@ -10582,7 +10542,7 @@ class TestRunner:
             raise AssertionError(f"an action-argument-refused create left rule {leftover} behind")
 
         # Fail-closed create across sections: the clean trigger lands, a trigger only the live wizard
-        # can refuse (a capability outside its picker) stops the create, and the Required Expression
+        # can refuse (a state outside RM's Switch picker) stops the create, and the Required Expression
         # and action sections are never written. A new rule has no pre-operation backup, so this
         # fixture is deleted rather than restored.
         self._native_rule_fixture_seq = getattr(self, "_native_rule_fixture_seq", 0) + 1
@@ -10595,7 +10555,7 @@ class TestRunner:
                     "name": stop_label,
                     "addTriggers": [
                         {"capability": "Switch", "deviceIds": [sw], "state": "on"},
-                        {"capability": "E2E Not A Trigger Capability"},
+                        {"capability": "Switch", "deviceIds": [sw], "state": "purple"},
                     ],
                     "addRequiredExpression": {"conditions": [
                         {"capability": "Switch", "deviceIds": [sw], "state": "on"}]},
@@ -10648,8 +10608,8 @@ class TestRunner:
     @test("native_apps")
     def test_set_rule_required_expression_refusals_and_unoffered_comparator(self) -> None:
         # Argument refusals on a Required Expression come before the pre-edit backup (none is
-        # taken), and a comparator RM's editor does not offer for the condition (a device-state
-        # Switch has no comparator field) is reported as not added as asked, never as success.
+        # taken), including a comparator Rule Machine does not offer for the condition (a Switch
+        # condition has no comparator).
         sw = int(self.get_test_switch_id())
         app_id = self._create_native_rule("REUnoffered")
         try:
@@ -10667,12 +10627,12 @@ class TestRunner:
             act = self._call_slow_rule({"appId": app_id, "addAction": {
                 "capability": "Switch", "action": "on", "deviceIds": [sw]}})
             assert act.get("success") is True, f"addAction with capability 'Switch' failed: {act}"
-            bad = self._call_slow_rule({"appId": app_id, "addRequiredExpression": {"conditions": [
-                {"capability": "Switch", "deviceIds": [sw], "comparator": ">", "state": "on"}]}})
-            assert bad.get("success") is False, f"an unoffered comparator was reported as success: {bad}"
-            reasons = [x.get("reason") for x in bad.get("settingsSkipped") or []]
-            assert "comparator_not_offered" in reasons, \
-                f"the skipped comparator should say RM does not offer it: {bad.get('settingsSkipped')}"
+            bad = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": int(app_id), "confirm": True, "addRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "comparator": ">", "state": "on"}]}}})
+            assert bad.get("success") is False and bad.get("backup") is None \
+                and "Rule Machine has no comparator for a Switch condition" in str(bad.get("error", "")), \
+                f"an unoffered comparator should be refused before any write: {bad}"
         finally:
             self._delete_native(app_id)
 
@@ -16769,10 +16729,9 @@ class TestRunner:
 
         parent_len = len(parent.get("content", ""))
         sub_content = sub.get("content", "")
-        # The motivating case: learning the Mode / Variable condition shapes used to cost the
-        # whole section. The STPage capability list is where those shapes are documented.
-        assert "STPage capability list" in sub_content, f"condition reference missing: {sub_content[:200]!r}"
-        assert "`addTrigger` capability families" not in sub_content, "sub-section leaked the trigger reference"
+        # The condition sub-section carries the Required Expression rules without the rest of the section.
+        assert "operator contract" in sub_content, f"condition reference missing: {sub_content[:200]!r}"
+        assert "Shapes come from discover" not in sub_content, "sub-section leaked the shapes reference"
         assert len(sub_content) < parent_len / 2, (
             f"sub-section is {len(sub_content)} chars against a "
             f"{parent_len}-char parent -- the split is not paying off"

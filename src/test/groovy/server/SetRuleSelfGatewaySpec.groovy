@@ -155,7 +155,8 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         script._setRuleFromEnvelope([operation: 'discover']).args == [addAction: [discover: true]]
         script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'trigger']]).args == [addTrigger: [discover: true]]
         script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'action', capability: 'switch', action: 'on']]).args == [addAction: [discover: [capability: 'switch', action: 'on']]]
-        script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'trigger', capability: 'Switch']]).args == [addTrigger: [discover: true]]
+        script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'trigger', capability: 'Switch']]).args == [addTrigger: [discover: [kind: 'trigger', capability: 'Switch']]]
+        script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'condition']]).args == [addTrigger: [discover: [kind: 'condition', capability: null]]]
     }
 
     def "discover with a capability selector and no rule id returns that capability's schema, never the create arm"() {
@@ -166,6 +167,37 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         notThrown(IllegalArgumentException)
         r.toString().contains('switchActs')
         script._isSetRuleSchemaOnlyCall([addAction: [discover: [capability: 'switch']]])
+    }
+
+    def "an edit that restarts a stopped rule says so, from Rule Machine's own state"() {
+        given:
+        settingsMap.enableWrite = true
+        def reads = 0
+        hubGet.register('/installedapp/statusJson/5') { params -> reads++; groovy.json.JsonOutput.toJson([appState: [[name: "stopped", value: reads == 1]]]) }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true, updateRuleFailed: false] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addTrigger: [capability: "Switch", deviceIds: [1], state: "on"], confirm: true])
+
+        then:
+        r.restartedStoppedRule == true
+        r.note.contains("restarted it and set its private boolean to true")
+        reads == 2
+    }
+
+    def "an edit of a running rule reads its state once and reports no restart"() {
+        given:
+        settingsMap.enableWrite = true
+        def reads = 0
+        hubGet.register('/installedapp/statusJson/5') { params -> reads++; groovy.json.JsonOutput.toJson([appState: [[name: "stopped", value: false]]]) }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addTrigger: [capability: "Switch", deviceIds: [1], state: "on"], confirm: true])
+
+        then:
+        !r.containsKey("restartedStoppedRule")
+        reads == 1
     }
 
     def "an unknown operation is rejected with the valid list"() {
@@ -217,14 +249,14 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         script.executeTool('hub_set_rule', [operation: 'addAction', appId: 5, args: [capability: 'switch', action: 'on', deviceIds: [3]], confirm: true])
 
         then: 'reaches _applyNativeAppEdit with the legacy-shaped args'
-        captured.edit == [appId: 5, confirm: true, addAction: [capability: 'switch', action: 'on', deviceIds: [3]]]
+        captured.edit == [appId: 5, confirm: true, addAction: [capability: 'switch', action: 'on', deviceIds: [3]], __rmRule: true]
 
         when: 'a clearActions envelope (boolean op, no payload)'
         captured.clear()
         script.executeTool('hub_set_rule', [operation: 'clearActions', appId: 5, confirm: true])
 
         then:
-        captured.edit == [appId: 5, confirm: true, clearActions: true]
+        captured.edit == [appId: 5, confirm: true, clearActions: true, __rmRule: true]
 
         when: 'a create envelope -- reaches _createNativeAppShell, no appId, name + bundle lifted from args'
         captured.clear()
@@ -247,7 +279,7 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         script.executeTool('hub_set_rule', [appId: 5, addAction: [capability: 'switch'], confirm: true])
 
         then: 'operation absent => no normalizer rewrite; passes straight through'
-        captured.edit == [appId: 5, addAction: [capability: 'switch'], confirm: true]
+        captured.edit == [appId: 5, addAction: [capability: 'switch'], confirm: true, __rmRule: true]
     }
 
     def "probe schema is sourced from the fat def (no drift), not a hand-maintained copy"() {
@@ -328,7 +360,7 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
 
         then:
         def e = thrown(IllegalArgumentException)
-        e.message.contains("must be 'trigger' or 'action'")
+        e.message.contains("must be 'action', 'trigger' or 'condition'")
     }
 
     def "envelope probe via the gateway bypasses the required-param pre-check and returns schema"() {
