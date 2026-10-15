@@ -537,3 +537,23 @@ bash "$SCRIPT" hub "$STUB/key.pem" "$STUB/out"
     else:
         assert result.returncode == 0, out + result.stderr
         assert (relayed / "session.key.enc").exists() and not (relayed / "results.json").exists()
+
+
+def test_ephemeral_request_script_matches_provider_run_by_consumer_token():
+    """The provider run is found by " for <repo>#<run id>" whatever follows it."""
+    script = (ROOT / ".github/scripts/request_ephemeral_hub.sh").read_text()
+    program = re.search(r"--jq '(\[\.\[\] \| select\(\(\.displayTitle.*?)'", script).group(1)
+    runs = json.dumps([
+        {"databaseId": 1, "createdAt": "2026-10-15T10:00:00Z", "displayTitle": "Ephemeral hub a for o/r#42 (jvm, suite)"},
+        {"databaseId": 2, "createdAt": "2026-10-15T10:00:00Z", "displayTitle": "Ephemeral hub a for o/r#420"},
+        {"databaseId": 3, "createdAt": "2026-10-15T10:00:00Z", "displayTitle": "Ephemeral hub a for o/r#42"},
+        {"databaseId": 4, "createdAt": "2026-10-15T09:00:00Z", "displayTitle": "Ephemeral hub a for o/r#42"},
+    ])
+    if not shutil.which("jq"):
+        pytest.skip("jq is not installed")
+    env = {**os.environ, "SUFFIX": " for o/r#42", "SINCE": "2026-10-15T09:30:00Z"}
+    picked = subprocess.run(["jq", "-r", program], input=runs, capture_output=True, text=True, env=env, check=True)
+    assert picked.stdout.strip() == "1"
+    picked = subprocess.run(["jq", "-r", program], input=json.dumps(json.loads(runs)[1:]), capture_output=True,
+                            text=True, env=env, check=True)
+    assert picked.stdout.strip() == "3"
