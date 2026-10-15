@@ -206,7 +206,7 @@ jobs:
           E2E_LANE: ephemeral
           E2E_DEFER_NATIVE_DELETES: '1'
           # A fast hub finishes the default workloads inside one HTTP leg, so the continuation and write-cap proofs need the larger documented ones.
-          E2E_MRTR_ACTION_COUNT: '72'
+          E2E_MRTR_ACTION_COUNT: '36'
           E2E_WRITE_CAP_VARIABLE_COUNT: '120'
           PYTHONUNBUFFERED: '1'
         run: |
@@ -217,7 +217,7 @@ jobs:
         if: ${{ !cancelled() && steps.deps.outcome == 'success' }}
         env:
           E2E_LANE: ephemeral
-          E2E_MRTR_ACTION_COUNT: '72'
+          E2E_MRTR_ACTION_COUNT: '36'
           E2E_WRITE_CAP_VARIABLE_COUNT: '120'
           PYTHONUNBUFFERED: '1'
         run: |

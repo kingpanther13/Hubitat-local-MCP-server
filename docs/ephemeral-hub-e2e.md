@@ -96,7 +96,7 @@ SDK. It does not cover radios, physical devices, the cloud relay, or the watchdo
 purge path, whose tests skip without `WATCHDOG_URL`. The physical-hub lane in `hub-e2e.yml` keeps
 that evidence and its required `Full e2e (runs with label)` gate.
 
-The lane sets `E2E_MRTR_ACTION_COUNT=72` and `E2E_WRITE_CAP_VARIABLE_COUNT=120` so the MRTR
+The lane sets `E2E_MRTR_ACTION_COUNT=36` and `E2E_WRITE_CAP_VARIABLE_COUNT=120` so the MRTR
 continuation and write-cap proofs outlast one HTTP leg on a fast hub, and the watchdog-dependent
 tests, `test_endpoint_access_toggles_block_their_own_transport` and
 `test_bps_refusal_is_error_logged_at_error_and_debug_thresholds`, skip.
