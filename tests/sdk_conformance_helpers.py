@@ -50,7 +50,9 @@ def mrtr_log_actions(prefix: str, environ: Mapping[str, str] | None = None) -> l
 def write_cap_variable_count(environ: Mapping[str, str] | None = None) -> int:
     """Select a bounded real bulk-create workload for the concurrent write proof."""
     settings = os.environ if environ is None else environ
-    configured = settings.get("E2E_WRITE_CAP_VARIABLE_COUNT", "4")
+    # 16 creates hold the slot for several seconds on a physical hub behind the cloud relay,
+    # long enough that a probe sent after the holder cannot land after it finished.
+    configured = settings.get("E2E_WRITE_CAP_VARIABLE_COUNT", "16")
     if not isinstance(configured, str) or re.fullmatch(r"[0-9]+", configured) is None:
         raise ValueError("E2E_WRITE_CAP_VARIABLE_COUNT must be an integer from 4 through 120")
     count = int(configured)
