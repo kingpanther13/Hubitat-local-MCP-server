@@ -36759,6 +36759,7 @@ def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
     return toolName == 'hub_call_device_replace' && (args instanceof Map) && args.list_options == true
 }
 def executeTool(toolName, args, boolean bpsChecked = false) {
+    EXECUTION_CACHE.clear()
     if (args instanceof Map && args.containsKey("opToken")) {
         throw new IllegalArgumentException("opToken was removed: slow writes now continue automatically via standard MCP requestState, which also provides the idempotent replay opToken used to. Remove the opToken argument and update your client's tool catalog. See hub_get_tool_guide(section='slow_ops').")
     }
