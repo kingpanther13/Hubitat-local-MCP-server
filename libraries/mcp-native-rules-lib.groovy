@@ -3028,15 +3028,19 @@ private Map _rmActionDiscover(Object selector) {
 // It is the one source for the mapping (_rmMapActionSpec), the discover schema and the argument
 // checks. Field entries (an entry's `slots`): name (spec field), key (RM setting), type, values
 // (the enum a field takes), required, desc; fixed = the value always written (no spec field); dflt = default;
-// whenTrue = written only when true; trueWhen = written as (value == trueWhen); direction = written
+// appChoice = a picker of a hub app's own data, checked against RM's live options; whenTrue =
+// written only when true; whenSet = written as true when the field is given (the toggle RM shows
+// before the field's own picker); trueWhen = written as (value == trueWhen); direction = written
 // as (direction == 'raise') or, when false, (direction != 'raise'); nonBlank = must have text.
-// Entry keys: notes (served with discover), requires (per action: field names, an inner list
-// meaning one of them), common (fields every action of the entry takes).
+// Entry keys: notes (served with discover), requires (field names, an inner list meaning one of
+// them), exclusive (lists of fields of which at most one is given), common (fields every action
+// of the entry takes); requires and exclusive apply per entry and per action.
 // custom = handled by the dedicated code in _rmMapActionSpec (the catalog still describes it).
 private Map _rmActionCatalog() {
     def dev = { String key, String desc = null -> def f = [name: "deviceIds", key: key, type: "List<Integer>", required: true]; if (desc) f.desc = desc; f }
     def delay = [name: "delay", type: "Map", desc: "{hours?, minutes?, seconds?, cancelable?, random?} or {variable}"]
     def raw = [name: "rawSettings", type: "Map"]
+    def tsCmd = { String cmd -> [key: "thermSched.@N", fixed: cmd] }
     return [
         "switch": [actType: "switchActs", family: "device", actions: [
             on:     [sub: "getOnOffSwitch", slots: [dev("onOffSwitch.@N"), [key: "onOff.@N", fixed: true],
@@ -3079,6 +3083,35 @@ private Map _rmActionCatalog() {
             lock:   [sub: "getLULock", slots: [[key: "lockRL.@N", fixed: false], dev("lockLockUnlock.@N")]],
             unlock: [sub: "getLULock", slots: [[key: "lockRL.@N", fixed: true], dev("lockLockUnlock.@N")]]
         ], common: [delay, raw]],
+        garageDoor: [actType: "lockActs", family: "device", actions: [
+            open:  [sub: "getOCGarage", slots: [[key: "garageRL.@N", fixed: false], dev("garageOpenClose.@N")]],
+            close: [sub: "getOCGarage", slots: [[key: "garageRL.@N", fixed: true], dev("garageOpenClose.@N")]]
+        ], common: [delay, raw]],
+        valve: [actType: "lockActs", family: "device", actions: [
+            open:  [sub: "getOCValve", slots: [[key: "valveRL.@N", fixed: false], dev("valveOpenClose.@N")]],
+            close: [sub: "getOCValve", slots: [[key: "valveRL.@N", fixed: true], dev("valveOpenClose.@N")]]
+        ], common: [delay, raw]],
+        thermostatController: [actType: "lockActs", sub: "getSetThermController", family: "device", notes: "Shown by RM only when Thermostat Controller 2.0 is installed; deviceIds are the temperature sensors the controller is set to use",
+              slots: [[name: "controllerId", key: "thisApp.@N", type: "Integer", required: true, appChoice: true, desc: "a Thermostat Controller 2.0 instance id (hub_list_apps)"], dev("tcSensors.@N", "temperature sensors")], common: [delay, raw]],
+        thermostatScheduler: [actType: "lockActs", sub: "getSetThermostatScheduler", family: "device", requires: [["deviceIds", "schedulerId"]], exclusive: [["deviceIds", "schedulerId"]],
+              notes: "Shown by RM only when Thermostat Scheduler 2.0 or Legacy is installed. The scheduler is picked by its thermostats (deviceIds) or by schedulerId. A by-mode scheduler takes setSched4Mode, a by-time one setTimeAway and setSchedDay. RM's Set Mode Setpoints and Set Days/Times Setpoints commands are built in its own setpoint table editor, which this tool does not drive",
+              slots: [[name: "schedulerId", key: "tMethod.@N", whenSet: true, type: "Integer"], [name: "schedulerId", key: "thisApp.@N", type: "Integer", appChoice: true, desc: "a Thermostat Scheduler 2.0 instance id; RM then fills the thermostats from it"],
+                      [name: "deviceIds", key: "thisTherm.@N", type: "List<Integer>", desc: "the scheduler's thermostats"]],
+              actions: [
+            setEcoMode:    [slots: [tsCmd("setEcoMode"), [name: "ecoMode", key: "ecoMode.@N", type: "enum", values: ["on", "off"], required: true]]],
+            setEcoOffset:  [requires: [["ecoOffset", "ecoOffsetVariable"]], exclusive: [["ecoOffset", "ecoOffsetVariable"]], slots: [tsCmd("setEcoOffset"),
+                            [name: "ecoOffsetVariable", key: "uVar.@N", whenSet: true, type: "String"], [name: "ecoOffsetVariable", key: "xVar.@N", type: "String", desc: "a hub variable holding the offset"],
+                            [name: "ecoOffset", key: "ecoOffset.@N", type: "Number"]]],
+            setHold:       [slots: [tsCmd("setHold"), [name: "hold", key: "setHold.@N", type: "enum", values: ["on", "off"], required: true]]],
+            setSched4Mode: [slots: [tsCmd("setSched4Mode"), [name: "modeId", key: "modN.@N", type: "Integer", required: true, appChoice: true, desc: "a mode the scheduler has setpoints for"]]],
+            setTimeAway:   [requires: [["awayHeat", "awayHeatVariable", "awayCool", "awayCoolVariable"]], exclusive: [["awayHeat", "awayHeatVariable"], ["awayCool", "awayCoolVariable"]], slots: [tsCmd("setTimeAway"),
+                            [name: "awayHeatVariable", key: "uVar2.@N", whenSet: true, type: "String"], [name: "awayHeatVariable", key: "xVar2.@N", type: "String", desc: "a hub variable holding the heating target"],
+                            [name: "awayHeat", key: "timeAwayHeat.@N", type: "Number", desc: "heating target"],
+                            [name: "awayCoolVariable", key: "uVar3.@N", whenSet: true, type: "String"], [name: "awayCoolVariable", key: "xVar3.@N", type: "String", desc: "a hub variable holding the cooling target"],
+                            [name: "awayCool", key: "timeAwayCool.@N", type: "Number", desc: "cooling target"]]],
+            setThermSched: [slots: [tsCmd("setThermSched")], notes: "activates the scheduled setpoints"],
+            setSchedDay:   [slots: [tsCmd("setSchedDay"), [name: "day", key: "dayN.@N", type: "Integer", required: true, desc: "0 Monday .. 6 Sunday"]]]
+        ], common: [delay, raw]],
         hsm: [actType: "lockActs", sub: "getSetHSM", family: "hub", custom: true, notes: "Shown by RM only when Hubitat Safety Monitor is installed",
               slots: [[name: "command", key: "alarm.@N", type: "enum", values: _rmHsmCommands(), required: true, desc: "Arm Away / Arm Home / Arm Night / Disarm / Re-Arm Water-Smoke-Gas-CO / Disarm All / Arm All HSM Rules / Cancel All Alerts; no armAll (use armRules)"]], common: [delay, raw]],
         thermostat: [actType: "lockActs", sub: "getSetThermostat", family: "device", custom: true, notes: "At least one setting is required",
@@ -3090,6 +3123,15 @@ private Map _rmActionCatalog() {
             close: [sub: "getRLShade", slots: [[key: "shadeRL.@N", fixed: true], dev("shadeOpenClose.@N")]],
             setPosition: [sub: "getShadePosition", slots: [dev("shadePosition.@N"), [name: "position", key: "shadeLevel.@N", type: "Integer", required: true, desc: "0-100"]]],
             stop:  [sub: "getStopShade", slots: [dev("shadeStop.@N")]]
+        ], common: [delay, raw]],
+        blind: [actType: "sceneActs", family: "device", actions: [
+            setTilt: [sub: "getBlindTilt", requires: [["tilt", "tiltVariable"]], exclusive: [["tilt", "tiltVariable"]], slots: [dev("blindTilt.@N"),
+                      [name: "tiltVariable", key: "uVar.@N", whenSet: true, type: "String"], [name: "tiltVariable", key: "xVar.@N", type: "String", desc: "hub variable holding the tilt"],
+                      [name: "tilt", key: "tiltLevel.@N", type: "Integer", desc: "0-100; or tiltVariable"]]]
+        ], common: [delay, raw]],
+        scene: [actType: "sceneActs", family: "hub", notes: "Shown by RM only when a Groups and Scenes scene exists", actions: [
+            activate: [sub: "getActivateScene", slots: [[name: "sceneIds", key: "sceneAct.@N", type: "List<Integer>", required: true, desc: "the scenes' activator device ids (the device each scene creates)"]]],
+            activatePerMode: [sub: "getActivateScenePerMode", custom: true, slots: [[name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: [scene activator device ids], ...}"]]]
         ], common: [delay, raw]],
         fan: [actType: "sceneActs", family: "device", actions: [
             setSpeed: [sub: "getFanSpeed", slots: [dev("fanDevice.@N"), [name: "speed", key: "fanSpeed.@N", type: "enum", values: ["low", "medium-low", "medium", "medium-high", "high", "on", "off", "auto"], required: true]]],
@@ -3140,6 +3182,14 @@ private Map _rmActionCatalog() {
         ], common: [delay, raw]],
         chime: [actType: "soundActs", sub: "getChime", family: "media", slots: [dev("chime.@N"), [name: "playStop", key: "chimePlayStop.@N", type: "String"], [name: "soundNumber", key: "chimePlaySound.@N", type: "Integer"]], common: [raw]],
         siren: [actType: "soundActs", sub: "getSiren", family: "media", slots: [dev("siren.@N"), [name: "sirenAction", key: "sirenAct.@N", type: "String"]], common: [raw]],
+        tone: [actType: "soundActs", sub: "getTone", family: "media", slots: [dev("toner.@N")], common: [delay, raw]],
+        musicPlayer: [actType: "soundActs", sub: "getSetMusicPlayer", family: "media", exclusive: [["volume", "volumeVariable"]], notes: "RM offers play track and restore / play text and restore when the first selected player supports them; track, text and volume apply to the commands that take them",
+              slots: [dev("player.@N"), [name: "command", key: "playerCommand.@N", type: "enum", required: true,
+                      values: ["play", "pause", "toggle play/pause", "stop", "mute", "unmute", "toggle mute", "raise volume", "lower volume", "set volume", "next track", "previous track", "play track", "restore track", "resume track", "set track", "play text", "play track and restore", "play text and restore"]],
+                      [name: "track", key: "playerTrack.@N", type: "String", desc: "play track, restore track, resume track, set track, play track and restore"],
+                      [name: "text", key: "playerText.@N", type: "String", desc: "play text, play text and restore"],
+                      [name: "volumeVariable", key: "uVar.@N", whenSet: true, type: "String"], [name: "volumeVariable", key: "xVar.@N", type: "String", desc: "hub variable holding the volume"],
+                      [name: "volume", key: "playerLevel.@N", type: "Integer", desc: "0-100: set volume, play track and restore, play text and restore; or volumeVariable"]], common: [delay, raw]],
         privateBoolean: [actType: "rulesActs", sub: "getSetPrivateBoolean", family: "rules", custom: true,
                notes: "The raw setting pvTF.<N> stores the inverse of value; read the rendered action, not the raw field",
                slots: [[name: "ruleIds", key: "privateT.@N", type: "List<Integer | \"*\">", required: true, desc: "\"*\" is this rule"], [name: "value", key: "pvTF.@N", type: "Boolean", required: true]], common: [raw]],
@@ -3175,6 +3225,16 @@ private Map _rmActionCatalog() {
                slots: [[name: "events", type: "List", required: true, desc: "[{capability, deviceIds?, state?, modeIds?, andStays?: true|{hours,minutes,seconds}}, ...]"], delay]],
         waitExpression: [actType: "delayActs", sub: "getWaitRule", family: "flow", custom: true,
                slots: [[name: "expression", type: "Map", required: true, desc: "{conditions: [...], operator?, operators?}"], [name: "useDuration", key: "durChoice.@N", type: "Boolean"], [name: "delay", type: "Map", desc: "timeout {hours?, minutes?, seconds?} or {variable}"]]],
+        returnValue: [actType: "modeActs", sub: "getReturnValue", family: "flow", custom: true, requires: [["value", "variable"]], exclusive: [["value", "variable"]],
+              notes: "Shown by RM only in a rule that returns a value (a rule function). A zero or empty literal is refused: RM shows no row for it",
+              slots: [[name: "type", key: "valType.@N", type: "enum", values: ["String", "Integer", "Decimal", "Boolean"], required: true], [name: "value", type: "String", desc: "a literal of that type; Boolean takes true or false"],
+                      [name: "variable", key: "valVar.@N", type: "String", appChoice: true, desc: "a hub variable of that type; not for String"]], common: [delay, raw]],
+        roomLights: [actType: "rulesActs", family: "rules", notes: "Shown by RM only when a Room Lights instance exists", actions: [
+            activate: [sub: "getRLActivate", slots: [[name: "roomLightsId", key: "actRL.@N", type: "Integer", required: true, appChoice: true, desc: "a Room Lights instance id (hub_list_apps)"],
+                       [name: "modeOrPeriod", key: "modeRL.@N", type: "String", dflt: "X", appChoice: true, desc: "'X' (default) for the current mode or period, else a mode id or period name the instance defines"],
+                       [name: "useConditions", key: "forceRL.@N", type: "Boolean", desc: "true applies the instance's own conditions; default false forces activation"]]],
+            turnOff:  [sub: "getRLTurnOff", slots: [[name: "roomLightsIds", key: "actOffRL.@N", type: "List<Integer>", required: true]]]
+        ], common: [delay, raw]],
         ifThen: [actType: "condActs", sub: "getIfThen", family: "flow", custom: true, slots: [[name: "expression", type: "Map", required: true, desc: "{conditions: [...], operator?, operators?}"]]],
         elseIf: [actType: "condActs", sub: "getElseIf", family: "flow", custom: true, slots: [[name: "expression", type: "Map", required: true, desc: "{conditions: [...], operator?, operators?}"]]],
         "else": [actType: "condActs", sub: "getElse", family: "flow", slots: []],
@@ -3228,14 +3288,23 @@ private Map _rmActionSchemaForDiscover() {
             conditional.put(act.toString(), ((conditional.get(act.toString()) ?: []) as List) + (ae.requires as List))
         }
         (entry.common ?: []).each { Map c -> optional << [name: c.name, type: c.type] + (c.desc ? [description: c.desc] : [:]) }
+        if (entry.actType != "condActs" && !(entry.sub in ["getWhile", "getWaitRule"])) optional << [name: "condition", type: "Map", description: "makes the row a Simple Conditional Action: a condition spec as in expressions, or {definedIndex} for a condition the rule already defines; the action runs only while it is true"]
         def subTypes = (entry.actions instanceof Map) ? perAction.collectEntries { act, Map ae -> [(act.toString()): ae.sub ?: entry.sub] } : entry.sub
         def example = [capability: cap]
         if (actions) example.action = actions[0]
         required.each { Map r -> if (r.name != "action") example.put(r.name, _rmExampleValue(r)) }
         if (actions) fieldSpecs.each { name, Map spec -> if ((requiredBy.get(name) ?: []).contains(actions[0])) example.put(name, _rmExampleValue(spec)) }
+        // A one-of requirement is shown with its first field.
+        (((entry.requires ?: []) as List) + ((actions ? (perAction[actions[0]]?.requires ?: []) : []) as List)).each { r ->
+            def n = (r instanceof List) ? (r as List)[0] : r
+            if (fieldSpecs.containsKey(n) && !example.containsKey(n)) example.put(n, _rmExampleValue(fieldSpecs.get(n) as Map))
+        }
         def out = [name: cap, family: entry.family, actType: entry.actType, actSubType: subTypes, requiredFields: required, optionalFields: optional, example: example]
         if (actions) out.actions = actions
         if (conditional) out.conditionalRequired = conditional
+        if (entry.requires) out.requires = entry.requires
+        def exclusive = (((entry.exclusive ?: []) as List) + perAction.collectMany { act, Map ae -> act == null ? [] : ((ae.exclusive ?: []) as List) }).unique()
+        if (exclusive) out.exclusive = exclusive
         def notes = [entry.notes] + perAction.collect { act, Map ae -> ae.notes ? "${act}: ${ae.notes}".toString() : null }
         notes = notes.findAll { it }
         if (notes) out.notes = notes.join(". ")
@@ -3271,13 +3340,106 @@ private Map _rmSubActCapab() {
      getSiren: "Alarm"]
 }
 
+// Simple Conditional Action (getCondAct): the row first takes a condition, one the rule already
+// defines (useCond / useCondNdx) or a new one, then "Done with this condition" (hasAll) clears the
+// row's type pickers so the action itself is chosen next on the same row. The caller's catch
+// rolls the row back on a throw. Returns the index of a condition it defined, else null.
+private Integer _rmWriteSimpleConditionalPreamble(Integer appId, Integer idx, String cap, Map cond, List applied, List skipped) {
+    _rmWriteSettingOnPage(appId, "doActPage", "actType.${idx}", "condActs", applied, null, skipped)
+    _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${idx}", "getCondAct", applied, null, skipped)
+    _rmRequireOfferedActionSubType("${cap}.condition".toString(), "getCondAct", idx, skipped)
+    if (cond.definedIndex != null) {
+        _rmWriteSettingOnPage(appId, "doActPage", "useCond.${idx}", true, applied, "bool", skipped)
+        _rmWriteSettingOnPage(appId, "doActPage", "useCondNdx.${idx}", cond.definedIndex, applied, null, skipped)
+        def miss = skipped.find { it instanceof Map && it.key?.toString() == "useCondNdx.${idx}".toString() && it.reason in ["not_offered", "not_in_schema"] }
+        if (miss) throw new IllegalArgumentException("${cap}.condition.definedIndex ${cond.definedIndex} is not a condition this rule defines${miss.offered ? ' (defined: ' + (miss.offered as List).join(', ') + ')' : ''}.".toString())
+        _rmClickAppButton(appId, "hasAll", null, "doActPage")
+        return null
+    } else {
+        String ccap = cond.capability.toString().trim()
+        def cInputs = (_rmFetchConfigJson(appId, "doActPage")?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
+        def rCapabInput = cInputs.find { it?.name?.toString()?.startsWith("rCapab_") }
+        if (!rCapabInput) {
+            throw new IllegalStateException("${cap}.condition: rCapab_<N> not in doActPage schema after actSubType=getCondAct; got ${cInputs.collect { it?.name }.findAll { it }.join(', ')}".toString())
+        }
+        def m = rCapabInput.name.toString() =~ /rCapab_(\d+)/
+        Integer cIdx = m ? ((m[0] as List)[1] as Integer) : null
+        if (cIdx == null) throw new IllegalStateException("${cap}.condition: couldn't parse the condition index from '${rCapabInput.name}'".toString())
+        def capOptions = (rCapabInput.options ?: []) as List
+        def capCanonical = capOptions.find { it.toString().equalsIgnoreCase(ccap) }
+        if (!capCanonical) {
+            throw new IllegalArgumentException("${cap}.condition.capability '${ccap}' is not in Rule Machine's condition list on this hub. RM lists: ${capOptions.join(', ')}.".toString())
+        }
+        def writeAct = { Map params, String fieldKey, Object fieldValue, String label = null ->
+            _rmWriteSettingOnPage(appId, "doActPage", fieldKey, fieldValue, applied, null, skipped)
+        }
+        def cancel = {
+            try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") } catch (Exception cancelExc) {
+                mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on doActPage (simple conditional action ${idx}): ${cancelExc.message}")
+            }
+        }
+        _rmWalkConditionReveal(appId, [page: "doActPage", writeST: writeAct, cancelInFlightCondition: cancel, condIdx: 0, cap: "${cap}.condition".toString(),
+                                       capCanonical: capCanonical, hrefParams: [unUsed: null], applied: applied, skipped: skipped], cond, cIdx)
+        // The render that handles Done clears the type pickers; only the next one shows them again.
+        _rmFetchConfigJson(appId, "doActPage")
+        return cIdx
+    }
+}
+
+// A refused Simple Conditional Action leaves the condition it defined in the rule's pool, listed by
+// the actions page's Manage Conditions (pred:false), where its bin button removes it on the next render.
+private void _rmDropSimpleCondition(Integer appId, Integer condIdx) {
+    if (condIdx == null) return
+    try {
+        _rmNavigateToPage(appId, "selectActions", "selectConditions", 0, "name", [pred: false])
+        _rmClickAppButton(appId, condIdx.toString(), "deleteCon", "selectConditions", null)
+        _rmFetchConfigJson(appId, "selectConditions")
+        if (_rmFetchSettingsByName(appId)?.containsKey("rCapab_${condIdx}".toString())) {
+            mcpLog("warn", "rm-native", "condition ${condIdx} of a refused simple conditional action is still defined in app ${appId}")
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "removing condition ${condIdx} of a refused simple conditional action from app ${appId} failed (${e.message})")
+    }
+}
+
 // RM prunes its action sub-type picker to what the hub has (pruneSubTypes: an installed app such as
 // Hubitat Safety Monitor, Scenes, Room Lights or a thermostat app, or a device with the capability).
 // A sub-type the picker does not list is refused with what it does; the caller rolls the row back.
 private void _rmRequireOfferedActionSubType(String cap, String actSubType, Integer idx, List skipped) {
     def miss = skipped.find { it instanceof Map && it.key?.toString() == "actSubType.${idx}".toString() && it.reason == "not_offered" }
     if (miss == null) return
-    throw new IllegalArgumentException("addAction: Rule Machine's action picker on this hub does not offer '${cap}' (${actSubType}). RM lists an action only when the hub has what it needs: the built-in app it drives (Hubitat Safety Monitor, Scenes, Room Lights, Thermostat Scheduler or Controller) or a device with the capability. This hub's picker offers: ${(miss.offered as List).join(', ')}.".toString())
+    throw new IllegalArgumentException("addAction: Rule Machine's action picker on this hub does not offer '${cap}' (${actSubType}). RM lists an action only when the hub has what it needs: the built-in app it drives (Hubitat Safety Monitor, Scenes, Room Lights, Thermostat Scheduler or Controller), a device with the capability, or, for returnValue, a rule that returns a value. This hub's picker offers: ${(miss.offered as List).join(', ')}.".toString())
+}
+
+// A choice RM's picker does not list (a player command the player lacks, a scene or app instance
+// that is not there) leaves a row RM does not render; the caller's catch rolls it back. The writer
+// checks single values; list values are checked here against the live picker.
+private void _rmRequireOfferedCatalogChoice(Integer appId, String cap, String action, Integer idx, Map fields, List skipped) {
+    Map entry = _rmActionCatalog()[cap == "variable" ? "setVariable" : cap] as Map
+    Map ae = (entry?.actions instanceof Map) ? ((entry.actions as Map)[action] as Map) : null
+    List slots = ((entry?.slots ?: []) as List) + ((ae?.slots ?: []) as List)
+    def keyOf = { Object k -> k.toString().replace("@N", idx.toString()) }
+    def nameOf = { String key -> slots.find { it.key && keyOf(it.key) == key }?.name ?: key }
+    def refuse = { String key, Object value, List offered ->
+        boolean fixed = slots.find { it.key && keyOf(it.key) == key }?.containsKey("fixed")
+        String what = fixed ? action : "${value} for ${nameOf(key)}"
+        throw new IllegalArgumentException("${cap}${action ? '.' + action : ''}: Rule Machine does not offer ${what} on this hub; it offers: ${offered ? offered.join(', ') : '(nothing)'}.".toString())
+    }
+    def miss = skipped.find { it instanceof Map && it.reason == "not_offered" && fields.keySet().any { k -> keyOf(k) == it.key?.toString() } }
+    if (miss != null) refuse(miss.key.toString(), "'${miss.value}'", (miss.offered ?: []) as List)
+    // appChoice: a picker listing an app's own data (instances, its modes or periods), which can be empty.
+    Map checked = fields.findAll { k, v ->
+        (v instanceof List && !(nameOf(keyOf(k)) in ["deviceIds", "ruleIds"])) || slots.find { it.key?.toString() == k.toString() }?.appChoice
+    }
+    if (checked.isEmpty()) return
+    def schema = _rmCollectInputSchema(_rmFetchConfigJson(appId, "doActPage")?.configPage)
+    checked.each { k, v ->
+        def field = schema?.get(keyOf(k))
+        if (field?.type != "enum" || field.options == null) return
+        List offered = _rmReadPickerOptionStrings(field)
+        def bad = ((v instanceof List) ? (v as List) : [v]).findAll { !(it?.toString() in offered) }
+        if (bad) refuse(keyOf(k), bad.join(', '), offered)
+    }
 }
 
 // Every device of an action must have the capability RM's picker for that action lists; RM stores
@@ -3347,6 +3509,7 @@ private Map _rmMapCatalogAction(String cap, String action, Map actionSpec, Map e
             if (f.direction != null) value = (f.direction == true) ? (value == "raise") : (value != "raise")
             else if (value == null && f.containsKey("dflt")) value = f.dflt
             if (f.trueWhen != null && value != null) value = value.toString() == f.trueWhen.toString()
+            if (f.whenSet) value = (value != null) ? true : null
         }
         if (f.required && (value == null || (f.nonBlank && !value.toString().trim()))) {
             throw new IllegalArgumentException("${label} requires '${f.name}'${f.desc ? ' (' + f.desc + ')' : ''}.".toString())
@@ -3888,14 +4051,17 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
         ((actionEntry.slots ?: []) as List).each { Map f -> if (f.containsKey("fixed")) writes[f.key.toString().replace("@N", actionIdx.toString())] = f.fixed }
     }
     List fieldDefs = (((entry.slots ?: []) as List) + ((actionEntry.slots ?: []) as List)).findAll { it.key && it.name }
-    def editable = fieldDefs*.name + (actions != null ? ["action"] : [])
+    def editable = (fieldDefs*.name).unique() + (actions != null ? ["action"] : [])
     mods.each { k, v ->
         String name = k.toString()
         if (name == "action") return
-        Map f = fieldDefs.find { it.name == name } as Map
-        if (f == null) {
+        List named = fieldDefs.findAll { it.name == name }
+        if (!named) {
             throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: '${name}' is not a field that can be edited in place. Editable: ${editable.join(', ')}. RM is not touched.")
         }
+        named.findAll { it.whenSet && v != null }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = true }
+        Map f = named.find { !it.whenSet } as Map
+        if (f == null) return
         _rmRequireCatalogValue("modifyAction on ${cap}".toString(), f, v)
         def value = (v != null && f.values instanceof List) ? _rmCatalogValueCanonical(f, v) : v
         if (f.direction != null) value = (f.direction == true) ? (value == "raise") : (value != "raise")
@@ -4907,12 +5073,17 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         if (f.name) _rmRequireCatalogValue(specLabel, f, actionSpec.get(f.name))
     }
     // requires: a name is a required field; an inner list, fields of which one is needed.
-    ((catAction.requires ?: catEntry.requires ?: []) as List).each { r ->
+    def perLevel = { String k -> ((catEntry.get(k) ?: []) as List) + ((catAction.is(catEntry) ? [] : (catAction.get(k) ?: [])) as List) }
+    perLevel("requires").each { r ->
         // A false boolean is "not set" for a one-of: useLastEventDevice:false names no device.
         if (r instanceof List && !r.any { def got = actionSpec.get(it?.toString()); got != null && got != false }) {
             throw new IllegalArgumentException("${specLabel} requires one of ${r.join(', ')}.".toString())
         }
         if (r instanceof String && actionSpec.get(r) == null) throw new IllegalArgumentException("${specLabel} requires '${r}'.".toString())
+    }
+    perLevel("exclusive").each { List g ->
+        def given = g.findAll { actionSpec.get(it?.toString()) != null }
+        if (given.size() > 1) throw new IllegalArgumentException("${specLabel} takes one of ${g.join(', ')}, not ${given.join(' and ')}.".toString())
     }
     if (!(catEntry.custom == true || catAction.custom == true)) {
         return _rmMapCatalogAction(cap, action, actionSpec, catEntry, catAction)
@@ -5414,6 +5585,48 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         if (!(actionSpec.expression instanceof Map)) {
             throw new IllegalArgumentException("waitExpression action requires expression={conditions:[...], operator?:..., operators?:[...]}")
         }
+    } else if (cap == "scene") {
+        actType = "sceneActs"
+        actSubType = "getActivateScenePerMode"
+        if (!(actionSpec.perMode instanceof Map) || actionSpec.perMode.isEmpty()) {
+            throw new IllegalArgumentException("scene.activatePerMode requires perMode={modeIdOrName: [sceneIds], ...}")
+        }
+        def modeIds = _rmResolveModeIds(actionSpec.perMode.keySet())
+        fields = ["sceneModes.@N": modeIds]
+        modeIds.each { mid ->
+            def val = actionSpec.perMode.find { _rmModeIdMatches(it.key, mid) }?.value
+            if (!(val instanceof List) || val.isEmpty()) throw new IllegalArgumentException("scene.activatePerMode: perMode[${mid}] must be a non-empty list of scene ids.")
+            fields["scene${mid}.@N".toString()] = val
+        }
+    } else if (cap == "returnValue") {
+        // RM offers a variable source (useVar) for Integer, Decimal and Boolean only.
+        actType = "modeActs"
+        actSubType = "getReturnValue"
+        def valueTypes = ["String", "Integer", "Decimal", "Boolean"]
+        def vt = _rmCatalogValueCanonical([values: valueTypes], actionSpec.type)?.toString()
+        if (!vt) throw new IllegalArgumentException("returnValue requires type: ${valueTypes.join(', ')}.")
+        fields = ["valType.@N": vt]
+        if (actionSpec.variable != null) {
+            if (vt == "String") throw new IllegalArgumentException("returnValue: Rule Machine returns a String only as a literal value; a variable source is offered for Integer, Decimal and Boolean.")
+            fields["useVar.@N"] = true
+            fields["valVar.@N"] = actionSpec.variable
+        } else {
+            String text = actionSpec.value.toString().trim()
+            def value
+            if (vt == "Boolean") {
+                if (!(text.toLowerCase() in ["true", "false"])) throw new IllegalArgumentException("returnValue: a Boolean value is true or false (got '${actionSpec.value}').")
+                value = text.toLowerCase()
+            } else if (vt == "Integer") {
+                if (!text.isLong()) throw new IllegalArgumentException("returnValue: an Integer value must be a whole number (got '${actionSpec.value}').")
+                value = text.toLong()
+            } else if (vt == "Decimal") {
+                if (!text.isBigDecimal()) throw new IllegalArgumentException("returnValue: a Decimal value must be a number (got '${actionSpec.value}').")
+                value = text.toBigDecimal()
+            } else value = actionSpec.value.toString()
+            // RM renders the row from the value's truth, so a zero or empty literal never bakes.
+            if (vt != "Boolean" && !value) throw new IllegalArgumentException("returnValue: Rule Machine shows no row for a zero or empty ${vt} value; return it from a variable instead${vt == 'String' ? ' (not offered for String)' : ''}.")
+            fields[[String: "valString.@N", Integer: "valInt.@N", Decimal: "valDec.@N", Boolean: "valBool.@N"].get(vt)] = value
+        }
     } else if (cap == "ifThen" || cap == "elseIf") {
         actType = "condActs"
         actSubType = (cap == "ifThen") ? "getIfThen" : "getElseIf"
@@ -5428,7 +5641,32 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
     _rmRequireDeviceCapability("${action ? cap + '.' + action : cap + ' action'}.deviceIds".toString(), actionSpec.deviceIds, actSubType?.toString())
     return [actType: actType, actSubType: actSubType, fields: fields, skipped: skipped]
     }
-    return _impl()
+    Map mapped = _impl() as Map
+    if (actionSpec.condition != null) _rmCheckSimpleConditionSpec(cap, mapped.actType?.toString(), mapped.actSubType?.toString(), actionSpec.condition)
+    return mapped
+}
+
+// The condition capabilities RM leaves out of a new Simple Conditional Action's picker.
+private List _rmSimpleCondExcluded() {
+    ["Time of day", "Between two times", "Days of week", "Between two dates", "Mode", "Private Boolean", "HSM Status", "HSM Alert",
+     "Keypad codes", "Lock codes", "Variable", "Custom Attribute", "Last Event Device", "On a Day", "Time Since Event"]
+}
+
+// A condition makes the row a Simple Conditional Action. Inside one RM's type picker drops the
+// conditional group and its sub-type pickers drop Repeat While and Wait for Expression.
+private void _rmCheckSimpleConditionSpec(String cap, String actType, String subType, Object cond) {
+    if (!(cond instanceof Map)) throw new IllegalArgumentException("${cap}.condition must be a condition spec, or {definedIndex} for a condition the rule already defines.".toString())
+    if (actType == "condActs" || subType in ["getWhile", "getWaitRule"]) {
+        throw new IllegalArgumentException("${cap} cannot carry a condition: Rule Machine does not offer it inside a Simple Conditional Action. Use ifThen ... endIf instead.".toString())
+    }
+    Map c = cond as Map
+    if (c.definedIndex != null) return
+    if (!c.capability?.toString()?.trim()) throw new IllegalArgumentException("${cap}.condition needs capability (or definedIndex for a condition the rule already defines).".toString())
+    _rmCheckCondSpec(c, "condition", "${cap}.condition".toString())
+    if (c.capability in _rmSimpleCondExcluded()) {
+        throw new IllegalArgumentException("${cap}.condition: Rule Machine does not offer a ${c.capability} condition in a Simple Conditional Action (it leaves out ${_rmSimpleCondExcluded().join(', ')}). Define the condition first and pass {definedIndex}, or use ifThen ... endIf. RM is not touched.".toString())
+    }
+    _rmValidateDeviceIdsExist("${cap}.condition.deviceIds", c.deviceIds ?: (c.deviceId != null ? [c.deviceId] : null))
 }
 
 // An expression-bearing action's argument checks, run with the mapping so a malformed expression is
@@ -5735,7 +5973,9 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
 
     // From here to the rawSettings block the editor is open on this row: any refusal must
     // cancel it, or RM reopens the row with its stale fields on the next add.
+    Integer simpleCondIdx = null
     try {
+        if (actionSpec.condition instanceof Map) simpleCondIdx = _rmWriteSimpleConditionalPreamble(appId, idx, cap, actionSpec.condition as Map, applied, skipped)
         _rmWriteSettingOnPage(appId, "doActPage", "actType.${idx}", actType, applied, null, skipped)
         _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${idx}", actSubType, applied, null, skipped)
         _rmRequireOfferedActionSubType(cap, actSubType, idx, skipped)
@@ -5757,10 +5997,11 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                 _rmWriteSettingOnPage(appId, "doActPage", fieldName, value, applied, null, skipped)
             }
         }
+        _rmRequireOfferedCatalogChoice(appId, cap, action, idx, fields as Map, skipped)
         if (cap == "runCommand") _rmWriteRunCommandFields(appId, idx, actionSpec, applied, skipped)
         _rmWriteWaitEventRows(appId, idx, actionSpec, actSubType, applied, skipped)
     } catch (Exception preExprExc) {
-        _rmCancelRefusedActionEditor(appId, idx, preExprExc)
+        try { _rmCancelRefusedActionEditor(appId, idx, preExprExc) } finally { _rmDropSimpleCondition(appId, simpleCondIdx) }
     }
 
     // Expression actions walk each condition (cond=a -> rCapab_<x> -> rDev_<x> -> state_<x> -> hasAll),
@@ -5927,7 +6168,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             }
         }
     } catch (Exception postOpenExc) {
-        _rmCancelRefusedActionEditor(appId, idx, postOpenExc)
+        try { _rmCancelRefusedActionEditor(appId, idx, postOpenExc) } finally { _rmDropSimpleCondition(appId, simpleCondIdx) }
     }
 
     // RM bakes the action on the navigation off doActPage that follows the actionDone click;
@@ -5972,6 +6213,14 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         }
         def joinedParagraphs = mainParagraphs.join("\n")
         actionNotBaked = joinedParagraphs.contains("Define Actions")
+        // RM appends a baked row to state.actionList. A row whose label renders empty (an app with
+        // no data for it, a choice the picker lacks) is left out, and the next add reopens its index.
+        if (!actionNotBaked && err == null) {
+            def appState = _rmFetchStatusJson(appId)?.appState
+            def listed = (appState instanceof List) ? (appState as List).find { it instanceof Map && it.name?.toString() == "actionList" }?.value : null
+            List baked = (listed instanceof List) ? _rmCoerceActionIndices(listed as List) : null
+            if (baked != null && !baked.contains(idx)) actionNotBaked = true
+        }
     } catch (Exception verifyExc) {
         verificationFetchFailed = true
         mcpLog("warn", "rm-native", "_rmAddAction: post-commit mainPage paragraph fetch failed for app ${appId} (${verifyExc.message}) -- action-baked check skipped")
@@ -5994,6 +6243,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     def rolledBack = false
     if (actionNotBaked || err != null) {
         rolledBack = _rmRollbackInFlightAction(appId, idx, false)
+        if (rolledBack) _rmDropSimpleCondition(appId, simpleCondIdx)
         if (rolledBack) {
             try { health = _rmCheckRuleHealth(appId) } catch (Exception healthExc) {
                 mcpLog("warn", "rm-native", "_rmAddAction: post-rollback health re-read failed for app ${appId} (${healthExc.message})")
@@ -6001,7 +6251,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                     [stale: true, note: "read before the rollback; the re-read after it failed"]
             }
         }
-        String why = err != null ? "RM's action editor reported an error (${err})".toString() : "RM did not bake the action (mainPage still shows the 'Define Actions' placeholder)"
+        String why = err != null ? "RM's action editor reported an error (${err})".toString() : "RM did not bake the action (it is not in the rule's action list: RM showed nothing for these settings)"
         def lost = genuineSkipped.findAll { it instanceof Map && it.key != null }*.key.join(', ')
         if (lost) why += "; fields that did not land: ${lost}".toString()
         repairHints << (rolledBack
