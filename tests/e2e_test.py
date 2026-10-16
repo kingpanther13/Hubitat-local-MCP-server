@@ -6749,6 +6749,9 @@ class TestRunner:
         app_id = self._create_native_rule("OnlyIfChanged", {
             "addActions": [{"capability": "switch", "action": "on", "deviceIds": [int(a), int(b)], "onlyIfChanged": True}],
         })
+        settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+        act_idx = next((int(str(k).split(".", 1)[1]) for k in settings if str(k).startswith("onOffSwitch.")), None)
+        assert act_idx is not None, f"the switch action's index was not persisted: {settings}"
 
         def commands(device_id: str, cmd: str) -> int:
             ev = self.client.call_tool("hub_list_device_events", {
@@ -6760,7 +6763,7 @@ class TestRunner:
             for i, (action, only) in enumerate((("on", True), ("on", False), ("off", True), ("off", False))):
                 if i:
                     mods = {"action": action, "onlyIfChanged": only}
-                    mod = self._set_rule(app_id, {"modifyAction": {"index": 1, "mods": mods}}, strict=True)
+                    mod = self._set_rule(app_id, {"modifyAction": {"index": act_idx, "mods": mods}}, strict=True)
                     assert mod.get("success") is True and mod.get("verified") is True, f"modifyAction {mods} failed: {mod}"
                 for device_id, state in ((a, "on"), (b, "off")):
                     r = self.client.call_tool("hub_call_device_command", {"deviceId": device_id, "command": state})
