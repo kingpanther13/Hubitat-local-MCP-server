@@ -200,6 +200,69 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         reads == 2
     }
 
+    @spock.lang.Unroll
+    def "#op runs Rule Machine's update, so its restart of a stopped rule is reported"() {
+        given:
+        settingsMap.enableWrite = true
+        def reads = 0
+        hubGet.register('/installedapp/statusJson/5') { params -> reads++; groovy.json.JsonOutput.toJson([appState: [[name: "stopped", value: reads == 1]]]) }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, (op): value, confirm: true])
+
+        then:
+        r.restartedStoppedRule == true
+        reads == 2
+
+        where:
+        op               | value
+        "replaceActions" | [[capability: "log", message: "x"]]
+        "clearActions"   | true
+        "removeAction"   | [index: 1]
+        "moveAction"     | [index: 1, direction: "up"]
+    }
+
+    def "a stopped rule whose state cannot be read after the edit is reported unverified, from the known pre-state"() {
+        given:
+        settingsMap.enableWrite = true
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null -> logs << [level: level, msg: msg] }
+        def reads = 0
+        hubGet.register('/installedapp/statusJson/5') { params ->
+            if (++reads > 1) throw new IllegalStateException("hub busy")
+            groovy.json.JsonOutput.toJson([appState: [[name: "stopped", value: true]]])
+        }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addTrigger: [capability: "Switch", deviceIds: [1], state: "on"], confirm: true])
+
+        then:
+        r.stoppedStateUnverified == true
+        !r.containsKey("restartedStoppedRule")
+        r.note.endsWith("The rule was stopped before this edit and its state could not be read afterwards; Rule Machine's update may have restarted it (check hub_get_rule_health).")
+        logs.any { it.level == "warn" && it.msg.contains("stopped state of app 5 could not be read after the edit (hub busy)") }
+    }
+
+    def "an unreadable stopped state on a refused edit is logged but adds no restart note"() {
+        given:
+        settingsMap.enableWrite = true
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null -> logs << [level: level, msg: msg] }
+        hubGet.register('/installedapp/statusJson/5') { params -> throw new IllegalStateException("hub busy") }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: false, error: "refused"] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addTrigger: [capability: "Switch", deviceIds: [1], state: "on"], confirm: true])
+
+        then:
+        r.applied == false
+        !r.containsKey("stoppedStateUnverified")
+        r.note == null
+        logs.any { it.level == "warn" && it.msg.contains("stopped state of app 5 could not be read before the edit (hub busy)") }
+    }
+
     def "a single addAction runs no update, so the stopped state is not read"() {
         given:
         settingsMap.enableWrite = true

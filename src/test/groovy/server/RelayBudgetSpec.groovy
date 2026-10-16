@@ -377,9 +377,9 @@ class RelayBudgetSpec extends ToolSpecBase {
         result.patches[1].op == 'addAction'
         result.patches[1].notAttempted == true
 
-        and: 'the stop is named and finalisation is skipped'
+        and: 'the stop is named and finalisation is skipped; nothing landed, so it is not partial'
         result.success == false
-        result.partial == true
+        result.partial == false
         result.bulkStoppedAfter == 'patches[0].addTriggers[0]'
         result.finalisationNotAttempted == true
         result.error?.startsWith('Stopped after patches[0].addTriggers[0] failed')
@@ -460,9 +460,6 @@ class RelayBudgetSpec extends ToolSpecBase {
         !JsonOutput.toJson(result).contains('__reqT0')
     }
 
-    // Fail-closed bulk semantics: a non-Map trigger[0] is recorded inline as a failure and stops the
-    // batch before the budget checkpoint, so no trigger-loop pause occurs and the skipped tail is never
-    // offered for resumption. The clean-pause return shape is pinned separately on _bulkPauseResult below.
     def "a non-Map addTriggers item is refused by name before the backup"() {
         given:
         def triggerCalls = []
@@ -509,6 +506,9 @@ class RelayBudgetSpec extends ToolSpecBase {
         second.actions[0].error.contains('[wizardStuck')
     }
 
+    // Fail-closed bulk semantics: a failed trigger[0] is recorded inline and stops the batch before the
+    // budget checkpoint, so no trigger-loop pause occurs and the skipped tail is never offered for
+    // resumption. The clean-pause return shape is pinned separately on _bulkPauseResult below.
     def "the trigger-loop checkpoint never offers a fail-closed tail for resumption"() {
         given:
         def triggerCalls = []
@@ -541,9 +541,9 @@ class RelayBudgetSpec extends ToolSpecBase {
         result.actions.size() == 2
         result.actions.every { it.notAttempted == true }
 
-        and: 'item 0 failed, so the result surfaces success:false + partial rather than masking it'
+        and: 'item 0 failed and nothing landed: success:false, not partial'
         result.success == false
-        result.partial == true
+        result.partial == false
 
         and: 'the stop is named and the trailing updateRule is not fired'
         result.bulkStoppedAfter == 'addTriggers[0]'
@@ -557,7 +557,7 @@ class RelayBudgetSpec extends ToolSpecBase {
 
     // A failed item stops the batch (fail-closed) before the budget checkpoint can pause, so no further
     // hub work runs and no resumable tail is offered; the failure is surfaced, not masked.
-    def "a failed item ends the batch before any budget pause and surfaces success:false + partial"() {
+    def "a failed item ends the batch before any budget pause and surfaces success:false"() {
         given:
         def actionCalls = []
         def clicks = []
@@ -585,9 +585,9 @@ class RelayBudgetSpec extends ToolSpecBase {
         !result.containsKey('addActionsRemaining')
         result.actions[1].notAttempted == true
 
-        and: 'the failure is bubbled up, NOT masked as a clean success'
+        and: 'the failure is bubbled up, NOT masked as a clean success; nothing landed, so not partial'
         result.success == false
-        result.partial == true
+        result.partial == false
         result.repairHints instanceof List && !result.repairHints.isEmpty()
 
         and: 'the stop is named and the trailing updateRule is not fired'

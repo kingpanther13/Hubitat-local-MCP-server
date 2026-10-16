@@ -608,6 +608,33 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         value << [true, false]
     }
 
+    def "the result carries each key's value from before the call, so a caller can restore it"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+        settingsMap.backupBeforeRuleEdits = false
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [backupBeforeRuleEdits: true, backupEveryRuleWrite: false],
+            confirm: true
+        ])
+
+        then: "an unset key reads back as null"
+        result.success == true
+        result.previous == [backupBeforeRuleEdits: false, backupEveryRuleWrite: null]
+        result.updated == [backupBeforeRuleEdits: true, backupEveryRuleWrite: false]
+    }
+
+    def "the settings description says what backupBeforeRuleEdits does and that it overrides backupEveryRuleWrite"() {
+        when:
+        def text = script.getAllToolDefinitions().find { it.name == 'hub_update_mcp_settings' }.inputSchema.properties.settings.description
+
+        then:
+        text.contains("backupBeforeRuleEdits (bool, default ON): OFF skips the File Manager baseline before each native-app edit")
+        text.contains("it overrides backupEveryRuleWrite")
+        text.contains("(only while backupBeforeRuleEdits is on)")
+    }
+
     @spock.lang.Unroll
     def "writes backupEveryRuleWrite=#value as the strict rule-backup policy toggle"() {
         given:

@@ -1408,6 +1408,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/app/ruleBuilderJson/507') { params -> '{}' }
         def uploads = []
         script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+        script._memoKeepPreEditStatus(507, [appState: []])
 
         when:
         def result = script._rmBackupBeforeEdit(507, "pre-update")
@@ -1417,6 +1418,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.baselineReused == true
         result.brokenBefore == null
         uploads.isEmpty()
+
+        and: 'a reused baseline drops the status read before this edit, so no later snapshot takes it'
+        script._memoTakePreEditStatus(507) == null
     }
 
     def "ordinary edit takes a fresh backup after the one-hour reuse window expires"() {
@@ -5715,15 +5719,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "the batch fails and is marked partial (one op refused pre-write)"
+        then: "the batch fails; the one op was refused pre-write, so nothing landed and it is not partial"
         result.success == false
-        result.partial == true
+        result.partial == false
 
         and: "the refusal rides on the addAction patch entry as the tailored steer, NOT the generic picker miss"
         // The distinguishing invariant of the patches path vs the dispatcher path: the reject is
         // reported on the per-op entry, and the fail-closed stop names that entry in the top-level
         // error. A regression that reroutes the reject through the outer catch would drop
-        // addPatch.error and bulkStoppedAfter and still pass success:false + partial:true.
+        // addPatch.error and bulkStoppedAfter and still pass success:false.
         result.bulkStoppedAfter == "patches[0]"
         result.finalisationNotAttempted == true
         result.error?.startsWith("Stopped after patches[0] failed:")
@@ -13312,7 +13316,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def dimmer = result.capabilities.find { it.name == "dimmer" }
         dimmer.conditionalRequired != null
         dimmer.conditionalRequired.toggle?.toString()?.contains("level")
-        dimmer.conditionalRequired.setLevel?.toString()?.contains("level")
+        // An inner list means one of those fields.
+        dimmer.conditionalRequired.setLevel == ["deviceIds", ["level", "levelVariable"]]
         dimmer.conditionalRequired.adjust?.toString()?.contains("adjustBy")
         dimmer.conditionalRequired.fade?.toString()?.contains("targetLevel")
         // direction is intentionally NOT in conditionalRequired for fade/startRaiseLower:
@@ -13326,7 +13331,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         switchCap.conditionalRequired?.choosePerMode?.toString()?.contains("perMode")
 
         def colorCap = result.capabilities.find { it.name == "color" }
-        colorCap.conditionalRequired?.setColor?.toString()?.contains("colorName")
+        colorCap.conditionalRequired?.setColor == [["colorName", "rawSettings"]]
         colorCap.conditionalRequired?.toggleColor?.toString()?.contains("colorName")
         colorCap.conditionalRequired?.setColorPerMode?.toString()?.contains("perMode")
 
@@ -13874,7 +13879,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [name: "hasAll", type: "button"]
         ]
         if (exposeComparator) {
-            inputs << [name: "ReltDev1", type: "enum", options: ["=", "!=", ">", "<"]]
+            inputs << [name: "ReltDev1", type: "enum", options: ["=", "≠", ">", "<", "*changed*"]]
         }
         JsonOutput.toJson([
             app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
@@ -14315,7 +14320,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [name: "rCapab_1", type: "enum", options: ["Custom Attribute"]],
             [name: "rDev_1", type: "capability.*", multiple: true],
             [name: "rCustomAttr_1", type: "enum", options: ["switch", "fixtureMode"]],
-            [name: "state_1", type: "enum", options: ["on", "off"]],
+            // As on the trigger row: a free-valued attribute takes a text value, an enum one its options.
+            exposeComparator ? [name: "state_1", type: "text"] : [name: "state_1", type: "enum", options: ["on", "off"]],
             [name: "not1", type: "bool"],
             // Outer Switch trigger (idx 2) fields.
             [name: "tCapab2", type: "enum", options: ["Switch"]],
@@ -14326,7 +14332,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             [name: "hasAll", type: "button"]
         ]
         if (exposeComparator) {
-            inputs << [name: "RelrDev_1", type: "enum", options: ["=", "!=", ">", "<"]]
+            inputs << [name: "RelrDev_1", type: "enum", options: ["=", "≠", ">", "<"]]
         }
         JsonOutput.toJson([
             app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
@@ -16270,7 +16276,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                                  [name: "condTrig.1", type: "enum", options: ["a", "b"]],
                                  [name: "rCapab_1", type: "enum", options: ["Switch", "Motion"]],
                                  [name: "rDev_1", type: "capability.switch", multiple: true],
-                                 [name: "state_1", type: "enum", options: ["on", "off"]],
+                                 [name: "state_1", type: "enum", options: ["active", "inactive"]],
                                  // Bound trigger at idx 2 (post-condition bump)
                                  [name: "tCapab2", type: "enum", options: ["Switch"]],
                                  [name: "tDev2", type: "capability.switch", multiple: true],
@@ -17358,15 +17364,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // selectActions with the log capability in the actType options.
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
-                options: ["notificationActs": "Notifications and Logging"]]])
+                options: ["messageActs": "Messaging and Logging"]]])
         }
         // STATIC doActPage schema -- no paragraphs, no render shift between fetches.
         // Both actType.1 and actSubType.1 writes silently reject -> applied stays [].
         def staticDoActInputs = [
             [name: "actType.1", type: "enum",
-             options: ["notificationActs": "Notifications and Logging"]],
+             options: ["messageActs": "Messaging and Logging"]],
             [name: "actSubType.1", type: "enum",
-             options: ["getLog": "Log a message"]],
+             options: ["getLogMsg": "Log a message"]],
             [name: "logType.1", type: "enum", options: ["info", "warn"]],
             [name: "logMessage.1", type: "text"],
             [name: "actionDone", type: "button"]
@@ -17413,9 +17419,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             configPage: [name: "doActPage", title: "T", install: false, error: null,
                          sections: [[title: "", input: [
                              [name: "actType.1", type: "enum",
-                              options: ["notificationActs": "Notifications and Logging"]],
+                              options: ["messageActs": "Messaging and Logging"]],
                              [name: "actSubType.1", type: "enum",
-                              options: ["getLog": "Log a message"]],
+                              options: ["getLogMsg": "Log a message"]],
                              [name: "logMessage.1", type: "text"],
                              [name: "actionDone", type: "button"]
                          ], paragraphs: ["seq ${seqNum}".toString()]]]],
@@ -17436,7 +17442,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
             ruleConfigJson(100, "r", [[name: "actType.1", type: "enum",
-                options: ["notificationActs": "Notifications and Logging"]]])
+                options: ["messageActs": "Messaging and Logging"]]])
         }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             fetchSeq++
@@ -25817,7 +25823,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             def seq = ++fetchSeq
             ruleConfigJson(100, "r", [
                 [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
-                [name: "xVarV.1", type: "enum", options: ["myVar": "myVar"], value: ""],
+                [name: "xVarV.1", type: "enum", options: ["myVar": "myVar", "unknownButNotValidated": "unknownButNotValidated"], value: ""],
                 [name: "numOp.1", type: "enum", options: ["number": "Constant", "var": "Variable"], value: ""],
                 [name: "valNumber.1", type: "number", value: "", paragraphs: ["seq ${seq}".toString()]]
             ])
@@ -26122,7 +26128,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             def seq = ++fetchSeq
             ruleConfigJson(100, "r", [
                 [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
-                [name: "xVarV.1", type: "enum", options: ["myVar": "myVar"], value: ""],
+                [name: "xVarV.1", type: "enum", options: ["myVar": "myVar", "unvalidated": "unvalidated"], value: ""],
                 [name: "numOp.1", type: "enum", options: ["number": "Constant", "variable": "Variable"], value: ""],
                 [name: "valNumber.1", type: "number", value: "", paragraphs: ["seq ${seq}".toString()]]
             ])
@@ -26172,7 +26178,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             def seq = ++fetchSeq
             ruleConfigJson(100, "r", [
                 [name: "actSubType.1", type: "enum", options: ["getSetVariable": "Set Variable"]],
-                [name: "xVarV.1", type: "enum", options: ["myLocal": "myLocal"], value: ""],
+                [name: "xVarV.1", type: "enum", options: ["myLocal": "myLocal", "unvalidatedLocal": "unvalidatedLocal"], value: ""],
                 [name: "numOp.1", type: "enum", options: ["number": "Constant", "variable": "Variable"], value: ""],
                 [name: "valNumber.1", type: "number", value: "", paragraphs: ["seq ${seq}".toString()]]
             ])
@@ -34613,8 +34619,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def labelCommit = posts.findIndexOf { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
         labelCommit >= 0
         def after = posts.drop(labelCommit + 1)
-        after.every { it.path == "/installedapp/btn" && (it.body?.stateAttribute == "moreCond" || it.body?.name == "cancelCapab") }
-        !after.any { it.path == "/installedapp/update/json" }
+        after.size() == 2
+        after.count { it.path == "/installedapp/btn" && it.body?.stateAttribute == "moreCond" } == 1
+        after.count { it.path == "/installedapp/btn" && it.body?.name == "cancelCapab" } == 1
     }
 
     def "create refuses a bundled item that fails its argument checks before the rule is created"() {
@@ -37324,7 +37331,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             def inputs = [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actType.1",    type: "enum", options: ["repeatActs": "Repeat Actions"]],
                 [name: "actSubType.1", type: "enum", options: ["getWhile": "REPEAT While Expression is TRUE"]],
                 [name: "cond",         type: "enum", options: ["a": "New condition"]],
                 [name: "rCapab_1",     type: "enum", options: ["Mode"]],
@@ -37391,7 +37398,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             def inputs = [
-                [name: "actType.1",    type: "enum", options: ["condActs": "Conditional Actions"]],
+                [name: "actType.1",    type: "enum", options: ["delayActs": "Delay, Wait, Exit and Comment"]],
                 [name: "actSubType.1", type: "enum", options: ["getWaitRule": "WAIT for Expression"]],
                 [name: "cond",         type: "enum", options: ["a": "New condition"]],
                 [name: "rCapab_1",     type: "enum", options: ["Mode"]],
@@ -39469,16 +39476,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         fallbackSentinel == null
     }
 
-    // ---------- state vocabulary -- Tamper detected/clear (now in the guide) ----------
+    // ---------- state vocabulary -- Tamper detected/clear (discover) ----------
 
-    def "hub_set_rule reference aligns Tamper with detected/clear vocabulary (in the guide)"() {
-        // Tamper actually emits 'detected'/'clear'; the wrong forms 'tampered' / 'not detected'
-        // would fail the live walker's option validation and mislead agents. The exhaustive
-        // state vocabulary now lives in the set_rule_reference guide (moved
-        // there to keep the inline description lean -- issue #181; reachable inline via guide:true).
-        // So: the inline description must never surface the WRONG forms, and the guide must carry
-        // the RIGHT ones. CO2 vocabulary is intentionally NOT pinned -- CarbonDioxideMeasurement
-        // is numeric ppm (comparator + value), not a discrete enum.
+    def "hub_set_rule reference aligns Tamper with detected/clear vocabulary (discover)"() {
+        // Tamper emits 'detected'/'clear'; 'tampered' / 'not detected' would fail the walker's option
+        // check. The state vocabulary comes from discover; neither the inline description nor the
+        // guide may surface the wrong forms. CO2 is numeric ppm, so it is not pinned here.
         when:
         def tools = script.getAllToolDefinitions()
         def updateNativeApp = tools.find { it.name == "hub_set_rule" }
@@ -41445,7 +41448,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- device-state comparator refusal ----------
 
     @spock.lang.Unroll
-    def "addRequiredExpression #cap with comparator + NO state + NO value: pre-walker guard throws targeted error"() {
+    def "addRequiredExpression #cap with comparator + NO state + NO value is refused by the condition check, naming the capability"() {
         // The shared condition check refuses a comparator on a device-state condition (RM offers
         // none; pass state) before any write; the refusal names the capability. CO2 is numeric and
         // keeps its comparator.
@@ -41509,10 +41512,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "addRequiredExpression #cap with state: '#validState': pre-walker guard does NOT fire (negative pin)"() {
+    def "addRequiredExpression #cap with state: '#validState' is not refused"() {
         // With a valid state the condition check does not refuse and the walker writes state_<N>;
         // the same capabilities as the refusal spec above.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -41631,10 +41633,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The numeric CO2 path must not get the device-state refusal.
         !(result.error?.toString()?.contains("has no comparator for a"))
 
-        and: "call did not hard-fail (positive pin: paired with the F18-phrase negation above)"
+        and: "call did not hard-fail (positive pin: paired with the device-state refusal negation above)"
         // Load-bearing positive discriminator (W10): without this, a regression
         // that returns success=false for an unrelated reason would silently
-        // satisfy the F18-negation above. result.success != false catches both
+        // satisfy the negation above. result.success != false catches both
         // explicit `success: false` and the case where the dispatcher errored
         // through `_rmBuildUpdateErrorResponse` (which never sets `success`).
         result.success != false
@@ -41685,7 +41687,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
         hubGet.register('/device/fullJson/8')  { params -> '{"id":"8","name":"Leak1"}' }
 
-        when: "caller passes addAction(ifThen) with discrete-event cap + comparator + no state"
+        when: "caller passes addAction(ifThen) with a device-state capability + comparator + no state"
         def result = script.toolSetRule([
             appId: 100,
             addAction: [
@@ -41699,9 +41701,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ])
 
         then: "the condition check refuses on doActPage too, naming the capability"
-        // Load-bearing discriminator: the F18 throw text must fire on doActPage
-        // as it does on STPage. A regression narrowing the guard to STPage-only
-        // would let this through with success != false and no F18 error phrase.
+        // Load-bearing discriminator: the device-state refusal must fire on doActPage as on
+        // STPage; a check narrowed to STPage would let this through with no refusal text.
         result.success == false
         result.error?.toString()?.contains("Water sensor")
         result.error?.toString()?.contains("has no comparator for a")
@@ -42423,7 +42424,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "a bulk stop on an item that left an editor open reports wizardStuck and puts the close-editor step first"() {
         given:
-        def stopItem = [success: false, index: 0,
+        def stopItem = [success: false, index: 0, wizardStuck: true,
                         error: "setVariable: numOp failed [wizardStuck -- action 3's editor or row could not be confirmed removed after the refusal]"]
 
         when:
@@ -42433,6 +42434,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         out.wizardStuck == true
         out.repairHints[0].contains("button='actionCancel', pageName='doActPage'")
         out.repairHints.size() == 2
+    }
+
+    def "a bulk stop reads wizardStuck from the item's flag, not its error text"() {
+        when:
+        def out = script._rmBulkStoppedResult(100, [backupKey: "k"], "addActions[0]",
+            [success: false, error: "x [wizardStuck -- text only]"], [health: [ok: true]])
+
+        then:
+        !out.containsKey("wizardStuck")
     }
 
     def "a bulk stop on an ordinary failure carries no wizardStuck flag"() {
@@ -46499,6 +46509,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "a rollback is not applied"                        | [success: false, rolledBack: true]              | false   | false     | false
         "an editor left open leaves applied unknown"       | [success: false, wizardStuck: true]             | null    | false     | false
         "fields written before a failure: unknown"         | [success: false, fieldsWritten: true]           | null    | false     | false
+        "a partial row with fields written: unknown"       | [success: false, partial: true, fieldsWritten: true] | null | false | false
+        "a partial row with an open editor: unknown"       | [success: false, partial: true, wizardStuck: true]   | null | false | false
+        "success outranks fields written"                  | [success: true, partial: true, fieldsWritten: true]  | true | true  | true
+        "a partial row otherwise is applied"               | [success: false, partial: true]                      | true | true  | false
         "a rejected update is applied, not activated"      | [success: true, updateRuleFailed: true]         | true    | false     | false
         "subscriptions not live: not activated"            | [success: true, subscriptionsNotLive: true]     | true    | false     | false
         "a failed readback is activated, not verified"     | [success: true, verificationFetchFailed: true]  | true    | true      | false
@@ -46610,14 +46624,32 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 (f.containsKey("fixed") ? (f.key && !f.name) : (f.name != null)) &&
                 (!f.whenTrue || f.type == "Boolean") &&
                 (f.trueWhen == null || (f.values instanceof List && (f.values as List).contains(f.trueWhen))) &&
-                (f.values == null || f.values instanceof List)
+                (f.values == null || f.values instanceof List) &&
+                (f.dflt == null || !(f.values instanceof List) || (f.values as List).contains(f.dflt)) &&
+                (f.direction == null || f.values == ["raise", "lower"])
             }
-            boolean requiresOk = variants.values().every { Map ae -> ae.requires == null || (ae.requires instanceof List && (ae.requires as List).every { it instanceof String || it instanceof List }) }
+            boolean requiresOk = variants.values().every { Map ae ->
+                def names = ((((entry.slots ?: []) as List) + (ae.is(entry) ? [] : ((ae.slots ?: []) as List)) + ((entry.common ?: []) as List))*.name).findAll { it } as Set
+                ae.requires == null || (ae.requires instanceof List && (ae.requires as List).every { r ->
+                    (r instanceof String && r in names) || (r instanceof List && (r as List).every { it in names })
+                })
+            }
             boolean distinct = variants.findAll { k, Map ae -> k != null }.groupBy { k, Map ae -> ae.sub ?: entry.sub }.every { sub, Map group ->
                 group.size() == 1 || group.values().collect { Map ae -> ((ae.slots ?: []) as List).findAll { it.containsKey("fixed") }.collectEntries { [(it.key): it.fixed] } }.unique().size() == group.size()
             }
             slotsOk && requiresOk && distinct
         }
+    }
+
+    def "every sub-type key of the device-capability map is a catalog sub-type or one the catalog does not model"() {
+        given: "RM sub-types with a device picker that no catalog entry maps"
+        def rmOnly = ["getBlindTilt", "getOCGarage", "getOCValve", "getSetMusicPlayer", "getTone"]
+        def subs = script._rmActionCatalog().collectMany { String cap, Map entry ->
+            [entry.sub] + ((entry.actions instanceof Map) ? (entry.actions as Map).values()*.sub : [])
+        }.findAll { it } as Set
+
+        expect:
+        script._rmSubActCapab().keySet().every { it in subs || it in rmOnly }
     }
 
     private List zwavePollEditor(int idx) {
@@ -46878,20 +46910,820 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def diag = [:]
-        def deprecated = script._systemAppTypeId("Notifications", diag)
+        def deprecated = script._systemAppTypeId("Notifications")
 
         then:
-        deprecated == null
-        diag.isEmpty()
+        deprecated == [id: null, error: null]
 
         when:
         readable = false
-        def unreadable = script._systemAppTypeId("Notifications", diag)
+        def unreadable = script._systemAppTypeId("Notifications")
 
         then:
-        unreadable == null
-        diag.typeLookupError.toString().contains("502")
+        unreadable.id == null
+        unreadable.error.contains("502")
+    }
+
+    def "a failed built-in parent bootstrap names why the built-in app list could not be read"() {
+        given: "no Rule Machine parent, a sysApp GET that creates nothing, and a list that fails on the type lookup"
+        int listReads = 0
+        hubGet.register('/hub2/appsList') { params ->
+            if (++listReads >= 3) throw new IllegalStateException("502 Bad Gateway")
+            JsonOutput.toJson([apps: [], systemAppTypes: []])
+        }
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 -> [status: 200, location: null, data: ""] }
+
+        when:
+        script._discoverParentAppId("rule_machine")
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("typeId=null (the built-in app list could not be read: 502 Bad Gateway)")
+    }
+
+    // ---------- review round 2: trigger wizard, slots, cleanup ----------
+
+    // selectTriggers serves `inputs`; writes are recorded (and land) without a hub round trip.
+    private Map wireTriggerWizard(List inputs) {
+        def posts = []
+        def writes = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params -> ruleConfigJson(100, "r", inputs) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"T2"}' }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null ->
+            writes << [key: key, value: value]; applied << key
+        }
+        return [posts: posts, writes: writes]
+    }
+
+    private static List temperatureTriggerInputs(boolean withReferencePicker) {
+        def inputs = [
+            [name: "tCapab1", type: "enum", options: ["Temperature"]],
+            [name: "tDev1", type: "capability.temperatureMeasurement", multiple: true],
+            [name: "ReltDev1", type: "enum", options: ["<", ">", "="]],
+            [name: "istDev1", type: "bool"],
+            [name: "tstate1", type: "decimal"],
+            [name: "isCondTrig.1", type: "bool"],
+            [name: "hasAll", type: "button"]
+        ]
+        if (withReferencePicker) inputs << [name: "reltDevice1", type: "capability.temperatureMeasurement"]
+        return inputs
+    }
+
+    def "a numeric trigger's compareToDevice writes istDev, then the reference device, and the offset as the right-hand value"() {
+        given:
+        def w = wireTriggerWizard(temperatureTriggerInputs(true))
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        def spec = [capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 9, offset: 2]]
+
+        when:
+        script._rmAddTrigger(100, spec)
+
+        then:
+        def keys = w.writes*.key
+        keys.indexOf("istDev1") >= 0
+        keys.indexOf("istDev1") < keys.indexOf("reltDevice1")
+        w.writes.find { it.key == "istDev1" }.value == true
+        w.writes.find { it.key == "reltDevice1" }.value == "9"
+        w.writes.find { it.key == "tstate1" }.value == 2
+
+        and: "the caller's spec is not changed"
+        !spec.containsKey("value")
+        spec.compareToDevice == [deviceId: 9, offset: 2]
+    }
+
+    def "a trigger failure after the editor opened cancels it once and carries no flag"() {
+        given:
+        def w = wireTriggerWizard(temperatureTriggerInputs(false))
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when:
+        script._rmAddTrigger(100, [capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 9]])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("reltDevice1 did not appear")
+        !ex.message.contains("[wizardStuck")
+        script._rmOutcomeFlags(ex).isEmpty()
+        w.posts.count { it.path == "/installedapp/btn" && it.body?.name == "cancelCapab" } == 1
+    }
+
+    def "a trigger editor whose cancel fails is flagged wizardStuck, and the error envelope reads the flag"() {
+        given:
+        wireTriggerWizard(temperatureTriggerInputs(false))
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (body?.name == "cancelCapab") throw new IllegalStateException("btn 500")
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddTrigger(100, [capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 9]])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("[wizardStuck -- cancelCapab cleanup failed: btn 500")
+        script._rmOutcomeFlags(ex).wizardStuck == true
+        script._rmBuildUpdateErrorResponse(100, ex.message, [backupKey: "k"], "selectTriggers", ex).wizardStuck == true
+    }
+
+    def "a conditional trigger refused after its condition was built names the condition left over"() {
+        given:
+        def w = wireTriggerWizard([
+            [name: "isCondTrig.1", type: "bool"],
+            [name: "condTrig.1", type: "enum", options: ["a"]],
+            [name: "rCapab_1", type: "enum", options: ["Switch"]],
+            [name: "rDev_1", type: "capability.switch", multiple: true],
+            [name: "state_1", type: "enum", options: ["on", "off"]],
+            [name: "tCapab2", type: "enum", options: ["Switch"]],
+            [name: "hasAll", type: "button"]
+        ])
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+
+        when: "the trigger's capability is not in the picker, after condition 1 exists"
+        script._rmAddTrigger(100, [capability: "Motion", deviceIds: [8], state: "active",
+                                   condition: [capability: "Switch", deviceIds: [9], state: "on"]])
+
+        then: "a runtime failure, not a validation error: a corrected retry would build another condition"
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("addTrigger.capability 'Motion' is not in Rule Machine's trigger list")
+        ex.message.contains("The condition created for this trigger (id 1) stays in the rule's conditions as unused")
+        !ex.message.contains("RM is not touched")
+        w.posts.count { it.path == "/installedapp/btn" && it.body?.name == "cancelCapab" } == 1
+    }
+
+    @spock.lang.Unroll
+    def "the in-flight trigger slot is RM's counter when ahead (ndx=#ndx, committed=#existing)"() {
+        given:
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([appSettings: [], appState: ndx == null ? [] : [[name: "ndx", value: ndx]]])
+        }
+
+        expect:
+        script._rmInFlightTriggerIdx(100, existing) == expected
+
+        where:
+        ndx  | existing | expected
+        5    | [1, 2]   | 5
+        "7"  | []       | 7
+        2    | [1, 2]   | 3
+        null | [1, 2]   | 3
+        null | []       | 1
+    }
+
+    def "a conditional trigger builds its condition on RM's counter and the trigger on the next slot"() {
+        given:
+        def w = wireTriggerWizard([
+            [name: "tCapab5", type: "enum", options: ["Switch"]],
+            [name: "tDev5", type: "capability.switch", multiple: true],
+            [name: "tstate5", type: "enum", options: ["on", "off"]],
+            [name: "isCondTrig.5", type: "bool"],
+            [name: "condTrig.5", type: "enum", options: ["4"]],
+            [name: "hasAll", type: "button"]
+        ])
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([appSettings: [[name: "tCapab1", value: "Switch"]], appState: [[name: "ndx", value: 4]]])
+        }
+
+        when: "a cancelled edit left the counter at 4, past the next index (2)"
+        script._rmAddTrigger(100, [capability: "Switch", deviceIds: [8], state: "on",
+                                   condition: [capability: "Switch", deviceIds: [9], state: "off"]])
+
+        then:
+        def keys = w.writes*.key
+        keys.contains("rCapab_4")
+        !keys.contains("rCapab_2")
+        keys.contains("tCapab5")
+        w.writes.find { it.key == "condTrig.5" }?.value == "4"
+    }
+
+    def "an unreadable trigger counter refuses a conditional add before its condition is built"() {
+        given:
+        def w = wireTriggerWizard([[name: "hasAll", type: "button"]])
+        int statusReads = 0
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (++statusReads > 1) throw new IllegalStateException("timeout")
+            statusJson(100)
+        }
+
+        when:
+        script._rmAddTrigger(100, [capability: "Switch", deviceIds: [8], state: "on",
+                                   condition: [capability: "Switch", deviceIds: [9], state: "off"]])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("the rule's trigger counter could not be read for app 100")
+        ex.message.contains("Nothing was written.")
+        !w.writes.any { it.key.startsWith("rCapab_") || it.key.startsWith("isCondTrig") }
+        w.posts.count { it.path == "/installedapp/btn" && it.body?.name == "cancelCapab" } == 1
+    }
+
+    // ---------- review round 2: pre-edit backups off ----------
+
+    def "with backups off the skip branch refuses a missing app id from its configure/json probe"() {
+        given:
+        settingsMap.backupBeforeRuleEdits = false
+        hubGet.register('/installedapp/configure/json/504') { params -> throw new RuntimeException("HTTP 404 Not Found") }
+
+        when:
+        script._rmBackupBeforeEdit(504, "pre-addAction")
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("No rule/app with id 504 exists on this hub")
+    }
+
+    @spock.lang.Unroll
+    def "with backups off the skip branch reads the walk's page once and records whether the app is an RM rule (#typeName)"() {
+        given:
+        settingsMap.backupBeforeRuleEdits = false
+        hubGet.register('/installedapp/configure/json/504/selectActions') { params ->
+            JsonOutput.toJson([app: [id: 504, appType: [name: typeName, namespace: "hubitat"]], configPage: [name: "selectActions", sections: []], settings: [:]])
+        }
+        script._memoKeepPreEditStatus(504, [appState: []])
+
+        when:
+        def backup = script._rmBackupBeforeEdit(504, "pre-walkStep", "selectActions")
+
+        then:
+        backup.skipped && !backup.backupKey
+        hubGet.calls*.path == ['/installedapp/configure/json/504/selectActions']
+        script._memoKnowsRuleMachine(504)
+        script._memoRuleMachine(504) == rm
+        script._memoTakePreEditStatus(504) == null
+
+        where:
+        typeName          | rm
+        "Rule-5.1"        | true
+        "Package Manager" | false
+    }
+
+    def "with backups off a transient configure/json failure leaves the app kind unknown instead of refusing"() {
+        given:
+        settingsMap.backupBeforeRuleEdits = false
+        hubGet.register('/installedapp/configure/json/504') { params -> throw new RuntimeException("HTTP 500 busy") }
+
+        when:
+        def backup = script._rmBackupBeforeEdit(504, "pre-addAction")
+
+        then:
+        backup.skipped
+        !script._memoKnowsRuleMachine(504)
+    }
+
+    def "restore hints name the backups setting only when the backup was skipped by it"() {
+        given:
+        def skipped = [skipped: "pre-edit backups are off in Advanced settings"]
+
+        expect:
+        script._rmBackupHint(skipped).contains("'Back up native apps before edits' is off in Advanced settings")
+        script._rmRollbackHint(skipped).contains("'Back up native apps before edits' is off in Advanced settings")
+        script._rmRestoreClause(skipped).startsWith("no pre-edit backup was taken ('Back up native apps before edits' is off")
+
+        and: "a backup map with no key and no skip names no setting"
+        script._rmBackupHint([:]) == "No backup key was returned for this edit, so there is no snapshot to restore; read the rule with hub_get_app_config and repair it in place."
+        !script._rmRollbackHint([:]).contains("Back up native apps")
+        script._rmRestoreClause([:]) == "no backup key was returned for this edit, so repair the rule in place"
+
+        and: "a key is the restore handle"
+        script._rmRestoreClause([backupKey: "k"]) == "restore via hub_restore_backup with backupKey='k'"
+    }
+
+    def "a modifyAction that does not verify with backups off says why there is no snapshot, never backupKey='null'"() {
+        given:
+        enableWrite()
+        settingsMap.backupBeforeRuleEdits = false
+        wireModifyEditorTransport(100, [1], ["actType.1": "deviceActs", "actSubType.1": "getStartStopZPoll", "ssZ.1": "false", "ssSD.1": "false"], zwavePollEditor(1))
+        hubGet.register('/app/ruleBuilderJson/100') { params -> '{}' }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def r = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [action: "start"]], confirm: true])
+
+        then:
+        r.success == false
+        r.backup.skipped
+        !r.backup.containsKey("backupKey")
+        r.restoreHint.contains("'Back up native apps before edits' is off in Advanced settings")
+        !JsonOutput.toJson(r).contains("backupKey='null'")
+        uploads.isEmpty()
+    }
+
+    @spock.lang.Unroll
+    def "with backups off an edit through the dispatch envelope reports the backup skipped (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        enableWrite()
+        settingsMap.backupBeforeRuleEdits = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def response = mcpDriver.callTool('hub_set_rule', [appId: 100, settings: [origLabel: "x"], confirm: true])
+
+        then:
+        response.error == null
+        def inner = mcpDriver.parseInner(response)
+        inner.backup.skipped
+        !inner.backup.containsKey("backupKey")
+        uploads.isEmpty()
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "a Button Controller flow failure without a backup key does not blame the backups setting"() {
+        given:
+        enableWrite()
+        settingsMap.backupBeforeRuleEdits = false
+        hubGet.register('/installedapp/configure/json/630') { params ->
+            JsonOutput.toJson([
+                app: [id: 630, name: "Button Controller-5.1", label: "BC", installed: true, appType: [name: "Button Controller-5.1", namespace: "hubitat"]],
+                configPage: [name: "mainPage", error: null, sections: [[title: "", input: [
+                    [name: "buttonDev", type: "capability.pushableButton", multiple: true], [name: "origLabel", type: "text"]]]]],
+                settings: [buttonDev: ["43": "Virtual Button"], origLabel: "BC"], childApps: []])
+        }
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null -> [:] }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (body?.stateAttribute == "addBut") throw new IllegalStateException("btn 500")
+            [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolSetNativeApp([buttonRule: [controllerId: 630, buttonNumber: 1, event: "pushed"], confirm: true])
+
+        then:
+        result.success == false
+        result.note.contains("No backup key was returned for the controller")
+        !result.note.contains("Back up native apps before edits")
+    }
+
+    // ---------- review round 2: per-execution memo ----------
+
+    def "every executeTool call starts with an empty execution memo"() {
+        given: "one of each memo family and an outcome flag left from an earlier call"
+        script._memoKeepDeviceList(["8": [label: "S", caps: ["switch"]]])
+        script._memoNoteDeviceExists("8")
+        script._memoKeepPreEditStatus(100, [appState: []])
+        script._memoNoteRuleMachine(100, true)
+        def flagged = script._rmFail(new IllegalStateException("x"), [wizardStuck: true])
+
+        when:
+        script.executeTool("hub_get_tool_guide", [:])
+
+        then:
+        (script.EXECUTION_CACHE as Map).isEmpty()
+        script._memoDeviceList() == null
+        !script._memoDeviceExists("8")
+        script._memoTakePreEditStatus(100) == null
+        !script._memoKnowsRuleMachine(100)
+        script._rmOutcomeFlags(flagged).isEmpty()
+    }
+
+    // ---------- review round 2: modifyAction ----------
+
+    def "modifyAction writes an enum value in the catalog's spelling"() {
+        given:
+        def ma = wireModifyEditorTransport(100, [1], ["actType.1": "sceneActs", "actSubType.1": "getFanSpeed", "fanDevice.1": ["12"], "fanSpeed.1": "low"],
+            [[name: "fanSpeed.1", type: "enum", options: ["low", "medium-low", "medium", "medium-high", "high", "on", "off", "auto"]], [name: "actionDone", type: "button"]])
+
+        when:
+        def result = script._rmModifyAction(100, 1, [speed: "HIGH"])
+
+        then:
+        result.success == true
+        (ma.writes as List).find { it.key == "fanSpeed.1" }?.value?.toString() == "high"
+    }
+
+    def "modifyAction maps a zwavePoll target in any case to RM's boolean"() {
+        given:
+        def ma = wireModifyEditorTransport(100, [1], ["actType.1": "deviceActs", "actSubType.1": "getStartStopZPoll", "ssZ.1": "true", "ssSD.1": "false"], zwavePollEditor(1))
+
+        when:
+        def result = script._rmModifyAction(100, 1, [target: "Switches"])
+
+        then:
+        result.success == true
+        (ma.writes as List).find { it.key == "ssSD.1" }?.value?.toString() == "true"
+    }
+
+    def "modifyAction refuses a device without the capability RM's picker lists, before opening the editor"() {
+        given:
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 26, label: "Temp", capabilities: ["TemperatureMeasurement"]]]) }
+        hubGet.register('/device/fullJson/26') { params -> '{"id":"26","name":"Temp"}' }
+        def ma = wireModifyEditorTransport(100, [1], ["actType.1": "switchActs", "actSubType.1": "getOnOffSwitch", "onOffSwitch.1": ["8"], "onOff.1": "true"],
+            [[name: "onOffSwitch.1", type: "capability.switch", multiple: true], [name: "actionDone", type: "button"]])
+
+        when:
+        script._rmModifyAction(100, 1, [deviceIds: [26]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("device 26 (Temp) does not have the Switch capability")
+        (ma.clicks as List).isEmpty()
+    }
+
+    def "modifyAction leaves useLastDev to the runCommand writer and carries the committed value"() {
+        given:
+        wireModifyEditorTransport(100, [1], ["actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"], "cCmd.1": "on", "useLastDev.1": "true"], runCommandEditor(1))
+
+        when:
+        def kept = script._rmPlanModifyAction(100, 1, [command: "off"])
+        def changed = script._rmPlanModifyAction(100, 1, [command: "off", useLastEventDevice: false])
+
+        then:
+        kept.runCommand.useLastEventDevice == true
+        !kept.writes.containsKey("useLastDev.1")
+        changed.runCommand.useLastEventDevice == false
+        !changed.writes.containsKey("useLastDev.1")
+    }
+
+    def "modifyAction on runCommand needs a command when neither the mods nor the committed row carry one"() {
+        given:
+        wireModifyEditorTransport(100, [1], ["actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"]], runCommandEditor(1))
+
+        when:
+        script._rmPlanModifyAction(100, 1, [capabilityFilter: "Dimmer"])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("modifyAction on runCommand: 'command' is needed. RM is not touched.")
+    }
+
+    @spock.lang.Unroll
+    def "the setVariable target check refuses only when the list it could belong to was read (#label)"() {
+        given:
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null -> logs << [level: level, msg: msg] }
+        script.metaClass.getAllGlobalVars = { -> if (!hubReadable) throw new IllegalStateException("hub vars down"); ["counter": [name: "counter", type: "integer"]] }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (!localsReadable) throw new IllegalStateException("status down")
+            JsonOutput.toJson([appSettings: [], appState: []])
+        }
+
+        when:
+        def refusal = null
+        try { script._rmRequireVariableName(100, target) } catch (IllegalArgumentException e) { refusal = e }
+
+        then:
+        (refusal != null) == refused
+        logs.any { it.level == "warn" && it.msg.contains("variable '${target}' was not checked") } == unchecked
+        !hubReadable == logs.any { it.msg.contains("the hub variables could not be read (hub vars down)") }
+        !localsReadable == logs.any { it.msg.contains("local variables could not be read") }
+
+        where:
+        label                                  | target    | hubReadable | localsReadable | refused | unchecked
+        "both lists read, name in neither"     | "nope"    | true        | true           | true    | false
+        "both lists read, a hub variable"      | "counter" | true        | true           | false   | false
+        "hub list unreadable"                  | "nope"    | false       | true           | false   | true
+        "local list unreadable"                | "nope"    | true        | false          | false   | true
+        "local list unreadable, a hub variable"| "counter" | true        | false          | false   | false
+    }
+
+    // ---------- review round 2: device capability check ----------
+
+    def "a device the feed lists with no capabilities is unknown, not refused"() {
+        given:
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 78, label: "Opaque", capabilities: []]]) }
+
+        expect:
+        script._rmMapActionSpec(100, [deviceIds: [78]], "switch", "on").actSubType == "getOnOffSwitch"
+    }
+
+    @spock.lang.Unroll
+    def "a #label device list is logged once and memoised for the execution"() {
+        given:
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null -> logs << [level: level, msg: msg] }
+        script.metaClass._typeName = { v -> "ShapeSentinel" }
+        int reads = 0
+        hubGet.register('/hub2/vrb/devices') { params -> reads++; if (body == null) throw new IllegalStateException("feed down"); body }
+
+        when:
+        script._rmMapActionSpec(100, [deviceIds: [26]], "switch", "on")
+        script._rmMapActionSpec(100, [deviceIds: [26]], "switch", "off")
+
+        then:
+        reads == 1
+        logs.count { it.level == "warn" && it.msg.contains(logged) } == 1
+
+        where:
+        label                | body             | logged
+        "failed"             | null             | "device capabilities could not be read (feed down); the Switch check is skipped for this call"
+        "oddly shaped"       | '{"devices":[]}' | "the device list had an unexpected shape (ShapeSentinel); the Switch check is skipped for this call"
+    }
+
+    // ---------- review round 2: picker-offered writes ----------
+
+    def "a single value an enum picker does not list is skipped with what it offers; listed values and lists are written"() {
+        given:
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            ruleConfigJson(100, "r", [
+                [name: "fanSpeed.1", type: "enum", options: ["low", "high"]],
+                [name: "pick.1", type: "enum", options: ["a": "A"]],
+                [name: "vt.1", type: "enum", options: [[value: "on", text: "On"]]],
+                [name: "modes.1", type: "enum", multiple: true, options: ["1": "Day"]]
+            ])
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+        def applied = []
+        def skipped = []
+        def written = { String key -> posts.any { it.path == "/installedapp/update/json" && (it.body as Map).containsKey("settings[${key}]".toString()) } }
+
+        when:
+        script._rmWriteSettingOnPage(100, "doActPage", "fanSpeed.1", "turbo", applied, null, skipped)
+        script._rmWriteSettingOnPage(100, "doActPage", "pick.1", "b", applied, null, skipped)
+
+        then:
+        skipped == [[key: "fanSpeed.1", reason: "not_offered", value: "turbo", offered: ["low", "high"]],
+                    [key: "pick.1", reason: "not_offered", value: "b", offered: ["a"]]]
+        posts.isEmpty()
+
+        when:
+        script._rmWriteSettingOnPage(100, "doActPage", "fanSpeed.1", "high", applied, null, skipped)
+        script._rmWriteSettingOnPage(100, "doActPage", "vt.1", "on", applied, null, skipped)
+        script._rmWriteSettingOnPage(100, "doActPage", "modes.1", ["9"], applied, null, skipped)
+
+        then:
+        written("fanSpeed.1")
+        written("vt.1")
+        written("modes.1")
+        skipped.count { it.reason == "not_offered" } == 2
+    }
+
+    def "an action sub-type the picker does not offer is refused naming what RM offers"() {
+        when:
+        script._rmRequireOfferedActionSubType("hsm", "getSetHSM", 3,
+            [[key: "actSubType.3", reason: "not_offered", value: "getSetHSM", offered: ["getSetMode", "getSetVariable"]]])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("does not offer 'hsm' (getSetHSM)")
+        ex.message.contains("This hub's picker offers: getSetMode, getSetVariable.")
+
+        when: "any other skip is not a refusal"
+        script._rmRequireOfferedActionSubType("hsm", "getSetHSM", 3, [[key: "actSubType.3", reason: "silent_rejection"], [key: "actType.3", reason: "not_offered", offered: []]])
+
+        then:
+        noExceptionThrown()
+    }
+
+    // ---------- review round 2: catalog requires and canonical values ----------
+
+    def "a catalog entry's requires is enforced: an inner list needs one of its fields"() {
+        given:
+        hubGet.register('/hub2/vrb/devices') { params -> "[]" }
+
+        when:
+        script._rmMapActionSpec(100, [command: "on"], "runCommand", null)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("requires one of deviceIds, useLastEventDevice")
+
+        when:
+        script._rmMapActionSpec(100, [deviceIds: [1]], "dimmer", "setLevel")
+
+        then:
+        def ex2 = thrown(IllegalArgumentException)
+        ex2.message.contains("dimmer.setLevel requires one of level, levelVariable.")
+    }
+
+    @spock.lang.Unroll
+    def "the add path writes direction '#direction' from its canonical value"() {
+        given:
+        hubGet.register('/hub2/vrb/devices') { params -> "[]" }
+
+        expect: "startRaiseLower's dimRL is true for lower"
+        script._rmMapActionSpec(100, [deviceIds: [1], direction: direction], "dimmer", "startRaiseLower").fields["dimRL.@N"] == lower
+
+        where:
+        direction | lower
+        "RAISE"   | false
+        "raise"   | false
+        "Lower"   | true
+    }
+
+    def "an hsm command is written in RM's spelling whatever its case"() {
+        expect:
+        script._rmMapActionSpec(100, [command: "DISARMALL"], "hsm", null).fields["alarm.@N"] == "disarmAll"
+    }
+
+    // ---------- review round 2: trigger and condition checks ----------
+
+    @spock.lang.Unroll
+    def "a #cap trigger's state must be one Rule Machine lists (#label)"() {
+        when:
+        script._rmCheckCondSpec([capability: cap, state: state], "trigger", "addTrigger")
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(text)
+
+        where:
+        label         | cap              | state      | text
+        "no state"    | "HSM Alert"      | null       | "HSM Alert needs state (one of intrusion, intrusion-delay"
+        "not listed"  | "HSM Alert"      | "burglary" | "HSM Alert state 'burglary' is not one Rule Machine lists"
+        "wrong case"  | "Location Event" | "Sunset"   | "Location Event state 'Sunset' is not one Rule Machine lists"
+    }
+
+    def "a listed hub-state value passes the check"() {
+        when:
+        script._rmCheckCondSpec([capability: "Location Event", state: "sunset"], "trigger", "addTrigger")
+        script._rmCheckCondSpec([capability: "HSM Alert", state: "intrusion-home"], "trigger", "addTrigger")
+
+        then:
+        noExceptionThrown()
+    }
+
+    def "an unlisted HSM Alert state is refused at round zero, with no hub read and no backup"() {
+        when:
+        def r = script._rmRoundZeroNativeEditRefusal([appId: 100, confirm: true, addTrigger: [capability: "HSM Alert", state: "burglary"]])
+
+        then:
+        r.success == false
+        r.error.contains("HSM Alert state 'burglary' is not one Rule Machine lists")
+        !r.backup
+        hubGet.calls.isEmpty()
+    }
+
+    def "_rmCheckCondSpec reads no hub state for a compareToDevice reference"() {
+        when:
+        script._rmCheckCondSpec([capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 99]], "trigger", "addTrigger")
+
+        then:
+        noExceptionThrown()
+        hubGet.calls.isEmpty()
+    }
+
+    @spock.lang.Unroll
+    def "a missing compareToDevice reference device is refused by the #label prevalidation"() {
+        given:
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/99') { params -> throw new RuntimeException("404 Not Found") }
+
+        def spec = [capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 99]]
+
+        when:
+        if (label == "condition") script._rmPrevalidateConditionList([conditions: [spec]], "addRequiredExpression")
+        else script._rmPrevalidateTriggerSpecList([spec], "addTriggers")
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(text)
+
+        where:
+        label       | text
+        "condition" | "addRequiredExpression.conditions[0].compareToDevice.deviceId contains device ID '99' which does not exist"
+        "trigger"   | "addTriggers[0]: addTrigger.compareToDevice.deviceId contains device ID '99' which does not exist"
+    }
+
+    // ---------- review round 2: outcome flags ----------
+
+    def "_rmOutcomeKeys carries only the flags that are set"() {
+        expect:
+        script._rmOutcomeKeys(script._rmFail(new IllegalStateException("x"), [wizardStuck: true, fieldsWritten: false])) == [wizardStuck: true]
+        script._rmOutcomeKeys(new IllegalStateException("x [wizardStuck -- text only]")) == [:]
+        script._rmOutcomeKeys(null) == [:]
+    }
+
+    @spock.lang.Unroll
+    def "a bulk stop is partial only when something landed: #label"() {
+        when:
+        def out = script._rmBulkStoppedResult(100, [backupKey: "k"], "addActions[0]", stopItem, extra + [health: [ok: true, success: true]])
+
+        then:
+        out.partial == partial
+
+        where:
+        label                                     | stopItem                                     | extra                                                                                                          | partial
+        "nothing landed"                          | [success: false, error: "x"]                 | [actions: [[success: false, error: "x"], [success: false, notAttempted: true]]]                                | false
+        "an earlier item was rolled back"         | [success: false, error: "x"]                 | [actions: [[success: true, rolledBack: true], [success: false, error: "x"]]]                                   | false
+        "the health read does not count"          | [success: false, error: "x"]                 | [actions: []]                                                                                                  | false
+        "a nested patch item applied"             | [success: false, error: "x"]                 | [patches: [[success: false, op: "addActions", results: [[success: true], [success: false, error: "x"]]]]]     | true
+        "the stop item itself was partial"        | [success: true, partial: true]               | [:]                                                                                                            | true
+        "a replace already cleared rows"          | [success: false, error: "x"]                 | [removedIndices: [1, 2], addedActions: [[success: false, error: "x"]]]                                         | true
+    }
+
+    // ---------- review round 2: addAction rollback outcomes ----------
+
+    // An unbaked switch action (mainPage keeps "Define Actions"). rowSurvives: the row stays in the
+    // settings after the editor's cancel, and its delete fails, so the rollback cannot be confirmed.
+    private List wireUnbakedSwitchAction(boolean rowSurvives) {
+        def fetchSeq = 0
+        def posts = []
+        boolean cancelled = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/btn" && body?.name == "actionCancel") cancelled = true
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> fetchSeq++; doActPageSchemaJson(100, fetchSeq) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPageJson(100, "Define Actions") }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            statusJson(100, (rowSurvives && cancelled) ? [[name: "actType.1", value: "switchActs"], [name: "actSubType.1", value: "getOnOffSwitch"]] : [])
+        }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        if (rowSurvives) script.metaClass._rmDeleteAction = { Integer appId, Integer idx, boolean skip = false -> throw new IllegalStateException("delAct refused") }
+        return posts
+    }
+
+    def "a rolled-back action whose health re-read fails reports the earlier non-map read as stale"() {
+        given:
+        enableWrite()
+        def posts = wireUnbakedSwitchAction(false)
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null ->
+            if (posts.any { it.body?.name == "actionCancel" }) throw new IllegalStateException("health down")
+            null
+        }
+
+        when:
+        def r = script._rmAddAction(100, [capability: "switch", action: "on", deviceIds: [8]])
+
+        then:
+        r.rolledBack == true
+        r.fieldsWritten == null
+        r.health.stale == true
+        r.health.unreadable == true
+        r.health.checkErrors == ["health down"]
+    }
+
+    def "an unbaked action whose rollback fails answers applied:null with fieldsWritten through hub_set_rule"() {
+        given:
+        enableWrite()
+        wireUnbakedSwitchAction(true)
+
+        when:
+        def r = script.toolSetRule([appId: 100, addAction: [capability: "switch", action: "on", deviceIds: [8]], confirm: true])
+
+        then:
+        r.success == false
+        r.rolledBack == false
+        r.fieldsWritten == true
+        r.applied == null
+    }
+
+    def "a baked action with one skipped field stays applied"() {
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> fetchSeq++; doActPageSchemaJson(100, fetchSeq) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPageJson(100, "On: S1") }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+
+        when: "onlyIfChanged's optSwitch is not on this editor page"
+        def r = script.toolSetRule([appId: 100, addAction: [capability: "switch", action: "on", deviceIds: [8], onlyIfChanged: true], confirm: true])
+
+        then:
+        r.success == true
+        (r.settingsSkipped as List).any { it.key == "optSwitch.1" }
+        r.applied == true
+        !r.containsKey("fieldsWritten") || r.fieldsWritten == null
+    }
+
+    // ---------- review round 2: served text ----------
+
+    def "the served guide and settings text carry the backup and outcome wording"() {
+        given:
+        def guide = script.getToolGuideSections()['set_rule_reference'] as String
+        def source = new File('hubitat-mcp-server.groovy').getText('UTF-8')
+
+        expect:
+        guide.contains("Deletes always take a fresh snapshot, as does a standalone Required Expression replacement while pre-edit backups are on.")
+        !guide.contains("remain fresh regardless")
+        guide.contains("`null` when a failure left fields written or an editor open, so read the target before retrying")
+        guide.contains("`verified` (activated, and the readback and the health check confirmed it)")
+        guide.contains("An action's `conditionalRequired` lists the fields each of its actions needs; an inner list means one of those fields.")
+        source.contains("Deletes always take a fresh snapshot; a standalone Required Expression replacement does too while pre-edit backups are on, and turning them off also overrides Back up before every native app edit.")
+        !source.contains("Deletes and a standalone Required Expression replacement still take a fresh snapshot.")
     }
 
 }
