@@ -13195,7 +13195,12 @@ class TestRunner:
             assert "is in use by" in refused and f"(id={rule_id})" in refused, \
                 f"deleting a connector a rule uses should be refused naming the rule: {refused}"
             assert read().get("deviceId") == linked.get("deviceId"), "the refused delete removed the connector"
-            self._delete_native(rule_id)
+            # The rule goes before the forced delete, inline even when fixture deletes are deferred:
+            # removing a connector device a rule still subscribes to is a different hub path from
+            # removing an unused one, and only the latter is this scenario's subject.
+            self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_delete_native_app", "args": {"appId": rule_id, "force": True, "confirm": True}})
+            self._untrack_native_app(rule_id)
             rule_id = None
 
             removed = self._soft_write(
