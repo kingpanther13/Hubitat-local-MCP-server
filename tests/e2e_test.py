@@ -1736,11 +1736,17 @@ class TestRunner:
         "test_rm_rule_restore_expression_by_device_name",
         "test_set_rule_replace_required_expression",
         "test_set_rule_remove_referenced_local_breaks_rule",
+        "test_set_native_app_walk_keeps_the_pending_page",
     })
 
-    def _rule_edit_backups(self, on: bool) -> None:
-        self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings", "args": {
+    def _rule_edit_backups(self, on: bool) -> bool | None:
+        """Set the pre-edit backup toggle; returns the value it had before (None when the hub never stored one)."""
+        result = self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings", "args": {
             "settings": {"backupBeforeRuleEdits": on}, "confirm": True}})
+        assert isinstance(result, dict) and result.get("success") is True \
+            and (result.get("updated") or {}).get("backupBeforeRuleEdits") is on, \
+            f"setting backupBeforeRuleEdits={on} did not take: {result}"
+        return (result.get("previous") or {}).get("backupBeforeRuleEdits")
 
     def _hub_variables_by_name(self) -> dict[str, dict]:
         rows: dict[str, dict] = {}
@@ -1763,9 +1769,9 @@ class TestRunner:
                 return str(value).lower() == wanted.lower()
 
         def same_type(reported, wanted: str) -> bool:
-            # The hub reports a Number variable as integer or bigdecimal.
+            # The hub lists a Number variable as integer and a Decimal one as bigdecimal.
             got = str(reported or "").lower()
-            return {"integer": "number", "bigdecimal": "number"}.get(got, got) == wanted.lower()
+            return {"integer": "number", "bigdecimal": "decimal"}.get(got, got) == wanted.lower()
 
         existing = self._hub_variables_by_name()
         create, reset = [], []
@@ -6787,11 +6793,14 @@ class TestRunner:
             and str(settings.get(f"optSwitch.{act_idx}")).lower() in ("true", "on"), \
             f"switch device/on/onlyIfChanged did not persist together in one action slot: {settings}"
 
-        def commands(device_id: str, cmd: str) -> int:
+        def commands(device_id: str, cmd: str, since: datetime) -> int:
+            # Events come newest first and the direct commands below interleave with the rule's, so
+            # the count is by time, not by a fixed window.
             ev = self.client.call_tool("hub_list_device_events", {
-                "deviceId": device_id, "attribute": f"command-{cmd}", "hoursBack": 1, "limit": 10})
+                "deviceId": device_id, "attribute": f"command-{cmd}", "hoursBack": 1, "limit": 50})
             rows = ev.get("events", []) if isinstance(ev, dict) else []
-            return sum(1 for r in rows if (r.get("producedBy") or {}).get("appId") == int(app_id))
+            return sum(1 for r in rows if (r.get("producedBy") or {}).get("appId") == int(app_id)
+                       and r.get("date") and datetime.fromisoformat(str(r["date"])) >= since)
 
         try:
             for i, (action, only) in enumerate((("on", True), ("on", False), ("off", True), ("off", False))):
@@ -6803,19 +6812,19 @@ class TestRunner:
                     r = self.client.call_tool("hub_call_device_command", {"deviceId": device_id, "command": state})
                     assert isinstance(r, dict) and r.get("success") is True, f"setting {device_id} {state} failed: {r}"
                 needing, already = (b, a) if action == "on" else (a, b)
-                before_needing, before_already = commands(needing, action), commands(already, action)
+                since = datetime.now(UTC)
                 self._call_with_limiter_bounce(
                     "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_id, "action": "actions"},
                     "hub_call_rule(action=actions)")
                 deadline = time.time() + 15.0
-                while time.time() < deadline and commands(needing, action) <= before_needing:
+                while time.time() < deadline and commands(needing, action, since) == 0:
                     time.sleep(1.0)
-                assert commands(needing, action) > before_needing, \
+                assert commands(needing, action, since) > 0, \
                     f"{action} (onlyIfChanged={only}) did not command the switch that was not {action} (rule {app_id})"
                 deadline = time.time() + 5.0
-                while time.time() < deadline and not only and commands(already, action) <= before_already:
+                while time.time() < deadline and not only and commands(already, action, since) == 0:
                     time.sleep(1.0)
-                assert (commands(already, action) > before_already) is (not only), \
+                assert (commands(already, action, since) > 0) is (not only), \
                     f"{action} (onlyIfChanged={only}): the switch already {action} was " \
                     f"{'commanded' if only else 'not commanded'} (rule {app_id})"
         finally:
@@ -8991,8 +9000,8 @@ class TestRunner:
                     refused = {"success": False, "error": str(e)}
                 assert refused.get("success") is False and "RM is not touched" in str(refused.get("error", "")), \
                     f"expected a pre-write refusal for {args}: {refused}"
-                assert not (refused.get("backup") or {}).get("backupKey"), \
-                    f"a refusal took a backup before validating {args}: {refused}"
+                assert refused.get("backup") is None, \
+                    f"a refusal took a backup decision before validating {args}: {refused}"
             act = self._call_slow_rule({"appId": app_id, "addAction": {
                 "capability": "Switch", "action": "on", "deviceIds": [sw]}})
             assert act.get("success") is True, f"addAction with capability 'Switch' failed: {act}"
@@ -10790,36 +10799,55 @@ class TestRunner:
             return self.client.call_tool("hub_manage_native_rules_and_apps", {
                 "tool": "hub_set_native_app", "args": {"appId": app_id, "walkStep": step, "confirm": True}})
 
+        passed = False
         try:
             to_install = walk({"page": "prefOptions", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstall"}})
             assert to_install.get("success") is True, f"navigate to prefPkgInstall failed: {to_install}"
+            # This test runs with pre-edit backups on: the backup's own config read is the one that
+            # must stay on the walk's page (#543), so a key must come back and the page must survive.
+            assert (to_install.get("backup") or {}).get("backupKey"), f"the walk took no pre-edit backup: {to_install}"
             to_url = walk({"page": "prefPkgInstall", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstallUrl"}})
-            assert to_url.get("success") is True and (to_url.get("after") or {}).get("nextPage"),                 f"the walk did not expose the page's Next target: {to_url}"
+            assert to_url.get("success") is True and (to_url.get("after") or {}).get("nextPage"), \
+                f"the walk did not expose the page's Next target: {to_url}"
             url = "https://example.invalid/e2e-manifest.json"
             wrote = walk({"page": "prefPkgInstallUrl", "operation": "write", "write": {"pkgInstall": url}})
             assert wrote.get("success") is True, f"writing pkgInstall failed: {wrote}"
             stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
                 "appId": app_id, "pageName": "prefPkgInstallUrl", "includeSettings": True}})
-            assert str((stored.get("settings") or {}).get("pkgInstall")) == url,                 f"the pending install URL was reset between steps: {stored.get('settings')}"
+            assert str((stored.get("settings") or {}).get("pkgInstall")) == url, \
+                f"the pending install URL was reset between steps: {stored.get('settings')}"
+            passed = True
         finally:
             # The fixture's default page clears its pending install state, so the next run starts clean.
-            walk({"page": "prefPkgInstallUrl", "operation": "navigate", "navigate": {"targetPage": "prefOptions"}})
+            reset = walk({"page": "prefPkgInstallUrl", "operation": "navigate", "navigate": {"targetPage": "prefOptions"}})
+            if passed:
+                assert reset.get("success") is True, f"the fixture was not reset to its default page: {reset}"
+            elif reset.get("success") is not True:
+                print(f"    [WARN] the wizard fixture was not reset to its default page: {reset}")
 
     def _ensure_wizard_walk_fixture(self) -> int:
-        """The permanent wizard-walk app's instance id, installing code and instance when the hub has none."""
-        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": "instances"}})
-        apps = listed if isinstance(listed, list) else (listed.get("apps") or listed.get("instances") or [])
-        found = next((a for a in apps if isinstance(a, dict)
-                      and str(a.get("name") or a.get("label") or "") == "BAT_E2E_KEEP_Wizard_Walk"), None)
-        if found is not None:
-            return int(found.get("id") or found.get("appId"))
-        source = (Path(__file__).resolve().parent / "fixtures" / "e2e-wizard-walk-app.groovy").read_text(encoding="utf-8")
-        code = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"source": source, "confirm": True}})
-        assert code.get("success") is True and code.get("appId"), f"installing the wizard fixture's code failed: {code}"
-        inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
-            "codeAppId": int(code["appId"]), "confirm": True}})
+        """The permanent wizard-walk app's instance id, installing what the hub lacks: the code, the instance, or both."""
+        name = "BAT_E2E_KEEP_Wizard_Walk"
+
+        def listed(scope: str) -> list[dict]:
+            page = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": scope}})
+            assert isinstance(page, dict) and isinstance(page.get("apps"), list), f"hub_list_apps({scope}) failed: {page}"
+            return [a for a in page["apps"] if isinstance(a, dict)]
+
+        instance = next((a for a in listed("instances") if str(a.get("name") or a.get("type") or "") == name), None)
+        if instance is not None:
+            return int(instance["id"])
+        code = next((a for a in listed("types") if str(a.get("name") or "") == name and a.get("namespace") == "mcptest"), None)
+        if code is None:
+            source = (Path(__file__).resolve().parent / "fixtures" / "e2e-wizard-walk-app.groovy").read_text(encoding="utf-8")
+            created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"source": source, "confirm": True}})
+            assert created.get("success") is True and created.get("appId"), f"installing the wizard fixture's code failed: {created}"
+            code_id = int(created["appId"])
+        else:
+            code_id = int(code["id"])
+        inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"codeAppId": code_id, "confirm": True}})
         assert inst.get("success") is True and inst.get("instanceAppId"), f"creating the wizard fixture failed: {inst}"
-        print("    [PERM FIXTURE] installed BAT_E2E_KEEP_Wizard_Walk -- reused by later runs")
+        print(f"    [PERM FIXTURE] installed {name} -- reused by later runs")
         return int(inst["instanceAppId"])
 
     @test("native_apps")
@@ -13215,7 +13243,7 @@ class TestRunner:
             # device (reported to that hub's owner); the in-use refusal names the rule either way.
             rule_id = self._create_native_rule("ConnUser", {"addAction": {
                 "capability": "runCommand", "command": "setVariable", "capabilityFilter": "Actuator",
-                "deviceIds": [int(linked["deviceId"])], "params": ["1"]}})
+                "deviceIds": [int(linked["deviceId"])], "parameters": [{"type": "string", "value": "1"}]}})
             # The refusal is a validation error (isError), which the client raises.
             try:
                 refused = str(self._refusal_call("hub_manage_variables", {
@@ -13230,7 +13258,8 @@ class TestRunner:
             # an unused one, and only the latter is this scenario's subject.
             deleted = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_delete_native_app", "args": {"appId": rule_id, "force": False, "confirm": True}})
-            assert deleted.get("success") is True and not self._app_still_present(rule_id),                 f"the consuming rule must be gone before the forced connector delete: {deleted}"
+            assert deleted.get("success") is True and not self._app_still_present(rule_id), \
+                f"the consuming rule must be gone before the forced connector delete: {deleted}"
             self._untrack_native_app(rule_id)
             rule_id = None
 
@@ -18338,32 +18367,40 @@ class TestRunner:
         self._restore_permanent_configuration_fixtures("pre-run")
         # Rule-engine variables live in the MCP app's state, beyond the watchdog purge: a killed run's go here.
         self._sweep_rule_engine_variables()
-        self._rule_edit_backups(False)
+        unknown = sorted(n for n in self.BACKUP_PROVING_TESTS if not callable(getattr(self, n, None)))
+        assert not unknown, f"BACKUP_PROVING_TESTS names tests that do not exist: {unknown}"
+        # Pre-edit backups stay off except around the tests that prove them; the hub's prior value
+        # (None when it never stored one, so the default ON) comes back at the end.
+        prior_backups = self._rule_edit_backups(False)
 
         # Group for display
         self._load_diagnostics = True
         current_group = None
-        for group, display_name, method_name in tests_to_run:
-            if group != current_group:
-                current_group = group
-                print(f"\n[{group}]")
-            proves_backups = method_name in self.BACKUP_PROVING_TESTS
-            if proves_backups:
-                self._rule_edit_backups(True)
-            try:
-                self._run_one(group, display_name, method_name)
-            finally:
-                if proves_backups:
-                    self._rule_edit_backups(False)
-
-        # Always clean up, then always turn pre-edit backups back on
         try:
-            self.cleanup()
+            for group, display_name, method_name in tests_to_run:
+                if group != current_group:
+                    current_group = group
+                    print(f"\n[{group}]")
+                proves_backups = method_name in self.BACKUP_PROVING_TESTS
+                try:
+                    if proves_backups:
+                        self._rule_edit_backups(True)
+                    self._run_one(group, display_name, method_name)
+                finally:
+                    if proves_backups:
+                        # A failed toggle is this test's failure, not the run's: the loop goes on.
+                        try:
+                            self._rule_edit_backups(False)
+                        except Exception as exc:
+                            self._record(display_name, group, "fail", message=f"could not turn pre-edit backups back off: {exc}")
         finally:
             try:
-                self._rule_edit_backups(True)
-            except Exception as exc:
-                print(f"  [WARN] could not turn pre-edit backups back on: {exc}")
+                self.cleanup()
+            finally:
+                try:
+                    self._rule_edit_backups(prior_backups is not False)
+                except Exception as exc:
+                    print(f"  [WARN] could not restore the pre-edit backup setting: {exc}")
 
         # Print summary
         return self._print_summary()

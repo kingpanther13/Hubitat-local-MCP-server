@@ -456,21 +456,7 @@ def _hubVarsNativeModel() {
 
 // Whether this firmware serves the native endpoint: it answers with the variables model (a login or
 // error page is not it). A create needs nothing else from the model.
-boolean _hubVarsNativeAvailable() {
-    def raw
-    try { raw = hubInternalGet("/hub2/variables") }
-    catch (Exception e) {
-        if (_httpStatusOf(e) == 404) return false
-        throw e
-    }
-    if (!raw?.toString()?.trim()) throw new IllegalStateException("Hub Variables returned an empty response")
-    def parsed
-    try { parsed = new groovy.json.JsonSlurper().parseText(raw.toString()) } catch (Exception e) {
-        throw new IllegalStateException("Hub Variables returned a non-JSON response")
-    }
-    if (!(parsed instanceof Map) || !(parsed.variables instanceof List)) throw new IllegalStateException("Hub Variables returned an unexpected JSON model")
-    return true
-}
+boolean _hubVarsNativeAvailable() { _hubVarsNativeModel() != null }
 
 private Map _hubVarsNativeRow(Map model, String name) {
     def row = model.variables.find { it instanceof Map && it.name?.toString() == name }

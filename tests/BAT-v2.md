@@ -3169,9 +3169,9 @@ This scenario requires no room creation or device command.
 
 ```json
 {
-  "setup_prompt": "Developer Mode and the Write master are enabled, a recent hub backup exists, and backupEveryRuleWrite is false. Create a small Rule Machine rule named 'BAT Backup Reuse'.",
+  "setup_prompt": "Developer Mode and the Write master are enabled, a recent hub backup exists, backupBeforeRuleEdits is true (its default) and backupEveryRuleWrite is false. Create a small Rule Machine rule named 'BAT Backup Reuse'.",
   "test_prompt": "Append four uniquely messaged Log Message actions to that same rule one at a time as four separate edits, recording each returned backup key. After the first two, enable the setting that creates a fresh backup for every native-app edit; then perform the final two separate edits and compare all four keys.",
-  "teardown_prompt": "Always use hub_update_mcp_settings to set backupEveryRuleWrite back to false, even if an edit failed, then delete 'BAT Backup Reuse'."
+  "teardown_prompt": "Always use hub_update_mcp_settings to set backupEveryRuleWrite back to false and backupBeforeRuleEdits back to true, even if an edit failed, then delete 'BAT Backup Reuse'."
 }
 ```
 

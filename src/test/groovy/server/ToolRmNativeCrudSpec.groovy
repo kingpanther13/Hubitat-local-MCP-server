@@ -46469,11 +46469,18 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- review fixes: outcome flags, catalog checks, modifyAction resolution ----------
 
-    def "_rmAddRefusalResult sets rolledBack only when the rollback was confirmed"() {
-        expect:
-        script._rmAddRefusalResult(new IllegalArgumentException("x. The opened action row was rolled back.")).rolledBack == true
-        !script._rmAddRefusalResult(new IllegalStateException("x. The opened action row was rolled back. [wizardStuck -- row still there]")).containsKey("rolledBack")
+    def "_rmAddRefusalResult carries the flags the throw recorded, never the message's wording"() {
+        expect: "rolledBack only from the flag, and not when the row is still open"
+        script._rmAddRefusalResult(script._rmFail(new IllegalArgumentException("x."), [rolledBack: true])).rolledBack == true
+        !script._rmAddRefusalResult(script._rmFail(new IllegalStateException("x."), [rolledBack: true, wizardStuck: true])).containsKey("rolledBack")
+        script._rmAddRefusalResult(script._rmFail(new IllegalStateException("x."), [wizardStuck: true, fieldsWritten: true])).subMap(["wizardStuck", "fieldsWritten"]) == [wizardStuck: true, fieldsWritten: true]
+        !script._rmAddRefusalResult(new IllegalArgumentException("x. The opened action row was rolled back. [wizardStuck -- row still there]")).containsKey("rolledBack")
         !script._rmAddRefusalResult(new IllegalArgumentException("x. RM is not touched.")).containsKey("rolledBack")
+
+        and: "a rewrap keeps the inner flags, and the envelope reads them off the cause"
+        script._rmOutcomeFlags(script._rmFail(new IllegalStateException("outer", script._rmFail(new IllegalStateException("inner"), [fieldsWritten: true])), script._rmOutcomeFlags(script._rmFail(new IllegalStateException("inner2"), [fieldsWritten: true])) + [wizardStuck: true])) == [fieldsWritten: true, wizardStuck: true]
+        script._rmBuildUpdateErrorResponse(100, "plain text", [backupKey: "k"], "doActPage", script._rmFail(new IllegalStateException("plain text"), [wizardStuck: true, fieldsWritten: true])).subMap(["wizardStuck", "fieldsWritten"]) == [wizardStuck: true, fieldsWritten: true]
+        script._rmBuildUpdateErrorResponse(100, "x [wizardStuck -- text only]", [backupKey: "k"]).wizardStuck == false
     }
 
     @spock.lang.Unroll

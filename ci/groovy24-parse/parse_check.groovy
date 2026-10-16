@@ -52,10 +52,12 @@ class HubNamespaceResolver extends ClassNodeResolver {
         String simple = name.substring(name.lastIndexOf('.') + 1)
         // Only class-shaped names: a lowercase segment is a package the resolver probes on the way.
         if (found == null && (name.startsWith('hubitat.') || name.startsWith('com.hubitat.')) && simple && Character.isUpperCase(simple.charAt(0))) {
-            // A star import of a hub package is tried before Groovy's default imports, so a JDK or
-            // Groovy class name stays unresolved here and resolves there (java.io.File, Map).
-            boolean defaultImport = ['java.lang.', 'java.util.', 'java.io.', 'java.net.', 'java.math.', 'groovy.lang.', 'groovy.util.'].any { pkg ->
-                try { Class.forName(pkg + simple, false, HubNamespaceResolver.classLoader); return true } catch (ClassNotFoundException ignored) { return false }
+            // Any hub-namespace name whose simple name is one of Groovy's default imports (java.lang,
+            // java.util, java.io, java.net, groovy.lang, groovy.util, BigDecimal, BigInteger) is left
+            // to that class: a star import of a hub package is tried before the default imports, so
+            // synthesizing it here would hide the JDK or Groovy class (java.io.File, Map).
+            boolean defaultImport = simple in ['BigDecimal', 'BigInteger'] || ['java.lang.', 'java.util.', 'java.io.', 'java.net.', 'groovy.lang.', 'groovy.util.'].any { pkg ->
+                try { Class.forName(pkg + simple, false, HubNamespaceResolver.classLoader); return true } catch (ClassNotFoundException | LinkageError ignored) { return false }
             }
             if (!defaultImport) found = new ClassNodeResolver.LookupResult(null, new ClassNode(name, 1, ClassHelper.OBJECT_TYPE))
         }

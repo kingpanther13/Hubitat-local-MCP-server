@@ -29,10 +29,25 @@
 @groovy.transform.Field static final Object SETUP_REFRESH_LOCK = new Object()
 @groovy.transform.Field static final Set LIVE_WRITE_EXECUTIONS = new java.util.HashSet()
 // Memo for hub reads one tool execution would otherwise repeat: the device list behind the Rule
-// Machine capability check, device existence, and a rule's status read before an edit, which the
-// backup snapshot takes instead of reading again. Not static, and cleared when a tool execution
-// starts, so nothing read for one call is ever served to another.
+// Machine capability check, device existence, a rule's status read before an edit (which the
+// backup snapshot takes instead of reading again) and whether an app is an RM rule. Not static,
+// cleared when a tool execution starts, and reached only through the accessors below.
 @groovy.transform.Field final Map EXECUTION_CACHE = new java.util.HashMap()
+private Map _memoDeviceList() { EXECUTION_CACHE.get("vrbDevicesById") as Map }
+private void _memoKeepDeviceList(Map byId) { EXECUTION_CACHE.put("vrbDevicesById", byId) }
+private boolean _memoDeviceExists(String id) { EXECUTION_CACHE.get("deviceExists:${id}".toString()) == true }
+private void _memoNoteDeviceExists(String id) { EXECUTION_CACHE.put("deviceExists:${id}".toString(), true) }
+private void _memoKeepPreEditStatus(Integer appId, Map status) { EXECUTION_CACHE.put("preEditStatus:${appId}".toString(), status) }
+private Map _memoTakePreEditStatus(Integer appId) { EXECUTION_CACHE.remove("preEditStatus:${appId}".toString()) as Map }
+private void _memoDropPreEditStatus(Integer appId) { EXECUTION_CACHE.remove("preEditStatus:${appId}".toString()) }
+private void _memoNoteRuleMachine(Integer appId, boolean rm) { EXECUTION_CACHE.put("ruleMachine:${appId}".toString(), rm) }
+private boolean _memoKnowsRuleMachine(Integer appId) { EXECUTION_CACHE.containsKey("ruleMachine:${appId}".toString()) }
+private Boolean _memoRuleMachine(Integer appId) { EXECUTION_CACHE.get("ruleMachine:${appId}".toString()) as Boolean }
+// Outcome flags of a failure (wizardStuck, fieldsWritten, rolledBack), keyed by the exception itself so a
+// rewrap carries them forward: `throw _rmFail(new IllegalStateException(msg), [wizardStuck: true])`.
+private Throwable _rmFail(Throwable e, Map flags) { EXECUTION_CACHE.put(e, _rmOutcomeFlags(e) + flags); return e }
+private Map _rmOutcomeFlags(Throwable e) { (e == null) ? [:] : ((EXECUTION_CACHE.get(e) as Map) ?: [:]) }
+private Map _rmOutcomeKeys(Throwable e) { _rmOutcomeFlags(e).findAll { it.value == true } }
 // Ordinary-write leases, keyed by leaseId. The global write cap is overload
 // protection, not crash safety: nothing here has to survive a recompile, and a
 // durable lease would cost two hub DB round trips on EVERY write call. A killed
@@ -563,12 +578,12 @@ def advancedOverridesPage() {
                   defaultValue: false
         }
         section("Native app edit backups") {
-            paragraph "By default, edits to the same native app reuse its newest File Manager baseline for one hour. Restoring that baseline returns the app to the start of the edit chain, undoing every later edit in the hour. This avoids uploading the same app before every small edit. Deletes and a standalone Required Expression replacement still take a fresh snapshot."
+            paragraph "By default, edits to the same native app reuse its newest File Manager baseline for one hour. Restoring that baseline returns the app to the start of the edit chain, undoing every later edit in the hour. This avoids uploading the same app before every small edit. Deletes always take a fresh snapshot; a standalone Required Expression replacement does too while pre-edit backups are on, and turning them off also overrides Back up before every native app edit."
             input "backupBeforeRuleEdits", "bool", title: "Back up native apps before edits",
                   description: "Leave ON (default): every edit of an existing native app has a File Manager baseline to restore. Turn OFF to skip the pre-edit baseline -- edit responses then carry no backupKey; deletes still take their snapshot.",
                   defaultValue: true
             input "backupEveryRuleWrite", "bool", title: "Back up before every native app edit",
-                  description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit.",
+                  description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit (only while Back up native apps before edits is on).",
                   defaultValue: false
         }
         section("Bug report error retention") {
@@ -5928,6 +5943,7 @@ def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
 
 // bpsChecked: the key was already validated for this slice's initial call (continuations).
 def executeTool(toolName, args, boolean bpsChecked = false) {
+    // Cleared at every entry; a gateway re-enters here per sub-tool before any memoised work.
     EXECUTION_CACHE.clear()
     // opToken is GONE (replaced by standard MCP requestState continuation). A client
     // still sending one is running the removed idempotent-replay protocol and would
@@ -8882,9 +8898,9 @@ private Integer _discoverParentAppId(String appType) {
         // Some built-ins (Notifications) have no sysApp alias: install them the way Apps > Add
         // Built-In App does, by the type id the hub lists in /hub2/appsList systemAppTypes.
         if (parentNode?.id == null) {
-            def typeLookup = [:]
-            def typeId = _systemAppTypeId(parentTypeName, typeLookup)
-            bootstrapDiag += " typeId=${typeId}${typeLookup.typeLookupError ? ' (the built-in app list could not be read: ' + typeLookup.typeLookupError + ')' : ''}"
+            def typeLookup = _systemAppTypeId(parentTypeName)
+            def typeId = typeLookup.id
+            bootstrapDiag += " typeId=${typeId}${typeLookup.error ? ' (the built-in app list could not be read: ' + typeLookup.error + ')' : ''}"
             if (typeId != null) {
                 def created2 = null
                 try { created2 = hubInternalGetRaw("/installedapp/create/${typeId}") } catch (Exception e2) {
@@ -8935,15 +8951,15 @@ private Integer _discoverParentAppId(String appType) {
 
 // The id of a built-in app type as /hub2/appsList systemAppTypes lists it (what Apps > Add Built-In
 // App installs from), or null when the list is unreadable or does not offer the name.
-private Integer _systemAppTypeId(String typeName, Map diag = null) {
+// [id: the built-in app type's id or null, error: why the list could not be read].
+private Map _systemAppTypeId(String typeName) {
     try {
         def parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/appsList") ?: "{}")
         def t = (parsed?.systemAppTypes ?: []).find { it instanceof Map && it.name?.toString() == typeName && it.deprecated != true }
-        return t?.id != null ? (t.id.toString() as Integer) : null
+        return [id: t?.id != null ? (t.id.toString() as Integer) : null, error: null]
     } catch (Exception e) {
         mcpLog("warn", "rm-native", "systemAppTypes lookup for '${typeName}' failed: ${e.message}")
-        if (diag != null) diag.typeLookupError = (e.message ?: e.toString())
-        return null
+        return [id: null, error: (e.message ?: e.toString())]
     }
 }
 
@@ -9110,6 +9126,16 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
             skipped << [key: key, reason: "not_in_schema", value: value, available: schema?.keySet()?.toList()?.sort()]
         }
         return
+    }
+    // A single value an enum picker does not list is not written: the hub would store it and the
+    // app render nothing for it (a user cannot pick it). The skip carries what the picker offers.
+    def field = schema.get(key)
+    if (field?.type == "enum" && field.options instanceof List && !(value instanceof List)) {
+        List offered = _rmInputOptionKeys(field.options as List)
+        if (offered && !(value?.toString() in offered)) {
+            if (skipped != null) skipped << [key: key, reason: "not_offered", value: value, offered: offered]
+            return
+        }
     }
     def settingsMap = [(key): value]
     def schemaForBuild = schema
@@ -10006,7 +10032,8 @@ private Map _rmCollectInputSchema(Map configPage) {
                     range: i.range?.toString(),
                     pattern: i.pattern?.toString(),
                     disabled: i.disabled == true,
-                    defaultValue: i.defaultValue
+                    defaultValue: i.defaultValue,
+                    options: i.options
                 ])
             }
         }
@@ -10016,6 +10043,11 @@ private Map _rmCollectInputSchema(Map configPage) {
 
 // The sub-pages a classic configPage links to, in page order: [[page, title], ...]. Links live
 // only in each section's `body` (element "href"); `input` carries no hrefs.
+// The keys of a picker's options: strings as given, [key: label] entries by key.
+private List _rmInputOptionKeys(List options) {
+    options.collectMany { o -> o instanceof Map ? (o.keySet() as List) : [o] }.findAll { it != null }*.toString()
+}
+
 private List _rmPageHrefs(Map configPage) {
     def out = []
     for (s in (configPage?.sections ?: [])) {
@@ -11773,11 +11805,11 @@ Reference for the `hub_set_rule` structured shortcuts (`addTrigger`, `addAction`
 
 To READ a rule's current configuration -- before an edit to discover the right input names, or to verify after a write -- use `hub_read_apps_code -> hub_get_app_config(appId)`. It is NOT in the `hub_manage_rule_machine` / `hub_manage_native_rules_and_apps` rule gateways; the rule-read tool lives in `hub_read_apps_code`.
 
-Each edit response includes the File Manager baseline under `backup.backupKey`. By default the newest same-rule baseline is reused for one hour, so a sequence of small edits does not upload the same rule before every call. Restoring it returns the rule to the baseline timestamp and undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for strict per-write snapshots. Deletes and a standalone Required Expression replacement remain fresh regardless. With **Back up native apps before edits** turned off under Advanced settings, edits -- a standalone Required Expression replacement included -- take no baseline and the response's backup says `skipped` instead of carrying a backupKey; deletes still snapshot.
+Each edit response includes the File Manager baseline under `backup.backupKey`. By default the newest same-rule baseline is reused for one hour, so a sequence of small edits does not upload the same rule before every call. Restoring it returns the rule to the baseline timestamp and undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for strict per-write snapshots. Deletes always take a fresh snapshot, as does a standalone Required Expression replacement while pre-edit backups are on. With **Back up native apps before edits** turned off under Advanced settings, edits -- a standalone Required Expression replacement included -- take no baseline and the response's backup says `skipped` instead of carrying a backupKey; deletes still snapshot.
 
 ### Shapes come from discover
 
-Trigger, condition and action fields are served, not written here: `hub_set_rule(operation:'discover', args:{kind:'trigger'|'condition'|'action', capability?, action?})`. Without `capability` it lists every capability Rule Machine has for that kind; with one it returns that capability's required and optional fields, Rule Machine's attribute, default state and device picker, and an example. Capability names are Rule Machine's own (any case). Rule Machine offers a capability only when the hub has something for it (a device with that capability, Safety Monitor, rules), and a value its live picker does not list is refused with the picker's list. What the schema cannot carry:
+Trigger, condition and action fields are served, not written here: `hub_set_rule(operation:'discover', args:{kind:'trigger'|'condition'|'action', capability?, action?})`. Without `capability` it lists every capability Rule Machine has for that kind; with one it returns that capability's required and optional fields, Rule Machine's attribute, default state and device picker, and an example. An action's `conditionalRequired` lists the fields each of its actions needs; an inner list means one of those fields. Capability names are Rule Machine's own (any case). Rule Machine offers a capability only when the hub has something for it (a device with that capability, Safety Monitor, rules), and a value its live picker does not list is refused with the picker's list. What the schema cannot carry:
 
 - **Sub-expression** (`addRequiredExpression` only; nested subExpression is refused on action expressions): `{subExpression:{conditions:[...], operator?, operators?}}`.
 - **Device attribute vs a hub variable** has no direct shape: copy the attribute into a variable with an `addAction setVariable` using `fromDevice`, then compare with `compareToVariable`.
@@ -11857,7 +11889,7 @@ Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch
 
 ### Responses: applied, activated, verified
 
-Every write answers `success`, `partial` and three outcome flags: `applied` (something was written and stays; a refused or rolled-back call is `applied:false`), `activated` (the rule runs with it: the re-initialization that follows a trigger, expression or variable change was fired and accepted, and for actions nothing more was needed) and `verified` (the readback and the health check confirmed it). When `activated` is false the response names why (`updateRuleFailed` with `updateRuleError` and the part that is not live: `subscriptionsNotLive`, `expressionNotLive`, `variableNotLive` or `patchesNotLive`; or `finalisationNotAttempted` after a stopped batch) and `repairHints` says what to run, normally `hub_set_rule(button='updateRule', confirm=true)` once the rule is complete.
+Every write answers `success`, `partial` and three outcome flags: `applied` (something was written and stays; a refused or rolled-back call is `applied:false`; `null` when a failure left fields written or an editor open, so read the target before retrying), `activated` (the rule runs with it: the re-initialization that follows a trigger, expression, variable or bulk action change was fired and accepted; a single addAction or modifyAction needs nothing more) and `verified` (activated, and the readback and the health check confirmed it). When `activated` is false the response names why (`updateRuleFailed` with `updateRuleError` and the part that is not live: `subscriptionsNotLive`, `expressionNotLive`, `variableNotLive` or `patchesNotLive`; or `finalisationNotAttempted` after a stopped batch) and `repairHints` says what to run, normally `hub_set_rule(button='updateRule', confirm=true)` once the rule is complete.
 
 A trigger, expression or local-variable edit, and `addActions`, `replaceActions`, `clearActions`, `removeAction` and `moveAction`, run Rule Machine's update, which rebuilds the rule's subscriptions: a paused rule stays paused, and a stopped rule is restarted with its private boolean set to true (`restartedStoppedRule:true`; `stoppedStateUnverified:true` when that state could not be read). A single `addAction` or `modifyAction` runs no update.
 

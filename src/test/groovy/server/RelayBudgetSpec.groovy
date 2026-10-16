@@ -493,8 +493,8 @@ class RelayBudgetSpec extends ToolSpecBase {
         int n = 0
         script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validRuleIds = null ->
             n++
-            if (n == 1) throw new IllegalArgumentException("runCommand: 'x' is not a command. The opened action row was rolled back.")
-            throw new IllegalStateException("runCommand: 'x' is not a command. [wizardStuck -- row 2 could not be confirmed removed]")
+            if (n == 1) throw script._rmFail(new IllegalArgumentException("runCommand: 'x' is not a command. The opened action row was rolled back."), [rolledBack: true])
+            throw script._rmFail(new IllegalStateException("runCommand: 'x' is not a command. [wizardStuck -- row 2 could not be confirmed removed]"), [wizardStuck: true])
         }
 
         when:

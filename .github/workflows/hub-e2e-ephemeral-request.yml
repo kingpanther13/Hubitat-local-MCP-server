@@ -180,7 +180,8 @@ jobs:
           overwrite: true
       # The trusted result: the provider run's own conclusion, posted from base code, which the
       # PR-controlled test workflow cannot change. With no provider run (the hub step failed, or an
-      # earlier step did and it never ran) the verdict is failure, so the head always gets one.
+      # earlier step did and it never ran) the verdict is failure, so the head gets one whenever
+      # this job runs.
       - name: Post the provider's verdict
         if: ${{ !cancelled() && env.EPHEMERAL_RUN_SUITE == 'true' }}
         env:

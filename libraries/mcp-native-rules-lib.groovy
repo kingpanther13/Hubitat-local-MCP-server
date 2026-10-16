@@ -284,19 +284,6 @@ def toolSetAppDisabled(args) {
     return [success: false, appId: appId, disabled: observed, error: "POST accepted but read-back shows disabled=${observed} (wanted ${disable}).", note: "The hub may not have committed the flag; retry, or check the app in the hub UI."]
 }
 
-// Enumerate Rule Machine rules via the official hubitat.helper.RMUtils API
-// (RM 4.x + RM 5.x, deduplicated by id) and ghost-filter them against the live
-// /hub2/appsList tree. Shared by hub_list_rules (which formats the rich list and
-// reports ghosts) and _rmValidRuleIds (which needs the existence-safe id set for
-// pre-write rule-target validation), so the RMUtils lookup + ghost-filter logic
-// lives in exactly one place.
-//
-// RMUtils is an optional platform class -- absent on hubs that have never
-// installed Rule Machine. Absence manifests as NoClassDefFoundError or
-// ClassNotFoundException (both Error subclasses, uncaught by catch Exception),
-// hence the catch Throwable + null-guarded .message; the caller classifies which
-// Throwables are a quiet "RM not installed" vs a real failure to surface.
-//
 // Fetch a guide section in full for an inline meta-call on a tool that has no cursor of its own.
 // Returns the same envelope hub_get_tool_guide does, with every page concatenated and the
 // pagination bookkeeping stripped -- the caller asked for the reference, not a page of it.
@@ -322,6 +309,17 @@ private Map _rmWholeGuideSection(String sectionKey) {
 }
 
 
+// Enumerate Rule Machine rules via the official hubitat.helper.RMUtils API
+// (RM 4.x + RM 5.x, deduplicated by id) and ghost-filter them against the live
+// /hub2/appsList tree. Shared by hub_list_rules (which formats the rich list and
+// reports ghosts) and _rmValidRuleIds (which needs the existence-safe id set for
+// pre-write rule-target validation), so the RMUtils lookup + ghost-filter logic
+// lives in exactly one place.
+// RMUtils is an optional platform class -- absent on hubs that have never
+// installed Rule Machine. Absence manifests as NoClassDefFoundError or
+// ClassNotFoundException (both Error subclasses, uncaught by catch Exception),
+// hence the catch Throwable + null-guarded .message; the caller classifies which
+// Throwables are a quiet "RM not installed" vs a real failure to surface.
 // Returns [combined, ghostIds, v4Error, v5Error, treeReadable, liveApps]:
 //   combined     -- id(String) -> entry map, ghost-filtered when the tree read
 //   ghostIds     -- ids RMUtils reported that are absent from /hub2/appsList
@@ -1454,13 +1452,12 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
     ids.each { id ->
         def idStr = id?.toString()
         if (!idStr) return
-        // One read per device per execution: a spec is mapped before the backup and again for
-        // the write, and the capability check's device list already proves the ids it holds.
-        String memoKey = "deviceExists:${idStr}".toString()
-        if (EXECUTION_CACHE.get(memoKey) == true) return
-        def listed = EXECUTION_CACHE.get("vrbDevicesById")
+        // One read per device per execution; the capability check's device list already proves the
+        // ids it holds.
+        if (_memoDeviceExists(idStr)) return
+        def listed = _memoDeviceList()
         if (listed instanceof Map && listed.get(idStr) != null) {
-            EXECUTION_CACHE.put(memoKey, true)
+            _memoNoteDeviceExists(idStr)
             return
         }
         def exists
@@ -1491,7 +1488,7 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
             // never consult the sentinel for restoreHint.)
             throw new IllegalArgumentException("${label} contains device ID '${idStr}' which does not exist on the hub. Verify the device ID via hub_list_devices. RM is not touched.")
         }
-        if (read) EXECUTION_CACHE.put(memoKey, true)
+        if (read) _memoNoteDeviceExists(idStr)
     }
 }
 
@@ -1943,6 +1940,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
     def editorOpen = [false]
     def builtCond = [null]
+    def rhsOverride = null   // a compareToDevice offset: the trigger's right-hand value, kept out of the caller's spec
     def _impl = {
     if (!(triggerSpec instanceof Map)) throw new IllegalArgumentException("addTrigger requires a Map spec. RM is not touched.")
     // Discover mode -- return static schema without touching the hub.
@@ -2227,7 +2225,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             throw new IllegalStateException("addTrigger: compareToDevice: the reference-device picker reltDevice${idx} did not appear after istDev${idx}=true.".toString())
         }
         writeIfPresent("reltDevice${idx}", ctd.deviceId.toString())
-        if (ctd.offset != null) triggerSpec.value = ctd.offset
+        if (ctd.offset != null) rhsOverride = ctd.offset
     }
 
     // Button and Button LED each have their own button-number field.
@@ -2280,7 +2278,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // tstate<N> covers both enum-state ("on"/"active") and numeric value
         // (Temperature reading) paths. value field is the numeric form.
         // NOT used for Mode (see special-case above) -- Mode uses modesX<N>.
-        def stateValue = triggerSpec.state != null ? triggerSpec.state : triggerSpec.value
+        def stateValue = triggerSpec.state != null ? triggerSpec.state : (rhsOverride != null ? rhsOverride : triggerSpec.value)
         if (stateValue instanceof CharSequence) {
             // RM's state picker is a fixed enum per capability (Switch: on/off); a value outside it is
             // dropped silently, so check it against the live options and write RM's spelling.
@@ -2723,12 +2721,12 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
                 stuck = "cancelCapab cleanup failed: ${cancelExc.message ?: cancelExc}".toString()
             }
         }
-        if (stuck) throw new IllegalStateException("${failed.message ?: failed} [wizardStuck -- ${stuck}; close the trigger editor with hub_set_rule(button='cancelCapab', pageName='selectTriggers', confirm=true) and check the rule with hub_get_app_config(appId=${appId})]".toString(), failed)
+        String leftover = builtCond[0] != null ? " The condition created for this trigger (id ${builtCond[0]}) stays in the rule's conditions as unused; Manage Conditions in the Rule Machine UI can delete it.".toString() : ""
+        if (stuck) throw _rmFail(new IllegalStateException("${failed.message ?: failed}${leftover} [wizardStuck -- ${stuck}; close the trigger editor with hub_set_rule(button='cancelCapab', pageName='selectTriggers', confirm=true) and check the rule with hub_get_app_config(appId=${appId})]".toString(), failed), [wizardStuck: true])
         // The condition RM created for the cancelled trigger stays in its condition list as unused
-        // (harmless, per RM); the next conditional trigger takes a new slot.
-        if (builtCond[0] != null && failed instanceof IllegalArgumentException) {
-            throw new IllegalArgumentException("${failed.message ?: failed} The condition created for this trigger (id ${builtCond[0]}) stays in the rule's conditions as unused; Manage Conditions in the Rule Machine UI can delete it.".toString(), failed)
-        }
+        // (harmless, per RM); the next conditional trigger takes a new slot. A refusal after it
+        // exists is no longer a validation error: a corrected retry would create another.
+        if (leftover) throw new IllegalStateException("${(failed.message ?: failed.toString()).replace(' RM is not touched.', '')}${leftover}".toString(), failed)
         throw failed
     }
 }
@@ -2802,8 +2800,10 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     if (cap in (kind == "condition" ? _rmCondNotModelled() : _rmTrigNotModelled())) {
         throw new IllegalArgumentException("${where}: '${cap}' is a Rule Machine ${kind} this tool does not model; set it with rawSettings or walkStep. RM is not touched.".toString())
     }
-    if (cap in ["Location Event", "HSM Alert"] && spec.state == null) {
-        throw new IllegalArgumentException("${where}: ${cap} needs state (a value Rule Machine's picker lists). ${hint}".toString())
+    if (cap in ["Location Event", "HSM Alert"]) {
+        List listed = (cap == "Location Event" ? t.locationEvents : t.hsmAlerts) as List
+        if (spec.state == null) throw new IllegalArgumentException("${where}: ${cap} needs state (one of ${listed.join(', ')}). ${hint}".toString())
+        if (!(spec.state.toString() in listed)) throw new IllegalArgumentException("${where}: ${cap} state '${spec.state}' is not one Rule Machine lists (${listed.join(', ')}). ${hint}".toString())
     }
     if (spec.compareToDevice != null && fam != "numeric") {
         throw new IllegalArgumentException("${where}: compareToDevice applies only to Rule Machine's numeric capabilities (${(t.numeric as List).join(', ')}). ${hint}".toString())
@@ -2818,7 +2818,6 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
         if (spec.state != null || spec.value != null) {
             throw new IllegalArgumentException("${where}: compareToDevice (device-relative RHS) cannot be combined with 'state'/'value' (literal RHS) -- mutually exclusive; use compareToDevice.offset for an offset. ${hint}".toString())
         }
-        _rmValidateDeviceIdsExist("${where}.compareToDevice.deviceId".toString(), [(spec.compareToDevice as Map).deviceId])
     }
     if (spec.comparator != null) {
         String cmp = _rmNormalizeComparator(spec.comparator)?.toString()
@@ -2845,7 +2844,7 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     }
 }
 
-// Condition capabilities RM offers that the tool's condition writer does not model.
+// Condition and trigger capabilities RM offers that the tool's writers do not model.
 private List _rmCondNotModelled() { ["Between two dates", "Days of week", "On a Day", "Lock codes", "Last Event Device", "Time of day", "Time Since Event"] }
 private List _rmTrigNotModelled() { ["Days of Week Schedule"] }
 
@@ -3025,7 +3024,7 @@ private Map _rmActionDiscover(Object selector) {
 // sub-type it drives and the settings RM's editor takes, in write order (@N = the action index).
 // It is the one source for the mapping (_rmMapActionSpec), the discover schema and the argument
 // checks. Field entries (an entry's `slots`): name (spec field), key (RM setting), type, values
-// (the enum a field takes), required, desc; fixed = always written (no spec field); dflt = default;
+// (the enum a field takes), required, desc; fixed = the value always written (no spec field); dflt = default;
 // whenTrue = written only when true; trueWhen = written as (value == trueWhen); direction = written
 // as (direction == 'raise') or, when false, (direction != 'raise'); nonBlank = must have text.
 // Entry keys: notes (served with discover), requires (per action: field names, an inner list
@@ -3108,6 +3107,7 @@ private Map _rmActionCatalog() {
                slots: [[name: "variable", key: "xVarV.@N", type: "String", required: true], [name: "value", type: "Number"], [name: "numOp", type: "enum", values: ["number", "add number"], desc: "with value only; 'add number' adds to the variable"],
                         [name: "sourceVariable", type: "String"], [name: "fromDevice", type: "Map"], [name: "math", type: "Map"]], common: [delay, raw]],
         runCommand: [actType: "modeActs", sub: "getDefinedAction", family: "device", custom: true, notes: "Any command of the selected devices, e.g. flashOff or a driver's custom command",
+               requires: [["deviceIds", "useLastEventDevice"]],
                slots: [[name: "command", key: "cCmd.@N", type: "String", required: true, desc: "checked against the commands RM lists for the devices"], [name: "deviceIds", key: "devices.@N", type: "List<Integer>", desc: "required unless useLastEventDevice"],
                         [name: "capabilityFilter", key: "myCapab.@N", type: "String", desc: "a capability RM's picker offers, by key or label (e.g. SwitchLevel or Dimmer); default Switch"],
                         [name: "parameters", type: "List", desc: "each {type, value} or {type, variable}; type number, decimal or string"],
@@ -3268,33 +3268,50 @@ private Map _rmSubActCapab() {
      getSiren: "Alarm"]
 }
 
+// RM prunes its action sub-type picker to what the hub has (pruneSubTypes: an installed app such as
+// Hubitat Safety Monitor, Scenes, Room Lights or a thermostat app, or a device with the capability).
+// A sub-type the picker does not list is refused with what it does; the caller rolls the row back.
+private void _rmRequireOfferedActionSubType(String cap, String actSubType, Integer idx, List skipped) {
+    def miss = skipped.find { it instanceof Map && it.key?.toString() == "actSubType.${idx}".toString() && it.reason == "not_offered" }
+    if (miss == null) return
+    throw new IllegalArgumentException("addAction: Rule Machine's action picker on this hub does not offer '${cap}' (${actSubType}). RM lists an action only when the hub has what it needs: the built-in app it drives (Hubitat Safety Monitor, Scenes, Room Lights, Thermostat Scheduler or Controller) or a device with the capability. This hub's picker offers: ${(miss.offered as List).join(', ')}.".toString())
+}
+
 // Every device of an action must have the capability RM's picker for that action lists; RM stores
-// any id and renders the row, but the command then has no implementation to run.
+// any id and renders the row, but the command then has no implementation to run. Skipped, with a
+// log line, when the device list cannot be read; a device absent from it, or listed with no
+// capabilities, is left to the existence check.
 private void _rmRequireDeviceCapability(String label, Object ids, String subType) {
     String cap = subType ? _rmSubActCapab()[subType] : null
     if (cap == null || !(ids instanceof List) || (ids as List).isEmpty()) return
-    def byId = EXECUTION_CACHE.get("vrbDevicesById")
+    def byId = _memoDeviceList()
     if (byId == null) {
         byId = [:]
-        try {
-            def parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/vrb/devices") ?: "[]")
-            (parsed instanceof List ? parsed : []).each { d ->
-                if (d instanceof Map && d.id != null) byId.put(d.id.toString(), [label: d.label, caps: ((d.capabilities ?: []) as List).collect { it?.toString()?.toLowerCase() }])
-            }
-        } catch (Exception e) {
-            mcpLog("warn", "rm-native", "${label}: device capabilities could not be read (${e.message ?: e}); the ${cap} check was skipped")
+        def parsed
+        try { parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/vrb/devices") ?: "[]") } catch (Exception e) {
+            mcpLog("warn", "rm-native", "${label}: device capabilities could not be read (${e.message ?: e}); the ${cap} check is skipped for this call")
+            _memoKeepDeviceList([:])
             return
         }
-        EXECUTION_CACHE.put("vrbDevicesById", byId)
+        if (!(parsed instanceof List)) {
+            mcpLog("warn", "rm-native", "${label}: the device list had an unexpected shape (${_typeName(parsed)}); the ${cap} check is skipped for this call")
+            _memoKeepDeviceList([:])
+            return
+        }
+        parsed.each { d ->
+            if (d instanceof Map && d.id != null) byId.put(d.id.toString(), [label: d.label, caps: ((d.capabilities ?: []) as List).collect { it?.toString()?.toLowerCase() }])
+        }
+        _memoKeepDeviceList(byId)
     }
     if (byId.isEmpty()) return
-    def lacking = (ids as List).findAll { id -> def d = byId.get(id?.toString()); d != null && !(cap.toLowerCase() in d.caps) }
+    // An empty capability list is a device the feed cannot see into (as the devices library reads it): unknown, not lacking.
+    def lacking = (ids as List).findAll { id -> def d = byId.get(id?.toString()); d != null && d.caps && !(cap.toLowerCase() in d.caps) }
     if (lacking) {
         throw new IllegalArgumentException("${label}: ${lacking.collect { id -> "device ${id} (${byId.get(id.toString()).label})" }.join(', ')} ${lacking.size() == 1 ? 'does' : 'do'} not have the ${cap} capability Rule Machine's picker for this action lists. RM is not touched.".toString())
     }
 }
 
-// A field with an enum takes one of its values.
+// Case and outer spaces are ignored; the catalog's spelling is what gets written.
 private void _rmRequireCatalogValue(String label, Map f, Object value) {
     if (value == null || !(f.values instanceof List)) return
     if (_rmCatalogValueCanonical(f, value) == null) {
@@ -3324,7 +3341,7 @@ private Map _rmMapCatalogAction(String cap, String action, Map actionSpec, Map e
             value = actionSpec.get(f.name)
             _rmRequireCatalogValue(label, f, value)
             if (value != null && f.values instanceof List) value = _rmCatalogValueCanonical(f, value)
-            if (f.direction != null) value = (f.direction == true) ? (actionSpec.direction == "raise") : (actionSpec.direction != "raise")
+            if (f.direction != null) value = (f.direction == true) ? (value == "raise") : (value != "raise")
             else if (value == null && f.containsKey("dflt")) value = f.dflt
             if (f.trueWhen != null && value != null) value = value.toString() == f.trueWhen.toString()
         }
@@ -3338,8 +3355,8 @@ private Map _rmMapCatalogAction(String cap, String action, Map actionSpec, Map e
     return [actType: entry.actType, actSubType: actionEntry.sub ?: entry.sub, fields: fields, skipped: []]
 }
 
-// The slot RM opened for the in-flight trigger: its counter (state.ndx), which a cancelled edit
-// leaves advanced, or the next index after the committed triggers when the counter is not stored.
+// The slot RM opened for the in-flight trigger: the larger of its counter (state.ndx), which a
+// cancelled edit leaves advanced, and the next index after the committed triggers.
 private Integer _rmInFlightTriggerIdx(Integer appId, List existing) {
     Integer next = (existing ? (existing.max() as Integer) + 1 : 1)
     def ndx = null
@@ -3347,7 +3364,7 @@ private Integer _rmInFlightTriggerIdx(Integer appId, List existing) {
         def raw = (_rmFetchStatusJson(appId)?.appState ?: []).find { it?.name?.toString() == "ndx" }?.value
         if (raw != null && raw.toString().isInteger()) ndx = raw.toString() as Integer
     } catch (Exception e) {
-        mcpLog("warn", "rm-native", "addTrigger: the rule's trigger counter could not be read for app ${appId} (${e.message ?: e}); using the next index after the committed triggers")
+        throw new IllegalStateException("addTrigger: the rule's trigger counter could not be read for app ${appId} (${e.message ?: e}), so the conditional trigger's slot is unknown. Nothing was written.".toString(), e)
     }
     return (ndx != null && ndx > next) ? ndx : next
 }
@@ -3682,7 +3699,7 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
         // Nothing was written, so Done re-commits the trigger unchanged and closes its editor.
         try { _rmClickAppButton(appId, "hasAll", null, "selectTriggers") } catch (Exception closeExc) {
             mcpLog("warn", "rm-native", "_rmModifyTrigger: closing trigger ${triggerIdx}'s editor on app ${appId} failed (${closeExc.message}) -- it may still be open")
-            throw new IllegalStateException(_rmModifyTriggerNoStateMessage(triggerIdx) + " [wizardStuck -- hasAll cleanup failed: ${closeExc.message ?: closeExc.toString()}]")
+            throw _rmFail(new IllegalStateException(_rmModifyTriggerNoStateMessage(triggerIdx) + " [wizardStuck -- hasAll cleanup failed: ${closeExc.message ?: closeExc.toString()}]", closeExc), [wizardStuck: true])
         }
         throw new IllegalArgumentException(_rmModifyTriggerNoStateMessage(triggerIdx))
     }
@@ -3732,16 +3749,17 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     try {
         openNames = (_rmFetchConfigJson(appId, "doActPage")?.configPage?.sections ?: []).collectMany { (it?.input ?: []) }.collect { it?.name?.toString() }.findAll { it }
     } catch (Exception readExc) {
-        throw new IllegalStateException("modifyAction: the editor page could not be read after action ${actionIdx}'s edit button (${readExc.message ?: readExc}); RM's editor may be open on that row [wizardStuck -- finish it with hub_set_rule(button='actionDone', pageName='doActPage', confirm=true); actionCancel would delete the action]".toString(), readExc)
+        throw _rmFail(new IllegalStateException("modifyAction: the editor page could not be read after action ${actionIdx}'s edit button (${readExc.message ?: readExc}); RM's editor may be open on that row [wizardStuck -- finish it with hub_set_rule(button='actionDone', pageName='doActPage', confirm=true); actionCancel would delete the action]".toString(), readExc), [wizardStuck: true])
     }
     String rowSuffix = ".${actionIdx}".toString()
     boolean onRow = openNames.any { it.endsWith(rowSuffix) } && !openNames.any { it.startsWith("actType.") && it != "actType${rowSuffix}" }
     if (!onRow) {
-        throw new IllegalStateException("modifyAction: RM did not open its editor on action ${actionIdx}. Visible fields: ${openNames.join(', ') ?: '(none)'}. RM's action editor may be left open; check the rule with hub_get_rule_health and restore the pre-edit backup if it is not as before.".toString())
+        throw _rmFail(new IllegalStateException("modifyAction: RM did not open its editor on action ${actionIdx}. Visible fields: ${openNames.join(', ') ?: '(none)'}. Check the rule with hub_get_rule_health and restore the pre-edit backup if one was taken and the rule is not as before [wizardStuck -- RM's action editor may be open on another row: finish it with hub_set_rule(button='actionDone', pageName='doActPage', confirm=true); actionCancel would delete the action].".toString()), [wizardStuck: true])
     }
     try {
         writes.each { String key, value -> _rmWriteSettingOnPage(appId, "doActPage", key, value, applied, null, skipped) }
-        if (plan.runCommand instanceof Map) writes.putAll(_rmWriteRunCommandFields(appId, actionIdx, plan.runCommand as Map, applied, skipped))
+        // Written into `writes` as each key lands, so a stop after the capability or devices names them.
+        if (plan.runCommand instanceof Map) _rmWriteRunCommandFields(appId, actionIdx, plan.runCommand as Map, applied, skipped, writes)
         def missed = skipped.findAll { it instanceof Map && writes.containsKey(it.key?.toString()) && it.reason == "not_in_schema" }*.key
         if (missed) throw new IllegalArgumentException("modifyAction: RM's editor for action ${actionIdx} has no field ${missed.join(', ')}, so that value does not apply to this action as committed.")
     } catch (Exception editExc) {
@@ -3753,13 +3771,13 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
             stuck = " [wizardStuck -- RM's editor on action ${actionIdx} is still open: finish it with hub_set_rule(button='actionDone', pageName='doActPage', confirm=true); actionCancel would delete the action]"
         }
         def landed = applied.findAll { writes.containsKey(it?.toString()) }
-        throw new IllegalStateException("${editExc.message ?: editExc}${landed ? ' Fields already written before the stop: ' + landed.join(', ') + ' (check the action with hub_get_app_config).' : ' Nothing was written.'}${stuck}".toString(), editExc)
+        throw _rmFail(new IllegalStateException("${editExc.message ?: editExc}${landed ? ' Fields already written before the stop: ' + landed.join(', ') + ' (check the action with hub_get_app_config).' : ' Nothing was written.'}${stuck}".toString(), editExc), _rmOutcomeFlags(editExc) + [fieldsWritten: !landed.isEmpty(), wizardStuck: !stuck.isEmpty()])
     }
     try {
         _rmClickAppButton(appId, "actionDone", null, "doActPage")
         _rmNavigateToPage(appId, "doActPage", "selectActions", 0, "name", null, null, null, false, true)
     } catch (Exception commitExc) {
-        throw new IllegalStateException("modifyAction: the editor's Done on action ${actionIdx} failed (${commitExc.message ?: commitExc}). Fields already written before the stop: ${applied.findAll { writes.containsKey(it?.toString()) }.join(', ') ?: '(none)'} (check the action with hub_get_app_config). [wizardStuck -- RM's editor on action ${actionIdx} may still be open: finish it with hub_set_rule(button='actionDone', pageName='doActPage', confirm=true); actionCancel would delete the action]".toString(), commitExc)
+        throw _rmFail(new IllegalStateException("modifyAction: the editor's Done on action ${actionIdx} failed (${commitExc.message ?: commitExc}). Fields already written before the stop: ${applied.findAll { writes.containsKey(it?.toString()) }.join(', ') ?: '(none)'} (check the action with hub_get_app_config). [wizardStuck -- RM's editor on action ${actionIdx} may still be open: finish it with hub_set_rule(button='actionDone', pageName='doActPage', confirm=true); actionCancel would delete the action]".toString(), commitExc), [fieldsWritten: true, wizardStuck: true])
     }
     // Readback: every value echoes from the committed settings, and the action list kept its
     // shape (RM's editor re-registers the index it edited).
@@ -3784,8 +3802,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
         def byName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
         if (status != null) deviceKeys.findAll { writes.containsKey(it) }.each { String k ->
             def wanted = ((writes.get(k) instanceof List) ? (writes.get(k) as List) : [writes.get(k)]).collect { it?.toString() } as Set
-            def stored = _rmStatusEntryDeviceIds(byName.get(k))
-            if (stored && stored != wanted) mismatches << k
+            if (_rmStatusEntryDeviceIds(byName.get(k)) != wanted) mismatches << k
         }
     }
     def orderAfter = _rmOrderedActionIndices(appId)
@@ -3797,9 +3814,9 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
                verificationFetchFailed: verificationFetchFailed ?: null]
     if (!verified) {
         out.error = (verificationFetchFailed || orderAfter == null) ? "modifyAction: the edit committed but the readback failed (${verificationFetchFailed ? 'the settings' : 'the action list'} could not be read); verify action ${actionIdx} with hub_get_app_config(appId=${appId})."
-            : (duplicates ? "modifyAction: after the edit the action list carries index ${duplicates.join(', ')} more than once; inspect the rule with hub_get_app_config and restore the pre-edit backup if it renders wrong."
-            : (orderAfter != before ? "modifyAction: the action order changed from ${before} to ${orderAfter}; inspect the rule and restore the pre-edit backup if it renders wrong."
-            : "modifyAction: ${mismatches ? mismatches.join(', ') + ' did not read back as written' : 'a field was skipped: ' + genuineSkipped*.key.join(', ')}; verify action ${actionIdx} with hub_get_app_config(appId=${appId}) and restore the pre-edit backup if needed.")).toString()
+            : (duplicates ? "modifyAction: after the edit the action list carries index ${duplicates.join(', ')} more than once; inspect the rule with hub_get_app_config and restore the pre-edit backup if one was taken (restoreHint) and it renders wrong."
+            : (orderAfter != before ? "modifyAction: the action order changed from ${before} to ${orderAfter}; inspect the rule and restore the pre-edit backup if one was taken (restoreHint) and it renders wrong."
+            : "modifyAction: ${mismatches ? mismatches.join(', ') + ' did not read back as written' : 'a field was skipped: ' + genuineSkipped*.key.join(', ')}; verify action ${actionIdx} with hub_get_app_config(appId=${appId}) and restore the pre-edit backup if one was taken (restoreHint).")).toString()
     }
     return out.findAll { k, v -> v != null }
 }
@@ -3809,17 +3826,27 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
 private void _rmRequireVariableName(Integer appId, Object name) {
     String target = name?.toString()
     List hub = null
-    try { hub = (getAllGlobalVars()?.keySet() ?: []).collect { it?.toString() } } catch (Exception e) { hub = null }
+    try { hub = (getAllGlobalVars()?.keySet() ?: []).collect { it?.toString() } } catch (Exception e) {
+        mcpLog("warn", "rm-native", "modifyAction: the hub variables could not be read (${e.message ?: e})")
+    }
     def localsRead = null
-    try { localsRead = _rmReadLocalVarsMap(appId) } catch (Exception e) { localsRead = null }
+    try { localsRead = _rmReadLocalVarsMap(appId) } catch (Exception e) {
+        mcpLog("warn", "rm-native", "modifyAction: rule ${appId}'s local variables could not be read (${e.message ?: e})")
+    }
+    if (localsRead != null && localsRead.ok != true) mcpLog("warn", "rm-native", "modifyAction: rule ${appId}'s local variables could not be read (${localsRead.error ?: 'no map'})")
     List locals = localsRead?.ok ? ((localsRead.vars ?: [:]) as Map).keySet().collect { it?.toString() } : null
-    if (hub == null && locals == null) return
     if ((hub ?: []).contains(target) || (locals ?: []).contains(target)) return
+    // A name absent from one list may be in the other; without both, nothing is refused.
+    if (hub == null || locals == null) {
+        mcpLog("warn", "rm-native", "modifyAction: variable '${target}' was not checked: ${hub == null ? 'hub' : 'local'} variables unreadable")
+        return
+    }
     throw new IllegalArgumentException("modifyAction: variable '${target}' is not a hub variable or one of this rule's local variables. Hub variables: ${hub == null ? '(unreadable)' : (hub.sort().join(', ') ?: '(none)')}; local variables: ${locals == null ? '(unreadable)' : (locals.sort().join(', ') ?: '(none)')}. RM is not touched.".toString())
 }
 
 // The argument checks and the settings an in-place edit will write, decided from the committed
-// rule and read-only lookups only, so a refusal happens before any backup or write.
+// rule and read-only lookups only, so a refusal happens before any backup or write -- except
+// runCommand's capabilityFilter and command, resolved against RM's live pickers once the editor is open.
 private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
     if (!(mods instanceof Map) || mods.isEmpty()) {
         throw new IllegalArgumentException("modifyAction.mods must set at least one of the action's fields. RM is not touched.")
@@ -3867,7 +3894,7 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
             throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: '${name}' is not a field that can be edited in place. Editable: ${editable.join(', ')}. RM is not touched.")
         }
         _rmRequireCatalogValue("modifyAction on ${cap}".toString(), f, v)
-        def value = v
+        def value = (v != null && f.values instanceof List) ? _rmCatalogValueCanonical(f, v) : v
         if (f.direction != null) value = (f.direction == true) ? (v == "raise") : (v != "raise")
         else if (f.trueWhen != null) value = v?.toString() == f.trueWhen.toString()
         else if (name == "ruleIds") value = _rmNormalizeRuleIdsForWrite(v, subType == "getSetPrivateBoolean")
@@ -3897,7 +3924,7 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
                       deviceIds: mods.containsKey("deviceIds") ? mods.deviceIds : (committedIds ?: null),
                       useLastEventDevice: mods.containsKey("useLastEventDevice") ? (mods.useLastEventDevice == true) : (committed("useLastDev")?.toString() == "true")]
         if (runCommand.command == null) throw new IllegalArgumentException("modifyAction on runCommand: 'command' is needed. RM is not touched.")
-        ["myCapab", "cCmd", "devices"].each { writes.remove("${it}.${actionIdx}".toString()) }
+        ["myCapab", "cCmd", "devices", "useLastDev"].each { writes.remove("${it}.${actionIdx}".toString()) }
     }
     if (writes.isEmpty() && runCommand == null) throw new IllegalArgumentException("modifyAction.mods changes nothing on action ${actionIdx}. RM is not touched.")
     return [cap: cap, action: action, subType: subType, writes: writes, fieldDefs: fieldDefs, runCommand: runCommand]
@@ -4876,6 +4903,13 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
     (((catEntry.slots ?: []) as List) + ((catAction.is(catEntry) ? [] : (catAction.slots ?: [])) as List)).each { Map f ->
         if (f.name) _rmRequireCatalogValue(specLabel, f, actionSpec.get(f.name))
     }
+    // requires: a name is a required field; an inner list, fields of which one is needed.
+    ((catAction.requires ?: catEntry.requires ?: []) as List).each { r ->
+        if (r instanceof List && !r.any { actionSpec.get(it?.toString()) != null }) {
+            throw new IllegalArgumentException("${specLabel} requires one of ${r.join(', ')}.".toString())
+        }
+        if (r instanceof String && actionSpec.get(r) == null) throw new IllegalArgumentException("${specLabel} requires '${r}'.".toString())
+    }
     if (!(catEntry.custom == true || catAction.custom == true)) {
         return _rmMapCatalogAction(cap, action, actionSpec, catEntry, catAction)
     }
@@ -5004,7 +5038,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         // alarm.<N> takes RM's bare HSM tokens, not the hsmArm* tokens of the Vue UI.
         actType = "lockActs"
         actSubType = "getSetHSM"
-        def hsmCmd = actionSpec.command?.toString()
+        def hsmCmd = _rmCatalogValueCanonical([values: _rmHsmCommands()], actionSpec.command)?.toString()
         if (!(hsmCmd in _rmHsmCommands())) {
             throw new IllegalArgumentException("hsm action requires 'command' as one of: ${_rmHsmCommands().join(', ')}. Got '${hsmCmd}'. (No 'armAll' -- use 'armRules'. getSetHSM appears only when HSM is installed on the hub.)")
         }
@@ -5697,6 +5731,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     try {
         _rmWriteSettingOnPage(appId, "doActPage", "actType.${idx}", actType, applied, null, skipped)
         _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${idx}", actSubType, applied, null, skipped)
+        _rmRequireOfferedActionSubType(cap, actSubType, idx, skipped)
 
         // Expression actions: reset a stale cond accumulator before cond=a. Not in the schema
         // for other actions, so silently skipped there.
@@ -5843,7 +5878,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
                     cancelInFlightActCond()
                 }
                 if (actWizardCleanupFailed) {
-                    throw new IllegalStateException("${perCondExc.message} [wizardStuck -- cancelCapab cleanup also failed: ${actWizardCleanupErr}]")
+                    throw _rmFail(new IllegalStateException("${perCondExc.message} [wizardStuck -- cancelCapab cleanup also failed: ${actWizardCleanupErr}]", perCondExc), _rmOutcomeFlags(perCondExc) + [wizardStuck: true])
                 }
                 throw perCondExc
             }
@@ -5955,7 +5990,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         if (rolledBack) {
             try { health = _rmCheckRuleHealth(appId) } catch (Exception healthExc) {
                 mcpLog("warn", "rm-native", "_rmAddAction: post-rollback health re-read failed for app ${appId} (${healthExc.message})")
-                if (health instanceof Map) health = (health as Map) + [stale: true, note: "read before the rollback; the re-read after it failed"]
+                health = (health instanceof Map ? (health as Map) : [ok: false, unreadable: true, checkErrors: [healthExc.message ?: healthExc.toString()]]) +
+                    [stale: true, note: "read before the rollback; the re-read after it failed"]
             }
         }
         String why = err != null ? "RM's action editor reported an error (${err})".toString() : "RM did not bake the action (mainPage still shows the 'Define Actions' placeholder)"
@@ -6002,6 +6038,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         success: !err && !actionNotBaked && !applied.isEmpty(),
         partial: partial,
         rolledBack: rolledBack,
+        fieldsWritten: ((actionNotBaked || err != null) && !rolledBack) ? true : null,
         hubRenderError: hubRenderError,
         actionIndex: idx,
         capability: cap,
@@ -6048,8 +6085,6 @@ private void _rmPrevalidateConditionList(Map exprSpec, String label) {
             cap = m.capability.toString()
             if (m.compareToDevice instanceof Map) {
                 Map ctd = m.compareToDevice as Map
-                if (ctd.deviceId == null) throw new IllegalArgumentException("${where}: compareToDevice requires 'deviceId' (the reference device ID). RM is not touched.")
-                if (m.comparator == null) throw new IllegalArgumentException("${where}: compareToDevice needs a comparator (e.g. '>', '<', '='). RM is not touched.")
                 _rmValidateDeviceIdsExist("${where}.compareToDevice.deviceId", [ctd.deviceId])
             }
             def ids = m.deviceIds ?: (m.deviceId != null ? [m.deviceId] : null)
@@ -6344,6 +6379,33 @@ private String _rmPreflightRestoreHint(String reason = null, Map backup = null, 
     "${lead ?: 'Pre-flight refusal -- the app was not touched, so nothing needs to be restored.'}${snapshot}${why}"
 }
 
+// The restore sentence after a committed edit went wrong: the baseline when one exists, else why there is none.
+private String _rmBackupHint(Map backup, String withBackup = null) {
+    if (backup?.backupKey) {
+        return (withBackup ?: "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.").toString()
+    }
+    return "${_rmNoBackupReason(backup)}, so there is no snapshot to restore; read the rule with hub_get_app_config and repair it in place.".toString()
+}
+
+// Why a backup map carries no key: the setting that skipped it, or an unexpected gap.
+private String _rmNoBackupReason(Map backup, boolean sentenceStart = true) {
+    String s = backup?.skipped ? "no pre-edit backup was taken ('Back up native apps before edits' is off in Advanced settings)" : "no backup key was returned for this edit"
+    return sentenceStart ? s.capitalize() : s
+}
+
+// The clause a repair hint ends with: the baseline to restore, or why there is none.
+private String _rmRestoreClause(Map backup) {
+    return backup?.backupKey ? "restore via hub_restore_backup with backupKey='${backup.backupKey}'".toString()
+        : "${_rmNoBackupReason(backup, false)}, so repair the rule in place".toString()
+}
+
+private String _rmRollbackHint(Map backup) {
+    return backup?.backupKey
+        ? "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').".toString()
+        : "If hub_get_app_config confirms the operation did NOT commit, repair the rule in place: ${_rmNoBackupReason(backup, false)}.".toString()
+}
+
+
 // Build the standard error response shape for _applyNativeAppEdit catch
 // blocks. Detects pre-flight refusals (signalled by the "RM is not
 // touched" sentinel that every pre-flight refusal throw includes) and
@@ -6354,28 +6416,15 @@ private String _rmPreflightRestoreHint(String reason = null, Map backup = null, 
 // the existing damage that motivated the refusal; on a mutation failure it is
 // whether the write left the rule broken — without a follow-up
 // hub_get_rule_health call.
-// The restore sentence after a committed edit went wrong: the baseline when one exists, else why there is none.
-private String _rmBackupHint(Map backup, String withBackup = null) {
-    if (backup?.backupKey) {
-        return (withBackup ?: "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.").toString()
-    }
-    return "No pre-edit backup was taken ('Back up native apps before edits' is off in Advanced settings), so there is no snapshot to restore; read the rule with hub_get_app_config and repair it in place."
-}
-
-private String _rmRollbackHint(Map backup) {
-    return backup?.backupKey
-        ? "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').".toString()
-        : "If hub_get_app_config confirms the operation did NOT commit, repair the rule in place: no pre-edit backup was taken ('Back up native apps before edits' is off in Advanced settings)."
-}
-
-private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, String pageName = "doActPage") {
+private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, String pageName = "doActPage", Throwable cause = null) {
     def msgStr = msg?.toString() ?: ""
     // No backup means the refusal fired before the baseline snapshot, so nothing was written: a
     // pre-flight refusal whatever its wording (a non-RM app's message carries no RM sentinel).
     def isPreflightRefusal = msgStr.contains("RM is not touched") || backup == null
-    // wizardStuck: mid-walk cancelCapab cleanup may have failed leaving the wizard
-    // half-open. Independent of preflight refusal (preflight never opens the wizard).
-    def wizardStuck = msgStr.contains("wizardStuck") || msgStr.contains("cancelCapab cleanup failed")
+    // The flags the throw recorded (_rmFail): a wizard left open, fields written before the stop,
+    // a row rolled back. Independent of preflight refusal (preflight never opens the wizard).
+    Map flags = _rmOutcomeFlags(cause)
+    def wizardStuck = flags.wizardStuck == true
     def health = null
     // Best effort -- a health read must never mask the real error, but a failed one is reported.
     try { health = _rmCheckRuleHealth(appId) } catch (Exception healthExc) {
@@ -6406,7 +6455,8 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
         backup: backup,
         restoreHint: restoreHint
     ]
-    if (msgStr.contains("Fields already written before the stop:")) result.fieldsWritten = true
+    if (flags.fieldsWritten == true) result.fieldsWritten = true
+    if (flags.rolledBack == true) result.rolledBack = true
     if (health != null) result.health = health
     result
 }
@@ -6979,7 +7029,7 @@ private void _rmVerifySubPageMultipleFlags(Integer appId, String pageName, Map s
             _rmVerifyMultipleFlags(appId, schema, touched, false)
         } catch (IllegalStateException persistent) {
             // The shared verifier's advice is to re-POST the group, which this helper has just done.
-            throw new IllegalStateException("${persistent.message} Automatic recovery was already attempted: one full-group re-POST with page context on page '${pageName}' did not restore the flag. The write may already be committed, so do not resend it; check hub_get_rule_health(appId=${appId}) and restore the pre-write backup if the rule is damaged.".toString())
+            throw new IllegalStateException("${persistent.message} Automatic recovery was already attempted: one full-group re-POST with page context on page '${pageName}' did not restore the flag. The write may already be committed, so do not resend it; check hub_get_rule_health(appId=${appId}) and restore the pre-edit backup if one was taken (restoreHint) and the rule is damaged.".toString())
         }
     }
 }
@@ -7219,7 +7269,7 @@ private Map _rmDriveWalkSteps(Integer appId, Map spec) {
         result.error = "${failurePrefix}${firstFailed.error ?: 'step reported success:false -- inspect its valueEcho/silentRejection/health'}".toString()
         boolean recoveryExhausted = firstFailed.error?.toString()?.contains("Automatic recovery was already attempted") == true
         result.repairHints = (result.repairHints ?: []) + [(recoveryExhausted ?
-            "Drive stopped at step ${firstFailed.step} after its automatic recovery was already attempted. Do not re-run that step: its write may already be committed. Inspect steps[${firstFailed.step - 1}] and hub_get_rule_health(appId=${appId}), and restore the pre-write backup if the rule is damaged." :
+            "Drive stopped at step ${firstFailed.step} after its automatic recovery was already attempted. Do not re-run that step: its write may already be committed. Inspect steps[${firstFailed.step - 1}] and hub_get_rule_health(appId=${appId}), and restore the pre-edit backup if one was taken (restoreHint) and the rule is damaged." :
             (stopOnError ?
                 "Drive stopped at step ${firstFailed.step}. Inspect steps[${firstFailed.step - 1}] for the failure detail, correct it, and re-run the drive from that step." :
                 "Step ${firstFailed.step} failed and the drive continued (stopOnError=false). Inspect each step with success:false before re-running any of them; later steps may have depended on it.")).toString()]
@@ -7393,14 +7443,23 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 // some apps (HPM) use to reset a wizard's pending input.
 Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
     if (settings?.backupBeforeRuleEdits == false) {
+        _memoDropPreEditStatus(ruleId)
+        // No baseline, but the app must exist and its kind is still needed: one config read, of the
+        // page a walk is on (some apps reset a wizard when their default page renders).
+        def cfg = null
+        try { cfg = activePage ? _rmFetchConfigJson(ruleId, activePage) : _rmFetchConfigJson(ruleId) } catch (Exception e) {
+            if (e.message?.contains("404")) {
+                throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='set_rule_reference').")
+            }
+        }
+        if (cfg instanceof Map) _rmNoteRuleMachineConfig(ruleId, cfg)
         // A map, not null: null means the edit was refused before its backup decision.
-        EXECUTION_CACHE.remove("preEditStatus:${ruleId}".toString())
         return [skipped: "pre-edit backups are off in Advanced settings"]
     }
     def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason, activePage) }
     if (reused != null) {
         // The status read before this edit is current only up to its first backup decision.
-        EXECUTION_CACHE.remove("preEditStatus:${ruleId}".toString())
+        _memoDropPreEditStatus(ruleId)
         return reused
     }
     return activePage ? _rmBackupRuleSnapshot(ruleId, reason, activePage) : _rmBackupRuleSnapshot(ruleId, reason)
@@ -7463,6 +7522,15 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String acti
     return null
 }
 
+// Whether a configure/json envelope is an RM rule's (every page of an app carries its type);
+// recorded for the execution, so a walk step can tell without a read of its own.
+private boolean _rmNoteRuleMachineConfig(Integer ruleId, Map config) {
+    boolean rm = (config?.app?.appType?.name?.toString() ?: "") ==~ /Rule-[0-9.]+/
+    _memoNoteRuleMachine(ruleId, rm)
+    return rm
+}
+
+
 // Snapshot the current state of an RM rule into the hub's File Manager
 // as a single JSON file (configure/json + statusJson combined), recorded
 // in the unified atomicState.itemBackupManifest alongside app/driver backups.
@@ -7472,14 +7540,6 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String acti
 // tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss-SSS>[-<uuid>].
 // The reads and the App Cloner export run outside the backup lock; only the file and manifest
 // writes hold it.
-// Whether a configure/json envelope is an RM rule's (every page of an app carries its type);
-// recorded for the execution, so a walk step can tell without a read of its own.
-private boolean _rmNoteRuleMachineConfig(Integer ruleId, Map config) {
-    boolean rm = (config?.app?.appType?.name?.toString() ?: "") ==~ /Rule-[0-9.]+/
-    EXECUTION_CACHE.put("ruleMachine:${ruleId}".toString(), rm)
-    return rm
-}
-
 Map _rmBackupRuleSnapshot(Integer ruleId, String reason, String activePage = null) {
     def built = _rmBuildRuleSnapshot(ruleId, reason, activePage)
     return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map) }
@@ -7509,8 +7569,8 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
         config = null
     }
     try {
-        // A pre-write snapshot takes the status hub_set_rule read just before its edit.
-        status = EXECUTION_CACHE.remove("preEditStatus:${ruleId}".toString()) ?: _rmFetchStatusJson(ruleId)
+        // A status memoised for this execution before any write serves a pre-write snapshot.
+        status = _memoTakePreEditStatus(ruleId) ?: _rmFetchStatusJson(ruleId)
     } catch (Exception e) {
         // Status failure is tolerable for a pre-write snapshot — the
         // config JSON alone is enough to restore. Record the failure in
@@ -8018,22 +8078,31 @@ def toolSetRule(args) {
             def preStatus = _rmFetchStatusJson(editId)
             wasStopped = _readAppStateBoolean(preStatus, "stopped", null)
             // The snapshot taken before the edit's first write reads the same page; it takes this one.
-            EXECUTION_CACHE.put("preEditStatus:${editId}".toString(), preStatus)
-        } catch (Exception readExc) { stoppedUnread = true }
+            _memoKeepPreEditStatus(editId, preStatus)
+        } catch (Exception readExc) {
+            stoppedUnread = true
+            mcpLog("warn", "rm-native", "hub_set_rule: the stopped state of app ${editId} could not be read before the edit (${readExc.message ?: readExc})")
+        }
     }
     // hub_set_rule edits only RM rules, which the engine then never has to look up.
     def out = _rmStampOutcome(_applyNativeAppEdit(args instanceof Map ? (new LinkedHashMap(args) + [__rmRule: true]) : args))
     if (wasStopped == true && out instanceof Map) {
         Boolean stillStopped = null
-        try { stillStopped = _readAppStateBoolean(_rmFetchStatusJson(editId), "stopped", null) } catch (Exception readExc) { stoppedUnread = true }
+        try { stillStopped = _readAppStateBoolean(_rmFetchStatusJson(editId), "stopped", null) } catch (Exception readExc) {
+            stoppedUnread = true
+            mcpLog("warn", "rm-native", "hub_set_rule: the stopped state of app ${editId} could not be read after the edit (${readExc.message ?: readExc})")
+        }
         if (stillStopped == false) {
             out.restartedStoppedRule = true
             out.note = ((out.note ? out.note.toString() + " " : "") + "The rule was stopped; Rule Machine's update restarted it and set its private boolean to true.").toString()
         }
     }
-    if (stoppedUnread && out instanceof Map) {
+    // A refusal ran no update, so there is nothing to report about a restart.
+    if (stoppedUnread && out instanceof Map && out.applied != false) {
         out.stoppedStateUnverified = true
-        out.note = ((out.note ? out.note.toString() + " " : "") + "The rule's stopped state could not be read around this edit; if it was stopped, Rule Machine's update may have restarted it (check hub_get_rule_health).").toString()
+        out.note = ((out.note ? out.note.toString() + " " : "") + (wasStopped == true
+            ? "The rule was stopped before this edit and its state could not be read afterwards; Rule Machine's update may have restarted it (check"
+            : "The rule's stopped state could not be read around this edit; if it was stopped, Rule Machine's update may have restarted it (check hub_get_rule_health).")).toString()
     }
     return out
 }
@@ -8046,7 +8115,6 @@ Map _rmStampOutcome(Object result) {
     if (!(result instanceof Map) || !(result as Map).containsKey("success")) return result as Map
     Map r = result as Map
     boolean applied = r.rolledBack != true && (r.success == true || r.partial == true)
-    // A failure that left fields written or an editor open is neither applied nor not: null.
     Boolean appliedFlag = applied ? true : ((r.wizardStuck == true || r.fieldsWritten == true) ? null : false)
     boolean activated = applied && r.updateRuleFailed != true && r.subscriptionsNotLive != true &&
         r.mainPageDoneFailed != true && r.mainPageDoneSkipped != true && r.finalisationNotAttempted != true
@@ -8220,7 +8288,7 @@ def _createButtonRuleViaController(args) {
         return [success: false, controllerId: controllerId, buttonNumber: buttonNumber, event: event,
             backup: backup, error: flowExc.message ?: flowExc.toString(),
             note: ("The add-button flow failed mid-stream; the controller may be left in add-button mode (a fresh page open in the UI collapses it) and the rule may or may not have spawned -- check childApps via hub_get_app_config(appId=${controllerId}). " +
-                (backup?.backupKey ? "Restore the controller via hub_restore_backup(backupKey='${backup.backupKey}') if its config looks damaged." : "No pre-edit backup of the controller was taken ('Back up native apps before edits' is off in Advanced settings); repair its config in place if it looks damaged.")).toString()]
+                (backup?.backupKey ? "Restore the controller via hub_restore_backup(backupKey='${backup.backupKey}') if its config looks damaged." : "No backup key was returned for the controller; repair its config in place if it looks damaged.")).toString()]
     }
 }
 
@@ -8318,7 +8386,7 @@ def _createNativeAppShell(args) {
                     try {
                         triggerResults << _rmAddTrigger(newId, spec as Map)
                     } catch (Exception te) {
-                        triggerResults << [success: false, error: te.message, specCapability: spec.capability]
+                        triggerResults << ([success: false, error: te.message, specCapability: spec.capability] + _rmOutcomeKeys(te))
                         mcpLog("warn", "rm-native", "hub_set_rule: trigger ${i} (capability=${spec.capability}) failed -- ${te.message}")
                     }
                 }
@@ -8812,7 +8880,7 @@ private Map _rmRemoveLocalVariable(Integer appId, String varName) {
             }
             def baseMsg = clickExc.message ?: clickExc.toString()
             if (cleanupFailed) {
-                throw new IllegalStateException("${baseMsg} [wizardStuck -- cancelCapab cleanup also failed: ${cleanupErr}]")
+                throw _rmFail(new IllegalStateException("${baseMsg} [wizardStuck -- cancelCapab cleanup also failed: ${cleanupErr}]", clickExc), _rmOutcomeFlags(clickExc) + [wizardStuck: true])
             }
             throw new IllegalStateException("removeLocalVariable: deleteGV/delConfirm click failed for '${name}' -- ${baseMsg}. The in-flight delete wizard was closed (cancelCapab); retry the removal.")
         }
@@ -8931,8 +8999,8 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
     def repairHints = []
     if (updateRuleFailed) {
         repairHints << (isAdd
-            ? "updateRule click was rejected after the local variable committed. The variable is created on the hub but the rule's action map will not pick it up until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
-            : "updateRule click was rejected after the local variable was removed. The variable is gone but the rule's action map will not re-evaluate until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails.")
+            ? "updateRule click was rejected after the local variable committed. The variable is created on the hub but the rule's action map will not pick it up until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or ${_rmRestoreClause(backup)} if the retry also fails."
+            : "updateRule click was rejected after the local variable was removed. The variable is gone but the rule's action map will not re-evaluate until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or ${_rmRestoreClause(backup)} if the retry also fails.")
     }
     def variableShape = isAdd
         ? [name: varResult?.name, type: varResult?.type, value: varResult?.value]
@@ -8966,16 +9034,16 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
         def markerHint = (health.brokenMarkers instanceof List && !health.brokenMarkers.isEmpty()) ? " (${health.brokenMarkers.join(', ')})" : ""
         if (brokenBefore == true) {
             // Pre-existing breakage -- removing this local did not cause it; restore won't fix it.
-            deleteBrokeError = "Local variable '${varResult?.name}' was deleted; the rule is broken${markerHint}, but it was ALREADY broken before this delete (pre-existing -- removing this local did not cause it). Restoring backup (backupKey='${backup?.backupKey}') undoes the delete but will NOT fix the pre-existing breakage; inspect the rule's broken action(s)/expression(s)."
-            repairHints << "The rule was already broken before this delete (pre-existing). Restoring backupKey='${backup?.backupKey}' only undoes the delete and will NOT repair the pre-existing breakage -- inspect the rule's broken action(s)/expression(s)."
+            deleteBrokeError = "Local variable '${varResult?.name}' was deleted; the rule is broken${markerHint}, but it was ALREADY broken before this delete (pre-existing -- removing this local did not cause it). A restore of the pre-delete baseline (${_rmRestoreClause(backup)}) undoes the delete but will NOT fix the pre-existing breakage; inspect the rule's broken action(s)/expression(s)."
+            repairHints << "The rule was already broken before this delete (pre-existing). Undoing the delete (${_rmRestoreClause(backup)}) will NOT repair the pre-existing breakage -- inspect the rule's broken action(s)/expression(s)."
         } else if (brokenBefore == false) {
             // Clean before -- the delete caused the break; restore undoes it.
-            deleteBrokeError = "Local variable '${varResult?.name}' was deleted, but that broke the action(s)/expression(s) that referenced it -- the rule is now broken${markerHint}. Restore the pre-delete backup (backupKey='${backup?.backupKey}') via hub_restore_backup to undo, or remove the references first and then retry the removal."
-            repairHints << "The deleted local variable was still referenced; the rule is now broken. Restore via hub_restore_backup with backupKey='${backup?.backupKey}', or remove the referencing action(s)/expression(s) and retry."
+            deleteBrokeError = "Local variable '${varResult?.name}' was deleted, but that broke the action(s)/expression(s) that referenced it -- the rule is now broken${markerHint}. To undo, ${_rmRestoreClause(backup)}; or remove the references first and then retry the removal."
+            repairHints << "The deleted local variable was still referenced; the rule is now broken. ${_rmRestoreClause(backup).capitalize()}, or remove the referencing action(s)/expression(s) and retry."
         } else {
             // Indeterminate baseline (pre-delete config unreadable) -- do not claim causation.
-            deleteBrokeError = "The rule is broken after removing '${varResult?.name}'${markerHint} (could not determine whether it was already broken beforehand). Restore the backup (backupKey='${backup?.backupKey}') via hub_restore_backup to undo this delete, or inspect the rule's action(s)/expression(s)."
-            repairHints << "The rule is broken after this delete; whether it was already broken beforehand is unknown. Restore via hub_restore_backup with backupKey='${backup?.backupKey}' to undo the delete, or inspect the rule's action(s)/expression(s)."
+            deleteBrokeError = "The rule is broken after removing '${varResult?.name}'${markerHint} (could not determine whether it was already broken beforehand). To undo this delete, ${_rmRestoreClause(backup)}; or inspect the rule's action(s)/expression(s)."
+            repairHints << "The rule is broken after this delete; whether it was already broken beforehand is unknown. To undo the delete, ${_rmRestoreClause(backup)}; or inspect the rule's action(s)/expression(s)."
         }
     }
     // Guard the add-path note the same way the remove-path note guards on deleted:
@@ -9128,7 +9196,7 @@ private void _rmRunPendingPredCapabsClear(Integer appId) {
     try {
         _rmClearPredCapabsViaGhostIfThen(appId, "addAction (deferred from addRequiredExpression)")
     } catch (Exception e) {
-        mcpLog("warn", "rm-native", "addAction: deferred predCapabs clear (ghost ifThen) failed for app ${appId} (${e.message ?: e.toString()}) -- this action may render under IF(**Broken Condition**); verify rule render or restore backup if needed")
+        mcpLog("warn", "rm-native", "addAction: deferred predCapabs clear (ghost ifThen) failed for app ${appId} (${e.message ?: e.toString()}) -- this action may render under IF(**Broken Condition**); verify rule render or restore the pre-edit backup if one was taken (restoreHint)")
     }
     try { _rmDropPredClearPending(appId, observedGeneration) }
     catch (Exception cleanupError) {
@@ -9422,9 +9490,9 @@ private void _rmWriteActionDelayModifier(Integer appId, Integer idx, Map actionS
 // devices.<N>, and cCmd.<N> is an enum RM builds from the selected devices' commands, so it only
 // appears once RM accepted at least one of them for the chosen capability. The capability and
 // the command are checked against RM's own lists; a miss throws inside the editor try-block, and
-// the opened row is removed (wizardStuck when that cannot be confirmed). Returns what was written.
-private Map _rmWriteRunCommandFields(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
-    def written = [:]
+// the caller's editor cleanup decides what happens to the row (an add removes it; modifyAction closes
+// the editor with actionDone and keeps the committed row). Fills and returns `written` as each key lands.
+private Map _rmWriteRunCommandFields(Integer appId, Integer idx, Map actionSpec, List applied, List skipped, Map written = [:]) {
     String capKey = "myCapab.${idx}".toString()
     def capInput = _rmRevealedInputOrThrow(appId, capKey,
         "the capability picker '${capKey}' was not revealed on action ${idx}.".toString(), "runCommand")
@@ -9539,11 +9607,10 @@ private void _rmRequireExistingHubFile(Integer appId, Integer idx, String field,
     }
 }
 
-// A thrown add as a bulk item result; a refusal whose opened row was removed says so.
+// A thrown add as a bulk item result, carrying the outcome flags the throw recorded.
 private Map _rmAddRefusalResult(Exception e) {
-    String msg = e.message ?: e.toString()
-    def r = [success: false, error: msg]
-    if (msg.contains("row was rolled back") && !msg.contains("[wizardStuck")) r.rolledBack = true
+    def r = [success: false, error: (e.message ?: e.toString())] + _rmOutcomeKeys(e)
+    if (r.wizardStuck == true) r.remove("rolledBack")
     return r
 }
 
@@ -9551,9 +9618,10 @@ private Map _rmAddRefusalResult(Exception e) {
 // row when a write is refused; without the rollback the next add reopens it pre-filled with its
 // stale fields. Cleanup is VERIFIED, not fire-and-forget: the hub answers 200 to a click that does
 // nothing, so the settings-checked rollback decides. On confirmed removal the refusal is re-raised
-// saying the row was rolled back. Otherwise an IllegalStateException carries the refusal text (minus
-// its not-touched claim) plus a wizardStuck marker whose recovery starts with actionCancel, because
-// removeAction is refused while the open editor holds state.editAct.
+// flagged rolledBack (as a runtime failure when it was not a validation error). Otherwise an
+// IllegalStateException flagged wizardStuck carries the refusal text (minus its not-touched claim)
+// and a recovery that starts with actionCancel, because removeAction is refused while the open
+// editor holds state.editAct.
 private void _rmCancelRefusedActionEditor(Integer appId, Integer idx, Exception refusal,
                                           boolean condWizardOpen = false, String stuckWhat = null) {
     boolean cleaned = false
@@ -9564,12 +9632,14 @@ private void _rmCancelRefusedActionEditor(Integer appId, Integer idx, Exception 
     }
     if (cleaned) {
         String m = refusal.message ?: refusal.toString()
-        if (m.contains("row was rolled back") || !(refusal instanceof IllegalArgumentException)) throw refusal
-        throw new IllegalArgumentException("${m.replace(' RM is not touched.', '')} The opened action row was rolled back.".toString(), refusal)
+        if (_rmOutcomeFlags(refusal).rolledBack == true) throw refusal
+        Map flags = _rmOutcomeFlags(refusal) + [rolledBack: true]
+        if (!(refusal instanceof IllegalArgumentException)) throw _rmFail(new IllegalStateException("${m} The opened action row was rolled back.".toString(), refusal), flags)
+        throw _rmFail(new IllegalArgumentException("${m.replace(' RM is not touched.', '')} The opened action row was rolled back.".toString(), refusal), flags)
     }
     String what = stuckWhat ?: "action ${idx}'s editor or row could not be confirmed removed after the refusal, and the next add can reopen it pre-filled".toString()
     mcpLog("warn", "rm-native", "_rmCancelRefusedActionEditor: app ${appId}: ${what}")
-    throw new IllegalStateException("${(refusal.message ?: refusal.toString()).replace(" RM is not touched.", "").replace(" The opened action row was rolled back.", "")} [wizardStuck -- ${what}; first close the editor with hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true), verify via hub_get_app_config(appId=${appId}), then remove any surviving row with hub_set_rule(removeAction:{index:${idx}}, confirm:true) or restore the pre-write backup]")
+    throw _rmFail(new IllegalStateException("${(refusal.message ?: refusal.toString()).replace(" RM is not touched.", "").replace(" The opened action row was rolled back.", "")} [wizardStuck -- ${what}; first close the editor with hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true), verify via hub_get_app_config(appId=${appId}), then remove any surviving row with hub_set_rule(removeAction:{index:${idx}}, confirm:true) or restore the pre-write backup]", refusal), _rmOutcomeFlags(refusal) + [wizardStuck: true])
 }
 
 // Extracted from _rmAddAction to keep it under the JVM's 64KB per-method bytecode limit.
@@ -10878,7 +10948,7 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec) {
                         // failed — the wizard is still open. Embed the marker
                         // so the dispatcher's catch can surface wizardStuck=true
                         // alongside the original error.
-                        throw new IllegalStateException("${perCondExc.message} [wizardStuck -- cancelCapab cleanup also failed: ${wizardCleanupErr}]")
+                        throw _rmFail(new IllegalStateException("${perCondExc.message} [wizardStuck -- cancelCapab cleanup also failed: ${wizardCleanupErr}]", perCondExc), _rmOutcomeFlags(perCondExc) + [wizardStuck: true])
                     }
                     throw perCondExc
                 }
@@ -11006,7 +11076,7 @@ Map _rmAddRequiredExpressionWalk(Integer appId, Map exprSpec) {
             repairHints: reRepairHints
         ]
         if (notRepresentable) {
-            out.error = "addRequiredExpression: condition ${notRepresentable.collect { it.condIdx != null ? it.condIdx + 1 : '?' }.join(', ')} asks for a comparator Rule Machine does not offer there, and was committed without it. Replace the expression (replaceRequiredExpression) or restore the backup.".toString()
+            out.error = "addRequiredExpression: condition ${notRepresentable.collect { it.condIdx != null ? it.condIdx + 1 : '?' }.join(', ')} asks for a comparator Rule Machine does not offer there, and was committed without it. Replace the expression (replaceRequiredExpression) or restore the pre-edit backup if one was taken (restoreHint).".toString()
         }
         return out
     }
@@ -12088,22 +12158,26 @@ private String _rmBulkStopError(String stoppedAfter, stopItem) {
 // Edit and replace stop envelope. Skipping finalisation is not a rollback: items before the stop stay written, and
 // actions self-bake, so they can already affect an active rule. The pre-operation backup is the rollback handle.
 private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter, stopItem, Map extra) {
+    // partial only when an item before the stop was applied; a stop at the first item wrote nothing.
+    boolean earlierApplied = ((extra ?: [:]).values().findAll { it instanceof List }.flatten()).any {
+        it instanceof Map && (it.success == true || it.partial == true) && it.rolledBack != true
+    }
     def out = [
         success: false,
-        partial: true,
+        partial: earlierApplied,
         appId: appId,
         backup: backup,
         bulkStoppedAfter: stoppedAfter,
         finalisationNotAttempted: true,
         error: _rmBulkStopError(stoppedAfter, stopItem),
         health: (extra?.containsKey("health") ? extra.health : _rmCheckRuleHealth(appId)),
-        repairHints: ["Stopped fail-closed after ${stoppedAfter}: later items were not attempted and the trailing updateRule was not fired. Items before it remain written and can already affect the rule (actions self-bake). Inspect with hub_get_app_config(appId=${appId}); repair the failed item and add the notAttempted items, or roll back via hub_restore_backup(backupKey='${backup?.backupKey}'). Fire hub_set_rule(button='updateRule') only once the rule is complete.".toString()],
+        repairHints: ["Stopped fail-closed after ${stoppedAfter}: later items were not attempted and the trailing updateRule was not fired. Items before it remain written and can already affect the rule (actions self-bake). Inspect with hub_get_app_config(appId=${appId}); repair the failed item and add the notAttempted items, or roll back (${_rmRestoreClause(backup)}). Fire hub_set_rule(button='updateRule') only once the rule is complete.".toString()],
         note: "Stopped after ${stoppedAfter} failed or was partial; finalisation not attempted.".toString()
     ]
     // An item that left an editor open is reported the way the single-op envelope reports it:
     // retrying the failed item first would reopen the stale row pre-filled.
     boolean stuck = false
-    try { stuck = groovy.json.JsonOutput.toJson(stopItem ?: [:]).contains("[wizardStuck") } catch (Exception ignored) { stuck = false }
+    if (stopItem instanceof Map) stuck = (stopItem.wizardStuck == true) || ((stopItem.values().findAll { it instanceof List }.flatten()).any { it instanceof Map && it.wizardStuck == true })
     if (stuck) {
         out.wizardStuck = true
         def recoveryHint = (stopItem instanceof Map && stopItem.op == "modifyTrigger") ?
@@ -12241,12 +12315,11 @@ private void _rmRejectNonDeviceMapSettings(Integer appId, String pageName, Map s
     }
 }
 
-// pageName lets callers target a specific sub-page (e.g. ruleActions,
-// triggerCondition, ifthenelseActions) — the schema is introspected from
-// that page so settings named on that page get correct marshaling.
 // _applyNativeAppEdit: the edit engine for an existing app, behind hub_set_rule's edit arm and
 // hub_set_native_app. Raw modes: settings (multi-device fields enforced, multiple flags verified with
-// one retry, then updateRule) or button (/installedapp/btn for editor buttons).
+// one retry, then updateRule) or button (/installedapp/btn for editor buttons). pageName targets a
+// sub-page (e.g. ruleActions, triggerCondition, ifthenelseActions): the schema is introspected from
+// that page so settings named on it get the right marshaling.
 def _applyNativeAppEdit(args) {
     // The body runs as a closure so its call sites live in the closure's own class: the app class is
     // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
@@ -12385,7 +12458,7 @@ def _applyNativeAppEdit(args) {
             _rmRejectNonDeviceMapSettings(appId, args?.pageName?.toString()?.trim() ?: null, settingsMap)
         }
     } catch (IllegalArgumentException preflightExc) {
-        return _rmBuildUpdateErrorResponse(appId, preflightExc.message, null)
+        return _rmBuildUpdateErrorResponse(appId, preflightExc.message, null, "doActPage", preflightExc)
     }
     // A standalone replace with nothing to replace is decidable from the committed page.
     if (replaceRequiredExpressionSpec) {
@@ -12418,11 +12491,15 @@ def _applyNativeAppEdit(args) {
         (modifyActionSpec ? "pre-modifyAction" :
         (walkStepSpec ? "pre-walkStep" : "pre-update"))))))))))))))))
     // A walkStep on an app that is not an RM rule reads the page it is on (see _rmBackupBeforeEdit);
-    // the backup's config read says whether the app is an RM rule.
+    // the backup decision's config read records whether the app is an RM rule.
     String wsPage = (walkStepSpec instanceof Map) ? ((walkStepSpec.page ?: ((walkStepSpec.steps instanceof List && walkStepSpec.steps) ? (walkStepSpec.steps[0] instanceof Map ? walkStepSpec.steps[0].page : null) : null))?.toString()) : null
     if (wsPage && args?.__rmRule == true) wsPage = null
     def backup = wsPage ? _rmBackupBeforeEdit(appId, backupReason, wsPage) : _rmBackupBeforeEdit(appId, backupReason)
-    if (wsPage && EXECUTION_CACHE.get("ruleMachine:${appId}".toString()) == true) wsPage = null
+    // When the backup decision read no config (a transient failure), the kind is read here.
+    if (wsPage && !_memoKnowsRuleMachine(appId)) {
+        try { _rmNoteRuleMachineConfig(appId, _rmFetchConfigJson(appId, wsPage)) } catch (Exception ignored) { }
+    }
+    if (wsPage && _memoRuleMachine(appId) == true) wsPage = null
 
     // walkStep: drive any RM page one operation at a time (introspect/write/click/navigate) and get the
     // schema diff, value echo, health and sub-page links back. The fallback for what the shortcuts don't
@@ -12493,7 +12570,7 @@ def _applyNativeAppEdit(args) {
             maResult = _rmModifyAction(appId, modifyActionSpec.index as Integer, modifyActionSpec.mods as Map, args?.__reqT0 as Long)
         } catch (Exception e) {
             mcpLogError("rm-native", "modifyAction failed for app ${appId}", e)
-            return _rmBuildUpdateErrorResponse(appId, e.message, backup)
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
         }
         def maHealth
         try { maHealth = _rmCheckRuleHealth(appId) }
@@ -12504,7 +12581,7 @@ def _applyNativeAppEdit(args) {
         boolean maOk = (maResult?.success == true) && _rmHealthGatePass(maHealth)
         def maOut = [success: maOk, partial: !maOk, appId: appId, backup: backup] + (maResult ?: [:]) + [
             health: maHealth,
-            error: maOk ? null : (maResult?.error ?: "modifyAction: the edit committed but the health check reports the rule broken -- inspect health.issues and restore via backup if the damage is real."),
+            error: maOk ? null : (maResult?.error ?: "modifyAction: the edit committed but the health check reports the rule broken -- inspect health.issues and ${_rmRestoreClause(backup)} if the damage is real."),
             restoreHint: maOk ? null : _rmBackupHint(backup),
             note: maOk ? "Action ${modifyActionSpec.index} edited in place; its index and position are unchanged and the new values read back.".toString()
                        : "modifyAction did not verify cleanly -- see error.".toString()
@@ -12674,7 +12751,7 @@ def _applyNativeAppEdit(args) {
                 }
                 return shape
             }
-            def result = _rmBuildUpdateErrorResponse(appId, e.message, backup)
+            def result = _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
             // removeAction exhaustion keeps the flat error with a verify hint, detected by the "one re-click"
             // phrase in _rmDeleteAction's throw.
             def isRetryExhaustion = e.message?.contains("one re-click")
@@ -12705,7 +12782,7 @@ def _applyNativeAppEdit(args) {
             addedResults.any { it instanceof Map && it.partial == true })
         def repairHints = []
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the action mutation committed. The action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the action mutation committed. The action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or ${_rmRestoreClause(backup)} if the retry also fails."
         }
         // A moveAction that may commit late returns success:false + asyncCommitLikely; fold that in and show
         // the verify-first hint.
@@ -12785,7 +12862,7 @@ def _applyNativeAppEdit(args) {
             if (isRetryExhaustion) {
                 trigResult.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
             }
-            if (e.message?.contains("[wizardStuck")) {
+            if (_rmOutcomeFlags(e).wizardStuck == true) {
                 trigResult.wizardStuck = true
                 trigResult.restoreHint = _rmModifyTriggerWizardRecoveryHint(appId) + " " + trigResult.restoreHint
             }
@@ -12807,7 +12884,7 @@ def _applyNativeAppEdit(args) {
         def health = _rmCheckRuleHealth(appId)
         def repairHints = []
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the trigger mutation committed. The trigger row is baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the trigger mutation committed. The trigger row is baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or ${_rmRestoreClause(backup)} if the retry also fails."
         }
         if (removeTriggerSpec) {
             // Lift partial from _rmRemoveTrigger if it ever reports one, as modifyTrigger does.
@@ -12862,7 +12939,7 @@ def _applyNativeAppEdit(args) {
             trigResult = _rmAddTrigger(appId, addTriggerSpec)
         } catch (Exception e) {
             mcpLogError("rm-native", "addTrigger failed for app ${appId}", e)
-            return _rmBuildUpdateErrorResponse(appId, e.message, backup)
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
         }
         // updateRule after any committed trigger, partial included; a rejected updateRule is reported
         // (updateRuleFailed / subscriptionsNotLive / updateRuleError) and flips success false + partial, as
@@ -12881,7 +12958,7 @@ def _applyNativeAppEdit(args) {
         }
         def trigRepairHints = (trigResult?.repairHints as List) ?: []
         if (updateRuleFailed) {
-            trigRepairHints = trigRepairHints + ["updateRule click was rejected after the trigger row committed. The trigger settings are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."]
+            trigRepairHints = trigRepairHints + ["updateRule click was rejected after the trigger row committed. The trigger settings are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or ${_rmRestoreClause(backup)} if the retry also fails."]
         }
         return [
             success: (trigResult?.success != false) && !updateRuleFailed,
@@ -12910,7 +12987,7 @@ def _applyNativeAppEdit(args) {
             actResult = _rmAddAction(appId, _rmWithClock(addActionSpec, args?.__reqT0 as Long))
         } catch (Exception e) {
             mcpLogError("rm-native", "addAction failed for app ${appId}", e)
-            return _rmBuildUpdateErrorResponse(appId, e.message, backup)
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
         }
         return [
             success: actResult?.success != false,
@@ -13316,7 +13393,7 @@ def _applyNativeAppEdit(args) {
         def repairHints = []
         repairHints.addAll(deferredRestoreHints)
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the patch ops committed. The patch settings are baked but the rule will not re-evaluate / re-subscribe until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the patch ops committed. The patch settings are baked but the rule will not re-evaluate / re-subscribe until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or ${_rmRestoreClause(backup)} if the retry also fails."
         }
         def out = [
             success: (patchErr == null) && (opsOk == patchResults.size()) && _rmHealthGatePass(health) && !updateRuleFailed,
@@ -13345,7 +13422,7 @@ def _applyNativeAppEdit(args) {
             varResult = _rmAddLocalVariable(appId, addLocalVariableSpec)
         } catch (Exception e) {
             mcpLogError("rm-native", "addLocalVariable failed for app ${appId}", e)
-            return _rmBuildUpdateErrorResponse(appId, e.message, backup)
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
         }
         // Shared add/remove envelope: trailing updateRule, settle, health, and the helper's partial, error
         // and repair hints merged in.
@@ -13362,7 +13439,7 @@ def _applyNativeAppEdit(args) {
             varResult = _rmRemoveLocalVariable(appId, varName)
         } catch (Exception e) {
             mcpLogError("rm-native", "removeLocalVariable failed for app ${appId}", e)
-            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "selectActions")
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "selectActions", e)
         }
         // A verify miss from the helper is partial, so an unconfirmed delete is never reported done.
         return _rmApplyLocalVarResult(appId, (varResult ?: [:]) as Map, backup, "remove")
@@ -13379,7 +13456,7 @@ def _applyNativeAppEdit(args) {
             // STPage is the wizard page this branch operates on; the helper threads it
             // into the wizardStuck restoreHint and surfaces preflight refusals with the
             // current health block (which a future preflight on this branch would set).
-            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "STPage")
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "STPage", e)
         }
         // updateRule, health and envelope via the shared finalize; add has no restore. A success:false the
         // helper returned (requiredExpressionAlreadyExists) passes through unchanged.
@@ -13397,7 +13474,7 @@ def _applyNativeAppEdit(args) {
             // expression is untouched and the rollback hint is replaced. Any other throw may have
             // touched the rule and keeps the backup hint.
             mcpLogError("rm-native", "replaceRequiredExpression failed for app ${appId}", e)
-            def errResp = _rmBuildUpdateErrorResponse(appId, e.message, backup, "STPage")
+            def errResp = _rmBuildUpdateErrorResponse(appId, e.message, backup, "STPage", e)
             if (errResp?.wizardStuck != true && e instanceof IllegalArgumentException) {
                 errResp.restoreHint = "No changes were made -- the Required Expression is intact (the spec was rejected before the rule was touched). No rollback is needed."
             }
@@ -13437,7 +13514,7 @@ def _applyNativeAppEdit(args) {
                 } else {
                     try { triggerResults << _rmAddTrigger(appId, spec as Map) }
                     catch (Exception te) {
-                        triggerResults << [success: false, error: te.message, specCapability: spec.capability]
+                        triggerResults << ([success: false, error: te.message, specCapability: spec.capability] + _rmOutcomeKeys(te))
                         mcpLog("warn", "rm-native", "hub_set_rule: addTriggers[${ti}] (${spec.capability}) failed -- ${te.message}")
                     }
                 }
@@ -13469,7 +13546,7 @@ def _applyNativeAppEdit(args) {
             }
         } catch (Exception e) {
             mcpLogError("rm-native", "addTriggers/addActions bulk failed for app ${appId}", e)
-            def bulkResult = _rmBuildUpdateErrorResponse(appId, e.message, backup)
+            def bulkResult = _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
             bulkResult.triggerResults = triggerResults
             bulkResult.actionResults = actionResults
             return bulkResult
@@ -13490,7 +13567,7 @@ def _applyNativeAppEdit(args) {
         def health = _rmCheckRuleHealth(appId)
         def repairHints = []
         if (updateRuleFailed) {
-            repairHints << "updateRule click was rejected after the bulk adds committed. The trigger/action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or restore via backup if the retry also fails."
+            repairHints << "updateRule click was rejected after the bulk adds committed. The trigger/action rows are baked but the rule will not subscribe to its device events until updateRule fires. Retry hub_set_rule(button='updateRule', confirm=true), or ${_rmRestoreClause(backup)} if the retry also fails."
         }
         // Lift per-item partial into the envelope; the counts use success alone.
         def itemsPartial = (trigOk != triggerResults.size()) || (actOk != actionResults.size()) ||
@@ -13631,7 +13708,7 @@ def _applyNativeAppEdit(args) {
         def err = finalConfig?.configPage?.error
         if (err) {
             result.warning = "App has a rendering error after update: ${err}"
-            result.restoreHint = "Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
+            result.restoreHint = _rmBackupHint(backup)
         }
         result.configPageError = err
 
@@ -13688,7 +13765,7 @@ def _applyNativeAppEdit(args) {
     } catch (Exception e) {
         def msg = e.message ?: e.toString()
         mcpLogError("rm-native", "hub_set_rule failed for ${appId}: ${msg}", e)
-        return _rmBuildUpdateErrorResponse(appId, msg, backup)
+        return _rmBuildUpdateErrorResponse(appId, msg, backup, "doActPage", e)
     }
     }
     return _impl()

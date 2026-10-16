@@ -2041,7 +2041,7 @@ def check_trailing_updaterule_envelope_parity(
 
 # Self-test fixtures for check_trailing_updaterule_envelope_parity. Drives
 # the real check function with synthetic corpora to cover must-catch +
-# must-not-catch cases (PIPELINE.md Rule 13).
+# must-not-catch cases.
 ENVELOPE_PARITY_SELF_TEST_CASES = [
     # (description, synthetic_src, expected_codes)
     (
@@ -2396,7 +2396,7 @@ def _build_read_write_split_corpus(gateways: dict, read_only: list, all_tools: l
 
 # Self-test fixtures for check_read_write_split. Drive the real check with
 # synthetic Groovy corpora to cover must-catch + must-not-catch cases
-# (PIPELINE.md Rule 13) so the guard provably fires and never silently no-ops.
+# so the guard provably fires and never silently no-ops.
 READ_WRITE_SPLIT_SELF_TEST_CASES = [
     # (description, groovy source, expected_rule_codes)
     (
@@ -4087,11 +4087,10 @@ def run_self_test() -> int:
     failures += _run_gateway_attribution_self_test()
 
     # Trailing-updateRule envelope parity must-catch / must-not-catch fixtures
-    # (PIPELINE.md Rule 13).
     envelope_parity_failures = _run_envelope_parity_self_test()
     failures += envelope_parity_failures
 
-    # Read/write-split must-catch / must-not-catch fixtures (PIPELINE.md Rule 13):
+    # Read/write-split must-catch / must-not-catch fixtures:
     # the guard that a read-only tool is never stranded behind only a hub_manage_*
     # gateway ships with positive + negative fixtures so a regression in the
     # dispatch logic surfaces here rather than silently weakening the lint.

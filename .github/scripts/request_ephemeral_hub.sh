@@ -11,7 +11,8 @@
 #                            writes provider_run to $GITHUB_OUTPUT
 #   verdict PROVIDER_RUN     wait for that provider run to end and post its conclusion as the head's
 #                            "Ephemeral e2e verdict (<kind>)" status (PROVIDER, GH_TOKEN, PUBLIC_SHA,
-#                            STATUS_TOKEN); an empty run id posts failure
+#                            STATUS_TOKEN); an empty run id posts failure; VERDICT_DEADLINE
+#                            (seconds, default 900) bounds the wait for the run to end
 #
 # Env: GITHUB_REPOSITORY; GH_TOKEN (actions:read, or the provider token for `hub`);
 #      HUB_KIND (os|jvm, default os) picks the hub and the test run's key;
@@ -142,13 +143,16 @@ hub() {
 # The PR's own test workflow reports the results it received, so the trusted verdict is the provider
 # run's conclusion, read here with the provider token and posted from base code.
 verdict() {
-  : "${PROVIDER:?}" "${PUBLIC_SHA:?}" "${STATUS_TOKEN:?}" "${GH_TOKEN:?}"
+  : "${PUBLIC_SHA:?}" "${STATUS_TOKEN:?}"
   [[ "$PUBLIC_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "unexpected head SHA shape"
   local state=failure desc conclusion=""
   if [ -z "${1:-}" ]; then
     desc="no provider run was started for the $kind hub"
+  elif ! [[ "$1" =~ ^[0-9]+$ ]]; then
+    desc="the $kind hub's provider run id was unusable"
   else
-    [[ "$1" =~ ^[0-9]+$ ]] || fail "verdict needs the provider run id."
+    # The provider is read only on this branch; a missing provider secret still gets a verdict.
+    : "${PROVIDER:?}" "${GH_TOKEN:?}"
     local deadline=$((SECONDS + ${VERDICT_DEADLINE:-900})) status="" read_ok=0
     while :; do
       local answer=""
@@ -166,7 +170,7 @@ verdict() {
   fi
   GH_TOKEN="$STATUS_TOKEN" gh api -X POST "repos/$GITHUB_REPOSITORY/statuses/$PUBLIC_SHA" \
     -f state="$state" -f context="Ephemeral e2e verdict ($kind)" -f description="$desc" >/dev/null
-  echo "Ephemeral e2e verdict ($kind): $state ($conclusion)."
+  echo "Ephemeral e2e verdict ($kind): $state -- $desc"
 }
 
 case "${1:-}" in
