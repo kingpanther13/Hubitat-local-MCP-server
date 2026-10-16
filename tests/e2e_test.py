@@ -1743,12 +1743,17 @@ class TestRunner:
             except (TypeError, ValueError):
                 return str(value).lower() == wanted.lower()
 
+        def same_type(reported, wanted: str) -> bool:
+            # The hub reports a Number variable as integer or bigdecimal.
+            got = str(reported or "").lower()
+            return {"integer": "number", "bigdecimal": "number"}.get(got, got) == wanted.lower()
+
         existing = self._hub_variables_by_name()
         create, reset = [], []
         for key in keys:
             name, var_type, value = self.PERM_VARIABLES[key]
             row = existing.get(name)
-            if row is not None and str(row.get("type", "")).lower() != var_type.lower():
+            if row is not None and not same_type(row.get("type"), var_type):
                 self._delete_variable_safe(name, inline=True)
                 row = None
             if row is None:
