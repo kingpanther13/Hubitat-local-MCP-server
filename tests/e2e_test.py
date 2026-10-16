@@ -8106,8 +8106,10 @@ class TestRunner:
             assert rules and all(label.lower() in str(r.get("label", "")).lower() for r in rules), \
                 f"labelFilter should return only rules whose label contains {label!r}: {rules}"
             mine = next((r for r in rules if str(r.get("id")) == str(app_id)), None)
-            assert mine is not None and str(mine.get("type") or "").startswith("Rule-"), \
-                f"the listed rule should carry the hub's app type: {mine}"
+            assert mine is not None and mine.get("type") == "Rule-5.1", \
+                f"the listed rule should carry app type Rule-5.1: {mine}"
+            assert mine.get("rmVersion") == "5.x", \
+                f"the listed Rule Machine rule should report rmVersion 5.x: {mine}"
 
             # The retained legacy path stays selectable and must NOT read the JSON source.
             html = self.client.call_tool("hub_manage_rule_machine", {
