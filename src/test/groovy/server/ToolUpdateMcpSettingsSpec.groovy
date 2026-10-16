@@ -630,7 +630,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         def text = script.getAllToolDefinitions().find { it.name == 'hub_update_mcp_settings' }.inputSchema.properties.settings.description
 
         then:
-        text.contains("backupBeforeRuleEdits (bool, default ON): OFF skips the File Manager baseline before each native-app edit")
+        text.contains("backupBeforeRuleEdits (bool, default ON): OFF skips the pre-edit baseline")
         text.contains("it overrides backupEveryRuleWrite")
         text.contains("(only while backupBeforeRuleEdits is on)")
     }

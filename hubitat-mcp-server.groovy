@@ -10093,9 +10093,8 @@ private Map _rmCollectInputSchema(Map configPage) {
                     range: i.range?.toString(),
                     pattern: i.pattern?.toString(),
                     disabled: i.disabled == true,
-                    defaultValue: i.defaultValue,
-                    options: i.options
-                ])
+                    defaultValue: i.defaultValue
+                ] + (i.options != null ? [options: i.options] : [:]))
             }
         }
     }

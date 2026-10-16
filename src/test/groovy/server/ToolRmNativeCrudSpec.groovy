@@ -3479,7 +3479,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "unsupported numOp"    | [capability: "setVariable", variable: "x", value: 1, numOp: "bogus"] | ["patches[0].replaceActions[0]:", "numOp 'bogus' does not go with value"]
         "numOp without value"  | [capability: "setVariable", variable: "x", sourceVariable: "y", numOp: "add number"] | ["patches[0].replaceActions[0]:", "numOp goes only with value"]
         "not a spec object"    | "switch on"                                                          | ["patches[0].replaceActions[0] must be an action spec object"]
-        "dimmer without level" | [capability: "dimmer", action: "setLevel"]                           | ["patches[0].replaceActions[0]:", "dimmer.setLevel requires 'level'"]
+        "dimmer without level" | [capability: "dimmer", action: "setLevel"]                           | ["patches[0].replaceActions[0]:", "dimmer.setLevel requires one of level, levelVariable"]
     }
 
     @spock.lang.Unroll
@@ -4231,7 +4231,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                     def key = _settingKeyOf(k)
                     if (key != null) {
                         (ctl.writes as List) << [key: key, value: v]
-                        if (ctl.applyWrites) committedSettings[key] = v
+                        // A device field stays a list, as the hub's statusJson serves it (deviceIdsForDeviceList).
+                        if (ctl.applyWrites) committedSettings[key] = (committedSettings[key] instanceof List && !(v instanceof List))
+                            ? v.toString().tokenize(",").collect { it.trim() }.findAll { it } : v
                     }
                 }
             }
@@ -34633,9 +34635,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         where:
         label                        | spec                                                              | expected
-        'dimmer.setLevel no level'   | [capability: "dimmer", action: "setLevel", deviceIds: [8]]        | "dimmer.setLevel requires 'level'"
+        'dimmer.setLevel no level'   | [capability: "dimmer", action: "setLevel", deviceIds: [8]]        | "dimmer.setLevel requires one of level, levelVariable"
         'dimmer.toggle no level'     | [capability: "dimmer", action: "toggle", deviceIds: [8]]          | "dimmer.toggle requires 'level'"
-        'color.setColor no color'    | [capability: "color", action: "setColor", deviceIds: [8]]         | "color.setColor requires 'colorName'"
+        'color.setColor no color'    | [capability: "color", action: "setColor", deviceIds: [8]]         | "color.setColor requires one of colorName, rawSettings"
         'color.toggleColor no name'  | [capability: "color", action: "toggleColor", deviceIds: [8], level: 50]        | "color.toggleColor requires 'colorName'"
         'color.toggleColor no level' | [capability: "color", action: "toggleColor", deviceIds: [8], colorName: "Red"] | "color.toggleColor requires 'level'"
         'setColorTemp no kelvin'     | [capability: "colorTemp", action: "setColorTemp", deviceIds: [8]]              | "colorTemp.setColorTemp requires 'kelvin'"
@@ -34681,7 +34683,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then:
         def e = thrown(IllegalArgumentException)
-        e.message.contains("dimmer.setLevel requires 'level'")
+        e.message.contains("dimmer.setLevel requires one of level, levelVariable")
         !e.message.contains("RM is not touched")
     }
 
@@ -34734,7 +34736,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "refused as a pre-flight, with nothing removed and no wizard write"
         result.success == false
-        result.error.contains("replaceActions[0]: dimmer.setLevel requires 'level'")
+        result.error.contains("replaceActions[0]: dimmer.setLevel requires one of level, levelVariable")
         result.restoreHint?.contains("Pre-flight refusal")
         !result.containsKey("removedIndices")
         posts.isEmpty()
@@ -42361,7 +42363,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 configPage: [name: "doActPage", title: "Define Actions", install: false, error: null,
                              sections: [[title: "", input: [
                                  [name: "actType.1", type: "enum", options: ["switchActs": "Switches"]],
-                                 [name: "actSubType.1", type: "enum", options: ["on": "On"]],
+                                 [name: "actSubType.1", type: "enum", options: ["getOnOffSwitch": "Turn switches on/off"]],
                                  [name: "switch.1", type: "capability.switch", multiple: true],
                                  [name: "actionDone", type: "button"]
                              ], paragraphs: ["seq ${System.nanoTime()}".toString()]]]],
@@ -42468,7 +42470,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 configPage: [name: "doActPage", title: "Define Actions", install: false, error: null,
                              sections: [[title: "", input: [
                                  [name: "actType.1", type: "enum", options: ["switchActs": "Switches"]],
-                                 [name: "actSubType.1", type: "enum", options: ["on": "On"]],
+                                 [name: "actSubType.1", type: "enum", options: ["getOnOffSwitch": "Turn switches on/off"]],
                                  [name: "switch.1", type: "capability.switch", multiple: true],
                                  [name: "actionDone", type: "button"]
                              ], paragraphs: ["seq ${System.nanoTime()}".toString()]]]],
@@ -43366,7 +43368,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 configPage: [name: "doActPage", title: "Define Actions", install: false, error: null,
                              sections: [[title: "", input: [
                                  [name: "actType.1", type: "enum", options: ["switchActs": "Switches"]],
-                                 [name: "actSubType.1", type: "enum", options: ["on": "On"]],
+                                 [name: "actSubType.1", type: "enum", options: ["getOnOffSwitch": "Turn switches on/off"]],
                                  [name: "switch.1", type: "capability.switch", multiple: true],
                                  [name: "actionDone", type: "button"]
                              ], paragraphs: ["seq ${System.nanoTime()}".toString()]]]],

@@ -36,7 +36,7 @@ class WatchdogV31ParitySpec extends WatchdogV31Harness {
 
         expect:
         watchdogKeys.contains('backupBeforeRuleEdits')
-        watchdogKeys == serverKeys - ['mcpLogLevel', 'redactAccessTokens']
+        watchdogKeys == serverKeys - ['mcpLogLevel']
     }
 
     def 'v3.1 names itself apart from v3 and protects the code of both watchdogs'() {

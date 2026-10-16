@@ -13409,7 +13409,7 @@ def _applyNativeAppEdit(args) {
                 } catch (Exception subExc) {
                     // Strip the internal asyncCommit marker from the per-patch error; patchErr stays the batch's.
                     def cleanedPatchErr = subExc.message?.replace(getAsyncCommitMarker(), "") ?: subExc.message
-                    patchResults << [success: false, op: pm.keySet().first(), error: cleanedPatchErr, spec: p]
+                    patchResults << ([success: false, op: pm.keySet().first(), error: cleanedPatchErr, spec: p] + _rmOutcomeKeys(subExc))
                     mcpLog("warn", "rm-native", "patches[${pi}] (${pm.keySet().first()}) failed: ${cleanedPatchErr}")
                 }
                 if (!patchResults.isEmpty() && _rmBulkItemBlocks(patchResults.last())) {
