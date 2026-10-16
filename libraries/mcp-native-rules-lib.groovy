@@ -3369,11 +3369,6 @@ private Integer _rmWriteSimpleConditionalPreamble(Integer appId, Integer idx, St
         def writeAct = { Map params, String fieldKey, Object fieldValue, String label = null ->
             _rmWriteSettingOnPage(appId, "doActPage", fieldKey, fieldValue, applied, null, skipped)
         }
-        def cancel = {
-            try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") } catch (Exception cancelExc) {
-                mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on doActPage (simple conditional action ${idx}): ${cancelExc.message}")
-            }
-        }
         if (condIdxOut != null) condIdxOut[0] = cIdx
         boolean cancelFailed = false
         def cancel = {

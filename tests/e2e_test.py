@@ -19107,11 +19107,17 @@ class TestRunner:
                     self._run_one(group, display_name, method_name)
                 finally:
                     if proves_backups:
-                        # A failed toggle is this test's failure, not the run's: the loop goes on.
+                        # Backups must be off again before the next test, or its result would be
+                        # misattributed: one retry, then the run stops here.
                         try:
                             self._rule_edit_backups(False)
-                        except Exception as exc:
-                            self._record(display_name, group, "fail", message=f"could not turn pre-edit backups back off: {exc}")
+                        except Exception as first:
+                            try:
+                                self._rule_edit_backups(False)
+                            except Exception as exc:
+                                self._record(f"{display_name} (pre-edit backups off again)", group, "fail",
+                                             message=f"could not turn pre-edit backups back off ({first}; retry: {exc}); the run stops here")
+                                raise
         finally:
             try:
                 self.cleanup()
@@ -19119,7 +19125,8 @@ class TestRunner:
                 try:
                     self._rule_edit_backups(prior_backups is not False)
                 except Exception as exc:
-                    print(f"  [WARN] could not restore the pre-edit backup setting: {exc}")
+                    self._record("restore pre-edit backup setting", "suite", "fail",
+                                 message=f"could not restore the hub's pre-edit backup setting (prior: {prior_backups}): {exc}")
 
         # Print summary
         return self._print_summary()
