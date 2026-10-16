@@ -1965,6 +1965,9 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         }
         _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds)
     }
+    if (triggerSpec.compareToDevice instanceof Map) {
+        _rmValidateDeviceIdsExist("addTrigger.compareToDevice.deviceId", [(triggerSpec.compareToDevice as Map).deviceId])
+    }
 
     _rmValidateRoundZeroPeriodicSpec(triggerSpec)
     // Preserve the legacy valid-path normalization without making the pure
@@ -5541,6 +5544,9 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
                 def cm = sm.condition as Map
                 _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds ?: (cm.deviceId != null ? [cm.deviceId] : null))
             }
+            if (sm.compareToDevice instanceof Map) {
+                _rmValidateDeviceIdsExist("addTrigger.compareToDevice.deviceId", [(sm.compareToDevice as Map).deviceId])
+            }
             _rmValidateRoundZeroPeriodicSpec(sm)
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException("${label}[${i}]: ${e.message}".toString(), e)
@@ -8101,7 +8107,7 @@ def toolSetRule(args) {
     if (stoppedUnread && out instanceof Map && out.applied != false) {
         out.stoppedStateUnverified = true
         out.note = ((out.note ? out.note.toString() + " " : "") + (wasStopped == true
-            ? "The rule was stopped before this edit and its state could not be read afterwards; Rule Machine's update may have restarted it (check"
+            ? "The rule was stopped before this edit and its state could not be read afterwards; Rule Machine's update may have restarted it (check hub_get_rule_health)."
             : "The rule's stopped state could not be read around this edit; if it was stopped, Rule Machine's update may have restarted it (check hub_get_rule_health).")).toString()
     }
     return out
