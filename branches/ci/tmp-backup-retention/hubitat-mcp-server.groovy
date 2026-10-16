@@ -28323,8 +28323,7 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 }
 Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
     def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason) }
-    return reused ?: _rmBackupRuleSnapshot(ruleId, reason,
-        settings?.backupEveryRuleWrite == true && reason != "pre-replaceRequiredExpression")
+    return reused ?: _rmBackupRuleSnapshot(ruleId, reason)
 }
 private def _rmRecentRuleBackup(Map mfst, Integer ruleId, long nowMs) {
     return mfst.findAll { key, value ->
@@ -28374,11 +28373,9 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
     }
     return null
 }
-Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean rollingIfInSession = false) {
+Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     def built = _rmBuildRuleSnapshot(ruleId, reason)
-    return _withBackupLock("rule ${ruleId} snapshot (${reason})") {
-        _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, rollingIfInSession)
-    }
+    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map) }
 }
 private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
     def config
@@ -28475,8 +28472,10 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
     }
     return [snapshot: snapshot, config: config]
 }
-private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config, boolean rollingIfInSession = false) {
-    String retention = rollingIfInSession && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
+private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config) {
+    boolean editStep = settings?.backupEveryRuleWrite == true &&
+        !(reason in ["pre-delete", "pre-forcedelete", "pre-replaceRequiredExpression"])
+    String retention = editStep && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
