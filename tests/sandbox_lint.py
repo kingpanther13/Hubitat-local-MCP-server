@@ -188,8 +188,8 @@ RULES = [
         # `instanceof InputStream` shipped this far. Duck-type instead: branch on byte[]/CharSequence
         # and read remaining bodies via `.bytes` / `.text` (see _readRespText), never naming the
         # class. Scans run on comment/string-stripped source, so doc mentions of these classes are
-        # unaffected. (This is a curated list of the realistic accidental classes; the real-hub e2e
-        # deploy remains the comprehensive compile gate for sandbox ClassExpressions not listed here.)
+        # unaffected. (This is a curated list of the realistic accidental classes; the groovy24-parse
+        # lane's sandbox allowlist check is the comprehensive gate.)
         "id": "SANDBOX-015",
         "pattern": r"\b(?:InputStream|OutputStream|FileInputStream|FileOutputStream|ByteArrayInputStream|ByteArrayOutputStream|DataInputStream|DataOutputStream|BufferedInputStream|BufferedOutputStream|BufferedReader|BufferedWriter|FileReader|FileWriter|InputStreamReader|OutputStreamWriter|RandomAccessFile|PushbackInputStream|PrintStream|PrintWriter)\b",
         "message": "java.io stream/reader/writer class referenced as a ClassExpression -- blocked by the Hubitat sandbox at parse time ('ClassExpression not allowed'). Duck-type instead: branch on byte[]/CharSequence and read via .bytes/.text rather than naming the class (e.g. avoid `instanceof InputStream`).",

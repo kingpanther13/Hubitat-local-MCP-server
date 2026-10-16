@@ -13,9 +13,15 @@ Review the native prerequisites before adding integration or radio infrastructur
 
 Install `device-configuration.groovy` as `mcptest.E2E_PERM_Configuration`, then
 install a second copy with only the definition name changed to
-`E2E_PERM_Configuration_Alternate`. Both must expose fixture version 2 and the
-same preferences and commands. The alternate is used for reversible driver
-switching; it is never created or removed inside E2E.
+`E2E_PERM_Configuration_Alternate`. Both must expose fixture version 3 and the
+same preferences and commands. Version 3 removed `singleThreaded`; a hub still
+carrying an older driver fails the version check until both drivers are
+reinstalled. The alternate is used for reversible driver switching; it is never
+created or removed inside E2E.
+
+Keep the observer driver reentrant: its HTTP self-read resolves driver inputs on
+another request thread. Enabling `singleThreaded` blocks that read behind the
+command holding the same device gate and causes the observer to time out.
 
 Provision the labels from `device-configuration-manifest.json` exactly:
 
@@ -113,7 +119,7 @@ Do not install/remove integrations during E2E.
 | Field | Standing coverage | Limit |
 |---|---|---|
 | `zigbeeId` | Selected and bypass standalones have synthetic baseline IDs `0200000000006859` and `0200000000006860`; the child has none and rejects edits. | Native property storage only; no paired identity or radio traffic. The manifest's positive target IDs deliberately differ from the baselines. |
-| `dashboardIds` | Persistent legacy dashboard `E2E_PERM_Configuration_Dashboard`, ID `36461`; all fixtures start unassigned. | Assignment persistence, not dashboard rendering. If provisioned on another hub, use that hub's owned dashboard ID. |
+| `dashboardIds` | Persistent legacy dashboard `E2E_PERM_Configuration_Dashboard`; all fixtures start unassigned. The test looks it up by name through `hub_list_dashboards` and uses the manifest's ID `36461` only when no such dashboard is listed. | Assignment persistence, not dashboard rendering. Any hub needs exactly one legacy dashboard with that name. |
 | `meshEnabled` | Native per-device selection control is available on the local mocks. | Test the stored selection only. Hub Mesh service remains disabled; propagation is not tested. |
 | `meshFullSync` | Rejected on the three local, unlinked devices. | Positive linked-device sync coverage is explicitly excluded; no second hub is required. |
 | `homeKitEnabled` | Enabled persistent HomeKit Bridge, ID `36462`; all fixtures start unassigned and are assignable. | Native assignment and preservation of other assistant flags, not Apple pairing or external control. |

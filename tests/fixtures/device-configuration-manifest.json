@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "driver": "E2E_PERM_Configuration",
   "replacementDriver": "E2E_PERM_Configuration_Alternate",
   "profiles": [

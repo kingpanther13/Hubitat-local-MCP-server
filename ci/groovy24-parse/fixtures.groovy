@@ -1,4 +1,6 @@
 // Executed by parse_check.groovy --self-test under the same Groovy 2.4 runtime as the gate.
+import org.codehaus.groovy.ast.ClassHelper
+
 def cases = [
     ['single-line', 'def f = { -> 1 }', ['1:9']],
     ['compact', 'def f = {->1}', ['1:9']],
@@ -33,10 +35,54 @@ def cases = [
     ['closure-default-expression', 'def f = { x = { -> 1 } -> x }', ['1:15']],
     ['unresolved-type', 'MissingHubType x\ndef f = { -> 1 }', ['2:9']],
 ]
+// Sandbox allowlist cases: [name, source, [[line, reported class], ...]].
+def sandboxCases = [
+    ['sandbox-allowed', '''import groovy.transform.Field
+import java.util.concurrent.ConcurrentHashMap
+@Field static final Map CACHE = new ConcurrentHashMap()
+class Local {
+    static class Inner {}
+}
+interface Marker {}
+class Sub extends Local implements Marker {}
+class Ordered extends java.util.LinkedHashMap {}
+def work(BigDecimal n, int[] counts, byte[][] raw) {
+    def m = new java.util.LinkedHashMap()
+    if (n instanceof java.math.BigDecimal) m.a = 1
+    Map.Entry entry = null
+    def builder = new java.util.Locale.Builder()
+    Local.Inner inner = new Local.Inner()
+    def f = { String s -> s }
+    for (Integer i in [1]) {}
+    try {
+        Integer.parseInt('x')
+    } catch (NumberFormatException e) {
+        throw new IllegalStateException('bad number', e)
+    }
+}''', []],
+    ['sandbox-file', "def f = new java.io.File('x')", [[1, 'java.io.File']]],
+    ['sandbox-deque', 'def q = new ArrayDeque()', [[1, 'java.util.ArrayDeque']]],
+    ['sandbox-thread', 'Thread.sleep(1)', [[1, 'java.lang.Thread']]],
+    ['sandbox-instanceof', 'def ok(x) { x instanceof java.io.InputStream }', [[1, 'java.io.InputStream']]],
+    ['sandbox-iterator-local', 'java.util.Iterator i = [1].iterator()', [[1, 'java.util.Iterator']]],
+    ['sandbox-iterator-signature', 'java.util.Iterator walk(\n        java.util.Iterator i) { i }', [[1, 'java.util.Iterator'], [2, 'java.util.Iterator']]],
+    ['sandbox-cast', 'def s = [] as java.util.Stack', [[1, 'java.util.Stack']]],
+    ['sandbox-field', 'class Holder {\n    private java.util.Stack items\n}', [[2, 'java.util.Stack']]],
+    ['sandbox-class-header', 'class Blocked extends java.util.ArrayDeque\n        implements java.io.Serializable {}',
+        [[1, 'java.util.ArrayDeque'], [2, 'java.io.Serializable']]],
+    ['sandbox-object-initializer', "class Holder {\n    { def f = new java.io.File('x') }\n}", [[2, 'java.io.File']]],
+    ['sandbox-closure-param', 'def f = { java.util.Stack s -> s }', [[1, 'java.util.Stack']]],
+    ['sandbox-for-variable', 'for (java.util.Stack s in []) {}', [[1, 'java.util.Stack']]],
+    ['sandbox-array', 'java.io.File[] files = null', [[1, 'java.io.File']]],
+    ['sandbox-annotation', '@groovy.transform.Memoized\ndef f() { 1 }', [[1, 'groovy.transform.Memoized']]],
+    ['sandbox-imports', 'import java.util.concurrent.locks.ReentrantLock\nimport java.lang.reflect.*\nimport static java.lang.System.currentTimeMillis\ndef x = 1',
+        [[1, 'java.util.concurrent.locks.ReentrantLock'], [2, 'java.lang.reflect.*'], [3, 'java.lang.System']]],
+]
 
 File scratch = File.createTempDir('parse24-fixtures-', '')
 int failures = 0
-def verify = { String name, File file, List expected, String error = null ->
+// blocked: [[location prefix, class], ...] expected as "blocked class reference" lines.
+def verify = { String name, File file, List expected, String error = null, List blocked = [] ->
     def bytes = new ByteArrayOutputStream()
     def stream = new PrintStream(bytes, true, 'UTF-8')
     def stdout = System.out
@@ -53,16 +99,19 @@ def verify = { String name, File file, List expected, String error = null ->
     }
     String output = bytes.toString('UTF-8')
     int count = output.readLines().count { it.contains(': closure parameters are null;') }
-    boolean ok = rc == ((expected || error) ? 1 : 0) && count == expected.size()
+    def blockedLines = output.readLines()*.trim().findAll { it.contains(': blocked class reference ') }
+    boolean ok = rc == ((expected || error || blocked) ? 1 : 0) && count == expected.size() && blockedLines.size() == blocked.size()
     expected.each { ok &= output.contains(it + ': closure parameters are null;') }
+    blocked.each { prefix, cls -> ok &= blockedLines.any { it.startsWith(prefix) && it.endsWith(': blocked class reference ' + cls) } }
     if (error) ok &= output.contains(error)
+    if (rc == 0) ok &= output.contains('sandbox allowlist check')
     ok &= !output.contains('CLASS_GENERATION') && !output.contains('sandbox check SKIPPED')
     if (!ok) {
         failures++
-        println "SELF-TEST FAIL ${name}: rc=${rc}, expected locations=${expected}, error=${error}\n${output}"
+        println "SELF-TEST FAIL ${name}: rc=${rc}, expected locations=${expected}, error=${error}, blocked=${blocked}\n${output}"
     } else {
         println "SELF-TEST PASS ${name}"
-        output.readLines().findAll { it.startsWith('FAIL') || it.startsWith('MISSING:') || it.contains(': closure parameters are null;') || it.contains('blocked class reference java.util.ArrayDeque') }.each { println "  ${it}" }
+        output.readLines().findAll { it.startsWith('FAIL') || it.startsWith('MISSING:') || it.contains(': closure parameters are null;') || it.contains(': blocked class reference ') }.each { println "  ${it}" }
     }
 }
 try {
@@ -70,6 +119,17 @@ try {
         File f = new File(scratch, name + '.groovy')
         f.setText(source, 'UTF-8')
         verify(name, f, locations.collect { f.absolutePath + ':' + it })
+    }
+    sandboxCases.each { name, source, refs ->
+        File f = new File(scratch, name + '.groovy')
+        f.setText(source, 'UTF-8')
+        verify(name, f, [], null, refs.collect { line, cls -> [f.absolutePath + ':' + line + ':', cls] })
+    }
+    // Stock Groovy cannot resolve hub classes, so the hub-namespace rule is checked directly.
+    [['hubitat.helper.RMUtils', true], ['com.hubitat.app.FixtureOnly', true], ['hubitatx.Helper', false]].each { cls, want ->
+        boolean ok = isAllowed(ClassHelper.make(cls), [] as Set) == want
+        if (!ok) failures++
+        println "SELF-TEST ${ok ? 'PASS' : 'FAIL'} hub-namespace ${cls}"
     }
     File missing = new File(scratch, 'missing.groovy')
     verify('missing-input', missing, [], 'MISSING: ' + missing.absolutePath)
@@ -92,12 +152,9 @@ try {
     app.setText('#include test.Absent\n', 'UTF-8')
     verify('missing-library', app, [], 'has no matching library')
 
-    File deque = new File(scratch, 'deque.groovy')
-    deque.setText('def q = new ArrayDeque()', 'UTF-8')
-    verify('arraydeque', deque, [], 'blocked class reference java.util.ArrayDeque')
     lib.setText('library(name: "Origin", namespace: "test")\ndef helper() { new ArrayDeque() }\n', 'UTF-8')
     app.setText('#include test.Origin\n', 'UTF-8')
-    verify('blocked-library-origin', app, [], lib.absolutePath + ':2:16: blocked class reference java.util.ArrayDeque')
+    verify('blocked-library-origin', app, [], null, [[lib.absolutePath + ':2:16:', 'java.util.ArrayDeque']])
 } finally {
     assert scratch.canonicalFile.parentFile == new File(System.getProperty('java.io.tmpdir')).canonicalFile
     assert scratch.name.startsWith('parse24-fixtures-')

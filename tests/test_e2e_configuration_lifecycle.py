@@ -220,3 +220,32 @@ def test_canonical_reconcile_patches_only_what_drifted(drift):
     # Identity: the supplied DNI already matches (no write); name/zigbeeId are null in the manifest
     # and must never be written.
     assert not any(k in w for w in writes for k in ("name", "zigbeeId", "deviceNetworkId"))
+
+
+@pytest.mark.parametrize("rows,expected", [
+    ([{"id": "512", "name": et.CONFIGURATION_DASHBOARD, "type": "legacy"}], [512]),
+    ([{"id": "7", "name": et.CONFIGURATION_DASHBOARD, "type": "easy"}], [36461]),
+    ([{"id": "8", "name": "Other", "type": "legacy"}], [36461]),
+    ([], [36461]),
+])
+def test_configuration_dashboard_resolves_by_name_before_manifest_fallback(rows, expected):
+    calls = []
+
+    def call_tool(name, args=None):
+        calls.append((name, args))
+        return {"dashboards": rows, "count": len(rows)}
+
+    runner = et.TestRunner(SimpleNamespace(call_tool=call_tool, app_id="38"))
+    assert runner._configuration_dashboard_ids([36461]) == expected
+    assert calls == [("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})]
+
+
+@pytest.mark.parametrize("listed", [
+    {"success": False, "error": "Could not list dashboards"},
+    {"dashboards": [{"id": "1", "name": et.CONFIGURATION_DASHBOARD, "type": "legacy"},
+                    {"id": "2", "name": et.CONFIGURATION_DASHBOARD, "type": "legacy"}]},
+])
+def test_configuration_dashboard_refuses_unreadable_or_ambiguous_list(listed):
+    runner = et.TestRunner(SimpleNamespace(call_tool=lambda name, args=None: listed, app_id="38"))
+    with pytest.raises(AssertionError):
+        runner._configuration_dashboard_ids([36461])

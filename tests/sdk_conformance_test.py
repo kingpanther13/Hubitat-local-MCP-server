@@ -67,6 +67,7 @@ from sdk_conformance_helpers import (  # noqa: E402  (import guard above supplie
     cleanup_preserving_primary,
     extract_bps_acknowledgment_key,
     find_exact_fixture_id_with_settle,
+    mrtr_log_actions,
     summarize_modern_posts,
     summarize_mrtr_proof,
 )
@@ -174,6 +175,7 @@ def _load_hub_config() -> dict:
             "Install its dependency with `pip install requests`."
         ) from exc
     config = e2e_test.load_config()
+    e2e_test.install_ephemeral_redaction()
     client = e2e_test.HubitatMcpClient(
         hub_url=config["hub_url"], app_id=config["app_id"], access_token=config["access_token"]
     )
@@ -463,10 +465,8 @@ class ModernMrtrScenario:
             fixture_id = str(create_payload.get("appId") or "") or None
             assert fixture_id, "fixture create returned no appId"
 
-            requested_actions = [
-                {"capability": "log", "message": f"SDK MRTR proof {index}"}
-                for index in range(1, 7)
-            ]
+            requested_actions = mrtr_log_actions("SDK MRTR proof")
+            print(f"         MRTR workload: {len(requested_actions)} real log actions")
             trace_mark = self.trace.mark()
             started = time.monotonic()
             result = await client.call_tool(self.GATEWAY, {

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
 try:
@@ -27,6 +28,64 @@ MINIMUM_LOGICAL_SECONDS = 10.0
 # writes it and the MRTR proof reads it through this constant, so a key typo is a
 # NameError in the fast lane instead of silently disabled recovery at hub time.
 CAPACITY_RECOVERY_CONFIG_KEY = "clear_load_throttle"
+
+
+def mrtr_action_count(environ: Mapping[str, str] | None = None) -> int:
+    """Select a bounded real mutation workload without changing the proof's assertions."""
+    settings = os.environ if environ is None else environ
+    configured = settings.get("E2E_MRTR_ACTION_COUNT", "6")
+    if not isinstance(configured, str) or re.fullmatch(r"[0-9]+", configured) is None:
+        raise ValueError("E2E_MRTR_ACTION_COUNT must be an integer from 6 through 120")
+    count = int(configured)
+    if not 6 <= count <= 120:
+        raise ValueError("E2E_MRTR_ACTION_COUNT must be an integer from 6 through 120")
+    return count
+
+
+def mrtr_log_actions(prefix: str, environ: Mapping[str, str] | None = None) -> list[dict[str, str]]:
+    return [{"capability": "log", "message": f"{prefix} {index}"}
+            for index in range(1, mrtr_action_count(environ) + 1)]
+
+
+def write_cap_variable_count(environ: Mapping[str, str] | None = None) -> int:
+    """Select a bounded real bulk-create workload for the concurrent write proof."""
+    settings = os.environ if environ is None else environ
+    # 16 creates hold the slot for several seconds on a physical hub behind the cloud relay,
+    # long enough that a probe sent after the holder cannot land after it finished.
+    configured = settings.get("E2E_WRITE_CAP_VARIABLE_COUNT", "16")
+    if not isinstance(configured, str) or re.fullmatch(r"[0-9]+", configured) is None:
+        raise ValueError("E2E_WRITE_CAP_VARIABLE_COUNT must be an integer from 4 through 120")
+    count = int(configured)
+    if not 4 <= count <= 120:
+        raise ValueError("E2E_WRITE_CAP_VARIABLE_COUNT must be an integer from 4 through 120")
+    return count
+
+
+def write_cap_variable_items(prefix: str, environ: Mapping[str, str] | None = None) -> list[dict[str, str]]:
+    return [{"name": f"{prefix}_{index}", "type": "String", "value": "held"}
+            for index in range(write_cap_variable_count(environ))]
+
+
+def write_cap_holder_retry_blocker(payload: Any, inventory: Any, names: list[str]) -> str | None:
+    """Return why a refused holder may not be retried, or None when its fixture is verifiably absent."""
+    if not isinstance(payload, dict) or payload.get("status") != "too_many_writes_in_flight":
+        return "holder was not refused by the write cap"
+    if not isinstance(inventory, dict):
+        return "variable inventory is not an object"
+    if inventory.get("success") is False:
+        return "variable inventory reported success:false"
+    rows = inventory.get("hubVariables")
+    if not isinstance(rows, list):
+        return "variable inventory has no hubVariables list"
+    if inventory.get("nextCursor"):
+        return "variable inventory is paginated (nextCursor present)"
+    if not all(isinstance(row, dict) and isinstance(row.get("name"), str) for row in rows):
+        return "variable inventory has rows without a name"
+    if not names:
+        return "no holder fixture names to check"
+    if not set(names).isdisjoint(row["name"] for row in rows):
+        return "holder fixtures are present on the hub"
+    return None
 
 
 def build_capacity_recovery(e2e_test_module: Any, client: Any) -> Callable[[str], bool]:
@@ -68,7 +127,7 @@ def assert_exact_rule_log_messages(
     *,
     operation: str,
 ) -> list[str]:
-    """Assert an empty RM fixture persisted exactly six requested log actions."""
+    """Assert an empty RM fixture persisted every requested log action exactly."""
     assert isinstance(config, dict), f"{operation} returned no config object"
     assert config.get("success") is not False, (
         f"{operation} failed: {config.get('error')!r}"
@@ -77,15 +136,19 @@ def assert_exact_rule_log_messages(
     assert isinstance(settings, dict), (
         f"{operation} did not return raw settings; includeSettings=true is required"
     )
-    assert len(expected_messages) == 6 and len(set(expected_messages)) == 6, (
-        "the MRTR proof must request exactly 6 distinct log messages"
+    expected_count = len(expected_messages)
+    assert all(isinstance(message, str) and message.strip() for message in expected_messages), (
+        "the MRTR proof must request nonempty text log messages"
+    )
+    assert 6 <= expected_count <= 120 and len(set(expected_messages)) == expected_count, (
+        "the MRTR proof must request 6 through 120 distinct log messages"
     )
 
     action_types = _indexed_settings(settings, "actType.")
     action_subtypes = _indexed_settings(settings, "actSubType.")
     log_messages = _indexed_settings(settings, "logmsg.")
-    assert len(action_types) == 6, (
-        f"{operation} must contain exactly 6 action rows; saw indices "
+    assert len(action_types) == expected_count, (
+        f"{operation} must contain exactly {expected_count} action rows; saw indices "
         f"{sorted(action_types)}"
     )
     action_indices = set(action_types)
@@ -105,7 +168,7 @@ def assert_exact_rule_log_messages(
     )
 
     actual = [log_messages[index] for index in sorted(action_indices)]
-    assert len(set(actual)) == 6, (
+    assert len(set(actual)) == expected_count, (
         f"{operation} log messages are not distinct: {actual}"
     )
     assert actual == expected_messages, (

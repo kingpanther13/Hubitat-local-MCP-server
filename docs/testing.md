@@ -8,7 +8,35 @@ Groovy unit tests run under Spock + HubitatCI via the Gradle wrapper. CI runs `.
 - **Build:** Gradle 9.5.1 via wrapper (`./gradlew test`)
 - **Python tests and E2E:** Python 3.11 or newer. The suite imports `datetime.UTC` and uses union type annotations and strict `zip`; CI selects the current Python 3 release.
 
-### Additive hub-closer lanes
+## Physical hub E2E lane
+
+`hub-e2e.yml` runs the full E2E registry and the SDK conformance script against the shared test
+hub only for a PR that carries a full-run label: `release:patch`, `release:minor`,
+`release:major` or `e2e:full`. Without one, a PR event books nothing and the required
+`Full e2e (runs with label)` status is posted pending. The first full-run label starts the run;
+removing the last one neither runs nor cancels anything. A PR that changes no hub-relevant file
+gets the status as success without a run. `e2e:skip` cancels the in-flight run and holds the
+status pending, and `workflow_dispatch` always runs. The decision lives in `.github/scripts/lane_gate.js`
+and is tested by `tests/lane_gate_test.js`.
+Because the trigger is `pull_request_target`, the default branch's copy of the workflow and of
+`lane_gate.js` decides, so a PR's change to this behaviour applies only after it merges.
+
+## Ephemeral hub E2E lane
+
+The [ephemeral hub lane](ephemeral-hub-e2e.md) runs the full E2E registry and the SDK
+conformance script against disposable test hubs that an external workflow boots for each
+run. It runs on every PR, forks included, without label gates, because the job that runs PR
+code holds no secrets; a first-time contributor's hub waits for a maintainer's approval. Each run tests two hub kinds as separate jobs: `os`, the more complete
+hub, whose verdict matters most, and `jvm`, a lighter hub that finishes in about ten minutes and
+gives the early signal. PR code runs only under `pull_request` in `hub-e2e-ephemeral.yml`; the
+`pull_request_target` workflow `hub-e2e-ephemeral-request.yml` requests the hub from base code,
+so PR code never runs in the base branch's cache scope. By default the provider runs both scripts
+next to the hub and returns scrubbed logs and a `results.json` that the test run reports and gates
+on; `EPHEMERAL_RUN_SUITE: 'false'` in both workflows restores the test run driving the hub over the
+tunnel. `E2E_LANE=ephemeral` only redacts hub
+identity from logs.
+
+## Additive hub-closer lanes
 
 Two standalone lanes complement the primary Groovy 3.0 lane without touching it — Hubitat's hub
 runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
@@ -21,7 +49,13 @@ runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
   processes the same AST successfully. An isolated app on firmware 2.5.1.181 rejected `{ -> 42 }`
   with HTTP 500 while identical source using `{ 42 }` compiled; the private compiler mechanism
   remains unproven. See [the live evidence](issue-407-findings.md). The lane also checks syntax
-  and sandbox-blocked classes. `parse24` runs its positive/negative fixtures first;
+  and, after CANONICALIZATION, fails every class reference outside the hub sandbox allowlist:
+  [`allowed-classes.txt`](../ci/groovy24-parse/allowed-classes.txt), transcribed from Hubitat's
+  [Allowed Classes for Import](https://docs2.hubitat.com/en/developer/allowed-imports) page, plus
+  primitives, Throwable subclasses, the file's own classes and the `hubitat.*` / `com.hubitat.*`
+  namespaces. It checks class expressions (`instanceof`, static calls), casts, constructor calls,
+  declared variable, field, parameter, return, catch and loop types, imports and annotations.
+  `parse24` runs its positive/negative fixtures first;
   they can also run directly via `parse_check.groovy --self-test <absolute-repo-root>`.
 - **Groovy 2.5 Spock** (`ci/groovy2x-spock/`) — runs this same spec corpus against a Groovy 2.5
   runtime via [joelwetzel/hubitat_ci](https://github.com/joelwetzel/hubitat_ci) (the biocomp-API fork
@@ -468,7 +502,7 @@ The validator is `com.networknt:json-schema-validator`, a `testImplementation` d
 
 ### Client retry policy (offline SDK and server coverage)
 
-The pinned [Python SDK 2.0.0 retry driver](https://github.com/modelcontextprotocol/python-sdk/blob/v2.0.0/src/mcp/client/_input_required.py)
+The pinned [Python SDK 2.2.0 retry driver](https://github.com/modelcontextprotocol/python-sdk/blob/v2.2.0/src/mcp/client/_input_required.py)
 allows ten retries after an initial `input_required` response. Reservation and worker-observation
 responses count toward this client limit even though they do not commit a server work slice.
 `mrtr.rounds` measures owner slices; the server's eight-slice cap cannot guarantee completion
@@ -557,7 +591,7 @@ replaying the old state only replays the terminal error.
 
 `MrtrWorkerBudgetSpec` uses virtual time and real tool dispatch to force safe native checkpoints,
 verify ordered results, cap recovery and one finalization, and protect atomic replacement
-batches. The regular live MRTR scenario uses six actions in nested and single-action patches;
+batches. The regular live MRTR scenario defaults to six actions in nested and single-action patches;
 the official SDK scenario retains its bulk edit. Both independently check exact persisted
 settings. These small live calls need not cross 120 seconds; deterministic unit coverage proves
 the clock boundary without adding hub stress or a test-only production setting.
@@ -566,13 +600,15 @@ the clock boundary without adding hub stress or a test-only production setting.
 
 `tests/sdk_conformance_test.py` connects one official SDK high-level `Client` through its `streamable_http_client` to a real hub `/mcp` endpoint, pinned directly to `mode="2026-07-28"`. It never uses `mode="auto"` (which could fall back) or `mode="legacy"`. Catalog, benign call, resources, and the MRTR proof all share that modern client. One `Client.call_tool()` drives the Rule Machine write through multiple state-only continuation responses to one terminal `CallToolResult` — no project-owned loop and no low-level session call.
 
-**⚠️ The modern MRTR scenario WRITES.** It reads the guide section of each tool it writes with through the same high-level modern client and carries that section's published acknowledgment key on fixture writes, so the standalone command works whether the optional BPS gate is ON or OFF without changing that setting. It creates one UUID-named `BAT_E2E_SDK_MRTR_*` rule, makes one six-action edit, and deletes only that exact app in a `finally`; if the create response is lost, cleanup performs a bounded settle/retry and adopts at most one exact random-name match. It refuses ambiguous matches, never performs a prefix sweep, and never lists or deletes backups. Eligible runs may not soft-skip this proof. A `skip_install` dispatch intentionally excludes the write scenario and therefore cannot count as SDK/MRTR conformance evidence (see the `pull_request_target` note below).
+**⚠️ The modern MRTR scenario WRITES.** It reads the guide section of each tool it writes with through the same high-level modern client and carries that section's published acknowledgment key on fixture writes, so the standalone command works whether the optional BPS gate is ON or OFF without changing that setting. It creates one UUID-named `BAT_E2E_SDK_MRTR_*` rule, makes one edit (six actions by default), and deletes only that exact app in a `finally`; if the create response is lost, cleanup performs a bounded settle/retry and adopts at most one exact random-name match. It refuses ambiguous matches, never performs a prefix sweep, and never lists or deletes backups. Eligible runs may not soft-skip this proof. A `skip_install` dispatch intentionally excludes the write scenario and therefore cannot count as SDK/MRTR conformance evidence (see the `pull_request_target` note below).
 
-The MRTR proof keeps the SDK's default `input_required_max_rounds=10`. Observer-only `httpx2` hooks mark the measured `Client.call_tool()` window and retain only method, modern MCP routing headers, status, monotonic timing, and a derived `has_request_state` boolean — never URL, token, state value, arguments, or body. The proof requires an initial leg without state followed only by state-bearing automatic continuation legs, at least three `tools/call` legs total (the first leg reserves, schedules and observes for the relay budget, so a write that runs longer than ten seconds needs at least two further legs), a successful terminal `result_type='complete'`, aggregate duration over 10 seconds, and every leg the SERVER ANSWERED below 9.5 seconds. A leg the cloud relay drops (502/503/504) is replayed by the SDK and is excluded from that ceiling -- its duration is the relay's timeout, not the server's -- but drops may not outnumber answered legs, so a server tripping the relay as a rule still fails. It reports the continuation count and unchanged SDK limit so consumers with a lower cap can evaluate compatibility. `hub_set_rule` and `hub_set_native_app` run their claimed generation in an internal Hubitat worker after the mapped request has returned; continuation legs therefore include at least one coordination handoff rather than only completed owner slices. The terminal payload must report at least one owner slice and fewer owner slices than observed continuation rounds, and the log reports the difference explicitly. After that timing window, a separate high-level read fetches `hub_get_app_config(includeSettings=true)` and requires exactly six `messageActs/getLogMsg` action rows whose numeric `logmsg.<N>` values are the six requested distinct messages, in order, with no extra action or message row.
+The MRTR proof keeps the SDK's default `input_required_max_rounds=10`. Observer-only `httpx2` hooks mark the measured `Client.call_tool()` window and retain only method, modern MCP routing headers, status, monotonic timing, and a derived `has_request_state` boolean — never URL, token, state value, arguments, or body. The proof requires an initial leg without state followed only by state-bearing automatic continuation legs, at least three `tools/call` legs total (the first leg reserves, schedules and observes for the relay budget, so a write that runs longer than ten seconds needs at least two further legs), a successful terminal `result_type='complete'`, aggregate duration over 10 seconds, and every leg the SERVER ANSWERED below 9.5 seconds. A leg the cloud relay drops (502/503/504) is replayed by the SDK and is excluded from that ceiling -- its duration is the relay's timeout, not the server's -- but drops may not outnumber answered legs, so a server tripping the relay as a rule still fails. It reports the continuation count and unchanged SDK limit so consumers with a lower cap can evaluate compatibility. `hub_set_rule` and `hub_set_native_app` run their claimed generation in an internal Hubitat worker after the mapped request has returned; continuation legs therefore include at least one coordination handoff rather than only completed owner slices. The terminal payload must report at least one owner slice and fewer owner slices than observed continuation rounds, and the log reports the difference explicitly. After that timing window, a separate high-level read fetches `hub_get_app_config(includeSettings=true)` and requires exactly the requested `messageActs/getLogMsg` action rows whose numeric `logmsg.<N>` values match every requested distinct message, in order, with no extra action or message row.
 
 The regular E2E runner also has one protocol mode: `HubitatMcpClient` derives `MCP-Protocol-Version: 2026-07-28`, `Mcp-Method`, and any required `Mcp-Name` for every standard request. Connectivity and capabilities use `server/discover`; the live suite never calls `initialize`, sends a headerless request, or selects a legacy revision. Negative raw transport tests may deliberately send malformed or unsupported modern headers, but none exercise legacy behavior. Its project-owned transport may replay an exact state-bearing MRTR POST after a lost HTTP response: a resumed call is bound to one `requestState` generation, so the replay can only rejoin or observe that logical operation. It never transport-replays a first request, which now starts the write, nor an ordinary write. This recovery is additional E2E behavior, not a claim that the official SDK retries HTTP 504 responses.
 
-The ordinary `mrtr` E2E group independently repeats the six-action Rule Machine edit through `HubitatMcpClient`. Its existing automatic `requestState` path must reach terminal `complete` after multiple continuation rounds, return all six successful action results, take more than 10 seconds as one logical call, and keep each ANSWERED HTTP POST below 9.5 seconds (relay-dropped legs are absorbed on the same terms as the SDK proof, and bounded the same way). It applies the same positive-owner-count/fewer-than-continuations invariant as the official SDK proof. Outside that call's timing window, it independently makes the same authoritative raw-settings read through its normal gateway path and applies the exact six-row/value assertion. This regular lane does not depend on the official-SDK scenario passing (and the SDK scenario does not consume the regular client's telemetry).
+The ordinary `mrtr` E2E group independently repeats the configured Rule Machine edit through `HubitatMcpClient`. Its existing automatic `requestState` path must reach terminal `complete` after multiple continuation rounds, return every requested successful action result, take more than 10 seconds as one logical call, and keep each ANSWERED HTTP POST below 9.5 seconds (relay-dropped legs are absorbed on the same terms as the SDK proof, and bounded the same way). It applies the same positive-owner-count/fewer-than-continuations invariant as the official SDK proof. Outside that call's timing window, it independently makes the same authoritative raw-settings read through its normal gateway path and applies the exact requested row/value assertion. This regular lane does not depend on the official-SDK scenario passing (and the SDK scenario does not consume the regular client's telemetry).
+
+Both proofs default to six actual log actions. `E2E_MRTR_ACTION_COUNT` accepts integers from 6 through 120 to configure a larger workload. This changes the number of real mutations; the elapsed-time, continuation, per-request ceiling, and exact persisted-state assertions remain mandatory. `E2E_WRITE_CAP_VARIABLE_COUNT` (integers 4 through 120, default 4) sets how many hub variables the concurrent write-cap test bulk-creates. The physical-hub lane uses the defaults; the ephemeral lane sets 36 and 120, because a fast hub finishes the default workloads inside one HTTP leg.
 
 The observer checks every real SDK POST, not reconstructed requests: each must carry `MCP-Protocol-Version: 2026-07-28`, a matching `Mcp-Method`, and `Mcp-Name` on `tools/call` and `resources/read`; every response must be observed and served as 200/202. Legacy header compatibility remains in the offline schema/server specs, not in live E2E.
 

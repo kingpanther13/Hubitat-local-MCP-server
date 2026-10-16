@@ -1,25 +1,20 @@
-// Groovy 2.4 parse + sandbox-class check (issues #105, #209). Runs UNDER Groovy 2.4.21 (the version
+// Groovy 2.4 parse + sandbox allowlist check (issues #105, #209). Runs UNDER Groovy 2.4.21 (the version
 // Hubitat's hub runtime uses, resolved by the isolated ci/groovy24-parse Gradle build) against each
 // given .groovy file, AFTER resolving its `#include` library bodies (so it sees exactly what the hub
 // compiles -- the inlined source, not the raw `#include` directive).
 //
-// Gates for Groovy 2.4 syntax, closure parameters, and sandbox-blocked classes.
+// Gates for Groovy 2.4 syntax, closure parameters, sandbox-allowed classes, and class size.
 //
 //  1. GROOVY 2.4 PARSE -- 3.0-only syntax/operators (e.g. null-safe indexing `?[`) that load fine on
 //     the Groovy 3.0 Spock harness but fail to load on the 2.4 hub runtime.
 //
-//  2. BLOCKED-CLASS / SANDBOX CHECK -- the Hubitat sandbox rejects references to non-allowlisted
-//     classes at parse time ("Expression [ClassExpression] is not allowed: java.io.InputStream").
-//     The Spock harness runs with Flags.DontRestrictGroovy (sandbox OFF, so the stubs work) and a
-//     plain Groovy compile doesn't enforce it either -- so an `instanceof InputStream` shipped all
-//     the way to a hub deploy before. We compile the inlined source to the CANONICALIZATION phase
-//     (where every class reference resolves to its fully-qualified name -- proven to succeed for the
-//     production files, which reference only default-imported classes + dynamic hub globals), then
-//     walk the AST and fail on any reference (instanceof / cast / new / typed declaration) to a
-//     blocked package. Curated blocklist of the dangerous families the hub forbids and the app never
-//     uses (java.io, java.nio, reflection, threads, GroovyShell, raw sockets); the app's legitimate
-//     java.net.URLEncoder / java.text.SimpleDateFormat etc. are NOT blocked. The real-hub e2e deploy
-//     remains the comprehensive backstop for anything not on this list.
+//  2. SANDBOX ALLOWLIST -- the Hubitat sandbox rejects references to classes outside its allowlist
+//     at parse time ("Expression [ClassExpression] is not allowed: java.io.InputStream"), which
+//     neither the sandbox-off Spock harness nor a plain compile enforces. We compile to
+//     CANONICALIZATION (every class reference resolved to its FQN), walk the AST and fail on any
+//     class not in allowed-classes.txt, Hubitat's published list
+//     (https://docs2.hubitat.com/en/developer/allowed-imports). Also allowed by rule: primitives,
+//     Throwable subclasses, the script's own classes, and the hubitat.* / com.hubitat.* namespaces.
 //
 // If CANONICALIZATION can't resolve a class (e.g. a future file references a hub-only type by name),
 // the sandbox check is skipped for that file with a NOTICE and it falls back to the CONVERSION-phase
@@ -29,38 +24,29 @@ import org.codehaus.groovy.control.CompilationUnit
 import org.codehaus.groovy.control.CompilerConfiguration
 import org.codehaus.groovy.control.Phases
 import org.codehaus.groovy.control.SourceUnit
+import org.codehaus.groovy.ast.ASTNode
+import org.codehaus.groovy.ast.AnnotatedNode
 import org.codehaus.groovy.ast.ClassCodeVisitorSupport
+import org.codehaus.groovy.ast.ClassHelper
+import org.codehaus.groovy.ast.ClassNode
+import org.codehaus.groovy.ast.FieldNode
 import org.codehaus.groovy.ast.MethodNode
+import org.codehaus.groovy.ast.Parameter
 import org.codehaus.groovy.ast.expr.ClassExpression
 import org.codehaus.groovy.ast.expr.ClosureExpression
 import org.codehaus.groovy.ast.expr.CastExpression
 import org.codehaus.groovy.ast.expr.ConstructorCallExpression
 import org.codehaus.groovy.ast.expr.DeclarationExpression
+import org.codehaus.groovy.ast.expr.StaticMethodCallExpression
+import org.codehaus.groovy.ast.expr.TupleExpression
 import org.codehaus.groovy.ast.expr.VariableExpression
+import org.codehaus.groovy.ast.stmt.CatchStatement
+import org.codehaus.groovy.ast.stmt.ForStatement
 
-// Blocked class FQNs. Prefix entries match a whole package subtree; exact entries match one class.
-// Curated to dangerous families the Hubitat sandbox forbids AND the production code does not use, so
-// there are zero false positives. (Add to this as new blocked classes surface; the e2e deploy is the
-// catch-all for the rest.)
-def BLOCKED_PREFIXES = ['java.io.', 'java.nio.', 'java.lang.reflect.']
-def BLOCKED_EXACT = [
-    'java.lang.Thread', 'java.lang.Runtime', 'java.lang.Process', 'java.lang.ProcessBuilder',
-    'java.lang.ClassLoader', 'java.lang.SecurityManager',
-    'groovy.lang.GroovyShell', 'groovy.lang.GroovyClassLoader', 'groovy.util.Eval',
-    'java.net.Socket', 'java.net.ServerSocket', 'java.net.DatagramSocket',
-    'java.net.MulticastSocket', 'java.net.URLClassLoader',
-    'java.util.ArrayDeque',
-] as Set
 // Constant-pool budget for one compiled app class, and bytecode budget for one method (the JVM
 // caps both at 65535); see Gate 3 in checkFile.
 CLASS_CP_BUDGET = 64000
 METHOD_CODE_BUDGET = 60000
-
-def isBlocked = { String fqn ->
-    if (!fqn) return false
-    if (BLOCKED_EXACT.contains(fqn)) return true
-    return BLOCKED_PREFIXES.any { fqn.startsWith(it) }
-}
 
 if (!args || (args[0] == '--self-test' && args.length != 2)) {
     System.err.println "usage: parse_check.groovy <file.groovy> [...] | --self-test <repo-root>"
@@ -83,6 +69,33 @@ if (!resolverFile.exists()) {
     System.exit(1)
 }
 def resolverClass = new GroovyClassLoader().parseClass(resolverFile)
+
+File allowFile = new File(repoRoot, 'ci/groovy24-parse/allowed-classes.txt')
+if (!allowFile.isFile()) {
+    System.err.println "MISSING sandbox allowlist: ${allowFile}"
+    System.exit(1)
+}
+// The doc spells nested classes both as Map$Entry and HashMap.Entry; compare with dots.
+def ALLOWED = allowFile.readLines('UTF-8')*.trim().findAll { it && !it.startsWith('#') }.collect { it.replace('$', '.') } as Set
+def ALLOWED_PACKAGES = ALLOWED.collect { it.substring(0, it.lastIndexOf('.')) } as Set
+def PRIMITIVES = ['boolean', 'byte', 'char', 'short', 'int', 'long', 'float', 'double', 'void'] as Set
+def HUB_PREFIXES = ['hubitat.', 'com.hubitat.']
+ClassNode THROWABLE = ClassHelper.make(Throwable)
+
+def elementType = { ClassNode type ->
+    while (type.isArray()) type = type.componentType
+    return type
+}
+// local: dotted names of the classes the compiled source declares.
+def isAllowed = { ClassNode type, Set local ->
+    type = elementType(type)
+    String fqn = type.name.replace('$', '.')
+    return PRIMITIVES.contains(fqn) || local.contains(fqn) || ALLOWED.contains(fqn) ||
+        HUB_PREFIXES.any { fqn.startsWith(it) } || type.isDerivedFrom(THROWABLE)
+}
+def isAllowedPackage = { String pkg ->
+    ALLOWED_PACKAGES.contains(pkg) || HUB_PREFIXES.any { (pkg + '.').startsWith(it) }
+}
 
 // Stock Groovy processes null closure parameters successfully. The hub-specific transform is
 // not exercised here. An isolated hub probe rejects { -> 42 } with HTTP 500 while the same
@@ -111,8 +124,9 @@ def collectNullParameters = { CompilationUnit cu, Map resolved ->
     return findings
 }
 
-// Compile to CANONICALIZATION and collect blocked-class references. Returns a list of finding
-// strings, or null if CANONICALIZATION could not resolve some class (caller falls back to syntax).
+// Compile to CANONICALIZATION and collect references to classes outside the sandbox allowlist.
+// Returns a list of finding strings, or null if CANONICALIZATION could not resolve some class
+// (caller falls back to syntax). Nodes without a source position are compiler-generated and skipped.
 def collectBlocked = { CompilationUnit cu, Map resolved ->
     try {
         cu.compile(Phases.CANONICALIZATION)
@@ -123,28 +137,80 @@ def collectBlocked = { CompilationUnit cu, Map resolved ->
         }
         throw e          // a genuine compile error -> let the caller report it
     }
-    def findings = []
+    def findings = new LinkedHashSet()
+    def add = { ASTNode node, String name ->
+        findings << "${resolverClass.sourceLocation(resolved, node.lineNumber, node.columnNumber)}: blocked class reference ${name}".toString()
+    }
+    Set local = []
+    for (Iterator units = cu.iterator(); units.hasNext();) {
+        units.next().AST?.classes?.each { cn -> local << cn.name.replace('$', '.') }
+    }
     for (Iterator it = cu.iterator(); it.hasNext();) {
         SourceUnit su = it.next()
-        su.AST?.classes?.each { cn ->
-            def visitor = new ClassCodeVisitorSupport() {
-                protected SourceUnit getSourceUnit() { su }
-                private void check(type, expression) {
-                    def fqn = type?.name
-                    if (isBlocked(fqn)) findings << "${resolverClass.sourceLocation(resolved, expression.lineNumber, expression.columnNumber)}: blocked class reference ${fqn}"
-                }
-                void visitClassExpression(ClassExpression e) { check(e.type, e); super.visitClassExpression(e) }
-                void visitCastExpression(CastExpression e) { check(e.type, e); super.visitCastExpression(e) }
-                void visitConstructorCallExpression(ConstructorCallExpression e) { check(e.type, e); super.visitConstructorCallExpression(e) }
-                void visitDeclarationExpression(DeclarationExpression e) {
-                    if (e.leftExpression instanceof VariableExpression) check(e.leftExpression.type, e)
-                    super.visitDeclarationExpression(e)
+        def module = su.AST
+        if (module == null) continue
+        (module.imports + module.staticImports.values() + module.staticStarImports.values()).each { imp ->
+            if (!isAllowed(imp.type, local)) add(imp, elementType(imp.type).name)
+        }
+        module.starImports.each { imp ->
+            String pkg = imp.packageName.endsWith('.') ? imp.packageName[0..-2] : imp.packageName
+            if (!isAllowedPackage(pkg)) add(imp, pkg + '.*')
+        }
+        def visitor = new ClassCodeVisitorSupport() {
+            private final Set declared = Collections.newSetFromMap(new IdentityHashMap())
+            protected SourceUnit getSourceUnit() { su }
+            private void report(ClassNode type, ASTNode node) {
+                if (type != null && node.lineNumber > 0 && !isAllowed(type, local)) add(node, elementType(type).name)
+            }
+            private void parameters(Parameter[] params) {
+                for (Parameter p : params ?: []) {
+                    report(p.type, p)
+                    p.initialExpression?.visit(this)
                 }
             }
-            cn.visitContents(visitor)
+            // visitClass skips the declared supertypes; compiler-supplied ones carry no position.
+            void visitClass(ClassNode node) {
+                for (ClassNode type : [node.unresolvedSuperClass] + (node.interfaces as List)) report(type, type)
+                super.visitClass(node)
+            }
+            void visitAnnotations(AnnotatedNode node) {
+                for (annotation in node.annotations) report(annotation.classNode, annotation)
+                super.visitAnnotations(node)
+            }
+            protected void visitConstructorOrMethod(MethodNode node, boolean constructor) {
+                if (!constructor) report(node.returnType, node)
+                parameters(node.parameters)
+                super.visitConstructorOrMethod(node, constructor)
+            }
+            void visitField(FieldNode node) { report(node.type, node); super.visitField(node) }
+            void visitClassExpression(ClassExpression e) { report(e.type, e); super.visitClassExpression(e) }
+            void visitCastExpression(CastExpression e) { report(e.type, e); super.visitCastExpression(e) }
+            void visitConstructorCallExpression(ConstructorCallExpression e) { report(e.type, e); super.visitConstructorCallExpression(e) }
+            void visitStaticMethodCallExpression(StaticMethodCallExpression e) { report(e.ownerType, e); super.visitStaticMethodCallExpression(e) }
+            void visitClosureExpression(ClosureExpression e) { parameters(e.parameters); super.visitClosureExpression(e) }
+            void visitCatchStatement(CatchStatement s) { report(s.variable.type, s); super.visitCatchStatement(s) }
+            void visitForLoop(ForStatement s) { report(s.variableType, s); super.visitForLoop(s) }
+            void visitDeclarationExpression(DeclarationExpression e) {
+                def left = e.leftExpression
+                for (v in (left instanceof TupleExpression ? left.expressions : [left])) {
+                    if (v instanceof VariableExpression) {
+                        declared << v
+                        report(v.originType, e)
+                    }
+                }
+                super.visitDeclarationExpression(e)
+            }
+            // Typed variables declared outside a DeclarationExpression; references are skipped.
+            void visitVariableExpression(VariableExpression e) {
+                if (!declared.contains(e) && !e.dynamicTyped && (e.accessedVariable == null || e.accessedVariable.is(e))) {
+                    report(e.originType, e)
+                }
+                super.visitVariableExpression(e)
+            }
         }
+        module.classes.each { visitor.visitClass(it) }
     }
-    return findings
+    return findings as List
 }
 
 def checkFile = { String path ->
@@ -183,7 +249,7 @@ def checkFile = { String path ->
         return 1
     }
 
-    // Gate 2: blocked-class / sandbox check (CANONICALIZATION + AST walk).
+    // Gate 2: sandbox allowlist check (CANONICALIZATION + AST walk).
     def findings
     try {
         findings = collectBlocked(cu, mapped)
@@ -197,10 +263,10 @@ def checkFile = { String path ->
     } else if (findings) {
         System.err.println "FAIL (Hubitat sandbox: blocked class reference): ${path}"
         findings.each { System.err.println "  ${it}" }
-        System.err.println "  These classes are rejected by the hub at parse time ('ClassExpression not allowed'). Duck-type or use an allowed class."
+        System.err.println "  The hub rejects classes outside its sandbox allowlist at parse time (ci/groovy24-parse/allowed-classes.txt). Duck-type or use an allowed class."
         rc = 1
     } else {
-        println "OK   (Groovy ${GroovySystem.version} parse + sandbox class check): ${path}"
+        println "OK   (Groovy ${GroovySystem.version} parse + sandbox allowlist check): ${path}"
     }
 
     // Gate 3: class size. The JVM caps a class at 65535 constant-pool entries, and the hub
@@ -293,7 +359,7 @@ def classFileSizes(String className, byte[] b) {
     return [name: className, cp: cp, method: skipMembers(true)]
 }
 if (selfTest) {
-    def binding = new Binding([checkFile: checkFile, repoRoot: repoRoot, resolverClass: resolverClass])
+    def binding = new Binding([checkFile: checkFile, isAllowed: isAllowed, repoRoot: repoRoot, resolverClass: resolverClass])
     System.exit(new GroovyShell(binding).evaluate(new File(repoRoot, 'ci/groovy24-parse/fixtures.groovy')) as int)
 }
 int rc = 0

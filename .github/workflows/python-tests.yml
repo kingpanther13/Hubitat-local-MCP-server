@@ -19,6 +19,9 @@ on:
       - 'tests/e2e_test.py'
       - '.github/workflows/python-tests.yml'
       - '.github/workflows/hub-e2e.yml'
+      - '.github/workflows/hub-e2e-ephemeral.yml'
+      - '.github/workflows/hub-e2e-ephemeral-request.yml'
+      - '.github/scripts/request_ephemeral_hub.sh'
       - '.github/workflows/release.yml'
 
 permissions:

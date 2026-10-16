@@ -35,7 +35,12 @@ from zoneinfo import ZoneInfo
 
 import requests
 from device_configuration_helpers import assert_native_preferences
-from sdk_conformance_helpers import assert_exact_rule_log_messages
+from sdk_conformance_helpers import (
+    assert_exact_rule_log_messages,
+    mrtr_log_actions,
+    write_cap_holder_retry_blocker,
+    write_cap_variable_items,
+)
 
 # ---------------------------------------------------------------------------
 # Artifact prefix — every test-created resource uses this for safe cleanup
@@ -49,6 +54,7 @@ PREFIX = "BAT_E2E_"
 # fixture is a hub-provisioning problem, not a test bug: the owning scenario says how to recreate it.
 # The watchdog's teardown purge skips the same marker.
 SCAFFOLD_PREFIX = f"{PREFIX}KEEP_"  # "BAT_E2E_KEEP_"
+CONFIGURATION_DASHBOARD = "E2E_PERM_Configuration_Dashboard"
 
 
 def _run_artifact_suffix(env: dict[str, str] | os._Environ[str] = os.environ) -> str:
@@ -320,6 +326,22 @@ def _tool_failure_log_expectation(tool_name: str, payload: Any,
     if not isinstance(leaf, str) or not leaf:
         leaf = tool_name
     return f"Tool {leaf} returned a failure result"
+
+
+def _zwave_radio_offline(details: dict) -> bool:
+    """True only when the hub's own Z-Wave details report the radio disabled or unhealthy."""
+    data = details.get("zwaveData")
+    return isinstance(data, dict) and (data.get("enabled") is False or data.get("healthy") is False)
+
+
+def _radio_unavailable_error(error: Any) -> bool:
+    return isinstance(error, str) and ("503" in error or "unavailable" in error.lower())
+
+
+def _rule_patch_rows(result: dict) -> list:
+    """hub_set_rule patch rows. A continued call's patchResults already holds every slice and
+    patches mirrors it, so read one key, never both."""
+    return result.get("patchResults") or result.get("patches") or []
 
 
 def _decode_mcp1_envelope(raw_message: str) -> dict | None:
@@ -3198,9 +3220,8 @@ class TestRunner:
     def test_radio_details_include_topology(self) -> None:
         # Item 3 (#257): include_topology folds the read-only mesh route map into hub_get_radio_details.
         # The helper always returns a topology object (with at least `endpoint`) when include_topology
-        # is set, so assert it strictly -- on a live hub (every Hubitat has a Z-Wave radio) the route
-        # fetch must succeed, so a route-fetch regression (topology.error, or no route data) fails here
-        # instead of slipping through a best-effort `if present` guard.
+        # is set. With the radio online the route fetch must succeed, so topology.error or missing route
+        # data fails; a radio the hub reports disabled or unhealthy may only answer unavailable, and skips.
         # Combined with include_status + include_firmware: one call returns every fold object, so the
         # three former separate zwave-radio tests share a single round-trip, each keeping its assertion.
         result = self.client.call_tool("hub_get_radio_details", {
@@ -3210,9 +3231,6 @@ class TestRunner:
         assert topo is not None, "include_topology=true did not return a topology object"
         assert "getChildAndRouteInfoJson" in str(topo.get("endpoint", "")), \
             f"include_topology topology missing the route endpoint: {topo}"
-        assert "error" not in topo, f"include_topology route fetch errored (regression): {topo.get('error')}"
-        assert "routes" in topo or "rawRoutes" in topo, \
-            f"include_topology returned no route data: {topo}"
         # include_status fold must not error the call (its former standalone assertion).
         assert "error" not in result or isinstance(result.get("error"), str), \
             f"include_status unexpected error shape: {result}"
@@ -3220,6 +3238,13 @@ class TestRunner:
         status = result.get("status") or {}
         for key in ("zwaveJs", "zwaveLocalBackup", "zwaveFirmwareBatch"):
             assert key in status, f"include_status is missing the {key} poller: {sorted(status)}"
+        if "error" in topo and _zwave_radio_offline(result):
+            assert _radio_unavailable_error(topo["error"]), \
+                f"offline Z-Wave radio's route fetch failed with something other than unavailable: {topo['error']}"
+            raise SkipTest("Z-Wave radio offline on this hub")
+        assert "error" not in topo, f"include_topology route fetch errored (regression): {topo.get('error')}"
+        assert "routes" in topo or "rawRoutes" in topo, \
+            f"include_topology returned no route data: {topo}"
 
     @test("diagnostics")
     def test_radio_details_matter(self) -> None:
@@ -3400,12 +3425,18 @@ class TestRunner:
         assert "error" in devs or isinstance(devs.get("devices"), list), f"include_devices returned nothing usable: {devs}"
         assert all("minutesSinceLastMessage" in d for d in devs.get("devices") or []), f"Zigbee activity rows lack their age: {devs}"
         # The Hub object has no zigbeeChannel on current firmware; the details JSON's channel fills it.
+        # Channel 0 means no assigned channel, so it is reported as "unavailable" by design.
         zb_channel = (details.get("zigbeeData") or {}).get("channel") if isinstance(details.get("zigbeeData"), dict) else None
         if zb_channel is not None:
-            assert details.get("zigbeeChannel") not in (None, "unavailable"), \
-                f"zigbeeChannel must be filled when the details carry channel {zb_channel}: {details}"
+            if zb_channel == 0:
+                assert details.get("zigbeeChannel") == "unavailable", \
+                    f"zero Zigbee channel must report unavailable: {details}"
+            else:
+                assert details.get("zigbeeChannel") not in (None, "unavailable"), \
+                    f"zigbeeChannel must be filled when the details carry channel {zb_channel}: {details}"
             info = self.client.call_tool("hub_get_info")
-            assert info.get("zigbeeChannel") in (zb_channel, "unavailable"), \
+            expected_channels = ("unavailable",) if zb_channel == 0 else (zb_channel, "unavailable")
+            assert info.get("zigbeeChannel") in expected_channels, \
                 f"hub_get_info must report the same Zigbee channel as the radio details ({zb_channel}): {info.get('zigbeeChannel')}"
 
     @test("diagnostics")
@@ -3599,12 +3630,24 @@ class TestRunner:
                 except (McpError, McpToolError):
                     pass
 
+    def _configuration_dashboard_ids(self, fallback: list) -> list:
+        """This hub's own configuration dashboard id; the manifest's id only when none is listed."""
+        listed = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})
+        rows = listed.get("dashboards") if isinstance(listed, dict) else None
+        assert isinstance(rows, list), f"Dashboard list is unreadable: {listed}"
+        ids = [int(row["id"]) for row in rows if isinstance(row, dict) and row.get("type") == "legacy"
+               and row.get("name") == CONFIGURATION_DASHBOARD and row.get("id")]
+        assert len(ids) <= 1, f"Provision exactly one legacy '{CONFIGURATION_DASHBOARD}': {ids}"
+        return ids or fallback
+
     @test("devices")
     def test_device_configuration_matrix(self) -> None:
         """Exercise native transport for provisioned child and selected fixtures; bypass reachability only."""
         fixture_dir = Path(__file__).resolve().parent / "fixtures"
         manifest = json.loads((fixture_dir / "device-configuration-manifest.json").read_text(encoding="utf-8"))
-        assert manifest["version"] == 2, "Update the configuration fixture manifest and provisioned drivers together"
+        assert manifest["version"] == 3, "Update the configuration fixture manifest and provisioned drivers together"
+        dashboard = manifest["nativeFields"]["dashboardIds"]
+        dashboard["target"] = self._configuration_dashboard_ids(dashboard["target"])
         expected = {
             "probeBool": ("bool", False), "probeNumber": ("number", 3),
             "probeText": ("text", "original saved text"), "probeEnum": ("enum", "eco"),
@@ -3738,7 +3781,8 @@ class TestRunner:
                     f"Stale/wrong-device {attribute} observer snapshot: {snapshot}"
                 )
                 assert snapshot.get("fixtureVersion") == manifest["version"], (
-                    f"Stale persistent observer; provision fixture version {manifest['version']} outside E2E"
+                    f"Stale persistent observer; reinstall both drivers from tests/fixtures/device-configuration.groovy "
+                    f"(fixture version {manifest['version']}) outside E2E"
                 )
                 snapshots.append(snapshot)
             if with_configuration:
@@ -4149,7 +4193,8 @@ class TestRunner:
             }, "independent LAN fixture ownership observation")
             assert captured.get("success") is True, f"LAN fixture identity observer failed: {captured}"
             native = self._wait_configuration_fixture_identity(device_id, nonce)
-            assert native.get("fixtureVersion") == manifest["version"] == 2, "Provision the current LAN fixture driver"
+            assert native.get("fixtureVersion") == manifest["version"] == 3, (
+                "Stale LAN fixture driver; reinstall both drivers from tests/fixtures/device-configuration.groovy outside E2E")
             self._assert_configuration_fixture_parent(profile, native)
             try:
                 result = self._write_once(None, "hub_call_device_command", {
@@ -7499,19 +7544,14 @@ class TestRunner:
 
     def _patch_rule(self, app_id: Any, patches: list[dict],
                     expected_refusals: int = 0) -> list[dict]:
-        """Apply ordered RM edits in one logical MRTR call and return every op result.
-
-        A continued patches call exposes completed slices as patchResults and the terminal
-        slice as patches. Keep both in order so live tests can assert each operation without
-        turning each wizard operation into a separate cloud request.
-        """
+        """Apply ordered RM edits in one logical MRTR call and return every op result, so live
+        tests can assert each operation without one cloud request per wizard operation."""
         result = self.client.call_tool("hub_manage_rule_machine", {
             "tool": "hub_set_rule",
             "args": {"appId": app_id, "patches": patches, "confirm": True},
         })
         self._cache_write_health(app_id, result)
-        entries = [entry for key in ("patchResults", "patches")
-                   for entry in (result.get(key) or []) if isinstance(entry, dict)]
+        entries = [entry for entry in _rule_patch_rows(result) if isinstance(entry, dict)]
         assert len(entries) == len(patches), \
             f"patch response omitted operation results: expected {len(patches)}, got {entries}; outer={result}"
         assert result.get("updateRuleFailed") is not True \
@@ -9067,10 +9107,8 @@ class TestRunner:
     def test_mrtr_rule_edit_uses_standard_continuation(self) -> None:
         app_id = self._create_native_rule("MrtrContinuation")
         try:
-            requested_actions = [
-                {"capability": "log", "message": f"MRTR regular E2E proof {index}"}
-                for index in range(1, 7)
-            ]
+            requested_actions = mrtr_log_actions("MRTR regular E2E proof")
+            print(f"    MRTR workload: {len(requested_actions)} real log actions")
             args = {
                 "appId": app_id,
                 # The tool schema permits extension properties. These inert values
@@ -9098,7 +9136,7 @@ class TestRunner:
             assert result.get("success") is not False, \
                 f"MRTR rule edit failed: {result}"
             assert not result.get("partial"), f"MRTR rule edit was partial: {result}"
-            patch_results = result.get("patchResults") or result.get("patches") or []
+            patch_results = _rule_patch_rows(result)
             assert all(isinstance(patch, dict) and patch.get("success") is not False
                        for patch in patch_results), (
                 f"MRTR rule edit contained a failed patch: {patch_results}"
@@ -10430,7 +10468,7 @@ class TestRunner:
                      "attribute": "switch", "comparator": "*changed*"}]}},
                 {"addAction": {"capability": "log", "message": op_skipped}},
             ]})
-            op_rows = partial_stop.get("patchResults") or partial_stop.get("patches") or []
+            op_rows = _rule_patch_rows(partial_stop)
             assert len(op_rows) == 3 and op_rows[0].get("success") is not False \
                 and op_rows[1].get("op") == "addRequiredExpression" \
                 and op_rows[1].get("success") is not False and op_rows[1].get("partial") is True \
@@ -10450,7 +10488,7 @@ class TestRunner:
                 ]},
                 {"addAction": {"capability": "log", "message": later_skipped}},
             ]})
-            inner_rows = inner_stop.get("patchResults") or inner_stop.get("patches") or []
+            inner_rows = _rule_patch_rows(inner_stop)
             # A checkpoint inside the inner list splits that op across rows; read its items in order.
             inner_items = [item for row in inner_rows if row.get("op") == "addActions"
                            for item in (row.get("results") or [])]
@@ -12681,9 +12719,7 @@ class TestRunner:
 
     @test("hub_variables")
     def test_hub_variable_create_get_delete_round_trip(self) -> None:
-        # create/delete drive the Hub Variables system app's wizard (its instance id
-        # resolved via the direct-alias redirect); get reads back through getGlobalVar,
-        # so a green round-trip proves the wizard writes landed in the real namespace.
+        # The independent getGlobalVar read proves create/delete reached the hub namespace.
         var_name = f"{PREFIX}HubVar_RT"
         # Track BEFORE creating: only the CI purge prefix-sweeps variables, so locally a crash
         # between the create landing and a later append would strand it.
@@ -12794,12 +12830,17 @@ class TestRunner:
                 assert dw["response"].get("success") is True, f"DateTime create failed: {dw['response']}"
             got_dt = self.client.call_tool("hub_manage_variables", {
                 "tool": "hub_get_variable", "args": {"name": dt_name}})
+            assert got_dt.get("source") == "hub" and str(got_dt.get("type")).lower() == "datetime", \
+                f"DateTime create did not persist the requested hub variable type: {got_dt}"
             dt_value = str(got_dt.get("value"))
             assert "T12:30" in dt_value and "99:99" not in dt_value, \
                 f"DateTime variable lost its time (expected T12:30): {got_dt}"
             hub_zone = self.client.call_tool("hub_get_info", {}).get("timeZone")
-            expected_offset = datetime(2026, 1, 1, 12, 30, tzinfo=ZoneInfo(hub_zone)).utcoffset()
-            assert datetime.fromisoformat(dt_value).utcoffset() == expected_offset, \
+            expected_datetime = datetime(2026, 1, 1, 12, 30, tzinfo=ZoneInfo(hub_zone))
+            actual_datetime = datetime.fromisoformat(dt_value)
+            assert actual_datetime.replace(tzinfo=None) == expected_datetime.replace(tzinfo=None), \
+                f"DateTime create changed the requested date or time: {dt_value}"
+            assert actual_datetime.utcoffset() == expected_datetime.utcoffset(), \
                 f"DateTime offset does not match hub zone {hub_zone}: {dt_value}"
         finally:
             self._delete_variable_safe(dt_name)
@@ -12808,13 +12849,14 @@ class TestRunner:
     def test_hub_variable_bulk_create_round_trip(self) -> None:
         # The bulk form (variables=[...]) creates several vars sequentially in one call
         # and reports per-item status. A green round-trip proves the gateway routes the
-        # variables array, each item's wizard write landed in the real namespace, and the
+        # variables array, each variable write landed in the real namespace, and the
         # response carries per-item success + the value that actually persisted.
-        names = [f"{PREFIX}BulkVar_A", f"{PREFIX}BulkVar_B", f"{PREFIX}BulkVar_C"]
+        names = [f"{PREFIX}BulkVar_{letter}" for letter in ("A", "B", "C", "D")]
         items = [
             {"name": names[0], "type": "Number", "value": 1},
             {"name": names[1], "type": "String", "value": "two"},
             {"name": names[2], "type": "Boolean", "value": True},
+            {"name": names[3], "type": "Decimal", "value": 1.25},
         ]
         # Track BEFORE creating -- only the CI purge prefix-sweeps variables, so a crash between the
         # create landing and a later append would strand the entities.
@@ -12835,10 +12877,10 @@ class TestRunner:
             else:
                 created = cw["response"]
                 assert created.get("success") is True, f"bulk create did not fully succeed: {created}"
-                assert created.get("createdCount") == 3 and created.get("failedCount") == 0, \
+                assert created.get("createdCount") == len(items) and created.get("failedCount") == 0, \
                     f"bulk create count mismatch: {created}"
                 results = created.get("results") or []
-                assert len(results) == 3, f"bulk create did not report one result per item: {created}"
+                assert len(results) == len(items), f"bulk create did not report one result per item: {created}"
                 by_name = {r.get("name"): r for r in results}
                 for it in items:
                     r = by_name.get(it["name"])
@@ -12851,6 +12893,8 @@ class TestRunner:
                         f"bulk item {it['name']} type mismatch: got {r.get('type')!r}, expected {it['type']!r}"
 
             # Independently confirm each landed in the hub namespace and read back its value.
+            stored_types = {"Number": "integer", "String": "string",
+                            "Boolean": "boolean", "Decimal": "bigdecimal"}
             for it in items:
                 got = self.client.call_tool("hub_manage_variables", {
                     "tool": "hub_get_variable", "args": {"name": it["name"]},
@@ -12858,10 +12902,12 @@ class TestRunner:
                 assert got.get("source") == "hub", f"bulk var {it['name']} not in the hub namespace: {got}"
                 assert got.get("value") == it["value"], \
                     f"bulk var {it['name']} value mismatch on read-back: {got}"
-            # type filter: the Number lists, the String and Boolean do not, rule-engine vars drop out.
+                assert str(got.get("type")).lower() == stored_types[it["type"]], \
+                    f"bulk var {it['name']} persisted the wrong type: {got}"
+            # The Number filter excludes the other types and rule-engine variables.
             typed = self.client.call_tool("hub_read_variables", {"tool": "hub_list_variables", "args": {"type": "Number"}})
             typed_names = [v.get("name") for v in typed.get("hubVariables") or []]
-            assert names[0] in typed_names and names[1] not in typed_names and names[2] not in typed_names, \
+            assert names[0] in typed_names and all(name not in typed_names for name in names[1:]), \
                 f"type=Number listing is wrong: {typed_names}"
             assert typed.get("ruleVariables") == [], "a typed listing must leave rule-engine variables out"
             # increment adds atomically on the hub and reports both values. Right after the bulk
@@ -12971,6 +13017,40 @@ class TestRunner:
             self._delete_native(app_id)
             self._delete_variable_safe(used_var)
             self._delete_variable_safe(unused_var)
+
+    @test("hub_variables")
+    def test_hub_variable_connector_round_trip(self) -> None:
+        # The variable's deviceId linkage is the proof of each connector write; a relay 504
+        # falls back to that read-back. An unknown `force` argument fails the delete.
+        var_name = f"{PREFIX}ConnVar_{_run_artifact_suffix()}"
+        self._create_hub_variable_visible(var_name, "Number", "0")
+
+        def read() -> dict:
+            return self.client.call_tool("hub_read_variables", {
+                "tool": "hub_get_variable", "args": {"name": var_name}})
+
+        try:
+            created = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_create_connector",
+                    "args": {"name": var_name, "connectorType": "Variable", "confirm": True}}),
+                lambda: read().get("deviceId"), f"hub_create_connector({var_name})")
+            if not created["relayDropped"]:
+                assert created["response"].get("success") is True, f"hub_create_connector failed: {created}"
+            linked = read()
+            assert linked.get("deviceId") is not None, f"no connector linked to {var_name}: {linked}"
+
+            removed = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_delete_connector",
+                    "args": {"name": var_name, "confirm": True, "force": True}}),
+                lambda: read().get("deviceId") is None, f"hub_delete_connector({var_name})")
+            if not removed["relayDropped"]:
+                assert removed["response"].get("success") is True, f"hub_delete_connector failed: {removed}"
+            cleared = read()
+            assert cleared.get("deviceId") is None, f"connector still linked to {var_name}: {cleared}"
+        finally:
+            self._delete_variable_safe(var_name)
 
     @test("hub_variables")
     def test_hub_set_variable_mesh_validation(self) -> None:
@@ -13293,12 +13373,12 @@ class TestRunner:
         assert isinstance(info, dict), f"hub_get_info returned {type(info).__name__}"
         net = info.get("network")
         assert isinstance(net, dict), f"hub_get_info(includeNetwork) missing the network block: {sorted(info.keys())}"
-        assert net.get("success") is True, f"network block did not succeed: {net}"
+        assert net.get("success") is True, f"network block did not succeed: {redact_hub_payload(net, 'network')}"
         # Live network fields present and shaped as expected.
         assert net.get("ipMode") in ("dhcp", "static", "unknown"), \
             f"ipMode should be dhcp|static|unknown, got: {net.get('ipMode')}"
         for key in ("activeDnsServers", "staticNameServers", "dhcpNameServers"):
-            assert isinstance(net.get(key), list), f"{key} should be a list, got: {net.get(key)!r}"
+            assert isinstance(net.get(key), list), f"{key} should be a list, got: {redact_hub_payload(net.get(key), 'network')!r}"
         # The projection carries the config knobs (values may be null on a given hub, but the keys exist).
         for key in ("staticGateway", "staticSubnetMask", "ethernetAutoneg", "wifiSsid",
                     "hasEthernet", "hasWiFi", "currentWifiAddress"):
@@ -13312,7 +13392,7 @@ class TestRunner:
             assert "password" not in low and "psk" not in low, \
                 f"network block leaked a secret-shaped key: {key}"
         serialized = json.dumps(net).lower()
-        assert "psk" not in serialized, f"network block contains a psk token: {net}"
+        assert "psk" not in serialized, f"network block contains a psk token: {redact_hub_payload(net, 'network')}"
         # includeNetwork is opt-in: a plain hub_get_info omits the block.
         plain = self.client.call_tool("hub_get_info")
         assert "network" not in plain, f"hub_get_info returned a network block without includeNetwork: {sorted(plain.keys())}"
@@ -13675,12 +13755,12 @@ class TestRunner:
         result = self.client.call_tool("hub_get_info")
         assert result is not None, "hub_get_info returned None"
         assert isinstance(result, dict), f"hub_get_info returned {type(result)}"
-        assert result.get("setupCurrent") is True, f"server setup is incomplete: {result}"
+        assert result.get("setupCurrent") is True, f"server setup is incomplete: {redact_hub_payload(result)}"
         assert result.get("setupVersion") == result.get("mcpServerVersion"), \
-            f"setup did not complete for the running server version: {result}"
+            f"setup did not complete for the running server version: {redact_hub_payload(result)}"
         repeated = self.client.call_tool("hub_get_info")
         assert repeated.get("setupCurrent") is True and repeated.get("setupVersion") == result["setupVersion"], \
-            f"ordinary requests must retain completed setup: {repeated}"
+            f"ordinary requests must retain completed setup: {redact_hub_payload(repeated)}"
         # Folded from test_hub_get_info_platform_update_and_safemode (the SAME default hub_get_info call):
         # #12/#13 -- platformUpdate + safeMode resolve from /hub2/hubData; the full alerts block stays out.
         assert "platformUpdate" in result, f"hub_get_info missing platformUpdate: {sorted(result)}"
@@ -14124,9 +14204,9 @@ class TestRunner:
         ha = info.get("healthAlerts")
         assert ha is not None, f"includeHealthAlerts=true but healthAlerts absent/null: {sorted(info)}"
         for k in ("safeMode", "active", "details"):
-            assert k in ha, f"healthAlerts missing '{k}': {ha}"
+            assert k in ha, f"healthAlerts missing '{k}': {redact_hub_payload(ha, 'healthAlerts')}"
         assert isinstance(ha["active"], list), f"healthAlerts.active not a list: {ha['active']}"
-        assert isinstance(ha["details"], dict), f"healthAlerts.details not a dict: {ha['details']}"
+        assert isinstance(ha["details"], dict), f"healthAlerts.details not a dict: {redact_hub_payload(ha['details'], 'healthAlerts')}"
         # platform-update fields are surfaced via platformUpdate, not duplicated in the alert details
         assert "platformUpdateAvailable" not in ha["details"], \
             f"platformUpdate leaked into healthAlerts.details: {sorted(ha['details'])}"
@@ -14134,12 +14214,12 @@ class TestRunner:
         items = ha["details"].get("alertItems")
         if isinstance(items, list):
             keys = sorted({str(i["key"]) for i in items if isinstance(i, dict) and i.get("key")})
-            assert ha["active"] == keys, f"healthAlerts.active must list the alert item keys {keys}: {ha}"
+            assert ha["active"] == keys, f"healthAlerts.active must list the alert item keys {keys}: {redact_hub_payload(ha, 'healthAlerts')}"
             # 2.5.2.129: each item is also served as a dismissal handle for hub_set_system_settings.
             assert [i.get("key") for i in ha.get("items") or []] == [i.get("key") for i in items if isinstance(i, dict) and i.get("key")], \
-                f"healthAlerts.items must mirror the alert items: {ha.get('items')}"
+                f"healthAlerts.items must mirror the alert items: {redact_hub_payload(ha.get('items'), 'healthAlerts')}"
             assert all(isinstance(i.get("dismissible"), bool) for i in ha.get("items") or []), \
-                f"alert items must carry a dismissible flag: {ha.get('items')}"
+                f"alert items must carry a dismissible flag: {redact_hub_payload(ha.get('items'), 'healthAlerts')}"
         # includeSubscriptions (same opt-in call): the four subscriptions, or an explicit error on old firmware.
         subs = info.get("subscriptions") or {}
         assert "error" in subs or "hubProtect" in subs, f"subscriptions block has neither data nor an error: {subs}"
@@ -14217,7 +14297,7 @@ class TestRunner:
         res = self.client.call_tool("hub_manage_diagnostics", {"tool": "hub_get_metrics"})
         assert "healthAlerts" in res, f"hub_get_metrics missing healthAlerts: {sorted(res)}"
         ha = res["healthAlerts"]
-        assert ha is not None and "active" in ha and "safeMode" in ha, f"healthAlerts shape wrong: {ha}"
+        assert ha is not None and "active" in ha and "safeMode" in ha, f"healthAlerts shape wrong: {redact_hub_payload(ha, 'healthAlerts')}"
 
     @test("system_tools")
     def test_get_memory_history(self) -> None:
@@ -14969,11 +15049,15 @@ class TestRunner:
         The suite runs with the cap OFF (main() pins maxConcurrentWrites=0), so this is the
         ONLY place it is exercised live. Cap 1 + one slow bulk variable create saturates it,
         and the second write must be refused BEFORE dispatch -- the refusal is what proves
-        the lease was taken, since nothing else on the wire reports an in-flight write."""
+        the lease was taken, since nothing else on the wire reports an in-flight write.
+        The first probe is sent as soon as the holder thread starts, with no fixed head start.
+        If it reaches the hub first (the holder is refused instead), the holder is retried,
+        up to three attempts, once its fixtures are verified absent."""
         suffix = _run_artifact_suffix()
-        slow_names = [f"{PREFIX}WriteCap_{i}_{suffix}" for i in range(4)]
+        items = write_cap_variable_items(f"{PREFIX}WriteCap_{suffix}")
+        slow_names = [item["name"] for item in items]
         probe_name = f"{PREFIX}WriteCapProbe_{suffix}"
-        items = [{"name": n, "type": "String", "value": "held"} for n in slow_names]
+        print(f"    WRITE_CAP workload: {len(items)} real variable creates")
 
         # A second client instance, not a second caller on self.client: the client keeps
         # per-call mutable state (JSON-RPC id counter, last-op timings), so two threads
@@ -14993,51 +15077,80 @@ class TestRunner:
         self.created_variable_names.extend(slow_names)
 
         slow: dict[str, Any] = {}
+        started = threading.Event()
 
         def _hold_the_slot() -> None:
             try:
+                started.set()
                 slow["response"] = bg.call_tool("hub_manage_variables", {
                     "tool": "hub_create_variable",
                     "args": {"variables": items, "confirm": True}})
             except Exception as exc:      # re-raised on the main thread after the join
                 slow["error"] = exc
 
-        worker = threading.Thread(target=_hold_the_slot, name="e2e-write-cap-slow", daemon=True)
         refusal = None
         probes = 0
         try:
             self._create_variable(probe_name, "String", "idle")
             self._set_write_cap(1)
-            worker.start()
-            try:
-                time.sleep(0.8)   # let the slow write reach the hub and take the lease
-                deadline = time.monotonic() + 60
-                while worker.is_alive() and time.monotonic() < deadline:
-                    probes += 1
-                    try:
-                        self.client.call_tool("hub_manage_variables", {
-                            "tool": "hub_set_variable",
-                            "args": {"name": probe_name, "value": f"probe-{probes}"},
-                        })
-                    except McpToolError as exc:
-                        payload = _tool_error_payload(exc)
-                        if payload.get("status") != "too_many_writes_in_flight":
-                            raise
-                        refusal = payload
-                        break
-                    except RelayLostResponseError as exc:
-                        # A dropped probe response says nothing about the cap either way.
-                        print(f"    write-cap probe {probes} lost to a relay 504 ({exc}); re-probing")
-            finally:
-                # The cap restore below is itself a capped write, so it cannot run while the
-                # slow write still owns the only slot.
-                worker.join(timeout=180)
-                # Fold the background call into the run's per-op wall-clock summary; the
-                # near-ceiling detector is what would flag this bulk create drifting toward
-                # the relay's ~10s limit, and it only reads the main client's timings.
-                self.client.op_timings.extend(bg.op_timings)
+            for attempt in range(1, 4):
+                slow.clear()
+                started.clear()
+                bg.op_timings.clear()
+                worker = threading.Thread(target=_hold_the_slot, name="e2e-write-cap-slow", daemon=True)
+                holder_started = time.monotonic()
+                worker.start()
+                try:
+                    assert started.wait(timeout=10), "the background write did not start"
+                    # Attempt 1 probes at once (a fast hub finishes the holder in under a second);
+                    # each retry gives the holder a longer head start for the relay-latency case.
+                    time.sleep(0.4 * (attempt - 1))
+                    deadline = time.monotonic() + 60
+                    while worker.is_alive() and time.monotonic() < deadline:
+                        probes += 1
+                        try:
+                            self.client.call_tool("hub_manage_variables", {
+                                "tool": "hub_set_variable",
+                                "args": {"name": probe_name, "value": f"probe-{probes}"},
+                            })
+                        except McpToolError as exc:
+                            payload = _tool_error_payload(exc)
+                            if payload.get("status") != "too_many_writes_in_flight":
+                                raise
+                            refusal = payload
+                            break
+                        except RelayLostResponseError as exc:
+                            print(f"    write-cap probe {probes} lost to a relay 504 ({exc}); re-probing")
+                finally:
+                    # Restore is a capped write, so the holder must finish first.
+                    worker.join(timeout=180)
+                    self.client.op_timings.extend(bg.op_timings)
+                    print(f"    WRITE_CAP attempt={attempt} holder_elapsed={time.monotonic() - holder_started:.3f}s "
+                          f"probes={probes} holder_error={slow.get('error')!r}")
+                assert not worker.is_alive(), "the in-flight write never finished; the cap state is unknown"
+                holder_error = slow.get("error")
+                if refusal is None and isinstance(holder_error, McpToolError) and attempt < 3:
+                    payload = _tool_error_payload(holder_error)
+                    if payload.get("status") == "too_many_writes_in_flight":
+                        inventory = self.client.call_tool("hub_read_variables", {
+                            "tool": "hub_list_variables", "args": {}})
+                        blocker = write_cap_holder_retry_blocker(payload, inventory, slow_names)
+                        if blocker is None:
+                            print("    WRITE_CAP probe won the race; absent holder fixtures verified before retry")
+                            continue
+                        print(f"    WRITE_CAP probe won the race; retry declined: {blocker}")
+                break
             assert not worker.is_alive(), \
                 "the in-flight write never finished; the cap state is unknown"
+            if "error" in slow:
+                exc = slow["error"]
+                if not isinstance(exc, requests.HTTPError) or "504" not in str(exc):
+                    raise exc
+            else:
+                created = slow.get("response") or {}
+                assert created.get("success") is True, f"the write holding the slot failed: {created}"
+                assert created.get("createdCount") == len(slow_names), \
+                    f"the write holding the slot did not create every variable: {created}"
             assert refusal is not None, (
                 f"no write was refused in {probes} probe(s) while a bulk create of "
                 f"{len(slow_names)} variables was in flight -- the cap did not hold the slot")
@@ -15062,11 +15175,6 @@ class TestRunner:
                 time.sleep(3.0)
                 assert all(self._hub_variable_visible_in_bulk(n) for n in slow_names), \
                     f"the write that held the slot was lost to a relay 504 and never committed: {slow_names}"
-            else:
-                created = slow.get("response") or {}
-                assert created.get("success") is True, f"the write holding the slot failed: {created}"
-                assert created.get("createdCount") == len(slow_names), \
-                    f"the write holding the slot did not create every variable: {created}"
             print(f"    WRITE_CAP ok -- refused after {probes} probe(s) "
                   "while hub_create_variable held the slot")
         finally:
@@ -16256,6 +16364,9 @@ class TestRunner:
         # headers do not control that cache, so a LegacyEraClient before/after pair
         # can still return the same payload. The watchdog reads /logs/past/json
         # directly and gives this proof an independent native-history observer.
+        if not (self.watchdog_url and self.server_app_id):
+            raise SkipTest("WATCHDOG_URL/HUBITAT_APP_ID not set")
+
         def bps_native_rows(logs: list) -> list:
             expected = "Validation error in hub_create_variable"
             acknowledgment = "Mandatory best-practice acknowledgment"
@@ -18220,14 +18331,20 @@ class TestRunner:
         # precondition, a failed upstream create, etc.) -- it is NOT a pass. The run fails on any
         # skip so the e2e can never go green while silently not validating something.
         skips = [r for r in self.results if r["status"] == "skip"]
-        if skips:
+        accepted = [r for r in skips if accepted_skip(r["message"])]
+        unaccepted = [r for r in skips if r not in accepted]
+        if accepted:
+            print("\nSkipped (accepted on the ephemeral test hub):")
+            for r in accepted:
+                print(f"  - {r['name']}: {r['message']}")
+        if unaccepted:
             print("\nSkipped (treated as FAILURES -- nothing may be silently skipped):")
-            for r in skips:
+            for r in unaccepted:
                 print(f"  - {r['name']}: {r['message']}")
 
         print("=" * 60)
         # A passing run must also leave the permanent fixtures ready for the next run.
-        return total_fail == 0 and total_skip == 0 and not self._fixture_reset_failures
+        return total_fail == 0 and not unaccepted and not self._fixture_reset_failures
 
 
 # ---------------------------------------------------------------------------
@@ -18257,6 +18374,98 @@ def _inject_device_id(obj: dict, dev_id: str) -> dict:
 
 
 TEST_HUB_LEASE_VARIABLE = "_TEST_HUB_LEASED_BY"
+
+# E2E_LANE=ephemeral (hub-e2e-ephemeral.yml) runs on a public log; it changes log redaction only.
+EPHEMERAL_HUB_URL = re.compile(r"^https://[a-z0-9-]+\.trycloudflare\.com$")
+_REDACTED = "<redacted>"
+_IDENTITY_KEYS = frozenset({"localIP", "hubData", "hubUID", "zigbeeId", "network"})
+_MAC = re.compile(r"\b[0-9A-Fa-f]{2}(?:[:-][0-9A-Fa-f]{2}){5}\b")
+_TUNNEL_HOST = re.compile(r"[A-Za-z0-9-]+\.trycloudflare\.com")
+_IPV4 = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+_ephemeral_literals: set[str] = set()
+
+
+# The ephemeral test hub has no watchdog and may report its Z-Wave radio offline; only these
+# documented skips pass there. Every other skip, and every skip on the physical hub, still fails.
+EPHEMERAL_ACCEPTED_SKIPS = ("WATCHDOG_URL/HUBITAT_APP_ID not set", "Z-Wave radio offline on this hub")
+
+
+def accepted_skip(message: str) -> bool:
+    return ephemeral_lane() and str(message).startswith(EPHEMERAL_ACCEPTED_SKIPS)
+
+
+def ephemeral_lane() -> bool:
+    return os.environ.get("E2E_LANE") == "ephemeral"
+
+
+def hub_label(hub_url: str) -> str:
+    return "ephemeral test hub" if ephemeral_lane() else hub_url
+
+
+def _count_alert_items(value) -> int:
+    """Alert entries in a healthAlerts payload: every `alertItems` list, at any depth."""
+    if isinstance(value, dict):
+        return sum(len(v) if k == "alertItems" and isinstance(v, list) else _count_alert_items(v)
+                   for k, v in value.items())
+    if isinstance(value, list):
+        return sum(_count_alert_items(v) for v in value)
+    return 0
+
+
+def redact_hub_payload(value, key: str | None = None):
+    """Ephemeral lane: a hub_get_info-shaped payload minus identity fields; alert text becomes a count."""
+    if not ephemeral_lane():
+        return value
+    if key in _IDENTITY_KEYS:
+        return _REDACTED
+    if key == "healthAlerts":
+        return f"<{_count_alert_items(value)} health-alert entries>" if isinstance(value, (dict, list)) else _REDACTED
+    if isinstance(value, dict):
+        return {k: redact_hub_payload(v, k) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact_hub_payload(v) for v in value]
+    return scrub_ephemeral_text(value) if isinstance(value, str) else value
+
+
+def register_ephemeral_identity(info, key: str | None = None, within: str | None = None) -> None:
+    """Learn the literal values the log scrubber must hide from one hub_get_info payload."""
+    within = within or (key if key in ("network", "hubData", "healthAlerts") else None)
+    if isinstance(info, dict):
+        for k, v in info.items():
+            register_ephemeral_identity(v, k, within)
+    elif isinstance(info, list):
+        for v in info:
+            register_ephemeral_identity(v, key, within)
+    elif isinstance(info, str) and len(info) >= 4 and info != "unavailable" and (
+            key in ("localIP", "hubUID", "zigbeeId") or _MAC.search(info)
+            or (within in ("network", "hubData") and _IPV4.match(info))
+            or (within == "healthAlerts" and " " in info.strip())):
+        _ephemeral_literals.add(info)
+
+
+def scrub_ephemeral_text(text: str) -> str:
+    for literal in sorted(_ephemeral_literals, key=len, reverse=True):
+        text = text.replace(literal, _REDACTED)
+    return _TUNNEL_HOST.sub(_REDACTED, _MAC.sub(_REDACTED, text))
+
+
+class _RedactingStream:
+    """Backstop for every print, assertion and traceback the ephemeral lane writes."""
+
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        self._stream.write(scrub_ephemeral_text(text))
+        return len(text)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def install_ephemeral_redaction() -> None:
+    if ephemeral_lane() and not isinstance(sys.stdout, _RedactingStream):
+        sys.stdout, sys.stderr = _RedactingStream(sys.stdout), _RedactingStream(sys.stderr)
 
 
 def _refuse(reasons: list[str]) -> None:
@@ -18288,8 +18497,11 @@ def refuse_unless_ci_test_hub(hub_url: str) -> None:
     reasons = []
     if os.environ.get("GITHUB_ACTIONS") != "true":
         reasons.append("GITHUB_ACTIONS is not 'true' (not running inside the GitHub Actions e2e job)")
-    if not re.match(r"^https://cloud\.hubitat\.com/api/[^/]+$", hub_url or ""):
-        reasons.append(f"hub_url {hub_url!r} is not the CI cloud-relay base (https://cloud.hubitat.com/api/<uuid>)")
+    # The ephemeral lane's disposable hub is reached through its own tunnel host.
+    if not (re.match(r"^https://cloud\.hubitat\.com/api/[^/]+$", hub_url or "")
+            or EPHEMERAL_HUB_URL.match(hub_url or "")):
+        reasons.append(f"hub_url {hub_label(hub_url)!r} is not the CI cloud-relay base "
+                       "(https://cloud.hubitat.com/api/<uuid>) or an ephemeral test hub tunnel")
     if reasons:
         _refuse(reasons)
 
@@ -18403,6 +18615,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config()
+    install_ephemeral_redaction()
     # Refused before anything is built: this runner (every mode, --cleanup-only included) sweeps
     # and pins settings, and it does that on the sacrificial test hub only.
     refuse_unless_ci_test_hub(config["hub_url"])
@@ -18412,7 +18625,7 @@ def main() -> None:
     print("=" * 60)
     print("Hubitat MCP Server — E2E Test Runner")
     print("=" * 60)
-    print(f"  Hub:   {config['hub_url']}")
+    print(f"  Hub:   {hub_label(config['hub_url'])}")
     print(f"  App:   {config['app_id']}")
     print(f"  Token: {masked_token}")
     print()
@@ -18432,6 +18645,12 @@ def main() -> None:
     # transport failure. TestRunner's constructor touches no hub.
     if not args.cleanup_only:
         refuse_unless_leased_test_hub(client)
+    if ephemeral_lane():
+        try:
+            register_ephemeral_identity(client.call_tool(
+                "hub_get_info", {"includeHealthAlerts": True, "includeNetwork": True}))
+        except Exception as exc:
+            print(f"  [WARN] hub identity unreadable ({type(exc).__name__}); log redaction is pattern-only")
 
     if args.setup_perm_fixtures:
         # Bootstrap a test hub for the permanent-fixture model, WITHOUT running any test. Separated
@@ -18514,7 +18733,7 @@ def main() -> None:
         assert discovery.get("supportedVersions", [None])[0] == MODERN_PROTOCOL_VERSION
         print("  Hub is reachable. MCP server responded to modern discovery.\n")
     except requests.exceptions.ConnectionError:
-        print(f"  ERROR: Cannot connect to hub at {config['hub_url']}")
+        print(f"  ERROR: Cannot connect to hub at {hub_label(config['hub_url'])}")
         print("  Check that the hub is online and the URL is correct.")
         sys.exit(1)
     except Exception as exc:

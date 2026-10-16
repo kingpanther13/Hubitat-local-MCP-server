@@ -1199,6 +1199,21 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         script.toolGetZwaveDetails([:]).zwaveVersion == '7.22.1'
     }
 
+    def "hub_get_radio_details reports unavailable for a zero native Zigbee channel"() {
+        given:
+        settingsMap.enableRead = true
+        sharedLocation.hub = new TestHub()
+        hubGet.register('/hub/zigbeeDetails/json') { params -> JsonOutput.toJson([channel: 0]) }
+
+        when:
+        def result = script.toolGetZigbeeDetails([:])
+
+        then:
+        result.zigbeeData.channel == 0
+        result.zigbeeChannel == 'unavailable'
+        result.source == 'hub_api'
+    }
+
     def "hub_get_radio_details zigbee returns channel + zigbeeId + parsed details"() {
         given:
         settingsMap.enableRead = true

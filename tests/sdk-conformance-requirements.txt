@@ -20,8 +20,8 @@
 # `requests` is deliberately NOT here -- this file stays single-purpose -- but a clean venv needs
 # it too: the script imports tests/e2e_test.py for the shared hub config, and that module imports
 # requests at module scope. hub-e2e.yml installs it on its own line.
-mcp==2.0.0
-mcp-types==2.0.0
+mcp==2.2.0
+mcp-types==2.2.0
 anyio==4.14.2
 httpx2==2.12.0
 pydantic==2.13.4

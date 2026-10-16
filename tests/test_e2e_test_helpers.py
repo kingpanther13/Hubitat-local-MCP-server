@@ -5,6 +5,7 @@ which keeps a bare `pytest` invocation usable; CI installs requests so this modu
 actually runs there.
 """
 
+import io
 import json
 import os
 import sys
@@ -704,18 +705,26 @@ def test_watchdog_hub_logs_fails_closed_on_unusable_payload(monkeypatch, respons
 
 
 @pytest.mark.parametrize(
-    ("test_status", "reset_failures", "expected"),
+    ("lane", "test_status", "reset_failures", "expected"),
     [
-        pytest.param("pass", [], True, id="all-tests-pass"),
-        pytest.param("fail", [], False, id="test-failed"),
-        pytest.param("skip", [], False, id="test-skipped"),
-        pytest.param("pass", ["5329 via off: response lost"], False,
+        pytest.param("", "pass", [], True, id="all-tests-pass"),
+        pytest.param("", "fail", [], False, id="test-failed"),
+        pytest.param("", "skip", [], False, id="test-skipped"),
+        pytest.param("", "pass", ["5329 via off: response lost"], False,
                      id="fixture-reset-unresolved"),
+        pytest.param("ephemeral", "pass", ["5329 via off: response lost"], False,
+                     id="fixture-reset-unresolved-on-ephemeral-hub"),
+        pytest.param("ephemeral", "skip", [], False,
+                     id="undocumented-skip-still-fails-on-ephemeral-hub"),
     ],
 )
 def test_print_summary_requires_tests_and_fixture_resets_to_succeed(
-    test_status, reset_failures, expected, capsys,
+    lane, test_status, reset_failures, expected, capsys, monkeypatch,
 ):
+    if lane:
+        monkeypatch.setenv("E2E_LANE", lane)
+    else:
+        monkeypatch.delenv("E2E_LANE", raising=False)
     runner = object.__new__(et.TestRunner)
     runner.results = [{
         "group": "isolated", "name": "summary_probe", "status": test_status,
@@ -2050,19 +2059,23 @@ def test_create_native_rule_return_result_preserves_create_envelope():
 def test_patch_rule_returns_all_checkpointed_entries_from_one_logical_call():
     calls = []
 
+    rows = [{"op": "addAction", "success": True, "actionIndex": 3},
+            {"op": "addAction", "success": False, "error": "refused"},
+            {"op": "addAction", "success": False, "notAttempted": True,
+             "error": "not attempted: bulk stopped after patches[1] failed or was partial"}]
+
     class FakeClient:
         def call_tool(self, name, arguments):
             calls.append((name, arguments))
+            # The continued terminal carries every slice in patchResults and mirrors it in patches.
             return {
                 "success": False,
                 "partial": True,
                 "bulkStoppedAfter": "patches[1]",
                 "finalisationNotAttempted": True,
                 "error": "Stopped after patches[1] failed: refused. Later items were not attempted and finalisation was not fired.",
-                "patchResults": [{"op": "addAction", "success": True, "actionIndex": 3}],
-                "patches": [{"op": "addAction", "success": False, "error": "refused"},
-                            {"op": "addAction", "success": False, "notAttempted": True,
-                             "error": "not attempted: bulk stopped after patches[1] failed or was partial"}],
+                "patchResults": rows,
+                "patches": list(rows),
                 "health": {"ok": True},
             }
 
@@ -3272,3 +3285,135 @@ def test_lan_fixture_identity_waits_for_its_nonce_and_never_accepts_stale_observ
         assert result["nonce"] == "123" and result["deviceId"] == "10"
         assert len(reads) == 2
         assert not log_reads
+
+
+@pytest.mark.parametrize("hub_url, actions, allowed", [
+    ("https://cloud.hubitat.com/api/0000-uuid", "true", True),
+    ("https://quiet-river-42.trycloudflare.com", "true", True),
+    ("https://quiet-river-42.trycloudflare.com", None, False),
+    ("https://quiet-river-42.trycloudflare.com/", "true", False),
+    ("http://quiet-river-42.trycloudflare.com", "true", False),
+    ("https://quiet-river-42.trycloudflare.com.example.net", "true", False),
+    ("https://Quiet-River.trycloudflare.com", "true", False),
+    ("https://192.168.1.5", "true", False),
+])
+def test_ci_guard_accepts_only_relay_or_ephemeral_tunnel_inside_actions(monkeypatch, hub_url, actions, allowed):
+    if actions:
+        monkeypatch.setenv("GITHUB_ACTIONS", actions)
+    else:
+        monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    if allowed:
+        et.refuse_unless_ci_test_hub(hub_url)
+    else:
+        with pytest.raises(SystemExit) as refused:
+            et.refuse_unless_ci_test_hub(hub_url)
+        assert refused.value.code == 2
+
+
+def test_ephemeral_refusal_and_banner_label_never_print_the_hub_url(monkeypatch, capsys):
+    monkeypatch.setenv("E2E_LANE", "ephemeral")
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    with pytest.raises(SystemExit):
+        et.refuse_unless_ci_test_hub("https://secret-host.example.net")
+    assert "secret-host" not in capsys.readouterr().out
+    assert et.hub_label("https://quiet-river-42.trycloudflare.com") == "ephemeral test hub"
+    monkeypatch.setenv("E2E_LANE", "full")
+    assert et.hub_label("https://cloud.hubitat.com/api/x") == "https://cloud.hubitat.com/api/x"
+
+
+HUB_INFO = {
+    "firmwareVersion": "2.5.2.129", "localIP": "192.168.255.2", "zigbeeId": "00AB12CD34EF5678",
+    "hubData": {"hubUID": "uid-0f3c-91aa", "macAddress": "AA:BB:CC:DD:EE:FF", "gateway": "192.168.255.1"},
+    "network": {"activeDnsServers": ["10.9.8.7"], "ipMode": "dhcp"},
+    "healthAlerts": {"active": ["cloud"], "details": {"alertItems": [
+        {"key": "cloud", "message": "Cloud connection is unavailable."}]}},
+}
+
+
+def test_hub_payload_redaction_is_ephemeral_only_and_keeps_counts(monkeypatch):
+    monkeypatch.setattr(et, "_ephemeral_literals", set())
+    monkeypatch.delenv("E2E_LANE", raising=False)
+    assert et.redact_hub_payload(HUB_INFO) is HUB_INFO
+    monkeypatch.setenv("E2E_LANE", "ephemeral")
+    redacted = et.redact_hub_payload(HUB_INFO)
+    for key in ("localIP", "zigbeeId", "hubData", "network"):
+        assert redacted[key] == "<redacted>"
+    assert redacted["healthAlerts"] == "<1 health-alert entries>"
+    assert redacted["firmwareVersion"] == "2.5.2.129"
+    assert et.redact_hub_payload([{"localIP": "1.2.3.4"}]) == [{"localIP": "<redacted>"}]
+    assert "Cloud connection" not in str(et.redact_hub_payload(HUB_INFO["healthAlerts"]["details"], "healthAlerts"))
+
+
+def test_ephemeral_stream_scrubs_learned_identity_macs_and_tunnel_hosts(monkeypatch):
+    monkeypatch.setattr(et, "_ephemeral_literals", set())
+    monkeypatch.setenv("E2E_LANE", "ephemeral")
+    out, err = io.StringIO(), io.StringIO()
+    monkeypatch.setattr(sys, "stdout", out)
+    monkeypatch.setattr(sys, "stderr", err)
+    et.install_ephemeral_redaction()
+    et.install_ephemeral_redaction()  # idempotent: never double-wrapped
+    assert isinstance(sys.stdout, et._RedactingStream) and sys.stdout._stream is out
+    et.register_ephemeral_identity(HUB_INFO)
+    print(f"FULL-FAILURE: {HUB_INFO} via https://quiet-river-42.trycloudflare.com/apps/api/1 de:ad:be:ef:00:01")
+    print("Cloud connection is unavailable.", file=sys.stderr)
+    text = out.getvalue() + err.getvalue()
+    for leaked in ("192.168.255.2", "192.168.255.1", "10.9.8.7", "00AB12CD34EF5678", "uid-0f3c-91aa",
+                   "AA:BB:CC:DD:EE:FF", "de:ad:be:ef:00:01", "trycloudflare", "Cloud connection"):
+        assert leaked not in text, leaked
+    assert "2.5.2.129" in text and "dhcp" in text
+
+
+def test_redaction_is_inert_outside_the_ephemeral_lane(monkeypatch):
+    monkeypatch.delenv("E2E_LANE", raising=False)
+    out = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", out)
+    et.install_ephemeral_redaction()
+    assert sys.stdout is out
+
+
+def test_rule_patch_rows_reads_one_key_so_continued_rows_are_not_doubled():
+    slices = [{"op": "addActions", "results": [{}, {}]}, {"op": "addAction"}]
+    # Continued terminal: patchResults holds every slice and patches mirrors it.
+    assert et._rule_patch_rows({"patchResults": slices, "patches": list(slices)}) == slices
+    assert et._rule_patch_rows({"patches": slices}) == slices
+    assert et._rule_patch_rows({"patchResults": slices}) == slices
+    assert et._rule_patch_rows({"patchResults": [], "patches": slices}) == slices
+    assert et._rule_patch_rows({"success": False}) == []
+
+
+@pytest.mark.parametrize("details,offline", [
+    ({"zwaveData": {"enabled": False, "healthy": True}}, True),
+    ({"zwaveData": {"enabled": True, "healthy": False}}, True),
+    ({"zwaveData": {"enabled": True, "healthy": True}}, False),
+    ({"zwaveData": {"enabled": True}}, False),
+    ({"zwaveData": {}}, False),
+    # Unreadable details are no evidence of an offline radio, so the test stays strict.
+    ({"source": "sdk_only"}, False),
+    ({"zwaveData": "raw"}, False),
+])
+def test_zwave_radio_offline_needs_the_hubs_own_disabled_or_unhealthy_report(details, offline):
+    assert et._zwave_radio_offline(details) is offline
+
+
+@pytest.mark.parametrize("error,unavailable", [
+    ("Failed to fetch /hub/zwave/getChildAndRouteInfoJson: status code: 503, reason phrase: Service Unavailable", True),
+    ("Failed to fetch /hub/zwave/getChildAndRouteInfoJson: radio unavailable", True),
+    ("Failed to fetch /hub/zwave/getChildAndRouteInfoJson: status code: 500, reason phrase: Server Error", False),
+    (None, False),
+])
+def test_radio_unavailable_error_accepts_only_503_or_unavailable(error, unavailable):
+    assert et._radio_unavailable_error(error) is unavailable
+
+
+@pytest.mark.parametrize("lane, message, expected", [
+    ("ephemeral", "WATCHDOG_URL/HUBITAT_APP_ID not set", True),
+    ("ephemeral", "Z-Wave radio offline on this hub", True),
+    ("ephemeral", "some other reason", False),
+    ("", "WATCHDOG_URL/HUBITAT_APP_ID not set", False),
+])
+def test_accepted_skip_passes_only_documented_ephemeral_reasons(monkeypatch, lane, message, expected):
+    if lane:
+        monkeypatch.setenv("E2E_LANE", lane)
+    else:
+        monkeypatch.delenv("E2E_LANE", raising=False)
+    assert et.accepted_skip(message) is expected

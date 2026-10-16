@@ -1740,15 +1740,17 @@ Sending a classic definition to CREATE a rule on a hub that offers both builders
 
 Reference for the hub-variable tools (hub_get_variable, hub_create_variable, hub_delete_variable, hub_create_connector). Per-tool details below.
 
+When the hub cannot complete a create or delete, the result is `success:false` with `error` and `note`. The note says whether nothing changed or the hub may have applied part of it; in the second case, read the variable with hub_get_variable before retrying.
+
 ### hub_get_variable
 
 The returned `source` field says which one matched (the hub-variable namespace is searched first, then rule-engine variables). For hub variables it also returns metadata: `type`, plus `deviceId`/`attribute` when a connector is linked.
 
-**`includeDependents=true` — which apps reference a HUB variable.** Opt-in (off by default) because it CLICKS the Settings → Hub Variables wizard reveal. Run it before renaming or deleting a hub variable to see what would break — the same registry that gates `hub_delete_variable`'s reference-safety refusal (deleting anyway needs `force=true`).
+**`includeDependents=true` — which apps reference a HUB variable.** Opt-in (off by default) because it costs an extra hub read, and on older firmware a click of the Settings → Hub Variables wizard reveal. Run it before renaming or deleting a hub variable to see what would break — the same registry that gates `hub_delete_variable`'s reference-safety refusal (deleting anyway needs `force=true`).
 
-- **Source:** the hub's own in-use registry, surfaced through the Settings → Hub Variables wizard. There is no pure-GET dependents document for variables (unlike a device's `/device/fullJson` `appsUsing`), so the fold reads the Hub Variables page, clicks the per-variable "Show In Use Apps" reveal, and parses the revealed app list. The reveal is a transient wizard-UI toggle (dismissed afterward), not a data change — `hub_get_variable` stays read-only.
-- **Result:** `appsUsing` is an array of `{id, label}` (the installed-app id and its user-visible label, e.g. `{"id":"21","label":"MyRule"}`), plus `count` and `coverageNote`. The full list is returned (no separate cursor on this tool); consumer lists for one variable are small.
-- **Empty vs unknown:** `appsUsing:[]`, `count:0` means the hub variable is registered but no app currently references it. `includeDependents` applies only to hub variables; it is ignored for a rule-engine variable (no hub in-use registry), so no `appsUsing` field appears. If the reveal cannot be read, did not render, or renders in-use yet lists no consumers, the response carries a case-specific `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
+- **Source:** the hub's own in-use registry. Current firmware serves it as JSON from the Hub Variables page's data endpoint: each variable lists the apps that use it directly and the apps that use its connector device. Older firmware without that endpoint has no pure-GET dependents document, so the fold reads the Hub Variables page, clicks the per-variable "Show In Use Apps" reveal, and parses the revealed app list. The reveal is a transient wizard-UI toggle (dismissed afterward), not a data change — `hub_get_variable` stays read-only either way.
+- **Result:** `appsUsing` is an array of `{id, label}` (the installed-app id and its user-visible label, e.g. `{"id":"21","label":"MyRule"}`), plus `count` and `coverageNote`. On current firmware `appsUsing` also includes apps that use the variable's connector device (each app once), and `connectorAppsUsing` lists those connector users on their own. The full list is returned (no separate cursor on this tool); consumer lists for one variable are small.
+- **Empty vs unknown:** `appsUsing:[]`, `count:0` means the hub variable is registered but no app currently references it. `includeDependents` applies only to hub variables; it is ignored for a rule-engine variable (no hub in-use registry), so no `appsUsing` field appears. If the registry cannot be read (or, on older firmware, the reveal did not render or renders in-use yet lists no consumers), the response carries a case-specific `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
 - **Coverage caveat:** only apps that register Hub Variable use with the hub appear (Rule Machine, Room Lighting, Thermostat Scheduler, and other registering apps — what the page shows in orange). Apps that never register their use, such as webCoRE pistons, are not covered; `coverageNote` says so.
 
 ### hub_set_variable: increment
@@ -1771,7 +1773,7 @@ For DateTime, pass hub-local `yyyy-MM-ddTHH:mm` or `{date,time}`. Supplied offse
 
 **Why create first (vs hub_set_variable):**
 - Use this before `hub_set_variable` for a name that doesn't exist yet — Hubitat's `setGlobalVar` cannot create, only update.
-- Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API.
+- Creation isn't exposed via the public app API, so the tool uses the hub's own Hub Variables page: one create request on current firmware, the Settings → Hub Variables wizard on older firmware. Either way it reads the variable back and fails if it did not appear; on current firmware it also fails when the stored type or value differs from the request.
 
 **Constraints:**
 - Name must not contain any of these characters: `' " \ ~ [ : ] < >`. (This applies to the single-form `name` and to each bulk item's `name`.)
@@ -1787,8 +1789,8 @@ Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale
 DESTRUCTIVE, no undo; requires `confirm=true` plus a backup <24h. Detects whether the name is a hub variable or a rule_engine variable. Deleting a hub variable also deletes its connector device when one exists (`connectorDeleted` in the response).
 
 **Why the reference-safety refusal matters:** deleting a variable something still uses silently breaks it — null lookups → false conditions, and a literal `%varname%` left in substitutions. Without `force=true` the tool refuses when:
-- the hub's own in-use registry marks a hub variable as used (what Settings → Hub Variables shows in orange; Rule Machine and other registering apps appear there);
-- that registry cannot be read, since unknown is not the same as unused;
+- the hub's own in-use registry marks a hub variable as used (what Settings → Hub Variables shows in orange; Rule Machine and other registering apps appear there). On current firmware this includes apps that use the variable's connector device, and the refusal names each app as `label (id=N)`;
+- that registry cannot be read, since unknown is not the same as unused. The refusal includes the reason, and a forced delete returns it in `platformInUseError`;
 - one of this server's child rules names the variable, quoted or as a `%name%` substitution.
 
 Apps that never register their use, such as webCoRE pistons, cannot be seen by any of these checks; the response's `coverageNote` says so and `platformInUse` reports what the registry said. Pass `force=true` to proceed anyway after acknowledging the breakage.
@@ -1801,11 +1803,13 @@ Audit/debug what changed a hub variable and when, without polling hub_get_variab
 
 ### hub_create_connector
 
-For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass `connectorType` to pick, default `Variable`. For String/Boolean/DateTime vars, the chooser is skipped. The full Number/Decimal `connectorType` set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance.
+`connectorType` picks the connector device type; the default is `Variable`. On current firmware the hub lists the types it offers for each variable, and a `connectorType` it does not offer is refused before anything is created (the error lists the offered types). When `connectorType` is omitted and `Variable` is not offered, the first offered type is used. The full Number/Decimal set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance. Older firmware only shows a type chooser for Number/Decimal vars and ignores `connectorType` for String/Boolean/DateTime.
 
 ### hub_delete_connector
 
 Deletes the connector DEVICE backing a hub variable. DESTRUCTIVE and not undoable — the connector device is removed, but the hub variable itself and its value are unchanged. `confirm=true` required. No-op if the variable has no connector.
+
+On current firmware the hub reports which apps use the connector device. Without `force=true` the tool refuses when any app does, naming each as `label (id=N)`, and also when that use cannot be read (the refusal says why). Pass `force=true` to delete anyway; the result's `brokenConsumers` lists the apps that used it. When that use could not be read, the result has `consumersUnknown: true` instead. Older firmware deletes the device without this check.
 
 ### Hub Mesh: sharing and linking hub variables
 
@@ -1946,7 +1950,7 @@ If eight owner slices leave work unfinished, the terminal `continuation_limit` r
 
 ### Client retry limits and resume
 
-The official Python SDK pinned by this project (2.0.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
+The official Python SDK pinned by this project (2.2.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
 
 For integrations that control the SDK, configure `Client(..., input_required_max_rounds=...)` for the expected operation size, or use `client.session.call_tool(..., allow_input_required=True)` and retain each returned `request_state` before the next request. Resume with the same outer tool, original arguments and exact state; do not send only the remaining arguments. Hubitat keeps one state string for the logical call. The SDK also accepts `client.call_tool(..., request_state=saved_state)` to resume its automatic loop. Choose state capture before starting: `InputRequiredRoundsExceededError` does not contain the last state. A worked example and offline SDK coverage are in `docs/testing.md`, "Client retry policy".
 

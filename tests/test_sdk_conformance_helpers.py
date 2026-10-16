@@ -16,6 +16,79 @@ from sdk_conformance_helpers import (
 )
 
 
+@pytest.mark.parametrize(("configured", "expected"), [(None, 6), ("6", 6), ("36", 36), ("120", 120)])
+def test_mrtr_workload_keeps_default_and_requires_each_distinct_real_mutation(configured, expected):
+    environment = {} if configured is None else {"E2E_MRTR_ACTION_COUNT": configured}
+    actions = helpers.mrtr_log_actions("timing proof", environment)
+    assert len(actions) == expected
+    assert all(action["capability"] == "log" for action in actions)
+    assert [action["message"] for action in actions] == [f"timing proof {index}" for index in range(1, expected + 1)]
+    assert len({action["message"] for action in actions}) == expected
+
+
+@pytest.mark.parametrize("configured", ["", "0", "5", "121", "-1", "+6", "6.0", "word", " 6", "6 ", None, True])
+def test_mrtr_workload_rejects_invalid_or_unbounded_configuration(configured):
+    with pytest.raises(ValueError, match="E2E_MRTR_ACTION_COUNT"):
+        helpers.mrtr_log_actions("timing proof", {"E2E_MRTR_ACTION_COUNT": configured})
+
+
+@pytest.mark.parametrize(("configured", "expected"), [(None, 16), ("4", 4), ("72", 72), ("120", 120)])
+def test_write_cap_workload_creates_every_distinct_real_variable(configured, expected):
+    environment = {} if configured is None else {"E2E_WRITE_CAP_VARIABLE_COUNT": configured}
+    items = helpers.write_cap_variable_items("BAT_E2E_WriteCap_run", environment)
+    assert items == [{"name": f"BAT_E2E_WriteCap_run_{index}", "type": "String", "value": "held"}
+                     for index in range(expected)]
+    assert len({item["name"] for item in items}) == expected
+
+
+@pytest.mark.parametrize("configured", ["", "0", "3", "121", "-1", "+4", "4.0", "word", " 4", "4 ", None, True])
+def test_write_cap_workload_rejects_invalid_or_unbounded_configuration(configured):
+    with pytest.raises(ValueError, match="E2E_WRITE_CAP_VARIABLE_COUNT"):
+        helpers.write_cap_variable_items("BAT_E2E_WriteCap_run", {"E2E_WRITE_CAP_VARIABLE_COUNT": configured})
+
+
+def test_write_cap_holder_retry_requires_refusal_and_complete_absence_readback():
+    refused = {"status": "too_many_writes_in_flight"}
+    names = ["fixture_0", "fixture_1"]
+    assert helpers.write_cap_holder_retry_blocker(refused, {"hubVariables": [{"name": "other"}]}, names) is None
+    for inventory in (
+        {"hubVariables": [{"name": "fixture_1"}]},
+        {"hubVariables": [{"name": "other"}], "nextCursor": "more"},
+        {"hubVariables": [], "success": False},
+        {"hubVariables": [{"error": "unreadable"}]},
+        {"hubVariables": None}, {}, None,
+    ):
+        assert helpers.write_cap_holder_retry_blocker(refused, inventory, names)
+    for payload in ({"status": "failed"}, {}, None):
+        assert helpers.write_cap_holder_retry_blocker(payload, {"hubVariables": []}, names)
+    assert helpers.write_cap_holder_retry_blocker(refused, {"hubVariables": []}, [])
+
+
+def test_write_cap_holder_retry_blocker_names_the_declining_condition():
+    refused = {"status": "too_many_writes_in_flight"}
+    names = ["fixture_0"]
+    assert helpers.write_cap_holder_retry_blocker(refused, {"hubVariables": []}, names) is None
+    for inventory, reason in (
+        ({"hubVariables": [], "nextCursor": "more"}, "nextCursor"),
+        ({"hubVariables": [], "success": False}, "success:false"),
+        ({"hubVariables": ["fixture_0"]}, "without a name"),
+        ({"hubVariables": [{"name": "fixture_0"}]}, "present on the hub"),
+    ):
+        assert reason in helpers.write_cap_holder_retry_blocker(refused, inventory, names)
+
+
+def test_expanded_mrtr_workload_does_not_relax_elapsed_or_continuation_requirements():
+    assert len(helpers.mrtr_log_actions("timing proof", {"E2E_MRTR_ACTION_COUNT": "36"})) == 36
+    one_leg = [{"duration": 2.325, "status": 200, "has_request_state": False,
+                "mcp_protocol_version": "2026-07-28"}]
+    with pytest.raises(AssertionError, match="at least 3"):
+        summarize_mrtr_proof(one_leg, 2.325)
+    multiple_legs = [{"duration": 3.0, "status": 200, "has_request_state": index > 0,
+                      "mcp_protocol_version": "2026-07-28"} for index in range(3)]
+    with pytest.raises(AssertionError, match="exceed 10"):
+        summarize_mrtr_proof(multiple_legs, 9.9)
+
+
 class _Headers(dict):
     def get(self, key, default=None):
         return super().get(key.lower(), default)
@@ -267,12 +340,51 @@ def _rule_config(messages=EXPECTED_LOG_MESSAGES):
     return {"success": True, "settings": settings}
 
 
-def test_exact_rule_log_messages_accepts_only_the_six_persisted_action_rows() -> None:
+@pytest.mark.parametrize("environ", [{}, {"E2E_MRTR_ACTION_COUNT": "36"}, {"E2E_MRTR_ACTION_COUNT": "120"}])
+def test_exact_rule_log_messages_accepts_every_configured_persisted_action(environ) -> None:
+    expected = [action["message"] for action in helpers.mrtr_log_actions("proof message", environ)]
     actual = helpers.assert_exact_rule_log_messages(
-        _rule_config(), EXPECTED_LOG_MESSAGES, operation="regular proof readback",
+        _rule_config(expected), expected, operation="regular proof readback",
     )
 
-    assert actual == EXPECTED_LOG_MESSAGES
+    assert actual == expected
+
+
+@pytest.mark.parametrize("count", [0, 5, 121])
+def test_exact_rule_log_messages_rejects_unbounded_expected_workloads(count) -> None:
+    expected = [f"proof message {index}" for index in range(count)]
+    with pytest.raises(AssertionError, match="6 through 120"):
+        helpers.assert_exact_rule_log_messages(_rule_config(expected), expected, operation="proof readback")
+
+
+@pytest.mark.parametrize("invalid_message", ["", "   ", None])
+def test_exact_rule_log_messages_rejects_empty_or_nontext_expected_messages(invalid_message) -> None:
+    expected = [*EXPECTED_LOG_MESSAGES[:-1], invalid_message]
+    with pytest.raises(AssertionError, match="nonempty text"):
+        helpers.assert_exact_rule_log_messages(_rule_config(expected), expected, operation="proof readback")
+
+
+@pytest.mark.parametrize(
+    ("mutate", "message"),
+    [
+        (lambda cfg: [cfg["settings"].pop(f"{prefix}.36")
+                      for prefix in ("actType", "actSubType", "logmsg")], "exactly 36 action rows"),
+        (lambda cfg: cfg["settings"].__setitem__("logmsg.36", "corrupted"), "exact messages"),
+        (lambda cfg: cfg["settings"].__setitem__("logmsg.36", "proof message 35"), "distinct"),
+        (lambda cfg: cfg["settings"].pop("actSubType.36"), "action-subtype indices"),
+        (lambda cfg: cfg["settings"].pop("logmsg.36"), "log-message indices"),
+        (lambda cfg: cfg["settings"].__setitem__("actType.36", "otherActs"), "non-log action type"),
+        (lambda cfg: cfg["settings"].__setitem__("actSubType.36", "otherMsg"), "non-log action subtype"),
+    ],
+)
+def test_exact_rule_log_messages_rejects_truncated_or_corrupted_configured_workload(mutate, message) -> None:
+    expected = [action["message"] for action in helpers.mrtr_log_actions(
+        "proof message", {"E2E_MRTR_ACTION_COUNT": "36"},
+    )]
+    config = _rule_config(expected)
+    mutate(config)
+    with pytest.raises(AssertionError, match=message):
+        helpers.assert_exact_rule_log_messages(config, expected, operation="SDK proof readback")
 
 
 @pytest.mark.parametrize(
