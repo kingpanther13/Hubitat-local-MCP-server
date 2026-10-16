@@ -1,8 +1,8 @@
 definition(
-    name: "BAT_E2E_Wizard_Walk",
+    name: "BAT_E2E_KEEP_Wizard_Walk",
     namespace: "mcptest",
     author: "ci",
-    description: "Install-from-URL wizard whose main page clears the pending URL, as Hubitat Package Manager's does",
+    description: "Permanent e2e fixture: an install-from-URL wizard whose main page clears the pending URL, as Hubitat Package Manager's does",
     category: "Utility",
     iconUrl: "",
     iconX2Url: ""

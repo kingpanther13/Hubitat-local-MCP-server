@@ -10762,24 +10762,16 @@ class TestRunner:
     def test_set_native_app_walk_keeps_the_pending_page(self) -> None:
         # A multi-page wizard walk reads and writes on the page it is on; rendering the app's default
         # page between steps resets it. The fixture app is Hubitat Package Manager's install-from-URL
-        # flow in miniature (its main page clears a pending install URL), installed from the repo so
-        # the scenario needs nothing the hub does not have. The walk also exposes the page's Next target.
-        source = (Path(__file__).resolve().parent / "fixtures" / "e2e-wizard-walk-app.groovy").read_text(encoding="utf-8")
-        code_id = app_id = None
+        # flow in miniature (its main page clears a pending install URL): a permanent BAT_E2E_KEEP_
+        # scaffold, installed from the repo once per hub and never removed. The walk also exposes the
+        # page's Next target.
+        app_id = self._ensure_wizard_walk_fixture()
 
         def walk(step: dict) -> dict:
             return self.client.call_tool("hub_manage_native_rules_and_apps", {
                 "tool": "hub_set_native_app", "args": {"appId": app_id, "walkStep": step, "confirm": True}})
 
         try:
-            code = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
-                "source": source, "confirm": True}})
-            assert code.get("success") is True and code.get("appId"), f"installing the wizard fixture's code failed: {code}"
-            code_id = str(code["appId"])
-            inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
-                "codeAppId": int(code_id), "confirm": True}})
-            assert inst.get("success") is True and inst.get("instanceAppId"), f"creating the wizard fixture failed: {inst}"
-            app_id = int(inst["instanceAppId"])
             to_install = walk({"page": "prefOptions", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstall"}})
             assert to_install.get("success") is True, f"navigate to prefPkgInstall failed: {to_install}"
             to_url = walk({"page": "prefPkgInstall", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstallUrl"}})
@@ -10791,12 +10783,25 @@ class TestRunner:
                 "appId": app_id, "pageName": "prefPkgInstallUrl", "includeSettings": True}})
             assert str((stored.get("settings") or {}).get("pkgInstall")) == url,                 f"the pending install URL was reset between steps: {stored.get('settings')}"
         finally:
-            if app_id is not None:
-                self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
-                    "appId": app_id, "force": True, "confirm": True}})
-            if code_id is not None:
-                self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {
-                    "type": "app", "item_id": code_id, "confirm": True}})
+            # The fixture's default page clears its pending install state, so the next run starts clean.
+            walk({"page": "prefPkgInstallUrl", "operation": "navigate", "navigate": {"targetPage": "prefOptions"}})
+
+    def _ensure_wizard_walk_fixture(self) -> int:
+        """The permanent wizard-walk app's instance id, installing code and instance when the hub has none."""
+        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": "instances"}})
+        apps = listed if isinstance(listed, list) else (listed.get("apps") or listed.get("instances") or [])
+        found = next((a for a in apps if isinstance(a, dict)
+                      and str(a.get("name") or a.get("label") or "") == "BAT_E2E_KEEP_Wizard_Walk"), None)
+        if found is not None:
+            return int(found.get("id") or found.get("appId"))
+        source = (Path(__file__).resolve().parent / "fixtures" / "e2e-wizard-walk-app.groovy").read_text(encoding="utf-8")
+        code = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {"source": source, "confirm": True}})
+        assert code.get("success") is True and code.get("appId"), f"installing the wizard fixture's code failed: {code}"
+        inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
+            "codeAppId": int(code["appId"]), "confirm": True}})
+        assert inst.get("success") is True and inst.get("instanceAppId"), f"creating the wizard fixture failed: {inst}"
+        print("    [PERM FIXTURE] installed BAT_E2E_KEEP_Wizard_Walk -- reused by later runs")
+        return int(inst["instanceAppId"])
 
     @test("native_apps")
     def test_set_rule_discover_meta(self) -> None:
