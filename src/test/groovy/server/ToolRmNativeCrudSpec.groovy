@@ -43706,6 +43706,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def_.inputSchema.properties.appType.enum.contains("basic_rule")
     }
 
+    def "_appTypeRegistry registers the scene and thermostat child types the e2e fixtures bootstrap, each committing with its page's Update button, and the enum advertises every registry key"() {
+        when:
+        def reg = script._appTypeRegistry()
+        def def_ = script.getAllToolDefinitions().find { it.name == 'hub_set_native_app' }
+
+        then:
+        reg.scene == [namespace: "hubitat", appName: "Scene-1.2", parentTypeName: "Groups and Scenes", labelInput: "name", commitButton: "update"]
+        reg.thermostat_scheduler == [namespace: "hubitat", appName: "Thermostat Scheduler 2.0", parentTypeName: "Thermostat Schedulers", commitButton: "update"]
+        reg.thermostat_controller == [namespace: "hubitat", appName: "Thermostat Controller 2.0", parentTypeName: "Thermostat Controllers", commitButton: "update"]
+        ["Scene-1.2", "Thermostat Scheduler 2.0", "Thermostat Controller 2.0"].every { script._resolveCommitButton(it) == "update" }
+
+        and: "the served enum is the registry minus the types the classic create path rejects"
+        (def_.inputSchema.properties.appType.enum as Set) == (reg.keySet() - ["visual_rule", "button_rule"]) as Set
+    }
+
     def "_resolveCommitButton: null for submitOnChange Basic Rule, updateRule for RM-family/unknown (issue #185 item 3)"() {
         expect:
         script._resolveCommitButton("Basic Rule-1.0") == null
