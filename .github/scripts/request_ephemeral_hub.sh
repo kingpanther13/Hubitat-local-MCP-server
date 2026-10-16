@@ -151,8 +151,11 @@ verdict() {
     [[ "$1" =~ ^[0-9]+$ ]] || fail "verdict needs the provider run id."
     local deadline=$((SECONDS + ${VERDICT_DEADLINE:-900})) status="" read_ok=0
     while :; do
-      if read -r status conclusion <<< "$(gh run view "$1" --repo "$PROVIDER" --json status,conclusion \
-          --jq '"\(.status) \(.conclusion)"')"; then read_ok=1; fi
+      local answer=""
+      if answer=$(gh run view "$1" --repo "$PROVIDER" --json status,conclusion --jq '"\(.status) \(.conclusion)"'); then
+        read_ok=1
+        read -r status conclusion <<< "$answer"
+      fi
       [ "$status" != completed ] || break
       [ "$SECONDS" -lt "$deadline" ] || { conclusion=$([ "$read_ok" = 1 ] && echo unfinished || echo unreadable); break; }
       sleep 30

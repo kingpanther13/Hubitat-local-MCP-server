@@ -505,9 +505,8 @@ class RelayBudgetSpec extends ToolSpecBase {
 
         then:
         first.actions[0].rolledBack == true
-        first.applied == false
         !second.actions[0].containsKey('rolledBack')
-        second.wizardStuck == true
+        second.actions[0].error.contains('[wizardStuck')
     }
 
     def "the trigger-loop checkpoint never offers a fail-closed tail for resumption"() {

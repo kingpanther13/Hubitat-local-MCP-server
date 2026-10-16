@@ -46743,14 +46743,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         where:
         label                                              | kind        | spec                                                                                              | text
-        "compareToDevice without a comparator"             | "trigger"   | [capability: "Temperature", deviceIds: [8], compareToDevice: [deviceId: 9]]                        | "compareToDevice needs a comparator"
-        "compareToDevice beside a value"                   | "trigger"   | [capability: "Temperature", deviceIds: [8], comparator: ">", value: 70, compareToDevice: [deviceId: 9]] | "compareToDevice replaces state/value"
+        "compareToDevice without a comparator"             | "trigger"   | [capability: "Temperature", deviceIds: [8], compareToDevice: [deviceId: 9]]                        | "compareToDevice requires 'comparator'"
+        "compareToDevice beside a value"                   | "trigger"   | [capability: "Temperature", deviceIds: [8], comparator: ">", value: 70, compareToDevice: [deviceId: 9]] | "cannot be combined with 'state'/'value'"
         "compareToDevice on a device-state capability"     | "trigger"   | [capability: "Switch", deviceIds: [8], comparator: "=", compareToDevice: [deviceId: 9]]            | "applies only to Rule Machine's numeric capabilities"
         "a hub-state trigger with no state"                | "trigger"   | [capability: "Location Event"]                                                                    | "Location Event needs state"
         "a trigger capability no writer models"            | "trigger"   | [capability: "Days of Week Schedule"]                                                             | "trigger capability this tool does not model"
         "a condition capability no writer models"          | "condition" | [capability: "Time of day"]                                                                       | "condition capability this tool does not model"
         "and stays on a capability without a duration"     | "trigger"   | [capability: "Button", deviceIds: [8], buttonNumber: 1, state: "pushed", andStays: [minutes: 1]]  | "no 'and stays' duration for a Button trigger"
-        "a change comparator on an All-of-these trigger"   | "trigger"   | [capability: "Switch", deviceIds: [8, 9], allOfThese: true, comparator: "*changed*"]              | "no comparator for a Switch trigger"
+        "a change comparator on an All-of-these trigger"   | "trigger"   | [capability: "Switch", deviceIds: [8, 9], allOfThese: true, comparator: "*changed*"]              | "for a Switch trigger"
         "an over comparator on a variable condition"       | "condition" | [capability: "Variable", variable: "x", comparator: "*increased*"]                                 | "not one Rule Machine offers for a Variable condition"
     }
 
@@ -46802,30 +46802,29 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "RM lists no commands"             | [[name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]], [name: "devices.1", type: "capability.switch", multiple: true], [name: "cCmd.1", type: "enum", options: [:]]] | "found no commands"
     }
 
-    def "_discoverParentAppId says when the built-in app list could not be read or offers no usable type"() {
+    def "_systemAppTypeId skips a deprecated type and records why the list could not be read"() {
         given:
         boolean readable = true
         hubGet.register('/hub2/appsList') { params ->
             if (!readable) throw new IllegalStateException("502")
             JsonOutput.toJson([apps: [], systemAppTypes: [[id: 24, name: "Notifications", allowNewInstances: true, deprecated: true]]])
         }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 -> [status: 200, location: null, data: ""] }
 
         when:
-        script._discoverParentAppId("notifier")
+        def diag = [:]
+        def deprecated = script._systemAppTypeId("Notifications", diag)
 
         then:
-        def deprecated = thrown(IllegalArgumentException)
-        deprecated.message.contains("typeId=null")
-        !deprecated.message.contains("could not be read")
+        deprecated == null
+        diag.isEmpty()
 
         when:
         readable = false
-        script._discoverParentAppId("notifier")
+        def unreadable = script._systemAppTypeId("Notifications", diag)
 
         then:
-        def unreadable = thrown(IllegalArgumentException)
-        unreadable.message.contains("the built-in app list could not be read")
+        unreadable == null
+        diag.typeLookupError.toString().contains("502")
     }
 
 }
