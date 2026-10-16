@@ -283,7 +283,7 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         then:
         def e = thrown(IllegalArgumentException)
         e.message.contains("switch.condition.capability 'Switch' is not in Rule Machine's condition list on this hub. RM lists: Contact, Motion.")
-        !events.any { it[0] == "walk" }
+        !events.any { it[2] == "rCapab_4" || it == ["click", "doActPage", "hasAll"] }
     }
 
     def "a picker without the conditional sub-type is refused by the picker check, naming what it offers"() {

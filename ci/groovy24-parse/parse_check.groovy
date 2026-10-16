@@ -57,7 +57,8 @@ class HubNamespaceResolver extends ClassNodeResolver {
             // to that class: a star import of a hub package is tried before the default imports, so
             // synthesizing it here would hide the JDK or Groovy class (java.io.File, Map).
             boolean defaultImport = simple in ['BigDecimal', 'BigInteger'] || ['java.lang.', 'java.util.', 'java.io.', 'java.net.', 'groovy.lang.', 'groovy.util.'].any { pkg ->
-                try { Class.forName(pkg + simple, false, HubNamespaceResolver.classLoader); return true } catch (ClassNotFoundException | LinkageError ignored) { return false }
+                // A LinkageError means the class exists but could not link: still a default import.
+                try { Class.forName(pkg + simple, false, HubNamespaceResolver.classLoader); return true } catch (ClassNotFoundException ignored) { return false } catch (LinkageError ignored) { return true }
             }
             if (!defaultImport) found = new ClassNodeResolver.LookupResult(null, new ClassNode(name, 1, ClassHelper.OBJECT_TYPE))
         }

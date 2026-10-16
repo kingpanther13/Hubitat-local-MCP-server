@@ -71,7 +71,7 @@ def toolUpdateMcpSettings(args) {
     // "false", which is truthy in Groovy — silently flipping the toggle to enabled
     // when the caller meant disabled.
     def updates = [:]
-    def previous = [:]   // the value each key had before this call, so a caller can restore it
+    def previous = [:]   // each scalar key's stored value before this call (null: never set, so its default applied); selectedDevices is not recorded
     boolean hasDeviceScope = false
     def deviceScopeRaw = null
     args.settings.each { key, value ->

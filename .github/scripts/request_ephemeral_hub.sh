@@ -150,9 +150,10 @@ verdict() {
     desc="no provider run was started for the $kind hub"
   elif ! [[ "$1" =~ ^[0-9]+$ ]]; then
     desc="the $kind hub's provider run id was unusable"
+  elif [ -z "${PROVIDER:-}" ] || [ -z "${GH_TOKEN:-}" ]; then
+    # A run exists but cannot be read without the provider secrets: still a verdict, a failed one.
+    desc="the $kind hub's provider run could not be read (provider secrets unavailable)"
   else
-    # The provider is read only on this branch; a missing provider secret still gets a verdict.
-    : "${PROVIDER:?}" "${GH_TOKEN:?}"
     local deadline=$((SECONDS + ${VERDICT_DEADLINE:-900})) status="" read_ok=0
     while :; do
       local answer=""

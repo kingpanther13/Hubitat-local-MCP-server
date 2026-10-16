@@ -50,14 +50,11 @@ def _getAllToolDefinitions_partNativeRM() {
                 required: ["ruleId", "value"]
             ]
         ],
-        // Native classic-app CRUD (hub admin-layer, bypasses SmartApp parent-type check).
-        // Generic across native automation app types — RM is the first registered type;
-        // Room Lighting / Button Controllers / Basic Rules / Notifier / Groups+Scenes work
-        // for edit + delete today (any classic-app appId), and join create as their entries
-        // get added to _appTypeRegistry().
+        // Native classic-app CRUD (hub admin-layer, bypasses SmartApp parent-type check); create
+        // covers the types in _appTypeRegistry(), edit and delete any classic-app appId.
         [
             name: "hub_set_native_app",
-            description: """Create OR edit a classic native app (Room Lighting, Button Controller, Notifier, Group, Scene, Visual Rule, etc.): omit appId to CREATE (appType + name), provide appId to EDIT.[[FLAT_TRIM]] One generic upsert for any classic SmartApp instance via settings/button.[[/FLAT_TRIM]] For Rule Machine RULES use hub_set_rule[[FLAT_TRIM]] (in the hub_manage_rule_machine gateway)[[/FLAT_TRIM]] instead.[[FLAT_TRIM]] Its one-call structured shortcuts are the preferred RM path, NOT this tool's raw settings/walkStep.[[/FLAT_TRIM]]
+            description: """Create OR edit a classic native app (Room Lighting, Button Controller, Notifier, Group, Scene, Thermostat Scheduler, Thermostat Controller, Visual Rule, etc.): omit appId to CREATE (appType + name), provide appId to EDIT.[[FLAT_TRIM]] One generic upsert for any classic SmartApp instance via settings/button.[[/FLAT_TRIM]] For Rule Machine RULES use hub_set_rule[[FLAT_TRIM]] (in the hub_manage_rule_machine gateway)[[/FLAT_TRIM]] instead.[[FLAT_TRIM]] Its one-call structured shortcuts are the preferred RM path, NOT this tool's raw settings/walkStep.[[/FLAT_TRIM]]
 
 Requires the Write master + confirm=true + recent hub backup.[[FLAT_TRIM]]
 
@@ -166,11 +163,11 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     walkStep: [
                         type: "object",
-                        description: """Wizard walker for what the shortcuts cannot express (e.g. Periodic sub-pages). {page, operation: introspect|write|click|navigate|done|drive, write?:{field: value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?}, steps?:[...]}; drive runs steps in one call: hub_get_tool_guide(section='set_rule_reference_walkstep')."""
+                        description: """Wizard walker for what the shortcuts cannot express (e.g. Periodic sub-pages). {page, operation: introspect|write|click|navigate|done|drive, write?:{field: value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, validateEnum?, steps?:[...]}; drive runs steps in one call. Reference: hub_get_tool_guide(section='set_rule_reference_walkstep')."""
                     ],
                     addAction: [
                         type: "object",
-                        description: """Add an RM action; returns actionIndex (the action editor finalizes it, no updateRule). `capability` and `action` are Rule Machine's; their fields: hub_set_rule(operation:'discover', args:{kind:'action', capability, action?}). ifThen/elseIf/repeatWhile/waitExpression take expression={conditions:[...], operator|operators}, each condition a kind:'condition' spec; nested subExpression only in addRequiredExpression. One waitEvents per rule. ruleIds of runRule/cancelTimers/pauseRule/privateBoolean must be existing rules; privateBoolean also takes '*' (this rule). Optional: delay {hours, minutes, seconds, cancelable}, rawSettings {field: value} with @N = the action index. A spec RM cannot bake is refused or rolled back: success:false means nothing was added."""
+                        description: """Add an RM action; returns actionIndex (the action editor finalizes it, no updateRule). `capability` and `action` are Rule Machine's; their fields: hub_set_rule(operation:'discover', args:{kind:'action', capability, action?}). ifThen/elseIf/repeatWhile/waitExpression take expression={conditions:[...], operator|operators}, each condition a kind:'condition' spec; nested subExpression only in addRequiredExpression. One waitEvents per rule. ruleIds of runRule/cancelTimers/pauseRule/privateBoolean must be existing rules; privateBoolean also takes '*' (this rule). Optional: delay {hours, minutes, seconds, cancelable}, rawSettings {field: value} with @N = the action index. A spec RM cannot bake is refused or rolled back: success:false with rolledBack:true means nothing was added; applied:null means a row or its fields may remain, so read the rule before retrying."""
                     ],
                     guide: [type: "boolean", description: "Set true to return the hub_set_rule reference inline (hub_get_tool_guide section 'set_rule_reference'). Changes no rule."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller: {controllerId, buttonNumber, event}. Returns buttonRuleId with the Button trigger auto-seeded — then author actions via addAction on that appId. The controller must already have a button device.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
@@ -309,17 +306,10 @@ private Map _rmWholeGuideSection(String sectionKey) {
 }
 
 
-// Enumerate Rule Machine rules via the official hubitat.helper.RMUtils API
-// (RM 4.x + RM 5.x, deduplicated by id) and ghost-filter them against the live
-// /hub2/appsList tree. Shared by hub_list_rules (which formats the rich list and
-// reports ghosts) and _rmValidRuleIds (which needs the existence-safe id set for
-// pre-write rule-target validation), so the RMUtils lookup + ghost-filter logic
-// lives in exactly one place.
-// RMUtils is an optional platform class -- absent on hubs that have never
-// installed Rule Machine. Absence manifests as NoClassDefFoundError or
-// ClassNotFoundException (both Error subclasses, uncaught by catch Exception),
-// hence the catch Throwable + null-guarded .message; the caller classifies which
-// Throwables are a quiet "RM not installed" vs a real failure to surface.
+// Rule Machine rules via hubitat.helper.RMUtils (RM 4.x + 5.x, deduplicated by id), ghost-filtered
+// against the live /hub2/appsList tree. RMUtils is an optional platform class: absent on a hub that
+// never installed Rule Machine, which surfaces as NoClassDefFoundError or ClassNotFoundException
+// (Error subclasses), hence the catch Throwable and the null-guarded .message.
 // Returns [combined, ghostIds, v4Error, v5Error, treeReadable, liveApps]:
 //   combined     -- id(String) -> entry map, ghost-filtered when the tree read
 //   ghostIds     -- ids RMUtils reported that are absent from /hub2/appsList
@@ -1965,6 +1955,8 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             cm.deviceIds = [cm.deviceId]
         }
         _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds)
+        _rmRequireConditionDeviceCapability("addTrigger.condition.deviceIds", cm)
+        if (cm.compareToDevice instanceof Map) _rmValidateDeviceIdsExist("addTrigger.condition.compareToDevice.deviceId", [(cm.compareToDevice as Map).deviceId])
     }
     if (triggerSpec.compareToDevice instanceof Map) {
         _rmValidateDeviceIdsExist("addTrigger.compareToDevice.deviceId", [(triggerSpec.compareToDevice as Map).deviceId])
@@ -2730,7 +2722,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
         // The condition RM created for the cancelled trigger stays in its condition list as unused
         // (harmless, per RM); the next conditional trigger takes a new slot. A refusal after it
         // exists is no longer a validation error: a corrected retry would create another.
-        if (leftover) throw new IllegalStateException("${(failed.message ?: failed.toString()).replace(' RM is not touched.', '')}${leftover}".toString(), failed)
+        if (leftover) throw _rmFail(new IllegalStateException("${(failed.message ?: failed.toString()).replace(' RM is not touched.', '')}${leftover}".toString(), failed), [fieldsWritten: true])
         throw failed
     }
 }
@@ -2807,7 +2799,9 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     if (cap in ["Location Event", "HSM Alert"]) {
         List listed = (cap == "Location Event" ? t.locationEvents : t.hsmAlerts) as List
         if (spec.state == null) throw new IllegalArgumentException("${where}: ${cap} needs state (one of ${listed.join(', ')}). ${hint}".toString())
-        if (!(spec.state.toString() in listed)) throw new IllegalArgumentException("${where}: ${cap} state '${spec.state}' is not one Rule Machine lists (${listed.join(', ')}). ${hint}".toString())
+        def canonical = listed.find { it.toString().equalsIgnoreCase(spec.state.toString().trim()) }
+        if (canonical == null) throw new IllegalArgumentException("${where}: ${cap} state '${spec.state}' is not one Rule Machine lists (${listed.join(', ')}). ${hint}".toString())
+        spec.state = canonical
     }
     if (spec.compareToDevice != null && fam != "numeric") {
         throw new IllegalArgumentException("${where}: compareToDevice applies only to Rule Machine's numeric capabilities (${(t.numeric as List).join(', ')}). ${hint}".toString())
@@ -3029,7 +3023,8 @@ private Map _rmActionDiscover(Object selector) {
 // It is the one source for the mapping (_rmMapActionSpec), the discover schema and the argument
 // checks. Field entries (an entry's `slots`): name (spec field), key (RM setting), type, values
 // (the enum a field takes), required, desc; fixed = the value always written (no spec field); dflt = default;
-// appChoice = a picker of a hub app's own data, checked against RM's live options; whenTrue =
+// appChoice = a picker of hub data that can be empty (app instances, their modes or periods, hub
+// variables), checked against RM's live options; whenTrue =
 // written only when true; whenSet = written as true when the field is given (the toggle RM shows
 // before the field's own picker); trueWhen = written as (value == trueWhen); direction = written
 // as (direction == 'raise') or, when false, (direction != 'raise'); nonBlank = must have text.
@@ -3289,7 +3284,7 @@ private Map _rmActionSchemaForDiscover() {
             conditional.put(act.toString(), ((conditional.get(act.toString()) ?: []) as List) + (ae.requires as List))
         }
         (entry.common ?: []).each { Map c -> optional << [name: c.name, type: c.type] + (c.desc ? [description: c.desc] : [:]) }
-        if (entry.actType != "condActs" && !(entry.sub in ["getWhile", "getWaitRule"])) optional << [name: "condition", type: "Map", description: "makes the row a Simple Conditional Action: a condition spec as in expressions, or {definedIndex} for a condition the rule already defines; the action runs only while it is true"]
+        if (!_rmNoConditionRow(entry.actType?.toString(), entry.sub?.toString())) optional << [name: "condition", type: "Map", description: "makes the row a Simple Conditional Action: a condition spec as in expressions, or {definedIndex} for a condition the rule already defines; the action runs only if it is true when reached"]
         def subTypes = (entry.actions instanceof Map) ? perAction.collectEntries { act, Map ae -> [(act.toString()): ae.sub ?: entry.sub] } : entry.sub
         def example = [capability: cap]
         if (actions) example.action = actions[0]
@@ -3345,7 +3340,7 @@ private Map _rmSubActCapab() {
 // defines (useCond / useCondNdx) or a new one, then "Done with this condition" (hasAll) clears the
 // row's type pickers so the action itself is chosen next on the same row. The caller's catch
 // rolls the row back on a throw. Returns the index of a condition it defined, else null.
-private Integer _rmWriteSimpleConditionalPreamble(Integer appId, Integer idx, String cap, Map cond, List applied, List skipped) {
+private Integer _rmWriteSimpleConditionalPreamble(Integer appId, Integer idx, String cap, Map cond, List applied, List skipped, List condIdxOut = null) {
     _rmWriteSettingOnPage(appId, "doActPage", "actType.${idx}", "condActs", applied, null, skipped)
     _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${idx}", "getCondAct", applied, null, skipped)
     _rmRequireOfferedActionSubType("${cap}.condition".toString(), "getCondAct", idx, skipped)
@@ -3379,8 +3374,21 @@ private Integer _rmWriteSimpleConditionalPreamble(Integer appId, Integer idx, St
                 mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on doActPage (simple conditional action ${idx}): ${cancelExc.message}")
             }
         }
-        _rmWalkConditionReveal(appId, [page: "doActPage", writeST: writeAct, cancelInFlightCondition: cancel, condIdx: 0, cap: "${cap}.condition".toString(),
-                                       capCanonical: capCanonical, hrefParams: [unUsed: null], applied: applied, skipped: skipped], cond, cIdx)
+        if (condIdxOut != null) condIdxOut[0] = cIdx
+        boolean cancelFailed = false
+        def cancel = {
+            try { _rmClickAppButton(appId, "cancelCapab", null, "doActPage") } catch (Exception cancelExc) {
+                cancelFailed = true
+                mcpLog("warn", "rm-native", "cancelCapab cleanup failed for app ${appId} on doActPage (simple conditional action ${idx}): ${cancelExc.message}")
+            }
+        }
+        try {
+            _rmWalkConditionReveal(appId, [page: "doActPage", writeST: writeAct, cancelInFlightCondition: cancel, condIdx: 0, cap: "${cap}.condition".toString(),
+                                           capCanonical: capCanonical, hrefParams: [unUsed: null], applied: applied, skipped: skipped], cond, cIdx)
+        } catch (Exception walkExc) {
+            if (cancelFailed) throw _rmFail(new IllegalStateException("${walkExc.message} [wizardStuck -- cancelCapab cleanup also failed on doActPage; close the condition editor with hub_set_rule(button='cancelCapab', pageName='doActPage', confirm=true)]".toString(), walkExc), [wizardStuck: true])
+            throw walkExc
+        }
         // The render that handles Done clears the type pickers; only the next one shows them again.
         _rmFetchConfigJson(appId, "doActPage")
         return cIdx
@@ -3389,18 +3397,34 @@ private Integer _rmWriteSimpleConditionalPreamble(Integer appId, Integer idx, St
 
 // A refused Simple Conditional Action leaves the condition it defined in the rule's pool, listed by
 // the actions page's Manage Conditions (pred:false), where its bin button removes it on the next render.
-private void _rmDropSimpleCondition(Integer appId, Integer condIdx) {
-    if (condIdx == null) return
+// Returns true when the condition is confirmed gone; a condition left behind is named in the response.
+private boolean _rmDropSimpleCondition(Integer appId, Integer condIdx) {
+    if (condIdx == null) return true
     try {
         _rmNavigateToPage(appId, "selectActions", "selectConditions", 0, "name", [pred: false])
         _rmClickAppButton(appId, condIdx.toString(), "deleteCon", "selectConditions", null)
         _rmFetchConfigJson(appId, "selectConditions")
         if (_rmFetchSettingsByName(appId)?.containsKey("rCapab_${condIdx}".toString())) {
             mcpLog("warn", "rm-native", "condition ${condIdx} of a refused simple conditional action is still defined in app ${appId}")
+            return false
         }
+        return true
     } catch (Exception e) {
         mcpLog("warn", "rm-native", "removing condition ${condIdx} of a refused simple conditional action from app ${appId} failed (${e.message})")
+        return false
     }
+}
+
+// The leftover-condition sentence for a refusal whose condition could not be removed.
+private String _rmSimpleConditionLeftNote(Integer condIdx) {
+    " The condition created for this action (id ${condIdx}) stays in the rule's conditions as unused; Manage Conditions in the Rule Machine UI can delete it.".toString()
+}
+
+// Re-raise a refusal after the row cleanup, naming a condition the cleanup could not remove.
+private void _rmRethrowWithConditionNote(Exception refusal, Integer condIdx, boolean dropped) {
+    if (dropped) throw refusal
+    Map flags = _rmOutcomeFlags(refusal) + [fieldsWritten: true]
+    throw _rmFail(new IllegalStateException("${(refusal.message ?: refusal.toString()).replace(' RM is not touched.', '')}${_rmSimpleConditionLeftNote(condIdx)}".toString(), refusal), flags)
 }
 
 // RM prunes its action sub-type picker to what the hub has (pruneSubTypes: an installed app such as
@@ -3409,12 +3433,15 @@ private void _rmDropSimpleCondition(Integer appId, Integer condIdx) {
 private void _rmRequireOfferedActionSubType(String cap, String actSubType, Integer idx, List skipped) {
     def miss = skipped.find { it instanceof Map && it.key?.toString() == "actSubType.${idx}".toString() && it.reason == "not_offered" }
     if (miss == null) return
+    if (actSubType == "getCondAct") {
+        throw new IllegalArgumentException("${cap}: Rule Machine does not offer a Simple Conditional Action on this row. This row's picker offers: ${(miss.offered as List).join(', ')}.".toString())
+    }
     throw new IllegalArgumentException("addAction: Rule Machine's action picker on this hub does not offer '${cap}' (${actSubType}). RM lists an action only when the hub has what it needs: the built-in app it drives (Hubitat Safety Monitor, Scenes, Room Lights, Thermostat Scheduler or Controller), a device with the capability, or, for returnValue, a rule that returns a value. This hub's picker offers: ${(miss.offered as List).join(', ')}.".toString())
 }
 
 // A choice RM's picker does not list (a player command the player lacks, a scene or app instance
 // that is not there) leaves a row RM does not render; the caller's catch rolls it back. The writer
-// checks single values; list values are checked here against the live picker.
+// checks single values; list values and every appChoice value are checked here against the live picker.
 private void _rmRequireOfferedCatalogChoice(Integer appId, String cap, String action, Integer idx, Map fields, List skipped) {
     Map entry = _rmActionCatalog()[cap == "variable" ? "setVariable" : cap] as Map
     Map ae = (entry?.actions instanceof Map) ? ((entry.actions as Map)[action] as Map) : null
@@ -3428,7 +3455,7 @@ private void _rmRequireOfferedCatalogChoice(Integer appId, String cap, String ac
     }
     def miss = skipped.find { it instanceof Map && it.reason == "not_offered" && fields.keySet().any { k -> keyOf(k) == it.key?.toString() } }
     if (miss != null) refuse(miss.key.toString(), "'${miss.value}'", (miss.offered ?: []) as List)
-    // appChoice: a picker listing an app's own data (instances, its modes or periods), which can be empty.
+    // appChoice: a picker of hub data that can be empty (app instances, their modes or periods, hub variables).
     Map checked = fields.findAll { k, v ->
         (v instanceof List && !(nameOf(keyOf(k)) in ["deviceIds", "ruleIds"])) || slots.find { it.key?.toString() == k.toString() }?.appChoice
     }
@@ -3444,9 +3471,9 @@ private void _rmRequireOfferedCatalogChoice(Integer appId, String cap, String ac
 }
 
 // Every device of an action must have the capability RM's picker for that action lists; RM stores
-// any id and renders the row, but the command then has no implementation to run. Skipped, with a
-// log line, when the device list cannot be read; a device absent from it, or listed with no
-// capabilities, is left to the existence check.
+// any id and renders the row, but the command then has no implementation to run. Skipped (named in
+// checksSkipped) when the device list cannot be read; a device absent from it is left to the existence
+// check, and one listed with no capabilities passes (the feed cannot see into it).
 private void _rmRequireDeviceCapability(String label, Object ids, String subType) {
     _rmRequireDevicesWithCapability(label, ids, subType ? _rmSubActCapab()[subType] : null)
 }
@@ -3471,11 +3498,13 @@ private void _rmRequireDevicesWithCapability(String label, Object ids, String ca
         try { parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/vrb/devices") ?: "[]") } catch (Exception e) {
             mcpLog("warn", "rm-native", "${label}: device capabilities could not be read (${e.message ?: e}); the ${cap} check is skipped for this call")
             _memoKeepDeviceList([:])
+            _memoNoteSkippedCheck("device capabilities (the device list could not be read)")
             return
         }
         if (!(parsed instanceof List)) {
             mcpLog("warn", "rm-native", "${label}: the device list had an unexpected shape (${_typeName(parsed)}); the ${cap} check is skipped for this call")
             _memoKeepDeviceList([:])
+            _memoNoteSkippedCheck("device capabilities (the device list had an unexpected shape)")
             return
         }
         parsed.each { d ->
@@ -3487,11 +3516,11 @@ private void _rmRequireDevicesWithCapability(String label, Object ids, String ca
     // An empty capability list is a device the feed cannot see into (as the devices library reads it): unknown, not lacking.
     def lacking = (ids as List).findAll { id -> def d = byId.get(id?.toString()); d != null && d.caps && !(cap.toLowerCase() in d.caps) }
     if (lacking) {
-        throw new IllegalArgumentException("${label}: ${lacking.collect { id -> "device ${id} (${byId.get(id.toString()).label})" }.join(', ')} ${lacking.size() == 1 ? 'does' : 'do'} not have the ${cap} capability Rule Machine's picker for this action lists. RM is not touched.".toString())
+        throw new IllegalArgumentException("${label}: ${lacking.collect { id -> "device ${id} (${byId.get(id.toString()).label})" }.join(', ')} ${lacking.size() == 1 ? 'does' : 'do'} not have the ${cap} capability Rule Machine's device picker here lists. RM is not touched.".toString())
     }
 }
 
-// Case and outer spaces are ignored; the catalog's spelling is what gets written.
+// Refuses a value outside the field's enum (case and outer spaces ignored).
 private void _rmRequireCatalogValue(String label, Map f, Object value) {
     if (value == null || !(f.values instanceof List)) return
     if (_rmCatalogValueCanonical(f, value) == null) {
@@ -4020,9 +4049,10 @@ private void _rmRequireVariableName(Integer appId, Object name) {
     // A name absent from one list may be in the other; without both, nothing is refused.
     if (hub == null || locals == null) {
         mcpLog("warn", "rm-native", "modifyAction: variable '${target}' was not checked: ${hub == null ? 'hub' : 'local'} variables unreadable")
+        _memoNoteSkippedCheck("variable name (the ${hub == null ? 'hub' : 'local'} variable list could not be read)")
         return
     }
-    throw new IllegalArgumentException("modifyAction: variable '${target}' is not a hub variable or one of this rule's local variables. Hub variables: ${hub == null ? '(unreadable)' : (hub.sort().join(', ') ?: '(none)')}; local variables: ${locals == null ? '(unreadable)' : (locals.sort().join(', ') ?: '(none)')}. RM is not touched.".toString())
+    throw new IllegalArgumentException("modifyAction: variable '${target}' is not a hub variable or one of this rule's local variables. Hub variables: ${hub.sort().join(', ') ?: '(none)'}; local variables: ${locals.sort().join(', ') ?: '(none)'}. RM is not touched.".toString())
 }
 
 // The argument checks and the settings an in-place edit will write, decided from the committed
@@ -4043,6 +4073,9 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
     def editAct = (status?.appState ?: []).find { it?.name?.toString() == "editAct" }?.value
     if (editAct != null) throw new IllegalStateException(_rmStuckEditActMessage("modifyAction(${actionIdx})", appId, editAct))
     Map target = _rmCatalogEntryForSubType(subType, committed)
+    // A custom entry's fields follow rules its own mapper holds; only the ones this planner
+    // handles below (runCommand, setVariable, privateBoolean, hsm) are edited in place.
+    if (target != null && (target.entry.custom == true || target.actionEntry.custom == true) && !(target.cap in ["runCommand", "setVariable", "variable", "privateBoolean", "hsm"])) target = null
     if (target == null) {
         throw new IllegalArgumentException("modifyAction: action ${actionIdx} (${subType}) cannot be edited in place; rebuild it with removeAction + addAction. RM is not touched.")
     }
@@ -4065,8 +4098,13 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
         action = newAction
         ((actionEntry.slots ?: []) as List).each { Map f -> if (f.containsKey("fixed")) writes[f.key.toString().replace("@N", actionIdx.toString())] = f.fixed }
     }
-    List fieldDefs = (((entry.slots ?: []) as List) + ((actionEntry.slots ?: []) as List)).findAll { it.key && it.name }
+    List fieldDefs = (((entry.slots ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.slots ?: [])) as List)).findAll { it.key && it.name }
     def editable = (fieldDefs*.name).unique() + (actions != null ? ["action"] : [])
+    // At most one of an exclusive group may be given, as on an add.
+    (((entry.exclusive ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.exclusive ?: [])) as List)).each { List g ->
+        def given = g.findAll { mods.containsKey(it?.toString()) && mods.get(it?.toString()) != null }
+        if (given.size() > 1) throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes one of ${g.join(', ')}, not ${given.join(' and ')}. RM is not touched.".toString())
+    }
     mods.each { k, v ->
         String name = k.toString()
         if (name == "action") return
@@ -4075,6 +4113,13 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
             throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: '${name}' is not a field that can be edited in place. Editable: ${editable.join(', ')}. RM is not touched.")
         }
         named.findAll { it.whenSet && v != null }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = true }
+        // A literal given for a field whose exclusive partner is a variable clears that partner's
+        // toggle first, so RM reveals the literal's picker again (uVar false, then tiltLevel).
+        (((entry.exclusive ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.exclusive ?: [])) as List)).findAll { List g -> name in g }.each { List g ->
+            g.findAll { it != name }.each { other ->
+                fieldDefs.findAll { it.name == other && it.whenSet }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = false }
+            }
+        }
         Map f = named.find { !it.whenSet } as Map
         if (f == null) return
         _rmRequireCatalogValue("modifyAction on ${cap}".toString(), f, v)
@@ -5099,7 +5144,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         if (r instanceof String && actionSpec.get(r) == null) throw new IllegalArgumentException("${specLabel} requires '${r}'.".toString())
     }
     perLevel("exclusive").each { List g ->
-        def given = g.findAll { actionSpec.get(it?.toString()) != null }
+        def given = g.findAll { def got = actionSpec.get(it?.toString()); got != null && !(got == false && boolField(it.toString())) }
         if (given.size() > 1) throw new IllegalArgumentException("${specLabel} takes one of ${g.join(', ')}, not ${given.join(' and ')}.".toString())
     }
     if (!(catEntry.custom == true || catAction.custom == true)) {
@@ -5669,17 +5714,23 @@ private List _rmSimpleCondExcluded() {
      "Keypad codes", "Lock codes", "Variable", "Custom Attribute", "Last Event Device", "On a Day", "Time Since Event"]
 }
 
-// A condition makes the row a Simple Conditional Action. Inside one RM's type picker drops the
-// conditional group and its sub-type pickers drop Repeat While and Wait for Expression.
+// Inside a Simple Conditional Action RM's type picker drops the conditional group and its sub-type
+// pickers drop Repeat While and Wait for Expression: those rows cannot carry a condition.
+private boolean _rmNoConditionRow(String actType, String subType) { actType == "condActs" || subType in ["getWhile", "getWaitRule"] }
+
+// A condition makes the row a Simple Conditional Action.
 private void _rmCheckSimpleConditionSpec(String cap, String actType, String subType, Object cond) {
     if (!(cond instanceof Map)) throw new IllegalArgumentException("${cap}.condition must be a condition spec, or {definedIndex} for a condition the rule already defines.".toString())
-    if (actType == "condActs" || subType in ["getWhile", "getWaitRule"]) {
+    if (_rmNoConditionRow(actType, subType)) {
         throw new IllegalArgumentException("${cap} cannot carry a condition: Rule Machine does not offer it inside a Simple Conditional Action. Use ifThen ... endIf instead.".toString())
     }
     Map c = cond as Map
     if (c.definedIndex != null) return
     if (!c.capability?.toString()?.trim()) throw new IllegalArgumentException("${cap}.condition needs capability (or definedIndex for a condition the rule already defines).".toString())
     _rmCheckCondSpec(c, "condition", "${cap}.condition".toString())
+    _rmValidateDeviceIdsExist("${cap}.condition.deviceIds".toString(), c.deviceIds ?: (c.deviceId != null ? [c.deviceId] : null))
+    _rmRequireConditionDeviceCapability("${cap}.condition.deviceIds".toString(), c)
+    if (c.compareToDevice instanceof Map) _rmValidateDeviceIdsExist("${cap}.condition.compareToDevice.deviceId".toString(), [(c.compareToDevice as Map).deviceId])
     if (c.capability in _rmSimpleCondExcluded()) {
         throw new IllegalArgumentException("${cap}.condition: Rule Machine does not offer a ${c.capability} condition in a Simple Conditional Action (it leaves out ${_rmSimpleCondExcluded().join(', ')}). Define the condition first and pass {definedIndex}, or use ifThen ... endIf. RM is not touched.".toString())
     }
@@ -5800,6 +5851,8 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
             if (sm.condition instanceof Map) {
                 def cm = sm.condition as Map
                 _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds ?: (cm.deviceId != null ? [cm.deviceId] : null))
+                _rmRequireConditionDeviceCapability("addTrigger.condition.deviceIds", cm)
+                if (cm.compareToDevice instanceof Map) _rmValidateDeviceIdsExist("addTrigger.condition.compareToDevice.deviceId", [(cm.compareToDevice as Map).deviceId])
             }
             if (sm.compareToDevice instanceof Map) {
                 _rmValidateDeviceIdsExist("addTrigger.compareToDevice.deviceId", [(sm.compareToDevice as Map).deviceId])
@@ -5991,9 +6044,10 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
 
     // From here to the rawSettings block the editor is open on this row: any refusal must
     // cancel it, or RM reopens the row with its stale fields on the next add.
-    Integer simpleCondIdx = null
+    // The slot is known as soon as the condition is built, so a throw after it still names it.
+    def simpleCond = [null]
     try {
-        if (actionSpec.condition instanceof Map) simpleCondIdx = _rmWriteSimpleConditionalPreamble(appId, idx, cap, actionSpec.condition as Map, applied, skipped)
+        if (actionSpec.condition instanceof Map) _rmWriteSimpleConditionalPreamble(appId, idx, cap, actionSpec.condition as Map, applied, skipped, simpleCond)
         _rmWriteSettingOnPage(appId, "doActPage", "actType.${idx}", actType, applied, null, skipped)
         _rmWriteSettingOnPage(appId, "doActPage", "actSubType.${idx}", actSubType, applied, null, skipped)
         _rmRequireOfferedActionSubType(cap, actSubType, idx, skipped)
@@ -6019,7 +6073,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         if (cap == "runCommand") _rmWriteRunCommandFields(appId, idx, actionSpec, applied, skipped)
         _rmWriteWaitEventRows(appId, idx, actionSpec, actSubType, applied, skipped)
     } catch (Exception preExprExc) {
-        try { _rmCancelRefusedActionEditor(appId, idx, preExprExc) } finally { _rmDropSimpleCondition(appId, simpleCondIdx) }
+        _rmCancelRefusedActionEditorThenDropCondition(appId, idx, preExprExc, simpleCond[0] as Integer)
     }
 
     // Expression actions walk each condition (cond=a -> rCapab_<x> -> rDev_<x> -> state_<x> -> hasAll),
@@ -6055,6 +6109,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         def opsList = (exprSpec.operators instanceof List) ? (exprSpec.operators as List).collect { it?.toString()?.toUpperCase() } : null
         conditions.eachWithIndex { c, i ->
             if (!(c instanceof Map)) return
+            _rmRequireConditionDeviceCapability("${cap}.expression.conditions[${i}].deviceIds".toString(), c as Map)
+            if ((c as Map).compareToDevice instanceof Map) _rmValidateDeviceIdsExist("${cap}.expression.conditions[${i}].compareToDevice.deviceId".toString(), [((c as Map).compareToDevice as Map).deviceId])
             def ids = (c as Map).deviceIds
             if (!(ids instanceof List)) return
             ids.each { id ->
@@ -6186,7 +6242,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             }
         }
     } catch (Exception postOpenExc) {
-        try { _rmCancelRefusedActionEditor(appId, idx, postOpenExc) } finally { _rmDropSimpleCondition(appId, simpleCondIdx) }
+        _rmCancelRefusedActionEditorThenDropCondition(appId, idx, postOpenExc, simpleCond[0] as Integer)
     }
 
     // RM bakes the action on the navigation off doActPage that follows the actionDone click;
@@ -6237,7 +6293,8 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
             def appState = _rmFetchStatusJson(appId)?.appState
             def listed = (appState instanceof List) ? (appState as List).find { it instanceof Map && it.name?.toString() == "actionList" }?.value : null
             List baked = (listed instanceof List) ? _rmCoerceActionIndices(listed as List) : null
-            if (baked != null && !baked.contains(idx)) actionNotBaked = true
+            if (baked == null) _memoNoteSkippedCheck("action baked (the rule's state carries no actionList)")
+            else if (!baked.contains(idx)) actionNotBaked = true
         }
     } catch (Exception verifyExc) {
         verificationFetchFailed = true
@@ -6261,7 +6318,10 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     def rolledBack = false
     if (actionNotBaked || err != null) {
         rolledBack = _rmRollbackInFlightAction(appId, idx, false)
-        if (rolledBack) _rmDropSimpleCondition(appId, simpleCondIdx)
+        // A row that could not be removed keeps its condition bound to it; only a removed row's is dropped.
+        if (rolledBack && simpleCond[0] != null && !_rmDropSimpleCondition(appId, simpleCond[0] as Integer)) {
+            repairHints << _rmSimpleConditionLeftNote(simpleCond[0] as Integer).trim()
+        }
         if (rolledBack) {
             try { health = _rmCheckRuleHealth(appId) } catch (Exception healthExc) {
                 mcpLog("warn", "rm-native", "_rmAddAction: post-rollback health re-read failed for app ${appId} (${healthExc.message})")
@@ -6682,16 +6742,9 @@ private String _rmRollbackHint(Map backup) {
 }
 
 
-// Build the standard error response shape for _applyNativeAppEdit catch
-// blocks. Detects pre-flight refusals (signalled by the "RM is not
-// touched" sentinel that every pre-flight refusal throw includes) and
-// adjusts the restoreHint to make clear that nothing was mutated — so
-// the caller doesn't waste a hub_restore_backup call. Always attaches the
-// current health (issue #254) so the caller sees the rule's compiled-state
-// `broken` verdict straight off the failure — on a pre-flight refusal that is
-// the existing damage that motivated the refusal; on a mutation failure it is
-// whether the write left the rule broken — without a follow-up
-// hub_get_rule_health call.
+// Error envelope for an edit's failure. A refusal before the backup decision (backup null), or one
+// carrying "RM is not touched", says nothing needs restoring; the outcome flags (wizardStuck,
+// fieldsWritten, rolledBack) come from `cause`; the rule's current health is attached.
 private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, String pageName = "doActPage", Throwable cause = null) {
     def msgStr = msg?.toString() ?: ""
     // No backup means the refusal fired before the baseline snapshot, so nothing was written: a
@@ -6849,8 +6902,8 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
     return out
 }
 
-// What renders each RM wizard page or slot, the state RM keeps for it, and button effects: the single
-// table walkStep's refusals and hints read, and the one the walkStep guide points to.
+// What renders each RM wizard page or slot, the state RM keeps for it, and button effects: the table
+// walkStep's refusals and hints read; the walkStep guide restates it (pinned by WalkStepSourceSpec).
 Map _rmWizardPrerequisites() {
     return [
         pages: [
@@ -6921,8 +6974,8 @@ private String _rmWizardPrerequisiteHint(String page, String key, Map configPage
 // write?: {<key>: <value>},
 // click?: {name, stateAttribute?},
 // navigate?: {targetPage},
-// validateEnum?: bool,  // if true, reject writes whose value
-// // isn't in the input's options list
+// validateEnum?: bool,  // if true, also check each value of a LIST write against the
+// // input's options (a single value the picker does not list is always refused)
 // hrefContext?: {fromPage, hrefName, hrefParams?, hrefIndex?}
 // // for sub-page ops + back-nav (done)
 // }
@@ -6962,7 +7015,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
     boolean pendingClear = actionPage && _rmPendingPredClearSnapshot().get(appId.toString()) != null
     boolean runsClear = operation in ["write", "click", "navigate"] && actionPage
     def prereqRefusal = _rmWizardPrerequisiteRefusal([page, navTarget], beforeStatus, pendingClear && runsClear)
-    if (prereqRefusal) throw new IllegalArgumentException(prereqRefusal)
+    if (prereqRefusal) throw _rmFail(new IllegalArgumentException(prereqRefusal), [notSent: true])
 
     // walkStep can author actions, so run any deferred predCapabs clear first (from an earlier
     // addRequiredExpression), or the action is wrapped in IF(**Broken Condition**).
@@ -7078,7 +7131,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
             def invalid = values.findAll { v -> v != null && !validValues.contains(v) }
             if (invalid) {
                 def valueWord = (invalid.size() == 1) ? "value" : "values"
-                throw new IllegalArgumentException("walkStep.write enum validation failed: ${valueWord} ${invalid} not in options ${validValues} for field '${writtenKey}'. Pass validateEnum=false to bypass, or pick a valid option.")
+                throw new IllegalArgumentException("walkStep.write enum validation failed: ${valueWord} ${invalid} not in options ${validValues} for field '${writtenKey}'. Pick values from the options list (a single value the picker does not list is always refused; validateEnum=false lets a list through unchecked).")
             }
         }
         def fullSchemaMap = _rmCollectInputSchema(beforeCfg?.configPage)
@@ -7789,8 +7842,9 @@ Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null)
             if (e.message?.contains("404")) {
                 throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='set_rule_reference').")
             }
+            throw new IllegalStateException("Rule/app ${ruleId} could not be read before the edit (${e.message ?: e}). Nothing was changed.".toString(), e)
         }
-        if (cfg instanceof Map) _rmNoteRuleMachineConfig(ruleId, cfg)
+        _rmNoteRuleMachineConfig(ruleId, cfg)
         // A map, not null: null means the edit was refused before its backup decision.
         return [skipped: "pre-edit backups are off in Advanced settings"]
     }
@@ -8435,7 +8489,7 @@ def toolSetRule(args) {
             out.note = ((out.note ? out.note.toString() + " " : "") + "The rule was stopped; Rule Machine's update restarted it and set its private boolean to true.").toString()
         }
     }
-    // A refusal ran no update, so there is nothing to report about a restart.
+    // A call that applied nothing ran no update, so there is no restart to report.
     if (stoppedUnread && out instanceof Map && out.applied != false) {
         out.stoppedStateUnverified = true
         out.note = ((out.note ? out.note.toString() + " " : "") + (wasStopped == true
@@ -8452,9 +8506,11 @@ def toolSetRule(args) {
 Map _rmStampOutcome(Object result) {
     if (!(result instanceof Map) || !(result as Map).containsKey("success")) return result as Map
     Map r = result as Map
-    // fieldsWritten / wizardStuck mark a row that is written but not a committed action, so they
-    // outrank partial: the answer is null, not true.
+    // fieldsWritten / wizardStuck mark a row that is written but not committed, so they outrank
+    // partial: the answer is null, not true. checksSkipped names the checks a hub read kept from running.
     boolean unsettled = r.wizardStuck == true || r.fieldsWritten == true
+    def skippedChecks = _memoSkippedChecks()
+    if (skippedChecks) r.checksSkipped = skippedChecks
     boolean applied = r.rolledBack != true && (r.success == true || (r.partial == true && !unsettled))
     Boolean appliedFlag = applied ? true : (unsettled ? null : false)
     boolean activated = applied && r.updateRuleFailed != true && r.subscriptionsNotLive != true &&
@@ -9948,11 +10004,26 @@ private void _rmRequireExistingHubFile(Integer appId, Integer idx, String field,
     }
 }
 
-// A thrown add as a bulk item result, carrying the outcome flags the throw recorded.
+// A thrown add as a bulk item result, carrying the outcome flags the throw recorded (wizardStuck
+// outranks rolledBack).
 private Map _rmAddRefusalResult(Exception e) {
     def r = [success: false, error: (e.message ?: e.toString())] + _rmOutcomeKeys(e)
     if (r.wizardStuck == true) r.remove("rolledBack")
     return r
+}
+
+// A refused row's cleanup, then its condition's: the editor is closed or the row removed first (an
+// open editor refuses a condition delete); the condition is dropped only when the row is gone, since
+// a row left behind still binds it, and the refusal then says so.
+private void _rmCancelRefusedActionEditorThenDropCondition(Integer appId, Integer idx, Exception refusal, Integer condIdx) {
+    try {
+        _rmCancelRefusedActionEditor(appId, idx, refusal)
+    } catch (Exception reraised) {
+        if (condIdx == null) throw reraised
+        Map flags = _rmOutcomeFlags(reraised)
+        boolean dropped = (flags.rolledBack == true && flags.wizardStuck != true) ? _rmDropSimpleCondition(appId, condIdx) : false
+        _rmRethrowWithConditionNote(reraised, condIdx, dropped)
+    }
 }
 
 // Roll back an action row whose build was refused. RM leaves the doActPage editor open on the
@@ -12514,7 +12585,7 @@ private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter,
     }
     boolean earlierApplied = (extra ?: [:]).any { k, v ->
         (k == "removedIndices" && v instanceof List && !(v as List).isEmpty()) || ((v instanceof List || v instanceof Map) && k != "health" && landed(v))
-    } || (stopItem instanceof Map && (stopItem as Map).partial == true)
+    } || (stopItem instanceof Map && landed(stopItem))
     def out = [
         success: false,
         partial: earlierApplied,
@@ -12529,8 +12600,19 @@ private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter,
     ]
     // An item that left an editor open is reported the way the single-op envelope reports it:
     // retrying the failed item first would reopen the stale row pre-filled.
-    boolean stuck = false
-    if (stopItem instanceof Map) stuck = (stopItem.wizardStuck == true) || ((stopItem.values().findAll { it instanceof List }.flatten()).any { it instanceof Map && it.wizardStuck == true })
+    // The stop item's own outcome flags (an editor left open, a row written but not baked) are the
+    // envelope's: the single-op envelope reports them the same way.
+    def flagged
+    flagged = { Object node, String flag ->
+        if (node instanceof Map) {
+            if ((node as Map).get(flag) == true) return true
+            return (node as Map).values().any { v -> (v instanceof List || v instanceof Map) && flagged(v, flag) }
+        }
+        if (node instanceof List) return (node as List).any { v -> (v instanceof List || v instanceof Map) && flagged(v, flag) }
+        return false
+    }
+    boolean stuck = flagged(stopItem, "wizardStuck")
+    if (flagged(stopItem, "fieldsWritten")) out.fieldsWritten = true
     if (stuck) {
         out.wizardStuck = true
         def recoveryHint = (stopItem instanceof Map && stopItem.op == "modifyTrigger") ?
@@ -12850,7 +12932,10 @@ def _applyNativeAppEdit(args) {
     def backup = wsPage ? _rmBackupBeforeEdit(appId, backupReason, wsPage) : _rmBackupBeforeEdit(appId, backupReason)
     // When the backup decision read no config (a transient failure), the kind is read here.
     if (wsPage && !_memoKnowsRuleMachine(appId)) {
-        try { _rmNoteRuleMachineConfig(appId, _rmFetchConfigJson(appId, wsPage)) } catch (Exception ignored) { }
+        try { _rmNoteRuleMachineConfig(appId, _rmFetchConfigJson(appId, wsPage)) } catch (Exception kindExc) {
+            mcpLog("warn", "rm-native", "walkStep: app ${appId}'s kind could not be read on page ${wsPage} (${kindExc.message ?: kindExc}); walked as a non-RM app")
+            _memoNoteSkippedCheck("app kind (walked as a non-RM app)")
+        }
     }
     if (wsPage && _memoRuleMachine(appId) == true) wsPage = null
 
@@ -12905,8 +12990,7 @@ def _applyNativeAppEdit(args) {
             // walker opened the page to read its inputs, which runs the app's page code.
             def uiRefusal = (e instanceof IllegalStateException) && e.message?.startsWith("Hubitat's app page would refuse")
             // An unrendered button or an unopened doActPage is refused before any POST.
-            def walkRefusal = (e instanceof IllegalArgumentException) &&
-                (e.message?.contains("so nothing was clicked") || e.message?.contains("Nothing was rendered or written"))
+            def walkRefusal = _rmOutcomeFlags(e).notSent == true
             return [
                 success: false,
                 appId: appId,
@@ -13978,6 +14062,9 @@ def _applyNativeAppEdit(args) {
             def isSubPageWrite = (pageName && pageName != "mainPage")
             def subPageApplied = []
             def subPageSkipped = []
+            // A page-context click that the page does not render refuses the whole call before any
+            // setting is written: a validation refusal comes before every side effect.
+            if (button && pageName) _rmRequireRenderedButton(config?.configPage as Map, button, pageName)
             if (knownSettings && isSubPageWrite) {
                 // Write sub-page keys one at a time with page context and verify each landed, including
                 // the sticky multiple flag; settingsApplied lists only confirmed keys.
@@ -14029,12 +14116,12 @@ def _applyNativeAppEdit(args) {
         }
 
         if (button) {
-            // A page-context click is checked against the buttons that page renders; refused with no
-            // settings written, the call changed nothing.
+            // A page-context click was checked against the page's buttons before any setting was
+            // written (above); without pageName the click is sent as named.
             if (pageName) {
                 try { _rmClickRenderedButton(appId, button, args?.stateAttribute?.toString(), pageName) }
                 catch (IllegalArgumentException notRendered) {
-                    if (settingsMap || !notRendered.message?.contains("so nothing was clicked")) throw notRendered
+                    if (settingsMap || _rmOutcomeFlags(notRendered).notSent != true) throw notRendered
                     return [success: false, appId: appId, error: notRendered.message, backup: backup,
                             restoreHint: _rmPreflightRestoreHint(null, backup, "Refused before the click was sent, so nothing needs to be restored.")]
                 }

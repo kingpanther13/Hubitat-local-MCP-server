@@ -43,11 +43,14 @@ private void _memoDropPreEditStatus(Integer appId) { EXECUTION_CACHE.remove("pre
 private void _memoNoteRuleMachine(Integer appId, boolean rm) { EXECUTION_CACHE.put("ruleMachine:${appId}".toString(), rm) }
 private boolean _memoKnowsRuleMachine(Integer appId) { EXECUTION_CACHE.containsKey("ruleMachine:${appId}".toString()) }
 private Boolean _memoRuleMachine(Integer appId) { EXECUTION_CACHE.get("ruleMachine:${appId}".toString()) as Boolean }
-// Outcome flags of a failure (wizardStuck, fieldsWritten, rolledBack), keyed by the exception itself so a
-// rewrap carries them forward: `throw _rmFail(new IllegalStateException(msg), [wizardStuck: true])`.
-private Throwable _rmFail(Throwable e, Map flags) { EXECUTION_CACHE.put(e, _rmOutcomeFlags(e) + flags); return e }
+// Outcome flags of a failure (wizardStuck, fieldsWritten, rolledBack, notSent), keyed by the exception
+// itself; a rewrap inherits its cause's flags: `throw _rmFail(new IllegalStateException(msg, cause), [wizardStuck: true])`.
+private Throwable _rmFail(Throwable e, Map flags) { EXECUTION_CACHE.put(e, _rmOutcomeFlags(e.cause) + _rmOutcomeFlags(e) + flags); return e }
 private Map _rmOutcomeFlags(Throwable e) { (e == null) ? [:] : ((EXECUTION_CACHE.get(e) as Map) ?: [:]) }
 private Map _rmOutcomeKeys(Throwable e) { _rmOutcomeFlags(e).findAll { it.value == true } }
+// A check this execution could not run (a hub read failed) is named in the response, not only logged.
+private void _memoNoteSkippedCheck(String what) { def l = (EXECUTION_CACHE.get("checksSkipped") as List) ?: []; if (!(what in l)) l << what; EXECUTION_CACHE.put("checksSkipped", l) }
+private List _memoSkippedChecks() { (EXECUTION_CACHE.get("checksSkipped") as List) ?: [] }
 // Ordinary-write leases, keyed by leaseId. The global write cap is overload
 // protection, not crash safety: nothing here has to survive a recompile, and a
 // durable lease would cost two hub DB round trips on EVERY write call. A killed
@@ -8956,8 +8959,8 @@ private Integer _discoverParentAppId(String appType) {
 }
 
 // The id of a built-in app type as /hub2/appsList systemAppTypes lists it (what Apps > Add Built-In
-// App installs from), or null when the list is unreadable or does not offer the name.
-// [id: the built-in app type's id or null, error: why the list could not be read].
+// App installs from): [id: the type's id, or null when the list does not offer the name or could not
+// be read; error: why it could not be read].
 private Map _systemAppTypeId(String typeName) {
     try {
         def parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/appsList") ?: "{}")
@@ -9110,8 +9113,8 @@ void _rmRequireRenderedButton(Map configPage, String buttonName, String pageName
     if (rendered.any { it.name == buttonName }) return
     def shown = rendered.take(40)
     def more = rendered.size() > shown.size() ? " (+${rendered.size() - shown.size()} more)" : ""
-    throw new IllegalArgumentException(("Button '${buttonName}' is not rendered on page '${pageName}', so nothing was clicked. " +
-        "Rendered buttons (name, stateAttribute): ${groovy.json.JsonOutput.toJson(shown)}${more}").toString())
+    throw _rmFail(new IllegalArgumentException(("Button '${buttonName}' is not rendered on page '${pageName}', so nothing was clicked. " +
+        "Rendered buttons (name, stateAttribute): ${groovy.json.JsonOutput.toJson(shown)}${more}").toString()), [notSent: true])
 }
 
 // A caller-named click, checked against the page the click reads for its version token; the cache
@@ -11683,7 +11686,7 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
 - **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only)
 
 Native CRUD (hub admin-layer, additionally requires the Write master):
-- **hub_set_native_app** — create or edit any classic SmartApp (Button Controller, Notifier, Groups+Scenes, Basic Rules, Room Lighting; edits Visual Rules by appId too). Omit appId to create (appType enum: rule_machine / button_controller / groups_scenes / scene / notifier / basic_rule / room_lighting / thermostat_scheduler / thermostat_controller; name); provide appId to edit via settings/button. Visual Rules are created with hub_set_visual_rule, not this appType enum. Create a Button Rule under its controller via buttonRule={controllerId, buttonNumber, event} (returns buttonRuleId; author its actions via hub_set_rule). walkStep (generic classic-page walker) works here too. Returns appId on create. (In the hub_manage_native_rules_and_apps gateway.)
+- **hub_set_native_app** — create or edit any classic SmartApp (Button Controller, Notifier, Groups+Scenes, Basic Rules, Room Lighting, Thermostat Scheduler, Thermostat Controller; edits Visual Rules by appId too). Omit appId to create (appType enum: rule_machine / button_controller / groups_scenes / scene / notifier / basic_rule / room_lighting / thermostat_scheduler / thermostat_controller; name); provide appId to edit via settings/button. Visual Rules are created with hub_set_visual_rule, not this appType enum. Create a Button Rule under its controller via buttonRule={controllerId, buttonNumber, event} (returns buttonRuleId; author its actions via hub_set_rule). walkStep (generic classic-page walker) works here too. Returns appId on create. (In the hub_manage_native_rules_and_apps gateway.)
 - **hub_set_rule** — create or edit a Rule Machine rule. Omit appId to create (name; optionally bundle addTriggers=[...] / addActions=[...] to populate in one call); provide appId to edit via the structured shortcuts (addTrigger / addAction / addRequiredExpression / walkStep / ...). (In the hub_manage_rule_machine gateway.)
 - **hub_set_rule** (edit detail) — edit an existing Rule Machine rule (appId required). Two raw modes (settings (Map) OR button (String)) plus 17 structured shortcuts (addTrigger, addTriggers, addAction, addActions, addRequiredExpression, replaceRequiredExpression, addLocalVariable, removeLocalVariable, removeAction, clearActions, replaceActions, moveAction, removeTrigger, modifyTrigger, modifyAction, patches, walkStep). Args: appId + one of those shortcut keys, plus optional pageName, stateAttribute, confirm. Auto-backs-up before writing; emits the multiple=true 3-field capability contract automatically. removeTrigger={index:N} deletes a trigger; modifyTrigger={index:N, mods:{state:'...'}} changes the state field of an existing trigger (capability/deviceIds changes require removeTrigger + addTrigger). modifyAction={index:N, mods:{<field>:...}} edits an action in place through RM's own editor (fields as discover lists them, plus action for a variant sharing the committed RM action); expression-bearing actions need removeAction + addAction. A disabled app cannot be edited (enable, edit, re-disable), and a '(Not Installed)' Button Rule child needs its first action authored before any row edit.
 - **hub_set_app_disabled** — enable or disable any installed app (red-X) via POST /installedapp/disable; reversible. Args: appId, disabled (bool). Read-back verified.
@@ -11870,7 +11873,7 @@ Each edit response includes the File Manager baseline under `backup.backupKey`. 
 
 ### Shapes come from discover
 
-Trigger, condition and action fields are served, not written here: `hub_set_rule(operation:'discover', args:{kind:'trigger'|'condition'|'action', capability?, action?})`. Without `capability` it lists every capability Rule Machine has for that kind; with one it returns that capability's required and optional fields, Rule Machine's attribute, default state and device picker, and an example. An action's `conditionalRequired` lists the fields each of its actions needs; an inner list means one of those fields. Capability names are Rule Machine's own (any case). Rule Machine offers a capability only when the hub has something for it (a device with that capability, Safety Monitor, rules), and a value its live picker does not list is refused with the picker's list. What the schema cannot carry:
+Trigger, condition and action fields are served, not written here: `hub_set_rule(operation:'discover', args:{kind:'trigger'|'condition'|'action', capability?, action?})`. Without `capability` it lists every capability Rule Machine has for that kind; with one it returns that capability's required and optional fields, Rule Machine's attribute, default state and device picker, and an example. An action's `conditionalRequired` lists the fields each of its actions needs; an inner list means one of those fields. `requires` lists the same for the whole entry, and `exclusive` lists groups of which at most one field may be given. Capability names are Rule Machine's own (any case). Rule Machine offers a capability only when the hub has something for it (a device with that capability, Safety Monitor, rules), and a value its live picker does not list is refused with the picker's list. What the schema cannot carry:
 
 - **Sub-expression** (`addRequiredExpression` only; nested subExpression is refused on action expressions): `{subExpression:{conditions:[...], operator?, operators?}}`.
 - **Device attribute vs a hub variable** has no direct shape: copy the attribute into a variable with an `addAction setVariable` using `fromDevice`, then compare with `compareToVariable`.
@@ -11902,7 +11905,7 @@ Also a valid `patches[]` op (reported as `op: 'replaceRequiredExpression'`). Ins
 
 ### `walkStep` schema-aware wizard walker
 
-For what the shortcuts cannot express (Periodic sub-pages, conditional-trigger binding, newer RM fields). Spec: `{page, operation, write?:{<field>:<value>}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, validateEnum?, steps?:[...]}`. Operations: `introspect`; `write` (one field); `click`; `navigate` (into a sub-page by its href); `done` (submit a sub-page to its parent; a Periodic row needs it); `drive` (run `steps=[...]` in one call; a step without `page` continues where the last ended; `stopOnError=false` runs on past a failure).
+For what the shortcuts cannot express (Periodic sub-pages, conditional-trigger binding, newer RM fields). Spec: `{page, operation, write?:{<field>:<value>}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, validateEnum? (also checks each value of a list write; a single unlisted value is always refused), steps?:[...]}`. Operations: `introspect`; `write` (one field); `click`; `navigate` (into a sub-page by its href); `done` (submit a sub-page to its parent; a Periodic row needs it); `drive` (run `steps=[...]` in one call; a step without `page` continues where the last ended; `stopOnError=false` runs on past a failure).
 
 Each step returns `before`/`after` schemas, `diff`, `valueEcho`, `silentRejection`, `opResult` and `health`; a failure carries `error` and `repairHints`. Refused before anything is sent: a `write` to a field the page does not show or of a value its picker does not list (`opResult.refused`), a `click` on a button the page does not render (the error lists the rendered `{name, stateAttribute}` pairs), and `navigate`/`done` while a required input is empty or invalid, as the UI refuses them.
 
@@ -11919,7 +11922,7 @@ hub_set_rule(appId=N, confirm=true, walkStep={operation:'drive', steps:[
   {page:'selectTriggers', operation:'done'}]})
 ```
 
-Raw mode is the same flow one call per step: `settings` (+ `pageName`) writes inputs the page shows, `button` (+ `stateAttribute`, `pageName`) clicks one, checked against that page. A mainPage `settings` write is followed by `updateRule`; a sub-page write is not, so close the editor with its Done (`hasAll`, `actionDone`), then `button='updateRule'`. After `hasAll` the tool clears RM's leftover `isCondTrig.<N>` prompt (`wizardDoneAutoRetry`). `settings:{useST:true}` only shows the Required Expression page (build it with `addRequiredExpression`); `settings:{isFunction:true}` makes the rule return a value.
+Raw mode is the same flow one call per step: `settings` (+ `pageName`) writes inputs the page shows, `button` (+ `stateAttribute`, `pageName`) clicks one; with `pageName` the click is checked against the buttons that page renders, before any `settings` in the same call are written. A mainPage `settings` write is followed by `updateRule`; a sub-page write is not, so close the editor with its Done (`hasAll`, `actionDone`), then `button='updateRule'`. After `hasAll` the tool clears RM's leftover `isCondTrig.<N>` prompt (`wizardDoneAutoRetry`). `settings:{useST:true}` only shows the Required Expression page (build it with `addRequiredExpression`); `settings:{isFunction:true}` makes the rule return a value.
 
 ### Responses: applied, activated, verified
 

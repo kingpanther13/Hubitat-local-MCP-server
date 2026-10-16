@@ -503,6 +503,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         then:
         first.actions[0].rolledBack == true
         !second.actions[0].containsKey('rolledBack')
+        second.actions[0].wizardStuck == true
         second.actions[0].error.contains('[wizardStuck')
     }
 

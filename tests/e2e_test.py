@@ -11581,7 +11581,7 @@ class TestRunner:
             and ["deviceIds", "schedulerId"] in (sched.get("exclusive") or []) \
             and "deviceIds" in (sched.get("example") or {}), \
             f"thermostatScheduler discover should take exactly one of deviceIds, schedulerId: {sched}"
-        # A Simple Conditional Action: any plain action takes a condition; an IF or a loop row does not.
+        # A Simple Conditional Action: any plain action takes a condition; an IF, Repeat While or Wait for Expression row does not.
         for name, takes in (("switch", True), ("ifThen", False), ("repeatWhile", False), ("waitExpression", False)):
             fields = (act_caps.get(name) or {}).get("optionalFields") or []
             assert any(f.get("name") == "condition" for f in fields) is takes, \
