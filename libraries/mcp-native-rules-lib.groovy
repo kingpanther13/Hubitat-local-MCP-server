@@ -12164,10 +12164,21 @@ private String _rmBulkStopError(String stoppedAfter, stopItem) {
 // Edit and replace stop envelope. Skipping finalisation is not a rollback: items before the stop stay written, and
 // actions self-bake, so they can already affect an active rule. The pre-operation backup is the rollback handle.
 private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter, stopItem, Map extra) {
-    // partial only when an item before the stop was applied; a stop at the first item wrote nothing.
-    boolean earlierApplied = ((extra ?: [:]).values().findAll { it instanceof List }.flatten()).any {
-        it instanceof Map && (it.success == true || it.partial == true) && it.rolledBack != true
+    // partial when anything landed: an applied or partial item at any depth (a patch op's inner
+    // `results`), the stop item itself when it was partial, or a replace that already cleared rows.
+    def landed
+    landed = { Object node ->
+        if (node instanceof Map) {
+            Map m = node as Map
+            if ((m.success == true || m.partial == true) && m.rolledBack != true) return true
+            return m.values().any { v -> (v instanceof List || v instanceof Map) && landed(v) }
+        }
+        if (node instanceof List) return (node as List).any { v -> (v instanceof List || v instanceof Map) && landed(v) }
+        return false
     }
+    boolean earlierApplied = (extra ?: [:]).any { k, v ->
+        (k == "removedIndices" && v instanceof List && !(v as List).isEmpty()) || ((v instanceof List || v instanceof Map) && k != "health" && landed(v))
+    } || (stopItem instanceof Map && (stopItem as Map).partial == true)
     def out = [
         success: false,
         partial: earlierApplied,
