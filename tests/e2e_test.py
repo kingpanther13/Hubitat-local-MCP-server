@@ -10794,27 +10794,28 @@ class TestRunner:
                     and str(a.get("name") or a.get("label") or "").startswith("Hubitat Package Manager")), None)
         # A hub without HPM gets a throwaway one from its published source, removed in the finally.
         # The runner fetches the source: a test hub need not have a route to GitHub.
-        installed_code_id = installed_instance_id = None
-        if hpm is None:
-            with urllib.request.urlopen(
-                    "https://raw.githubusercontent.com/dcmeglio/hubitat-packagemanager/master/apps/Package_Manager.groovy",
-                    timeout=60) as resp:
-                hpm_source = resp.read().decode("utf-8")
-            code = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
-                "source": hpm_source, "confirm": True}})
-            assert code.get("success") is True and code.get("appId"), f"installing HPM's code failed: {code}"
-            installed_code_id = str(code["appId"])
-            inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
-                "codeAppId": int(installed_code_id), "confirm": True}})
-            assert inst.get("success") is True and inst.get("instanceAppId"), f"creating the HPM instance failed: {inst}"
-            installed_instance_id = int(inst["instanceAppId"])
-        hpm_id = installed_instance_id if hpm is None else int(hpm.get("id") or hpm.get("appId"))
+        installed_code_id = installed_instance_id = hpm_id = None
+        if hpm is not None:
+            hpm_id = int(hpm.get("id") or hpm.get("appId"))
 
         def walk(step: dict) -> dict:
             return self.client.call_tool("hub_manage_native_rules_and_apps", {
                 "tool": "hub_set_native_app", "args": {"appId": hpm_id, "walkStep": step, "confirm": True}})
 
         try:
+            if hpm is None:
+                with urllib.request.urlopen(
+                        "https://raw.githubusercontent.com/dcmeglio/hubitat-packagemanager/master/apps/Package_Manager.groovy",
+                        timeout=60) as resp:
+                    hpm_source = resp.read().decode("utf-8")
+                code = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
+                    "source": hpm_source, "confirm": True}})
+                assert code.get("success") is True and code.get("appId"), f"installing HPM's code failed: {code}"
+                installed_code_id = str(code["appId"])
+                inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
+                    "codeAppId": int(installed_code_id), "confirm": True}})
+                assert inst.get("success") is True and inst.get("instanceAppId"), f"creating the HPM instance failed: {inst}"
+                installed_instance_id = hpm_id = int(inst["instanceAppId"])
             to_install = walk({"page": "prefOptions", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstall"}})
             assert to_install.get("success") is True, f"navigate to prefPkgInstall failed: {to_install}"
             to_url = walk({"page": "prefPkgInstall", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstallUrl"}})
@@ -10829,7 +10830,8 @@ class TestRunner:
                 f"the pending install URL was reset between steps: {stored.get('settings')}"
         finally:
             # HPM's default page clears its pending install state.
-            walk({"page": "prefPkgInstallUrl", "operation": "navigate", "navigate": {"targetPage": "prefOptions"}})
+            if hpm_id is not None:
+                walk({"page": "prefPkgInstallUrl", "operation": "navigate", "navigate": {"targetPage": "prefOptions"}})
             if installed_instance_id is not None:
                 self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
                     "appId": installed_instance_id, "force": True, "confirm": True}})
