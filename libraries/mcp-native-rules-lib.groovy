@@ -6033,7 +6033,7 @@ private void _rmPrevalidateConditionList(Map exprSpec, String label) {
             if (m.compareToDevice instanceof Map) {
                 Map ctd = m.compareToDevice as Map
                 if (ctd.deviceId == null) throw new IllegalArgumentException("${where}: compareToDevice requires 'deviceId' (the reference device ID). RM is not touched.")
-                if (m.comparator == null) throw new IllegalArgumentException("${where}: compareToDevice requires 'comparator' (e.g. '>', '<', '='). RM is not touched.")
+                if (m.comparator == null) throw new IllegalArgumentException("${where}: compareToDevice needs a comparator (e.g. '>', '<', '='). RM is not touched.")
                 _rmValidateDeviceIdsExist("${where}.compareToDevice.deviceId", [ctd.deviceId])
             }
             def ids = m.deviceIds ?: (m.deviceId != null ? [m.deviceId] : null)
