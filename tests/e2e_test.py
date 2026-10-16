@@ -13198,8 +13198,9 @@ class TestRunner:
             # The rule goes before the forced delete, inline even when fixture deletes are deferred:
             # removing a connector device a rule still subscribes to is a different hub path from
             # removing an unused one, and only the latter is this scenario's subject.
-            self.client.call_tool("hub_manage_rule_machine", {
+            deleted = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_delete_native_app", "args": {"appId": rule_id, "force": True, "confirm": True}})
+            assert deleted.get("success") is True and not self._app_still_present(rule_id),                 f"the consuming rule must be gone before the forced connector delete: {deleted}"
             self._untrack_native_app(rule_id)
             rule_id = None
 
