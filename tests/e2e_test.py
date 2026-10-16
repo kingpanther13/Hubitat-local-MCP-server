@@ -27,6 +27,7 @@ import re
 import sys
 import threading
 import time
+import urllib.request
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -10792,11 +10793,15 @@ class TestRunner:
         hpm = next((a for a in apps if isinstance(a, dict)
                     and str(a.get("name") or a.get("label") or "").startswith("Hubitat Package Manager")), None)
         # A hub without HPM gets a throwaway one from its published source, removed in the finally.
+        # The runner fetches the source: a test hub need not have a route to GitHub.
         installed_code_id = installed_instance_id = None
         if hpm is None:
+            with urllib.request.urlopen(
+                    "https://raw.githubusercontent.com/dcmeglio/hubitat-packagemanager/master/apps/Package_Manager.groovy",
+                    timeout=60) as resp:
+                hpm_source = resp.read().decode("utf-8")
             code = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
-                "importUrl": "https://raw.githubusercontent.com/dcmeglio/hubitat-packagemanager/master/apps/Package_Manager.groovy",
-                "confirm": True}})
+                "source": hpm_source, "confirm": True}})
             assert code.get("success") is True and code.get("appId"), f"installing HPM's code failed: {code}"
             installed_code_id = str(code["appId"])
             inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
@@ -13219,9 +13224,13 @@ class TestRunner:
             linked = read()
             assert linked.get("deviceId") is not None, f"no connector linked to {var_name}: {linked}"
 
-            rule_id = self._create_native_rule("ConnUser", {"addTrigger": {
-                "capability": "Custom Attribute", "deviceIds": [int(linked["deviceId"])],
-                "attribute": "variable", "comparator": "*changed*"}})
+            # The rule uses the device through an action and is removed by RM's own delete before
+            # the connector goes, so nothing of it is left on the device: the emulated os test hub
+            # leaves a transaction open when a connector's removal still finds an app's link to the
+            # device (reported to that hub's owner); the in-use refusal names the rule either way.
+            rule_id = self._create_native_rule("ConnUser", {"addAction": {
+                "capability": "runCommand", "command": "setVariable", "capabilityFilter": "Actuator",
+                "deviceIds": [int(linked["deviceId"])], "params": ["1"]}})
             # The refusal is a validation error (isError), which the client raises.
             try:
                 refused = str(self._refusal_call("hub_manage_variables", {
@@ -13232,10 +13241,10 @@ class TestRunner:
                 f"deleting a connector a rule uses should be refused naming the rule: {refused}"
             assert read().get("deviceId") == linked.get("deviceId"), "the refused delete removed the connector"
             # The rule goes before the forced delete, inline even when fixture deletes are deferred:
-            # removing a connector device a rule still subscribes to is a different hub path from
-            # removing an unused one, and only the latter is this scenario's subject.
+            # removing a connector device a rule still uses is a different hub path from removing
+            # an unused one, and only the latter is this scenario's subject.
             deleted = self.client.call_tool("hub_manage_rule_machine", {
-                "tool": "hub_delete_native_app", "args": {"appId": rule_id, "force": True, "confirm": True}})
+                "tool": "hub_delete_native_app", "args": {"appId": rule_id, "force": False, "confirm": True}})
             assert deleted.get("success") is True and not self._app_still_present(rule_id),                 f"the consuming rule must be gone before the forced connector delete: {deleted}"
             self._untrack_native_app(rule_id)
             rule_id = None
