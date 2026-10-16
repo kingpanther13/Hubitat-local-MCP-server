@@ -589,6 +589,26 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "writes backupBeforeRuleEdits=#value as the pre-edit backup toggle"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([
+            settings: [backupBeforeRuleEdits: value],
+            confirm: true
+        ])
+
+        then:
+        result.success == true
+        result.updated == [backupBeforeRuleEdits: value]
+        sharedAppStub.settingsStore['backupBeforeRuleEdits'] == [type: 'bool', value: value]
+
+        where:
+        value << [true, false]
+    }
+
+    @spock.lang.Unroll
     def "writes backupEveryRuleWrite=#value as the strict rule-backup policy toggle"() {
         given:
         enableDeveloperModeAndAdminWrite()

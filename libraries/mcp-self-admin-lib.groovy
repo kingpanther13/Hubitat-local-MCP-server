@@ -50,6 +50,7 @@ def toolUpdateMcpSettings(args) {
         "enableMandatoryBPS":     "bool",
         "bypassDeviceAllowlist":  "bool",
         "maxConcurrentWrites":    "number",
+        "backupBeforeRuleEdits":  "bool",
         "backupEveryRuleWrite":   "bool",
         "enableLocalAccess":      "bool",
         "enableCloudAccess":      "bool",

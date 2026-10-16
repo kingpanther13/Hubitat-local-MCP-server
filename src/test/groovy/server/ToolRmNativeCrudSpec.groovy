@@ -1460,6 +1460,29 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         uploads.size() == 2
     }
 
+    def "backupBeforeRuleEdits=false takes no pre-edit baseline, while a delete still snapshots"() {
+        given:
+        enableWrite()
+        settingsMap.backupBeforeRuleEdits = false
+        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "nobackup") }
+        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+
+        when:
+        def edit = script._rmBackupBeforeEdit(504, "pre-addAction")
+        def deletion = script._rmBackupRuleSnapshot(504, "pre-forcedelete")
+
+        then: "no edit baseline, one delete snapshot, and the hints say why there is nothing to restore"
+        edit.skipped && !edit.backupKey
+        deletion.backupKey
+        uploads.size() == 1
+        script._rmPreflightRestoreHint(null, null).contains("pre-edit backups are off")
+        script._rmBackupHint(null).contains("no snapshot to restore")
+        script._rmRollbackHint(null).contains("repair the rule in place")
+        script._rmBackupHint([backupKey: "rm-rule_504_x"]).contains("backupKey='rm-rule_504_x'")
+    }
+
     // ---------- unified backup integration: hub_list_backups + hub_restore_backup ----------
 
     def "hub_list_backups surfaces rm-rule entries with rule-specific metadata alongside app/driver entries"() {

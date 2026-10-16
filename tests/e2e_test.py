@@ -1723,6 +1723,25 @@ class TestRunner:
         "conn_keep": ("E2E_PERM_Var_ConnKeep", "Number", "0"),
     }
 
+    # Scenarios that assert on an edit's backup or restore from it run with pre-edit backups on;
+    # every other scenario runs without the App Cloner export a fresh rule's first edit pays.
+    BACKUP_PROVING_TESTS: ClassVar[frozenset[str]] = frozenset({
+        "test_set_rule_self_gateway_envelope_edit",
+        "test_set_native_app_basic_rule_lifecycle",
+        "test_rm_rule_restore_in_place_with_device_picker",
+        "test_rm_rule_restore_skips_a_deleted_device",
+        "test_rm_rule_restore_brings_back_a_removed_trigger",
+        "test_rm_rule_restore_of_a_deleted_rule_uses_the_exact_copy",
+        "test_rm_rule_restore_puts_actions_back_in_order",
+        "test_rm_rule_restore_expression_by_device_name",
+        "test_set_rule_replace_required_expression",
+        "test_set_rule_remove_referenced_local_breaks_rule",
+    })
+
+    def _rule_edit_backups(self, on: bool) -> None:
+        self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings", "args": {
+            "settings": {"backupBeforeRuleEdits": on}, "confirm": True}})
+
     def _hub_variables_by_name(self) -> dict[str, dict]:
         rows: dict[str, dict] = {}
         cursor = None
@@ -18319,6 +18338,7 @@ class TestRunner:
         self._restore_permanent_configuration_fixtures("pre-run")
         # Rule-engine variables live in the MCP app's state, beyond the watchdog purge: a killed run's go here.
         self._sweep_rule_engine_variables()
+        self._rule_edit_backups(False)
 
         # Group for display
         self._load_diagnostics = True
@@ -18327,10 +18347,21 @@ class TestRunner:
             if group != current_group:
                 current_group = group
                 print(f"\n[{group}]")
-            self._run_one(group, display_name, method_name)
+            proves_backups = method_name in self.BACKUP_PROVING_TESTS
+            if proves_backups:
+                self._rule_edit_backups(True)
+            try:
+                self._run_one(group, display_name, method_name)
+            finally:
+                if proves_backups:
+                    self._rule_edit_backups(False)
 
         # Always clean up
         self.cleanup()
+        try:
+            self._rule_edit_backups(True)
+        except Exception as exc:
+            print(f"  [WARN] could not turn pre-edit backups back on: {exc}")
 
         # Print summary
         return self._print_summary()
