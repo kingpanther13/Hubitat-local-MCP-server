@@ -51,7 +51,8 @@ private _listSourceItemBackups(args) {
             count: 0,
             total: 0,
             message: "No item backups exist yet. Backups are created automatically when you use hub_update_app, hub_update_driver, hub_update_library, or hub_delete_item.",
-            maxBackups: 20,
+            storageBudget: _itemBackupBudgetUsage(manifest),
+            retentionPolicy: _itemBackupRetentionPolicy(),
             storage: "Backups are stored as .groovy files in the hub's File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager.",
             howToRestore: "Use 'hub_get_backup' to retrieve source code, then 'hub_restore_backup' to restore (apps/drivers). For deleted apps or drivers, use 'hub_create_app' or 'hub_create_driver' with the backup source. For deleted libraries, use 'hub_create_library' with the backup source."
         ]
@@ -68,6 +69,8 @@ private _listSourceItemBackups(args) {
             timestamp: formatTimestamp(entry.timestamp),
             age: formatAge(entry.timestamp),
             sourceLength: entry.sourceLength ?: 0,
+            sizeBytes: _itemBackupEntryBytes(entry),
+            retention: entry.retention ?: "pinned",
             directDownload: "http://<HUB_IP>/local/${entry.fileName}"
         ]
         // App/driver entries carry version + sourceLength; rm-rule entries
@@ -90,7 +93,8 @@ private _listSourceItemBackups(args) {
         backups: paged.page,
         count: paged.page.size(),
         total: backupList.size(),
-        maxBackups: 20,
+        storageBudget: _itemBackupBudgetUsage(manifest),
+        retentionPolicy: _itemBackupRetentionPolicy(),
         storage: "Backup files are stored in the hub's local File Manager (Settings > File Manager). Files persist even if MCP is uninstalled.",
         howToRestore: "Use 'hub_restore_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'hub_update_library' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
         manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
@@ -100,6 +104,10 @@ private _listSourceItemBackups(args) {
     }
     if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
     return result
+}
+
+private String _itemBackupRetentionPolicy() {
+    return "Each item's backups only push out that item's own older backups. Apps, drivers and libraries keep one pinned baseline, replaced by the item's next backup after the one-hour reuse window. A rule keeps a pinned baseline per editing session plus pinned pre-delete snapshots; with backupEveryRuleWrite on, its later writes in a session are rolling steps, of which the newest ${ITEM_BACKUP_ROLLING_STEPS} are kept. When all backups together exceed ${ITEM_BACKUP_BYTE_BUDGET.intdiv(1024L * 1024L)} MB, rolling steps and then pinned baselines are removed, oldest first."
 }
 
 // A pending-deletion marker is written before the delete, so a delete that failed
@@ -372,6 +380,7 @@ private Map _toolRestoreSourceBackup(args) {
                 _publishUploadedItemBackup(preRestoreBackupKey, [
                     type: entry.type, id: entry.id, fileName: preRestoreFileName,
                     version: parsed.version, timestamp: now(), sourceLength: parsed.source.length(),
+                    sizeBytes: parsed.source.getBytes("UTF-8").length, retention: "pinned",
                     undoForBackupKey: args.backupKey.toString(), undoForSourceHash: restoreSourceHash,
                     sourceHash: undoSourceHash
                 ], args.backupKey.toString())
@@ -481,7 +490,7 @@ private Map _toolRestoreSourceBackup(args) {
             if (undoAvailable) {
                 restoreResult.preRestoreBackup = preRestoreBackupKey
                 restoreResult.preRestoreFile = preRestoreFileName
-                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'"
+                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'. ${_itemBackupRetentionNote([type: entry.type, retention: "pinned", undoForBackupKey: args.backupKey.toString()])}"
             } else {
                 restoreResult.warning = undoWarning
             }
@@ -1419,7 +1428,7 @@ A transport drop can lose the response while the hub still commits this write; v
         // ==================== Source-code item backup tools ====================
         [
             name: "hub_list_backups",
-            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups — a local backup's name and a cloud backup's path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule read joins hubBackupErrors (partial:true) and a failed share read stays inside networkBackup; neither fails the listing. See hub_get_tool_guide(section='backup').[[/FLAT_TRIM]]",
+            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups — a local backup's name and a cloud backup's path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule read joins hubBackupErrors (partial:true) and a failed share read stays inside networkBackup; neither fails the listing. Source entries carry retention (pinned or rolling) and the response reports storageBudget and the retention policy. See hub_get_tool_guide(section='backup').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [

@@ -229,7 +229,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         uploads.size() == 1
         result.backupKey.toString().startsWith('rm-rule_701_')
         uploads[0].fileName == result.fileName
-        def manifestEntry = atomicStateMap.itemBackupManifest.find { it.key.toString().startsWith('rm-rule_701_') }
+        def manifestEntry = backupIndex.find { it.key.toString().startsWith('rm-rule_701_') }
         manifestEntry != null
         manifestEntry.value.type == 'rm-rule'
         manifestEntry.value.appLabel == 'Hall light'
@@ -391,7 +391,7 @@ class ToolVisualRuleRestoreSpec extends ToolSpecBase {
         def snapshot = vrbSnapshot(500, [appLabel: 'Hall light', vrbFormat: 'classic',
                                          vrbRulePaused: false, vrbDefinition: classicDefinition()])
         def bytes = json(snapshot).getBytes('UTF-8')
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'rm-rule_500_t': [type: 'rm-rule', id: 500, ruleId: 500, fileName: 'mcp-rm-backup-500-t.json',
                               reason: 'pre-delete', appLabel: 'Hall light', timestamp: 1000, sourceLength: bytes.length]
         ]

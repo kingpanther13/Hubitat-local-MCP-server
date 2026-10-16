@@ -699,11 +699,18 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - hub_create_backup itself is exempt from the prior-backup requirement (it IS the backup)
 
 ### Source Code Backups (Automatic)
-- Created when using hub_update_app, hub_update_driver, hub_update_library, hub_delete_item
-- Stored in File Manager as .groovy files
+- Created when using hub_update_app, hub_update_driver, hub_update_library, hub_delete_item, and before Rule Machine edits and deletes
+- Stored in File Manager (.groovy for code, .json for rule snapshots) and indexed in `mcp-backup-index.json`
 - Persist even if MCP uninstalled
-- Max 20 kept, oldest pruned
 - Rapid edits preserve original (1-hour protection)
+
+### Backup retention
+- Retention is per item: one item's backups never push out another item's backups.
+- Apps, drivers and libraries keep one **pinned** baseline, replaced by that item's next backup after the one-hour window.
+- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete or replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's later writes in that session are **rolling** steps, and the newest 5 are kept. So "before I started" and "one step back" both stay available.
+- All MCP backups share a 10 MB storage budget. Past it, rolling steps are removed first, then pinned baselines, oldest first. The backup just taken and an active restore target are never removed.
+- A response that returns a backupKey carries `retention` (`pinned` or `rolling`) and `retentionNote`, and its restoreHint says when that backup can be removed. hub_list_backups reports `storageBudget` (`usedBytes` / `limitBytes`) and each entry's `retention`.
+- If the index file is missing, it is rebuilt from the File Manager listing, which also brings backup files left by older versions under retention.
 
 ### Rule Backups (Automatic)
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
@@ -755,6 +762,8 @@ Files stored at http://<HUB_IP>/local/<filename>
 - Use offset and length for files >60KB
 - Each chunk must be <60KB
 - Follow `nextOffset` while `hasMore` is true to read the next chunk
+
+**Backup copies:** hub_write_file (when it overwrites different content) and hub_delete_file first copy the file to `<name>_backup_<yyyyMMdd-HHmmss><ext>`. The newest 5 copies of each file name are kept; older copies of that same name are deleted at that point and listed in `removedOldBackups`.
 
 ### hub_list_files
 

@@ -492,6 +492,8 @@ RETIRED_PERSISTED_DERIVED_KEYS = (
     "toolSearchCorpusFingerprint",
     "requiredParamsByTool",
     "requiredParamsByToolFingerprint",
+    # Not code-derived: the backup index moved to a File Manager file (issues #506/#517).
+    "itemBackupManifest",
 )
 _RETIRED_KEY_PATTERN = "|".join(map(re.escape, RETIRED_PERSISTED_DERIVED_KEYS))
 # Include compound writes while leaving equality and regex comparisons readable.
@@ -534,7 +536,7 @@ def _literal_state_writes(line: str, original: str, dot_re, bracket_re, literal_
 
 
 def _scan_retired_persisted_key_writes(display_path: str, source: str) -> list[dict]:
-    """Reject assignments that put retired code-derived caches back in app state."""
+    """Reject assignments that put retired keys (code-derived caches, the backup index) back in app state."""
     findings = []
     source_lines = source.split("\n")
     for line_num, (line, original) in enumerate(
@@ -548,9 +550,9 @@ def _scan_retired_persisted_key_writes(display_path: str, source: str) -> list[d
                 "line": line_num,
                 "rule": "PERSISTED_DERIVED_KEY",
                 "message": (
-                    f"Do not persist retired code-derived cache `{key}` in state/atomicState; "
-                    "keep derived metadata in class memory. Reads and remove-based migration "
-                    "cleanup remain allowed."
+                    f"Do not persist retired key `{key}` in state/atomicState; "
+                    "keep derived metadata in class memory and the backup index in its File "
+                    "Manager file. Reads and remove-based migration cleanup remain allowed."
                 ),
                 "severity": "error",
                 "source": original.strip(),
@@ -569,7 +571,7 @@ PERSISTED_STATE_INVENTORY = {
     },
     "atomicState": {
         "mrtrRequests", "packageDeployInFlight", "lastSelfDeploy", "reportErrors",
-        "hubSecurityCookie", "hubSecurityCookieExpiry", "itemBackupManifest",
+        "hubSecurityCookie", "hubSecurityCookieExpiry",
         "debugLogGeneration", "parentAppIds", "inUseHubVars", "variableHistory",
         "hubVarsAppId", "predClearPending", "protectedAppsPolicy",
     },

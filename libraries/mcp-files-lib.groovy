@@ -15,6 +15,45 @@ private List _filesApplyListFilters(List fileList, String filterLower) {
     return out
 }
 
+// <base>_backup_<yyyyMMdd-HHmmss><ext>: the copy hub_write_file and hub_delete_file take first.
+private List _filesBackupNameParts(String fileName) {
+    int dotIndex = fileName.lastIndexOf('.')
+    return dotIndex > 0 ? [fileName.substring(0, dotIndex), fileName.substring(dotIndex)] : [fileName, ""]
+}
+
+private String _filesWriteBackupCopy(String fileName, byte[] bytes) {
+    List parts = _filesBackupNameParts(fileName)
+    String backupFileName = "${parts[0]}_backup_${new Date().format("yyyyMMdd-HHmmss")}${parts[1]}"
+    uploadHubFile(backupFileName, bytes)
+    return backupFileName
+}
+
+// Keep the newest FILE_BACKUP_COPIES copies of exactly this file name. Best-effort: a
+// failed listing or delete leaves copies in place and never fails the write.
+private List _filesPruneBackupCopies(String fileName) {
+    List parts = _filesBackupNameParts(fileName)
+    String copyPattern = "^" + java.util.regex.Pattern.quote(parts[0]) + "_backup_\\d{8}-\\d{6}" + java.util.regex.Pattern.quote(parts[1]) + "\$"
+    List names
+    try { names = _fileManagerRootFiles().collect { it.name } }
+    catch (Exception e) {
+        mcpLog("warn", "file-manager", "Could not list File Manager to prune old backup copies of '${fileName}': ${e.message}")
+        return []
+    }
+    // The timestamp sorts chronologically, so name order is age order.
+    List stale = names.findAll { it ==~ copyPattern }.sort().reverse().drop(FILE_BACKUP_COPIES)
+    List removed = []
+    stale.each { name ->
+        try {
+            deleteHubFile(name)
+            removed << name
+        } catch (Exception e) {
+            mcpLog("warn", "file-manager", "Could not delete old backup copy '${name}': ${e.message}")
+        }
+    }
+    if (removed) mcpLog("info", "file-manager", "Removed ${removed.size()} old backup copies of '${fileName}' (keeping the newest ${FILE_BACKUP_COPIES})")
+    return removed
+}
+
 def toolListFiles(args = null) {
     if (args?.filter != null && !(args.filter instanceof CharSequence)) {
         throw new IllegalArgumentException("filter must be a string (a case-insensitive substring of the file name), not ${args.filter instanceof Number ? 'a number' : args.filter instanceof Map ? 'an object' : args.filter instanceof List ? 'an array' : 'a non-string value'}")
@@ -241,12 +280,7 @@ def toolWriteFile(args) {
             mcpLog("info", "file-manager", "Existing '${args.fileName}' already matches the incoming content -- skipping backup")
         } else if (existingBytes != null) {
             // File exists — create a backup before overwriting
-            def dotIndex = args.fileName.lastIndexOf('.')
-            def baseName = dotIndex > 0 ? args.fileName.substring(0, dotIndex) : args.fileName
-            def ext = dotIndex > 0 ? args.fileName.substring(dotIndex) : ""
-            def ts = new Date().format("yyyyMMdd-HHmmss")
-            backupFileName = "${baseName}_backup_${ts}${ext}"
-            uploadHubFile(backupFileName, existingBytes)
+            backupFileName = _filesWriteBackupCopy(args.fileName.toString(), existingBytes)
             backedUp = true
             mcpLog("info", "file-manager", "Backed up existing '${args.fileName}' to '${backupFileName}' before overwriting (${existingBytes.length} bytes)")
         }
@@ -254,6 +288,9 @@ def toolWriteFile(args) {
         // File doesn't exist or can't be read — that's fine, proceed with write
         mcpLog("debug", "file-manager", "No existing file '${args.fileName}' to back up: ${e.message}")
     }
+
+    // Prune only after the backup copy landed, so the newest copies always include it.
+    List removedOldBackups = backedUp ? _filesPruneBackupCopies(args.fileName.toString()) : []
 
     // Write the file
     try {
@@ -274,7 +311,9 @@ def toolWriteFile(args) {
         if (backedUp) {
             result.backupFile = backupFileName
             result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
+            result.backupRetention = "The newest ${FILE_BACKUP_COPIES} backup copies of '${args.fileName}' are kept; older copies are deleted on its next write or delete."
         }
+        if (removedOldBackups) result.removedOldBackups = removedOldBackups
         return result
     } catch (Exception e) {
         mcpLogError("file-manager", "Failed to write file '${args.fileName}'", e)
@@ -300,12 +339,7 @@ def toolDeleteFile(args) {
         try {
             def bytes = downloadHubFile(args.fileName)
             if (bytes == null) throw new Exception("File not found")
-            def dotIndex = args.fileName.lastIndexOf('.')
-            def baseName = dotIndex > 0 ? args.fileName.substring(0, dotIndex) : args.fileName
-            def ext = dotIndex > 0 ? args.fileName.substring(dotIndex) : ""
-            def ts = new Date().format("yyyyMMdd-HHmmss")
-            backupFileName = "${baseName}_backup_${ts}${ext}"
-            uploadHubFile(backupFileName, bytes)
+            backupFileName = _filesWriteBackupCopy(args.fileName.toString(), bytes)
             backedUp = true
             mcpLog("info", "file-manager", "Backed up '${args.fileName}' to '${backupFileName}' before deletion (${bytes.length} bytes)")
         } catch (Exception e) {
@@ -314,6 +348,7 @@ def toolDeleteFile(args) {
     } else {
         mcpLog("debug", "file-manager", "Skipping auto-backup for '${args.fileName}' -- file is itself a backup")
     }
+    List removedOldBackups = backedUp ? _filesPruneBackupCopies(args.fileName.toString()) : []
 
     // Delete the file
     try {
@@ -338,7 +373,9 @@ def toolDeleteFile(args) {
             try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) { /* fall through */ }
             result.backupDownload = "http://${hubIp ?: '<HUB_IP>'}/local/${backupFileName}"
             result.undoHint = "To recover: use 'hub_read_file' on '${backupFileName}' to view contents, or 'hub_write_file' to recreate '${args.fileName}' from the backup."
+            result.backupRetention = "The newest ${FILE_BACKUP_COPIES} backup copies of '${args.fileName}' are kept; older copies are deleted on its next write or delete."
         }
+        if (removedOldBackups) result.removedOldBackups = removedOldBackups
         if (!backedUp && !isBackupFile) {
             result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
         }
@@ -391,7 +428,7 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_write_file",
-            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery). Requires Write master and confirm=true — confirm the write with the user before calling.",
+            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery; the newest 5 copies per file are kept). Requires Write master and confirm=true — confirm the write with the user before calling.",
             inputSchema: [
                 type: "object",
                 properties: [

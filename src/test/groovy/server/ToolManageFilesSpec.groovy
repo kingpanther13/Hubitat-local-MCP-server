@@ -678,6 +678,76 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('fileName is required')
     }
 
+    // A listing that reflects uploads and deletes, seeded with six older copies of notes.txt and
+    // look-alike names that must never be pruned (another base name, another extension, no timestamp).
+    private Map fileManagerWithOldCopies() {
+        Map files = [:]
+        (1..6).each { files["notes_backup_20260101-00000${it}.txt".toString()] = 'old'.getBytes('UTF-8') }
+        ['notes-2_backup_20260101-000000.txt', 'notes_backup_20260101-000000.json', 'notes_backup_old.txt',
+         'xnotes_backup_20260101-000000.txt'].each { files[it] = 'other'.getBytes('UTF-8') }
+        files['notes.txt'] = 'current'.getBytes('UTF-8')
+        hubGet.register('/hub/fileManager/json') { params ->
+            JsonOutput.toJson([files: files.keySet().collect { [name: it, type: 'file', size: '3', date: '1'] }])
+        }
+        script.metaClass.downloadHubFile = { String name -> files[name] }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> files[name] = content }
+        script.metaClass.deleteHubFile = { String name -> files.remove(name) }
+        return files
+    }
+
+    def "hub_write_file keeps the newest five backup copies of that file name only"() {
+        given:
+        enableWrite()
+        Map files = fileManagerWithOldCopies()
+
+        when:
+        def result = script.toolWriteFile([fileName: 'notes.txt', content: 'new content', confirm: true])
+
+        then: 'the new copy plus the four newest older copies remain; the two oldest are removed'
+        result.success == true
+        result.removedOldBackups == ['notes_backup_20260101-000002.txt', 'notes_backup_20260101-000001.txt']
+        result.backupRetention.contains('newest 5 backup copies')
+        files.keySet().findAll { it ==~ /notes_backup_\d{8}-\d{6}\.txt/ }.size() == 5
+        files.containsKey(result.backupFile)
+
+        and: 'look-alike names are untouched'
+        ['notes-2_backup_20260101-000000.txt', 'notes_backup_20260101-000000.json', 'notes_backup_old.txt',
+         'xnotes_backup_20260101-000000.txt'].every { files.containsKey(it) }
+    }
+
+    def "hub_delete_file applies the same five-copy cap to its pre-delete copy"() {
+        given:
+        enableWrite()
+        Map files = fileManagerWithOldCopies()
+
+        when:
+        def result = script.toolDeleteFile([fileName: 'notes.txt', confirm: true])
+
+        then:
+        result.success == true
+        !files.containsKey('notes.txt')
+        result.removedOldBackups == ['notes_backup_20260101-000002.txt', 'notes_backup_20260101-000001.txt']
+        files.keySet().findAll { it ==~ /notes_backup_\d{8}-\d{6}\.txt/ }.size() == 5
+    }
+
+    def "hub_write_file still writes when the listing for pruning fails"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub/fileManager/json') { params -> throw new RuntimeException('listing unavailable') }
+        def uploads = []
+        script.metaClass.downloadHubFile = { String name -> name == 'notes.txt' ? 'old'.getBytes('UTF-8') : null }
+        script.metaClass.uploadHubFile = { String name, byte[] content -> uploads << name }
+
+        when:
+        def result = script.toolWriteFile([fileName: 'notes.txt', content: 'new', confirm: true])
+
+        then:
+        result.success == true
+        !result.containsKey('removedOldBackups')
+        uploads.size() == 2
+        uploads[1] == 'notes.txt'
+    }
+
     def "hub_delete_file backs up then deletes a normal file"() {
         given:
         enableWrite()
@@ -790,7 +860,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
     def "hub_delete_file unlinks every manifest entry for the deleted backup file"() {
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_42_old": [type: "rm-rule", ruleId: 42, fileName: "mcp-rm-backup-42-old.json", timestamp: 1L],
             "rm-rule_42_alias": [type: "rm-rule", ruleId: 42, fileName: "mcp-rm-backup-42-old.json", timestamp: 2L],
             "rm-rule_43_keep": [type: "rm-rule", ruleId: 43, fileName: "mcp-rm-backup-43-keep.json", timestamp: 3L]
@@ -806,7 +876,7 @@ class ToolManageFilesSpec extends ToolSpecBase {
         then:
         result.success == true
         deleted == ["mcp-rm-backup-42-old.json"]
-        atomicStateMap.itemBackupManifest.keySet() == ["rm-rule_43_keep"] as Set
+        backupIndex.keySet() == ["rm-rule_43_keep"] as Set
     }
 
     def "hub_delete_file reports failure without throwing when deleteHubFile errors"() {

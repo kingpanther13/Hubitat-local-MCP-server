@@ -2341,7 +2341,8 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
                 (idParam): itemId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName,
-                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
+                backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
+                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result
@@ -2388,8 +2389,9 @@ private Map _backupLibrarySourceLocked(String libraryId) {
     def libData = parsed[0]
     def backupSource = libData.source ?: ""
     def fileName = _itemBackupFileName("mcp-backup-library-${libraryId}.groovy")
+    byte[] backupBytes = backupSource.getBytes("UTF-8")
     try {
-        uploadHubFile(fileName, backupSource.getBytes("UTF-8"))
+        uploadHubFile(fileName, backupBytes)
     } catch (Exception e) {
         mcpLogError("hub-admin", "Failed to save library backup file '${fileName}'", e)
         throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: file upload failed -- ${e.message}")
@@ -2401,7 +2403,9 @@ private Map _backupLibrarySourceLocked(String libraryId) {
         fileName: fileName,
         version: libData.version,
         timestamp: now(),
-        sourceLength: backupSource.length()
+        sourceLength: backupSource.length(),
+        sizeBytes: backupBytes.length,
+        retention: "pinned"
     ]
     _publishUploadedItemBackup(key, entry)
     mcpLog("info", "hub-admin", "Backed up library ID ${libraryId} source to File Manager: ${fileName} (version ${libData.version}, ${backupSource.length()} chars)")
@@ -2846,7 +2850,8 @@ def toolDeleteLibrary(args) {
                 libraryId: libraryId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName ?: backupFileName,
-                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
+                backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
+                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result

@@ -297,10 +297,9 @@ Exception: `toolCreateHubBackup` checks `confirm` directly without requiring a p
 **`backupItemSource(type, id)`** — Automatic item-level backup for modify/delete operations:
 - Called by `hub_update_app`, `hub_update_driver`, `hub_delete_item` (type=app|driver) before making changes
 - Fetches current source code and saves as a `.groovy` file in the hub's local File Manager via `uploadHubFile()`
-- Metadata (type, id, version, timestamp, fileName, sourceLength) stored in `atomicState.itemBackupManifest` keyed by `"app_<id>"` or `"driver_<id>"`
+- Metadata (type, id, version, timestamp, fileName, sourceLength, sizeBytes, retention) is indexed in the File Manager file `mcp-backup-index.json` (kept out of app state, since every `atomicState` access parses the whole state blob), keyed by `"app_<id>"` or `"driver_<id>"`. A legacy `atomicState.itemBackupManifest` is moved into the file on first access; a missing index is rebuilt from the File Manager listing, adopting older backup files
 - 1-hour window: if a backup of the same item exists within the last hour and is not pending deletion, it is kept (preserves the pre-edit original across a series of edits)
-- Retains max 20 entries across all backup types: the trimmed manifest is committed first, then files no entry references are deleted via `deleteHubFile()` (a failed delete leaves an orphan file, never a dangling entry)
-- No size limit — full source always stored (File Manager has ~1GB capacity)
+- Retention is per item: an item's backups only push out that item's own older backups. App/driver/library baselines and a rule's first snapshot per editing session (plus every pre-delete or `replaceRequiredExpression` snapshot) are `pinned`; with `backupEveryRuleWrite` on, later writes in a rule's session are `rolling` steps, newest 5 kept per rule. A 10 MB byte budget across all indexed backups evicts rolling steps, then pinned baselines, oldest first, never the entry being published or an active restore target. The trimmed index is committed first, then files no entry references are deleted via `deleteHubFile()` (a failed delete leaves an orphan file, never a dangling entry)
 - Not needed for install tools (nothing to lose when creating new)
 - Files persist even if MCP app is uninstalled; accessible at `http://<HUB_IP>/local/<filename>`
 - Requires firmware ≥2.3.4.132 for `uploadHubFile()` support
@@ -315,8 +314,8 @@ Exception: `toolCreateHubBackup` checks `confirm` directly without requiring a p
 **File Manager Tools** (4 tools):
 - `hub_list_files` — lists files via `/hub/fileManager/json` internal API endpoint, optionally narrowed by a `filter` name substring; available under the Read master
 - `hub_read_file` — reads file via `downloadHubFile()`; returns content inline for files ≤60KB, otherwise provides download URL; available under the Read master
-- `hub_write_file` — writes via `uploadHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`)
-- `hub_delete_file` — deletes via `deleteHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up file before deletion
+- `hub_write_file` — writes via `uploadHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up existing file before overwriting (backup named `<original>_backup_<timestamp>.<ext>`; the newest 5 copies per file name are kept)
+- `hub_delete_file` — deletes via `deleteHubFile()`; requires the Write master + confirm + a recent backup; automatically backs up file before deletion (same 5-copy cap)
 - File name validation: must match `^[A-Za-z0-9][A-Za-z0-9._-]*$` (no spaces, no leading period)
 
 **Device Authorization Safety** (v0.7.2+):
@@ -418,11 +417,7 @@ Native requests use the fixed `http://127.0.0.1:8080` loopback endpoint on the h
 | `lastBackupTimestamp` | Long | Newest known hub backup epoch ms (24-hour write safety gate; stamped by hub_create_backup or refreshed from the hub's local backup list on a gate fallback) |
 | `updateCheck` | Map | `{latestVersion, checkedAt, lastError}` |
 
-**Parent app `atomicState.*`:**
-
-| Key | Type | Purpose |
-|-----|------|---------|
-| `itemBackupManifest` | Map | Shared File Manager backup index for app/driver/library source, rule snapshots, and pre-restore undo; max 20 entries |
+The backup index for app/driver/library source, rule snapshots, and pre-restore undo is the File Manager file `mcp-backup-index.json`, not app state.
 
 Legacy device captures live in per-app class-static memory, not `state` or `atomicState`. Existing `capturedDeviceStates` keys are imported and removed on capture-store access; captures are intentionally lost on app code reload or hub restart. See `docs/capture-storage.md`.
 

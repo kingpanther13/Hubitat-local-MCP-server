@@ -171,8 +171,9 @@ Defaults: 30 executions within 60 seconds. Configurable in app settings.
 Source code backups are created automatically before modify/delete operations.
 
 - Stored in File Manager as `.groovy` files
-- Max 20 backups kept (oldest pruned automatically)
 - 1-hour protection: rapid edits preserve the pre-edit original
+- Retention is per item: other items' backups never push a backup out. Responses say whether a backup is `pinned` or a `rolling` step and when it can be removed
+- All MCP backups share a 10 MB budget; past it, rolling steps go first, then the oldest pinned baselines
 - Backups persist even if MCP is uninstalled
 - Accessible at `http://<HUB_IP>/local/<filename>`
 

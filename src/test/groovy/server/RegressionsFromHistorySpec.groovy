@@ -375,7 +375,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         given: 'a recent cached backup whose manifest carries a stale version=5'
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        atomicStateMap.itemBackupManifest = [app_50: [
+        backupIndex = [app_50: [
             type: 'app', id: '50',
             fileName: 'mcp-backup-app-50.groovy',
             version: 5,                                    // stale
@@ -413,7 +413,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        atomicStateMap.itemBackupManifest = [app_50: [
+        backupIndex = [app_50: [
             type: 'app', id: '50',
             fileName: 'mcp-backup-app-50.groovy',
             version: 5,
@@ -558,7 +558,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         given: 'a recent cached backup with version=5 (stale, but the only thing we have)'
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        atomicStateMap.itemBackupManifest = [app_50: [
+        backupIndex = [app_50: [
             type: 'app', id: '50',
             fileName: 'mcp-backup-app-50.groovy',
             version: 5,
@@ -593,7 +593,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        atomicStateMap.itemBackupManifest = [app_50: [
+        backupIndex = [app_50: [
             type: 'app', id: '50',
             fileName: 'mcp-backup-app-50.groovy',
             version: 5,
@@ -646,7 +646,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         given: 'a recent cached backup whose manifest carries a stale version=1'
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        atomicStateMap.itemBackupManifest = [library_42: [
+        backupIndex = [library_42: [
             type: 'library', id: '42',
             fileName: 'mcp-backup-library-42.groovy',
             version: 1,                                    // stale -- hub has been edited since
@@ -683,7 +683,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        atomicStateMap.itemBackupManifest = [library_42: [
+        backupIndex = [library_42: [
             type: 'library', id: '42',
             fileName: 'mcp-backup-library-42.groovy',
             version: 1,
@@ -725,7 +725,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         given: 'a recent cached backup with version=7 (stale, but the only value available)'
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        atomicStateMap.itemBackupManifest = [library_42: [
+        backupIndex = [library_42: [
             type: 'library', id: '42',
             fileName: 'mcp-backup-library-42.groovy',
             version: 7,
@@ -762,7 +762,7 @@ class RegressionsFromHistorySpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
-        atomicStateMap.itemBackupManifest = [library_42: [
+        backupIndex = [library_42: [
             type: 'library', id: '42',
             fileName: 'mcp-backup-library-42.groovy',
             version: 7,
