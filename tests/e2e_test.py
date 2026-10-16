@@ -6718,6 +6718,47 @@ class TestRunner:
         finally:
             self._delete_native(app_id)
 
+    @test("devices")
+    def test_switch_only_if_changed_commands_only_switches_needing_it(self) -> None:
+        # onlyIfChanged is RM's "Command only switches that are off/on?": with switch A on and B off,
+        # an on action commands only B and an off action only A; without it both are commanded. The
+        # rule's own command-<name> events (producedBy names the rule) show which switch RM commanded.
+        a = self._ensure_perm_fixture("switch_a")
+        b = self._ensure_perm_fixture("switch_b")
+
+        def commanded_by(device_id: str, cmd: str, app_id: Any) -> bool:
+            ev = self.client.call_tool("hub_list_device_events", {
+                "deviceId": device_id, "attribute": f"command-{cmd}", "hoursBack": 1, "limit": 5})
+            rows = ev.get("events", []) if isinstance(ev, dict) else []
+            return any((r.get("producedBy") or {}).get("appId") == int(app_id) for r in rows)
+
+        for action in ("on", "off"):
+            for only in (True, False):
+                for device_id, state in ((a, "on"), (b, "off")):
+                    r = self.client.call_tool("hub_call_device_command", {"deviceId": device_id, "command": state})
+                    assert isinstance(r, dict) and r.get("success") is True, f"setting {device_id} {state} failed: {r}"
+                app_id = self._create_native_rule(f"OnlyIfChanged_{action}_{only}", {
+                    "addActions": [{"capability": "switch", "action": action, "deviceIds": [int(a), int(b)],
+                                    "onlyIfChanged": only}],
+                })
+                try:
+                    self._call_with_limiter_bounce(
+                        "hub_manage_rule_machine", "hub_call_rule", {"ruleId": app_id, "action": "actions"},
+                        "hub_call_rule(action=actions)")
+                    needing = b if action == "on" else a
+                    already = a if action == "on" else b
+                    deadline = time.time() + 15.0
+                    while time.time() < deadline and not commanded_by(needing, action, app_id):
+                        time.sleep(1.0)
+                    assert commanded_by(needing, action, app_id), \
+                        f"{action} (onlyIfChanged={only}) did not command the switch that was not {action} (rule {app_id})"
+                    time.sleep(2.0)
+                    assert commanded_by(already, action, app_id) is (not only), \
+                        f"{action} (onlyIfChanged={only}): the switch already {action} was " \
+                        f"{'commanded' if only else 'not commanded'} (rule {app_id})"
+                finally:
+                    self._delete_native(app_id)
+
     @test("native_apps")
     def test_call_rule_multi_id_aggregates_per_rule(self) -> None:
         # A multi-ruleId hub_call_rule is MRTR-eligible from its first request (the
