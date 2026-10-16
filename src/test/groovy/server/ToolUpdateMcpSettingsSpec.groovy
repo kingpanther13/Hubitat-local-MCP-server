@@ -631,7 +631,7 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
 
         then:
         text.contains("backupBeforeRuleEdits (bool, default ON): OFF skips the pre-edit baseline")
-        text.contains("it overrides backupEveryRuleWrite")
+        text.contains("overrides backupEveryRuleWrite")
         text.contains("(only while backupBeforeRuleEdits is on)")
     }
 

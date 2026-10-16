@@ -4231,8 +4231,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                     def key = _settingKeyOf(k)
                     if (key != null) {
                         (ctl.writes as List) << [key: key, value: v]
-                        // A device field stays a list, as the hub's statusJson serves it (deviceIdsForDeviceList).
-                        if (ctl.applyWrites) committedSettings[key] = (committedSettings[key] instanceof List && !(v instanceof List))
+                        // A device picker stays a list, as the hub's statusJson serves it (deviceIdsForDeviceList).
+                        boolean devicePicker = editorInputs.any { it.name?.toString() == key && it.type?.toString()?.startsWith("capability.") }
+                        if (ctl.applyWrites) committedSettings[key] = (devicePicker && !(v instanceof List))
                             ? v.toString().tokenize(",").collect { it.trim() }.findAll { it } : v
                     }
                 }
