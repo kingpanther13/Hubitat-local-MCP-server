@@ -5736,13 +5736,16 @@ private void _rmCheckSimpleConditionSpec(String cap, String actType, String subT
     Map c = cond as Map
     if (c.definedIndex != null) return
     if (!c.capability?.toString()?.trim()) throw new IllegalArgumentException("${cap}.condition needs capability (or definedIndex for a condition the rule already defines).".toString())
+    // RM's Simple Conditional picker leaves these out: refused before the condition's own fields are asked for.
+    String rawCondCap = c.capability.toString().trim()
+    String condCap = ((_rmCondTables().condition as List).find { it.toString().equalsIgnoreCase(rawCondCap) } ?: rawCondCap).toString()
+    if (condCap in _rmSimpleCondExcluded()) {
+        throw new IllegalArgumentException("${cap}.condition: Rule Machine does not offer a ${condCap} condition in a Simple Conditional Action (it leaves out ${_rmSimpleCondExcluded().join(', ')}). Define the condition first and pass {definedIndex}, or use ifThen ... endIf. RM is not touched.".toString())
+    }
     _rmCheckCondSpec(c, "condition", "${cap}.condition".toString())
     _rmValidateDeviceIdsExist("${cap}.condition.deviceIds".toString(), c.deviceIds ?: (c.deviceId != null ? [c.deviceId] : null))
     _rmRequireConditionDeviceCapability("${cap}.condition.deviceIds".toString(), c)
     if (c.compareToDevice instanceof Map) _rmValidateDeviceIdsExist("${cap}.condition.compareToDevice.deviceId".toString(), [(c.compareToDevice as Map).deviceId])
-    if (c.capability in _rmSimpleCondExcluded()) {
-        throw new IllegalArgumentException("${cap}.condition: Rule Machine does not offer a ${c.capability} condition in a Simple Conditional Action (it leaves out ${_rmSimpleCondExcluded().join(', ')}). Define the condition first and pass {definedIndex}, or use ifThen ... endIf. RM is not touched.".toString())
-    }
     _rmValidateDeviceIdsExist("${cap}.condition.deviceIds", c.deviceIds ?: (c.deviceId != null ? [c.deviceId] : null))
 }
 
@@ -6717,7 +6720,7 @@ private String _rmPreflightRestoreHint(String reason = null, Map backup = null, 
     // read it off the envelope rather than asserting either case.
     // A reused baseline (same rule edited again inside the reuse window) was taken for an EARLIER
     // edit, so describing it as a snapshot taken before this refusal misstates what it restores.
-    def snapshot = !backup?.backupKey ? (settings?.backupBeforeRuleEdits == false ? " No backup was taken: pre-edit backups are off in Advanced settings." : " No backup was taken.") :
+    def snapshot = !backup?.backupKey ? (_rmPreEditBackupsOff() ? " No backup was taken: pre-edit backups are off in Advanced settings." : " No backup was taken.") :
         (backup.baselineReused == true
             ? " The backupKey on this response is the baseline reused from an earlier edit; restoring it reverts every edit since it was taken, not just this one."
             : " The backupKey on this response is an unused snapshot taken before the refusal.")
@@ -7841,8 +7844,11 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 // A fresh snapshot is taken after the lock is released, since its App Cloner export is slow.
 // activePage: the page a wizard edit is on; its render is read instead of the default page, which
 // some apps (HPM) use to reset a wizard's pending input.
+// The toggle as stored: a form save keeps it as text, so the text decides.
+private boolean _rmPreEditBackupsOff() { settings?.backupBeforeRuleEdits?.toString() == "false" }
+
 Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
-    if (settings?.backupBeforeRuleEdits == false) {
+    if (_rmPreEditBackupsOff()) {
         _memoDropPreEditStatus(ruleId)
         // No baseline, but the app must exist and its kind is still needed: one config read, of the
         // page a walk is on (some apps reset a wizard when their default page renders).

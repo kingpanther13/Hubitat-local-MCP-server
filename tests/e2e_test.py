@@ -1772,6 +1772,12 @@ class TestRunner:
         assert isinstance(result, dict) and result.get("success") is True \
             and (result.get("updated") or {}).get("backupBeforeRuleEdits") is on, \
             f"setting backupBeforeRuleEdits={on} did not take: {result}"
+        # The echo is the request; the stored value decides every later edit's backup, so read it back.
+        stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
+            "appId": str(self.client.app_id), "includeSettings": True}})
+        raw = (stored.get("settings") or {}).get("backupBeforeRuleEdits") if isinstance(stored, dict) else None
+        assert str(raw).lower() == str(on).lower(), \
+            f"backupBeforeRuleEdits={on} was accepted but the app's stored value reads {raw!r}: {stored}"
         return (result.get("previous") or {}).get("backupBeforeRuleEdits")
 
     def _hub_variables_by_name(self) -> dict[str, dict]:
@@ -7877,7 +7883,7 @@ class TestRunner:
             assert all(entry.get("error") for entry in refused), \
                 f"outer patch failure was not attributable to explicit refused entries: {result}"
             stop_at = entries.index(refused[0])
-            self._assert_bulk_stop(result, f"patches[{stop_at}]", entries[stop_at + 1:])
+            self._assert_bulk_stop(result, f"patches[{stop_at}]", entries[stop_at + 1:], landed=stop_at > 0)
         else:
             assert result.get("error") is None, \
                 f"patch batch had an outer application error unrelated to per-op results: {result}"
@@ -7887,15 +7893,18 @@ class TestRunner:
 
     @staticmethod
     def _assert_bulk_stop(result: Any, stopped_after: str, not_attempted: list,
-                          *, partial_item: bool = False) -> None:
+                          *, partial_item: bool = False, landed: bool = True) -> None:
         """Assert the fail-closed bulk contract on one envelope.
 
         The stopping item is named in bulkStoppedAfter and the top-level error, finalisation is
         skipped, every later row is notAttempted, and no skipped tail is handed back for resumption.
+        partial says whether anything landed: true after an earlier item wrote (or the stop item
+        itself was partial), false when the first item was refused and the rule is untouched.
         """
         assert isinstance(result, dict), f"a stopped batch returned no envelope: {result!r}"
-        assert result.get("success") is False and result.get("partial") is True, \
-            f"a stopped batch must report success:false + partial:true: {result}"
+        expect_partial = landed or partial_item
+        assert result.get("success") is False and result.get("partial") is expect_partial, \
+            f"a stopped batch must report success:false + partial:{str(expect_partial).lower()}: {result}"
         assert result.get("bulkStoppedAfter") == stopped_after, \
             f"expected bulkStoppedAfter={stopped_after!r}, got {result.get('bulkStoppedAfter')!r}: {result}"
         assert result.get("finalisationNotAttempted") is True, \
@@ -8318,15 +8327,18 @@ class TestRunner:
                 f"the driven tCapab1='Switch' write should round-trip live (valueEcho.match): {write_step}"
             # A half-built (uncommitted) trigger is scratch wizard state, not a broken rule.
             self._assert_rule_renders(app_id)
-            # A capability the open slot's picker does not list is refused unsent; Switch stays.
+            # RM replaces the capability picker with the device picker once a capability is chosen,
+            # so the open slot's next picker is the device, then the state.
+            dev_write = self._set_rule(app_id, {"walkStep": {"page": "selectTriggers", "operation": "write",
+                                                             "write": {"tDev1": [int(self.get_test_switch_id())]}}}, strict=True)
+            assert (dev_write.get("valueEcho") or {}).get("match") is True,                 f"the tDev1 write should round-trip live (valueEcho.match): {dev_write}"
+            # A state the open slot's picker does not list is refused unsent; the slot keeps Switch.
             unlisted = _walk_refusal({"walkStep": {"page": "selectTriggers", "operation": "write",
-                                                   "write": {"tCapab1": "E2E Not A Capability"}}})
+                                                   "write": {"tstate1": "E2E Not A State"}}})
             refused = (unlisted.get("opResult") or {}).get("refused") or {}
-            assert unlisted.get("success") is False and refused.get("reason") == "not_offered" \
-                and "Switch" in [str(o) for o in (refused.get("offered") or [])], \
-                f"an unlisted tCapab1 value should be refused with the picker's options: {unlisted}"
-            assert (self._get_persisted_rule_config(app_id).get("settings") or {}).get("tCapab1") == "Switch", \
-                "the refused tCapab1 write changed the stored capability"
+            assert unlisted.get("success") is False and refused.get("reason") == "not_offered"                 and "on" in [str(o) for o in (refused.get("offered") or [])],                 f"an unlisted tstate1 value should be refused with the picker's options: {unlisted}"
+            after_refusal = self._get_persisted_rule_config(app_id).get("settings") or {}
+            assert after_refusal.get("tCapab1") == "Switch" and after_refusal.get("tstate1") in (None, ""),                 f"the refused tstate1 write changed the stored slot: {after_refusal}"
 
             # (3) failure halt: an invalid step operation aborts the drive (success:false,
             #     the step throws) and must NOT corrupt the rule.
@@ -10997,7 +11009,7 @@ class TestRunner:
             # A Day row through the scheduler's own table editor, as the UI fills it: Add Mode, pick the
             # mode, open the first row's heat cell, set it, Update.
             tm = scheduler("sched_modes", t2, "Hub Modes", [
-                {"button": "addMode"}, {"settings": {"perX": [day]}}, {"button": "1", "stateAttribute": "tsH"},
+                {"button": "addMode", "stateAttribute": "addMode"}, {"settings": {"perX": [day]}}, {"button": "1", "stateAttribute": "tsH"},
                 {"settings": {"tempX": 68}}, {"button": "update"}])
             on_t1 = f"Thermostat Scheduler for {t1_name}: "
 

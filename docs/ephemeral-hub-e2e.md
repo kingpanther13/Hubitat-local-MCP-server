@@ -79,9 +79,11 @@ dispatches them as the provider's `run_suite` and `kind` inputs.
 
 With `EPHEMERAL_RUN_SUITE: 'true'`, the provider runs `tests/e2e_test.py` and
 `tests/sdk_conformance_test.py` at the head revision next to the hub, so the suite no longer
-crosses a tunnel. The provider run ends with the suite, and `request-hub` waits up to 40 minutes
-for it to complete. It then downloads the artifact `ephemeral-hub-results-<provider run id>` and
-relays it as `ephemeral-hub-results-<test run id>-<attempt>-<kind>`. The artifact holds:
+crosses a tunnel. The provider run ends with the suite, and its results artifact
+`ephemeral-hub-results-<provider run id>` appears when it completes. `request-hub` waits up to 40
+minutes for that artifact (five minutes before the first read, then once a minute; a provider run
+that ends without it fails the wait), downloads it and relays it as
+`ephemeral-hub-results-<test run id>-<attempt>-<kind>`. The artifact holds:
 
 - `results.json`, with `schema_version`, `kind`, `public_sha`, `public_repo`, `started_at`,
   `finished_at`, and an `e2e` and an `sdk` object. Each carries `status`, `exit_code`, the
@@ -93,8 +95,9 @@ relays it as `ephemeral-hub-results-<test run id>-<attempt>-<kind>`. The artifac
 artifact bypasses log masking.
 
 With `EPHEMERAL_RUN_SUITE: 'true'`, `request-hub` also posts the provider run's conclusion as the
-head's `Ephemeral e2e verdict (<kind>)` commit status, from base code: success only when the
-provider run succeeded, failure when it did not finish within 15 minutes of the artifact, could
+head's `Ephemeral e2e verdict (<kind>)` commit status, from base code, after the artifact relay:
+that step waits up to 15 more minutes for the provider run to complete. The verdict is success
+only when the provider run succeeded, failure when it did not complete within that wait, could
 not be read, or was never started while that job ran. The PR's own `e2e` job cannot change that
 status.
 

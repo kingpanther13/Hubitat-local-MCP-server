@@ -203,6 +203,7 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
                                         condition: [capability: "Switch", deviceIds: [8], state: "on"]]                                                        || "repeatWhile cannot carry a condition"
         "on a Wait for Expression"   | [capability: "waitExpression", expression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
                                         condition: [capability: "Switch", deviceIds: [8], state: "on"]]                                                        || "waitExpression cannot carry a condition"
+        "a Mode condition"           | [capability: "log", message: "m", condition: [capability: "Mode"]]                                              || "log.condition: Rule Machine does not offer a Mode condition in a Simple Conditional Action"
         "a device without the capability" | [capability: "switch", action: "on", deviceIds: [8], condition: [capability: "Switch", deviceIds: [7], state: "on"]] || "switch.condition.deviceIds: device 7 (Temp) does not have the switch capability"
         "a missing reference device" | [capability: "switch", action: "on", deviceIds: [8],
                                         condition: [capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 99]]]              || "switch.condition.compareToDevice.deviceId contains device ID '99' which does not exist"
