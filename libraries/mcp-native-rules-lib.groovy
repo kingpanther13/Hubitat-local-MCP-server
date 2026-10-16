@@ -1454,10 +1454,21 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
     ids.each { id ->
         def idStr = id?.toString()
         if (!idStr) return
+        // One read per device per execution: a spec is mapped before the backup and again for
+        // the write, and the capability check's device list already proves the ids it holds.
+        String memoKey = "deviceExists:${idStr}".toString()
+        if (EXECUTION_CACHE.get(memoKey) == true) return
+        def listed = EXECUTION_CACHE.get("vrbDevicesById")
+        if (listed instanceof Map && listed.get(idStr) != null) {
+            EXECUTION_CACHE.put(memoKey, true)
+            return
+        }
         def exists
+        boolean read = false
         try {
             def resp = hubInternalGet("/device/fullJson/${idStr}")
             exists = (resp != null && resp.toString().length() > 0)
+            read = true
         } catch (Exception fetchExc) {
             // Distinguish "device truly missing" (404 / empty body) from
             // "validator unavailable" (network blip, auth-cookie expiry,
@@ -1480,6 +1491,7 @@ private void _rmValidateDeviceIdsExist(String label, Object ids) {
             // never consult the sentinel for restoreHint.)
             throw new IllegalArgumentException("${label} contains device ID '${idStr}' which does not exist on the hub. Verify the device ID via hub_list_devices. RM is not touched.")
         }
+        if (read) EXECUTION_CACHE.put(memoKey, true)
     }
 }
 
@@ -3261,15 +3273,19 @@ private Map _rmSubActCapab() {
 private void _rmRequireDeviceCapability(String label, Object ids, String subType) {
     String cap = subType ? _rmSubActCapab()[subType] : null
     if (cap == null || !(ids instanceof List) || (ids as List).isEmpty()) return
-    def byId = [:]
-    try {
-        def parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/vrb/devices") ?: "[]")
-        (parsed instanceof List ? parsed : []).each { d ->
-            if (d instanceof Map && d.id != null) byId.put(d.id.toString(), [label: d.label, caps: ((d.capabilities ?: []) as List).collect { it?.toString()?.toLowerCase() }])
+    def byId = EXECUTION_CACHE.get("vrbDevicesById")
+    if (byId == null) {
+        byId = [:]
+        try {
+            def parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/vrb/devices") ?: "[]")
+            (parsed instanceof List ? parsed : []).each { d ->
+                if (d instanceof Map && d.id != null) byId.put(d.id.toString(), [label: d.label, caps: ((d.capabilities ?: []) as List).collect { it?.toString()?.toLowerCase() }])
+            }
+        } catch (Exception e) {
+            mcpLog("warn", "rm-native", "${label}: device capabilities could not be read (${e.message ?: e}); the ${cap} check was skipped")
+            return
         }
-    } catch (Exception e) {
-        mcpLog("warn", "rm-native", "${label}: device capabilities could not be read (${e.message ?: e}); the ${cap} check was skipped")
-        return
+        EXECUTION_CACHE.put("vrbDevicesById", byId)
     }
     if (byId.isEmpty()) return
     def lacking = (ids as List).findAll { id -> def d = byId.get(id?.toString()); d != null && !(cap.toLowerCase() in d.caps) }
@@ -7363,7 +7379,12 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 // some apps (HPM) use to reset a wizard's pending input.
 Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
     def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason, activePage) }
-    return reused ?: (activePage ? _rmBackupRuleSnapshot(ruleId, reason, activePage) : _rmBackupRuleSnapshot(ruleId, reason))
+    if (reused != null) {
+        // The status read before this edit is current only up to its first backup decision.
+        EXECUTION_CACHE.remove("preEditStatus:${ruleId}".toString())
+        return reused
+    }
+    return activePage ? _rmBackupRuleSnapshot(ruleId, reason, activePage) : _rmBackupRuleSnapshot(ruleId, reason)
 }
 
 private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
@@ -7397,6 +7418,7 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String acti
         def config = null
         try {
             config = activePage ? _rmFetchConfigJson(ruleId, activePage) : _rmFetchConfigJson(ruleId)
+            if (activePage && _rmNoteRuleMachineConfig(ruleId, config)) config = _rmFetchConfigJson(ruleId)
         } catch (Exception e) {
             def vrbFallback = null
             try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
@@ -7431,6 +7453,14 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String acti
 // tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss-SSS>[-<uuid>].
 // The reads and the App Cloner export run outside the backup lock; only the file and manifest
 // writes hold it.
+// Whether a configure/json envelope is an RM rule's (every page of an app carries its type);
+// recorded for the execution, so a walk step can tell without a read of its own.
+private boolean _rmNoteRuleMachineConfig(Integer ruleId, Map config) {
+    boolean rm = (config?.app?.appType?.name?.toString() ?: "") ==~ /Rule-[0-9.]+/
+    EXECUTION_CACHE.put("ruleMachine:${ruleId}".toString(), rm)
+    return rm
+}
+
 Map _rmBackupRuleSnapshot(Integer ruleId, String reason, String activePage = null) {
     def built = _rmBuildRuleSnapshot(ruleId, reason, activePage)
     return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map) }
@@ -7441,6 +7471,10 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
     def status
     try {
         config = activePage ? _rmFetchConfigJson(ruleId, activePage) : _rmFetchConfigJson(ruleId)
+        if (activePage && _rmNoteRuleMachineConfig(ruleId, config)) {
+            config = _rmFetchConfigJson(ruleId)
+            activePage = null
+        }
     } catch (Exception e) {
         // Vue-JSON children (Visual Rules) may not serve configure/json. If the id speaks a
         // VRB serialization, the VRB-flavored snapshot below is still a full backup --
@@ -7456,7 +7490,8 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
         config = null
     }
     try {
-        status = _rmFetchStatusJson(ruleId)
+        // A pre-write snapshot takes the status hub_set_rule read just before its edit.
+        status = EXECUTION_CACHE.remove("preEditStatus:${ruleId}".toString()) ?: _rmFetchStatusJson(ruleId)
     } catch (Exception e) {
         // Status failure is tolerable for a pre-write snapshot — the
         // config JSON alone is enough to restore. Record the failure in
@@ -7960,7 +7995,12 @@ def toolSetRule(args) {
     Boolean wasStopped = null
     boolean stoppedUnread = false
     if (editId != null) {
-        try { wasStopped = _readAppStateBoolean(_rmFetchStatusJson(editId), "stopped", null) } catch (Exception readExc) { stoppedUnread = true }
+        try {
+            def preStatus = _rmFetchStatusJson(editId)
+            wasStopped = _readAppStateBoolean(preStatus, "stopped", null)
+            // The snapshot taken before the edit's first write reads the same page; it takes this one.
+            EXECUTION_CACHE.put("preEditStatus:${editId}".toString(), preStatus)
+        } catch (Exception readExc) { stoppedUnread = true }
     }
     // hub_set_rule edits only RM rules, which the engine then never has to look up.
     def out = _rmStampOutcome(_applyNativeAppEdit(args instanceof Map ? (new LinkedHashMap(args) + [__rmRule: true]) : args))
@@ -12358,10 +12398,12 @@ def _applyNativeAppEdit(args) {
         (modifyTriggerSpec ? "pre-modifyTrigger" :
         (modifyActionSpec ? "pre-modifyAction" :
         (walkStepSpec ? "pre-walkStep" : "pre-update"))))))))))))))))
-    // A walkStep on an app that is not an RM rule reads the page it is on (see _rmBackupBeforeEdit).
+    // A walkStep on an app that is not an RM rule reads the page it is on (see _rmBackupBeforeEdit);
+    // the backup's config read says whether the app is an RM rule.
     String wsPage = (walkStepSpec instanceof Map) ? ((walkStepSpec.page ?: ((walkStepSpec.steps instanceof List && walkStepSpec.steps) ? (walkStepSpec.steps[0] instanceof Map ? walkStepSpec.steps[0].page : null) : null))?.toString()) : null
-    if (wsPage && (args?.__rmRule == true || _ruleCompiledState(appId)?.ruleFormat == "rm")) wsPage = null
+    if (wsPage && args?.__rmRule == true) wsPage = null
     def backup = wsPage ? _rmBackupBeforeEdit(appId, backupReason, wsPage) : _rmBackupBeforeEdit(appId, backupReason)
+    if (wsPage && EXECUTION_CACHE.get("ruleMachine:${appId}".toString()) == true) wsPage = null
 
     // walkStep: drive any RM page one operation at a time (introspect/write/click/navigate) and get the
     // schema diff, value echo, health and sub-page links back. The fallback for what the shortcuts don't

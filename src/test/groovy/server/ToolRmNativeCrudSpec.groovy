@@ -972,10 +972,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def statusCalls = 0
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusCalls++
-            // 1st call = pre-backup snapshot; 2nd = post-write verify (poisoned);
-            // 3rd = post-retry verify (recovered); 4th+ = final page-error probe.
-            // call 1 is hub_set_rule's stopped-state read before the edit
-            if (statusCalls == 3) {
+            // 1st call = hub_set_rule's stopped-state read, which the pre-backup snapshot
+            // takes over; 2nd = post-write verify (poisoned); 3rd = post-retry verify
+            // (recovered); 4th+ = final page-error probe.
+            if (statusCalls == 2) {
                 statusJson(100, [[name: "tDev0", type: "capability.switch", multiple: false, value: "8,9"]])
             } else {
                 statusJson(100, [[name: "tDev0", type: "capability.switch", multiple: true, value: "8,9"]])
@@ -2110,9 +2110,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def statusCalls = 0
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusCalls++
-            // call #2 is the post-write verify -- return the poisoned (multiple:false) flag to force a retry
-            // call 1 is hub_set_rule's stopped-state read before the edit
-            if (statusCalls == 3) {
+            // call 1 is hub_set_rule's stopped-state read, which the pre-backup snapshot takes over;
+            // call 2 is the post-write verify -- return the poisoned (multiple:false) flag to force a retry
+            if (statusCalls == 2) {
                 statusJson(100, [[name: "tDev0", type: "capability.switch", multiple: false, value: "8,9"]])
             } else {
                 statusJson(100, [[name: "tDev0", type: "capability.switch", multiple: true, value: "8,9"]])
@@ -8108,15 +8108,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ]
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selectActionsSchema) }
-        // statusJson fetch count: the stopped-state read before the edit -> backup snapshot
-        // (pre-write, before pre-clear snapshot) -> pre-clear snapshot at the dispatcher (THROW
-        // HERE) -> _rmClearActions internal indices fetch + 4 retry-loop fetches -> post-throw
+        // statusJson fetch count: the stopped-state read before the edit, which the backup
+        // snapshot takes over -> pre-clear snapshot at the dispatcher (THROW HERE) ->
+        // _rmClearActions internal indices fetch + 4 retry-loop fetches -> post-throw
         // actionsStillPresent fetch in the catch. Throw selectively on the dispatcher's pre-clear
-        // snapshot call (the third call).
+        // snapshot call (the second call).
         def statusFetchCount = 0
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusFetchCount++
-            if (statusFetchCount == 3) {
+            if (statusFetchCount == 2) {
                 throw new RuntimeException("simulated hub blip on pre-clear snapshot fetch")
             }
             statusJson(100, [[name: "actType.1", value: "switchActs"]])
@@ -45676,7 +45676,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ruleConfigJson(100, "pkg", [])
         }
         hubGet.register('/installedapp/configure/json/100/prefPkgInstallUrl') { params ->
-            ruleConfigJson(100, "pkg", [[name: "pkgInstall", type: "text", required: true]], null, stored.clone() as Map)
+            JsonOutput.toJson([app: [id: 100, name: "pkg", label: "pkg", trueLabel: "pkg", installed: true, appType: [name: "Package Manager", namespace: "x"]],
+                               configPage: [name: "prefPkgInstallUrl", title: "", install: false, error: null,
+                                            sections: [[title: "", input: [[name: "pkgInstall", type: "text", required: true]]]]],
+                               settings: stored.clone(), childApps: []])
         }
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusJson(100, stored.collect { k, v -> [name: k, type: "text", value: v] })
@@ -45697,6 +45700,30 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.valueEcho.match == true
         defaultRenders == rendersBefore
         stored.pkgInstall == "https://example.test/packageManifest.json"
+
+        and: "the app's kind came from the page the backup read; the compiled state is read once, by the health probe"
+        hubGet.calls.count { it.path == '/app/ruleBuilderJson/100' } == 1
+    }
+
+    def "walkStep on an RM rule through hub_set_native_app snapshots the rule's main page"() {
+        given: "the wizard page's envelope names the app type, as every page of an app does"
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs"]]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/app/ruleBuilderJson/100') { params -> JsonOutput.toJson([broken: false, actionList: []]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        when:
+        def seen = script.toolSetNativeApp([appId: 100, confirm: true, walkStep: [page: "selectActions", operation: "introspect"]])
+
+        then: "the snapshot read the rule's main page after the wizard page named the app's type, with no compiled-state read before it"
+        seen.success == true
+        def paths = hubGet.calls*.path
+        paths.indexOf('/installedapp/configure/json/100/selectActions') < paths.indexOf('/installedapp/configure/json/100')
+        paths.indexOf('/app/ruleBuilderJson/100') > paths.indexOf('/installedapp/configure/json/100')
     }
 
     def "walkStep shows a wizard page's nextPage and navigating to it presses the page's Next"() {
@@ -46468,8 +46495,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "a device without the capability Rule Machine's picker lists for the action is refused"() {
         given:
+        def listReads = 0
+        def fullJsonReads = [:]
         hubGet.register('/hub2/vrb/devices') { params ->
+            listReads++
             JsonOutput.toJson([[id: 26, label: "Temp", capabilities: ["TemperatureMeasurement"]], [id: 8, label: "Sw", capabilities: ["Switch", "Refresh"]]])
+        }
+        [8, 9].each { id ->
+            hubGet.register("/device/fullJson/${id}".toString()) { params -> fullJsonReads.put(id, (fullJsonReads.get(id) ?: 0) + 1); JsonOutput.toJson([id: id]) }
         }
 
         when:
@@ -46482,8 +46515,18 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         when:
         def mapped = script._rmMapActionSpec(100, [deviceIds: [8]], "switch", "on")
 
-        then:
+        then: "the device list was read once for the execution"
         mapped.actSubType == "getOnOffSwitch"
+        listReads == 1
+
+        when: "the existence check runs for a listed device, and twice for an unlisted one"
+        script._rmValidateDeviceIdsExist("addAction.deviceIds", [8])
+        script._rmValidateDeviceIdsExist("addAction.deviceIds", [9])
+        script._rmValidateDeviceIdsExist("addTrigger.deviceIds", [9])
+
+        then: "the list answers for the listed device; the unlisted one is read once"
+        fullJsonReads.get(8) == null
+        fullJsonReads.get(9) == 1
     }
 
     def "an unreadable device list skips the capability check instead of refusing"() {
