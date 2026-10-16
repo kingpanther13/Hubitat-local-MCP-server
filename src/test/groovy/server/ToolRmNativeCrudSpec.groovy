@@ -32995,7 +32995,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         then: "fail-loud -- comparator required"
         result.success == false
-        result.error?.toString()?.contains("needs a comparator")
+        result.error?.toString()?.contains("requires 'comparator'")
     }
 
     def "addRequiredExpression Custom Attribute: fail-loud when attribute set but comparator missing"() {
