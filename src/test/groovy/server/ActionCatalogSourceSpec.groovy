@@ -708,7 +708,8 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
             JsonOutput.toJson([[id: 123, label: "All", capabilities: (script._rmSubActCapab() as Map).values().unique()]])
         }
         hubGet.register('/device/fullJson/123') { params -> JsonOutput.toJson([id: 123]) }
-        script.metaClass.getAllGlobalVars = { -> [:] }
+        script.metaClass.getAllGlobalVars = { -> [myVar: [type: "integer", value: 1]] }
+        sharedLocation.modes = [[id: "1", name: "Day"]]
 
         when: "each entry's example, copied as a client would"
         def refused = [:]

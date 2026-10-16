@@ -3001,6 +3001,17 @@ private String _rmResolveRunCommandCapability(Object raw, Map options) {
 
 // The discover response: the full action schema, or one capability's entry when a selector
 // {capability, action?} is given.
+// Fields a custom mapper needs that its slots do not mark required: the served example carries them.
+private Map _rmActionExampleFields() {
+    def cond = [capability: "Switch", deviceIds: [1], state: "on"]
+    [thermostat: [mode: "heat"], mode: [modeName: "Day"], setVariable: [value: 1], setLocalVariable: [value: 1],
+     privateBoolean: [ruleIds: ["*"], value: true], runRule: [ruleIds: [1]], cancelTimers: [ruleIds: [1]], pauseRule: [ruleIds: [1]],
+     delay: [seconds: 30], delayPerMode: [perMode: [Day: [seconds: 30]]], repeat: [minutes: 5, times: 3],
+     repeatWhile: [expression: [conditions: [cond]]], waitExpression: [expression: [conditions: [cond]]],
+     ifThen: [expression: [conditions: [cond]]], elseIf: [expression: [conditions: [cond]]],
+     waitEvents: [events: [cond]], returnValue: [value: "done"]]
+}
+
 private Map _rmActionDiscover(Object selector) {
     Map full = _rmActionSchemaForDiscover()
     if (!(selector instanceof Map) || !(selector as Map).capability) return full
@@ -3295,6 +3306,9 @@ private Map _rmActionSchemaForDiscover() {
             def n = (r instanceof List) ? (r as List)[0] : r
             if (fieldSpecs.containsKey(n) && !example.containsKey(n)) example.put(n, _rmExampleValue(fieldSpecs.get(n) as Map))
         }
+        // A custom mapper's own requirements, so every served example maps through its action.
+        def ownExample = _rmActionExampleFields().get(cap)
+        if (ownExample instanceof Map) example.putAll(ownExample as Map)
         def out = [name: cap, family: entry.family, actType: entry.actType, actSubType: subTypes, requiredFields: required, optionalFields: optional, example: example]
         if (actions) out.actions = actions
         if (conditional) out.conditionalRequired = conditional
@@ -6744,10 +6758,10 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
     def msgStr = msg?.toString() ?: ""
     // No backup means the refusal fired before the baseline snapshot, so nothing was written: a
     // pre-flight refusal whatever its wording (a non-RM app's message carries no RM sentinel).
-    def isPreflightRefusal = msgStr.contains("RM is not touched") || backup == null
     // The flags the throw recorded (_rmFail): a wizard left open, fields written before the stop,
-    // a row rolled back. Independent of preflight refusal (preflight never opens the wizard).
+    // a row rolled back, nothing sent. Independent of preflight refusal (preflight never opens the wizard).
     Map flags = _rmOutcomeFlags(cause)
+    def isPreflightRefusal = msgStr.contains("RM is not touched") || backup == null || flags.notSent == true
     def wizardStuck = flags.wizardStuck == true
     def health = null
     // Best effort -- a health read must never mask the real error, but a failed one is reported.
@@ -8553,7 +8567,10 @@ def toolSetNativeApp(args) {
         }
         return _createNativeAppShell(args)
     }
-    return _applyNativeAppEdit(args)
+    def out = _applyNativeAppEdit(args)
+    def skippedChecks = _memoSkippedChecks()
+    if (skippedChecks && out instanceof Map) out.checksSkipped = skippedChecks
+    return out
 }
 
 // Create a Button Rule-5.1 under an existing Button Controller-5.1, routing
@@ -13375,7 +13392,7 @@ def _applyNativeAppEdit(args) {
             trigResult = _rmAddTrigger(appId, addTriggerSpec)
         } catch (Exception e) {
             mcpLogError("rm-native", "addTrigger failed for app ${appId}", e)
-            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
+            return _rmBuildUpdateErrorResponse(appId, e.message, backup, "selectTriggers", e)
         }
         // updateRule after any committed trigger, partial included; a rejected updateRule is reported
         // (updateRuleFailed / subscriptionsNotLive / updateRuleError) and flips success false + partial, as
