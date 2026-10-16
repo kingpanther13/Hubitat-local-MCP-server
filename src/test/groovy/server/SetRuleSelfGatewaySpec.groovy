@@ -185,6 +185,51 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         reads == 2
     }
 
+    def "a bulk action edit runs Rule Machine's update too, so its restart of a stopped rule is reported"() {
+        given:
+        settingsMap.enableWrite = true
+        def reads = 0
+        hubGet.register('/installedapp/statusJson/5') { params -> reads++; groovy.json.JsonOutput.toJson([appState: [[name: "stopped", value: reads == 1]]]) }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addActions: [[capability: "log", message: "x"]], confirm: true])
+
+        then:
+        r.restartedStoppedRule == true
+        reads == 2
+    }
+
+    def "a single addAction runs no update, so the stopped state is not read"() {
+        given:
+        settingsMap.enableWrite = true
+        def reads = 0
+        hubGet.register('/installedapp/statusJson/5') { params -> reads++; groovy.json.JsonOutput.toJson([appState: [[name: "stopped", value: true]]]) }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addAction: [capability: "log", message: "x"], confirm: true])
+
+        then:
+        !r.containsKey("restartedStoppedRule")
+        reads == 0
+    }
+
+    def "an unreadable stopped state is reported instead of dropped"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/installedapp/statusJson/5') { params -> throw new IllegalStateException("hub busy") }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addTrigger: [capability: "Switch", deviceIds: [1], state: "on"], confirm: true])
+
+        then:
+        r.stoppedStateUnverified == true
+        r.note.contains("stopped state could not be read")
+        !r.containsKey("restartedStoppedRule")
+    }
+
     def "an edit of a running rule reads its state once and reports no restart"() {
         given:
         settingsMap.enableWrite = true

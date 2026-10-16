@@ -3133,6 +3133,11 @@ SELF_TEST_CASES = [
         [("SANDBOX-017", True)],
     ),
     (
+        "a .declaredFields property read is flagged",
+        "def fs = page.declaredFields",
+        [("SANDBOX-017", True)],
+    ),
+    (
         "querystring embedded in a hubInternalGet path is flagged",
         'def r = hubInternalGet("/device/updateLabel?deviceId=${id}&label=${name}")',
         [("SANDBOX-016", True)],
@@ -4080,8 +4085,6 @@ def run_self_test() -> int:
 
     # Gateway-attribution must-catch / must-not-catch fixtures.
     failures += _run_gateway_attribution_self_test()
-
-    # Discrete-event-caps must-catch / must-not-catch fixtures (PIPELINE.md Rule 13).
 
     # Trailing-updateRule envelope parity must-catch / must-not-catch fixtures
     # (PIPELINE.md Rule 13).
@@ -5306,11 +5309,6 @@ def main() -> int:
     all_findings.extend(check_tool_guide_pointers())
     # TOOL_GUIDE.md must be the generated rendering of getToolGuideSections().
     all_findings.extend(check_tool_guide_generated())
-
-    # Check that every doc surface that lists discrete-event sensor capabilities
-    # only names capabilities that are in production's DISCRETE_EVENT_CAPS map.
-    # Catches the "doc surface drifts ahead of production" class -- agents
-    # copying a stale-doc example would build a condition the live walker rejects.
 
     # Check that every `catch (Exception updateExc)` block in the RM dispatcher
     # is followed by the full 5-slot trailing-updateRule envelope shape.

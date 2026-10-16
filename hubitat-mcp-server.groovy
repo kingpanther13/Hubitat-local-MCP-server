@@ -8873,8 +8873,9 @@ private Integer _discoverParentAppId(String appType) {
         // Some built-ins (Notifications) have no sysApp alias: install them the way Apps > Add
         // Built-In App does, by the type id the hub lists in /hub2/appsList systemAppTypes.
         if (parentNode?.id == null) {
-            def typeId = _systemAppTypeId(parentTypeName)
-            bootstrapDiag += " typeId=${typeId}"
+            def typeLookup = [:]
+            def typeId = _systemAppTypeId(parentTypeName, typeLookup)
+            bootstrapDiag += " typeId=${typeId}${typeLookup.typeLookupError ? ' (the built-in app list could not be read: ' + typeLookup.typeLookupError + ')' : ''}"
             if (typeId != null) {
                 def created2 = null
                 try { created2 = hubInternalGetRaw("/installedapp/create/${typeId}") } catch (Exception e2) {
@@ -8925,13 +8926,14 @@ private Integer _discoverParentAppId(String appType) {
 
 // The id of a built-in app type as /hub2/appsList systemAppTypes lists it (what Apps > Add Built-In
 // App installs from), or null when the list is unreadable or does not offer the name.
-private Integer _systemAppTypeId(String typeName) {
+private Integer _systemAppTypeId(String typeName, Map diag = null) {
     try {
         def parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/appsList") ?: "{}")
         def t = (parsed?.systemAppTypes ?: []).find { it instanceof Map && it.name?.toString() == typeName && it.deprecated != true }
         return t?.id != null ? (t.id.toString() as Integer) : null
     } catch (Exception e) {
         mcpLog("warn", "rm-native", "systemAppTypes lookup for '${typeName}' failed: ${e.message}")
+        if (diag != null) diag.typeLookupError = (e.message ?: e.toString())
         return null
     }
 }
@@ -9395,7 +9397,8 @@ private Map _ruleCompiledState(Integer appId) {
                 // are IF expressions in actions). An eval map without "0" has no committed expression;
                 // no eval map at all leaves it unknown (null), never a false "empty".
                 def reTokens = (parsed.eval instanceof Map) ? ((parsed.eval["0"] instanceof List) ? (parsed.eval["0"] as List).size() : 0) : null
-                // RM writes `paused` only once a rule is first paused; absent means running.
+                // RM writes `paused` only once a rule is first paused; absent means not paused (the
+                // rule may still be stopped).
                 return [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
                         paused: parsed.paused == true,
                         predicate: pred, requiredExpressionTokens: reTokens,
@@ -11847,7 +11850,7 @@ Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch
 
 Every write answers `success`, `partial` and three outcome flags: `applied` (something was written and stays; a refused or rolled-back call is `applied:false`), `activated` (the rule runs with it: the re-initialization that follows a trigger, expression or variable change was fired and accepted, and for actions nothing more was needed) and `verified` (the readback and the health check confirmed it). When `activated` is false the response names why (`updateRuleFailed` with `updateRuleError` and the part that is not live: `subscriptionsNotLive`, `expressionNotLive`, `variableNotLive` or `patchesNotLive`; or `finalisationNotAttempted` after a stopped batch) and `repairHints` says what to run, normally `hub_set_rule(button='updateRule', confirm=true)` once the rule is complete.
 
-A trigger, expression or local-variable edit runs Rule Machine's update, which rebuilds the rule's subscriptions: a paused rule stays paused, and a stopped rule is restarted with its private boolean set to true (`restartedStoppedRule:true`). An action edit runs no update.
+A trigger, expression or local-variable edit, and `addActions`, `replaceActions`, `clearActions`, `removeAction` and `moveAction`, run Rule Machine's update, which rebuilds the rule's subscriptions: a paused rule stays paused, and a stopped rule is restarted with its private boolean set to true (`restartedStoppedRule:true`; `stoppedStateUnverified:true` when that state could not be read). A single `addAction` or `modifyAction` runs no update.
 
 `settingsSkipped[]` lists each field that did not land as RM's editor showed it, with a `reason` and, where one applies, a `hint`; informational entries (`reveal_fallback_to_existing_field`, `useST_idempotent_noop`, `device_list_committed_schema_unchanged`, `state_change_comparator_ignored_explicit_value`) do not make the call `partial`. An action RM does not bake is removed by the add and reported `success:false, rolledBack:true`. A bulk add, `replaceActions` or `patches` stops at the first failed or partial item: later items are `notAttempted`, `bulkStoppedAfter` names the stop, and earlier items stay written (it is not a transaction), so repair the stopping item and add the rest, or restore `backup.backupKey`.
 

@@ -92,6 +92,11 @@ relays it as `ephemeral-hub-results-<test run id>-<attempt>-<kind>`. The artifac
 `[A-Za-z0-9._-]`. It then replaces its own secret values in each expected file, because an
 artifact bypasses log masking.
 
+`request-hub` also posts the provider run's conclusion as the head's `Ephemeral e2e verdict
+(<kind>)` commit status, from base code: success only when the provider run succeeded, failure
+when it did not finish within 15 minutes of the artifact, could not be read, or was never
+started. The PR's own `e2e` job cannot change that status.
+
 The `e2e` job waits up to 35 minutes for that artifact and applies the same entry check. It prints
 the three logs with workflow commands disabled, writes the counts and failed tests to the step
 summary, and uploads the files as its results. It passes only when `e2e.status` and `sdk.status`

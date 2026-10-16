@@ -490,6 +490,56 @@ bash "$SCRIPT" verdict 77
     assert "context=Ephemeral e2e verdict (os)" in posted
 
 
+@pytest.mark.parametrize("provider_state, lookup_ok, expected_desc", [
+    ("77 in_progress ", True, "did not pass (unfinished)"),
+    ("", False, "could not be read"),
+])
+def test_ephemeral_verdict_fails_closed_at_its_deadline(provider_state, lookup_ok, expected_desc, tmp_path):
+    script = '''
+gh() {
+  case "$1 $2" in
+    "run view") [ "$LOOKUP_OK" = 1 ] || return 1; echo "$PROVIDER_STATE" ;;
+    "api -X") printf '%s\\n' "$@" > "$STUB/posted" ;;
+    *) return 1 ;;
+  esac
+}
+sleep() { :; }
+export -f gh sleep
+bash "$SCRIPT" verdict 77
+'''
+    env = {**os.environ, "STUB": str(tmp_path), "SCRIPT": str(ROOT / ".github/scripts/request_ephemeral_hub.sh"),
+           "GITHUB_REPOSITORY": "owner/repo", "HUB_KIND": "os", "PROVIDER": "owner/provider",
+           "PUBLIC_SHA": FORK_SHA, "GH_TOKEN": "provider-token", "STATUS_TOKEN": "status-token",
+           "PROVIDER_STATE": provider_state.split(" ", 1)[1] if provider_state else "", "LOOKUP_OK": "1" if lookup_ok else "0",
+           "VERDICT_DEADLINE": "0"}
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    posted = (tmp_path / "posted").read_text().splitlines()
+    assert "state=failure" in posted and any(expected_desc in line for line in posted), posted
+
+
+def test_ephemeral_verdict_is_failure_when_no_provider_run_started(tmp_path):
+    script = '''
+gh() {
+  case "$1 $2" in
+    "run view") echo "should not look up a run" >&2; return 1 ;;
+    "api -X") printf '%s\\n' "$@" > "$STUB/posted" ;;
+    *) return 1 ;;
+  esac
+}
+export -f gh
+bash "$SCRIPT" verdict ""
+'''
+    env = {**os.environ, "STUB": str(tmp_path), "SCRIPT": str(ROOT / ".github/scripts/request_ephemeral_hub.sh"),
+           "GITHUB_REPOSITORY": "owner/repo", "HUB_KIND": "jvm", "PROVIDER": "owner/provider",
+           "PUBLIC_SHA": FORK_SHA, "GH_TOKEN": "provider-token", "STATUS_TOKEN": "status-token"}
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    posted = (tmp_path / "posted").read_text().splitlines()
+    assert "state=failure" in posted and "context=Ephemeral e2e verdict (jvm)" in posted
+    assert any("no provider run" in line for line in posted)
+
+
 @pytest.mark.parametrize("event, base, request_state, artifacts, outcome", [
     ("pull_request", "present", "7 completed success", "ephemeral-hub-unavailable", "skip"),  # the gate's shared reason
     ("pull_request", "present", "7 in_progress ", "ephemeral-hub-session-100-1-jvm\nephemeral-hub-session-100-1-os", "session"),

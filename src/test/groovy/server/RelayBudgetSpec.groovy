@@ -463,6 +463,53 @@ class RelayBudgetSpec extends ToolSpecBase {
     // Fail-closed bulk semantics: a non-Map trigger[0] is recorded inline as a failure and stops the
     // batch before the budget checkpoint, so no trigger-loop pause occurs and the skipped tail is never
     // offered for resumption. The clean-pause return shape is pinned separately on _bulkPauseResult below.
+    def "a non-Map addTriggers item is refused by name before the backup"() {
+        given:
+        def triggerCalls = []
+        def actionCalls = []
+        def clicks = []
+        installBulkStubs(triggerCalls, actionCalls, clicks, false)
+
+        when:
+        def result = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 2000L,
+            addTriggers: ['not-a-map', [capability: 'Switch', state: 'on', deviceIds: [8]]],
+            addActions: [[capability: 'switch', action: 'on', deviceIds: [11]]]])
+
+        then:
+        result.success == false
+        result.error.contains("addTriggers[0] must be a trigger spec object")
+        result.error.contains("RM is not touched")
+        result.backup == null
+        triggerCalls.isEmpty() && actionCalls.isEmpty()
+        !clicks.contains('updateRule')
+    }
+
+    def "a bulk item refused after its row was rolled back says so; one left with an open editor does not"() {
+        given:
+        def triggerCalls = []
+        def actionCalls = []
+        def clicks = []
+        installBulkStubs(triggerCalls, actionCalls, clicks, false)
+        int n = 0
+        script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validRuleIds = null ->
+            n++
+            if (n == 1) throw new IllegalArgumentException("runCommand: 'x' is not a command. The opened action row was rolled back.")
+            throw new IllegalStateException("runCommand: 'x' is not a command. [wizardStuck -- row 2 could not be confirmed removed]")
+        }
+
+        when:
+        def first = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 2000L,
+            addActions: [[capability: 'runCommand', command: 'x', deviceIds: [11], capabilityFilter: 'Switch']]])
+        def second = script._applyNativeAppEdit([appId: 1, confirm: true, __reqT0: 2000L,
+            addActions: [[capability: 'runCommand', command: 'x', deviceIds: [11], capabilityFilter: 'Switch']]])
+
+        then:
+        first.actions[0].rolledBack == true
+        first.applied == false
+        !second.actions[0].containsKey('rolledBack')
+        second.wizardStuck == true
+    }
+
     def "the trigger-loop checkpoint never offers a fail-closed tail for resumption"() {
         given:
         def triggerCalls = []

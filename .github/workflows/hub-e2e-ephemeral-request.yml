@@ -179,9 +179,10 @@ jobs:
           if-no-files-found: error
           overwrite: true
       # The trusted result: the provider run's own conclusion, posted from base code, which the
-      # PR-controlled test workflow cannot change.
+      # PR-controlled test workflow cannot change. With no provider run (the hub step failed before
+      # dispatching) the verdict is failure, so the head never shows no verdict at all.
       - name: Post the provider's verdict
-        if: ${{ !cancelled() && env.EPHEMERAL_RUN_SUITE == 'true' && steps.hub.outputs.provider_run != '' }}
+        if: ${{ !cancelled() && env.EPHEMERAL_RUN_SUITE == 'true' && steps.hub.outcome != 'skipped' }}
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_CI_TOKEN }}
           STATUS_TOKEN: ${{ github.token }}

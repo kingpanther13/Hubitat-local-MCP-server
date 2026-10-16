@@ -454,7 +454,8 @@ def _hubVarsNativeModel() {
     return model
 }
 
-// Whether this firmware serves the native endpoint; a create needs nothing else from the model.
+// Whether this firmware serves the native endpoint: it answers with the variables model (a login or
+// error page is not it). A create needs nothing else from the model.
 boolean _hubVarsNativeAvailable() {
     def raw
     try { raw = hubInternalGet("/hub2/variables") }
@@ -463,6 +464,11 @@ boolean _hubVarsNativeAvailable() {
         throw e
     }
     if (!raw?.toString()?.trim()) throw new IllegalStateException("Hub Variables returned an empty response")
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(raw.toString()) } catch (Exception e) {
+        throw new IllegalStateException("Hub Variables returned a non-JSON response")
+    }
+    if (!(parsed instanceof Map) || !(parsed.variables instanceof List)) throw new IllegalStateException("Hub Variables returned an unexpected JSON model")
     return true
 }
 

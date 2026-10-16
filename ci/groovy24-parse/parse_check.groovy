@@ -52,7 +52,12 @@ class HubNamespaceResolver extends ClassNodeResolver {
         String simple = name.substring(name.lastIndexOf('.') + 1)
         // Only class-shaped names: a lowercase segment is a package the resolver probes on the way.
         if (found == null && (name.startsWith('hubitat.') || name.startsWith('com.hubitat.')) && simple && Character.isUpperCase(simple.charAt(0))) {
-            found = new ClassNodeResolver.LookupResult(null, new ClassNode(name, 1, ClassHelper.OBJECT_TYPE))
+            // A star import of a hub package is tried before Groovy's default imports, so a JDK or
+            // Groovy class name stays unresolved here and resolves there (java.io.File, Map).
+            boolean defaultImport = ['java.lang.', 'java.util.', 'java.io.', 'java.net.', 'java.math.', 'groovy.lang.', 'groovy.util.'].any { pkg ->
+                try { Class.forName(pkg + simple, false, HubNamespaceResolver.classLoader); return true } catch (ClassNotFoundException ignored) { return false }
+            }
+            if (!defaultImport) found = new ClassNodeResolver.LookupResult(null, new ClassNode(name, 1, ClassHelper.OBJECT_TYPE))
         }
         return found
     }

@@ -1916,7 +1916,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule(appId, addAction={capability:'switch', action:'off', deviceIds:[<id>], onlyOn:true})` commits; the wire writes `optSwitch.<N>=true` AFTER `onOffSwitch.<N>` (its reveal gate). `partial:false`. `hub_get_app_config` shows the off action with the "only switches that are on" qualifier. SAFETY: only BAT-prefixed devices/rules touched.
+**Expected**: `hub_set_rule(appId, addAction={capability:'switch', action:'off', deviceIds:[<id>], onlyIfChanged:true})` commits; the wire writes `optSwitch.<N>=true` AFTER `onOffSwitch.<N>` (its reveal gate). `partial:false`. `hub_get_app_config` shows the off action with the "only switches that are on" qualifier. SAFETY: only BAT-prefixed devices/rules touched.
 
 ### T462 — waitEvents per-event "and stays that way for" duration
 

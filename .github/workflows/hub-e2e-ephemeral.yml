@@ -144,7 +144,7 @@ jobs:
           fi
           export SESSION="ephemeral-hub-session-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND" RESULTS="ephemeral-hub-results-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT-$KIND"
           export JOB="Request ephemeral hub ($KIND)"
-          # Results or a session within 35 minutes in either mode; the slowest suite run took 29.
+          # Results or a session within 35 minutes in either mode, with headroom over a suite run.
           wait=2100
           deadline=$((SECONDS + wait)); first_seen=$((SECONDS + 600)); grace=0; polls=0
           # One artifact read per minute. The request run's state is re-read every poll for the first
