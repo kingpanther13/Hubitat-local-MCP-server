@@ -47038,16 +47038,17 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "Package Manager" | false
     }
 
-    def "with backups off a transient configure/json failure leaves the app kind unknown instead of refusing"() {
+    def "with backups off a configure/json failure that is not a 404 refuses the edit, as the backup path does"() {
         given:
         settingsMap.backupBeforeRuleEdits = false
         hubGet.register('/installedapp/configure/json/504') { params -> throw new RuntimeException("HTTP 500 busy") }
 
         when:
-        def backup = script._rmBackupBeforeEdit(504, "pre-addAction")
+        script._rmBackupBeforeEdit(504, "pre-addAction")
 
         then:
-        backup.skipped
+        def ex = thrown(IllegalStateException)
+        ex.message == "Rule/app 504 could not be read before the edit (HTTP 500 busy). Nothing was changed."
         !script._memoKnowsRuleMachine(504)
     }
 
@@ -47441,7 +47442,18 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         label         | cap              | state      | text
         "no state"    | "HSM Alert"      | null       | "HSM Alert needs state (one of intrusion, intrusion-delay"
         "not listed"  | "HSM Alert"      | "burglary" | "HSM Alert state 'burglary' is not one Rule Machine lists"
-        "wrong case"  | "Location Event" | "Sunset"   | "Location Event state 'Sunset' is not one Rule Machine lists"
+        "misspelt"    | "Location Event" | "sunsets"  | "Location Event state 'sunsets' is not one Rule Machine lists"
+    }
+
+    def "a Location Event state in another case is accepted and written in RM's spelling"() {
+        given:
+        def spec = [capability: "Location Event", state: " SUNSET "]
+
+        when:
+        script._rmCheckCondSpec(spec, "trigger", "addTrigger")
+
+        then:
+        spec.state == "sunset"
     }
 
     def "a listed hub-state value passes the check"() {

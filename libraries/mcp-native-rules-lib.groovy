@@ -163,7 +163,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     walkStep: [
                         type: "object",
-                        description: """Wizard walker for what the shortcuts cannot express (e.g. Periodic sub-pages). {page, operation: introspect|write|click|navigate|done|drive, write?:{field: value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, validateEnum?, steps?:[...]}; drive runs steps in one call. Reference: hub_get_tool_guide(section='set_rule_reference_walkstep')."""
+                        description: """Wizard walker for what the shortcuts cannot express. {page, operation: introspect|write|click|navigate|done|drive, write?:{field: value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, validateEnum?, steps?:[...]}; drive runs steps in one call. Reference: hub_get_tool_guide(section='set_rule_reference_walkstep')."""
                     ],
                     addAction: [
                         type: "object",
@@ -4068,9 +4068,9 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
     def editAct = (status?.appState ?: []).find { it?.name?.toString() == "editAct" }?.value
     if (editAct != null) throw new IllegalStateException(_rmStuckEditActMessage("modifyAction(${actionIdx})", appId, editAct))
     Map target = _rmCatalogEntryForSubType(subType, committed)
-    // A custom entry's fields follow rules its own mapper holds; only the ones this planner
-    // handles below (runCommand, setVariable, privateBoolean, hsm) are edited in place.
-    if (target != null && (target.entry.custom == true || target.actionEntry.custom == true) && !(target.cap in ["runCommand", "setVariable", "variable", "privateBoolean", "hsm"])) target = null
+    // returnValue's type, literal and variable are coupled by its own mapper (the literal slot
+    // follows the type; no variable for a String), which an in-place edit cannot honour.
+    if (target?.cap == "returnValue") target = null
     if (target == null) {
         throw new IllegalArgumentException("modifyAction: action ${actionIdx} (${subType}) cannot be edited in place; rebuild it with removeAction + addAction. RM is not touched.")
     }
