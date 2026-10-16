@@ -5089,9 +5089,11 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
     }
     // requires: a name is a required field; an inner list, fields of which one is needed.
     def perLevel = { String k -> ((catEntry.get(k) ?: []) as List) + ((catAction.is(catEntry) ? [] : (catAction.get(k) ?: [])) as List) }
+    def slotsAll = ((catEntry.slots ?: []) as List) + ((catAction.is(catEntry) ? [] : (catAction.slots ?: [])) as List)
+    def boolField = { String n -> slotsAll.find { Map f -> f.name == n }?.type == "Boolean" }
     perLevel("requires").each { r ->
-        // A false boolean is "not set" for a one-of: useLastEventDevice:false names no device.
-        if (r instanceof List && !r.any { def got = actionSpec.get(it?.toString()); got != null && got != false }) {
+        // A false Boolean field is "not set" for a one-of: useLastEventDevice:false names no device.
+        if (r instanceof List && !r.any { def got = actionSpec.get(it?.toString()); got != null && !(got == false && boolField(it.toString())) }) {
             throw new IllegalArgumentException("${specLabel} requires one of ${r.join(', ')}.".toString())
         }
         if (r instanceof String && actionSpec.get(r) == null) throw new IllegalArgumentException("${specLabel} requires '${r}'.".toString())

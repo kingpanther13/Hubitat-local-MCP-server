@@ -46455,9 +46455,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 if (entry.custom == true || ae.custom == true) return true
                 def slots = ((entry.slots ?: []) as List) + (ae.is(entry) ? [] : ((ae.slots ?: []) as List))
                 def example = [:]
-                slots.findAll { Map f -> f.name && f.required }.each { Map f ->
-                    example[f.name] = f.name == "deviceIds" ? [1] : (f.values instanceof List ? (f.values as List)[0]
-                        : (f.type == "Integer" ? 1 : (f.type == "Boolean" ? true : "x")))
+                def exampleFor = { Map f -> f.name == "deviceIds" ? [1] : (f.values instanceof List ? (f.values as List)[0]
+                        : (f.type == "Integer" ? 1 : (f.type == "Boolean" ? true : "x"))) }
+                slots.findAll { Map f -> f.name && f.required }.each { Map f -> example[f.name] = exampleFor(f) }
+                // A one-of requirement (entry or action level) is met with its first field.
+                (((entry.requires ?: []) as List) + ((ae.is(entry) ? [] : (ae.requires ?: [])) as List)).each { r ->
+                    def n = (r instanceof List) ? (r as List)[0] : r
+                    def f = slots.find { Map s -> s.name == n }
+                    if (f && !example.containsKey(n)) example[n] = exampleFor(f)
                 }
                 def mapped = script._rmMapActionSpec(100, example, cap, act?.toString())
                 mapped.actType == entry.actType && mapped.actSubType == (ae.sub ?: entry.sub) &&

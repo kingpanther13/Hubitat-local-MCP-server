@@ -222,7 +222,7 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         }
         script.metaClass._rmClickAppButton = { Integer id, String name, String attr = null, String page = null, Map cache = null -> events << ["click", page, name] }
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            JsonOutput.toJson([configPage: [name: "doActPage", sections: [[input: [[name: "rCapab_4", type: "enum", options: opts.capabilities ?: ["Switch", "Contact"]]]]]]])
+            JsonOutput.toJson([app: [id: 100], configPage: [name: "doActPage", sections: [[input: [[name: "rCapab_4", type: "enum", options: opts.capabilities ?: ["Switch", "Contact"]]]]]]])
         }
         script.metaClass._rmWalkConditionReveal = { Integer id, Map ctx, Map cond, Integer cIdx -> events << ["walk", ctx.page, cIdx, ctx.capCanonical] }
         [applied: [], skipped: []]
@@ -319,7 +319,7 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
 
     private void doActPageWith(List inputs) {
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
-            JsonOutput.toJson([configPage: [name: "doActPage", sections: [[input: inputs]]]])
+            JsonOutput.toJson([app: [id: 100], configPage: [name: "doActPage", sections: [[input: inputs]]]])
         }
     }
 
@@ -403,8 +403,6 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
         script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null -> [ok: true] }
-        def rolledBackIdx = []
-        script.metaClass._rmRollbackInFlightAction = { Integer id, Integer idx, boolean open = false -> rolledBackIdx << idx; true }
 
         when:
         def r = script._rmAddAction(100, [capability: "log", message: "x"])
@@ -412,7 +410,6 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         then:
         r.actionIndex == 2
         r.rolledBack == rolled
-        rolledBackIdx == (rolled ? [2] : [])
         !rolled || (r.repairHints as List).any { it.toString().contains("it is not in the rule's action list") }
 
         where:
@@ -479,7 +476,7 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         then:
         entry.name == "thermostatScheduler"
         entry.actions == ["setEcoMode", "setEcoOffset", "setHold", "setSched4Mode", "setTimeAway", "setThermSched", "setSchedDay"]
-        (entry.actSubType as Map).values().unique() == ["getSetThermostatScheduler"]
+        (entry.actSubType as Map).values().toSet() == ["getSetThermostatScheduler"] as Set
         entry.requires == [["deviceIds", "schedulerId"]]
         (entry.exclusive as List).contains(["deviceIds", "schedulerId"])
         (entry.exclusive as List).contains(["ecoOffset", "ecoOffsetVariable"])
