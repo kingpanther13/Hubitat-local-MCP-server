@@ -18356,12 +18356,14 @@ class TestRunner:
                 if proves_backups:
                     self._rule_edit_backups(False)
 
-        # Always clean up
-        self.cleanup()
+        # Always clean up, then always turn pre-edit backups back on
         try:
-            self._rule_edit_backups(True)
-        except Exception as exc:
-            print(f"  [WARN] could not turn pre-edit backups back on: {exc}")
+            self.cleanup()
+        finally:
+            try:
+                self._rule_edit_backups(True)
+            except Exception as exc:
+                print(f"  [WARN] could not turn pre-edit backups back on: {exc}")
 
         # Print summary
         return self._print_summary()
