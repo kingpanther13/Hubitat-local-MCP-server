@@ -315,6 +315,165 @@ class WalkStepSourceSpec extends ToolSpecBase {
         ["doActN", "moreCond", "editCond", "editST", "hrefContext", "cancelCapab"].every { guide.contains(it) }
     }
 
+    def "a pending predCapabs clear lets a doActPage write through, and the status is read again after the clear"() {
+        given:
+        enableWrite()
+        script.metaClass._rmPendingPredClearSnapshot = { -> ["100": 7L] }
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> page("selectActions", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> page("doActPage", [[name: "actType.4", type: "enum", options: ["messageActs"]]]) }
+        int statusReads = 0
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            ++statusReads == 1 ? status([[name: "actNdx", value: 4]]) : status([[name: "doActN", value: "N"], [name: "actNdx", value: 4]])
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << body; [status: 200, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, walkStep: [page: "doActPage", operation: "write", write: ["actType.4": "messageActs"]]])
+
+        then:
+        !(result.error ?: "").contains("renders only inside an open action editor")
+        statusReads >= 2
+        posts.any { it["settings[actType.4]"] == "messageActs" && it.currentPage == "doActPage" }
+    }
+
+    def "a mainPage write of a field the page does not show is refused unsent"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", [[name: "logging", type: "enum", options: ["None"]]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> page("mainPage", [[name: "logging", type: "enum", options: ["None"]]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        def settingPosts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (body.keySet().any { it.toString().startsWith("settings[") }) settingPosts << body
+            [status: 200, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, walkStep: [page: "mainPage", operation: "write", write: [nope: "x"]]])
+
+        then:
+        settingPosts.isEmpty()
+        result.success == false
+        result.opResult.refused == [key: "nope", reason: "not_in_schema", value: "x", available: ["logging"]]
+        result.error.contains("'nope' is not an input on page 'mainPage'")
+    }
+
+    def "a periodic step without hrefContext carries the href-param hint"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/periodic') { params -> page("periodic", [[name: "whichPeriod1", type: "enum", options: ["Hourly"]]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, walkStep: [page: "periodic", operation: "introspect"]])
+
+        then:
+        result.repairHints.any { it.contains("periodic reads its href param n only from the request") && it.contains("hrefContext") }
+    }
+
+    def "a walkStep refusal says nothing needs restoring only when it is flagged notSent, not from its wording"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, data: ''] }
+        def wording = "Button 'x' is not rendered on page 'p', so nothing was clicked."
+        def flagged = false
+        script.metaClass._rmWalkStep = { Integer id, Map spec ->
+            throw flagged ? script._rmFail(new IllegalArgumentException("refused"), [notSent: true]) : new IllegalArgumentException(wording)
+        }
+
+        when:
+        def textOnly = script.toolSetRule([appId: 100, confirm: true, walkStep: [page: "p", operation: "click", click: [name: "x"]]])
+        flagged = true
+        def notSent = script.toolSetRule([appId: 100, confirm: true, walkStep: [page: "p", operation: "click", click: [name: "x"]]])
+
+        then:
+        textOnly.success == false && notSent.success == false
+        !textOnly.restoreHint.contains("nothing needs to be restored")
+        notSent.restoreHint.contains("Refused before any write or click was sent, so nothing needs to be restored.")
+    }
+
+    def "raw settings with a page-context button the page does not render are refused before any setting is written"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            page("selectTriggers", [[name: "tCapab1", type: "enum", options: ["Switch"]], [name: "hasAll", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << [path: path, body: body]; [status: 200, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, settings: [tCapab1: "Switch"], button: "actionDone", pageName: "selectTriggers"])
+
+        then:
+        result.success == false
+        result.error.contains("Button 'actionDone' is not rendered on page 'selectTriggers'")
+        result.applied == false
+        !posts.any { it.body?.containsKey("settings[tCapab1]") }
+        !posts.any { it.path == "/installedapp/btn" }
+    }
+
+    def "a patches button with pageName is checked against that page: an unrendered one stops the batch unsent"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", [[name: "updateRule", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> page("doActPage", [[name: "actionDone", type: "button"]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        def clicks = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body.name
+            [status: 200, data: '']
+        }
+
+        when:
+        def refused = script.toolSetRule([appId: 100, confirm: true, patches: [[button: "hasAll", pageName: "doActPage"]]])
+
+        then:
+        refused.success == false
+        refused.bulkStoppedAfter == "patches[0]"
+        refused.patches[0].success == false
+        refused.patches[0].error.contains("Button 'hasAll' is not rendered on page 'doActPage'")
+        clicks.isEmpty()
+
+        when:
+        def clicked = script.toolSetRule([appId: 100, confirm: true, patches: [[button: "actionDone", pageName: "doActPage"]]])
+
+        then:
+        clicked.patches[0].success == true
+        clicks.contains("actionDone")
+    }
+
+    def "a walkStep whose app-kind probe fails walks the app as a non-RM app and records the skipped check"() {
+        given:
+        enableWrite()
+        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason, String activePage = null -> [backupKey: "k"] }
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null -> logs << [level: level, msg: msg] }
+        int reads = 0
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            if (++reads == 1) throw new IllegalStateException("HTTP 502")
+            page("mainPage", [[name: "origLabel", type: "text"]])
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", [[name: "origLabel", type: "text"]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, data: ''] }
+
+        when:
+        script.toolSetNativeApp([appId: 100, confirm: true, walkStep: [page: "mainPage", operation: "introspect"]])
+
+        then: "the walk read the page after the failed probe"
+        reads >= 2
+        script._memoSkippedChecks() == ["app kind (walked as a non-RM app)"]
+        logs.any { it.level == "warn" && it.msg.contains("app 100's kind could not be read on page mainPage (HTTP 502); walked as a non-RM app") }
+    }
+
     // ---------- served text ----------
 
     // hub_set_rule's walkStep bound sits with its other size pins in UpdateNativeAppSchemaTrimSpec.

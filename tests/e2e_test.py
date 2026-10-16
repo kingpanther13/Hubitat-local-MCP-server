@@ -6716,6 +6716,17 @@ class TestRunner:
             assert tilt_row and re.fullmatch(
                 rf"Tilt Blinds: {re.escape(self.PERM_FIXTURES['blind'][0])} to {re.escape(var_name)}\(\S+\)", tilt_row), \
                 f"the edited tilt row does not render the variable: {tilt_row!r}"
+            # Back to a literal: the toggle is cleared first, so RM reads tiltLevel again, not xVar.
+            lit_mod = self._set_rule(target_b, {"modifyAction": {"index": tilt_idx, "mods": {"tilt": 55}}}, strict=True)
+            assert lit_mod.get("modifiedIndex") == tilt_idx and lit_mod.get("verified") is True, \
+                f"the tilt edit back to a literal did not apply in place: {lit_mod}"
+            lit_after = self._get_persisted_rule_config(target_b).get("settings") or {}
+            assert self._setting_text(lit_after.get(f"uVar.{tilt_idx}")) == "false" \
+                and self._setting_text(lit_after.get(f"tiltLevel.{tilt_idx}")) == "55", \
+                f"modifyAction did not switch the tilt back to the literal 55 (the add wrote 40): {lit_after}"
+            lit_row = self._action_row_texts(target_b).get(tilt_idx)
+            assert lit_row == f"Tilt Blinds: {self.PERM_FIXTURES['blind'][0]} to 55", \
+                f"the tilt row edited back to a literal does not render it: {lit_row!r}"
 
             # Keep one live >1 ruleId request: a successful call proves the batch envelope and
             # exact echoed ids; a platform load-limiter refusal proves the parsed array reached
@@ -7936,18 +7947,23 @@ class TestRunner:
             return {str(v) for v in value}
         return {str(value)}
 
-    def _action_row_texts(self, app_id: Any) -> dict[int, str]:
-        """Each action's row as RM's actions page renders it, keyed by action index, whitespace collapsed."""
+    def _action_rows(self, app_id: Any) -> dict[int, tuple[int, str]]:
+        """Each action's row on RM's actions page, keyed by action index: the condition index its edit
+        button carries ("<index>.<condition>.<ifThenElse>", 0 for none) and the text, whitespace collapsed."""
         cfg = self.client.call_tool("hub_read_apps_code", {
             "tool": "hub_get_app_config", "args": {"appId": app_id, "pageName": "selectActions"}})
         assert cfg.get("success") is True, f"selectActions read failed for rule {app_id}: {cfg}"
-        rows: dict[int, str] = {}
+        rows: dict[int, tuple[int, str]] = {}
         for sect in ((cfg.get("page") or {}).get("sections") or []):
             for row in sect.get("embeddedActions") or []:
-                m = re.fullmatch(r"(\d+)\.\d+\.\w+", str(row.get("name") or ""))
+                m = re.fullmatch(r"(\d+)\.(\d+)\.\w+", str(row.get("name") or ""))
                 if m:
-                    rows[int(m.group(1))] = " ".join(str(row.get("description") or "").split())
+                    rows[int(m.group(1))] = (int(m.group(2)), " ".join(str(row.get("description") or "").split()))
         return rows
+
+    def _action_row_texts(self, app_id: Any) -> dict[int, str]:
+        """Each action's row as RM's actions page renders it, keyed by action index, whitespace collapsed."""
+        return {idx: text for idx, (_, text) in self._action_rows(app_id).items()}
 
     def _assert_catalog_adds(self, app_id: Any, results: Any, expected: list[dict]) -> list[int]:
         """Assert each added catalog row against its expectation and return the rows' indices.
@@ -8258,6 +8274,35 @@ class TestRunner:
                 f"each drive step should carry its health snapshot: {steps}"
             self._assert_rule_healthy(app_id)
 
+            # Refused before anything is sent, so the rule's settings do not change.
+            def _walk_refusal(extra: dict) -> dict:
+                return self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                    "appId": app_id, "confirm": True, **extra}})
+            settings_before = self._get_persisted_rule_config(app_id).get("settings") or {}
+            no_editor = _walk_refusal({"walkStep": {"page": "doActPage", "operation": "write", "write": {"actType.1": "messageActs"}}})
+            assert no_editor.get("success") is False \
+                and "doActPage renders only inside an open action editor" in str(no_editor.get("error", "")) \
+                and "nothing needs to be restored" in str(no_editor.get("restoreHint", "")), \
+                f"a doActPage write with no action editor open should be refused unsent: {no_editor}"
+            unrendered = _walk_refusal({"walkStep": {"page": "selectTriggers", "operation": "click", "click": {"name": "moreCond"}}})
+            assert unrendered.get("success") is False \
+                and "Button 'moreCond' is not rendered on page 'selectTriggers'" in str(unrendered.get("error", "")) \
+                and '"stateAttribute":"moreCond"' in str(unrendered.get("error", "")), \
+                f"a click on a button the page does not render should be refused, naming RM's buttons: {unrendered}"
+            off_slot = _walk_refusal({"walkStep": {"page": "selectTriggers", "operation": "write", "write": {"tCapab9": "Switch"}}})
+            assert off_slot.get("success") is False \
+                and ((off_slot.get("opResult") or {}).get("refused") or {}).get("reason") == "not_in_schema" \
+                and "'tCapab9' is not an input on page 'selectTriggers'" in str(off_slot.get("error", "")) \
+                and any("renders only in an open slot" in str(h) for h in (off_slot.get("repairHints") or [])), \
+                f"a write outside the open slot should be refused with the slot hint: {off_slot}"
+            raw_click = _walk_refusal({"settings": {"tCapab1": "Contact"}, "button": "noSuchButtonE2E", "pageName": "selectTriggers"})
+            assert raw_click.get("success") is False \
+                and "Button 'noSuchButtonE2E' is not rendered on page 'selectTriggers'" in str(raw_click.get("error", "")), \
+                f"raw settings with an unrendered pageName button should be refused before any write: {raw_click}"
+            settings_after = self._get_persisted_rule_config(app_id).get("settings") or {}
+            assert settings_after == settings_before, \
+                f"the refused walkStep and raw calls changed the rule's settings: {settings_before} -> {settings_after}"
+
             # (2) WRITE composition: open the trigger editor then pick a capability, in ONE
             #     drive call. Mirrors _rmAddTrigger's proven wire format (click name='true'/
             #     stateAttribute='moreCond' opens the editor; tCapab1 is the capability picker).
@@ -8273,6 +8318,15 @@ class TestRunner:
                 f"the driven tCapab1='Switch' write should round-trip live (valueEcho.match): {write_step}"
             # A half-built (uncommitted) trigger is scratch wizard state, not a broken rule.
             self._assert_rule_renders(app_id)
+            # A capability the open slot's picker does not list is refused unsent; Switch stays.
+            unlisted = _walk_refusal({"walkStep": {"page": "selectTriggers", "operation": "write",
+                                                   "write": {"tCapab1": "E2E Not A Capability"}}})
+            refused = (unlisted.get("opResult") or {}).get("refused") or {}
+            assert unlisted.get("success") is False and refused.get("reason") == "not_offered" \
+                and "Switch" in [str(o) for o in (refused.get("offered") or [])], \
+                f"an unlisted tCapab1 value should be refused with the picker's options: {unlisted}"
+            assert (self._get_persisted_rule_config(app_id).get("settings") or {}).get("tCapab1") == "Switch", \
+                "the refused tCapab1 write changed the stored capability"
 
             # (3) failure halt: an invalid step operation aborts the drive (success:false,
             #     the step throws) and must NOT corrupt the rule.
@@ -10644,6 +10698,10 @@ class TestRunner:
 
             # Simple Conditional Action: an action carrying its own condition builds that condition on
             # the action's row, after the RE, without a Broken Condition and without an IF block to close.
+            def _cond_slots() -> set[int]:
+                cfg_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+                return {int(k[len("rCapab_"):]) for k in cfg_settings if str(k).startswith("rCapab_") and k[len("rCapab_"):].isdigit()}
+            conds_before = _cond_slots()
             cond_act = self._set_rule(app_id, {"addAction": {
                 "capability": "switch", "action": "on", "deviceIds": [sw],
                 "condition": {"capability": "Switch", "deviceIds": [sw], "state": "on"}}}, strict=True)
@@ -10659,6 +10717,48 @@ class TestRunner:
             self._assert_rule_healthy(app_id)
             assert "Broken Condition" not in self._rule_page_text(app_id), \
                 "the Simple Conditional Action's condition rendered broken"
+            # The row is conditional: it is bound to the one new condition (its edit button carries
+            # that index) and RM renders it under IF; an unconditional switch row passes neither check.
+            new_conds = _cond_slots() - conds_before
+            assert len(new_conds) == 1, f"the Simple Conditional Action should define exactly one condition: {new_conds}"
+            cond_n = next(iter(new_conds))
+            assert str(cond_settings.get(f"rCapab_{cond_n}") or "").lower() == "switch" \
+                and self._setting_holds_exact(cond_settings.get(f"rDev_{cond_n}"), sw), \
+                f"condition {cond_n} did not persist the Switch condition: {cond_settings}"
+            rows = self._action_rows(app_id)
+            assert rows.get(int(cond_idx), (None, ""))[0] == cond_n and rows[int(cond_idx)][1].startswith("IF ("), \
+                f"action {cond_idx} is not bound to condition {cond_n} under IF: {rows.get(int(cond_idx))}"
+
+            # A condition the rule already defines ({definedIndex}): RM stores useCond/useCondNdx on the
+            # row. The Required Expression's own conditions are not offered there (RM leaves out predCapabs).
+            def_act = self._set_rule(app_id, {"addAction": {
+                "capability": "log", "message": "E2E defined condition", "condition": {"definedIndex": cond_n}}}, strict=True)
+            def_idx = def_act.get("actionIndex")
+            assert def_act.get("success") is True and def_act.get("verified") is True and def_idx is not None, \
+                f"the definedIndex Simple Conditional Action did not commit cleanly: {def_act}"
+            def_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+            assert self._setting_text(def_settings.get(f"useCond.{def_idx}")) == "true" \
+                and self._setting_text(def_settings.get(f"useCondNdx.{def_idx}")) == str(cond_n), \
+                f"action {def_idx} did not store its defined condition {cond_n}: {def_settings}"
+            assert _cond_slots() - conds_before == {cond_n}, "a definedIndex action should define no new condition"
+            rows = self._action_rows(app_id)
+            assert rows.get(int(def_idx), (None, ""))[0] == cond_n and rows[int(def_idx)][1].startswith("IF ("), \
+                f"action {def_idx} is not bound to condition {cond_n} under IF: {rows.get(int(def_idx))}"
+
+            # Refused after its condition was built (a command the switch lacks): the row is rolled back
+            # and its condition dropped, so the rule's conditions and rows are as before.
+            rows_before = self._action_row_texts(app_id)
+            refused = self._rm_stop_call(app_id, {"addAction": {
+                "capability": "runCommand", "command": "noSuchCommandE2E", "deviceIds": [sw],
+                "condition": {"capability": "Switch", "deviceIds": [sw], "state": "off"}}})
+            refused_err = str(refused.get("error", ""))
+            assert refused.get("success") is False and refused.get("rolledBack") is True \
+                and "is not a command of the selected device" in refused_err \
+                and "stays in the rule's conditions" not in refused_err, \
+                f"the refused conditional add should roll back its row and drop its condition: {refused}"
+            assert _cond_slots() - conds_before == {cond_n}, \
+                f"the refused conditional add left a condition behind: {_cond_slots()} (before {conds_before})"
+            assert self._action_row_texts(app_id) == rows_before, "the refused conditional add changed the rule's rows"
         finally:
             self._delete_native(app_id)
 
@@ -10793,9 +10893,15 @@ class TestRunner:
             "tool": "hub_set_native_app", "args": {"appType": app_type, "name": label, "confirm": True}})
         app_id = created.get("appId")
         # The thermostat apps take their name only once their thermostat is set, so their create
-        # reports the label unverified; configure ends by writing it as origLabel.
-        assert app_id and (created.get("success") is True or app_type != "scene"), \
+        # reports the label unverified (the documented answer); configure ends by writing it as origLabel.
+        assert app_id and created.get("appType") == app_type and created.get("parentAppId") is not None, \
             f"creating the {label} fixture ({app_type}) failed: {created}"
+        if app_type == "scene":
+            assert created.get("success") is True, f"creating the {label} fixture ({app_type}) failed: {created}"
+        else:
+            assert created.get("labelApplied") is False \
+                and "could not be verified as the app's display label" in str(created.get("note", "")), \
+                f"a {app_type} create should report its name unverified until the thermostat is set: {created}"
         try:
             for step in configure:
                 done = self.client.call_tool("hub_manage_native_rules_and_apps", {

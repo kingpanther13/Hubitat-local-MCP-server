@@ -22,12 +22,13 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
 
     def setup() {
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "2", name: "Night"]]
-        // Device 8 has every capability these pickers list; device 9 is a plain switch.
+        // Device 8 has every capability these pickers list; device 9 is a plain switch; 7 only measures temperature.
         hubGet.register('/hub2/vrb/devices') { params ->
-            JsonOutput.toJson([[id: 8, label: "Multi", capabilities: ["GarageDoorControl", "Valve", "WindowBlind", "Tone", "MusicPlayer", "Thermostat", "TemperatureMeasurement", "Switch"]],
-                               [id: 9, label: "Plain", capabilities: ["Switch"]]])
+            JsonOutput.toJson([[id: 8, label: "Multi", capabilities: ["GarageDoorControl", "Valve", "WindowBlind", "Tone", "MusicPlayer", "Thermostat", "TemperatureMeasurement", "Switch", "FanControl"]],
+                               [id: 9, label: "Plain", capabilities: ["Switch"]], [id: 7, label: "Temp", capabilities: ["TemperatureMeasurement"]]])
         }
         hubGet.register('/device/fullJson/8') { params -> JsonOutput.toJson([id: 8]) }
+        hubGet.register('/device/fullJson/99') { params -> throw new RuntimeException("404 Not Found") }
     }
 
     def cleanup() {
@@ -201,7 +202,9 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         "on a Repeat While"          | [capability: "repeatWhile", seconds: 5, expression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
                                         condition: [capability: "Switch", deviceIds: [8], state: "on"]]                                                        || "repeatWhile cannot carry a condition"
         "on a Wait for Expression"   | [capability: "waitExpression", expression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
-                                        condition: [capability: "Switch", deviceIds: [8], state: "on"]]                                                        || "waitExpression cannot carry a condition"
+                                        condition: [capability: "Switch", deviceIds: [8], state: "on"]]                                                        || "waitExpression cannot carry a condition"        "a device without the capability" | [capability: "switch", action: "on", deviceIds: [8], condition: [capability: "Switch", deviceIds: [7], state: "on"]] || "switch.condition.deviceIds: device 7 (Temp) does not have the switch capability"
+        "a missing reference device" | [capability: "switch", action: "on", deviceIds: [8],
+                                        condition: [capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 99]]]              || "switch.condition.compareToDevice.deviceId contains device ID '99' which does not exist"
     }
 
     def "a condition the rule defines or a well-formed new one passes the mapping"() {
@@ -317,6 +320,140 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         "roomLights"           | "getRLActivate"
         "thermostatScheduler"  | "getSetThermostatScheduler"
         "thermostatController" | "getSetThermController"
+    }
+
+    // ---- a Simple Conditional Action through _rmAddAction ----
+
+    // Writes, clicks, href navigations and doActPage reads are recorded in order. RM offers condition
+    // slot 4 on row 1 and only 'low' for the fan speed, so the add is refused after its condition is
+    // built. rowSurvives: the row outlives actionCancel and its delete fails. conditionSurvives:
+    // rCapab_4 is still set after the bin button.
+    private void wireConditionalAdd(Map opts = [:]) {
+        events = []
+        boolean cancelled = false
+        boolean binClicked = false
+        script.metaClass._rmPendingPredClearSnapshot = { -> [:] }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String page, String key, Object value, List applied, String hint = null, List skipped = null, Map cache = null ->
+            events << ["write", page, key, value]
+            if (key == "fanSpeed.1") skipped << [key: key, reason: "not_offered", value: value, offered: ["low"]]
+        }
+        script.metaClass._rmClickAppButton = { Integer id, String name, String attr = null, String page = null, Map cache = null ->
+            events << ["click", page, name, attr]
+            if (name == "actionCancel") cancelled = true
+            if (name == "4" && attr == "deleteCon") binClicked = true
+        }
+        if (opts.rowSurvives) script.metaClass._rmDeleteAction = { Integer appId, Integer idx, boolean skip = false -> throw new IllegalStateException("delAct refused") }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            def marker = body?.keySet()?.find { it.toString().startsWith("_action_href_") }?.toString()
+            if (marker) events << ["nav", marker, body["params_for_" + marker.substring(1)]]
+            [status: 200, location: null, data: '']
+        }
+        def page = { String name, List inputs ->
+            JsonOutput.toJson([app: [id: 100, name: "Rule-5.1", label: "r", installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                               configPage: [name: name, error: null, sections: [[input: inputs]]], settings: [:]])
+        }
+        hubGet.register('/installedapp/configure/json/100') { p -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { p -> page("selectActions", [[name: "N", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100/selectConditions') { p -> page("selectConditions", []) }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { p ->
+            events << ["read", "doActPage"]
+            page("doActPage", [[name: "actType.1", type: "enum", options: ["condActs", "sceneActs"]], [name: "actSubType.1", type: "enum", options: ["getCondAct", "getFanSpeed"]],
+                               [name: "rCapab_4", type: "enum", options: ["Switch"]], [name: "fanDevice.1", type: "capability.fanControl", multiple: true],
+                               [name: "fanSpeed.1", type: "enum", options: ["low"]], [name: "actionCancel", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { p ->
+            def appSettings = []
+            if (opts.rowSurvives && cancelled) appSettings += [[name: "actType.1", value: "sceneActs"], [name: "actSubType.1", value: "getFanSpeed"]]
+            if (opts.conditionSurvives && binClicked) appSettings << [name: "rCapab_4", value: "Switch"]
+            JsonOutput.toJson([appSettings: appSettings, appState: []])
+        }
+    }
+
+    private static Map conditionalFan() {
+        [capability: "fan", action: "setSpeed", deviceIds: [8], speed: "high", condition: [capability: "Switch", deviceIds: [8], state: "on"]]
+    }
+
+    def "a conditional add builds its condition, closes it, re-reads the editor, then writes the action on the same row"() {
+        given:
+        wireConditionalAdd()
+
+        when:
+        script._rmAddAction(100, conditionalFan())
+
+        then:
+        thrown(IllegalArgumentException)
+        events.findAll { it[0] != "read" }.take(12) == [
+            ["click", "selectActions", "N", "doActN"],
+            ["write", "doActPage", "actType.1", "condActs"],
+            ["write", "doActPage", "actSubType.1", "getCondAct"],
+            ["write", "doActPage", "rCapab_4", "Switch"],
+            ["write", "doActPage", "rDev_4", [8]],
+            ["write", "doActPage", "state_4", "on"],
+            ["click", "doActPage", "hasAll", null],
+            ["write", "doActPage", "actType.1", "sceneActs"],
+            ["write", "doActPage", "actSubType.1", "getFanSpeed"],
+            ["write", "doActPage", "cond", []],
+            ["write", "doActPage", "fanDevice.1", [8]],
+            ["write", "doActPage", "fanSpeed.1", "high"]]
+
+        and: "the editor is read again between Done with this condition and the action's own type"
+        events.subList(events.indexOf(["click", "doActPage", "hasAll", null]), events.indexOf(["write", "doActPage", "actType.1", "sceneActs"]))
+            .contains(["read", "doActPage"])
+    }
+
+    def "a refused conditional add removes the row, then its condition from Manage Conditions, and re-raises the refusal"() {
+        given:
+        wireConditionalAdd()
+
+        when:
+        script._rmAddAction(100, conditionalFan())
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("fan.setSpeed: Rule Machine does not offer 'high' for speed on this hub; it offers: low.")
+        ex.message.contains("The opened action row was rolled back.")
+        !ex.message.contains("stays in the rule's conditions")
+        script._rmOutcomeFlags(ex).rolledBack == true
+        !script._rmOutcomeFlags(ex).fieldsWritten
+
+        and: "the row's cancel first, then the bin button on the actions page's condition list"
+        events.findAll { it[0] != "read" }.drop(12) == [
+            ["click", "doActPage", "actionCancel", null],
+            ["nav", "_action_href_name|selectConditions|0", '{"pred":false}'],
+            ["click", "selectConditions", "4", "deleteCon"]]
+    }
+
+    def "a condition still defined after the bin button is named in the refusal, which then carries fieldsWritten"() {
+        given:
+        wireConditionalAdd(conditionSurvives: true)
+
+        when:
+        script._rmAddAction(100, conditionalFan())
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("does not offer 'high' for speed")
+        ex.message.contains("The condition created for this action (id 4) stays in the rule's conditions as unused")
+        !ex.message.contains("RM is not touched")
+        script._rmOutcomeFlags(ex).fieldsWritten == true
+        script._rmOutcomeFlags(ex).rolledBack == true
+        events.contains(["click", "selectConditions", "4", "deleteCon"])
+    }
+
+    def "a row that could not be removed keeps its condition: no bin click, and the refusal names the condition"() {
+        given:
+        wireConditionalAdd(rowSurvives: true)
+
+        when:
+        script._rmAddAction(100, conditionalFan())
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("[wizardStuck")
+        ex.message.contains("The condition created for this action (id 4) stays in the rule's conditions as unused")
+        script._rmOutcomeFlags(ex).wizardStuck == true
+        script._rmOutcomeFlags(ex).fieldsWritten == true
+        !events.any { it[0] == "nav" || (it.size() > 3 && it[3] == "deleteCon") }
     }
 
     // ---- choices RM's picker does not list ----
@@ -445,6 +582,72 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         (plan.writes as Map) == ["uVar.3": true, "xVar.3": "tv"]
     }
 
+    private void committedRow(Map settings) {
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([appSettings: settings.collect { k, v -> [name: k, value: v] }, appState: []])
+        }
+    }
+
+    @Unroll
+    def "modifyAction from a variable back to a literal clears the variable's toggle first"() {
+        given:
+        committedRow(committed)
+
+        when:
+        def writes = script._rmPlanModifyAction(100, 3, mods).writes as Map
+
+        then: "in order: the toggle off, then the literal's own field"
+        writes.collect { k, v -> [k, v] } == expected.collect { k, v -> [k, v] }
+
+        where:
+        label           | committed                                                                                                                   | mods             || expected
+        "tilt"          | ["actType.3": "sceneActs", "actSubType.3": "getBlindTilt", "blindTilt.3": "8", "uVar.3": "true", "xVar.3": "tv"]             | [tilt: 40]       || ["uVar.3": false, "tiltLevel.3": 40]
+        "volume"        | ["actType.3": "soundActs", "actSubType.3": "getSetMusicPlayer", "player.3": "8", "playerCommand.3": "set volume", "uVar.3": "true", "xVar.3": "vv"] | [volume: 30] || ["uVar.3": false, "playerLevel.3": 30]
+        "ecoOffset"     | ["actType.3": "lockActs", "actSubType.3": "getSetThermostatScheduler", "thermSched.3": "setEcoOffset", "thisTherm.3": "8", "uVar.3": "true", "xVar.3": "off"] | [ecoOffset: 2] || ["uVar.3": false, "ecoOffset.3": 2]
+        "awayHeat"      | ["actType.3": "lockActs", "actSubType.3": "getSetThermostatScheduler", "thermSched.3": "setTimeAway", "thisTherm.3": "8", "uVar2.3": "true", "xVar2.3": "hv"] | [awayHeat: 60] || ["uVar2.3": false, "timeAwayHeat.3": 60]
+        "awayCool"      | ["actType.3": "lockActs", "actSubType.3": "getSetThermostatScheduler", "thermSched.3": "setTimeAway", "thisTherm.3": "8", "uVar3.3": "true", "xVar3.3": "cv"] | [awayCool: 70] || ["uVar3.3": false, "timeAwayCool.3": 70]
+        "thermostats"   | ["actType.3": "lockActs", "actSubType.3": "getSetThermostatScheduler", "thermSched.3": "setHold", "setHold.3": "on", "tMethod.3": "true", "thisApp.3": "60"] | [deviceIds: [8]] || ["tMethod.3": false, "thisTherm.3": [8]]
+    }
+
+    def "modifyAction refuses both fields of an exclusive pair before any write"() {
+        given:
+        committedRow(["actType.3": "sceneActs", "actSubType.3": "getBlindTilt", "blindTilt.3": "8", "tiltLevel.3": "20"])
+
+        when:
+        script._rmPlanModifyAction(100, 3, [tilt: 40, tiltVariable: "v"])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == "modifyAction on blind.setTilt: takes one of tilt, tiltVariable, not tilt and tiltVariable. RM is not touched."
+    }
+
+    def "a returnValue row is refused toward removeAction + addAction"() {
+        given:
+        committedRow(["actType.3": "modeActs", "actSubType.3": "getReturnValue", "valType.3": "Integer", "valInt.3": "5"])
+
+        when:
+        script._rmPlanModifyAction(100, 3, [type: "Decimal"])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == "modifyAction: action 3 (getReturnValue) cannot be edited in place; rebuild it with removeAction + addAction. RM is not touched."
+    }
+
+    @Unroll
+    def "other custom entries still edit in place"() {
+        given:
+        committedRow(committed)
+
+        expect:
+        (script._rmPlanModifyAction(100, 3, mods).writes as Map) == expected
+
+        where:
+        label            | committed                                                                                  | mods               || expected
+        "mode"           | ["actType.3": "modeActs", "actSubType.3": "getSetMode", "mode.3": "1"]                     | [modeId: 2]        || ["mode.3": 2]
+        "pauseRule"      | ["actType.3": "rulesActs", "actSubType.3": "getPauseResumeRules", "pauseRule.3": ["200"], "pR.3": "false"] | [action: "resume"] || ["pR.3": true]
+        "dimmer.setLevel" | ["actType.3": "dimmerActs", "actSubType.3": "getSetDimmer", "dimA.3": "8", "dimLA.3": "50"] | [level: 30]       || ["dimLA.3": 30]
+    }
+
     // ---- discover ----
 
     @Unroll
@@ -497,6 +700,26 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         then:
         out.action == "close"
         (out.capability as Map).name == "garageDoor"
+    }
+
+    def "every served discover example maps through its own action"() {
+        given: "one device with every capability an action picker lists"
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([[id: 123, label: "All", capabilities: (script._rmSubActCapab() as Map).values().unique()]])
+        }
+        hubGet.register('/device/fullJson/123') { params -> JsonOutput.toJson([id: 123]) }
+        script.metaClass.getAllGlobalVars = { -> [:] }
+
+        when: "each entry's example, copied as a client would"
+        def refused = [:]
+        (script._rmActionDiscover(true).capabilities as List).each { Map entry ->
+            Map example = new LinkedHashMap(entry.example as Map)
+            try { script._rmMapActionSpec(100, example, entry.name as String, example.action as String) }
+            catch (Exception e) { refused[entry.name] = e.message }
+        }
+
+        then:
+        refused == [:]
     }
 
     def "Rule Machine's sub-type capability table is unchanged"() {

@@ -540,6 +540,37 @@ bash "$SCRIPT" verdict ""
     assert any("no provider run" in line for line in posted)
 
 
+@pytest.mark.parametrize("run_id, unset, expected_desc", [
+    ("abc", (), "the os hub's provider run id was unusable"),
+    ("77", ("PROVIDER",), "the os hub's provider run could not be read (provider secrets unavailable)"),
+    ("77", ("GH_TOKEN",), "the os hub's provider run could not be read (provider secrets unavailable)"),
+])
+def test_ephemeral_verdict_without_a_readable_run_posts_one_failure(run_id, unset, expected_desc, tmp_path):
+    script = '''
+gh() {
+  case "$1 $2" in
+    "run view") echo "should not look up a run" >&2; return 1 ;;
+    "api -X") printf '%s\\n' "$@" >> "$STUB/posted"; echo --- >> "$STUB/posted" ;;
+    *) return 1 ;;
+  esac
+}
+export -f gh
+bash "$SCRIPT" verdict "$RUN_ID"
+'''
+    env = {**os.environ, "STUB": str(tmp_path), "SCRIPT": str(ROOT / ".github/scripts/request_ephemeral_hub.sh"),
+           "GITHUB_REPOSITORY": "owner/repo", "HUB_KIND": "os", "PROVIDER": "owner/provider",
+           "PUBLIC_SHA": FORK_SHA, "GH_TOKEN": "provider-token", "STATUS_TOKEN": "status-token", "RUN_ID": run_id}
+    for name in unset:
+        env.pop(name)
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "should not look up a run" not in result.stderr
+    posted = (tmp_path / "posted").read_text().splitlines()
+    assert posted.count("---") == 1, posted
+    assert "state=failure" in posted and "context=Ephemeral e2e verdict (os)" in posted
+    assert f"description={expected_desc}" in posted, posted
+
+
 @pytest.mark.parametrize("event, base, request_state, artifacts, outcome", [
     ("pull_request", "present", "7 completed success", "ephemeral-hub-unavailable", "skip"),  # the gate's shared reason
     ("pull_request", "present", "7 in_progress ", "ephemeral-hub-session-100-1-jvm\nephemeral-hub-session-100-1-os", "session"),

@@ -46642,6 +46642,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("[wizardStuck")
         ex.message.contains("actionCancel would delete the action")
         !(ma.clicks as List).any { it.name == "actionCancel" }
+        script._rmOutcomeFlags(ex) == [wizardStuck: true, fieldsWritten: false]
     }
 
     def "modifyAction reports a failed Done after the writes with the fields that landed"() {
@@ -46658,6 +46659,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("Done on action 1 failed")
         ex.message.contains("ruleAct.1")
         ex.message.contains("[wizardStuck")
+        script._rmOutcomeFlags(ex) == [fieldsWritten: true, wizardStuck: true]
     }
 
     def "modifyAction reports an unreadable editor page as a possibly open editor"() {
@@ -46672,6 +46674,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def ex = thrown(IllegalStateException)
         ex.message.contains("could not be read")
         ex.message.contains("[wizardStuck")
+        script._rmOutcomeFlags(ex).wizardStuck == true
     }
 
     def "modifyAction is not verified when the action list cannot be read back"() {
@@ -47532,6 +47535,23 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "a nested patch item applied"             | [success: false, error: "x"]                 | [patches: [[success: false, op: "addActions", results: [[success: true], [success: false, error: "x"]]]]]     | true
         "the stop item itself was partial"        | [success: true, partial: true]               | [:]                                                                                                            | true
         "a replace already cleared rows"          | [success: false, error: "x"]                 | [removedIndices: [1, 2], addedActions: [[success: false, error: "x"]]]                                         | true
+        "the only item was a partial row rolled back" | [success: false, partial: true, rolledBack: true, error: "x"] | [actions: [[success: false, partial: true, rolledBack: true, error: "x"]]]                   | false
+    }
+
+    def "a bulk stop lifts wizardStuck and fieldsWritten from any depth of the stop item"() {
+        when:
+        def stuck = script._rmBulkStoppedResult(100, [backupKey: "k"], "patches[0]",
+            [success: false, op: "addActions", results: [[success: true], [success: false, wizardStuck: true]]], [health: [ok: true]])
+        def written = script._rmBulkStoppedResult(100, [backupKey: "k"], "patches[0]",
+            [success: false, op: "replaceActions", results: [[actions: [[success: false, fieldsWritten: true]]]]], [health: [ok: true]])
+
+        then:
+        stuck.wizardStuck == true
+        stuck.repairHints[0].contains("button='actionCancel', pageName='doActPage'")
+        !stuck.containsKey("fieldsWritten")
+        written.fieldsWritten == true
+        !written.containsKey("wizardStuck")
+        written.repairHints.size() == 1
     }
 
     // ---------- review round 2: addAction rollback outcomes ----------
@@ -47637,6 +47657,248 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         guide.contains("An action's `conditionalRequired` lists the fields each of its actions needs; an inner list means one of those fields.")
         source.contains("Deletes always take a fresh snapshot; a standalone Required Expression replacement does too while pre-edit backups are on, and turning them off also overrides Back up before every native app edit.")
         !source.contains("Deletes and a standalone Required Expression replacement still take a fresh snapshot.")
+    }
+
+    // ---------- review round 3: outcome flags through the envelopes ----------
+
+    private Map wireRunRuleDoneFails() {
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        wireModifyEditorTransport(100, [1], ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]], runRuleEditor(1)) { String path, Map body ->
+            if (path == "/installedapp/btn" && body?.name?.toString() == "actionDone") throw new IllegalStateException("btn 500")
+        }
+    }
+
+    def "a modifyAction whose Done fails answers wizardStuck, fieldsWritten and applied:null through hub_set_rule"() {
+        given:
+        wireRunRuleDoneFails()
+
+        when:
+        def r = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
+
+        then:
+        r.success == false
+        r.wizardStuck == true
+        r.fieldsWritten == true
+        r.applied == null
+        r.restoreHint.contains("button='actionDone' for an editor modifyAction opened on a committed action")
+    }
+
+    def "a modifyAction patch whose Done fails stops the batch with the same flags"() {
+        given:
+        wireRunRuleDoneFails()
+
+        when:
+        def r = script.toolSetRule([appId: 100, patches: [[modifyAction: [index: 1, mods: [ruleIds: [300]]]]], confirm: true])
+
+        then:
+        r.success == false
+        r.bulkStoppedAfter == "patches[0]"
+        r.patches[0].op == "modifyAction"
+        r.wizardStuck == true
+        r.fieldsWritten == true
+        r.applied == null
+        r.repairHints[0].contains("button='actionDone' for one modifyAction opened on a committed action")
+    }
+
+    def "an addTrigger whose cancel fails answers wizardStuck and applied:null through hub_set_rule"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        wireTriggerWizard(temperatureTriggerInputs(false))
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (body?.name == "cancelCapab") throw new IllegalStateException("btn 500")
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def r = script.toolSetRule([appId: 100, confirm: true,
+            addTrigger: [capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 9]]])
+
+        then:
+        r.success == false
+        r.error.contains("[wizardStuck -- cancelCapab cleanup failed: btn 500")
+        r.wizardStuck == true
+        r.applied == null
+    }
+
+    def "a runCommand edit stopped after its capability landed names the written fields and answers applied:null"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def ma = wireModifyEditorTransport(100, [1], ["actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"], "cCmd.1": "on"], runCommandEditor(1))
+        def mods = [capabilityFilter: "SwitchLevel", command: "setLevel"]
+
+        when:
+        script._rmModifyAction(100, 1, mods)
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("'setLevel' is not a command of the selected device(s) on action 1")
+        ex.message.contains("Fields already written before the stop: myCapab.1")
+        script._rmOutcomeFlags(ex).fieldsWritten == true
+        !script._rmOutcomeFlags(ex).wizardStuck
+        (ma.writes as List).find { it.key == "myCapab.1" }?.value == "SwitchLevel"
+        !(ma.writes as List).any { it.key == "cCmd.1" }
+
+        when:
+        def r = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: mods], confirm: true])
+
+        then:
+        r.success == false
+        r.fieldsWritten == true
+        r.wizardStuck == false
+        r.applied == null
+    }
+
+    def "modifyAction reads an emptied device picker back as a mismatch"() {
+        given:
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 9, label: "B", capabilities: ["Switch"]]]) }
+        hubGet.register('/device/fullJson/9') { params -> '{"id":"9","name":"B"}' }
+        def settings = ["actType.1": "switchActs", "actSubType.1": "getOnOffSwitch", "onOffSwitch.1": ["8"], "onOff.1": "true"]
+        def ma = wireModifyEditorTransport(100, [1], settings,
+            [[name: "onOffSwitch.1", type: "capability.switch", multiple: true], [name: "onOff.1", type: "bool"], [name: "actionDone", type: "button"]]) { String path, Map body ->
+            if (body?.containsKey("settings[onOffSwitch.1]")) settings["onOffSwitch.1"] = []
+        }
+        ma.applyWrites = false
+
+        when:
+        def r = script._rmModifyAction(100, 1, [deviceIds: [9]])
+
+        then:
+        r.success == false
+        r.readbackMismatches == ["onOffSwitch.1"]
+        r.error.contains("onOffSwitch.1 did not read back as written")
+    }
+
+    def "a false Boolean does not meet a one-of on the add path; a true one does"() {
+        given:
+        hubGet.register('/hub2/vrb/devices') { params -> "[]" }
+
+        when:
+        script._rmMapActionSpec(100, [command: "on", useLastEventDevice: false], "runCommand", null)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("requires one of deviceIds, useLastEventDevice")
+
+        when:
+        def mapped = script._rmMapActionSpec(100, [command: "on", useLastEventDevice: true], "runCommand", null)
+
+        then:
+        mapped.actSubType == "getDefinedAction"
+        mapped.fields == ["useLastDev.@N": true]
+    }
+
+    def "_rmFail inherits its cause's flags, and its own flags win"() {
+        given:
+        def inner = script._rmFail(new IllegalStateException("inner"), [fieldsWritten: true, rolledBack: true])
+
+        expect:
+        script._rmOutcomeFlags(script._rmFail(new IllegalStateException("outer", inner), [wizardStuck: true])) == [fieldsWritten: true, rolledBack: true, wizardStuck: true]
+        script._rmOutcomeFlags(script._rmFail(new IllegalStateException("outer", inner), [rolledBack: false])).rolledBack == false
+        script._rmOutcomeFlags(new IllegalStateException("plain rewrap", inner)).isEmpty()
+    }
+
+    // ---------- review round 3: checks a hub read kept from running ----------
+
+    @Unroll
+    def "an add names the checks it could not run in checksSkipped"() {
+        given:
+        enableWrite()
+        def fetchSeq = 0
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
+            ruleConfigJson(100, "r", [[name: "actType.1", type: "enum", options: ["switchActs": "Switches"]]])
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params -> fetchSeq++; doActPageSchemaJson(100, fetchSeq) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> bakedMainPageJson(100, "On: S1") }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [[name: "evt1"]], scheduledJobs: [],
+                               appState: listed ? [[name: "actionList", value: ["1"]]] : [], childAppCount: 0, childDeviceCount: 0])
+        }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        hubGet.register('/hub2/vrb/devices') { params ->
+            if (!devicesReadable) throw new IllegalStateException("502 Bad Gateway")
+            JsonOutput.toJson([[id: 8, label: "S1", capabilities: ["Switch"]]])
+        }
+
+        when:
+        def r = script.toolSetRule([appId: 100, addAction: [capability: "switch", action: "on", deviceIds: [8]], confirm: true])
+
+        then:
+        r.success == true
+        r.checksSkipped == expected
+
+        where:
+        label                  | devicesReadable | listed || expected
+        "every read worked"    | true            | true   || null
+        "no device list"       | false           | true   || ["device capabilities (the device list could not be read)"]
+        "no actionList"        | true            | false  || ["action baked (the rule's state carries no actionList)"]
+    }
+
+    def "a modifyAction whose hub variables cannot be read names the skipped variable check"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.getAllGlobalVars = { -> throw new IllegalStateException("hub busy") }
+        wireModifyEditorTransport(100, [1], ["actType.1": "modeActs", "actSubType.1": "getSetVariable", "xVarV.1": "counter"],
+            [[name: "xVarV.1", type: "enum"], [name: "actionDone", type: "button"]])
+
+        when:
+        def r = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [variable: "other"]], confirm: true])
+
+        then:
+        r.success == true
+        r.checksSkipped == ["variable name (the hub variable list could not be read)"]
+    }
+
+    // ---------- review round 3: thermostat app creates ----------
+
+    @Unroll
+    def "creating a thermostat app goes under its parent and reports that the name has not landed yet"() {
+        given:
+        enableWrite()
+        hubGet.register('/hub2/appsList') { params ->
+            JsonOutput.toJson([apps: [[data: [id: 61, name: parent, type: parent, user: false, hidden: false], children: []]]])
+        }
+        hubGet.register('/installedapp/configure/json/790') { params ->
+            JsonOutput.toJson([app: [id: 790, name: appName, label: appName, installed: true, appType: [name: appName, namespace: "hubitat"]],
+                configPage: [name: "mainPage", error: null, sections: [[title: "", input: [[name: "origLabel", type: "text"], [name: "therm", type: "capability.thermostat"], [name: "update", type: "button"]]]]],
+                settings: [:], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/790') { params -> statusJson(790) }
+        def createCalls = []
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
+            createCalls << path; [status: 302, location: "/installedapp/configure/790", data: ""]
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '{"status":"success"}']
+        }
+
+        when:
+        def result = script.toolSetNativeApp([appType: appType, name: "Upstairs", confirm: true])
+
+        then:
+        createCalls.contains("/installedapp/createchild/hubitat/${appName}/parent/61".toString())
+        result.appId == 790
+        result.appType == appType
+        result.parentAppId == 61
+        result.labelApplied == false
+        result.note.contains("NOTE: the requested name could not be verified as the app's display label")
+        posts.any { it.path == "/installedapp/update/json" && it.body["settings[origLabel]"] == "Upstairs" }
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "update" }
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
+
+        where:
+        appType                 | parent                   | appName
+        "thermostat_scheduler"  | "Thermostat Schedulers"  | "Thermostat Scheduler 2.0"
+        "thermostat_controller" | "Thermostat Controllers" | "Thermostat Controller 2.0"
     }
 
 }
