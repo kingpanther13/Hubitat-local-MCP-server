@@ -202,7 +202,8 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         "on a Repeat While"          | [capability: "repeatWhile", seconds: 5, expression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
                                         condition: [capability: "Switch", deviceIds: [8], state: "on"]]                                                        || "repeatWhile cannot carry a condition"
         "on a Wait for Expression"   | [capability: "waitExpression", expression: [conditions: [[capability: "Switch", deviceIds: [8], state: "on"]]],
-                                        condition: [capability: "Switch", deviceIds: [8], state: "on"]]                                                        || "waitExpression cannot carry a condition"        "a device without the capability" | [capability: "switch", action: "on", deviceIds: [8], condition: [capability: "Switch", deviceIds: [7], state: "on"]] || "switch.condition.deviceIds: device 7 (Temp) does not have the switch capability"
+                                        condition: [capability: "Switch", deviceIds: [8], state: "on"]]                                                        || "waitExpression cannot carry a condition"
+        "a device without the capability" | [capability: "switch", action: "on", deviceIds: [8], condition: [capability: "Switch", deviceIds: [7], state: "on"]] || "switch.condition.deviceIds: device 7 (Temp) does not have the switch capability"
         "a missing reference device" | [capability: "switch", action: "on", deviceIds: [8],
                                         condition: [capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 99]]]              || "switch.condition.compareToDevice.deviceId contains device ID '99' which does not exist"
     }
