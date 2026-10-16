@@ -8120,8 +8120,11 @@ def toolSetRule(args) {
 Map _rmStampOutcome(Object result) {
     if (!(result instanceof Map) || !(result as Map).containsKey("success")) return result as Map
     Map r = result as Map
-    boolean applied = r.rolledBack != true && (r.success == true || r.partial == true)
-    Boolean appliedFlag = applied ? true : ((r.wizardStuck == true || r.fieldsWritten == true) ? null : false)
+    // fieldsWritten / wizardStuck mark a row that is written but not a committed action, so they
+    // outrank partial: the answer is null, not true.
+    boolean unsettled = r.wizardStuck == true || r.fieldsWritten == true
+    boolean applied = r.rolledBack != true && (r.success == true || (r.partial == true && !unsettled))
+    Boolean appliedFlag = applied ? true : (unsettled ? null : false)
     boolean activated = applied && r.updateRuleFailed != true && r.subscriptionsNotLive != true &&
         r.mainPageDoneFailed != true && r.mainPageDoneSkipped != true && r.finalisationNotAttempted != true
     boolean verified = activated && r.success == true && r.verificationFetchFailed != true && r.healthUnverified != true &&
@@ -13021,6 +13024,8 @@ def _applyNativeAppEdit(args) {
             configPageError: actResult?.configPageError,
             hubRenderError: actResult?.hubRenderError,
             rolledBack: actResult?.rolledBack,
+            fieldsWritten: actResult?.fieldsWritten,
+            wizardStuck: actResult?.wizardStuck,
             repairHints: actResult?.repairHints,
             health: actResult?.health,
             verificationFetchFailed: actResult?.verificationFetchFailed,
