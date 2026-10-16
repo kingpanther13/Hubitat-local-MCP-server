@@ -3898,8 +3898,8 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
         }
         _rmRequireCatalogValue("modifyAction on ${cap}".toString(), f, v)
         def value = (v != null && f.values instanceof List) ? _rmCatalogValueCanonical(f, v) : v
-        if (f.direction != null) value = (f.direction == true) ? (v == "raise") : (v != "raise")
-        else if (f.trueWhen != null) value = v?.toString() == f.trueWhen.toString()
+        if (f.direction != null) value = (f.direction == true) ? (value == "raise") : (value != "raise")
+        else if (f.trueWhen != null) value = value?.toString() == f.trueWhen.toString()
         else if (name == "ruleIds") value = _rmNormalizeRuleIdsForWrite(v, subType == "getSetPrivateBoolean")
         else if (name == "value" && subType == "getSetPrivateBoolean") value = !(v as Boolean)
         if (name == "deviceIds") {
