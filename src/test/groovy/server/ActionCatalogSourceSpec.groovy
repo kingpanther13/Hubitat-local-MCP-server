@@ -224,7 +224,6 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
             JsonOutput.toJson([app: [id: 100], configPage: [name: "doActPage", sections: [[input: [[name: "rCapab_4", type: "enum", options: opts.capabilities ?: ["Switch", "Contact"]]]]]]])
         }
-        script.metaClass._rmWalkConditionReveal = { Integer id, Map ctx, Map cond, Integer cIdx -> events << ["walk", ctx.page, cIdx, ctx.capCanonical] }
         [applied: [], skipped: []]
     }
 
@@ -236,9 +235,14 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         script._rmWriteSimpleConditionalPreamble(100, 3, "switch", [capability: "switch", deviceIds: [8], state: "on"], acc.applied, acc.skipped)
 
         then:
+        // The walk is RM's inputCapab reveal on the slot the page opened (rCapab_4); the walker's own
+        // hasAll closes the condition and the preamble clicks nothing more.
         events == [["write", "doActPage", "actType.3", "condActs"],
                    ["write", "doActPage", "actSubType.3", "getCondAct"],
-                   ["walk", "doActPage", 4, "Switch"]]
+                   ["write", "doActPage", "rCapab_4", "Switch"],
+                   ["write", "doActPage", "rDev_4", [8]],
+                   ["write", "doActPage", "state_4", "on"],
+                   ["click", "doActPage", "hasAll"]]
     }
 
     def "preamble with a defined condition: useCond, the index, then Done with this condition"() {
