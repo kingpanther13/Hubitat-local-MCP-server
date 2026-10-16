@@ -6184,9 +6184,13 @@ class TestRunner:
         # delete may still have committed, so verify by listing rules (absent => the
         # delete committed). Only a rule still PRESENT after a non-504 path is a failure.
         try:
-            self.client.call_tool("hub_manage_rule_machine", {
+            deleted = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_delete_native_app", "args": {"appId": app_id, "confirm": True},
             })
+            # This test runs with pre-edit backups off; a delete takes its snapshot regardless.
+            assert deleted.get("success") is True and (deleted.get("backup") or {}).get("backupKey") \
+                and "skipped" not in deleted["backup"], \
+                f"the delete should carry its own snapshot's backupKey with pre-edit backups off: {deleted}"
         except (McpError, McpToolError, requests.HTTPError) as exc:
             if "504" not in str(exc):
                 raise
@@ -6236,6 +6240,30 @@ class TestRunner:
                          "time": "17:30"}, "confirm": True}})
             assert bad_time.get("success") is False and "addTrigger.time must be 'A specific time', 'Sunrise' or 'Sunset'" in str(bad_time.get("error", "")), \
                 f"a Certain Time time outside its options should be refused, got: {bad_time}"
+            # Refusals decided from the arguments come before the backup decision, so the envelope has
+            # no backup at all (with backups off, a decision taken would still leave a map).
+            sw_id = int(self.get_test_switch_id())
+            for args, needles in (
+                ({"addTrigger": {"capability": "Location Event"}}, ("Location Event needs state (one of",)),
+                ({"addTrigger": {"capability": "Location Event", "state": "E2E no such event"}},
+                 ("Location Event state 'E2E no such event' is not one Rule Machine lists",)),
+                ({"addTrigger": {"capability": "HSM Alert"}}, ("HSM Alert needs state (one of",)),
+                ({"addTrigger": {"capability": "Days of Week Schedule"}},
+                 ("'Days of Week Schedule' is a Rule Machine trigger this tool does not model",)),
+                ({"addRequiredExpression": {"conditions": [{"capability": "Time of day"}]}},
+                 ("'Time of day' is a Rule Machine condition this tool does not model",)),
+                ({"addRequiredExpression": {"conditions": [{"capability": "Time Since Event"}]}},
+                 ("'Time Since Event' is a Rule Machine condition this tool does not model",)),
+                # A switch asked to set a fan speed: RM's picker for that action lists FanControl devices.
+                ({"addAction": {"capability": "fan", "action": "setSpeed", "speed": "low", "deviceIds": [sw_id]}},
+                 (f"device {sw_id} (", "does not have the FanControl capability")),
+            ):
+                refused = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                    "args": {"appId": app_id, "confirm": True, **args}})
+                error = str(refused.get("error", ""))
+                assert refused.get("success") is False and all(n in error for n in needles) \
+                    and "RM is not touched" in error and refused.get("backup") is None, \
+                    f"{args} should be refused before the backup, naming {needles}: {refused}"
             # The remaining handler-level validators run as ordered patches in one logical
             # continuation-aware call. Each is pre-write, so the batch may continue after a
             # refusal without accumulating mutations; the final config read below is binding.
@@ -6427,13 +6455,25 @@ class TestRunner:
         # modifyAction edits a committed action in place through RM's own row editor: the index,
         # the position and the untouched settings stay, and every value reads back. Its own tiny
         # rules per AGENTS.md: the classic wizard re-sends the whole rule page on every
-        # submitOnChange POST, so per-edit cost grows with rule size. Targets A and B are empty
-        # shells -- a runRule target only has to EXIST, and a pause target only has to be a rule.
+        # submitOnChange POST, so per-edit cost grows with rule size. Target A is an empty shell -- a
+        # runRule target only has to EXIST, and a pause target only has to be a rule. Target B also
+        # carries the three actions the modifyAction refusals below edit.
+        button = self._ensure_perm_fixture("button")
+        var_name = self._ensure_perm_variables("sv_number")["sv_number"]
+        modes = self.client.call_tool("hub_list_modes").get("modes") or []
+        assert modes, "no hub mode for the modifyAction mode-id refusal"
+        mode_id = int(modes[0]["id"])
         target_a = self._create_native_rule("MaTargetA")
         target_b = None
         caller_id = None
         try:
-            target_b = self._create_native_rule("MaTargetB")
+            # The button operation is given in a casing RM's picker does not use; it is written as "hold".
+            target_b = self._create_native_rule("MaTargetB", {"addActions": [
+                {"capability": "mode", "modeId": mode_id},
+                {"capability": "setVariable", "variable": var_name, "value": 1},
+                {"capability": "button", "action": "push", "deviceIds": [int(button)], "buttonNumber": 1,
+                 "operation": "HOLD"},
+            ]})
             sentinel_msg = "E2E order sentinel post-action"
             caller_id, caller_create = self._create_native_rule("MaCaller", {
                 "addActions": [
@@ -6536,6 +6576,43 @@ class TestRunner:
             pb_patched = self._get_persisted_rule_config(caller_id).get("settings") or {}
             assert str(pb_patched.get(f"pvTF.{pb_idx}")).lower() == "true", \
                 f"patches modifyAction did not set value False in place: {pb_patch} / {pb_patched}"
+
+            # modifyAction checks a mode id, a variable, a device's capability and an enum value the
+            # way an add does, before the backup decision: the refusal carries no backup at all.
+            tb_settings = self._get_persisted_rule_config(target_b).get("settings") or {}
+
+            def _tb_slot(prefix: str, wanted: Any) -> int | None:
+                return next((int(str(k)[len(prefix):]) for k, v in tb_settings.items()
+                             if str(k).startswith(prefix) and str(k)[len(prefix):].isdigit()
+                             and self._setting_holds_exact(v, wanted)), None)
+            mode_idx, var_idx, btn_idx = _tb_slot("mode.", mode_id), _tb_slot("xVarV.", var_name), _tb_slot("pushButton.", button)
+            assert None not in (mode_idx, var_idx, btn_idx), \
+                f"target B's mode, setVariable and button actions did not persist: {tb_settings}"
+            assert tb_settings.get(f"pushButOp.{btn_idx}") == "hold", \
+                f"addAction wrote the button operation as given instead of RM's spelling: {tb_settings}"
+            missing_var = f"{PREFIX}NoSuchVariable"
+            for idx, mods, needle in (
+                (mode_idx, {"modeId": 999999}, "mode ID 999999 is not offered by"),
+                (var_idx, {"variable": missing_var},
+                 f"variable '{missing_var}' is not a hub variable or one of this rule's local variables"),
+                (btn_idx, {"deviceIds": [int(self.get_test_switch_id())]}, "does not have the PushableButton capability"),
+                (btn_idx, {"operation": "squeeze"}, "'operation' must be one of push, hold, doubleTap, release (got 'squeeze')"),
+            ):
+                refused = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                    "appId": target_b, "modifyAction": {"index": idx, "mods": mods}, "confirm": True}})
+                assert refused.get("success") is False and needle in str(refused.get("error", "")) \
+                    and refused.get("backup") is None, \
+                    f"modifyAction {mods} on action {idx} should be refused before the backup: {refused}"
+            # An enum value is written in RM's spelling; with pre-edit backups off the edit says it took none.
+            op_mod = self._set_rule(target_b, {"modifyAction": {"index": btn_idx, "mods": {"operation": "Push"}}},
+                                    strict=True)
+            assert op_mod.get("modifiedIndex") == btn_idx and op_mod.get("verified") is True, \
+                f"the button operation edit did not apply in place: {op_mod}"
+            assert op_mod.get("backup") == {"skipped": "pre-edit backups are off in Advanced settings"}, \
+                f"with pre-edit backups off the edit should report the skipped backup and no key: {op_mod}"
+            op_after = self._get_persisted_rule_config(target_b).get("settings") or {}
+            assert op_after.get(f"pushButOp.{btn_idx}") == "push", \
+                f"modifyAction wrote the button operation as given instead of RM's spelling: {op_after}"
 
             # Keep one live >1 ruleId request: a successful call proves the batch envelope and
             # exact echoed ids; a platform load-limiter refusal proves the parsed array reached
@@ -8840,6 +8917,34 @@ class TestRunner:
                 f"before={states_before} after={states_after}"
             assert skipped_msg not in self._rule_page_text(app_id), \
                 "the action after a stopped trigger batch was written"
+
+            # A conditional trigger refused after its condition was built (a state RM's picker lacks)
+            # names the condition RM keeps as unused; RM's trigger counter has moved past the cancelled
+            # slot, and the next conditional trigger takes the slot after it and commits.
+            try:
+                cond_refused = self._rm_stop_call(app_id, {"addTrigger": {
+                    "capability": "Switch", "deviceIds": [sw], "state": "purple",
+                    "condition": {"capability": "Switch", "deviceIds": [sw], "state": "on"}}})
+            except McpToolError as exc:
+                cond_refused = {"success": False, "error": str(exc)}
+            leftover = re.search(r"The condition created for this trigger \(id (\d+)\) stays in the rule's "
+                                 r"conditions as unused", str(cond_refused.get("error", "")))
+            assert cond_refused.get("success") is False and leftover \
+                and "is not a state Rule Machine offers for Switch" in str(cond_refused.get("error", "")) \
+                and cond_refused.get("wizardStuck") is not True, \
+                f"the refused conditional trigger should name its unused condition and close the editor: {cond_refused}"
+            cond_ok = self._set_rule(app_id, {"addTrigger": {
+                "capability": "Switch", "deviceIds": [sw], "state": "on",
+                "condition": {"capability": "Switch", "deviceIds": [sw], "state": "off"}}}, strict=True)
+            cond_tidx = cond_ok.get("triggerIndex")
+            assert cond_ok.get("success") is True and not cond_ok.get("partial") and cond_tidx is not None, \
+                f"the conditional trigger after a refused one should commit: {cond_ok}"
+            cond_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+            bound = cond_settings.get(f"condTrig.{cond_tidx}")
+            assert bound not in (None, "", []) and not self._setting_holds_exact(bound, leftover.group(1)) \
+                and self._setting_holds_exact(cond_settings.get(f"tDev{cond_tidx}"), sw) \
+                and str(cond_settings.get(f"tstate{cond_tidx}")).lower() == "on", \
+                f"trigger {cond_tidx} should persist bound to a new condition, not unused {leftover.group(1)}: {cond_settings}"
         finally:
             self._delete_native(app_id)
 
@@ -10129,6 +10234,23 @@ class TestRunner:
             blob = str(cfg)
             assert ("Temperature of" in blob) or ("temperature of" in blob.lower()), \
                 f"rule paragraph does not render a device-relative Temperature comparison: {blob[:600]}"
+
+            # The numeric trigger form: istDev<N> makes the right side reference device reltDevice<N>,
+            # and the offset rides in the value slot tstate<N>.
+            trig = self._set_rule(ctd_app_id, {"addTrigger": {
+                "capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">",
+                "compareToDevice": {"deviceId": int(dev_b), "offset": 2}}}, strict=True)
+            tidx = trig.get("triggerIndex")
+            assert trig.get("success") is True and not trig.get("partial") and tidx is not None, \
+                f"compareToDevice addTrigger did not cleanly commit: {trig}"
+            trig_settings = self._get_persisted_rule_config(ctd_app_id).get("settings") or {}
+            assert str(trig_settings.get(f"istDev{tidx}")).lower() == "true" \
+                and self._setting_holds_exact(trig_settings.get(f"reltDevice{tidx}"), dev_b) \
+                and self._setting_holds_exact(trig_settings.get(f"tDev{tidx}"), dev_a) \
+                and trig_settings.get(f"ReltDev{tidx}") == ">" \
+                and str(trig_settings.get(f"tstate{tidx}")) in ("2", "2.0"), \
+                f"the device-relative trigger {tidx} did not persist its reference device and offset: {trig_settings}"
+            self._assert_rule_healthy(ctd_app_id)
         finally:
             self._delete_native(ctd_app_id)
 
@@ -18384,7 +18506,11 @@ class TestRunner:
                 proves_backups = method_name in self.BACKUP_PROVING_TESTS
                 try:
                     if proves_backups:
-                        self._rule_edit_backups(True)
+                        try:
+                            self._rule_edit_backups(True)
+                        except Exception as exc:
+                            self._record(display_name, group, "fail", message=f"could not turn pre-edit backups on: {exc}")
+                            continue
                     self._run_one(group, display_name, method_name)
                 finally:
                     if proves_backups:

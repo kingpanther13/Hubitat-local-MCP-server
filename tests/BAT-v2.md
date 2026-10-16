@@ -3958,7 +3958,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: the walker's `IllegalArgumentException` is caught by `hub_set_rule`'s backup-and-catch wrapper and surfaces as a structured `success=false` map whose `error` names the missing `comparator` (the map also carries `backup`/`restoreHint`); it is NOT a JSON-RPC `-32602`. No condition fields are written -- the rule has no half-built Temperature condition afterward (inspect mainPage to confirm nothing was added).
+**Expected**: the argument check refuses the call before the pre-edit backup and surfaces as a structured `success=false` map whose `error` names the missing `comparator`, with no `backup` and a `restoreHint` saying the rule was not touched; it is NOT a JSON-RPC `-32602`. No condition fields are written -- the rule has no half-built Temperature condition afterward (inspect mainPage to confirm nothing was added).
 
 **Failure modes**: `success=true` / `partial=true` with a half-written condition (regression to the pre-fix path where rCapab/rDev landed but no comparator/RHS, rendering an incomplete or `*BROKEN*` condition). Any condition fields present in `settingsApplied` (the reject must fire before any hub write).
 
@@ -4105,7 +4105,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: the call returns a structured `success=false` map before any sub-page write. The `error` field names the allowed set `[1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]` and the rejected value (7), and a `backup`/`restoreHint` accompanies it. No trigger row is committed. The up-front `IllegalArgumentException` is caught by the whole-tool backup-and-catch envelope and surfaced as `success=false` (NOT a thrown -32602) -- consistent with the sibling compareToDevice missing-comparator guard on this same addTrigger path. This is fail-loud: RM restricts the Seconds/Minutes count to a fixed enum, and 7 is not in it, so the tool surfaces a recoverable structured error instead of silently rendering "null".
+**Expected**: the call returns a structured `success=false` map before any sub-page write. The `error` field names the allowed set `[1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30]` and the rejected value (7), with no `backup` (the refusal comes before the pre-edit backup) and a `restoreHint` saying the rule was not touched. No trigger row is committed. The up-front `IllegalArgumentException` is surfaced as `success=false` (NOT a thrown -32602) -- consistent with the sibling compareToDevice missing-comparator guard on this same addTrigger path. This is fail-loud: RM restricts the Seconds/Minutes count to a fixed enum, and 7 is not in it, so the tool surfaces a recoverable structured error instead of silently rendering "null".
 
 **Failure modes**: the call returns `success=true` and the trigger renders "null"/"?" (validation was skipped and the out-of-enum count was silently rejected by the hub). The `error` omits the valid-options list (less actionable for the LLM).
 
@@ -4137,7 +4137,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 }
 ```
 
-**Expected**: the call returns a structured `success=false` map before any sub-page write. The `error` field states the two modes are mutually exclusive and names both `dayOfMonth` and `weekOfMonth`, and a `backup`/`restoreHint` accompanies it. No trigger row is committed. The up-front `IllegalArgumentException` is caught by the whole-tool backup-and-catch envelope and surfaced as `success=false` (NOT a thrown -32602), consistent with the Seconds/Minutes everyN guard and the sibling compareToDevice guard. Monthly by-day (calendar day) and nth-weekday (Nth weekday) are distinct RM modes whose field sets hide each other; mixing them is unrenderable.
+**Expected**: the call returns a structured `success=false` map before any sub-page write. The `error` field states the two modes are mutually exclusive and names both `dayOfMonth` and `weekOfMonth`, with no `backup` (the refusal comes before the pre-edit backup) and a `restoreHint` saying the rule was not touched. No trigger row is committed. The up-front `IllegalArgumentException` is surfaced as `success=false` (NOT a thrown -32602), consistent with the Seconds/Minutes everyN guard and the sibling compareToDevice guard. Monthly by-day (calendar day) and nth-weekday (Nth weekday) are distinct RM modes whose field sets hide each other; mixing them is unrenderable.
 
 **Failure modes**: the call returns `success=true` and the trigger renders "null"/"?" (the guard was skipped and both field sets were written, leaving an ambiguous/incomplete sub-page). The `error` names only one of the two conflicting fields (less actionable).
 
@@ -4387,7 +4387,7 @@ Tools in this section require **the Read master** and HPM itself must be install
 
 ```json
 {
-  "setup_prompt": "the Write master is enabled. Create an RM rule called 'BAT LocalVar Broken Test'; add a NUMERIC local variable 'refLocal' (type Number, value 0) to it, then add an action setLocalVariable={variable:'refLocal', value:9} that references it. Leave the referencing action in place.",
+  "setup_prompt": "the Write master is enabled and backupBeforeRuleEdits is true (its default). Create an RM rule called 'BAT LocalVar Broken Test'; add a NUMERIC local variable 'refLocal' (type Number, value 0) to it, then add an action setLocalVariable={variable:'refLocal', value:9} that references it. Leave the referencing action in place.",
   "test_prompt": "On 'BAT LocalVar Broken Test': remove the rule-local variable 'refLocal' WITHOUT first removing the action that references it. Report success, variable.deleted, error, health.ok, and any repairHints. Then list the rule's local variables and confirm 'refLocal' is gone.",
   "teardown_prompt": "Delete the 'BAT LocalVar Broken Test' rule."
 }
