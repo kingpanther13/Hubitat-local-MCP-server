@@ -173,6 +173,9 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         then: 'flat is still <= gateway (some FLAT_TRIM remains), and the gateway def is now lean (was ~54 KB)'
         flatBytes <= gwBytes
         gwBytes < 40_000
+
+        and: 'walkStep keeps only its shape and the guide pointer (was 1,223 bytes)'
+        (gwUpdateNative.inputSchema.properties.walkStep.description as String).getBytes('UTF-8').length <= 400
     }
 
     def "hub_set_rule flat-mode is the thin self-gateway selector that still reaches discover/guide"() {

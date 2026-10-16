@@ -73,7 +73,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     pageName: [type: "string", description: "Optional sub-page for schema introspection + settings POST."],
                     stateAttribute: [type: "string", description: "Optional state attribute value for the button click."],
                     buttonRule: [type: "object", description: "Create a Button Rule under an existing Button Controller.", properties: [controllerId: [type: "integer", description: "Button Controller-5.1 appId"], buttonNumber: [type: "integer", description: "button number (>=1)"], event: [type: "string", enum: ["pushed", "held", "doubleTapped", "released"]]]],
-                    walkStep: [type: "object", description: "Multi-page classic-app walker — EDIT-only (requires appId; rejected on create). Use it for inputs on a sub-page (hub_list_app_pages lists them), inputs that appear only after an earlier choice, and anything settings/button cannot represent.[[FLAT_TRIM]] For RM rules prefer hub_set_rule's structured shortcuts, which do the same walk in one call. Generic classic-dynamicPage walker for stateful apps: introspect/write/click/navigate/done one step per call, or operation='drive' with steps=[...] to run the whole sequence in one call. Same shape as hub_set_rule's walkStep.[[/FLAT_TRIM]]"],
+                    walkStep: [type: "object", description: "Classic-app wizard walker, EDIT-only: inputs on a sub-page (hub_list_app_pages), inputs that appear after an earlier choice, anything settings/button cannot express. Same spec as hub_set_rule's walkStep: hub_get_tool_guide(section='set_rule_reference_walkstep')."],
                     confirm: [type: "boolean", description: "Must be true. Safety gate for Write master operations."]
                 ],
                 required: ["confirm"]
@@ -83,7 +83,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
             name: "hub_set_rule",
             description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. Fields per capability: operation:'discover'. RM-only — for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; each edit keeps a File Manager baseline (backup.backupKey; reused for an hour).
 
-ALWAYS prefer the one-call shortcuts (addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, remove/modify/move/clear, addLocalVariable/removeLocalVariable, patches); walkStep and raw settings+button are LAST RESORTS.[[FLAT_TRIM]] Each shortcut orchestrates the full RM 5.1 wizard in one call; walkStep (one wizard page per call) covers capabilities no shortcut can represent.
+ALWAYS prefer the one-call shortcuts (addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, remove/modify/move/clear, addLocalVariable/removeLocalVariable, patches); walkStep and raw settings+button are for what they cannot express.[[FLAT_TRIM]] Each shortcut orchestrates the full RM 5.1 wizard in one call.
 
 Partial-success (every shortcut): success:true can pair with partial:true — inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true, first run the close-editor click restoreHint names (cancelCapab for a condition sub-wizard or the trigger editor, actionCancel for a new action's editor, actionDone for an editor modifyAction opened on a committed action). On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).[[/FLAT_TRIM]]
 
@@ -166,7 +166,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     walkStep: [
                         type: "object",
-                        description: """Raw wizard walker — LAST RESORT, one call per wizard step (token-heavy): use ONLY when the structured shortcuts can't represent the change (Periodic sub-pages, conditional-trigger binding, later-firmware features). operation='drive' runs a whole steps=[...] loop in ONE call (introspect → navigate into a sub-page → write each field → done → finalize), carrying the page forward and stopping at the first failed step (stopOnError=false to continue); the single-step primitives drive composes are introspect | write (one field) | click | navigate | done. Spec: {page, operation, write?:{field:value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?}, steps?:[...]}; page is e.g. selectTriggers/selectActions/doActPage/periodic. Always check silentRejection / valueEcho.match / health (the fail-loud signals; health.skipped / health.unreadable mean not-checked, not broken; a standalone mutation with budget-skipped health returns success:false, partial:true, healthUnverified:true -- verify health before continuing, do not replay the committed step). Full walker mechanics + page names: guide:true or hub_get_tool_guide(section='set_rule_reference_walkstep')."""
+                        description: """Wizard walker for what the shortcuts cannot express (e.g. Periodic sub-pages). {page, operation: introspect|write|click|navigate|done|drive, write?:{field: value}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?}, steps?:[...]}; drive runs steps in one call: hub_get_tool_guide(section='set_rule_reference_walkstep')."""
                     ],
                     addAction: [
                         type: "object",
@@ -6580,6 +6580,61 @@ private Map _rmCollectWalkSchema(Map configPage, Map liveSettings = null) {
     return out
 }
 
+// What renders each RM wizard page or slot, the state RM keeps for it, and button effects: the single
+// table walkStep's refusals and hints read, and the one the walkStep guide points to.
+Map _rmWizardPrerequisites() {
+    return [
+        pages: [
+            doActPage: [appState: "doActN", slotState: "actNdx",
+                opener: "on selectActions click N with stateAttribute doActN for a new action (slot state.actNdx), or <n>.0.false with stateAttribute doAct to edit action n"],
+            selectTriggers: [slotState: "ndx", slotKey: /^(tCapab|tDev|tstate|isCondTrig\.|condTrig\.)/, openerButton: "true",
+                opener: "on selectTriggers click true with stateAttribute moreCond for a new trigger (slot state.ndx), or <n> with stateAttribute editCond to edit trigger n"],
+            selectConditions: [slotState: "ndx", slotKey: /^(rCapab_|rDev_|state_)/, openerButton: "true",
+                opener: "on selectConditions click true with stateAttribute moreCond for a new condition (slot state.ndx), or <n> with stateAttribute editCond to edit condition n"],
+            STPage: [editorButton: "editST",
+                opener: "on STPage click editST (stateAttribute editST) to open the saved Required Expression in its editor"],
+            periodic: [hrefParam: "n",
+                opener: "navigate the periodic<n> href from selectTriggers, or pass hrefContext {fromPage: 'selectTriggers', hrefName: 'periodic<n>', hrefParams: {n: <n>}}"]
+        ],
+        buttons: [
+            cancelCapab: "RM drops the open condition sub-wizard on the page's next render"
+        ]
+    ]
+}
+
+private Object _rmAppStateValue(Map status, String name) {
+    def appState = status?.appState
+    return appState instanceof List ? appState.find { it instanceof Map && it.name?.toString() == name }?.value : null
+}
+
+// doActPage builds its editor from state.doActN, so entering it before any slot was opened fails to
+// render. A pending predCapabs clear opens one first; an unreadable appState is left to RM's render.
+private String _rmWizardPrerequisiteRefusal(List pages, Map status, boolean pendingClear) {
+    if (!("doActPage" in pages) || pendingClear || !(status?.appState instanceof List)) return null
+    if (_rmAppStateValue(status, "doActN") != null) return null
+    def p = _rmWizardPrerequisites().pages.doActPage
+    return "walkStep: doActPage renders only inside an open action editor, built from RM's state.${p.appState}, which this rule has not set. Nothing was rendered or written. Open the editor first: ${p.opener}.".toString()
+}
+
+// Why a key the page does not show may be missing, from the page and RM's slot state; null if unknown.
+private String _rmWizardPrerequisiteHint(String page, String key, Map configPage, Map status) {
+    def p = _rmWizardPrerequisites().pages[page]
+    if (!p) return null
+    def rendered = _rmRenderedButtons(configPage)*.name
+    if (p.slotKey && (key =~ p.slotKey).find() && p.openerButton in rendered) {
+        return "'${key}' renders only in an open slot: ${p.opener}. RM's state.${p.slotState} is ${_rmAppStateValue(status, p.slotState as String)}.".toString()
+    }
+    if (p.editorButton && p.editorButton in rendered) return "${page} shows the saved expression, not its editor: ${p.opener}.".toString()
+    if (page == "doActPage") {
+        def doActN = _rmAppStateValue(status, "doActN")?.toString()
+        if (!doActN) return null
+        def slot = (doActN == "N" || doActN.startsWith("I")) ? _rmAppStateValue(status, "actNdx") : doActN.tokenize(".")[0]
+        return "The open action editor is slot ${slot} (RM's state.doActN is ${doActN}); its keys end in .${slot}, e.g. actType.${slot}.".toString()
+    }
+    if (p.hrefParam) return "${page} reads its href param ${p.hrefParam} only from the request: ${p.opener}.".toString()
+    return null
+}
+
 // walkStep — single-step wizard introspection + write/click/navigate.
 //
 // Designed for LLM-driven dynamic wizard walking. Each call performs at
@@ -6631,13 +6686,21 @@ Map _rmWalkStep(Integer appId, Map spec) {
     def walkCache = spec?.__pageCache instanceof Map ? (Map) spec.__pageCache : null
     if (walkCache != null && operation != "write") walkCache.clear()
 
+    def navTarget = (operation == "navigate" && spec?.navigate instanceof Map) ? ((Map) spec.navigate).targetPage?.toString() : null
+    // Read before any render: a page entered without the state RM builds it from is refused here.
+    def beforeStatus = _rmFetchStatusJson(appId)
+    boolean actionPage = [page, navTarget].any { it in ["selectActions", "doActPage"] }
+    boolean pendingClear = actionPage && _rmPendingPredClearSnapshot().get(appId.toString()) != null
+    boolean runsClear = operation in ["write", "click", "navigate"] && actionPage
+    def prereqRefusal = _rmWizardPrerequisiteRefusal([page, navTarget], beforeStatus, pendingClear && runsClear)
+    if (prereqRefusal) throw new IllegalArgumentException(prereqRefusal)
+
     // walkStep can author actions, so run any deferred predCapabs clear first (from an earlier
     // addRequiredExpression), or the action is wrapped in IF(**Broken Condition**).
-    if (operation in ["write", "click", "navigate"]) {
-        def navTarget = (operation == "navigate" && spec?.navigate instanceof Map) ? ((Map) spec.navigate).targetPage?.toString() : null
-        if (page == "selectActions" || page == "doActPage" || navTarget == "selectActions" || navTarget == "doActPage") {
-            _rmRunPendingPredCapabsClear(appId)
-        }
+    if (runsClear) {
+        _rmRunPendingPredCapabsClear(appId)
+        // The clear opens and cancels an action slot, so the status read above is stale.
+        if (pendingClear) beforeStatus = _rmFetchStatusJson(appId)
     }
 
     // hrefContext re-sends a sub-page's href marker on every request, since state like the periodic
@@ -6680,7 +6743,6 @@ Map _rmWalkStep(Integer appId, Map spec) {
         beforeCfg = _rmFetchConfigJson(appId, page, walkCache)
         beforeFromNav = true
     }
-    def beforeStatus = _rmFetchStatusJson(appId)
     def beforeSettings = (beforeStatus?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it?.value] }
     def beforeSchema = _rmCollectWalkSchema(beforeCfg?.configPage, beforeSettings)
     // Count only, off the status already in hand -- no order needed and no second
@@ -6739,10 +6801,6 @@ Map _rmWalkStep(Integer appId, Map spec) {
         if (writtenValue instanceof Map && _isDevicePickerType(schemaInput?.type)) {
             writtenValue = (writtenValue as Map).keySet().collect { it?.toString() }
         }
-        // Validate against schema if asked.
-        if (!schemaInput) {
-            opResult.warning = "Field '${writtenKey}' not in current schema for page '${page}'. Available: ${beforeSchema.inputs.collect { it.name }}. The write will be attempted but the hub may silently drop it."
-        }
         if (validateEnum && schemaInput?.options) {
             def validValues = schemaInput.options.collect { it.value?.toString() }
             def writtenStr = writtenValue?.toString()
@@ -6754,58 +6812,52 @@ Map _rmWalkStep(Integer appId, Map spec) {
                 throw new IllegalArgumentException("walkStep.write enum validation failed: ${valueWord} ${invalid} not in options ${validValues} for field '${writtenKey}'. Pass validateEnum=false to bypass, or pick a valid option.")
             }
         }
-        // Build the schema map _rmUpdateAppSettings expects.
         def fullSchemaMap = _rmCollectInputSchema(beforeCfg?.configPage)
-        if (hrefContextMarkers) {
-            // For sub-pages, include the action marker in the same request
-            // so RM re-sets state.<paramKey> before applying the write.
-            // Without this, the page renders with state.n null and the
-            // setting write lands in the wrong scope.
-            def body = _rmBuildSettingsBody(appId, [(writtenKey): writtenValue], fullSchemaMap)
-            body.formAction = "update"
-            body.currentPage = page
-            body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, page, '["mainPage"]')
-            hrefContextMarkers.each { k, v -> body.put(k, v) }
-            try {
-                def cfg = _rmFetchConfigJson(appId, hrefContext.fromPage?.toString() ?: page)
-                if (cfg?.app?.version != null) body.version = cfg.app.version.toString()
-            } catch (Exception verExc) {
-                mcpLog("warn", "rm-native", "walkStep: href-context version fetch for app ${appId} on page '${hrefContext.fromPage ?: page}' failed (${verExc.message}) -- POSTing write without version field; hub may reject on concurrent-edit conflict")
+        def pageSkipped = []
+        if (page == "mainPage" && !hrefContextMarkers) {
+            // The main page keeps its settings write; only the refusals are shared with sub-pages.
+            def mainRefusal = schemaInput ? _rmNotOfferedSkip(fullSchemaMap.get(writtenKey) as Map, writtenKey, writtenValue) :
+                [key: writtenKey, reason: "not_in_schema", value: writtenValue, available: fullSchemaMap.keySet().toList().sort()]
+            if (mainRefusal) pageSkipped << mainRefusal
+            else _rmUpdateAppSettings(appId, [(writtenKey): writtenValue], fullSchemaMap, walkCache)
+        } else {
+            // Sub-pages write through the schema writer against the page already read (seeded into
+            // the cache), with page context; an href sub-page adds its markers so RM re-sets the
+            // route state (e.g. periodic's state.n) before applying the write.
+            Map writeCache = walkCache != null ? walkCache : [:]
+            _rmCacheStore(writeCache, appId, page, beforeCfg as Map)
+            Map extras = null
+            if (hrefContextMarkers) {
+                extras = [:] + hrefContextMarkers
+                try {
+                    def cfg = _rmFetchConfigJson(appId, hrefContext.fromPage?.toString() ?: page)
+                    if (cfg?.app?.version != null) extras.version = cfg.app.version.toString()
+                } catch (Exception verExc) {
+                    mcpLog("warn", "rm-native", "walkStep: href-context version fetch for app ${appId} on page '${hrefContext.fromPage ?: page}' failed (${verExc.message}) -- POSTing write without version field; hub may reject on concurrent-edit conflict")
+                }
             }
-            // Every write path takes the drive cache so the carried before-page is dropped and the
-            // after-read below sees the page this write produced.
-            _rmPostSettings(appId, body, walkCache)
-        } else if (page && page != "mainPage" && schemaInput != null) {
-            // Sub-page writes need formAction/currentPage/pageBreadcrumbs, or RM silently no-ops
-            // wizard pickers such as doActPage cond (see _rmWriteSettingOnPage).
-            def pageApplied = []
-            def pageSkipped = []
-            _rmWriteSettingOnPage(appId, page, writtenKey, writtenValue, pageApplied, null, pageSkipped, walkCache)
-            _rmVerifySubPageMultipleFlags(appId, page, [(writtenKey): writtenValue], fullSchemaMap, walkCache)
+            _rmWriteSettingOnPage(appId, page, writtenKey, writtenValue, [], null, pageSkipped, writeCache, extras)
+            boolean posted = !pageSkipped.any { it.reason in ["not_in_schema", "not_offered"] }
+            if (posted && !hrefContextMarkers) _rmVerifySubPageMultipleFlags(appId, page, [(writtenKey): writtenValue], fullSchemaMap, walkCache)
             // A committed device pick reveals nothing and reads as silent_rejection; re-tag it as addAction does.
             _rmReclassifyDeviceListSkips(appId, pageSkipped)
-            if (pageSkipped) opResult.skipped = pageSkipped
-        } else if (page && page != "mainPage") {
-            // Unresolved key: keep walkStep's contract of attempting the exact requested key (with the
-            // schema warning above), but with page context so a wizard picker is not silently dropped.
-            def body = _rmBuildSettingsBody(appId, [(writtenKey): writtenValue], fullSchemaMap)
-            body.formAction = "update"
-            body.currentPage = page
-            body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, page, '["mainPage"]')
-            if (beforeCfg?.app?.version != null) body.version = beforeCfg.app.version.toString()
-            _rmPostSettings(appId, body, walkCache)
-        } else {
-            _rmUpdateAppSettings(appId, [(writtenKey): writtenValue], fullSchemaMap, walkCache)
         }
-        opResult.wrote = [(writtenKey): writtenValue]
+        if (pageSkipped) opResult.skipped = pageSkipped
+        def refusedSkip = pageSkipped.find { it.reason in ["not_in_schema", "not_offered"] }
+        if (refusedSkip) opResult.refused = refusedSkip
+        else opResult.wrote = [(writtenKey): writtenValue]
     } else if (operation == "click") {
         if (!(spec?.click instanceof Map) || !spec.click.name) {
             throw new IllegalArgumentException("walkStep operation='click' requires click={name, stateAttribute?}")
         }
         def btnName = spec.click.name?.toString()
         def stateAttr = spec.click.stateAttribute?.toString()
+        // Checked against the page just read; RM would run the handler of a button it does not show.
+        _rmRequireRenderedButton(beforeCfg?.configPage as Map, btnName, page)
         _rmClickAppButton(appId, btnName, stateAttr, page)
         opResult.clicked = [name: btnName, stateAttribute: stateAttr]
+        def effect = _rmWizardPrerequisites().buttons[btnName]
+        if (effect) opResult.note = effect
     } else if (operation == "done") {
         // Submit the page back to its parent with _action_previous=Done and every current setting: the
         // periodic trigger's description renders only after this. paramsForPage carries the route param;
@@ -6889,7 +6941,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
     // Value echo: did the stored value match the write (catches case normalization and flag coercion)?
     // A device picker stores null with its ids in deviceIdsForDeviceList, so compare those.
     def valueEcho = null
-    if (writtenKey != null) {
+    if (writtenKey != null && opResult.refused == null) {
         def storedValue = afterSettings[writtenKey]
         def schemaInputForKey = beforeSchema.inputs.find { it.name == writtenKey }
         if (_isDevicePickerType(schemaInputForKey?.type)) {
@@ -6956,7 +7008,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
     // steps must not write into a page RM could not build.
     def pageError = afterCfg?.configPage?.error
     def result = [
-        success: pageError == null && _rmHealthGatePass(health) && (operation != "write" || (valueEcho?.match != false)),
+        success: pageError == null && _rmHealthGatePass(health) && (operation != "write" || (valueEcho?.match != false && opResult.refused == null)),
         page: page,
         operation: operation,
         before: beforeSchema,
@@ -6995,6 +7047,16 @@ Map _rmWalkStep(Integer appId, Map spec) {
             renderHint = "The page '${page}' rendered with an error (${pageError}) alongside its inputs, so what it shows may not reflect what RM stored."
         }
         result.repairHints = (result.repairHints ?: []) + [renderHint + " Enter the page the way the wizard does (the href or button on its parent page) rather than by name."]
+    }
+    def refused = opResult.refused as Map
+    if (refused != null) {
+        result.error = (refused.reason == "not_offered" ?
+            "walkStep write refused: the '${refused.key}' picker does not offer ${refused.value} (it offers ${refused.offered}); nothing was written" :
+            "walkStep write refused: '${refused.key}' is not an input on page '${page}' (it shows ${refused.available}); nothing was written").toString()
+        def hint = refused.reason == "not_in_schema" ? _rmWizardPrerequisiteHint(page, writtenKey, beforeCfg?.configPage as Map, beforeStatus) : null
+        if (hint) result.repairHints = (result.repairHints ?: []) + [hint]
+    } else if (page == "periodic" && !hrefContext && operation != "navigate") {
+        result.repairHints = (result.repairHints ?: []) + [_rmWizardPrerequisiteHint(page, "", null, null)]
     }
     if (health.unreadable == true) {
         result.repairHints = (result.repairHints ?: []) + ["The post-op health probe could not be read -- no evidence of breakage either way (a transient failure, or the rule may since have been removed); the operation itself committed. Verify via hub_get_rule_health(${appId}).".toString()]
@@ -12572,12 +12634,16 @@ def _applyNativeAppEdit(args) {
             // A page-check refusal is decided before any settings or Done are submitted, but after the
             // walker opened the page to read its inputs, which runs the app's page code.
             def uiRefusal = (e instanceof IllegalStateException) && e.message?.startsWith("Hubitat's app page would refuse")
+            // An unrendered button or an unopened doActPage is refused before any POST.
+            def walkRefusal = (e instanceof IllegalArgumentException) &&
+                (e.message?.contains("so nothing was clicked") || e.message?.contains("Nothing was rendered or written"))
             return [
                 success: false,
                 appId: appId,
                 error: e.message ?: e.toString(),
                 backup: backup,
                 restoreHint: uiRefusal ? _rmPreflightRestoreHint(null, backup, "Refused before submitting: no settings were written and no Done was sent, so nothing needs to be restored. The page was still opened to read its inputs, which runs the app's page code.") :
+                    walkRefusal ? _rmPreflightRestoreHint(null, backup, "Refused before any write or click was sent, so nothing needs to be restored.") :
                     _rmBackupHint(backup)
             ]
         }
@@ -13114,7 +13180,8 @@ def _applyNativeAppEdit(args) {
                         _rmUpdateAppSettings(appId, pm.settings as Map, schema)
                         patchResults << [success: true, op: "settings", keys: (pm.settings as Map).keySet().toList()]
                     } else if (pm.containsKey("button")) {
-                        _rmClickAppButton(appId, pm.button.toString(), pm.stateAttribute?.toString(), pm.pageName?.toString())
+                        if (pm.pageName) _rmClickRenderedButton(appId, pm.button.toString(), pm.stateAttribute?.toString(), pm.pageName.toString())
+                        else _rmClickAppButton(appId, pm.button.toString(), pm.stateAttribute?.toString(), null)
                         patchResults << [success: true, op: "button", name: pm.button]
                     } else if (pm.containsKey("addTrigger")) {
                         patchResults << ([op: "addTrigger"] + _rmAddTrigger(appId, pm.addTrigger as Map))
@@ -13692,7 +13759,18 @@ def _applyNativeAppEdit(args) {
         }
 
         if (button) {
-            _rmClickAppButton(appId, button, args?.stateAttribute?.toString(), pageName)
+            // A page-context click is checked against the buttons that page renders; refused with no
+            // settings written, the call changed nothing.
+            if (pageName) {
+                try { _rmClickRenderedButton(appId, button, args?.stateAttribute?.toString(), pageName) }
+                catch (IllegalArgumentException notRendered) {
+                    if (settingsMap || !notRendered.message?.contains("so nothing was clicked")) throw notRendered
+                    return [success: false, appId: appId, error: notRendered.message, backup: backup,
+                            restoreHint: _rmPreflightRestoreHint(null, backup, "Refused before the click was sent, so nothing needs to be restored.")]
+                }
+            } else {
+                _rmClickAppButton(appId, button, args?.stateAttribute?.toString(), pageName)
+            }
             result.buttonClicked = button
 
             // One hasAll commits the trigger but leaves RM's "Conditional Trigger?" prompt (isCondTrig.<n>).
