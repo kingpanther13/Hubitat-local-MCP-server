@@ -1704,6 +1704,32 @@ class TestRunner:
         "button":   ("E2E_PERM_Button",   "Virtual Button"),
         "motion":   ("E2E_PERM_Motion",   "Virtual Motion Sensor"),
         "omni":     ("E2E_PERM_Omni",     "Virtual Omni Sensor"),
+        "garage":   ("E2E_PERM_Garage",   "Virtual Garage Door Controller"),
+        "valve":    ("E2E_PERM_Valve",    "Virtual Valve"),
+        "blind":    ("E2E_PERM_Blind",    "Virtual Blind"),
+        "player":   ("E2E_PERM_Player",   "Virtual Player"),
+        "thermostat_a": ("E2E_PERM_Thermostat_A", "Virtual Thermostat"),
+        "thermostat_b": ("E2E_PERM_Thermostat_B", "Virtual Thermostat"),
+        "tone":     ("E2E_PERM_Tone",     "BAT_E2E_KEEP Virtual Tone"),
+    }
+
+    # User drivers for the fixtures no built-in virtual driver covers (none has Tone): installed from
+    # tests/fixtures before their first device, never deleted (the purge reclaims only throwaway code).
+    PERM_FIXTURE_DRIVERS: ClassVar[dict[str, str]] = {
+        "BAT_E2E_KEEP Virtual Tone": "e2e-tone-driver.groovy",
+    }
+
+    # Built-in apps that RM's app-driven actions drive (label, app type name, hub_set_native_app
+    # appType). RM lists those actions only while an instance of the app type exists. Found by label,
+    # else created and configured on first use, never deleted: the scene with E2E_PERM_Switch_A
+    # captured (its activator device carries the scene's label); the controller on
+    # E2E_PERM_Thermostat_A with one temperature sensor; a Time Periods scheduler on
+    # E2E_PERM_Thermostat_A; a Hub Modes scheduler on E2E_PERM_Thermostat_B with a Day row.
+    BUILTIN_APP_FIXTURES: ClassVar[dict[str, tuple[str, str, str]]] = {
+        "scene": (f"{SCAFFOLD_PREFIX}Scene", "Scene-1.2", "scene"),
+        "therm_ctl": (f"{SCAFFOLD_PREFIX}ThermCtl", "Thermostat Controller 2.0", "thermostat_controller"),
+        "sched_time": (f"{SCAFFOLD_PREFIX}ThermSched_Time", "Thermostat Scheduler 2.0", "thermostat_scheduler"),
+        "sched_modes": (f"{SCAFFOLD_PREFIX}ThermSched_Modes", "Thermostat Scheduler 2.0", "thermostat_scheduler"),
     }
 
     # PERMANENT hub variables for tests that only need a variable to exist (create/delete is not their
@@ -1843,6 +1869,8 @@ class TestRunner:
         if key in self._perm_fixture_ids:
             return self._perm_fixture_ids[key]
 
+        if driver_name in self.PERM_FIXTURE_DRIVERS:
+            self._ensure_fixture_driver(driver_name)
         type_id = self._driver_type_id(driver_name)
         created = self.client.call_tool("hub_manage_devices", {
             "tool": "hub_create_device",
@@ -1860,6 +1888,22 @@ class TestRunner:
               "permanent, non-child; it will be reused by every later run")
         self._perm_fixture_ids[key] = str(dev_id)
         return self._perm_fixture_ids[key]
+
+    def _ensure_fixture_driver(self, name: str) -> None:
+        """Install a permanent fixture's user driver from tests/fixtures unless the hub already has it."""
+        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_drivers", "args": {}})
+        # An unreadable list is not "absent": installing then would add a duplicate permanent driver.
+        assert isinstance(listed.get("drivers"), list), \
+            f"user driver list unreadable -- refusing to install '{name}' a second time: {listed}"
+        if any(d.get("name") == name and d.get("namespace") == "mcptest" for d in listed["drivers"]):
+            return
+        source = (Path(__file__).resolve().parent / "fixtures" / self.PERM_FIXTURE_DRIVERS[name]).read_text(encoding="utf-8")
+        created = self.client.call_tool("hub_manage_code", {"tool": "hub_create_driver", "args": {"source": source, "confirm": True}})
+        assert created.get("success") is True and created.get("driverId"), f"installing the '{name}' fixture driver failed: {created}"
+        # The type-id cache predates the driver; the next lookup reloads the catalog.
+        self._driver_type_ids.clear()
+        self._driver_buckets.clear()
+        print(f"    [PERM FIXTURE] installed driver '{name}' (id {created['driverId']}) -- reused by later runs")
 
     def _driver_type_id(self, driver_name: str) -> str:
         """Resolve a built-in driver's type id by name (hub-specific, so never hardcoded)."""
@@ -6243,6 +6287,7 @@ class TestRunner:
             # Refusals decided from the arguments come before the backup decision, so the envelope has
             # no backup at all (with backups off, a decision taken would still leave a map).
             sw_id = int(self.get_test_switch_id())
+            num_var = self.PERM_VARIABLES["sv_number"][0]  # named only: each refusal comes before any variable read
             for args, needles in (
                 ({"addTrigger": {"capability": "Location Event"}}, ("Location Event needs state (one of",)),
                 ({"addTrigger": {"capability": "Location Event", "state": "E2E no such event"}},
@@ -6260,6 +6305,44 @@ class TestRunner:
                 # The same check on a trigger's devices: RM's Garage door picker lists garageDoorControl devices.
                 ({"addTrigger": {"capability": "Garage door", "deviceIds": [sw_id], "state": "open"}},
                  (f"device {sw_id} (", "does not have the garageDoorControl capability")),
+                # The device actions' pickers list only devices with their capability.
+                ({"addAction": {"capability": "garageDoor", "action": "close", "deviceIds": [sw_id]}},
+                 (f"device {sw_id} (", "does not have the GarageDoorControl capability")),
+                ({"addAction": {"capability": "valve", "action": "open", "deviceIds": [sw_id]}},
+                 (f"device {sw_id} (", "does not have the Valve capability")),
+                ({"addAction": {"capability": "tone", "deviceIds": [sw_id]}},
+                 (f"device {sw_id} (", "does not have the Tone capability")),
+                # One-of fields: exactly one source of the value.
+                ({"addAction": {"capability": "blind", "action": "setTilt", "deviceIds": [sw_id], "tilt": 40,
+                                "tiltVariable": num_var}},
+                 ("blind.setTilt takes one of tilt, tiltVariable, not tilt and tiltVariable",)),
+                ({"addAction": {"capability": "blind", "action": "setTilt", "deviceIds": [sw_id]}},
+                 ("blind.setTilt requires one of tilt, tiltVariable",)),
+                ({"addAction": {"capability": "musicPlayer", "deviceIds": [sw_id], "command": "set volume",
+                                "volume": 30, "volumeVariable": num_var}},
+                 ("musicPlayer action takes one of volume, volumeVariable, not volume and volumeVariable",)),
+                ({"addAction": {"capability": "thermostatScheduler", "action": "setThermSched",
+                                "deviceIds": [sw_id], "schedulerId": 1}},
+                 ("thermostatScheduler.setThermSched takes one of deviceIds, schedulerId, not deviceIds and schedulerId",)),
+                ({"addAction": {"capability": "thermostatScheduler", "action": "setThermSched"}},
+                 ("thermostatScheduler.setThermSched requires one of deviceIds, schedulerId",)),
+                # Set Mode Setpoints is built in RM's own setpoint table editor, which the catalog leaves out.
+                ({"addAction": {"capability": "thermostatScheduler", "action": "setSchedMode", "deviceIds": [sw_id]}},
+                 ("Unknown thermostatScheduler action 'setSchedMode'",)),
+                # A return value RM cannot show as a row.
+                ({"addAction": {"capability": "returnValue", "type": "String", "variable": num_var}},
+                 ("returnValue: Rule Machine returns a String only as a literal value",)),
+                ({"addAction": {"capability": "returnValue", "type": "Integer", "value": 0}},
+                 ("returnValue: Rule Machine shows no row for a zero or empty Integer value",)),
+                ({"addAction": {"capability": "returnValue", "type": "Boolean", "value": "maybe"}},
+                 ("returnValue: a Boolean value is true or false (got 'maybe')",)),
+                # A Simple Conditional Action's picker leaves out Mode, and IF rows take no condition.
+                ({"addAction": {"capability": "log", "message": "m", "condition": {"capability": "Mode"}}},
+                 ("log.condition: Rule Machine does not offer a Mode condition in a Simple Conditional Action",)),
+                ({"addAction": {"capability": "ifThen", "expression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw_id], "state": "on"}]},
+                    "condition": {"capability": "Switch", "deviceIds": [sw_id], "state": "on"}}},
+                 ("ifThen cannot carry a condition",)),
             ):
                 refused = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                     "args": {"appId": app_id, "confirm": True, **args}})
@@ -6460,8 +6543,9 @@ class TestRunner:
         # rules per AGENTS.md: the classic wizard re-sends the whole rule page on every
         # submitOnChange POST, so per-edit cost grows with rule size. Target A is an empty shell -- a
         # runRule target only has to EXIST, and a pause target only has to be a rule. Target B also
-        # carries the three actions the modifyAction refusals below edit.
+        # carries the four actions the modifyAction refusals and edits below change.
         button = self._ensure_perm_fixture("button")
+        blind = self._ensure_perm_fixture("blind")
         var_name = self._ensure_perm_variables("sv_number")["sv_number"]
         modes = self.client.call_tool("hub_list_modes").get("modes") or []
         assert modes, "no hub mode for the modifyAction mode-id refusal"
@@ -6476,6 +6560,7 @@ class TestRunner:
                 {"capability": "setVariable", "variable": var_name, "value": 1},
                 {"capability": "button", "action": "push", "deviceIds": [int(button)], "buttonNumber": 1,
                  "operation": "HOLD"},
+                {"capability": "blind", "action": "setTilt", "deviceIds": [int(blind)], "tilt": 40},
             ]})
             sentinel_msg = "E2E order sentinel post-action"
             caller_id, caller_create = self._create_native_rule("MaCaller", {
@@ -6589,8 +6674,9 @@ class TestRunner:
                              if str(k).startswith(prefix) and str(k)[len(prefix):].isdigit()
                              and self._setting_holds_exact(v, wanted)), None)
             mode_idx, var_idx, btn_idx = _tb_slot("mode.", mode_id), _tb_slot("xVarV.", var_name), _tb_slot("pushButton.", button)
-            assert None not in (mode_idx, var_idx, btn_idx), \
-                f"target B's mode, setVariable and button actions did not persist: {tb_settings}"
+            tilt_idx = _tb_slot("blindTilt.", blind)
+            assert None not in (mode_idx, var_idx, btn_idx, tilt_idx), \
+                f"target B's mode, setVariable, button and blind actions did not persist: {tb_settings}"
             assert tb_settings.get(f"pushButOp.{btn_idx}") == "hold", \
                 f"addAction wrote the button operation as given instead of RM's spelling: {tb_settings}"
             missing_var = f"{PREFIX}NoSuchVariable"
@@ -6616,6 +6702,20 @@ class TestRunner:
             op_after = self._get_persisted_rule_config(target_b).get("settings") or {}
             assert op_after.get(f"pushButOp.{btn_idx}") == "push", \
                 f"modifyAction wrote the button operation as given instead of RM's spelling: {op_after}"
+
+            # A literal tilt edited to a variable source: RM's toggle (uVar) and the variable (xVar).
+            tilt_mod = self._set_rule(target_b, {"modifyAction": {"index": tilt_idx, "mods": {"tiltVariable": var_name}}},
+                                      strict=True)
+            assert tilt_mod.get("modifiedIndex") == tilt_idx and tilt_mod.get("verified") is True, \
+                f"the blind tilt edit did not apply in place: {tilt_mod}"
+            tilt_after = self._get_persisted_rule_config(target_b).get("settings") or {}
+            assert self._setting_text(tilt_after.get(f"uVar.{tilt_idx}")) == "true" \
+                and tilt_after.get(f"xVar.{tilt_idx}") == var_name, \
+                f"modifyAction did not switch the tilt to {var_name}: {tilt_after}"
+            tilt_row = self._action_row_texts(target_b).get(tilt_idx)
+            assert tilt_row and re.fullmatch(
+                rf"Tilt Blinds: {re.escape(self.PERM_FIXTURES['blind'][0])} to {re.escape(var_name)}\(\S+\)", tilt_row), \
+                f"the edited tilt row does not render the variable: {tilt_row!r}"
 
             # Keep one live >1 ruleId request: a successful call proves the batch envelope and
             # exact echoed ids; a platform load-limiter refusal proves the parsed array reached
@@ -7819,6 +7919,111 @@ class TestRunner:
         """The rule's rendered page, for landed/never-landed markers. The render, not the settings map,
         because a removed action's settings are not guaranteed to be purged."""
         return json.dumps(self._get_persisted_rule_config(app_id).get("page") or {})
+
+    @staticmethod
+    def _setting_text(value: Any) -> str:
+        """A stored scalar as text; booleans in the lower case RM's string form uses."""
+        return str(value).lower() if isinstance(value, bool) else str(value)
+
+    @staticmethod
+    def _setting_id_set(value: Any) -> set[str]:
+        """The ids a stored picker holds: an {id: label} device map, a list, or one value."""
+        if value is None:
+            return set()
+        if isinstance(value, dict):
+            return {str(k) for k in value}
+        if isinstance(value, (list, tuple, set)):
+            return {str(v) for v in value}
+        return {str(value)}
+
+    def _action_row_texts(self, app_id: Any) -> dict[int, str]:
+        """Each action's row as RM's actions page renders it, keyed by action index, whitespace collapsed."""
+        cfg = self.client.call_tool("hub_read_apps_code", {
+            "tool": "hub_get_app_config", "args": {"appId": app_id, "pageName": "selectActions"}})
+        assert cfg.get("success") is True, f"selectActions read failed for rule {app_id}: {cfg}"
+        rows: dict[int, str] = {}
+        for sect in ((cfg.get("page") or {}).get("sections") or []):
+            for row in sect.get("embeddedActions") or []:
+                m = re.fullmatch(r"(\d+)\.\d+\.\w+", str(row.get("name") or ""))
+                if m:
+                    rows[int(m.group(1))] = " ".join(str(row.get("description") or "").split())
+        return rows
+
+    def _assert_catalog_adds(self, app_id: Any, results: Any, expected: list[dict]) -> list[int]:
+        """Assert each added catalog row against its expectation and return the rows' indices.
+
+        An expectation names `stored` settings (a list or set compares the ids a picker holds, any
+        other value the stored text), `unset` keys, and the rendered `text` (a string, a compiled
+        pattern the whole row must match, or None to leave the row text unchecked)."""
+        assert isinstance(results, list) and len(results) == len(expected), \
+            f"expected {len(expected)} action results, got: {results}"
+        for result, want in zip(results, expected, strict=True):
+            assert result.get("success") is True and not result.get("partial") \
+                and result.get("rolledBack") is False and result.get("actionIndex") is not None, \
+                f"{want['spec']} did not commit cleanly: {result}"
+        settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+        texts = self._action_row_texts(app_id)
+        indices = [int(r["actionIndex"]) for r in results]
+        for idx, want in zip(indices, expected, strict=True):
+            for key, value in (want.get("stored") or {}).items():
+                got = settings.get(f"{key}.{idx}")
+                ok = self._setting_id_set(got) == {str(v) for v in value} if isinstance(value, (list, set)) \
+                    else self._setting_text(got) == str(value)
+                assert ok, f"{want['spec']}: {key}.{idx} should hold {value!r}, got {got!r}"
+            for key in want.get("unset") or []:
+                assert settings.get(f"{key}.{idx}") is None, \
+                    f"{want['spec']}: {key}.{idx} should be unset, got {settings.get(f'{key}.{idx}')!r}"
+            text, row = want.get("text"), texts.get(idx)
+            if isinstance(text, re.Pattern):
+                assert row is not None and text.fullmatch(row), f"{want['spec']}: row {idx} renders {row!r}"
+            elif text is not None:
+                assert row == " ".join(text.split()), f"{want['spec']}: row {idx} renders {row!r}, wanted {text!r}"
+        return indices
+
+    def _assert_rm_rollback(self, app_id: Any, spec: dict, needles: tuple[str, ...]) -> str:
+        """An add refused only once RM's editor showed its choices: rolled back, naming them. Returns the error."""
+        refused = self._rm_stop_call(app_id, {"addAction": spec})
+        error = str(refused.get("error", ""))
+        assert refused.get("success") is False and refused.get("rolledBack") is True \
+            and all(n in error for n in needles), \
+            f"{spec} should be refused and rolled back naming {needles}: {refused}"
+        return error
+
+    def _assert_picker_gate(self, app_id: Any, spec: dict, sub_type: str) -> None:
+        """RM's picker lists an app-driven action only while the hub has what it drives."""
+        self._assert_rm_rollback(app_id, spec, (
+            f"Rule Machine's action picker on this hub does not offer '{spec['capability']}' ({sub_type})",
+            "This hub's picker offers: "))
+
+    def _assert_rule_clean(self, app_id: Any) -> None:
+        """Healthy, with no settings row outside the rule's actions (a refused add left nothing behind)."""
+        health = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_get_rule_health", "args": {"appId": app_id}})
+        assert health.get("ok") is not False and not health.get("orphanedActionRows"), \
+            f"the refused adds left rule {app_id} unhealthy or with leftover rows: {health}"
+
+    def _installed_app_rows(self) -> list[dict]:
+        rows: list[dict] = []
+        cursor: str | None = ""
+        while cursor is not None:
+            page = self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_list_apps", "args": {"scope": "instances", "cursor": cursor}})
+            assert isinstance(page.get("apps"), list), f"hub_list_apps(instances) failed: {page}"
+            rows += [a for a in page["apps"] if isinstance(a, dict)]
+            cursor = page.get("nextCursor")
+        return rows
+
+    @staticmethod
+    def _app_row_by_label(rows: list[dict], label: str) -> dict | None:
+        # The listing can append RM's status decoration, e.g. " (Paused)".
+        return next((r for r in rows if str(r.get("name") or "") == label
+                     or str(r.get("name") or "").startswith(f"{label} (")), None)
+
+    def _mode_ids(self, *names: str) -> list[str]:
+        modes = {str(m.get("name")): str(m.get("id")) for m in (self.client.call_tool("hub_list_modes").get("modes") or [])}
+        missing = [n for n in names if n not in modes]
+        assert not missing, f"this hub has no {missing} mode: {modes}"
+        return [modes[n] for n in names]
 
     def _rm_call_soft(self, args: dict, strict: bool = False, recover_504: bool = False) -> Any:
         """Direct hub_set_rule call preserving its full response contract."""
@@ -10458,6 +10663,344 @@ class TestRunner:
             self._delete_native(app_id)
 
     @test("native_apps")
+    def test_rm_action_device_catalog(self) -> None:
+        # The device-driven catalog entries on their permanent virtual devices: what each row stores
+        # and the text RM renders for it. Two small rules (doors, media) keep each wizard page small.
+        # Their refusals that need no such device are in test_set_rule_failloud_wrong_trigger_shape;
+        # the in-place tilt edit is in test_set_rule_modifyaction_retarget.
+        dev = {k: self._ensure_perm_fixture(k) for k in ("garage", "valve", "blind", "tone", "player")}
+        name = {k: self.PERM_FIXTURES[k][0] for k in dev}
+        var = self._ensure_perm_variables("sv_number")["sv_number"]
+        var_value = rf"{re.escape(var)}\(\S+\)"
+        track = "http://x/a.mp3"
+
+        doors = [
+            {"spec": {"capability": "garageDoor", "action": "close", "deviceIds": [int(dev["garage"])]},
+             "stored": {"garageRL": "true", "garageOpenClose": [dev["garage"]]}, "text": f"Close: {name['garage']}"},
+            {"spec": {"capability": "garageDoor", "action": "open", "deviceIds": [int(dev["garage"])]},
+             "stored": {"garageRL": "false", "garageOpenClose": [dev["garage"]]}, "text": f"Open: {name['garage']}"},
+            {"spec": {"capability": "valve", "action": "open", "deviceIds": [int(dev["valve"])]},
+             "stored": {"valveRL": "false", "valveOpenClose": [dev["valve"]]}, "text": f"Open: {name['valve']}"},
+            {"spec": {"capability": "valve", "action": "close", "deviceIds": [int(dev["valve"])]},
+             "stored": {"valveRL": "true", "valveOpenClose": [dev["valve"]]}, "text": f"Close: {name['valve']}"},
+            {"spec": {"capability": "tone", "deviceIds": [int(dev["tone"])]},
+             "stored": {"toner": [dev["tone"]]}, "text": f"Beep: {name['tone']}"},
+        ]
+        player = int(dev["player"])
+        media = [
+            {"spec": {"capability": "blind", "action": "setTilt", "deviceIds": [int(dev["blind"])], "tilt": 40},
+             "stored": {"blindTilt": [dev["blind"]], "tiltLevel": "40"}, "unset": ["uVar"],
+             "text": f"Tilt Blinds: {name['blind']} to 40"},
+            {"spec": {"capability": "blind", "action": "setTilt", "deviceIds": [int(dev["blind"])], "tiltVariable": var},
+             "stored": {"blindTilt": [dev["blind"]], "uVar": "true", "xVar": var},
+             "text": re.compile(rf"Tilt Blinds: {re.escape(name['blind'])} to {var_value}")},
+            {"spec": {"capability": "musicPlayer", "deviceIds": [player], "command": "set volume", "volume": 30},
+             "stored": {"player": [dev["player"]], "playerCommand": "set volume", "playerLevel": "30"},
+             "text": f"{name['player']} --> Set Level to 30"},
+            {"spec": {"capability": "musicPlayer", "deviceIds": [player], "command": "play track", "track": track},
+             "stored": {"playerCommand": "play track", "playerTrack": track},
+             "text": f"{name['player']}: Play Track: '{track}'"},
+            {"spec": {"capability": "musicPlayer", "deviceIds": [player], "command": "play text", "text": "hello"},
+             "stored": {"playerCommand": "play text", "playerText": "hello"},
+             "text": f"{name['player']}: Play Text: 'hello'"},
+            {"spec": {"capability": "musicPlayer", "deviceIds": [player], "command": "set volume", "volumeVariable": var},
+             "stored": {"playerCommand": "set volume", "uVar": "true", "xVar": var},
+             "text": re.compile(rf"{re.escape(name['player'])} --> Set Level to {var_value}")},
+        ]
+        for suffix, expected in (("RmActDevDoors", doors), ("RmActDevMedia", media)):
+            app_id, created = self._create_native_rule(suffix, {"addActions": [w["spec"] for w in expected]},
+                                                       return_result=True)
+            try:
+                created = self._require_create_envelope(created, suffix)
+                assert created.get("verified") is True, f"{suffix} create was not verified: {created}"
+                self._assert_catalog_adds(app_id, created.get("actions"), expected)
+                if suffix == "RmActDevMedia":
+                    # RM offers the restoring commands only for a player that supports them; this one does not.
+                    before = self._action_row_texts(app_id)
+                    self._assert_rm_rollback(app_id, {"capability": "musicPlayer", "deviceIds": [player],
+                                                      "command": "play track and restore", "track": track},
+                                             ("musicPlayer: Rule Machine does not offer 'play track and restore' "
+                                              "for command on this hub; it offers: ",))
+                    assert self._action_row_texts(app_id) == before, "the refused add changed the rule's rows"
+                    self._assert_rule_clean(app_id)
+            finally:
+                self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_action_room_lights(self) -> None:
+        # Room Lights actions. RM lists them only while a Room Lights instance exists, so a hub without
+        # one is refused first; then the permanent instance is found by label or created by appType.
+        label = f"{SCAFFOLD_PREFIX}RoomLights"
+        rows = self._installed_app_rows()
+        app_id = self._create_native_rule("RmActRoomLights")
+        try:
+            if not any(r.get("type") == "Room Lights" for r in rows):
+                self._assert_picker_gate(app_id, {"capability": "roomLights", "action": "turnOff", "roomLightsIds": [1]},
+                                         "getRLTurnOff")
+                self._assert_rule_clean(app_id)
+            fixture = self._app_row_by_label(rows, label)
+            if fixture is not None:
+                rl = str(fixture["id"])
+            else:
+                cw = self._soft_write(
+                    lambda: self.client.call_tool("hub_manage_native_rules_and_apps", {
+                        "tool": "hub_set_native_app", "args": {"appType": "room_lighting", "name": label, "confirm": True}}),
+                    lambda: (self._app_row_by_label(self._installed_app_rows(), label) or {}).get("id"),
+                    "Room Lights fixture create")
+                if cw["relayDropped"]:
+                    assert cw["committed"], "the Room Lights fixture create was lost to a relay 504 and never committed"
+                    rl = str(cw["evidence"])
+                else:
+                    rl = str(cw["response"].get("appId") or "")
+                    assert rl, f"the Room Lights fixture create returned no appId: {cw['response']}"
+                print(f"    [PERM FIXTURE] created '{label}' (app {rl}) -- reused by later runs")
+            added = self._set_rule(app_id, {"addActions": [
+                {"capability": "roomLights", "action": "activate", "roomLightsId": int(rl)},
+                {"capability": "roomLights", "action": "activate", "roomLightsId": int(rl), "useConditions": True},
+                {"capability": "roomLights", "action": "turnOff", "roomLightsIds": [int(rl)]},
+            ]}, strict=True)
+            assert added.get("verified") is True, f"the Room Lights adds were not verified: {added}"
+            self._assert_catalog_adds(app_id, added.get("actions"), [
+                {"spec": "roomLights.activate", "stored": {"actRL": rl, "modeRL": "X"}, "unset": ["forceRL"],
+                 "text": f"Activate {label} (Force)"},
+                {"spec": "roomLights.activate useConditions", "stored": {"actRL": rl, "forceRL": "true"},
+                 "text": f"Activate {label} (Conditions)"},
+                {"spec": "roomLights.turnOff", "stored": {"actOffRL": [rl]}, "text": f"Turn Off Room Lights:\n   {label}"},
+            ])
+            # The instance defines no modes or periods, and 99999 is no instance.
+            before = self._action_row_texts(app_id)
+            self._assert_rm_rollback(app_id, {"capability": "roomLights", "action": "activate", "roomLightsId": int(rl),
+                                              "modeOrPeriod": "1"},
+                                     ("roomLights.activate: Rule Machine does not offer '1' for modeOrPeriod on this hub; it offers: X",))
+            error = self._assert_rm_rollback(app_id, {"capability": "roomLights", "action": "turnOff",
+                                                      "roomLightsIds": [int(rl), 99999]},
+                                             ("roomLights.turnOff: Rule Machine does not offer 99999 for roomLightsIds on this hub; it offers: ",))
+            assert rl in error.split("it offers: ", 1)[1], f"the refusal should list the fixture {rl}: {error}"
+            assert self._action_row_texts(app_id) == before, "the refused adds changed the rule's rows"
+            self._assert_rule_clean(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    def _ensure_builtin_app_fixture(self, rows: list[dict], key: str, configure: list[dict]) -> str:
+        """A BUILTIN_APP_FIXTURES app's id: found by label, else created by appType and configured with
+        `configure` (hub_set_native_app edits, in order). A half-built instance is deleted, not kept,
+        so the next run does not find a fixture that is missing part of its setup."""
+        label, _, app_type = self.BUILTIN_APP_FIXTURES[key]
+        found = self._app_row_by_label(rows, label)
+        if found is not None:
+            return str(found["id"])
+        created = self.client.call_tool("hub_manage_native_rules_and_apps", {
+            "tool": "hub_set_native_app", "args": {"appType": app_type, "name": label, "confirm": True}})
+        app_id = created.get("appId")
+        # The thermostat apps take their name only once their thermostat is set, so their create
+        # reports the label unverified; configure ends by writing it as origLabel.
+        assert app_id and (created.get("success") is True or app_type != "scene"), \
+            f"creating the {label} fixture ({app_type}) failed: {created}"
+        try:
+            for step in configure:
+                done = self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_set_native_app", "args": {"appId": int(app_id), "confirm": True, **step}})
+                assert done.get("success") is True, f"configuring the {label} fixture: {step} failed: {done}"
+        except BaseException:
+            try:
+                self.client.call_tool("hub_manage_native_rules_and_apps", {
+                    "tool": "hub_delete_native_app", "args": {"appId": int(app_id), "force": True, "confirm": True}})
+            except (McpError, McpToolError, requests.HTTPError) as exc:
+                print(f"    [WARN] could not delete the half-built {label} fixture (app {app_id}): {exc}")
+            raise
+        print(f"    [PERM FIXTURE] created '{label}' ({app_type}, app {app_id}) -- reused by later runs")
+        return str(app_id)
+
+    @test("native_apps")
+    def test_rm_action_scene(self) -> None:
+        # Groups and Scenes actions. RM lists them only while a scene exists, so a hub without one is
+        # refused first; then the permanent scene is found by label or created and captured.
+        label, app_type, _ = self.BUILTIN_APP_FIXTURES["scene"]
+        switch = self._ensure_perm_fixture("switch_a")
+        rows = self._installed_app_rows()
+        day, night = self._mode_ids("Day", "Night")
+        app_id = self._create_native_rule("RmActScene")
+        try:
+            if not any(r.get("type") == app_type for r in rows):
+                self._assert_picker_gate(app_id, {"capability": "scene", "action": "activate", "sceneIds": [1]},
+                                         "getActivateScene")
+                self._assert_rule_clean(app_id)
+            scene_app = self._ensure_builtin_app_fixture(rows, "scene", [
+                {"settings": {"switches": [int(switch)]}}, {"button": "captureBtn"}])
+            # sceneIds are the scenes' activator devices, which carry the scene's name.
+            listed = self.client.call_tool("hub_list_devices", {"scope": "all", "labelFilter": label})
+            activators = [str(d["id"]) for d in (listed.get("devices") or []) if d.get("label") == label]
+            assert len(activators) == 1, f"expected one activator device labelled {label}: {listed}"
+            scene = activators[0]
+            added = self._set_rule(app_id, {"addActions": [
+                {"capability": "scene", "action": "activate", "sceneIds": [int(scene)]},
+                {"capability": "scene", "action": "activatePerMode", "perMode": {"Day": [int(scene)], "Night": [int(scene)]}},
+            ]}, strict=True)
+            assert added.get("verified") is True, f"the scene adds were not verified: {added}"
+            self._assert_catalog_adds(app_id, added.get("actions"), [
+                {"spec": "scene.activate", "stored": {"sceneAct": [scene]}, "text": f"Activate scenes: {label}"},
+                {"spec": "scene.activatePerMode", "stored": {"sceneModes": [day, night], f"scene{day}": [scene], f"scene{night}": [scene]},
+                 "text": f"Scenes per mode:\n\tDay: {label}\n\tNight: {label}"},
+            ])
+            # The scene's app id is not what the picker lists: its activator device is.
+            before = self._action_row_texts(app_id)
+            error = self._assert_rm_rollback(app_id, {"capability": "scene", "action": "activate", "sceneIds": [int(scene_app)]},
+                                             (f"scene.activate: Rule Machine does not offer {scene_app} for sceneIds on this hub; it offers: ",))
+            assert scene in error.split("it offers: ", 1)[1], f"the refusal should list the activator {scene}: {error}"
+            assert self._action_row_texts(app_id) == before, "the refused add changed the rule's rows"
+            self._assert_rule_clean(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
+    def test_rm_action_thermostat_apps(self) -> None:
+        # Thermostat Controller and Thermostat Scheduler actions. RM lists each only while an instance
+        # of its app exists, so a hub without one is refused first; then the permanent controller and
+        # schedulers are found by label or created. The scheduler is picked by its thermostat
+        # (deviceIds, RM then fills the scheduler) or by schedulerId (RM fills the thermostat).
+        t1, t2 = self._ensure_perm_fixture("thermostat_a"), self._ensure_perm_fixture("thermostat_b")
+        t1_name, t2_name = self.PERM_FIXTURES["thermostat_a"][0], self.PERM_FIXTURES["thermostat_b"][0]
+        temp_a, temp_b = self.get_test_temperature_ids()
+        var = self._ensure_perm_variables("sv_number")["sv_number"]
+        day, night = self._mode_ids("Day", "Night")
+        rows = self._installed_app_rows()
+        types = {r.get("type") for r in rows}
+        rule_a = self._create_native_rule("RmActThermA")
+        rule_b = None
+        try:
+            no_scheduler = not types & {"Thermostat Scheduler 2.0", "Thermostat Scheduler Legacy"}
+            if no_scheduler:
+                self._assert_picker_gate(rule_a, {"capability": "thermostatScheduler", "action": "setThermSched",
+                                                  "deviceIds": [int(t1)]}, "getSetThermostatScheduler")
+            if "Thermostat Controller 2.0" not in types:
+                self._assert_picker_gate(rule_a, {"capability": "thermostatController", "controllerId": 1,
+                                                  "deviceIds": [int(temp_a)]}, "getSetThermController")
+                self._assert_rule_clean(rule_a)
+            elif no_scheduler:
+                self._assert_rule_clean(rule_a)
+            def scheduler(key: str, thermostat: str, schedule: str, extra: list[dict]) -> str:
+                return self._ensure_builtin_app_fixture(rows, key, [
+                    {"settings": {"therm": [int(thermostat)]}}, {"settings": {"schedTypeL": schedule}}, *extra,
+                    {"settings": {"origLabel": self.BUILTIN_APP_FIXTURES[key][0]}}])
+            tc_name = self.BUILTIN_APP_FIXTURES["therm_ctl"][0]
+            # The sensors are a separate write: written together with therm they are skipped.
+            tc = self._ensure_builtin_app_fixture(rows, "therm_ctl", [
+                {"settings": {"therm": [int(t1)]}}, {"settings": {"tempSensors": [int(temp_a)]}},
+                {"settings": {"origLabel": tc_name}}])
+            ts = scheduler("sched_time", t1, "Time Periods", [])
+            # A Day row through the scheduler's own table editor, as the UI fills it: Add Mode, pick the
+            # mode, open the first row's heat cell, set it, Update.
+            tm = scheduler("sched_modes", t2, "Hub Modes", [
+                {"button": "addMode"}, {"settings": {"perX": [day]}}, {"button": "1", "stateAttribute": "tsH"},
+                {"settings": {"tempX": 68}}, {"button": "update"}])
+            on_t1 = f"Thermostat Scheduler for {t1_name}: "
+
+            added = self._set_rule(rule_a, {"addActions": [
+                {"capability": "thermostatController", "controllerId": int(tc), "deviceIds": [int(temp_a), int(temp_b)]},
+                {"capability": "thermostatScheduler", "action": "setEcoMode", "deviceIds": [int(t1)], "ecoMode": "on"},
+                {"capability": "thermostatScheduler", "action": "setEcoOffset", "schedulerId": int(ts), "ecoOffset": 2.5},
+                {"capability": "thermostatScheduler", "action": "setEcoOffset", "deviceIds": [int(t1)], "ecoOffsetVariable": var},
+                {"capability": "thermostatScheduler", "action": "setHold", "schedulerId": int(ts), "hold": "off"},
+            ]}, strict=True)
+            assert added.get("verified") is True, f"the thermostat app adds were not verified: {added}"
+            self._assert_catalog_adds(rule_a, added.get("actions"), [
+                {"spec": "thermostatController", "stored": {"thisApp": tc, "tcSensors": [temp_a, temp_b]},
+                 "text": f"Set Sensors for {tc_name} to {SCAFFOLD_PREFIX}Temp_A, {SCAFFOLD_PREFIX}Temp_B"},
+                {"spec": "setEcoMode by thermostat",
+                 "stored": {"thisTherm": [t1], "thermSched": "setEcoMode", "ecoMode": "on", "thisApp": ts},
+                 "text": f"{on_t1}EcoMode on"},
+                {"spec": "setEcoOffset by scheduler",
+                 "stored": {"tMethod": "true", "thisApp": ts, "thermSched": "setEcoOffset", "ecoOffset": "2.5"},
+                 "text": f"{on_t1}EcoMode Offset 2.5"},
+                # RM's own row for a variable offset prints its settings map, so only the stored keys are pinned.
+                {"spec": "setEcoOffset from a variable", "stored": {"uVar": "true", "xVar": var}, "text": None},
+                {"spec": "setHold by scheduler", "stored": {"thermSched": "setHold", "setHold": "off"},
+                 "text": f"{on_t1}Set Hold off"},
+            ])
+
+            rule_b = self._create_native_rule("RmActThermB")
+            added = self._set_rule(rule_b, {"addActions": [
+                {"capability": "thermostatScheduler", "action": "setTimeAway", "deviceIds": [int(t1)],
+                 "awayHeat": 60, "awayCoolVariable": var},
+                {"capability": "thermostatScheduler", "action": "setSchedDay", "deviceIds": [int(t1)], "day": 0},
+                {"capability": "thermostatScheduler", "action": "setThermSched", "deviceIds": [int(t1)]},
+            ]}, strict=True)
+            assert added.get("verified") is True, f"the by-time scheduler adds were not verified: {added}"
+            self._assert_catalog_adds(rule_b, added.get("actions"), [
+                {"spec": "setTimeAway", "stored": {"timeAwayHeat": "60", "uVar3": "true", "xVar3": var},
+                 "text": re.compile(rf"{re.escape(on_t1)}Days/Times Away: Heat 60\.0 Cool {re.escape(var)}\(\S+\)")},
+                {"spec": "setSchedDay", "stored": {"dayN": "0"}, "text": f"{on_t1}Activate Scheduled Setpoints for Monday"},
+                {"spec": "setThermSched", "stored": {"thermSched": "setThermSched"}, "text": f"{on_t1}Activate Scheduled Setpoints"},
+            ])
+
+            # The by-mode scheduler offers the modes its table has a row for.
+            by_mode = self._rm_call_soft({"appId": rule_b, "confirm": True, "addAction": {
+                "capability": "thermostatScheduler", "action": "setSched4Mode", "deviceIds": [int(t2)], "modeId": int(day)}},
+                strict=True)
+            self._assert_catalog_adds(rule_b, [by_mode], [
+                {"spec": "setSched4Mode", "stored": {"thisTherm": [t2], "modN": day},
+                 "text": f"Thermostat Scheduler for {t2_name}: Activate Scheduled Setpoints for Day"},
+            ])
+
+            before = self._action_row_texts(rule_b)
+            error = self._assert_rm_rollback(rule_b, {"capability": "thermostatController", "controllerId": 12345,
+                                                      "deviceIds": [int(temp_a)]},
+                                             ("thermostatController: Rule Machine does not offer '12345' for controllerId on this hub; it offers: ",))
+            assert tc in error.split("it offers: ", 1)[1], f"the refusal should list the controller {tc}: {error}"
+            error = self._assert_rm_rollback(rule_b, {"capability": "thermostatScheduler", "action": "setSched4Mode",
+                                                      "deviceIds": [int(t2)], "modeId": int(night)},
+                                             (f"thermostatScheduler.setSched4Mode: Rule Machine does not offer '{night}' for modeId on this hub; it offers: ",))
+            assert day in error.split("it offers: ", 1)[1], f"the refusal should list the Day row {day}: {error}"
+            # A by-mode scheduler has no Days/Times Away setpoints.
+            self._assert_rm_rollback(rule_b, {"capability": "thermostatScheduler", "action": "setTimeAway",
+                                              "schedulerId": int(tm), "awayHeat": 60},
+                                     ("thermostatScheduler.setTimeAway: Rule Machine does not offer setTimeAway on this hub; "
+                                      "it offers: setEcoMode, setEcoOffset, setHold, setSchedMode, setSched4Mode, setThermSched",))
+            assert self._action_row_texts(rule_b) == before, "the refused adds changed the rule's rows"
+            self._assert_rule_clean(rule_b)
+        finally:
+            if rule_b:
+                self._delete_native(rule_b)
+            self._delete_native(rule_a)
+
+    @test("native_apps")
+    def test_rm_action_return_value(self) -> None:
+        # Return Value: RM offers it only in a rule function, so the add is refused until the rule is
+        # one. Its literal-value refusals are in test_set_rule_failloud_wrong_trigger_shape.
+        names = self._ensure_perm_variables("sv_number", "sv_string")
+        num_var, str_var = names["sv_number"], names["sv_string"]
+        app_id = self._create_native_rule("RmActFunc")
+        try:
+            self._assert_picker_gate(app_id, {"capability": "returnValue", "type": "Integer", "value": 5}, "getReturnValue")
+            self._set_rule(app_id, {"settings": {"isFunction": True}}, strict=True)
+            added = self._set_rule(app_id, {"addActions": [
+                {"capability": "returnValue", "type": "Integer", "value": 5},
+                {"capability": "returnValue", "type": "String", "value": "done"},
+                {"capability": "returnValue", "type": "Decimal", "value": "2.5"},
+                {"capability": "returnValue", "type": "Boolean", "value": False},
+                {"capability": "returnValue", "type": "Integer", "variable": num_var},
+            ]}, strict=True)
+            assert added.get("verified") is True, f"the return value adds were not verified: {added}"
+            self._assert_catalog_adds(app_id, added.get("actions"), [
+                {"spec": "Integer 5", "stored": {"valType": "Integer", "valInt": "5"}, "text": "Return '5'"},
+                {"spec": "String done", "stored": {"valType": "String", "valString": "done"}, "text": "Return 'done'"},
+                {"spec": "Decimal 2.5", "stored": {"valType": "Decimal", "valDec": "2.5"}, "text": None},
+                {"spec": "Boolean false", "stored": {"valType": "Boolean", "valBool": "false"}, "text": "Return 'false'"},
+                {"spec": "Integer variable", "stored": {"valType": "Integer", "useVar": "true", "valVar": num_var},
+                 "text": re.compile(rf"Return '{re.escape(num_var)}\(\S+\)'")},
+            ])
+            # The variable picker lists only variables of the return type.
+            before = self._action_row_texts(app_id)
+            error = self._assert_rm_rollback(app_id, {"capability": "returnValue", "type": "Integer", "variable": str_var},
+                                             (f"returnValue: Rule Machine does not offer '{str_var}' for variable on this hub; it offers: ",))
+            offered = error.split("it offers: ", 1)[1]
+            assert num_var in offered and str_var not in offered, f"the refusal should list only Integer variables: {error}"
+            assert self._action_row_texts(app_id) == before, "the refused add changed the rule's rows"
+            self._assert_rule_clean(app_id)
+        finally:
+            self._delete_native(app_id)
+
+    @test("native_apps")
     def test_set_rule_action_mutations(self) -> None:
         # hub_set_rule edit -> addActions (bulk) + removeAction + clearActions +
         # replaceActions -- the index-bearing action-list mutations on one small rule.
@@ -11014,6 +11557,35 @@ class TestRunner:
         act_cond_fields = act.get("conditionFields") or []
         assert any(f.get("name") == "not" for f in act_cond_fields), \
             f"addAction discover conditionFields missing the 'not' field: {act_cond_fields}"
+        # The device- and app-driven entries: canonical name, RM's action group and sub-type per action.
+        act_caps = {c.get("name"): c for c in act.get("capabilities") or [] if isinstance(c, dict)}
+        sched_actions = ["setEcoMode", "setEcoOffset", "setHold", "setSched4Mode", "setTimeAway", "setThermSched", "setSchedDay"]
+        for name, act_type, sub in (
+            ("garageDoor", "lockActs", {"open": "getOCGarage", "close": "getOCGarage"}),
+            ("valve", "lockActs", {"open": "getOCValve", "close": "getOCValve"}),
+            ("blind", "sceneActs", {"setTilt": "getBlindTilt"}),
+            ("scene", "sceneActs", {"activate": "getActivateScene", "activatePerMode": "getActivateScenePerMode"}),
+            ("thermostatController", "lockActs", "getSetThermController"),
+            ("thermostatScheduler", "lockActs", dict.fromkeys(sched_actions, "getSetThermostatScheduler")),
+            ("tone", "soundActs", "getTone"),
+            ("musicPlayer", "soundActs", "getSetMusicPlayer"),
+            ("returnValue", "modeActs", "getReturnValue"),
+            ("roomLights", "rulesActs", {"activate": "getRLActivate", "turnOff": "getRLTurnOff"}),
+        ):
+            entry = act_caps.get(name) or {}
+            assert entry.get("actType") == act_type and entry.get("actSubType") == sub \
+                and entry.get("actions") == (list(sub) if isinstance(sub, dict) else None), \
+                f"addAction discover entry {name} should be {act_type}/{sub}: {entry}"
+        sched = act_caps["thermostatScheduler"]
+        assert sched.get("requires") == [["deviceIds", "schedulerId"]] \
+            and ["deviceIds", "schedulerId"] in (sched.get("exclusive") or []) \
+            and "deviceIds" in (sched.get("example") or {}), \
+            f"thermostatScheduler discover should take exactly one of deviceIds, schedulerId: {sched}"
+        # A Simple Conditional Action: any plain action takes a condition; an IF or a loop row does not.
+        for name, takes in (("switch", True), ("ifThen", False), ("repeatWhile", False), ("waitExpression", False)):
+            fields = (act_caps.get(name) or {}).get("optionalFields") or []
+            assert any(f.get("name") == "condition" for f in fields) is takes, \
+                f"addAction discover {name} should {'' if takes else 'not '}offer a condition: {fields}"
         # The operation envelope with a capability selector and no appId returns that one entry.
         one = self.client.call_tool("hub_manage_rule_machine", {
             "tool": "hub_set_rule",
@@ -19036,8 +19608,13 @@ def main() -> None:
             # PRIME the attribute the tests poll. On the bypass path a read of an attribute missing
             # from currentStates THROWS, and a device that has never been commanded has reported
             # nothing -- so without this a fresh hub bootstraps green and fails its first real lane.
+            # The RM-action fixtures are only picked into rule rows, never polled, so they need no priming.
+            no_prime = (None, None, None)
             prime = {"Virtual Dimmer": ("setLevel", ["10"], "level"),
-                     "Virtual Button": (None, None, None)}.get(driver, ("off", None, "switch"))
+                     "Virtual Button": no_prime, "Virtual Garage Door Controller": no_prime,
+                     "Virtual Valve": no_prime, "Virtual Blind": no_prime, "Virtual Player": no_prime,
+                     "Virtual Thermostat": no_prime, "BAT_E2E_KEEP Virtual Tone": no_prime,
+                     }.get(driver, ("off", None, "switch"))
             cmd, params, attr = prime
             if cmd:
                 cargs = {"deviceId": dev_id, "command": cmd}
