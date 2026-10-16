@@ -10791,9 +10791,19 @@ class TestRunner:
         apps = listed if isinstance(listed, list) else (listed.get("apps") or listed.get("instances") or [])
         hpm = next((a for a in apps if isinstance(a, dict)
                     and str(a.get("name") or a.get("label") or "").startswith("Hubitat Package Manager")), None)
+        # A hub without HPM gets a throwaway one from its published source, removed in the finally.
+        installed_code_id = installed_instance_id = None
         if hpm is None:
-            raise SkipTest("Hubitat Package Manager is not installed on this hub")
-        hpm_id = int(hpm.get("id") or hpm.get("appId"))
+            code = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
+                "importUrl": "https://raw.githubusercontent.com/dcmeglio/hubitat-packagemanager/master/apps/Package_Manager.groovy",
+                "confirm": True}})
+            assert code.get("success") is True and code.get("appId"), f"installing HPM's code failed: {code}"
+            installed_code_id = str(code["appId"])
+            inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
+                "codeAppId": int(installed_code_id), "confirm": True}})
+            assert inst.get("success") is True and inst.get("instanceAppId"), f"creating the HPM instance failed: {inst}"
+            installed_instance_id = int(inst["instanceAppId"])
+        hpm_id = installed_instance_id if hpm is None else int(hpm.get("id") or hpm.get("appId"))
 
         def walk(step: dict) -> dict:
             return self.client.call_tool("hub_manage_native_rules_and_apps", {
@@ -10815,6 +10825,12 @@ class TestRunner:
         finally:
             # HPM's default page clears its pending install state.
             walk({"page": "prefPkgInstallUrl", "operation": "navigate", "navigate": {"targetPage": "prefOptions"}})
+            if installed_instance_id is not None:
+                self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
+                    "appId": installed_instance_id, "force": True, "confirm": True}})
+            if installed_code_id is not None:
+                self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {
+                    "type": "app", "item_id": installed_code_id, "confirm": True}})
 
     @test("native_apps")
     def test_set_rule_discover_meta(self) -> None:
@@ -13165,21 +13181,41 @@ class TestRunner:
         # The variable's deviceId linkage is the proof of each connector write; a relay 504
         # falls back to that read-back. A connector a rule uses is refused without force, naming the rule.
         var_name = f"{PREFIX}ConnVar_{_run_artifact_suffix()}"
+        keep_name = f"{PREFIX}ConnKeep_{_run_artifact_suffix()}"
         self._create_hub_variable_visible(var_name, "Number", "0")
+        self._create_hub_variable_visible(keep_name, "Number", "0")
         rule_id = None
 
-        def read() -> dict:
+        def read(name: str = var_name) -> dict:
             return self.client.call_tool("hub_read_variables", {
-                "tool": "hub_get_variable", "args": {"name": var_name}})
+                "tool": "hub_get_variable", "args": {"name": name}})
 
-        try:
+        def connect(name: str) -> None:
             created = self._soft_write(
                 lambda: self.client.call_tool("hub_manage_variables", {
                     "tool": "hub_create_connector",
-                    "args": {"name": var_name, "connectorType": "Variable", "confirm": True}}),
-                lambda: read().get("deviceId"), f"hub_create_connector({var_name})")
+                    "args": {"name": name, "connectorType": "Variable", "confirm": True}}),
+                lambda: read(name).get("deviceId"), f"hub_create_connector({name})")
             if not created["relayDropped"]:
                 assert created["response"].get("success") is True, f"hub_create_connector failed: {created}"
+
+        def disconnect(name: str) -> None:
+            removed = self._soft_write(
+                lambda: self.client.call_tool("hub_manage_variables", {
+                    "tool": "hub_delete_connector",
+                    "args": {"name": name, "confirm": True, "force": True}}),
+                lambda: read(name).get("deviceId") is None, f"hub_delete_connector({name})")
+            if not removed["relayDropped"]:
+                assert removed["response"].get("success") is True, f"hub_delete_connector failed: {removed}"
+            cleared = read(name)
+            assert cleared.get("deviceId") is None, f"connector still linked to {name}: {cleared}"
+
+        try:
+            # A second connector keeps the Variable Connectors parent alive while the used one goes:
+            # removing the LAST connector deletes the parent too, a far slower hub path, which the
+            # unused keeper then takes on its own, as a plain connector round trip does.
+            connect(keep_name)
+            connect(var_name)
             linked = read()
             assert linked.get("deviceId") is not None, f"no connector linked to {var_name}: {linked}"
 
@@ -13204,19 +13240,13 @@ class TestRunner:
             self._untrack_native_app(rule_id)
             rule_id = None
 
-            removed = self._soft_write(
-                lambda: self.client.call_tool("hub_manage_variables", {
-                    "tool": "hub_delete_connector",
-                    "args": {"name": var_name, "confirm": True, "force": True}}),
-                lambda: read().get("deviceId") is None, f"hub_delete_connector({var_name})")
-            if not removed["relayDropped"]:
-                assert removed["response"].get("success") is True, f"hub_delete_connector failed: {removed}"
-            cleared = read()
-            assert cleared.get("deviceId") is None, f"connector still linked to {var_name}: {cleared}"
+            disconnect(var_name)
+            disconnect(keep_name)
         finally:
             if rule_id:
                 self._delete_native(rule_id)
             self._delete_variable_safe(var_name)
+            self._delete_variable_safe(keep_name)
 
     @test("hub_variables")
     def test_hub_set_variable_mesh_validation(self) -> None:
