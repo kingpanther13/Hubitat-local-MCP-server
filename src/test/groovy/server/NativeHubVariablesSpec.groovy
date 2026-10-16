@@ -524,15 +524,21 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         posts()*.path == ['/hub2/variables/create']
     }
 
-    def 'a page that is not the variables model is not the native endpoint'() {
+    def 'a page that is not the variables model is not the native endpoint (#label)'() {
         given:
-        modelBody = '<html><title>Login</title></html>'
+        modelBody = body
         when:
         def result = script.toolCreateVariable([confirm: true, name: 'Counter', type: 'Number', value: 3])
-        then:
+        then: 'the create reads the model the connector path reads, and reports it the same way'
         !result.success
-        result.error.contains("non-JSON response")
+        result.error == "hub_create_variable: Could not read the Hub Variables model: ${expected}".toString()
         posts().isEmpty()
+
+        where:
+        label          | body                                 | expected
+        'login page'   | '<html><title>Login</title></html>'  | 'Could not read the Hub Variables JSON model'
+        'JSON array'   | '[1, 2]'                             | 'Hub Variables returned an unexpected JSON model'
+        'no variables' | '{"variables": "none"}'              | 'Hub Variables returned an unexpected JSON model'
     }
 
     def 'endpoint 404 creates through existing wizard primitives'() {

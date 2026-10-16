@@ -201,7 +201,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         then:
         complete.result.resultType == 'complete'
         terminal.success == false
-        terminal.partial == true
+        terminal.partial == (outcome == 'partial')
         terminal.bulkStoppedAfter == 'patches[0].addActions[0]'
         terminal.finalisationNotAttempted == true
         terminal.error.startsWith("Stopped after patches[0].addActions[0] ${outcome == 'failed' ? 'failed' : 'reported partial'}")
