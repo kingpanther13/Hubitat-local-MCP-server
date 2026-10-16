@@ -1778,6 +1778,13 @@ class TestRunner:
         raw = (stored.get("settings") or {}).get("backupBeforeRuleEdits") if isinstance(stored, dict) else None
         assert str(raw).lower() == str(on).lower(), \
             f"backupBeforeRuleEdits={on} was accepted but the app's stored value reads {raw!r}: {stored}"
+        # And the server's own view of its settings, which decides the edit: a second write of the
+        # same value reports it as previous.
+        again = self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings", "args": {
+            "settings": {"backupBeforeRuleEdits": on}, "confirm": True}})
+        seen = (again.get("previous") or {}).get("backupBeforeRuleEdits") if isinstance(again, dict) else None
+        assert seen is on, \
+            f"backupBeforeRuleEdits={on} is stored as {raw!r} but the server reads it as {seen!r}: {again}"
         return (result.get("previous") or {}).get("backupBeforeRuleEdits")
 
     def _hub_variables_by_name(self) -> dict[str, dict]:
@@ -11023,7 +11030,9 @@ class TestRunner:
             assert added.get("verified") is True, f"the thermostat app adds were not verified: {added}"
             self._assert_catalog_adds(rule_a, added.get("actions"), [
                 {"spec": "thermostatController", "stored": {"thisApp": tc, "tcSensors": [temp_a, temp_b]},
-                 "text": f"Set Sensors for {tc_name} to {SCAFFOLD_PREFIX}Temp_A, {SCAFFOLD_PREFIX}Temp_B"},
+                 # RM renders the controller's label, which the app suffixes with its mode ("(Free)" when idle).
+                 "text": re.compile(rf"Set Sensors for {re.escape(tc_name)}(?: \([^)]+\))? to "
+                                    rf"{re.escape(SCAFFOLD_PREFIX)}Temp_A, {re.escape(SCAFFOLD_PREFIX)}Temp_B")},
                 {"spec": "setEcoMode by thermostat",
                  "stored": {"thisTherm": [t1], "thermSched": "setEcoMode", "ecoMode": "on", "thisApp": ts},
                  "text": f"{on_t1}EcoMode on"},
