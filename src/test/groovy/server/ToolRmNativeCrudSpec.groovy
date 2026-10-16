@@ -908,7 +908,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // proves the real reference came back inline (these live only in the guide now)
         result.content.contains("addTrigger")
         result.content.contains("walkStep")
-        result.content.contains("Raw `settings`/`button` mode")
+        result.content.contains("Raw mode is the same flow one call per step")
         // no appId / confirm / backup snapshot was required -> no hub endpoints registered, no mutation occurred
     }
 
@@ -2202,7 +2202,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
                 [name: "actType.1", type: "enum"],
                 [name: "actSubType.1", type: "enum"],
                 [name: "tCapab-1", type: "enum", options: ["Switch"]],
-                [name: "tCapab-2", type: "enum", options: ["Motion"]]
+                [name: "tCapab-2", type: "enum", options: ["Motion"]],
+                // A page-context click is checked against the page's rendered buttons.
+                [name: "anotherWait", type: "button", state: "anotherWait"]
             ])
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -9864,8 +9866,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "walkStep write does not guess when a stale doActPage slot has multiple live counterparts"() {
         // Automatic rebinding is safe only for a sole same-stem field.  If firmware
         // exposes multiple actType slots, choosing either one could mutate the wrong
-        // action.  Keep the existing fail-loud behavior: attempt only the caller's
-        // exact key, retain the schema warning, and report the silent rejection.
+        // action.  The exact key is not on the page, so the write is refused unsent.
         given:
         enableWrite()
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
@@ -9890,14 +9891,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             confirm: true
         ])
 
-        then: "neither live candidate is guessed; the exact requested key follows the legacy path"
-        posts.any { it.path == "/installedapp/update/json" && it.body?.containsKey("settings[actType.2]") }
-        !posts.any { it.body?.containsKey("settings[actType.3]") || it.body?.containsKey("settings[actType.4]") }
-        result.opResult?.wrote == ["actType.2": "messageActs"]
+        then: "neither live candidate is guessed and the absent key is not posted"
+        !posts.any { it.path == "/installedapp/update/json" }
+        result.opResult?.wrote == null
         result.opResult?.rebound == null
-        result.opResult?.warning?.toString()?.contains("not in current schema")
+        result.opResult?.refused?.reason == "not_in_schema"
+        result.opResult?.refused?.available == ["actType.3", "actType.4"]
+        result.error.contains("'actType.2' is not an input on page 'doActPage'")
         result.success == false
-        result.silentRejection == true
+        result.silentRejection == false
     }
 
     def "walk schema keeps sandbox-sensitive enum option keys and labels"() {

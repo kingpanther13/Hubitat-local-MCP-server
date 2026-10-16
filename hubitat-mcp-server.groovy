@@ -9066,6 +9066,68 @@ def _rmClickAppButton(Integer appId, String buttonName, String stateAttribute = 
     return resp
 }
 
+// The buttons a page renders, [name, stateAttribute?] in page order: button inputs (their `state`
+// option is the attribute) and RM's paragraph buttonLinks (a hidden `<name>.type=button` input, then
+// the data-stateAttribute of the clickable element that follows it).
+List _rmRenderedButtons(Map configPage) {
+    def out = []
+    def seen = [] as Set
+    for (s in (configPage?.sections ?: [])) {
+        for (i in (s?.input ?: [])) {
+            if (i instanceof Map && i.type == "button" && i.name && seen.add(i.name.toString())) {
+                out << (i.state instanceof String && i.state ? [name: i.name.toString(), stateAttribute: i.state] : [name: i.name.toString()])
+            }
+        }
+        for (b in (s?.body ?: [])) {
+            def html = b instanceof Map ? (b.description ?: b.title)?.toString() : null
+            if (!html || !html.contains(".type")) continue
+            def m = (html =~ /<input\s+type=['"]hidden['"]\s+name=['"]([^'"]+?)\.type['"]\s+value=['"]button['"]/)
+            def found = []
+            while (m.find()) found << [name: m.group(1), at: m.end()]
+            found.eachWithIndex { f, n ->
+                if (!seen.add(f.name)) return
+                def segment = html.substring(f.at as int, n + 1 < found.size() ? (found[n + 1].at as int) : html.length())
+                def sm = (segment =~ /data-stateAttribute=['"]([^'"]*)['"]/)
+                def st = sm.find() ? sm.group(1) : null
+                out << (st ? [name: f.name, stateAttribute: st] : [name: f.name])
+            }
+        }
+    }
+    return out
+}
+
+// Refuses a click on a button the page does not render: RM runs a button's handler whether or not
+// the page offers it. A page that rendered with an error has no reliable button list and is not checked.
+void _rmRequireRenderedButton(Map configPage, String buttonName, String pageName) {
+    if (configPage == null || configPage.error != null) return
+    def rendered = _rmRenderedButtons(configPage)
+    if (rendered.any { it.name == buttonName }) return
+    def shown = rendered.take(40)
+    def more = rendered.size() > shown.size() ? " (+${rendered.size() - shown.size()} more)" : ""
+    throw new IllegalArgumentException(("Button '${buttonName}' is not rendered on page '${pageName}', so nothing was clicked. " +
+        "Rendered buttons (name, stateAttribute): ${groovy.json.JsonOutput.toJson(shown)}${more}").toString())
+}
+
+// A caller-named click, checked against the page the click reads for its version token; the cache
+// then serves that page to the click, so the check adds no read. A failed read leaves it unchecked.
+def _rmClickRenderedButton(Integer appId, String buttonName, String stateAttribute, String pageName, Map cache = null) {
+    Map c = cache != null ? cache : [:]
+    def cfg = null
+    try { cfg = _rmFetchConfigJson(appId, pageName, c) }
+    catch (Exception readExc) {
+        mcpLog("warn", "rm-native", "click '${buttonName}' on app ${appId} page ${pageName}: page read failed (${readExc.message}); the rendered-button check is skipped")
+    }
+    _rmRequireRenderedButton(cfg?.configPage as Map, buttonName, pageName)
+    return _rmClickAppButton(appId, buttonName, stateAttribute, pageName, c)
+}
+
+// The skip for a single value an enum picker does not list; null when the picker offers it.
+Map _rmNotOfferedSkip(Map field, String key, Object value) {
+    if (field?.type != "enum" || field.options == null || value instanceof List) return null
+    List offered = _rmReadPickerOptionStrings(field)
+    return (offered && !(value?.toString() in offered)) ? [key: key, reason: "not_offered", value: value, offered: offered] : null
+}
+
 
 /**
  * Strip dynamic substrings from a configPage's serialized sections so the
@@ -9114,7 +9176,8 @@ private String _rmSanitizeRenderForHash(Object sections) {
  */
 // Non-private so test specs can override via script.metaClass — see
 // _rmClickAppButton for the same rationale.
-def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object value, List applied, String typeHintOverride = null, List skipped = null, Map cache = null) {
+// bodyExtras (sub-page path only) adds form fields to the POST, e.g. a sub-page's href markers.
+def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object value, List applied, String typeHintOverride = null, List skipped = null, Map cache = null, Map bodyExtras = null) {
     def config = _rmFetchConfigJson(appId, pageName, cache)
     def schema = _rmCollectInputSchema(config?.configPage)
     if (!schema?.containsKey(key)) {
@@ -9129,13 +9192,10 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
     }
     // A single value an enum picker does not list is not written: the hub would store it and the
     // app render nothing for it (a user cannot pick it). The skip carries what the picker offers.
-    def field = schema.get(key)
-    if (field?.type == "enum" && field.options != null && !(value instanceof List)) {
-        List offered = _rmReadPickerOptionStrings(field)
-        if (offered && !(value?.toString() in offered)) {
-            if (skipped != null) skipped << [key: key, reason: "not_offered", value: value, offered: offered]
-            return
-        }
+    def notOffered = _rmNotOfferedSkip(schema.get(key) as Map, key, value)
+    if (notOffered != null) {
+        if (skipped != null) skipped << notOffered
+        return
     }
     def settingsMap = [(key): value]
     def schemaForBuild = schema
@@ -9166,6 +9226,7 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
         body.currentPage = pageName
         body.pageBreadcrumbs = _rmPageBreadcrumbs(appId, pageName, '["mainPage"]')
         if (config?.app?.version != null) body.version = config.app.version.toString()
+        if (bodyExtras) body.putAll(bodyExtras)
         writeResp = _rmPostSettings(appId, body, cache)
     } else {
         _rmUpdateAppSettings(appId, settingsMap, schemaForBuild, cache)
@@ -11836,21 +11897,13 @@ Also a valid `patches[]` op (reported as `op: 'replaceRequiredExpression'`). Ins
 
 ### `walkStep` schema-aware wizard walker
 
-`walkStep` is the lowest-level escape hatch: drive the RM wizard when the high-level `addTrigger`/`addAction` helpers don't cover the capability you need (Periodic Schedule sub-pages, conditional-trigger binding, IF/THEN/ELSE flow control, features added in a later firmware). Each single-step call returns a structured snapshot -- schema before/after, schema diff (inputs appeared/disappeared), value-echo (catches silent enum case normalization), sub-page hrefs, action/trigger list-count change (disambiguates 'committed' from 'broke and lost the row'), and a health check.
+For what the shortcuts cannot express (Periodic sub-pages, conditional-trigger binding, newer RM fields). Spec: `{page, operation, write?:{<field>:<value>}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, validateEnum?, steps?:[...]}`. Operations: `introspect`; `write` (one field); `click`; `navigate` (into a sub-page by its href); `done` (submit a sub-page to its parent; a Periodic row needs it); `drive` (run `steps=[...]` in one call; a step without `page` continues where the last ended; `stopOnError=false` runs on past a failure).
 
-Spec: `{page, operation, write?:{<field>:<value>}, click?:{name,stateAttribute?}, navigate?:{targetPage}, validateEnum?:<bool>, hrefContext?:{fromPage,hrefName,hrefParams?,hrefIndex?}, steps?:[...]}` where `page` is e.g. `selectTriggers`/`selectActions`/`doActPage`/`mainPage`/`periodic` and `operation` is one of:
-- `drive` -- **preferred**: run an ordered `steps=[...]` list (each item a single-step spec) in ONE call. The tool performs them in sequence, carrying the page forward across `navigate`/`done`, and stops at the first failed step (`stopOnError=false` to continue). A step that omits `page` inherits the page the previous step ended on. Returns `{steps:[{step, operation, page, success, diff, valueEcho, silentRejection, commitSignal, opResult, health}, ...], stepsRequested, stepsRun, lastStepOperation, success, health}`; on a halt the aggregate also carries a top-level `error` + `repairHints` naming the failed step. A finished drive fails when a step fails (the top-level `error` and `repairHints` name it) or when the rule ends with a structural issue the drive introduced, listed in `structuralIssues` (for example a block it opened and never closed: add the closer, or restore). Structural issues that were already present before the drive are listed in `preExistingStructuralIssues` and do not fail it, so building inside an already-open block across calls is allowed. That exemption needs a structural baseline read before the first step; if the read fails, pre-existing issues cannot be told apart from new ones and fail the drive, and the result carries `baselineUnavailable` with the reason, so compare with `hub_get_rule_health` before re-running. `healthUnverified:true` (with `success:false` and `partial:true`) marks a finished drive with at least one mutating step whose final health check the time budget skipped: its steps are committed, so check `hub_get_rule_health` rather than re-running the drive. A drive the budget pauses between steps instead returns `status:'in_progress'` with `stepsRemaining`. End the drive with a `done` step to fire the mainPage Done finalize (the `updateRule`-equivalent that re-initializes subscriptions) — the same finalize a single-step `done` gets. A drive finalizes only when every step ran and succeeded; one ending in `done` that failed, was paused, or ran past a failure under `stopOnError=false` returns `mainPageDoneSkipped:true` and leaves the app's update lifecycle unrun. This automates the manual loop below.
-- `introspect` -- fetch schema; no mutation.
-- `write` -- write one field's value (exactly one key per call; `hrefContext` for sub-pages).
-- `click` -- click a regular button (`cancelCapab`, `hasAll`, `moreCond`, ...).
-- `navigate` -- forward into a sub-page via its href.
-- `done` -- BACK-navigate from a sub-page to its parent (`_action_previous=Done`), carrying ALL the sub-page's current settings. REQUIRED for sub-pages (Periodic, etc.) whose parent row otherwise renders `?`. Pass `hrefContext={fromPage:<parent>, hrefParams:{n:<idx>}}`.
+Each step returns `before`/`after` schemas, `diff`, `valueEcho`, `silentRejection`, `opResult` and `health`; a failure carries `error` and `repairHints`. Refused before anything is sent: a `write` to a field the page does not show or of a value its picker does not list (`opResult.refused`), a `click` on a button the page does not render (the error lists the rendered `{name, stateAttribute}` pairs), and `navigate`/`done` while a required input is empty or invalid, as the UI refuses them.
 
-`navigate` and `done` are page navigation, which Hubitat's own app page refuses until the page being left passes its checks: every required input (marked * in the UI) filled, numbers within their range (number inputs whole and non-negative, decimal inputs at most two decimal places, unless the input's range says otherwise), and values matching any required format. The tool refuses the same way and names each field; fill it, or deselect the option that revealed it, then retry. `write` and `click` are never checked, as in the UI.
+RM builds some pages only inside an open editor; the walker's prerequisite table, quoted in its refusals and `repairHints`: `doActPage` needs an action editor (`N` with stateAttribute `doActN`, or `<n>.0.false` with `doAct`, on `selectActions`); a trigger or condition slot needs `true` with `moreCond` (or `<n>` with `editCond`); a saved Required Expression opens in its editor after `editST` on `STPage`; `periodic` needs `hrefContext` with its `n`; `cancelCapab` drops the open condition on the page's next render.
 
-The loop `drive` automates (and the sequence to put in `steps[]`): `introspect` to see the page's fields -> `navigate` into a sub-page if one is exposed -> `write` each required field (with `hrefContext` on sub-pages) -> inspect `diff.appeared`/`valueEcho.match`/`silentRejection` between writes -> `done` to back out of a sub-page (this bakes the trigger/action description) -> `click` `hasAll`/`actionDone` on the parent to finalize the row. Always check `silentRejection`, `valueEcho.match`, and `health` in each step's snapshot -- they are the fail-loud signals. A page that rendered empty on a `navigate` (or on an `hrefContext` re-render) is re-read once and `opResult.navRetried: true` says the re-read supplied the page; if `after` is still empty the page really is (see `commitSignal`). A page RM could not build comes back with `pageError` (RM's own render text, e.g. a `doActPage` entered by name without the wizard state it expects) and a repair hint -- that empty schema has a stated cause and is never re-read. On health: `skipped: true` means the probe was deliberately not run (time budget spent) and `unreadable: true` means it could not be read -- neither is evidence of breakage; only a checked verdict (broken/issues with unreadable false) is.
-
-Worked `drive` example (a multi-device switch trigger committed in one call, the `steps[]` form of the raw-mode example below). The trailing `done` is what runs the mainPage Done finalize (raw-mode step 6, `updateRule`); without it the trigger is written to settings but never subscribed, so the rule looks created yet never fires:
+End a drive with `done` to run the mainPage Done (the `updateRule` equivalent); without it the change is written but not subscribed. A multi-device switch trigger in one call:
 ```
 hub_set_rule(appId=N, confirm=true, walkStep={operation:'drive', steps:[
   {page:'selectTriggers', operation:'click', click:{name:'true', stateAttribute:'moreCond'}},
@@ -11861,26 +11914,7 @@ hub_set_rule(appId=N, confirm=true, walkStep={operation:'drive', steps:[
   {page:'selectTriggers', operation:'done'}]})
 ```
 
-A standalone mutating `walkStep` (`write`, `click`, `navigate`, or `done`) whose time budget skips the health probe also returns `success:false`, `partial:true`, and `healthUnverified:true` when the operation otherwise succeeded. This is a terminal request with committed work, not a checkpoint to replay: call `hub_get_rule_health(appId=...)` and address any issue before continuing or treating the rule as complete. Read-only `introspect` and the deliberately deferred per-step health inside an unfinished drive do not acquire that failure flag. Modern detached writes discard the request clock and check health normally; the budget case primarily affects legacy requests. An unreadable probe remains separately identified by `health.unreadable` and its verification hint.
-
-### Raw `settings`/`button` mode (manual wizard flow)
-
-Prefer the structured shortcuts above. Raw mode is the unstructured escape hatch: write page inputs via `settings` and click page-transition buttons via `button` directly.
-
-- **Auto-updateRule**: main-page `settings` writes are auto-followed by an implicit `updateRule` click so `initialize()` re-fires. Sub-page writes (`pageName=selectTriggers`/`selectActions`/...) SKIP the auto-click so the wizard's `stateAttribute` (`moreCond`, `editCond`, `editAct`, ...) survives -- commit the wizard via its own Done button (RM triggers: `hasAll`; RM actions: `actionDone`), then issue a final `hub_set_rule(button='updateRule')` yourself to re-initialize.
-- **mainPage boolean flags** -- some rule-level toggles are plain mainPage booleans you set directly via `settings`, distinct from the structured shortcuts:
-  - `settings:{useST:true}` -- the "Use Required Expression" flag. It only EXPOSES the Required Expression sub-page (the "Define Required Expression" href); it does NOT author any condition. Use `addRequiredExpression` to build the actual expression (which sets `useST` for you). Setting `useST:true` bare, with no committed expression, leaves the rule running UNGATED: the write's health check flags it and the call returns `success:false` until an expression is added.
-  - `settings:{isFunction:true}` -- the "function mode" flag (the rule returns a value so other rules can call it as a function). No structured shortcut; write it directly.
-  Both are mainPage writes, so they auto-commit via `updateRule` per the Auto-updateRule rule above.
-- **Wizard-Done auto-finalize**: clicking `hasAll` on `selectTriggers` commits the trigger but RM 5.1 leaves a residual `isCondTrig.<N>` ("Conditional Trigger?") prompt; the tool auto-writes `isCondTrig.<N>=false` to clear it without consuming a trigger index, reported as `wizardDoneAutoRetry: 'OK' | 'OK after finalize ...' | 'WARN: ...'`. (Earlier versions clicked `hasAll` twice, which allocated phantom **Broken Trigger** rows; the finalize-via-`isCondTrig` path keeps indices contiguous 1, 2, 3.)
-- **Worked example -- multi-device switch trigger via raw mode**:
-  1. `hub_set_rule(appId, button='true', stateAttribute='moreCond', pageName='selectTriggers')` -- opens the trigger editor.
-  2. `hub_set_rule(appId, settings={tCapab1:'Switch'}, pageName='selectTriggers')` -- picks the capability; page re-renders the device picker.
-  3. `hub_set_rule(appId, settings={tDev1:[<deviceId>, ...]}, pageName='selectTriggers')` -- writes devices (multi-device 3-field contract automatic).
-  4. `hub_set_rule(appId, settings={tstate1:'on'}, pageName='selectTriggers')` -- sets the attribute/value.
-  5. `hub_set_rule(appId, button='hasAll', pageName='selectTriggers')` -- commits; residual Conditional? prompt auto-finalized.
-  6. `hub_set_rule(appId, button='updateRule')` -- re-initialize so subscriptions populate.
-  The `addTrigger={...}` shortcut performs steps 1-6 automatically. A second trigger uses index 2 (`tCapab2`/`tDev2`/`tstate2`), a third index 3, etc.
+Raw mode is the same flow one call per step: `settings` (+ `pageName`) writes inputs the page shows, `button` (+ `stateAttribute`, `pageName`) clicks one, checked against that page. A mainPage `settings` write is followed by `updateRule`; a sub-page write is not, so close the editor with its Done (`hasAll`, `actionDone`), then `button='updateRule'`. After `hasAll` the tool clears RM's leftover `isCondTrig.<N>` prompt (`wizardDoneAutoRetry`). `settings:{useST:true}` only shows the Required Expression page (build it with `addRequiredExpression`); `settings:{isFunction:true}` makes the rule return a value.
 
 ### Responses: applied, activated, verified
 
@@ -12229,7 +12263,7 @@ def getToolGuideSubSections() {
             set_rule_reference_shapes: ["Shapes come from discover"],
             set_rule_reference_conditions: ["`addRequiredExpression`", "`replaceRequiredExpression`",
                                             "deviceId vs deviceIds normalization"],
-            set_rule_reference_walkstep: ["`walkStep`", "Raw `settings`/`button` mode"],
+            set_rule_reference_walkstep: ["`walkStep`"],
             set_rule_reference_responses: ["Responses", "Action mutations"]
         ]
     ]
