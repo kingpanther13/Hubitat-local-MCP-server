@@ -27,7 +27,6 @@ import re
 import sys
 import threading
 import time
-import urllib.request
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1721,6 +1720,7 @@ class TestRunner:
         "in_use": ("E2E_PERM_Var_InUse", "Number", "0"),
         "mesh_share": ("E2E_PERM_Var_MeshShare", "String", "share-me"),
         "bps_write": ("E2E_PERM_Var_BpsWrite", "String", "v1"),
+        "conn_keep": ("E2E_PERM_Var_ConnKeep", "Number", "0"),
     }
 
     def _hub_variables_by_name(self) -> dict[str, dict]:
@@ -10786,58 +10786,42 @@ class TestRunner:
     @test("native_apps")
     def test_set_native_app_walk_keeps_the_pending_page(self) -> None:
         # A multi-page wizard walk reads and writes on the page it is on; rendering the app's default
-        # page between steps resets it (Hubitat Package Manager clears a pending install URL). The
-        # walk also exposes the page's Next target.
-        listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": "instances"}})
-        apps = listed if isinstance(listed, list) else (listed.get("apps") or listed.get("instances") or [])
-        hpm = next((a for a in apps if isinstance(a, dict)
-                    and str(a.get("name") or a.get("label") or "").startswith("Hubitat Package Manager")), None)
-        # A hub without HPM gets a throwaway one from its published source, removed in the finally.
-        # The runner fetches the source: a test hub need not have a route to GitHub.
-        installed_code_id = installed_instance_id = hpm_id = None
-        if hpm is not None:
-            hpm_id = int(hpm.get("id") or hpm.get("appId"))
+        # page between steps resets it. The fixture app is Hubitat Package Manager's install-from-URL
+        # flow in miniature (its main page clears a pending install URL), installed from the repo so
+        # the scenario needs nothing the hub does not have. The walk also exposes the page's Next target.
+        source = (Path(__file__).resolve().parent / "fixtures" / "e2e-wizard-walk-app.groovy").read_text(encoding="utf-8")
+        code_id = app_id = None
 
         def walk(step: dict) -> dict:
             return self.client.call_tool("hub_manage_native_rules_and_apps", {
-                "tool": "hub_set_native_app", "args": {"appId": hpm_id, "walkStep": step, "confirm": True}})
+                "tool": "hub_set_native_app", "args": {"appId": app_id, "walkStep": step, "confirm": True}})
 
         try:
-            if hpm is None:
-                with urllib.request.urlopen(
-                        "https://raw.githubusercontent.com/dcmeglio/hubitat-packagemanager/master/apps/Package_Manager.groovy",
-                        timeout=60) as resp:
-                    hpm_source = resp.read().decode("utf-8")
-                code = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
-                    "source": hpm_source, "confirm": True}})
-                assert code.get("success") is True and code.get("appId"), f"installing HPM's code failed: {code}"
-                installed_code_id = str(code["appId"])
-                inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
-                    "codeAppId": int(installed_code_id), "confirm": True}})
-                assert inst.get("success") is True and inst.get("instanceAppId"), f"creating the HPM instance failed: {inst}"
-                installed_instance_id = hpm_id = int(inst["instanceAppId"])
+            code = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
+                "source": source, "confirm": True}})
+            assert code.get("success") is True and code.get("appId"), f"installing the wizard fixture's code failed: {code}"
+            code_id = str(code["appId"])
+            inst = self.client.call_tool("hub_manage_code", {"tool": "hub_create_app", "args": {
+                "codeAppId": int(code_id), "confirm": True}})
+            assert inst.get("success") is True and inst.get("instanceAppId"), f"creating the wizard fixture failed: {inst}"
+            app_id = int(inst["instanceAppId"])
             to_install = walk({"page": "prefOptions", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstall"}})
             assert to_install.get("success") is True, f"navigate to prefPkgInstall failed: {to_install}"
             to_url = walk({"page": "prefPkgInstall", "operation": "navigate", "navigate": {"targetPage": "prefPkgInstallUrl"}})
-            assert to_url.get("success") is True and (to_url.get("after") or {}).get("nextPage"), \
-                f"the walk did not expose the page's Next target: {to_url}"
+            assert to_url.get("success") is True and (to_url.get("after") or {}).get("nextPage"),                 f"the walk did not expose the page's Next target: {to_url}"
             url = "https://example.invalid/e2e-manifest.json"
             wrote = walk({"page": "prefPkgInstallUrl", "operation": "write", "write": {"pkgInstall": url}})
             assert wrote.get("success") is True, f"writing pkgInstall failed: {wrote}"
             stored = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_app_config", "args": {
-                "appId": hpm_id, "pageName": "prefPkgInstallUrl", "includeSettings": True}})
-            assert str((stored.get("settings") or {}).get("pkgInstall")) == url, \
-                f"the pending install URL was reset between steps: {stored.get('settings')}"
+                "appId": app_id, "pageName": "prefPkgInstallUrl", "includeSettings": True}})
+            assert str((stored.get("settings") or {}).get("pkgInstall")) == url,                 f"the pending install URL was reset between steps: {stored.get('settings')}"
         finally:
-            # HPM's default page clears its pending install state.
-            if hpm_id is not None:
-                walk({"page": "prefPkgInstallUrl", "operation": "navigate", "navigate": {"targetPage": "prefOptions"}})
-            if installed_instance_id is not None:
+            if app_id is not None:
                 self.client.call_tool("hub_manage_native_rules_and_apps", {"tool": "hub_delete_native_app", "args": {
-                    "appId": installed_instance_id, "force": True, "confirm": True}})
-            if installed_code_id is not None:
+                    "appId": app_id, "force": True, "confirm": True}})
+            if code_id is not None:
                 self.client.call_tool("hub_manage_code", {"tool": "hub_delete_item", "args": {
-                    "type": "app", "item_id": installed_code_id, "confirm": True}})
+                    "type": "app", "item_id": code_id, "confirm": True}})
 
     @test("native_apps")
     def test_set_rule_discover_meta(self) -> None:
@@ -13188,9 +13172,8 @@ class TestRunner:
         # The variable's deviceId linkage is the proof of each connector write; a relay 504
         # falls back to that read-back. A connector a rule uses is refused without force, naming the rule.
         var_name = f"{PREFIX}ConnVar_{_run_artifact_suffix()}"
-        keep_name = f"{PREFIX}ConnKeep_{_run_artifact_suffix()}"
+        keep_name = self._ensure_perm_variables("conn_keep")["conn_keep"]
         self._create_hub_variable_visible(var_name, "Number", "0")
-        self._create_hub_variable_visible(keep_name, "Number", "0")
         rule_id = None
 
         def read(name: str = var_name) -> dict:
@@ -13218,10 +13201,11 @@ class TestRunner:
             assert cleared.get("deviceId") is None, f"connector still linked to {name}: {cleared}"
 
         try:
-            # A second connector keeps the Variable Connectors parent alive while the used one goes:
-            # removing the LAST connector deletes the parent too, a far slower hub path, which the
-            # unused keeper then takes on its own, as a plain connector round trip does.
-            connect(keep_name)
+            # A permanent connector on E2E_PERM_Var_ConnKeep keeps the Variable Connectors app alive:
+            # removing the hub's LAST connector removes that app with it, a path a real hub takes in
+            # ~15 s and the emulated test hubs do not come back from, so the suite never takes it.
+            if read(keep_name).get("deviceId") is None:
+                connect(keep_name)
             connect(var_name)
             linked = read()
             assert linked.get("deviceId") is not None, f"no connector linked to {var_name}: {linked}"
@@ -13252,12 +13236,10 @@ class TestRunner:
             rule_id = None
 
             disconnect(var_name)
-            disconnect(keep_name)
         finally:
             if rule_id:
                 self._delete_native(rule_id)
             self._delete_variable_safe(var_name)
-            self._delete_variable_safe(keep_name)
 
     @test("hub_variables")
     def test_hub_set_variable_mesh_validation(self) -> None:
