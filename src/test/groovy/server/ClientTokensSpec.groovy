@@ -17,7 +17,6 @@ class ClientTokensSpec extends ToolSpecBase {
     @Shared List<String> calls = []
     @Shared int nextToken = 0
     @Shared boolean revokeSticks = true
-    @Shared List<String> removedSettings = []
 
     def setupSpec() {
         appExecutor.getApp() >> sharedAppStub
@@ -43,13 +42,12 @@ class ClientTokensSpec extends ToolSpecBase {
 
     def setup() {
         calls.clear()
-        removedSettings.clear()
         nextToken = 0
         revokeSticks = true
         stateMap.accessToken = 'main'
         ['clientTokens', 'nextClientTokenId', 'retiredTokenHashes'].each { stateMap.remove(it) }
         script.metaClass.mcpLog = { String level, String component, String msg -> }
-        sharedAppStub.metaClass.removeSetting = { String name -> removedSettings << name; settingsMap.remove(name) }
+        sharedAppStub.settingsStore.clear()
     }
 
     def "creating a client token stores it under a new id and keeps the main token first"() {
@@ -102,8 +100,9 @@ class ClientTokensSpec extends ToolSpecBase {
         given:
         stateMap.accessToken = 'main,client-a,client-b'
         stateMap.clientTokens = ['1': [label: 'Alpha', token: 'client-a'], '2': [label: 'Beta', token: 'client-b']]
-        settingsMap['clientTools_2'] = ['hub_list_modes']
-        settingsMap['clientTools_1'] = ['hub_list_rooms']
+        def accessKeys = ['clientTools', 'clientRead', 'clientWrite', 'clientLocal', 'clientCloud', 'clientToolNumber']
+        accessKeys.each { sharedAppStub.settingsStore["${it}_2".toString()] = 'x' }
+        sharedAppStub.settingsStore['clientTools_1'] = ['hub_list_rooms']
 
         when:
         script.appButtonHandler('revokeClientToken_2')
@@ -112,8 +111,8 @@ class ClientTokensSpec extends ToolSpecBase {
         calls == ['revoke:client-b']
         stateMap.clientTokens == ['1': [label: 'Alpha', token: 'client-a']]
         stateMap.accessToken == 'main,client-a'
-        removedSettings.containsAll(['clientTools_2', 'clientRead_2', 'clientWrite_2', 'clientLocal_2', 'clientCloud_2', 'clientToolNumber_2'])
-        settingsMap['clientTools_1'] == ['hub_list_rooms']
+        accessKeys.every { !sharedAppStub.settingsStore.containsKey("${it}_2".toString()) }
+        sharedAppStub.settingsStore['clientTools_1'] == ['hub_list_rooms']
         script._isRetiredAccessToken('client-b')
         !script._isRetiredAccessToken('client-a')
     }
