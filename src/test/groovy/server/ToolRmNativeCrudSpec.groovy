@@ -3178,7 +3178,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // IS an existing RM rule (555), the existence guard must NOT fire -- execution advances
         // into the action-write path (a POST fires) and then dead-ends on the unmocked doActPage
         // fetch. A guard that wrongly rejected a valid id would surface the "does not exist"
-        // message here and never POST. Both-ways pending (orchestrator).
+        // message here and never POST.
         given:
         installRuleTargetStubs()
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -3557,7 +3557,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // deviceIds) makes the captured value [555.0] and fails this. Only the field-write layer
         // (_rmWriteSettingOnPage) is intercepted -- so the captured value is exactly what the
         // normalization hands to the write, isolated from the doActPage schema walk. The rest of
-        // the scaffolding runs real off registered GETs. Both-ways pending (orchestrator).
+        // the scaffolding runs real off registered GETs.
         given:
         installRuleTargetStubs()
         hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
@@ -3599,7 +3599,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // integer-canonical [555], never [555.0]. Reverting any one cap's wiring line to the raw
         // (actionSpec.ruleIds ?: deviceIds) captures [555.0] and fails that row. Only the field-write
         // layer is intercepted, isolating the captured value from the doActPage schema walk.
-        // Both-ways pending (orchestrator).
         given:
         installRuleTargetStubs()
         hubGet.register('/hub2/appsList') { params -> appsListWithRule(555) }
@@ -6999,7 +6998,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // `removedIndices` and `note` continue to look correct. Pinning the
         // index-list diff lets callers detect post-delete state without an
         // extra hub_get_app_config round-trip.
-        // Both-ways pending (orchestrator).
         result.removedIndex == 1
         result.beforeIndices instanceof List
         (result.beforeIndices as List).contains(1)
@@ -7701,7 +7699,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // _rmClearActions routes the recovery-phrase "if the <action|actions>
     // really did get clobbered". Pin the singular form when exactly 1 action
     // stays stuck.
-    // Both-ways pending (orchestrator).
     def "clearActions error text says 'if the action really did get clobbered' singular for one stuck action"() {
         given:
         enableWrite()
@@ -7729,7 +7726,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     // W-spec-clearActions-text (plural): pin the plural form when multiple actions stay stuck.
-    // Both-ways pending (orchestrator).
     def "clearActions error text says 'if the actions really did get clobbered' plural for two stuck actions"() {
         given:
         enableWrite()
@@ -8611,7 +8607,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the move itself succeeds and the note string is unchanged. Without
         // this assertion only the unit-level success / note pins survive and
         // the rich shape silently regresses to the pre-fix nulls.
-        // Both-ways pending (orchestrator).
         result.beforePosition != null
         result.afterPosition != null
         // Tier-1 ordering: index 1 starts at slot 0, moves to slot 1 after
@@ -8675,7 +8670,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Sibling regression guard to the arrowDn spec above. Pins the same
         // moveResult capture on the arrowUp dispatch path so a regression
         // that drops the assignment on EITHER direction surfaces here.
-        // Both-ways pending (orchestrator).
         result.beforePosition != null
         result.afterPosition != null
         Math.abs((result.afterPosition as Integer) - (result.beforePosition as Integer)) == 1
@@ -14642,7 +14636,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // never a stringified Map ("[value:on, text:On]") nor a Map.Entry ("on=On"), either
         // of which would corrupt the route probe AND the state_<N> domain validator that
         // shares this helper.
-        // Both-ways pending (orchestrator).
         expect:
         script._rmReadPickerOptionStrings(picker) == expected
 
@@ -14671,7 +14664,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // must require exact equality after stripping the '*...*' wrapping + case-folding.
         // 'became false' must NOT match 'became true'; 'unchanged' must NOT match a
         // '*changed*' request; wrapped/bare/case variants of the SAME token must match.
-        // Both-ways pending (orchestrator).
         expect:
         script._rmComparatorTokensMatch(requested, candidate) == expected
 
@@ -14786,7 +14778,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // coarse signal that CAN mask on an unrelated paragraph delta -- that known
         // limitation is documented at the renderShifted assignment; this spec pins the
         // honest no-mask baseline so a regression that always-credits persisted is caught.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -17133,7 +17124,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // bake (doActPage->selectActions). A regression that reverts the truth-up
         // (e.g. restores the deleted "updateRule fired" phrase) would surface
         // here. Pairs with the tools/list description spec below.
-        // Both-ways pending (orchestrator).
         result.note?.contains("added and baked")
         result.note?.contains("no trailing updateRule")
         !result.note?.contains("updateRule fired")
@@ -17149,7 +17139,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // OR question the response when no updateRule fired -- the description
         // misled both ways.
         // Pairs with the happy-path note pin above (W2 outer pair).
-        // Both-ways pending (orchestrator).
         when:
         def tools = script.getAllToolDefinitions()
         def updateNativeApp = tools.find { it.name == "hub_set_rule" }
@@ -17654,7 +17643,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // attribute WITHOUT comparator and comparator WITHOUT attribute produce distinct,
     // differentiating error messages. Both paths must fail-loud and the error text
     // must name the missing sibling field so agents know exactly what to add.
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression: Custom Attribute attribute-without-comparator fails with differentiating error"() {
         given:
@@ -18819,7 +18807,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Site B aborts), the asymmetry the maintainer flagged. The "fail exactly the 2nd
         // post-attr fetch" trick lands the throw on discoverField (the attr write's own
         // pre-fetch + verify both succeed first), same as the Site A pin.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         boolean rCustomAttrWritten = false
@@ -19056,7 +19043,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // (it asserts the error is the clear one AND is NOT the schema dump). The
         // toolSetRule dispatcher forwards requiredExpressionAlreadyExists + error verbatim;
         // pinning the helper keeps the assertion at the guard's source.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -19121,7 +19107,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // comparator that landed. This drives the Site A throwing-probe fallback (the same
         // fixture as the Site A force-write spec) and asserts repairHints carries the
         // verify-don't-rewrite hint for RelrDev_1 and NOT the generic lost-field hint.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         boolean rCustomAttrWritten = false
@@ -22045,7 +22030,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity with the waitEvents/condition Mode paths: a directly-passed
         // integer ID skips name resolution, so it must be cross-checked against
         // the valid set before modesX1 commits a mode-less (Broken) trigger row.
-        // location.modes offers 1/2/3; id 9 belongs to no mode. Both-ways pending (orchestrator).
+        // location.modes offers 1/2/3; id 9 belongs to no mode.
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
@@ -22099,7 +22084,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addTrigger Mode with a valid integer modeId still writes modesX<N> (anti-regression companion)"() {
         // Must-NOT-catch pair for the reject spec above: modeIds:[2] IS a real hub
         // mode, so the cross-check must ACCEPT it and write the picker -- never
-        // false-reject a legitimate directly-passed ID. Both-ways pending (orchestrator).
+        // false-reject a legitimate directly-passed ID.
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Home"], [id: "2", name: "Away"], [id: "3", name: "Night"]]
@@ -25192,7 +25177,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Legacy scalar path: parameters: [75] (bare Integer, not a Map).
         // The pre-validation loop skips non-Map entries; __runCommandExtraParams treats them
         // as type="string" and pValue=p, then follows the literal write path.
-        // Both-ways pending (orchestrator): mutate the `if (!(p instanceof Map)) return` early-return
         // to a throw and confirm this spec goes RED on the scalar contract.
         given:
         enableWrite()
@@ -25511,7 +25495,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // mirroring the production reveal sequence so the guard is non-circular (if the code fails to
         // write uVar3.1 the xVar3.1 enum never opens and xVar3.1 cannot be written).
         //
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def fetchSeq = 0
@@ -25852,7 +25835,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // firmware when the real cause is the numOp write itself.
         // The stub uses a constant seqProvider ({ 1 }) so before/after hashes are identical --
         // numOp.1 routes to skipped(silent_rejection), triggering the precise-attribution path.
-        // Both-ways pending (orchestrator): stub re-routes numOp.1 to applied to prove the
         // old reveal-miss path is still reachable when numOp lands correctly.
         given:
         enableWrite()
@@ -26026,7 +26008,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // valNumber.<N> is a numeric RM field; writing a String, Boolean, or date string
         // produces a broken action that RM silently accepts but renders incorrectly.
         // Reject early so the caller gets a clear message rather than a broken rule.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -26063,7 +26044,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction setVariable with numeric value zero is accepted (truthiness guard regression)"() {
         // value=0 is a valid numeric constant; a truthy-check would wrongly reject it.
         // The numeric-type guard must use instanceof Number, not a truthiness test.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -26112,7 +26092,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction setVariable API-unavailable adds sentinel to skipped (partial=true)"() {
         // When getAllGlobalVars() throws, variable-name validation is skipped and a
         // sentinel entry is pushed to skipped so partial=true surfaces to the caller.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.getAllGlobalVars = { -> throw new RuntimeException("API unavailable") }
@@ -26218,7 +26197,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction runCommand rejects parameter slot #slot with both value and variable"() {
         // Providing both value and variable in a single parameter Map is ambiguous;
         // the pre-validation loop must reject it before any hub writes are attempted.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -26254,7 +26232,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction runCommand rejects Map parameter with neither value nor variable"() {
         // A Map entry with no value and no variable writes only cpType<P>, leaving RM to
         // bake a half-formed action with a type but no actual parameter content.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -26287,7 +26264,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction runCommand rejects non-numeric value for type '#pType'"() {
         // cpVal<P>.<N> is a numeric field when cpType is 'number' or 'decimal'; writing
         // a string produces a silently-broken action. Reject early with a clear message.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -26325,7 +26301,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When numOp.<N> is not in the doActPage schema (not_in_schema skip), the subsequent
         // source-variable reveal cannot happen. The error must name the numOp write failure,
         // not the reveal-miss -- which would wrongly suggest RM/firmware is the cause.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -26377,7 +26352,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When the schema contains more than one field matching xVar<digits>.<N> at the same
         // action slot (unexpected but possible in future firmware), the tool must fail loudly
         // rather than silently picking the first match and producing a confusing write.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -30049,7 +30023,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The fix discovers the picker name from the live schema and writes IDs.
         // Consequence-gated: modes1 appears in the schema only after the stub
         // sees rCapab_1='Mode' in the POST body. Firmware field name: modes<cIdx>.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -30145,7 +30118,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Alternate Mode spec: pass modeIds directly to skip name->ID resolution.
         // Fixture uses ID "99" which is NOT present in location.modes -- proves the modeIds
         // path bypasses _rmResolveModeIds entirely (no name lookup, no KeyError on "99").
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         // ID "99" intentionally absent from modes list -- proves the bypass path doesn't consult it.
@@ -30232,7 +30204,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity with the waitEvents/trigger Mode paths: a directly-passed integer
         // ID skips name resolution, so it must be cross-checked against the revealed
         // picker before modes1 commits a mode-less Broken Condition. The picker
-        // offers 1/3; id 9 is not among them. Both-ways pending (orchestrator).
+        // offers 1/3; id 9 is not among them.
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -30320,7 +30292,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Mode condition with a valid integer modeId still writes the picker (anti-regression companion)"() {
         // Must-NOT-catch pair for the reject spec above: modeIds:[3] IS offered by
         // the revealed picker, so the cross-check must ACCEPT it and write modes1 --
-        // never false-reject a legitimate directly-passed ID. Both-ways pending (orchestrator).
+        // never false-reject a legitimate directly-passed ID.
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -30399,7 +30371,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Mode condition: fail-loud when modes picker not revealed"() {
         // When rCapab='Mode' does NOT cause the modes picker to appear (firmware
         // gap or schema version mismatch), the walker must cancel and throw rather
-        // than silently writing nothing. Both-ways pending (orchestrator).
+        // than silently writing nothing.
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -30444,7 +30416,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Mode condition: fail-loud when neither state nor modeIds is provided"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -30498,7 +30469,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Clock time wire format: ISO datetime '2000-01-01THH:mm:00.000+HHMM' with hub-local TZ offset.
         // sharedLocation defaults to UTC so the fixture produces '+0000' for the assertion.
         // Consequence-gated: each field appears only after the preceding write lands.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -30618,7 +30588,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // and flows to its start/end handler (the stray comparator is ignored). Both-ways:
         // removing the BTT exemption makes the guard fire, flipping success:false with the
         // not-valid-as-a-condition error and no starting1 write.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -30734,7 +30703,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // codes (offset_field_not_revealed, silent_rejection,
         // verification_fetch_failed, not_in_schema) ARE genuine degradation and
         // continue to flip partial -- the disambiguator is the reason-code string.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -30852,7 +30820,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: fail-loud when start-type selector not revealed"() {
         // Confirms the walker throws rather than silently skipping when the
-        // expected reveal does not materialise. Both-ways pending (orchestrator).
+        // expected reveal does not materialise.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -30902,7 +30870,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // start-value reveal fails, the error must mention "'offset' field" not "'time' field"
         // or the wrong field name "'offset' field (startingA<N>)". Verifies the
         // startFieldHint fix (non-clock types say "'offset' field (firmware-assigned)").
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         // Track rCapab write so the STPage stub can reveal starting1 progressively.
@@ -30967,7 +30934,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Between two times: fail-loud with 'offset' field hint when sunset end value not revealed"() {
         // W-spec-clock-aware-error-sunrise (end side): when type='sunset' and the
         // end-value reveal fails, the error must mention "'offset' field".
-        // Mirrors the start-side spec above. Both-ways pending (orchestrator).
+        // Mirrors the start-side spec above.
         given:
         enableWrite()
         def startingWritten = false
@@ -31046,7 +31013,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // comparator/value silently drop. The picker name is firmware-assigned and
         // discovered by regex; names are validated against the revealed enum.
         // Consequence-gated: lVar_1 appears only after rCapab_1='Variable' lands.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -31150,7 +31116,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Variable: fail-loud when variable picker not revealed"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -31195,7 +31160,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Variable: fail-loud when variable name not in revealed enum"() {
         // Validates the name against the live schema enum; unknown name must throw.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -31263,7 +31227,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // RelrDev_<N> in one POST body" from "two sequential POSTs", a distinction
         // outside this stub's wire-format model. Live-hub validation via the wizard
         // probe matrix remains the primary signal for the silent-drop class of bugs.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCustomAttrWritten = false
@@ -31367,7 +31330,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Custom Attribute: fail-loud when RelrDev not revealed after rCustomAttr"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -31423,7 +31385,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: fail-loud when start.time missing for clock type"() {
         // start.type='clock' requires start.time; the walker validates before any hub writes.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -31469,7 +31430,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: fail-loud when end.offset missing for sunrise type"() {
         // end.type='sunrise' requires end.offset; validated before hub writes.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -31517,7 +31477,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Proves getOffset(anchorMs) is exercised: Eastern time (EST = UTC-5 in January).
         // If getOffset(now()) were used instead, the offset would differ in summer (EDT = -0400).
         // Anchor date 2000-01-01 is always winter in Eastern TZ, so offset is always -0500.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.timeZone = TimeZone.getTimeZone("US/Eastern")  // EST = -0500 for Jan anchor
@@ -31630,7 +31589,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Critical: if firmware uses a different field for start-sunrise offset (e.g.
         // startSunriseOffset<N>), the existing startingA regex /startingA\d+/ would miss it.
         // This spec documents what the stub encodes; live firmware shape verified separately.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -31744,7 +31702,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: requires start and end Maps"() {
         // Validation before any hub write: start/end must both be Maps.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -31789,7 +31746,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: fail-loud when start.type is invalid"() {
         // start.type must be 'clock', 'sunrise', or 'sunset'.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -31834,7 +31790,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Between two times: fail-loud when end.type is invalid"() {
         // end.type must be 'clock', 'sunrise', or 'sunset'.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -31882,7 +31837,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Variable: fail-loud when RelrDev not revealed after picker write"() {
         // The comparator field (RelrDev_<N>) must be gated on the variable-picker write.
         // When it never appears, the walker must cancel and throw.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -31938,7 +31892,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Variable: fail-loud when state field not revealed after RelrDev write"() {
         // The value field (state_<N>) must be gated on the RelrDev_<N> write.
         // When it never appears, the walker must cancel and throw.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -32006,7 +31959,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Custom Attribute: fail-loud when state not revealed after RelrDev write"() {
         // The value field (state_<N>) must be gated on RelrDev_<N> write.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCustomAttrWritten = false
@@ -32077,7 +32029,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // commit CLEANLY against an empty-options device picker: success:true, NOT
         // partial, and NO compareToDevice-validation skip (the false-partial this
         // live-validation round fixed). This is the regression guard for that bug.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         // The reference device (99) is intentionally NOT in this app's selectedDevices:
@@ -32174,7 +32125,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // != true) now that the clean-success return carries an explicit partial:false,
         // so this pins the field is PRESENT, not merely absent. A regression that
         // re-treated the empty device-picker options as an anomaly would push a genuine
-        // skip and flip partial. Both-ways pending (orchestrator).
+        // skip and flip partial.
         result.partial == false
 
         and: "the comparator, the isDev toggle, the reference device, and the offset all landed AND are recorded applied"
@@ -32205,7 +32156,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When the boolean isDev_1 toggle does NOT reveal the relDevice_1 picker
         // (firmware variant / render failure), the walker MUST cancel + throw
         // rather than silently commit a device-relative condition with no
-        // reference device. Both-ways pending (orchestrator).
+        // reference device.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -32270,7 +32221,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // options and the requested reference id is not among them, the walker must
         // cancel + throw rather than write an id that picker would reject. This case is
         // rare on real hardware; the common empty-options case proceeds cleanly (see the
-        // happy-path and empty-options specs). Both-ways pending (orchestrator).
+        // happy-path and empty-options specs).
         given:
         enableWrite()
         def isDevWritten = false
@@ -32346,7 +32297,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // -- options present AND the ref id PRESENT -> proceed, write lands, no reject.
         // Without this pin a membership-clause-dropped wrong-impl (`if (relOpts) { reject }`)
         // would pass the whole suite because no spec exercises options-present-and-valid.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def isDevWritten = false
@@ -32427,7 +32377,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // ([[99:"T2"]]) rather than a {id:label} Map or a flat scalar List. The walker must
         // extract each map's single key for the membership test -- otherwise each entry
         // stringifies as "[99:T2]" and the `== refDevId` check always fails, falsely
-        // rejecting a valid reference device. Both-ways pending (orchestrator).
+        // rejecting a valid reference device.
         given:
         enableWrite()
         def isDevWritten = false
@@ -32509,7 +32459,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // fullJson body = not-found) is rejected before any write, so it cannot write
         // through to a silent broken rule. This is the guard the option-list check could
         // NOT provide on real firmware (device pickers expose no options, so the
-        // option-list branch never fires). Both-ways pending (orchestrator).
+        // option-list branch never fires).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -32573,7 +32523,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // literal fallback; the new device-relative code ignores them, so a caller passing
         // both would silently lose the literal. Reject up front, mirroring the Variable
         // compareToVariable-vs-state/value reject. The where-block covers BOTH literal RHS
-        // shapes (state and value) -- the reject must fire for either. Both-ways pending
+        // shapes (state and value) -- the reject must fire for either.
         // (orchestrator).
         given:
         enableWrite()
@@ -32620,7 +32570,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // compareToDevice (device-relative RHS) and compareToVariable (variable RHS) are
         // mutually exclusive. Without this reject the compareToVariable RHS would silently
         // be dropped (the device-relative path never consumes it). Reject up front, the
-        // third arm of the RHS-exclusivity contract. Both-ways pending (orchestrator).
+        // third arm of the RHS-exclusivity contract.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -32668,7 +32618,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // a compareToDevice passed alongside one of them would be silently dropped (the
         // capability block commits its own condition and returns). The pre-walker
         // capability-scope guard rejects the combination up front so the documented contract
-        // holds unconditionally. Both-ways pending (orchestrator).
+        // holds unconditionally.
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -32721,7 +32671,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // validation gap. The walker must write the reference id and commit cleanly:
         // success:true, NOT partial, and NO compareToDevice-validation skip. This is the
         // inverse of the old (wrong) behaviour that treated empty options as an anomaly
-        // and false-flagged partial on every compareToDevice. Both-ways pending (orchestrator).
+        // and false-flagged partial on every compareToDevice.
         given:
         enableWrite()
         def isDevWritten = false
@@ -32811,7 +32761,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // comparator enum only accepts the Unicode glyphs; a raw '!=' would write an
         // operator RM does not recognize). Drives the device-relative happy path with a
         // '!=' comparator and asserts the glyph landed on RelrDev_1.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -32890,7 +32839,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression compareToDevice: fail-loud when RelrDev not visible after base writes"() {
         // The walker does a direct fetch after rCapab/rDev writes and fails loud if
-        // RelrDev_<N> is absent. Both-ways pending (orchestrator).
+        // RelrDev_<N> is absent.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -32942,7 +32891,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Variable: fail-loud when 'variable' field missing"() {
         // Variable condition validation: 'variable' is required.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -32987,7 +32935,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Variable: fail-loud when 'comparator' field missing"() {
         // Variable condition validation: 'comparator' is required.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -33033,7 +32980,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Custom Attribute validation: both attribute AND comparator required when one is present.
         // This covers the first throw inside _rmWalkConditionReveal's Custom
         // Attribute branch: attribute!=null && comparator==null.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -33080,7 +33026,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression Custom Attribute: fail-loud when comparator set but attribute missing"() {
         // The second Custom Attribute validation: comparator!=null && attribute==null.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -33125,7 +33070,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addRequiredExpression compareToDevice: fail-loud when deviceId missing"() {
         // compareToDevice.deviceId is required.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -33174,7 +33118,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // implied by the shared capability, and the walker has no wire consumer for it
         // (it is neither validated nor written). Omitting it must NOT fail loud; the
         // device-relative comparison commits. Pins that the dropped attribute requirement
-        // did not regress into a silent reject. Both-ways pending (orchestrator).
+        // did not regress into a silent reject.
         given:
         enableWrite()
         def isDevWritten = false
@@ -33252,7 +33196,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression Mode: multi-mode by name list -- both names resolved, both IDs written"() {
         // Exercises state: ['Day', 'Night'] (List form of state).
         // Both names are resolved via location.modes, both IDs written to modes<N>.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -33346,7 +33289,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     //   compareToDevice   -- RelrDev + isDev toggle -> relDevice picker -> offset
     //   fail-loud paths   -- same cancelCapab+throw contract as STPage callers
     //
-    // Both-ways pending (orchestrator) for every guard below.
 
     // --- Shared helpers for addAction ifThen tests ---
 
@@ -33379,7 +33321,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // "two sequential POSTs", a distinction outside this stub's wire-format
         // model. Live-hub validation via the wizard probe matrix remains the
         // primary signal for the silent-drop class of bugs.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCustomAttrWritten = false
@@ -33475,7 +33416,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // writes the resolved mode IDs. Without the walker, no modes picker was written
         // (the old code wrote rCapab and then tried state_N which does not exist for Mode).
         // Consequence-gated: modes1 appears only after rCapab_1='Mode' POST lands.
-        // Firmware field name: modes<cIdx> (e.g. modes1). Both-ways pending (orchestrator).
+        // Firmware field name: modes<cIdx> (e.g. modes1).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -33557,7 +33498,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // each write or the subsequent fields silently drop (same invariant as STPage).
         // Consequence-gated: lVar_1 only after rCapab_1='Variable'; RelrDev_1 only
         // after lVar_1; state_1 only after RelrDev_1.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -34912,7 +34852,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Clock time: ISO datetime '2000-01-01THH:mm:00.000+HHMM' with hub-local TZ offset.
         // sharedLocation defaults to UTC so the fixture produces '+0000' for the assertion.
         // Consequence-gated: each field only appears after the preceding one is committed.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -35017,7 +34956,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // doActPage mirror of the STPage device-relative happy path. The shared walker
         // _rmWalkConditionReveal runs on BOTH pages, so this pins that the isDev_1 toggle
         // reveals the relDevice_1 picker and the reference device + offset land on the
-        // action page too -- not just on STPage. Both-ways pending (orchestrator).
+        // action page too -- not just on STPage.
         given:
         enableWrite()
         def isDevWritten = false
@@ -35099,7 +35038,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.success == true
         // The headline contract on the doActPage surface: compareToDevice commits clean.
         // _rmAddAction's clean return has always carried partial:false, so assert == false
-        // (pins the field present, not merely absent). Both-ways pending (orchestrator).
+        // (pins the field present, not merely absent).
         result.partial == false
 
         and: "the comparator, isDev toggle, reference device, and offset all landed AND are recorded applied on doActPage"
@@ -35124,7 +35063,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when modes picker not revealed on doActPage"() {
         // When rCapab='Mode' does not cause modes picker to appear, the walker must
         // cancel and throw so the caller gets a diagnostic rather than a silent no-op.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -35173,7 +35111,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when variable name not in revealed enum on doActPage"() {
         // Unknown variable name must throw with a message naming the bad variable
         // and the available options -- same contract as the STPage Variable path.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -35233,7 +35170,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When rCustomAttr_N is written but RelrDev_N never appears, the walker must
         // cancel and throw with a diagnostic -- same contract as the STPage Custom
         // Attribute path. The static stub simulates firmware that doesn't reveal RelrDev.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -35291,7 +35227,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When writing a condition fails AND the cancelCapab cleanup also throws,
         // the outer catch must decode the [wizardStuck] marker and set wizardStuck=true
         // in the response with a restoreHint pointing at doActPage cancelCapab.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -35350,7 +35285,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Parity with addRequiredExpression Mode-by-modeIds spec: when modeIds is
         // provided instead of state, the walker writes the IDs directly without
         // attempting name->ID resolution via location.modes.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -35420,7 +35354,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when compareToDevice RelrDev not visible after base writes"() {
         // Parity with addRequiredExpression compareToDevice fail-loud spec: when RelrDev_<N>
         // is absent from the schema after rCapab/rDev writes, the walker must fail loud.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -35478,7 +35411,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // device-relative comparison commits, but state_1 (the offset slot) never appears,
         // so the requested offset drops with an offset_field_not_revealed sentinel. That
         // sentinel must flip partial through _rmAddAction's OWN envelope computation
-        // (distinct from the STPage / addRequiredExpression envelope). Both-ways pending
+        // (distinct from the STPage / addRequiredExpression envelope).
         // (orchestrator).
         given:
         enableWrite()
@@ -35572,7 +35505,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction ifThen: fail-loud when Mode condition supplies neither state nor modeIds"() {
         // Parity with addRequiredExpression Mode "neither provided" spec.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -35619,7 +35551,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when Between two times start.time missing for clock type"() {
         // When start.type='clock' and no time is provided, the IAE must fire before
         // the wizard walk begins. Parity with addRequiredExpression validation path.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -35670,7 +35601,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when Between two times end.time missing for clock type"() {
         // When end.type='clock' and no time is provided, the IAE must fire.
         // Parity with addRequiredExpression validation path.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -35721,7 +35651,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when Between two times starting<N> not revealed after rCapab write"() {
         // Static doActPage schema never reveals starting1 -- verifies fail-loud on the
         // start-type-reveal step. Parity with the addRequiredExpression static-schema guard.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -35774,7 +35703,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // toIsoTime closure must cancel the in-flight wizard before throwing. Without that
     // cancel, the wizard stays half-open and the next write inherits it. The fix point
     // is _rmWalkConditionReveal's toIsoTime closure (Round 12 B1).
-    // Both-ways pending (orchestrator).
     def "addAction ifThen: fail-loud when Between two times location.timeZone is null on doActPage"() {
         given:
         enableWrite()
@@ -35839,7 +35767,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // to cancel) and flips wizardStuck to true erroneously. The fix point is the
     // !cancelledByWalker conditional in _rmAddRequiredExpression's outer
     // catch -- this spec pins the guard.
-    // Both-ways pending (orchestrator).
     def "addRequiredExpression Mode: walker cancel succeeds -- outer catch does not issue a second cancelCapab"() {
         given:
         enableWrite()
@@ -35899,7 +35826,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen: fail-loud when Variable lVar picker not revealed on doActPage"() {
         // When rCapab='Variable' does not cause the variable-name picker (lVar_<N>) to
         // appear, the walker must cancel and throw. Parity with addRequiredExpression guard.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -35950,7 +35876,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Variable comparator field (RelrDev_<N>) must be revealed after the picker write.
         // When it never appears, the walker must cancel and throw.
         // Parity with addRequiredExpression Variable RelrDev fail-loud spec.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -36012,7 +35937,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The value field (state_<N>) must be revealed after the RelrDev write.
         // When it never appears, the walker must cancel and throw.
         // Parity with addRequiredExpression Variable state_N fail-loud spec.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -36081,7 +36005,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The value field (state_<N>) for Custom Attribute must be revealed after RelrDev write.
         // When it never appears, the walker must cancel and throw.
         // Parity with addRequiredExpression Custom Attribute state_N fail-loud spec.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -36161,7 +36084,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When writing a condition fails AND the cancelCapab cleanup also throws on STPage,
         // the outer catch must set wizardStuck=true in the response.
         // Parity with addAction ifThen wizardStuck spec.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -36220,7 +36142,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression: outer toolSetRule propagates inner failure fields on STPage walk error"() {
         // When the walker fails (e.g. modes picker not revealed), the outer call must
         // surface success=false and error in the returned map, not an unhandled exception.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "3", name: "Night"]]
@@ -36277,7 +36198,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Before the slot-anchor fix the walker wrote the comparator to the FIRST page-order
         // /RelrDev_\d+/ match and revealed /relDevice_\d+/ unanchored, so condition 2's writes
         // silently landed in slot 1's fields (writeST verifies the wrong-but-valid field as
-        // applied). Both-ways pending (orchestrator).
+        // applied).
         given:
         enableWrite()
         def isDev1Written = false
@@ -36416,7 +36337,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // main capability sequence completes. These five specs verify that field lands.
 
     def "addRequiredExpression Mode: cond.not=true writes not<N> to STPage"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -36485,7 +36405,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Between two times: cond.not=true writes not<N> to STPage"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -36574,7 +36493,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Variable: cond.not=true writes not<N> to STPage"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -36655,7 +36573,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Custom Attribute: cond.not=true writes not<N> to STPage"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -36740,7 +36657,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addRequiredExpression compareToDevice: cond.not=true writes not<N> to STPage"() {
         // The device-relative sequence (isDev toggle -> relDevice picker) runs, then the
         // walker writes not1=true after sealing the comparison.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def isDevWritten = false
@@ -36824,7 +36740,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // the normal capability write sequence.
 
     def "addRequiredExpression Mode: rawSettings fields written alongside modes picker"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"]]
@@ -36894,7 +36809,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Variable: rawSettings fields written alongside comparator chain"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -36973,7 +36887,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Custom Attribute: rawSettings fields written alongside comparator chain"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -37056,7 +36969,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression Between two times: rawSettings fields written alongside clock sequence"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -37144,7 +37056,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression compareToDevice: rawSettings fields written alongside device-compare sequence"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def isDevWritten = false
@@ -37226,7 +37137,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // fires (success=true) for the non-ifThen subtypes using a simple Mode condition.
 
     def "addAction elseIf: Mode condition writes modes picker -- walker fires on elseIf subtype"() {
-        // Both-ways pending (orchestrator).
         //
         // Setup includes an existing open ifThen action (actType.1=condActs +
         // actSubType.1=getIfThen) so the new elseIf has a parent IF block --
@@ -37307,7 +37217,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction repeatWhile: Mode condition writes modes picker -- walker fires on repeatWhile subtype"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"]]
@@ -37374,7 +37283,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction waitExpression: Mode condition writes modes picker -- walker fires on waitExpression subtype"() {
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"]]
@@ -37448,7 +37356,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // (explicit deviceIds beats singular deviceId when both are provided).
 
     def "addRequiredExpression: singular deviceId normalized to deviceIds array before STPage walk"() {
-        // Both-ways pending (orchestrator).
         // When the caller passes deviceId: 73 instead of deviceIds: [73], the
         // dispatcher normalizes it to [73] so rDev_1 is written correctly.
         given:
@@ -37535,7 +37442,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addAction ifThen: singular deviceId normalized to deviceIds array before doActPage walk"() {
-        // Both-ways pending (orchestrator).
         // Same normalization as STPage path but exercised via addAction ifThen expression.
         given:
         enableWrite()
@@ -37636,7 +37542,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // companion spec should be added asserting the recursive validation also
     // throws on non-existent ids; that companion belongs in the same PR as the
     // write-side feature work.
-    // Both-ways pending (orchestrator).
     def "addAction ifThen: recursive normExprCondList walks subExpression without crashing the dispatcher"() {
         given:
         enableWrite()
@@ -37688,7 +37593,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // deviceIds: [9999], then validated, then the validator must throw with the
     // distinctive 'does not exist on the hub' phrase. Without the order, the
     // un-normalized singular deviceId would bypass validation entirely.
-    // Both-ways pending (orchestrator).
     def "addTrigger: singular non-existent deviceId in trigger.condition fails the existence check"() {
         given:
         enableWrite()
@@ -37748,7 +37652,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     def "addRequiredExpression: explicit deviceIds wins over singular deviceId when both provided"() {
-        // Both-ways pending (orchestrator).
         // Precedence: if both deviceId: 5 and deviceIds: [99] are given, deviceIds wins.
         given:
         enableWrite()
@@ -37834,7 +37737,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // When caller passes singular deviceId: <nonexistent>, the normalization converts it
     // to deviceIds: [<nonexistent>], and then _rmValidateDeviceIdsExist catches the bad ID.
     // If normalization didn't run, deviceIds would be null and the validator would skip.
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression: singular deviceId for nonexistent device triggers pre-validation throw"() {
         given:
@@ -37878,7 +37780,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // When a condition has a subExpression, the deviceId-normalization closure
     // must recurse into subExpression.conditions[] so that singular deviceId
     // entries inside nested parens are also normalized.
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression: singular deviceId inside nested subExpression.conditions is normalized"() {
         given:
@@ -37974,7 +37875,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // trigger write (no new appearance detected). This path fires on hubs where the schema
     // is static (all fields always visible regardless of prior writes). A simple Mode
     // condition with a static STPage schema verifies the fallback keeps success=true.
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression Mode: static-schema (all fields always visible) succeeds via revealedAny fallback"() {
         given:
@@ -38043,7 +37943,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     //
     // When location.timeZone is null, the Between two times walker must fail-loud
     // before touching the wizard (throw with message naming the Settings path).
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression Between two times: fail-loud when location.timeZone is null"() {
         given:
@@ -38096,7 +37995,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // The Between two times clock-time conversion must produce the correct TZ offset
     // for non-UTC hubs. Verify with Australia/Sydney (+11 or +10 depending on DST;
     // using a fixed-offset timezone to keep the test deterministic).
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression Between two times: clock time ISO datetime uses hub timezone offset (non-UTC zone)"() {
         given:
@@ -38190,7 +38088,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     //
     // When exactly one condition degrades (compareToDevice offset field absent), the
     // repairHints string must say "1 condition" (not "1 conditions" or "1 condition(s)").
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression: repairHints says '1 condition' (singular) for exactly one degraded condition"() {
         given:
@@ -38278,7 +38175,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // unique-count. This spec forces 3 skipped entries that all carry condIdx=0
     // (via rawSettings keys absent from the static schema) and pins the
     // singular wording.
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression: repairHints says '1 condition' when one condition produces multiple skipped entries"() {
         given:
@@ -38353,7 +38249,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // Expression added with N condition(s); updateRule fired." with a count-
     // aware ternary on condition/conditions. Pin both forms so a regression
     // that drops the discrimination is caught.
-    // Both-ways pending (orchestrator).
 
     def "addRequiredExpression note says '1 condition' singular for one condition"() {
         given:
@@ -38508,14 +38403,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // is" / "triggers are". The helper _rmCheckSubscriptionSettle determines
     // the count via tDev<N> setting introspection. Pin both forms via the
     // helper output: triggerCount=1 (singular path) and triggerCount=2 (plural).
-    // Both-ways pending (orchestrator).
     def "subscriptionSettle WARN message: singular 'trigger is' when triggerCount=1"() {
         // Drive the count-aware trigVerb ternary inside toolSetRule's
         // button-handler post-updateRule branch via a real statusJson stub
         // returning one tDev entry + zero subscriptions.
         // _rmCheckSubscriptionSettle reports unsettled=true twice (initial +
         // post-retry), so the WARN string fires.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -38666,7 +38559,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "subscriptionSettle WARN message: plural 'triggers are' when triggerCount=2"() {
         // Plural-side regression pin for the trigVerb ternary in
         // toolSetRule's button-handler post-updateRule branch.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -38704,7 +38596,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- W-spec-addTrigger-deviceId-silent: addTrigger.condition singular deviceId ----------
     //
     // _rmBuildCondition now normalizes singular deviceId -> deviceIds for trigger.condition.
-    // Both-ways pending (orchestrator).
 
     def "addTrigger: singular deviceId in trigger.condition is normalized before wizard write"() {
         given:
@@ -38817,7 +38708,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // propagation, Variable picker degradation sentinel, subExpression rejection
     // on doActPage, Tamper/CO2 description vocabulary). Each spec carries a
     // "Load-bearing discriminator" note naming the regression class it pins.
-    // Both-ways pending (orchestrator).
     // =========================================================================
 
     // ---------- compareToDevice silent writes on null reveal ----------
@@ -38827,7 +38717,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the relDevice write (firmware variant), the walker logs warn + pushes a sentinel
         // with reason='offset_field_not_revealed'. It does NOT fail the call -- the
         // device-relative comparison is otherwise complete (offset is optional).
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def isDevWritten = false
@@ -39224,7 +39113,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // condition fail-loud guard). State-change comparators legitimately omit RHS;
         // a regression that drops the exemption would throw on every Variable-changed
         // condition and break the entire "fire when myVar changes" idiom.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -39407,7 +39295,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // fallback path (even when revealedNew matched) would emit false positives on every
         // normal progressive-disclosure write -- the entire walker would mark every
         // condition partial=true.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def rCapabWritten = false
@@ -39511,7 +39398,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // result.partial MUST remain falsy. Catches a regression that flips the
         // `!varOpts` gate to `if (true)` or otherwise unconditionally pushes the
         // sentinel.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -39580,7 +39466,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // recovery line. Catches a regression that flips the flag init values
         // (e.g. `def updateRuleFailed = true` instead of `false`) or always
         // appends the repairHint regardless of failure.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -39668,7 +39553,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Uses the proven selectTriggersSchemaJson + mainPageJson helpers (same as
         // the addTrigger full-success spec) so the call actually reaches the
         // trailing updateRule click.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleAttempted = false
@@ -39737,7 +39621,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // When the trailing updateRule click succeeds, the new B5 response slots
         // MUST stay falsy and repairHints MUST NOT carry the recovery line.
         // Uses the same proven helpers as the failure spec above for symmetry.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -39880,7 +39763,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // single-shape spec missed the actions-only case entirely, which would
         // let a regression that gates the trailing-updateRule propagation on
         // "addTriggersList non-empty" ship green.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleAttempted = false
@@ -39970,7 +39852,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the wrong default (so callers see them true even on success) would
         // surface here. Mirror of the single-trigger addTrigger SUCCESS pin.
         // Three-row rotation matches the failure-pin coverage.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -40051,7 +39932,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // so the addActions-only and mixed-shape OR-branches are also pinned. A
         // regression that fixes the OR for triggers but reverts it for actions
         // (or vice versa) was previously invisible.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -40129,7 +40009,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Schema layout for the conditional-trigger path: _rmBuildCondition writes to
         // rCapab_1/rDev_1/state_1 at idx=1, then idx advances to 2 and the actual
         // trigger needs tCapab2/tDev2/tstate2/isCondTrig.2/condTrig.2.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -40207,7 +40086,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // This spec asserts the multi-device list path produces the CSV form directly,
         // pinning the serialization invariant that any regression to the wrap step (or
         // the _rmBuildSettingsBody CSV builder) would surface here.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -40287,7 +40165,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // throws IllegalArgumentException BEFORE any wizard write fires, so no
         // selectTriggers schema is needed -- the throw propagates up to the
         // toolSetRule catch and surfaces as result.success=false.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -40344,7 +40221,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The outer catch in _rmAddRequiredExpression must observe that
         // cancelledByWalker is still false and issue cancelCapab itself. Mirrors F4
         // structurally (sibling-pattern fidelity per N.13).
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def cancelCapabClicks = 0
@@ -40434,7 +40310,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // F8 Variable picker regex-union parametrize; F9 ASCII-to-Unicode
     // comparator wire-write cross-site; F12 patches-bundle walker spec;
     // device-state comparator refusal)
-    // Both-ways pending (orchestrator).
     // =========================================================================
 
     // ---------- F1: patches updateRule failure propagation ----------
@@ -40446,7 +40321,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // click is rejected the patches landed but never bake; envelope MUST carry
         // dedicated slots (updateRuleFailed / patchesNotLive / updateRuleError),
         // flip success=false, and append a recovery repairHint.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleAttempted = false
@@ -40528,7 +40402,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Negative pin paired with the failure spec above. A regression flipping
         // the F1 flag init values (e.g. updateRuleFailed=true by default) or
         // unconditionally appending the repairHint would surface here.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -40603,7 +40476,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Sibling pattern from F1 (above) + F2 addRequiredExpression. Variable is
         // created on the hub (varResult non-null) but the rule's action map never
         // re-evaluates against the new variable until updateRule fires.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleAttempted = false
@@ -40664,7 +40536,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addLocalVariable: trailing updateRule SUCCESS leaves updateRuleFailed + variableNotLive falsy"() {
         // Negative pin paired with the failure spec above.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -40738,7 +40609,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // branch by returning an allLocalVars Map that does NOT contain the
         // variable name across all 3 verification retries. Trailing updateRule
         // succeeds in this scenario -- the inner failed, not the trailing click.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -40842,7 +40712,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // _rmWriteSettingOnPage useST=true), so the fixture uses a sequence
         // counter to let the EARLY mainPage fetches succeed and throw only on
         // the FINAL verification fetch.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def fetchSeq = 0
@@ -40922,7 +40791,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // settings but RM never baked the paragraph (typically wizard-state leak
         // from a prior aborted walk). hubRenderError flips true to tell the caller
         // the row needs removeAction-then-retry style recovery.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def fetchSeq = 0
@@ -40985,7 +40853,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // three firmware-variant picker names -- lVar_<N> / varName_<N> / rVar_<N>.
         // Existing happy-path specs only stub lVar_1; this @Unroll parametrizes
         // over all three so a regex narrowing on any branch surfaces here.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -41054,7 +40921,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // walker call site. A regression to the normalize call site (e.g.
         // _rmNormalizeComparator removed from the call chain) would store the
         // raw '!=' string and RM would reject it as not in the option list.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -41113,7 +40979,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "addAction ifThen Variable: caller passes '!=', RelrDev_1 written as Unicode '≠' (cross-site for _rmNormalizeComparator)"() {
         // Companion to the addRE site above. The same _rmNormalizeComparator
         // mapping must apply on the doActPage walker path (Variable branch).
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         // Open ifThen needed for the structural-balance pre-flight to allow this addAction.
@@ -41176,7 +41041,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "addAction ifThen Custom Attribute: caller passes '!=', RelrDev_1 written as Unicode '≠' (cross-site for _rmNormalizeComparator)"() {
         // Third F9 site: doActPage walker Custom Attribute branch. Same contract.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def writtenFields = [:]
@@ -41247,7 +41111,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // slot init values flip.
         // P2 mechanism: pins the F1 fix in the patches dispatch (sibling
         // _rmAddRequiredExpression class-fix). Same diff as F1.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "3", name: "Night"]]
@@ -41726,7 +41589,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     //
     // A regression that fixes `subscriptionsNotLive = false` always, returns
     // wrong `updateRuleError` text, or rewrites the recovery hint line would
-    // lint-green but red here. Both-ways pending (orchestrator).
+    // lint-green but red here.
 
     @spock.lang.Unroll
     def "mutation-dispatcher #shape: trailing-updateRule failure surfaces updateRuleFailed + subscriptionsNotLive (I6)"() {
@@ -41906,7 +41769,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // initializes updateRuleFailed=true or subscriptionsNotLive=true at the
         // wrong default (so callers see them true even on success) would surface
         // here. Mirror of the per-dispatcher SUCCESS pins (addTrigger, bulk, etc.).
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -42073,7 +41935,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // hub_get_app_config to see where the action moved. A regression that
         // restores the thin entry would leave the rich slots null even though
         // the move itself succeeds.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def clickFired = false
@@ -42134,7 +41995,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // index} push), forcing callers to re-fetch via hub_get_app_config to see
         // the index-list diff. A regression that restores the discard would
         // leave the rich slots null.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def delActFired = false
@@ -42479,7 +42339,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Hubitat sandbox script class. Driving partial:true through the real
         // helper via a deliberately-failing post-commit mainPage fetch is
         // both robust and exercises the contract end-to-end.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -42685,7 +42544,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // (The post-commit readback reads the PERSISTED configure/json settings
         // now, not the closed selectTriggers wizard page.) The dispatcher then
         // flips trigInnerPartial=true and the new inner-only hint should fire
-        // because updateRuleFailed stays false. Both-ways pending (orchestrator).
+        // because updateRuleFailed stays false.
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -43029,7 +42888,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Pin: nested bogus deviceId must reject with a path-prefixed error
         // that names the nesting site. The path string is the load-bearing
         // discriminator -- it distinguishes the recursive validator from any
-        // flat fallback. Both-ways pending (orchestrator).
+        // flat fallback.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -43086,7 +42945,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // see "conditions[0] is not a Map" (the silent-skip + downstream
         // throw shape) instead of "addRequiredExpression.conditions[1].
         // subExpression.conditions[0] is not a Map".
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -43145,7 +43003,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // revealedAny on the post-rCapab stage and emits the informational
         // `reveal_fallback_to_existing_field` sentinel. Pre-fix, that
         // entry flipped partial:true; post-fix it must stay falsy.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "2", name: "Night"]]
@@ -43279,7 +43136,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         //   the bubble came from trigInnerPartial, not from the trailing-
         //   updateRule branch).
         //
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -43362,7 +43218,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // missing) would red-fail this spec while the positive pin still passes.
         // Pin: VALID nested deviceId proceeds without the "does not exist on
         // the hub" error -- validator does not throw false positives.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -43417,7 +43272,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // The walker still emits the informational sentinel on the modes1
         // reveal (revealedAny matches because modes1 was already visible).
         // The dispatcher MUST see both sentinel classes and flip partial:true.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         sharedLocation.modes = [[id: "2", name: "Night"]]
@@ -43590,7 +43444,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // STPage reveals relDevice_1 after isDev_1 (device-relative RHS lands) but never
         // exposes state_1 (the offset slot), so the inner addRE returns
         // {success:true, partial:true}. Trailing updateRule click lands clean.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def updateRuleClicked = false
@@ -44333,7 +44186,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // the REAL _createNativeAppShell (NOT a stubbed shell) and asserts a
         // btn updateRule click occurs AFTER the last RE-walk POST. It goes RED
         // if the trailing updateRule is removed.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def fetchSeq = 0
@@ -44416,7 +44268,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // updateRuleFailed propagation. The post-RE updateRule click is the only
         // btn-updateRule that targets selectActions context here -- we fail
         // exactly that click.
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         def fetchSeq = 0
@@ -44587,7 +44438,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // on create. It pins only what the where: block enumerates -- a NEW shortcut added to
         // hub_set_rule must be added to EDIT_ONLY (and to this where: block) to be covered here.
         // The companion below pins the must-NOT-catch side (CREATE_HONORED ops do not throw).
-        // Both-ways pending (orchestrator).
         given:
         enableWrite()
         script.metaClass._createNativeAppShell = { args -> [success: true, appId: 984] }
@@ -44680,7 +44530,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // records the comparator key into ctx.applied AND emits a skip hint promising "value IS
         // in settingsApplied". If a caller omits ctx.applied the force-write would land in a
         // throwaway list and the hint would lie, so the walker rejects a null ctx.applied at the
-        // boundary rather than degrading silently. Both-ways pending (orchestrator).
+        // boundary rather than degrading silently.
         when: "the walker is invoked with a ctx that omits the applied accumulator"
         script._rmWalkConditionReveal(100, [page: "STPage", skipped: []], [capability: "Switch"], 0)
 
@@ -44695,7 +44545,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // ctx.skipped. A null accumulator on a degradation-surfacing path is a PROGRAMMING
         // error, so the walker rejects it at the boundary rather than no-op'ing the skip.
         // ctx.applied is supplied here so the failure is unambiguously the skipped guard.
-        // Both-ways pending (orchestrator).
         when: "the walker is invoked with a ctx that omits the skipped accumulator"
         script._rmWalkConditionReveal(100, [page: "STPage", applied: []], [capability: "Switch"], 0)
 
