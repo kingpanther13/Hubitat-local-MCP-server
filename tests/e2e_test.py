@@ -19091,8 +19091,11 @@ class TestRunner:
         # Group for display
         self._load_diagnostics = True
         current_group = None
+        abort_run = False
         try:
             for group, display_name, method_name in tests_to_run:
+                if abort_run:
+                    break
                 if group != current_group:
                     current_group = group
                     print(f"\n[{group}]")
@@ -19117,7 +19120,7 @@ class TestRunner:
                             except Exception as exc:
                                 self._record(f"{display_name} (pre-edit backups off again)", group, "fail",
                                              message=f"could not turn pre-edit backups back off ({first}; retry: {exc}); the run stops here")
-                                raise
+                                abort_run = True
         finally:
             try:
                 self.cleanup()
