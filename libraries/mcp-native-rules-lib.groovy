@@ -9264,12 +9264,10 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 // Reuse the newest same-rule edit baseline for one hour unless strict per-write
 // backups are enabled. Deletes call _rmBackupRuleSnapshot directly and a standalone
 // replaceRequiredExpression is exempted below, so both always get a fresh, pinned image.
-// Under strict per-write backups a write inside an editing session is a rolling step.
 // A fresh snapshot is taken after the lock is released, since its App Cloner export is slow.
 Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
     def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason) }
-    return reused ?: _rmBackupRuleSnapshot(ruleId, reason,
-        settings?.backupEveryRuleWrite == true && reason != "pre-replaceRequiredExpression")
+    return reused ?: _rmBackupRuleSnapshot(ruleId, reason)
 }
 
 // The newest non-pending snapshot of ruleId taken within the last hour (a map entry), or null.
@@ -9342,11 +9340,9 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
 // tools. Backup key pattern: rm-rule_<ruleId>_<yyyyMMdd-HHmmss-SSS>[-<uuid>].
 // The reads and the App Cloner export run outside the backup lock; only the file and manifest
 // writes hold it.
-Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean rollingIfInSession = false) {
+Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
     def built = _rmBuildRuleSnapshot(ruleId, reason)
-    return _withBackupLock("rule ${ruleId} snapshot (${reason})") {
-        _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, rollingIfInSession)
-    }
+    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map) }
 }
 
 private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
@@ -9494,9 +9490,13 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
     return [snapshot: snapshot, config: config]
 }
 
-private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config, boolean rollingIfInSession = false) {
-    // Decided under the lock: the session's first snapshot is its pinned baseline.
-    String retention = rollingIfInSession && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
+private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config) {
+    // Under strict per-write backups an edit inside an editing session is a rolling step. The
+    // session's first snapshot, and a delete's or Required Expression replacement's recovery
+    // point, stay pinned. Decided under the lock, against the committed index.
+    boolean editStep = settings?.backupEveryRuleWrite == true &&
+        !(reason in ["pre-delete", "pre-forcedelete", "pre-replaceRequiredExpression"])
+    String retention = editStep && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
