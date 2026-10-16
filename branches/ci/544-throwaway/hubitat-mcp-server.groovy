@@ -24379,13 +24379,13 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     }
     if (spec.compareToDevice != null) {
         if (!(spec.compareToDevice instanceof Map) || (spec.compareToDevice as Map).deviceId == null) {
-            throw new IllegalArgumentException("${where}: compareToDevice is {deviceId, offset?}. ${hint}".toString())
+            throw new IllegalArgumentException("${where}: compareToDevice requires 'deviceId' (the reference device ID). ${hint}".toString())
         }
         if (spec.comparator == null || _rmComparatorIsRhsOptional(spec.comparator)) {
-            throw new IllegalArgumentException("${where}: compareToDevice needs a comparator (=, !=, <, >, <=, >=). ${hint}".toString())
+            throw new IllegalArgumentException("${where}: compareToDevice requires 'comparator' (e.g. '>', '<', '='). ${hint}".toString())
         }
         if (spec.state != null || spec.value != null) {
-            throw new IllegalArgumentException("${where}: compareToDevice replaces state/value; an offset goes in compareToDevice.offset. ${hint}".toString())
+            throw new IllegalArgumentException("${where}: compareToDevice (device-relative RHS) cannot be combined with 'state'/'value' (literal RHS) -- mutually exclusive; use compareToDevice.offset for an offset. ${hint}".toString())
         }
         _rmValidateDeviceIdsExist("${where}.compareToDevice.deviceId".toString(), [(spec.compareToDevice as Map).deviceId])
     }
@@ -24803,23 +24803,28 @@ private void _rmRequireDeviceCapability(String label, Object ids, String subType
     try {
         def parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/vrb/devices") ?: "[]")
         (parsed instanceof List ? parsed : []).each { d ->
-            if (d instanceof Map && d.id != null) byId[d.id.toString()] = [label: d.label, caps: ((d.capabilities ?: []) as List).collect { it?.toString()?.toLowerCase() }]
+            if (d instanceof Map && d.id != null) byId.put(d.id.toString(), [label: d.label, caps: ((d.capabilities ?: []) as List).collect { it?.toString()?.toLowerCase() }])
         }
     } catch (Exception e) {
         mcpLog("warn", "rm-native", "${label}: device capabilities could not be read (${e.message ?: e}); the ${cap} check was skipped")
         return
     }
     if (byId.isEmpty()) return
-    def lacking = (ids as List).findAll { id -> def d = byId[id?.toString()]; d != null && !(cap.toLowerCase() in d.caps) }
+    def lacking = (ids as List).findAll { id -> def d = byId.get(id?.toString()); d != null && !(cap.toLowerCase() in d.caps) }
     if (lacking) {
-        throw new IllegalArgumentException("${label}: ${lacking.collect { id -> "device ${id} (${byId[id.toString()].label})" }.join(', ')} ${lacking.size() == 1 ? 'does' : 'do'} not have the ${cap} capability Rule Machine's picker for this action lists. RM is not touched.".toString())
+        throw new IllegalArgumentException("${label}: ${lacking.collect { id -> "device ${id} (${byId.get(id.toString()).label})" }.join(', ')} ${lacking.size() == 1 ? 'does' : 'do'} not have the ${cap} capability Rule Machine's picker for this action lists. RM is not touched.".toString())
     }
 }
 private void _rmRequireCatalogValue(String label, Map f, Object value) {
     if (value == null || !(f.values instanceof List)) return
-    if (!(f.values as List).any { it.toString() == value.toString() }) {
+    if (_rmCatalogValueCanonical(f, value) == null) {
         throw new IllegalArgumentException("${label}: '${f.name}' must be one of ${(f.values as List).join(', ')} (got '${value}').".toString())
     }
+}
+private Object _rmCatalogValueCanonical(Map f, Object value) {
+    if (!(f.values instanceof List)) return value
+    String wanted = value?.toString()?.trim()
+    return (f.values as List).find { it.toString().equalsIgnoreCase(wanted) }
 }
 private Map _rmMapCatalogAction(String cap, String action, Map actionSpec, Map entry, Map actionEntry) {
     def fields = [:]
@@ -24833,6 +24838,7 @@ private Map _rmMapCatalogAction(String cap, String action, Map actionSpec, Map e
         else {
             value = actionSpec.get(f.name)
             _rmRequireCatalogValue(label, f, value)
+            if (value != null && f.values instanceof List) value = _rmCatalogValueCanonical(f, value)
             if (f.direction != null) value = (f.direction == true) ? (actionSpec.direction == "raise") : (actionSpec.direction != "raise")
             else if (value == null && f.containsKey("dflt")) value = f.dflt
             if (f.trueWhen != null && value != null) value = value.toString() == f.trueWhen.toString()
@@ -24847,16 +24853,15 @@ private Map _rmMapCatalogAction(String cap, String action, Map actionSpec, Map e
     return [actType: entry.actType, actSubType: actionEntry.sub ?: entry.sub, fields: fields, skipped: []]
 }
 private Integer _rmInFlightTriggerIdx(Integer appId, List existing) {
-    def inputs = (_rmFetchConfigJson(appId, "selectTriggers")?.configPage?.sections ?: []).collectMany { it?.input ?: [] }
-    def candidates = []
-    inputs.each { inp ->
-        def m = (inp?.name?.toString() ?: "") =~ /^tCapab(\d+)$/
-        if (m.matches() && !existing.contains(m[0][1] as Integer)) candidates << (m[0][1] as Integer)
+    Integer next = (existing ? (existing.max() as Integer) + 1 : 1)
+    def ndx = null
+    try {
+        def raw = (_rmFetchStatusJson(appId)?.appState ?: []).find { it?.name?.toString() == "ndx" }?.value
+        if (raw != null && raw.toString().isInteger()) ndx = raw.toString() as Integer
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "addTrigger: the rule's trigger counter could not be read for app ${appId} (${e.message ?: e}); using the next index after the committed triggers")
     }
-    if (!candidates) {
-        throw new IllegalStateException("addTrigger: no in-flight tCapab<N> in selectTriggers schema after moreCond click. Existing committed: ${existing}; schema names: ${inputs.collect { it?.name }.findAll { it }.join(', ')}")
-    }
-    return candidates.max()
+    return (ndx != null && ndx > next) ? ndx : next
 }
 private List _rmCollectTriggerIndices(Integer appId) {
     def status = _rmFetchStatusJson(appId)
@@ -29035,13 +29040,13 @@ private Map _rmWriteRunCommandFields(Integer appId, Integer idx, Map actionSpec,
         "the capability picker '${capKey}' was not revealed on action ${idx}.".toString(), "runCommand")
     String capFilter = _rmResolveRunCommandCapability(actionSpec.capabilityFilter, _rmReadPickerOptionLabels(capInput))
     _rmWriteSettingOnPage(appId, "doActPage", capKey, capFilter, applied, null, skipped)
-    written[capKey] = capFilter
+    written.put(capKey, capFilter)
     String cmd = actionSpec.command.toString().trim()
     boolean useLast = actionSpec.useLastEventDevice == true
     String devicesKey = "devices.${idx}".toString()
     if (actionSpec.deviceIds != null) {
         _rmWriteSettingOnPage(appId, "doActPage", devicesKey, actionSpec.deviceIds, applied, null, skipped)
-        written[devicesKey] = actionSpec.deviceIds
+        written.put(devicesKey, actionSpec.deviceIds)
     }
     if (!useLast && skipped.any { it instanceof Map && it.key?.toString() == devicesKey && it.reason == "not_in_schema" }) {
         throw new IllegalArgumentException("runCommand: RM revealed no device picker for capability '${capFilter}' on action ${idx}, so deviceIds could not be written.")
@@ -29061,7 +29066,7 @@ private Map _rmWriteRunCommandFields(Integer appId, Integer idx, Map actionSpec,
         throw new IllegalArgumentException("runCommand: '${cmd}' is not a command of the selected device(s) on action ${idx}. RM offers: ${opts.sort().join(', ')}.")
     }
     _rmWriteSettingOnPage(appId, "doActPage", cmdKey, canonical, applied, null, skipped)
-    written[cmdKey] = canonical
+    written.put(cmdKey, canonical)
     return written
 }
 private void _rmWriteRunCommandParams(Integer appId, Integer idx, Map actionSpec, List applied, List skipped) {
