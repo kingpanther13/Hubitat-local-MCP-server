@@ -10433,6 +10433,24 @@ class TestRunner:
                 "tool": "hub_get_app_config", "args": {"appId": app_id}})
             assert "Broken Condition" not in str(cfg), \
                 f"ghost-ifThen failed to clear predCapabs -- the post-RE action is wrapped under IF(Broken Condition): {str(cfg)[:800]}"
+
+            # Simple Conditional Action: an action carrying its own condition builds that condition on
+            # the action's row, after the RE, without a Broken Condition and without an IF block to close.
+            cond_act = self._set_rule(app_id, {"addAction": {
+                "capability": "switch", "action": "on", "deviceIds": [sw],
+                "condition": {"capability": "Switch", "deviceIds": [sw], "state": "on"}}}, strict=True)
+            cond_idx = cond_act.get("actionIndex")
+            assert cond_act.get("success") is True and not cond_act.get("partial") \
+                and cond_act.get("verified") is True and cond_idx is not None, \
+                f"the Simple Conditional Action did not commit cleanly: {cond_act}"
+            cond_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+            assert self._setting_holds_exact(cond_settings.get(f"onOffSwitch.{cond_idx}"), sw) \
+                and str(cond_settings.get(f"onOff.{cond_idx}")).lower() == "true", \
+                f"the conditional switch action {cond_idx} did not persist its device and state: {cond_settings}"
+            self._last_write_health = None
+            self._assert_rule_healthy(app_id)
+            assert "Broken Condition" not in self._rule_page_text(app_id), \
+                "the Simple Conditional Action's condition rendered broken"
         finally:
             self._delete_native(app_id)
 
