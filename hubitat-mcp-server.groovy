@@ -9130,8 +9130,8 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
     // A single value an enum picker does not list is not written: the hub would store it and the
     // app render nothing for it (a user cannot pick it). The skip carries what the picker offers.
     def field = schema.get(key)
-    if (field?.type == "enum" && field.options instanceof List && !(value instanceof List)) {
-        List offered = _rmInputOptionKeys(field.options as List)
+    if (field?.type == "enum" && field.options != null && !(value instanceof List)) {
+        List offered = _rmReadPickerOptionStrings(field)
         if (offered && !(value?.toString() in offered)) {
             if (skipped != null) skipped << [key: key, reason: "not_offered", value: value, offered: offered]
             return
@@ -10043,11 +10043,6 @@ private Map _rmCollectInputSchema(Map configPage) {
 
 // The sub-pages a classic configPage links to, in page order: [[page, title], ...]. Links live
 // only in each section's `body` (element "href"); `input` carries no hrefs.
-// The keys of a picker's options: strings as given, [key: label] entries by key.
-private List _rmInputOptionKeys(List options) {
-    options.collectMany { o -> o instanceof Map ? (o.keySet() as List) : [o] }.findAll { it != null }*.toString()
-}
-
 private List _rmPageHrefs(Map configPage) {
     def out = []
     for (s in (configPage?.sections ?: [])) {
