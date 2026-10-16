@@ -3004,7 +3004,7 @@ private String _rmResolveRunCommandCapability(Object raw, Map options) {
 // Fields a custom mapper needs that its slots do not mark required: the served example carries them.
 private Map _rmActionExampleFields() {
     def cond = [capability: "Switch", deviceIds: [1], state: "on"]
-    [thermostat: [mode: "heat"], mode: [modeName: "Day"], setVariable: [value: 1], setLocalVariable: [value: 1],
+    [thermostat: [mode: "heat"], mode: [modeName: "Day"], setVariable: [variable: "myVar", value: 1], setLocalVariable: [variable: "myVar", value: 1],
      privateBoolean: [ruleIds: ["*"], value: true], runRule: [ruleIds: [1]], cancelTimers: [ruleIds: [1]], pauseRule: [ruleIds: [1]],
      delay: [seconds: 30], delayPerMode: [perMode: [Day: [seconds: 30]]], repeat: [minutes: 5, times: 3],
      repeatWhile: [expression: [conditions: [cond]]], waitExpression: [expression: [conditions: [cond]]],
