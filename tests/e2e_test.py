@@ -17640,9 +17640,12 @@ class TestRunner:
         legacy.initialize(LEGACY_PROTOCOL_VERSION)
         app_id = self._create_native_rule("LegacyStop")
         kept, skipped = "E2E legacy stop kept", "E2E legacy stop skipped"
+        # The refused item must be one only the live hub refuses (an argument refusal now stops the
+        # whole call before any write): a capability RM's Run Custom Action picker does not offer.
         specs = [
             {"capability": "log", "message": kept},
-            {"capability": "switch", "state": "on", "deviceIds": [int(self.get_test_switch_id())]},
+            {"capability": "runCommand", "command": "on", "capabilityFilter": "E2E Not A Capability",
+             "deviceIds": [int(self.get_test_switch_id())]},
             {"capability": "log", "message": skipped},
         ]
 
