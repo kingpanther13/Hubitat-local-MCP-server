@@ -6749,15 +6749,24 @@ class TestRunner:
         # onlyIfChanged is RM's "Command only switches that are off/on?": with switch A on and B off,
         # an on action commands only B and an off action only A; without it both are commanded. One
         # rule, edited in place with modifyAction between runs; the rule's own command-<name> events
-        # (producedBy names the rule) show which switch RM commanded.
+        # (producedBy names the rule) show which switch RM commanded. The create's bundled action
+        # persists device, action and optSwitch.<N> (revealed only AFTER the device picker, so written
+        # last) in one slot; the shade leg at the end covers the device-list partial re-tag.
         a = self._ensure_perm_fixture("switch_a")
         b = self._ensure_perm_fixture("switch_b")
-        app_id = self._create_native_rule("OnlyIfChanged", {
+        app_id, created = self._create_native_rule("OnlyIfChanged", {
             "addActions": [{"capability": "switch", "action": "on", "deviceIds": [int(a), int(b)], "onlyIfChanged": True}],
-        })
+        }, return_result=True)
+        if created is not None:
+            actions = created.get("actions") or []
+            assert len(actions) == 1 and actions[0].get("success") is not False, \
+                f"create did not return the bundled switch action as committed: {created}"
         settings = self._get_persisted_rule_config(app_id).get("settings") or {}
         act_idx = next((int(str(k).split(".", 1)[1]) for k in settings if str(k).startswith("onOffSwitch.")), None)
         assert act_idx is not None, f"the switch action's index was not persisted: {settings}"
+        assert str(settings.get(f"onOff.{act_idx}")).lower() in ("true", "on") \
+            and str(settings.get(f"optSwitch.{act_idx}")).lower() in ("true", "on"), \
+            f"switch device/on/onlyIfChanged did not persist together in one action slot: {settings}"
 
         def commands(device_id: str, cmd: str) -> int:
             ev = self.client.call_tool("hub_list_device_events", {
@@ -6792,6 +6801,49 @@ class TestRunner:
                     f"{'commanded' if only else 'not commanded'} (rule {app_id})"
         finally:
             self._delete_native(app_id)
+
+        # Device-list partial re-tag (the load-bearing check): a shade close's LAST write is the
+        # device picker (shadeOpenClose.<N>), stored in the hub's deviceIdsForDeviceList side-
+        # structure with no further schema revealed. The write cannot be seen to "advance", but
+        # since the IDs actually committed it must NOT report a cosmetic partial; the skip (if the
+        # firmware surfaces one) must be re-tagged device_list_committed_schema_unchanged, NOT
+        # silent_rejection. Confirmed live: without the fix a shade close is partial:true.
+        shade = self.get_test_shade_id()
+        if not shade:
+            return  # no Virtual Shade driver on this hub -- skip the re-tag leg cleanly
+        shade_id = int(shade)
+        shade_app, shade_created = self._create_native_rule("ShadeDeviceList", {
+            "addActions": [
+                {"capability": "shade", "action": "close", "deviceIds": [shade_id]}],
+        }, return_result=True)
+        try:
+            if shade_created is not None:
+                shade_actions = shade_created.get("actions") or []
+                assert len(shade_actions) == 1, \
+                    f"create did not return the bundled shade action: {shade_created}"
+                sres = shade_actions[0]
+                assert sres.get("success") is not False and not sres.get("partial"), \
+                    f"shade close action failed or falsely reported partial: {sres}"
+                shade_skips = [s for s in (sres.get("settingsSkipped") or [])
+                               if isinstance(s, dict)
+                               and str(s.get("key", "")).startswith("shadeOpenClose")]
+                assert all(s.get("reason") == "device_list_committed_schema_unchanged"
+                           for s in shade_skips), \
+                    f"shadeOpenClose skip not re-tagged: {shade_skips}"
+            shade_cfg = self._get_persisted_rule_config(shade_app)
+            shade_settings = shade_cfg.get("settings") or {}
+            shade_slots = [str(key).split(".", 1)[1] for key, value in shade_settings.items()
+                           if str(key).startswith("shadeOpenClose.")
+                           and self._setting_holds_exact(value, shade_id)]
+            assert shade_slots and any(
+                str(shade_settings.get(f"shadeRL.{slot}")).lower() in ("true", "on")
+                for slot in shade_slots), \
+                f"shade close device/action did not persist together: {shade_settings}"
+            shade_created = self._require_create_envelope(shade_created, "ShadeDeviceList")
+            self._assert_rule_healthy(shade_app)
+        finally:
+            self._delete_native(shade_app)
+
 
     @test("native_apps")
     def test_call_rule_multi_id_aggregates_per_rule(self) -> None:
@@ -8908,6 +8960,30 @@ class TestRunner:
         sw = int(self.get_test_switch_id())
         app_id = self._create_native_rule("ReqExpr")
         try:
+            # Argument refusals on a Required Expression come before the pre-edit backup (none is
+            # taken), including a comparator Rule Machine does not offer for the condition (a Switch
+            # condition has none); the action capability matches RM's spelling regardless of case.
+            for args in ({"replaceRequiredExpression": {"conditions": [
+                              {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}},
+                         {"addRequiredExpression": {"conditions": [{"deviceIds": [sw], "state": "on"}]}}):
+                try:
+                    refused = self._call_slow_rule(dict(args, appId=app_id))
+                except McpToolError as e:
+                    refused = {"success": False, "error": str(e)}
+                assert refused.get("success") is False and "RM is not touched" in str(refused.get("error", "")), \
+                    f"expected a pre-write refusal for {args}: {refused}"
+                assert not (refused.get("backup") or {}).get("backupKey"), \
+                    f"a refusal took a backup before validating {args}: {refused}"
+            act = self._call_slow_rule({"appId": app_id, "addAction": {
+                "capability": "Switch", "action": "on", "deviceIds": [sw]}})
+            assert act.get("success") is True, f"addAction with capability 'Switch' failed: {act}"
+            bad = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": int(app_id), "confirm": True, "addRequiredExpression": {"conditions": [
+                    {"capability": "Switch", "deviceIds": [sw], "comparator": ">", "state": "on"}]}}})
+            assert bad.get("success") is False and bad.get("backup") is None \
+                and "Rule Machine has no comparator for a Switch condition" in str(bad.get("error", "")), \
+                f"an unoffered comparator should be refused before any write: {bad}"
+
             built = self._patch_rule(app_id, [
                 {"addLocalVariable": {"name": "fields", "type": "Number", "value": 0}},
                 {"addAction": {"capability": "setLocalVariable", "variable": "fields", "value": 0}},
@@ -9051,80 +9127,6 @@ class TestRunner:
             self._assert_rule_healthy(app_id)
         finally:
             self._delete_native(app_id)
-
-    @test("native_apps")
-    def test_set_rule_switch_only_if_changed_and_device_list_no_false_partial(self) -> None:
-        # switch off with onlyIfChanged=true writes optSwitch.<N> (revealed only AFTER the device
-        # picker, so it must be written last). NOTE: a switch action does NOT exercise the
-        # device-list partial re-tag -- its device picker (onOffSwitch.<N>) is followed by
-        # onOff/optSwitch, so it advances the schema and never gets a cosmetic silent_rejection.
-        # The re-tag is exercised by the shade portion below, whose LAST write IS the picker.
-        sw = int(self.get_test_switch_id())
-        app_id, created = self._create_native_rule("SwitchOnlyOn", {
-            "addActions": [
-                {"capability": "switch", "action": "off", "deviceIds": [sw], "onlyIfChanged": True}],
-        }, return_result=True)
-        try:
-            if created is not None:
-                actions = created.get("actions") or []
-                assert len(actions) == 1, f"create did not return the bundled switch action: {created}"
-                assert actions[0].get("success") is not False, \
-                    f"switch onlyIfChanged addAction reported failure: {actions[0]}"
-
-            cfg = self._get_persisted_rule_config(app_id)
-            settings = cfg.get("settings") or {}
-            switch_slots = [str(key).split(".", 1)[1] for key, value in settings.items()
-                            if str(key).startswith("onOffSwitch.")
-                            and self._setting_holds_exact(value, sw)]
-            assert any(str(settings.get(f"onOff.{slot}")).lower() in ("false", "off")
-                       and str(settings.get(f"optSwitch.{slot}")).lower() in ("true", "on")
-                       for slot in switch_slots), \
-                f"switch device/off/onlyIfChanged did not persist together in one action slot: {settings}"
-            self._assert_rule_healthy(app_id)
-        finally:
-            self._delete_native(app_id)
-
-        # Device-list partial re-tag (the load-bearing check): a shade close's LAST write is the
-        # device picker (shadeOpenClose.<N>), stored in the hub's deviceIdsForDeviceList side-
-        # structure with no further schema revealed. The write cannot be seen to "advance", but
-        # since the IDs actually committed it must NOT report a cosmetic partial; the skip (if the
-        # firmware surfaces one) must be re-tagged device_list_committed_schema_unchanged, NOT
-        # silent_rejection. Confirmed live: without the fix a shade close is partial:true.
-        shade = self.get_test_shade_id()
-        if not shade:
-            return  # no Virtual Shade driver on this hub -- skip the re-tag leg cleanly
-        shade_id = int(shade)
-        shade_app, shade_created = self._create_native_rule("ShadeDeviceList", {
-            "addActions": [
-                {"capability": "shade", "action": "close", "deviceIds": [shade_id]}],
-        }, return_result=True)
-        try:
-            if shade_created is not None:
-                shade_actions = shade_created.get("actions") or []
-                assert len(shade_actions) == 1, \
-                    f"create did not return the bundled shade action: {shade_created}"
-                sres = shade_actions[0]
-                assert sres.get("success") is not False and not sres.get("partial"), \
-                    f"shade close action failed or falsely reported partial: {sres}"
-                shade_skips = [s for s in (sres.get("settingsSkipped") or [])
-                               if isinstance(s, dict)
-                               and str(s.get("key", "")).startswith("shadeOpenClose")]
-                assert all(s.get("reason") == "device_list_committed_schema_unchanged"
-                           for s in shade_skips), \
-                    f"shadeOpenClose skip not re-tagged: {shade_skips}"
-            shade_cfg = self._get_persisted_rule_config(shade_app)
-            shade_settings = shade_cfg.get("settings") or {}
-            shade_slots = [str(key).split(".", 1)[1] for key, value in shade_settings.items()
-                           if str(key).startswith("shadeOpenClose.")
-                           and self._setting_holds_exact(value, shade_id)]
-            assert shade_slots and any(
-                str(shade_settings.get(f"shadeRL.{slot}")).lower() in ("true", "on")
-                for slot in shade_slots), \
-                f"shade close device/action did not persist together: {shade_settings}"
-            shade_created = self._require_create_envelope(shade_created, "ShadeDeviceList")
-            self._assert_rule_healthy(shade_app)
-        finally:
-            self._delete_native(shade_app)
 
     @test("native_apps")
     def test_set_rule_wait_events_and_stays_duration(self) -> None:
@@ -10755,38 +10757,6 @@ class TestRunner:
             raise RelayLostResponseError(
                 f"504 relay response loss erased the fail-closed create stop envelope for {stop_label!r}; "
                 "the committed rule was verified and deleted, retry this test with a fresh fixture")
-
-    @test("native_apps")
-    def test_set_rule_required_expression_refusals_and_unoffered_comparator(self) -> None:
-        # Argument refusals on a Required Expression come before the pre-edit backup (none is
-        # taken), including a comparator Rule Machine does not offer for the condition (a Switch
-        # condition has no comparator).
-        sw = int(self.get_test_switch_id())
-        app_id = self._create_native_rule("REUnoffered")
-        try:
-            for args in ({"replaceRequiredExpression": {"conditions": [
-                              {"capability": "Switch", "deviceIds": [sw], "state": "on"}]}},
-                         {"addRequiredExpression": {"conditions": [{"deviceIds": [sw], "state": "on"}]}}):
-                try:
-                    refused = self._call_slow_rule(dict(args, appId=app_id))
-                except McpToolError as e:
-                    refused = {"success": False, "error": str(e)}
-                assert refused.get("success") is False and "RM is not touched" in str(refused.get("error", "")), \
-                    f"expected a pre-write refusal for {args}: {refused}"
-                assert not (refused.get("backup") or {}).get("backupKey"), \
-                    f"a refusal took a backup before validating {args}: {refused}"
-            # The action capability is matched to RM's spelling regardless of case.
-            act = self._call_slow_rule({"appId": app_id, "addAction": {
-                "capability": "Switch", "action": "on", "deviceIds": [sw]}})
-            assert act.get("success") is True, f"addAction with capability 'Switch' failed: {act}"
-            bad = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-                "appId": int(app_id), "confirm": True, "addRequiredExpression": {"conditions": [
-                    {"capability": "Switch", "deviceIds": [sw], "comparator": ">", "state": "on"}]}}})
-            assert bad.get("success") is False and bad.get("backup") is None \
-                and "Rule Machine has no comparator for a Switch condition" in str(bad.get("error", "")), \
-                f"an unoffered comparator should be refused before any write: {bad}"
-        finally:
-            self._delete_native(app_id)
 
     @test("native_apps")
     def test_set_native_app_walk_keeps_the_pending_page(self) -> None:
