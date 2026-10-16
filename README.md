@@ -846,6 +846,20 @@ Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[writ
 </details>
 
 <details>
+<summary><b>Advanced: Per-client access tokens (firmware 2.5.2+)</b></summary>
+
+Under **Settings > Advanced > Per-client access tokens** you can give an MCP client its own token for the same endpoint, with narrower access than the main token. The main token and everything set on the main page keep working exactly as before. Each client token has its own page:
+
+- **Tools** — the tools this client may call. None are on until you pick them, and a tool added by a later update stays off for the client until you turn it on. `hub_get_tool_guide` and `hub_search_tools` are always included. MCP self-administration, the Developer Mode deploy and code management stay with the main token and cannot be granted.
+- **Read / Write** — can only narrow: the main-page Read and Write switches still apply.
+- **Local / cloud** — which endpoints this token may use (the main-page endpoint switches still apply).
+- **Tool names** — the client's own tool-name number, or the same as the main token, or none.
+
+The client sees only its tools in `tools/list`, the gateway catalogs and `hub_search_tools`. A call it may not make is refused with a message naming the client and what blocks it, and `hub_get_info` returns its access under `clientAccess`. MCP log entries made during a client's request carry the client's name, and `recentWrites` shows a client only its own writes. **Rotate** issues a new token for that client (its URL changes); **Revoke** removes it. Either takes effect at once, even though the hub itself keeps accepting the old token for up to a minute. A client token must be sent as `?access_token=` or an `Authorization: Bearer` header.
+
+</details>
+
+<details>
 <summary><b>Protected apps</b></summary>
 
 The **Protected apps** picker on the app's **Advanced** page blocks generic app, native-rule, and Dashboard mutations (Easy and legacy) for selected installed apps. It defaults to the MCP server itself on new installs and upgrades, and preserves later choices, including an empty list. Protection applies even with Developer Mode on. Read-only inspection and authorized dedicated Developer Mode settings/package maintenance remain available. Change the selection there, then return to the main page and click **Done** to apply it.
