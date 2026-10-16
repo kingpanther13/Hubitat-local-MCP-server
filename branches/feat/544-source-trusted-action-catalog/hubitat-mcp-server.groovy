@@ -5302,6 +5302,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Max concurrent writes:** ${effNum(settings.maxConcurrentWrites, _maxConcurrentWrites())}",
             "- **Cloud-relay budget (ms):** ${effNum(settings.relayBudgetMs, _relayBudgetMs())}",
             "- **LAN budget (ms):** ${effNum(settings.lanBudgetMs, _lanBudgetMs())}",
+            "- **Back up native apps before edits:** ${eff(settings.backupBeforeRuleEdits, true)}",
             "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
             "- **Hide access tokens in responses:** ${eff(settings.redactAccessTokens, false)}",
             "- **Keep recent errors for bug reports:** ${eff(settings.retainReportErrors, false)}",
@@ -20167,6 +20168,7 @@ def toolUpdateMcpSettings(args) {
         "enableMandatoryBPS":     "bool",
         "bypassDeviceAllowlist":  "bool",
         "maxConcurrentWrites":    "number",
+        "backupBeforeRuleEdits":  "bool",
         "backupEveryRuleWrite":   "bool",
         "enableLocalAccess":      "bool",
         "enableCloudAccess":      "bool",
@@ -27099,11 +27101,22 @@ private List _rmStructuralSequenceFromSpecList(List specList) {
 }
 private String _rmPreflightRestoreHint(String reason = null, Map backup = null, String lead = null) {
     def why = reason ? " Reason: ${reason}" : ""
-    def snapshot = !backup?.backupKey ? " No backup was taken." :
+    def snapshot = !backup?.backupKey ? (settings?.backupBeforeRuleEdits == false ? " No backup was taken: pre-edit backups are off in Advanced settings." : " No backup was taken.") :
         (backup.baselineReused == true
             ? " The backupKey on this response is the baseline reused from an earlier edit; restoring it reverts every edit since it was taken, not just this one."
             : " The backupKey on this response is an unused snapshot taken before the refusal.")
     "${lead ?: 'Pre-flight refusal -- the app was not touched, so nothing needs to be restored.'}${snapshot}${why}"
+}
+private String _rmBackupHint(Map backup, String withBackup = null) {
+    if (backup?.backupKey) {
+        return (withBackup ?: "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.").toString()
+    }
+    return "No pre-edit backup was taken ('Back up native apps before edits' is off in Advanced settings), so there is no snapshot to restore; read the rule with hub_get_app_config and repair it in place."
+}
+private String _rmRollbackHint(Map backup) {
+    return backup?.backupKey
+        ? "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').".toString()
+        : "If hub_get_app_config confirms the operation did NOT commit, repair the rule in place: no pre-edit backup was taken ('Back up native apps before edits' is off in Advanced settings)."
 }
 private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, String pageName = "doActPage") {
     def msgStr = msg?.toString() ?: ""
@@ -27120,9 +27133,9 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
             msgStr.contains("is DISABLED") ? "the rule is disabled, and Hubitat does not allow editing a disabled app -- re-enable it, make the change, then disable it again" : null,
             backup)
     } else if (wizardStuck) {
-        restoreHint = "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain. Or, before your next write, close the in-flight wizard manually: hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a stuck editor on a new action row, or button='actionDone' for an editor modifyAction opened on a committed action (actionCancel would delete that action)."
+        restoreHint = _rmBackupHint(backup, "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup?.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain.") + " Or, before your next write, close the in-flight wizard manually: hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a stuck editor on a new action row, or button='actionDone' for an editor modifyAction opened on a committed action (actionCancel would delete that action)."
     } else {
-        restoreHint = "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
+        restoreHint = _rmBackupHint(backup)
     }
     def result = [
         success: false,
@@ -27801,6 +27814,10 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
     }
 }
 Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
+    if (settings?.backupBeforeRuleEdits == false) {
+        EXECUTION_CACHE.remove("preEditStatus:${ruleId}".toString())
+        return [skipped: "pre-edit backups are off in Advanced settings"]
+    }
     def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason, activePage) }
     if (reused != null) {
         EXECUTION_CACHE.remove("preEditStatus:${ruleId}".toString())
@@ -28340,7 +28357,7 @@ def _createButtonRuleViaController(args) {
         return [success: false, controllerId: controllerId, buttonNumber: buttonNumber, event: event,
             backup: backup, error: flowExc.message ?: flowExc.toString(),
             note: ("The add-button flow failed mid-stream; the controller may be left in add-button mode (a fresh page open in the UI collapses it) and the rule may or may not have spawned -- check childApps via hub_get_app_config(appId=${controllerId}). " +
-                "Restore the controller via hub_restore_backup(backupKey='${backup.backupKey}') if its config looks damaged.").toString()]
+                (backup?.backupKey ? "Restore the controller via hub_restore_backup(backupKey='${backup.backupKey}') if its config looks damaged." : "No pre-edit backup of the controller was taken ('Back up native apps before edits' is off in Advanced settings); repair its config in place if it looks damaged.")).toString()]
     }
 }
 def _createNativeAppShell(args) {
@@ -31435,7 +31452,7 @@ def _applyNativeAppEdit(args) {
                 error: e.message ?: e.toString(),
                 backup: backup,
                 restoreHint: uiRefusal ? _rmPreflightRestoreHint(null, backup, "Refused before submitting: no settings were written and no Done was sent, so nothing needs to be restored. The page was still opened to read its inputs, which runs the app's page code.") :
-                    "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
+                    _rmBackupHint(backup)
             ]
         }
     }
@@ -31457,7 +31474,7 @@ def _applyNativeAppEdit(args) {
         def maOut = [success: maOk, partial: !maOk, appId: appId, backup: backup] + (maResult ?: [:]) + [
             health: maHealth,
             error: maOk ? null : (maResult?.error ?: "modifyAction: the edit committed but the health check reports the rule broken -- inspect health.issues and restore via backup if the damage is real."),
-            restoreHint: maOk ? null : "Backup baseline available. Call hub_restore_backup with backupKey='${backup?.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.".toString(),
+            restoreHint: maOk ? null : _rmBackupHint(backup),
             note: maOk ? "Action ${modifyActionSpec.index} edited in place; its index and position are unchanged and the new values read back.".toString()
                        : "modifyAction did not verify cleanly -- see error.".toString()
         ]
@@ -31556,7 +31573,7 @@ def _applyNativeAppEdit(args) {
                     possibleStateEditAct: possibleStateEditAct,
                     wizardStuck: false,
                     backup: backup,
-                    restoreHint: "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').",
+                    restoreHint: _rmRollbackHint(backup),
                     verifyHint: "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the deletion actually committed asynchronously after the response, do NOT call hub_restore_backup.",
                     safeRecovery: [
                         recommended: 'verify-then-decide',
@@ -31587,7 +31604,7 @@ def _applyNativeAppEdit(args) {
             def result = _rmBuildUpdateErrorResponse(appId, e.message, backup)
             def isRetryExhaustion = e.message?.contains("one re-click")
             if (isRetryExhaustion) {
-                result.restoreHint = "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')."
+                result.restoreHint = _rmRollbackHint(backup)
                 result.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
             }
             return result
@@ -31669,9 +31686,7 @@ def _applyNativeAppEdit(args) {
                 backup: backup,
                 restoreHint: isPreflightRefusal ?
                     _rmPreflightRestoreHint(null, backup) :
-                    (isRetryExhaustion ?
-                        "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')." :
-                        "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.")
+                    (isRetryExhaustion ? _rmRollbackHint(backup) : _rmBackupHint(backup))
             ]
             if (isRetryExhaustion) {
                 trigResult.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
@@ -32825,6 +32840,9 @@ def advancedOverridesPage() {
         }
         section("Native app edit backups") {
             paragraph "By default, edits to the same native app reuse its newest File Manager baseline for one hour. Restoring that baseline returns the app to the start of the edit chain, undoing every later edit in the hour. This avoids uploading the same app before every small edit. Deletes and a standalone Required Expression replacement still take a fresh snapshot."
+            input "backupBeforeRuleEdits", "bool", title: "Back up native apps before edits",
+                  description: "Leave ON (default): every edit of an existing native app has a File Manager baseline to restore. Turn OFF to skip the pre-edit baseline -- edit responses then carry no backupKey; deletes still take their snapshot.",
+                  defaultValue: true
             input "backupEveryRuleWrite", "bool", title: "Back up before every native app edit",
                   description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit.",
                   defaultValue: false
@@ -40774,7 +40792,7 @@ For READING an RM rule's current state, use **hub_get_app_config** in the hub_re
 For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
 ### Safety model for native CRUD
-1. Every existing-app edit has a full File Manager rollback baseline (configure/json + statusJson); by default, edits to the same app reuse the newest baseline for one hour. The response's backup.backupKey is the restore handle, and restoring a reused baseline undoes every edit made after it. Deletes and a standalone Required Expression replacement always take a fresh snapshot.
+1. Every existing-app edit has a full File Manager rollback baseline (configure/json + statusJson); by default, edits to the same app reuse the newest baseline for one hour. The response's backup.backupKey is the restore handle, and restoring a reused baseline undoes every edit made after it. Deletes and a standalone Required Expression replacement always take a fresh snapshot. With **Back up native apps before edits** turned off under Advanced settings, edits take no baseline and the response's backup says `skipped` instead of carrying a backupKey; deletes still snapshot.
 2. Multi-device capability inputs (capability.X with multiple=true) require a 3-field POST payload group (settings[name]=csv, name.type=capability.X, name.multiple=true). Omitting name.multiple=true poisons the AppSetting DB flag and every render throws `Command 'size' is not supported by device`. hub_set_rule emits the full group automatically from the input schema — callers never have to think about this.
 3. After every write, the multiple flags in the live appSettings are verified. If any flipped, one automatic retry fires with the full group. Persistent divergence throws and the response surfaces hub_restore_backup as the next step.
 4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
@@ -40842,7 +40860,7 @@ This is the generic upsert tool for ANY classic SmartApp. It is separate from th
 
 **RM authoring shortcuts and `walkStep` are EDIT-only here.** `walkStep` and the RM authoring shortcuts also work on this tool, but ONLY on EDIT (appId present) for RM-wire-format classic apps; the CREATE arm (no appId) honors NONE of them and rejects rather than silently dropping them. `walkStep` has the same shape as `hub_set_rule`'s `walkStep` — see `hub_get_tool_guide(section='set_rule_reference_walkstep')`. For Rule Machine RULES use `hub_set_rule`.
 
-**Edit backups.** Existing-app edits ensure a File Manager baseline exists. By default the newest baseline for the same app is reused for one hour; restoring it undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for a fresh snapshot on every edit. Deletes and a standalone Required Expression replacement always take a fresh snapshot.
+**Edit backups.** Existing-app edits ensure a File Manager baseline exists. By default the newest baseline for the same app is reused for one hour; restoring it undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for a fresh snapshot on every edit. Deletes and a standalone Required Expression replacement always take a fresh snapshot. With **Back up native apps before edits** turned off under Advanced settings, edits take no baseline and the response's backup says `skipped` instead of carrying a backupKey; deletes still snapshot.
 
 **CREATE by `appType`** covers the enum types (`rule_machine` / `button_controller` / `groups_scenes` / `notifier` / `basic_rule` / `room_lighting`). Other classic apps can usually still be created through their PARENT app's own page, driven like any other app: e.g. the Room Lighting parent's "Create Room Lights from Group, Scene or Scene Transition" input (`newScene`) creates a Room Lights instance from an existing group or scene when written with `hub_set_native_app(appId=<parent id>, settings={newScene:[<group/scene app id>]})`. Inspect the parent with `hub_get_app_config` or `walkStep` introspect first.
 
@@ -40939,7 +40957,7 @@ Reference for the `hub_set_rule` structured shortcuts (`addTrigger`, `addAction`
 
 To READ a rule's current configuration -- before an edit to discover the right input names, or to verify after a write -- use `hub_read_apps_code -> hub_get_app_config(appId)`. It is NOT in the `hub_manage_rule_machine` / `hub_manage_native_rules_and_apps` rule gateways; the rule-read tool lives in `hub_read_apps_code`.
 
-Each edit response includes the File Manager baseline under `backup.backupKey`. By default the newest same-rule baseline is reused for one hour, so a sequence of small edits does not upload the same rule before every call. Restoring it returns the rule to the baseline timestamp and undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for strict per-write snapshots. Deletes and a standalone Required Expression replacement remain fresh regardless.
+Each edit response includes the File Manager baseline under `backup.backupKey`. By default the newest same-rule baseline is reused for one hour, so a sequence of small edits does not upload the same rule before every call. Restoring it returns the rule to the baseline timestamp and undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for strict per-write snapshots. Deletes and a standalone Required Expression replacement remain fresh regardless. With **Back up native apps before edits** turned off under Advanced settings, edits take no baseline and the response's backup says `skipped` instead of carrying a backupKey; deletes still snapshot.
 
 ### Shapes come from discover
 
