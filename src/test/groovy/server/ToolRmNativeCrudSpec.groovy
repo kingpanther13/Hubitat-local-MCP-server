@@ -47189,6 +47189,33 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         (ma.clicks as List).isEmpty()
     }
 
+    def "a trigger or condition device must have the capability RM's picker for that capability lists"() {
+        given: "a temperature sensor offered as a Garage door trigger and as a Switch condition"
+        enableWrite()
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 26, label: "Temp", capabilities: ["TemperatureMeasurement"]]]) }
+        hubGet.register('/device/fullJson/26') { params -> '{"id":"26","name":"Temp"}' }
+
+        when:
+        script._rmPrevalidateTriggerSpecList([[capability: "Garage door", deviceIds: [26], state: "open"]], "triggers")
+
+        then:
+        def trig = thrown(IllegalArgumentException)
+        trig.message.contains("device 26 (Temp) does not have the garageDoorControl capability")
+
+        when:
+        script._rmPrevalidateConditionList([conditions: [[capability: "Switch", deviceIds: [26], state: "on"]]], "conditions")
+
+        then:
+        def cond = thrown(IllegalArgumentException)
+        cond.message.contains("device 26 (Temp) does not have the switch capability")
+
+        when: "a capability with no device picker is not checked"
+        script._rmPrevalidateTriggerSpecList([[capability: "Mode", state: "Day"]], "triggers")
+
+        then:
+        notThrown(IllegalArgumentException)
+    }
+
     def "modifyAction leaves useLastDev to the runCommand writer and carries the committed value"() {
         given:
         wireModifyEditorTransport(100, [1], ["actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"], "cCmd.1": "on", "useLastDev.1": "true"], runCommandEditor(1))

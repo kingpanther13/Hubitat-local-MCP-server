@@ -1957,6 +1957,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
     // {<bogusId>: null} in tDev_<N> if the ID doesn't resolve, and the
     // trigger renders as "Broken Trigger" with no event subscriptions.
     _rmValidateDeviceIdsExist("addTrigger.deviceIds", triggerSpec.deviceIds)
+    _rmRequireConditionDeviceCapability("addTrigger.deviceIds", triggerSpec)
     if (triggerSpec.condition instanceof Map) {
         // Lift a singular condition deviceId into deviceIds before the device check reads it.
         def cm = triggerSpec.condition as Map
@@ -3447,7 +3448,21 @@ private void _rmRequireOfferedCatalogChoice(Integer appId, String cap, String ac
 // log line, when the device list cannot be read; a device absent from it, or listed with no
 // capabilities, is left to the existence check.
 private void _rmRequireDeviceCapability(String label, Object ids, String subType) {
-    String cap = subType ? _rmSubActCapab()[subType] : null
+    _rmRequireDevicesWithCapability(label, ids, subType ? _rmSubActCapab()[subType] : null)
+}
+
+// A trigger's or condition's devices must have the capability RM's picker for that capability
+// lists (the deviceCapability table), the same way an action's devices must.
+private void _rmRequireConditionDeviceCapability(String label, Map spec) {
+    String rmCap = spec?.capability?.toString()?.trim()
+    if (!rmCap) return
+    Map table = _rmCondTables().deviceCapability as Map
+    def hit = table.find { k, v -> k.toString().equalsIgnoreCase(rmCap) }
+    if (hit == null) return
+    _rmRequireDevicesWithCapability(label, spec.deviceIds ?: (spec.deviceId != null ? [spec.deviceId] : null), hit.value?.toString())
+}
+
+private void _rmRequireDevicesWithCapability(String label, Object ids, String cap) {
     if (cap == null || !(ids instanceof List) || (ids as List).isEmpty()) return
     def byId = _memoDeviceList()
     if (byId == null) {
@@ -5779,6 +5794,7 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
                 throw new IllegalArgumentException("addTrigger.capability is required. Pass {discover: true} to get the full structured schema. RM is not touched.")
             }
             _rmValidateDeviceIdsExist("addTrigger.deviceIds", sm.deviceIds)
+            _rmRequireConditionDeviceCapability("addTrigger.deviceIds", sm)
             if (sm.condition instanceof Map) {
                 def cm = sm.condition as Map
                 _rmValidateDeviceIdsExist("addTrigger.condition.deviceIds", cm.deviceIds ?: (cm.deviceId != null ? [cm.deviceId] : null))
@@ -6346,6 +6362,7 @@ private void _rmPrevalidateConditionList(Map exprSpec, String label) {
             }
             def ids = m.deviceIds ?: (m.deviceId != null ? [m.deviceId] : null)
             if (ids != null) _rmValidateDeviceIdsExist("${where}.deviceIds", ids)
+            _rmRequireConditionDeviceCapability("${where}.deviceIds".toString(), m)
         }
     }
     if (exprSpec?.conditions instanceof List) walk(exprSpec.conditions as List, "${label}.conditions")
@@ -10974,6 +10991,7 @@ private Map _rmValidateRequiredExpressionSpec(Map exprSpec, String label) {
             // Shape already guarded above; here it is the existence probe per condition.
             def m = condRaw as Map
             _rmValidateDeviceIdsExist("${pathPrefix}[${i}].deviceIds", m.deviceIds)
+            _rmRequireConditionDeviceCapability("${pathPrefix}[${i}].deviceIds".toString(), m)
             // compareToDevice's reference device is existence-validated here, up front,
             // before any walker write -- so a nonexistent reference id fails loud and the
             // walker never opens a half-written slot for it.

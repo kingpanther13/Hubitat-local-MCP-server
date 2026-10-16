@@ -6257,6 +6257,9 @@ class TestRunner:
                 # A switch asked to set a fan speed: RM's picker for that action lists FanControl devices.
                 ({"addAction": {"capability": "fan", "action": "setSpeed", "speed": "low", "deviceIds": [sw_id]}},
                  (f"device {sw_id} (", "does not have the FanControl capability")),
+                # The same check on a trigger's devices: RM's Garage door picker lists garageDoorControl devices.
+                ({"addTrigger": {"capability": "Garage door", "deviceIds": [sw_id], "state": "open"}},
+                 (f"device {sw_id} (", "does not have the garageDoorControl capability")),
             ):
                 refused = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                     "args": {"appId": app_id, "confirm": True, **args}})
