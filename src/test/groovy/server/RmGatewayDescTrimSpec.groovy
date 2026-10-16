@@ -58,7 +58,7 @@ class RmGatewayDescTrimSpec extends ToolSpecBase {
         !(appType.description as String).contains('EDIT/DELETE-only')
 
         and: 'enum is exactly the create-capable classic types, room_lighting included (issue #461)'
-        appType.enum == ['rule_machine', 'button_controller', 'groups_scenes', 'notifier', 'basic_rule', 'room_lighting']
+        appType.enum == ['rule_machine', 'button_controller', 'groups_scenes', 'scene', 'notifier', 'basic_rule', 'room_lighting', 'thermostat_scheduler', 'thermostat_controller']
     }
 
     def "hub_set_app_disabled uses appId (app_id -> appId rename)"() {
