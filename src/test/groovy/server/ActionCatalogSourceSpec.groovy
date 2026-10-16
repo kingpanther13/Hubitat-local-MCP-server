@@ -296,7 +296,7 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         then:
         def e = thrown(IllegalArgumentException)
         e.message.contains("switch.condition: Rule Machine does not offer a Simple Conditional Action on this row. This row's picker offers: getIfThen, getEndIf.")
-        e.message.contains("This hub's picker offers: getIfThen, getEndIf.")
+        e.message.contains("This row's picker offers: getIfThen, getEndIf.")
     }
 
     @Unroll
