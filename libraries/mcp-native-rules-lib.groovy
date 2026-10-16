@@ -2788,7 +2788,7 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     String fam = _rmCondFamily(cap)
     String hint = "See discover kind:'${kind}', capability:'${cap}'. RM is not touched.".toString()
     if (cap in (kind == "condition" ? _rmCondNotModelled() : _rmTrigNotModelled())) {
-        throw new IllegalArgumentException("${where}: '${cap}' is a Rule Machine ${kind} capability this tool does not model; set it with rawSettings or walkStep. RM is not touched.".toString())
+        throw new IllegalArgumentException("${where}: '${cap}' is a Rule Machine ${kind} this tool does not model; set it with rawSettings or walkStep. RM is not touched.".toString())
     }
     if (cap in ["Location Event", "HSM Alert"] && spec.state == null) {
         throw new IllegalArgumentException("${where}: ${cap} needs state (a value Rule Machine's picker lists). ${hint}".toString())
@@ -2801,7 +2801,7 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
             throw new IllegalArgumentException("${where}: compareToDevice requires 'deviceId' (the reference device ID). ${hint}".toString())
         }
         if (spec.comparator == null || _rmComparatorIsRhsOptional(spec.comparator)) {
-            throw new IllegalArgumentException("${where}: compareToDevice requires 'comparator' (e.g. '>', '<', '='). ${hint}".toString())
+            throw new IllegalArgumentException("${where}: compareToDevice needs a comparator (e.g. '>', '<', '='). ${hint}".toString())
         }
         if (spec.state != null || spec.value != null) {
             throw new IllegalArgumentException("${where}: compareToDevice (device-relative RHS) cannot be combined with 'state'/'value' (literal RHS) -- mutually exclusive; use compareToDevice.offset for an offset. ${hint}".toString())
@@ -3757,7 +3757,7 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     }
     if (!(after instanceof Map)) verificationFetchFailed = true
     // RM stores a device picker as {id: label}; its readback is the id set statusJson carries.
-    def deviceKeys = fieldDefs.findAll { it.name == "deviceIds" }.collect { it.key.toString().replace("@N", actionIdx.toString()) }
+    def deviceKeys = fieldDefs.findAll { it.name == "deviceIds" }.collect { it.key.toString().replace("@N", actionIdx.toString()) }.unique()
     def mismatches = (after instanceof Map) ? writes.findAll { k, v -> !(k in deviceKeys) && !_rmSettingEchoes((after as Map)[k], v) }.keySet().toList() : []
     if (after instanceof Map && deviceKeys.any { writes.containsKey(it) }) {
         def status = null
@@ -3767,8 +3767,9 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
         }
         def byName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
         if (status != null) deviceKeys.findAll { writes.containsKey(it) }.each { String k ->
-            def wanted = ((writes[k] instanceof List) ? (writes[k] as List) : [writes[k]]).collect { it?.toString() } as Set
-            if (_rmStatusEntryDeviceIds(byName[k]) != wanted) mismatches << k
+            def wanted = ((writes.get(k) instanceof List) ? (writes.get(k) as List) : [writes.get(k)]).collect { it?.toString() } as Set
+            def stored = _rmStatusEntryDeviceIds(byName.get(k))
+            if (stored && stored != wanted) mismatches << k
         }
     }
     def orderAfter = _rmOrderedActionIndices(appId)

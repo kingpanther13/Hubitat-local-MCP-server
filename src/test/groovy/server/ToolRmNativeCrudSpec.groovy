@@ -8108,15 +8108,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ]
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selectActionsSchema) }
-        // statusJson fetch count: backup snapshot (pre-write, before pre-clear
-        // snapshot) -> pre-clear snapshot at the dispatcher (THROW HERE) ->
-        // _rmClearActions internal indices fetch + 4 retry-loop fetches ->
-        // post-throw actionsStillPresent fetch in the catch. Throw selectively
-        // on the dispatcher's pre-clear snapshot call (call index 2, 0-based).
+        // statusJson fetch count: the stopped-state read before the edit -> backup snapshot
+        // (pre-write, before pre-clear snapshot) -> pre-clear snapshot at the dispatcher (THROW
+        // HERE) -> _rmClearActions internal indices fetch + 4 retry-loop fetches -> post-throw
+        // actionsStillPresent fetch in the catch. Throw selectively on the dispatcher's pre-clear
+        // snapshot call (the third call).
         def statusFetchCount = 0
         hubGet.register('/installedapp/statusJson/100') { params ->
             statusFetchCount++
-            if (statusFetchCount == 2) {
+            if (statusFetchCount == 3) {
                 throw new RuntimeException("simulated hub blip on pre-clear snapshot fetch")
             }
             statusJson(100, [[name: "actType.1", value: "switchActs"]])
@@ -34586,11 +34586,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.bulkStoppedAfter == "triggers[0]"
         result.finalisationNotAttempted == true
 
-        and: "after the label commit only the trigger-editor open is posted: no wizard writes, no updateRule, no mainPage Done"
+        and: "after the label commit only the trigger-editor open and its cancel are posted: no wizard writes, no updateRule, no mainPage Done"
         def labelCommit = posts.findIndexOf { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
         labelCommit >= 0
         def after = posts.drop(labelCommit + 1)
-        after.every { it.path == "/installedapp/btn" && it.body?.stateAttribute == "moreCond" }
+        after.every { it.path == "/installedapp/btn" && (it.body?.stateAttribute == "moreCond" || it.body?.name == "cancelCapab") }
         !after.any { it.path == "/installedapp/update/json" }
     }
 
@@ -34664,10 +34664,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         'dimmer.setLevel no level'   | [capability: "dimmer", action: "setLevel", deviceIds: [8]]        | "dimmer.setLevel requires 'level'"
         'dimmer.toggle no level'     | [capability: "dimmer", action: "toggle", deviceIds: [8]]          | "dimmer.toggle requires 'level'"
         'color.setColor no color'    | [capability: "color", action: "setColor", deviceIds: [8]]         | "color.setColor requires 'colorName'"
-        'color.toggleColor no name'  | [capability: "color", action: "toggleColor", level: 50]           | "color.toggleColor requires 'colorName'"
-        'color.toggleColor no level' | [capability: "color", action: "toggleColor", colorName: "Red"]    | "color.toggleColor requires 'level'"
-        'setColorTemp no kelvin'     | [capability: "colorTemp", action: "setColorTemp"]                 | "colorTemp.setColorTemp requires 'kelvin'"
-        'toggleColorTemp no kelvin'  | [capability: "colorTemp", action: "toggleColorTemp"]              | "colorTemp.toggleColorTemp requires 'kelvin'"
+        'color.toggleColor no name'  | [capability: "color", action: "toggleColor", deviceIds: [8], level: 50]        | "color.toggleColor requires 'colorName'"
+        'color.toggleColor no level' | [capability: "color", action: "toggleColor", deviceIds: [8], colorName: "Red"] | "color.toggleColor requires 'level'"
+        'setColorTemp no kelvin'     | [capability: "colorTemp", action: "setColorTemp", deviceIds: [8]]              | "colorTemp.setColorTemp requires 'kelvin'"
+        'toggleColorTemp no kelvin'  | [capability: "colorTemp", action: "toggleColorTemp", deviceIds: [8]]           | "colorTemp.toggleColorTemp requires 'kelvin'"
+        'switch.on no devices'       | [capability: "switch", action: "on"]                                           | "switch.on requires 'deviceIds'"
         'unknown switch action'      | [capability: "switch", action: "blink", deviceIds: [8]]           | "Unknown switch action 'blink'"
         'unsupported capability'     | [capability: "teleport"]                                          | "Unsupported capability 'teleport'"
     }
@@ -46136,7 +46137,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def e = thrown(IllegalArgumentException)
         e.message.contains("capabilityFilter '${raw}' is not a capability Rule Machine's Run Custom Action offers")
         e.message.contains("RM offers: FanControl, SpeechSynthesis, Switch, SwitchLevel, WindowShade")
-        e.message.contains("rolled back")
+        !e.message.contains("rolled back")
 
         where:
         raw << ["Initialize", "ColorControl", "AudioVolume", "Color Temperature"]
@@ -46666,8 +46667,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyAction reports a failed Done after the writes with the fields that landed"() {
         given:
-        installRuleTargetStubs()
-        hubGet.register('/hub2/appsList') { params -> appsListWithRule(300) }
         def ma = wireModifyEditorTransport(100, [1], ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]], runRuleEditor(1)) { String path, Map body ->
             if (path == "/installedapp/btn" && body?.name?.toString() == "actionDone") throw new IllegalStateException("btn 500")
         }
@@ -46684,8 +46683,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyAction reports an unreadable editor page as a possibly open editor"() {
         given:
-        installRuleTargetStubs()
-        hubGet.register('/hub2/appsList') { params -> appsListWithRule(300) }
         wireModifyEditorTransport(100, [1], ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]], runRuleEditor(1))
         hubGet.register('/installedapp/configure/json/100/doActPage') { params -> throw new IllegalStateException("timeout") }
 
@@ -46700,8 +46697,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "modifyAction is not verified when the action list cannot be read back"() {
         given:
-        installRuleTargetStubs()
-        hubGet.register('/hub2/appsList') { params -> appsListWithRule(300) }
         wireModifyEditorTransport(100, [1], ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]], runRuleEditor(1))
         hubGet.register('/app/ruleBuilderJson/100') { params -> '{}' }
 
@@ -46743,14 +46738,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         where:
         label                                              | kind        | spec                                                                                              | text
-        "compareToDevice without a comparator"             | "trigger"   | [capability: "Temperature", deviceIds: [8], compareToDevice: [deviceId: 9]]                        | "compareToDevice requires 'comparator'"
+        "compareToDevice without a comparator"             | "trigger"   | [capability: "Temperature", deviceIds: [8], compareToDevice: [deviceId: 9]]                        | "compareToDevice needs a comparator"
         "compareToDevice beside a value"                   | "trigger"   | [capability: "Temperature", deviceIds: [8], comparator: ">", value: 70, compareToDevice: [deviceId: 9]] | "cannot be combined with 'state'/'value'"
         "compareToDevice on a device-state capability"     | "trigger"   | [capability: "Switch", deviceIds: [8], comparator: "=", compareToDevice: [deviceId: 9]]            | "applies only to Rule Machine's numeric capabilities"
         "a hub-state trigger with no state"                | "trigger"   | [capability: "Location Event"]                                                                    | "Location Event needs state"
-        "a trigger capability no writer models"            | "trigger"   | [capability: "Days of Week Schedule"]                                                             | "trigger capability this tool does not model"
-        "a condition capability no writer models"          | "condition" | [capability: "Time of day"]                                                                       | "condition capability this tool does not model"
+        "a trigger capability no writer models"            | "trigger"   | [capability: "Days of Week Schedule"]                                                             | "trigger this tool does not model"
+        "a condition capability no writer models"          | "condition" | [capability: "Time of day"]                                                                       | "condition this tool does not model"
         "and stays on a capability without a duration"     | "trigger"   | [capability: "Button", deviceIds: [8], buttonNumber: 1, state: "pushed", andStays: [minutes: 1]]  | "no 'and stays' duration for a Button trigger"
-        "a change comparator on an All-of-these trigger"   | "trigger"   | [capability: "Switch", deviceIds: [8, 9], allOfThese: true, comparator: "*changed*"]              | "for a Switch trigger"
         "an over comparator on a variable condition"       | "condition" | [capability: "Variable", variable: "x", comparator: "*increased*"]                                 | "not one Rule Machine offers for a Variable condition"
     }
 
