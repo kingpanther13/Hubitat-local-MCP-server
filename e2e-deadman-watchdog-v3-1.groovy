@@ -1906,7 +1906,7 @@ def adminUpdateMcpSettings(args) {
     }
     Map types = [debugLogging: "bool", maxCapturedStates: "number", loopGuardMax: "number", loopGuardWindowSec: "number",
                  enableRead: "bool", enableCustomRuleEngine: "bool", useGateways: "bool", enableMandatoryBPS: "bool",
-                 bypassDeviceAllowlist: "bool", maxConcurrentWrites: "number", backupBeforeRuleEdits: "bool", backupEveryRuleWrite: "bool",
+                 bypassDeviceAllowlist: "bool", maxConcurrentWrites: "number", backupBeforeRuleEdits: "bool", backupEveryRuleWrite: "bool", redactAccessTokens: "bool",
                  enableLocalAccess: "bool", enableCloudAccess: "bool"]
     Map wanted = [:]
     args.settings.each { key, value ->

@@ -3920,7 +3920,7 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
     // runCommand's capability, devices and command are resolved against RM's live pickers once the
     // editor is open, the way the add does; the committed values fill in what mods leave out.
     Map runCommand = null
-    if (cap == "runCommand" && ["capabilityFilter", "command", "deviceIds"].any { mods.containsKey(it) }) {
+    if (cap == "runCommand" && ["capabilityFilter", "command", "deviceIds", "useLastEventDevice"].any { mods.containsKey(it) }) {
         def committedIds = _rmStatusEntryDeviceIds(settingsByName["devices.${actionIdx}".toString()]).collect { it as Integer }
         runCommand = [capabilityFilter: mods.containsKey("capabilityFilter") ? mods.capabilityFilter : committed("myCapab"),
                       command: mods.containsKey("command") ? mods.command : committed("cCmd"),
@@ -4908,7 +4908,8 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
     }
     // requires: a name is a required field; an inner list, fields of which one is needed.
     ((catAction.requires ?: catEntry.requires ?: []) as List).each { r ->
-        if (r instanceof List && !r.any { actionSpec.get(it?.toString()) != null }) {
+        // A false boolean is "not set" for a one-of: useLastEventDevice:false names no device.
+        if (r instanceof List && !r.any { def got = actionSpec.get(it?.toString()); got != null && got != false }) {
             throw new IllegalArgumentException("${specLabel} requires one of ${r.join(', ')}.".toString())
         }
         if (r instanceof String && actionSpec.get(r) == null) throw new IllegalArgumentException("${specLabel} requires '${r}'.".toString())
