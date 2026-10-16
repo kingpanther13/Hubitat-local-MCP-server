@@ -334,6 +334,8 @@ abstract class HarnessSpec extends Specification {
         (scriptStaticField('MRTR_CLEANUP_SCHEDULES') as Map).clear()
         (scriptStaticField('MRTR_CLEANUP_CHECK_AT') as Map).clear()
         (scriptStaticField('TOOL_SEARCH_INDEX') as Map).clear()
+        // The per-execution memo is an instance field; the harness reuses one script instance.
+        (script.EXECUTION_CACHE as Map).clear()
         (scriptStaticField('TOOL_METADATA_CACHE') as Map).clear()
         (scriptStaticField('RETIRED_TOOL_STATE_CLEANED') as Set).clear()
         (scriptStaticField('HUB_SECURITY_CHECKED') as Set).clear()

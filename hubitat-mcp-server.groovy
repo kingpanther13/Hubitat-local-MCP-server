@@ -28,9 +28,10 @@
 @groovy.transform.Field static volatile long SETUP_RETRY_AT = 0L
 @groovy.transform.Field static final Object SETUP_REFRESH_LOCK = new Object()
 @groovy.transform.Field static final Set LIVE_WRITE_EXECUTIONS = new java.util.HashSet()
-// Per-execution memo for hub reads one tool call would otherwise repeat: the device list behind
-// the Rule Machine capability check, and a rule's status read before an edit, which the backup
-// snapshot takes instead of reading again. Not static: each execution is its own instance.
+// Memo for hub reads one tool execution would otherwise repeat: the device list behind the Rule
+// Machine capability check, device existence, and a rule's status read before an edit, which the
+// backup snapshot takes instead of reading again. Not static, and cleared when a tool execution
+// starts, so nothing read for one call is ever served to another.
 @groovy.transform.Field final Map EXECUTION_CACHE = new java.util.HashMap()
 // Ordinary-write leases, keyed by leaseId. The global write cap is overload
 // protection, not crash safety: nothing here has to survive a recompile, and a
@@ -5924,6 +5925,7 @@ def _isDeviceReplaceOptionsOnlyCall(toolName, args) {
 
 // bpsChecked: the key was already validated for this slice's initial call (continuations).
 def executeTool(toolName, args, boolean bpsChecked = false) {
+    EXECUTION_CACHE.clear()
     // opToken is GONE (replaced by standard MCP requestState continuation). A client
     // still sending one is running the removed idempotent-replay protocol and would
     // otherwise lose its duplicate-commit protection silently -- fail loud instead.
