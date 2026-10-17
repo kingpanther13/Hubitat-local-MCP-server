@@ -22,6 +22,7 @@
 @groovy.transform.Field static final Object SETUP_REFRESH_LOCK = new Object()
 @groovy.transform.Field static final Set LIVE_WRITE_EXECUTIONS = new java.util.HashSet()
 @groovy.transform.Field final Map EXECUTION_CACHE = new java.util.HashMap()
+@groovy.transform.Field Map REQUEST_SETTINGS = null
 private Map _memoDeviceList() { EXECUTION_CACHE.get("vrbDevicesById") as Map }
 private void _memoKeepDeviceList(Map byId) { EXECUTION_CACHE.put("vrbDevicesById", byId) }
 private boolean _memoDeviceExists(String id) { EXECUTION_CACHE.get("deviceExists:${id}".toString()) == true }
@@ -36,6 +37,11 @@ private Throwable _rmFail(Throwable e, Map flags) { EXECUTION_CACHE.put(e, _rmOu
 private Map _rmOutcomeFlags(Throwable e) { (e == null) ? [:] : ((EXECUTION_CACHE.get(e) as Map) ?: [:]) }
 private Map _rmOutcomeKeys(Throwable e) { _rmOutcomeFlags(e).findAll { it.value == true } }
 private void _memoNoteSkippedCheck(String what) { def l = (EXECUTION_CACHE.get("checksSkipped") as List) ?: []; if (!(what in l)) l << what; EXECUTION_CACHE.put("checksSkipped", l) }
+private Map _requestSettingsSnapshot() {
+    [backupBeforeRuleEdits: settings?.backupBeforeRuleEdits?.toString(), backupEveryRuleWrite: settings?.backupEveryRuleWrite?.toString()]
+}
+private void _keepRequestSettings(Map snap) { REQUEST_SETTINGS = snap ?: null }
+private String _requestSetting(String key) { (REQUEST_SETTINGS ?: [:]).get(key)?.toString() }
 private List _memoSkippedChecks() { (EXECUTION_CACHE.get("checksSkipped") as List) ?: [] }
 @groovy.transform.Field static final Map WRITE_REQUEST_LEASES = new java.util.HashMap()
 @groovy.transform.Field static final Map MRTR_WORK_ITEMS = new java.util.HashMap()
@@ -28216,7 +28222,8 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
         return false
     }
 }
-private boolean _rmPreEditBackupsOff() { settings?.backupBeforeRuleEdits?.toString() == "false" }
+private boolean _rmPreEditBackupsOff() { (_requestSetting("backupBeforeRuleEdits") ?: settings?.backupBeforeRuleEdits?.toString()) == "false" }
+private boolean _rmStrictBackupsOn() { (_requestSetting("backupEveryRuleWrite") ?: settings?.backupEveryRuleWrite?.toString()) == "true" }
 Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
     if (_rmPreEditBackupsOff()) {
         _memoDropPreEditStatus(ruleId)
@@ -28238,7 +28245,7 @@ Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null)
     return activePage ? _rmBackupRuleSnapshot(ruleId, reason, activePage) : _rmBackupRuleSnapshot(ruleId, reason)
 }
 private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
-    if (settings?.backupEveryRuleWrite == true || reason == "pre-replaceRequiredExpression") return null
+    if (_rmStrictBackupsOn() || reason == "pre-replaceRequiredExpression") return null
     long nowMs = now()
     def mfst = _itemBackupManifest()
     def recent = mfst.findAll { key, value ->
@@ -35726,7 +35733,8 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         }
         MRTR_WORK_ITEMS.put(claimId, [
             stateId: stateId, claimId: claimId, generation: generation,
-            arguments: _mrtrCopyMap(executionArgs), started: false
+            arguments: _mrtrCopyMap(executionArgs), started: false,
+            requestSettings: _requestSettingsSnapshot()
         ])
     }
     try {
@@ -35789,6 +35797,7 @@ def runMrtrSlice(Map job = [:]) {
     mrtrWorkerSliceStartedAt = now()
     try {
         Map executionArgs = _mrtrCopyMap(work.arguments as Map)
+        _keepRequestSettings(work.requestSettings as Map)
         def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
         _mrtrLogBackgroundCommit(stateId, rec, _mrtrCommitSlice(stateId, rec, claim, executionArgs, result))
     } catch (Exception workerErr) {
@@ -35802,6 +35811,7 @@ def runMrtrSlice(Map job = [:]) {
         _mrtrCleanupRecord(rec)
         _mrtrStoreTerminalOrLog(stateId, rec, claim, failure, rec.leafTool)
     } finally {
+        _keepRequestSettings(null)
         mrtrWorkerSliceStartedAt = previousWorkerStart
         synchronized (WRITE_RESERVATION_LOCK) {
             def current = MRTR_WORK_ITEMS.get(claimId)
