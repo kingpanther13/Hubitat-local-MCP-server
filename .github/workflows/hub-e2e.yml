@@ -57,7 +57,7 @@ on:
   pull_request_target:
     # The guide PR is stacked on this maintained fixes branch. Keep the trusted
     # base allowlist explicit; lane-gate posts its docs-only diff as not requiring e2e.
-    branches: [main, pr/fixes-447-449-455-471]
+    branches: [main]
     # `labeled`/`unlabeled` are included so the lane-gate job can re-evaluate on a full-run-label
     # (release:patch|minor|major|e2e:full) or e2e:skip toggle -- but e2e RUNS only on the FIRST
     # full-run label or on removing e2e:skip while a full-run label remains; any other toggle runs
