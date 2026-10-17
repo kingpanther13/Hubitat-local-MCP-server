@@ -3103,7 +3103,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableRead = true
         settingsMap.enableWrite = true
         settingsMap.useGateways = gateways
-        String hint = script._mrtrClientErrorHint() as String
+        // No request context here, so the catalog is built for a legacy-era caller.
+        String hint = script._writeRecoveryHint(false) as String
 
         when:
         def tools = script.getToolDefinitions() as List
@@ -3118,9 +3119,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
             : []
 
         then: 'the instructions always carry the hint; gateway surfaces carry it exactly once, the size-capped flat catalog does not'
-        hint.contains('Read the target before repeating')
+        hint.contains('then read the target itself')
         !hint.contains('joins')
-        (script.serverInstructions() as String).count(hint) == 1
+        (script.serverInstructions(false) as String).count(hint) == 1
         !expectedHinted.isEmpty() == gateways
         expectedHinted.every { (byName[it].description as String).count(hint) == 1 &&
             (byName[it].description as String).endsWith(hint) }
@@ -3639,7 +3640,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         List gatewayWrites = ((script.getGatewayConfig() as Map)['hub_manage_devices'].tools as List)
             .findAll { writeLeaves.contains(it) }
         script.metaClass.getHiddenToolNames = { -> gatewayWrites as Set }
-        String hint = script._mrtrClientErrorHint() as String
+        String hint = script._writeRecoveryHint(false) as String
 
         when:
         def byName = (script.getToolDefinitions() as List).collectEntries { [(it.name): it] }
