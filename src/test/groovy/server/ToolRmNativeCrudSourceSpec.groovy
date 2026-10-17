@@ -2961,14 +2961,14 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         !script._rmStrictBackupsOn()
 
         when: "a detached write carries the request's view"
-        script._memoKeepRequestSettings([backupBeforeRuleEdits: "false", backupEveryRuleWrite: "true"])
+        script._keepRequestSettings([backupBeforeRuleEdits: "false", backupEveryRuleWrite: "true"])
 
         then:
         script._rmPreEditBackupsOff()
         script._rmStrictBackupsOn()
 
         when: "the stored value is text from a form save"
-        script.EXECUTION_CACHE.remove("requestSettings")
+        script._keepRequestSettings(null)
         settingsMap.backupBeforeRuleEdits = "false"
 
         then:

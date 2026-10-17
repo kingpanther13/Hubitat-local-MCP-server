@@ -502,8 +502,15 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
     }
 
     def "a detached slice carries the request's view of the backup toggles"() {
-        given: "the request sees pre-edit backups off; the worker is captured, not run"
+        given: "the request sees pre-edit backups off; every action records the toggle as the worker reads it"
         settingsMap.backupBeforeRuleEdits = false
+        def seen = []
+        script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validIds = null ->
+            actions << new LinkedHashMap(spec)
+            seen << script._rmPreEditBackupsOff()
+            clock.addAndGet(itemElapsed.call(actions.size()) as Long)
+            [success: true, deviceIds: spec.deviceIds]
+        }
         RUN_IN_MILLIS_OVERRIDE.set({ List call -> runInMillisCalls << call })
 
         when:
@@ -515,12 +522,14 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         runInMillisCalls.size() == 1
         script.MRTR_WORK_ITEMS.values().find { it.stateId == stateId }.requestSettings.backupBeforeRuleEdits == "false"
 
-        when: "the scheduled job reads the setting as it was before the toggle"
+        when: "the scheduled job reads the setting as it stood before the toggle"
         settingsMap.backupBeforeRuleEdits = true
         script.runMrtrSlice(new LinkedHashMap(runInMillisCalls[0][2].data as Map))
 
-        then: "the slice decided from the request's view"
-        script._memoRequestSetting("backupBeforeRuleEdits") == "false"
-        script._rmPreEditBackupsOff()
+        then: "the worker's actions still saw backups off, and the view does not outlive the slice"
+        actions.size() == 3
+        seen == [true, true, true]
+        script._requestSetting("backupBeforeRuleEdits") == null
+        !script._rmPreEditBackupsOff()
     }
 }

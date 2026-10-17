@@ -33,6 +33,9 @@
 // backup snapshot takes instead of reading again) and whether an app is an RM rule. Not static,
 // cleared when a tool execution starts, and reached only through the accessors below.
 @groovy.transform.Field final Map EXECUTION_CACHE = new java.util.HashMap()
+// A detached slice's view of the settings its request read (see _requestSettingsSnapshot); set for
+// the slice and cleared after it, so it outlives the per-tool cache clear but never a worker run.
+@groovy.transform.Field Map REQUEST_SETTINGS = null
 private Map _memoDeviceList() { EXECUTION_CACHE.get("vrbDevicesById") as Map }
 private void _memoKeepDeviceList(Map byId) { EXECUTION_CACHE.put("vrbDevicesById", byId) }
 private boolean _memoDeviceExists(String id) { EXECUTION_CACHE.get("deviceExists:${id}".toString()) == true }
@@ -56,8 +59,8 @@ private void _memoNoteSkippedCheck(String what) { def l = (EXECUTION_CACHE.get("
 private Map _requestSettingsSnapshot() {
     [backupBeforeRuleEdits: settings?.backupBeforeRuleEdits?.toString(), backupEveryRuleWrite: settings?.backupEveryRuleWrite?.toString()]
 }
-private void _memoKeepRequestSettings(Map snap) { if (snap) EXECUTION_CACHE.put("requestSettings", snap) }
-private String _memoRequestSetting(String key) { ((EXECUTION_CACHE.get("requestSettings") as Map) ?: [:]).get(key)?.toString() }
+private void _keepRequestSettings(Map snap) { REQUEST_SETTINGS = snap ?: null }
+private String _requestSetting(String key) { (REQUEST_SETTINGS ?: [:]).get(key)?.toString() }
 private List _memoSkippedChecks() { (EXECUTION_CACHE.get("checksSkipped") as List) ?: [] }
 // Ordinary-write leases, keyed by leaseId. The global write cap is overload
 // protection, not crash safety: nothing here has to survive a recompile, and a
@@ -3948,7 +3951,7 @@ def runMrtrSlice(Map job = [:]) {
     mrtrWorkerSliceStartedAt = now()
     try {
         Map executionArgs = _mrtrCopyMap(work.arguments as Map)
-        _memoKeepRequestSettings(work.requestSettings as Map)
+        _keepRequestSettings(work.requestSettings as Map)
         def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
         _mrtrLogBackgroundCommit(stateId, rec, _mrtrCommitSlice(stateId, rec, claim, executionArgs, result))
     } catch (Exception workerErr) {
@@ -3964,6 +3967,7 @@ def runMrtrSlice(Map job = [:]) {
         _mrtrCleanupRecord(rec)
         _mrtrStoreTerminalOrLog(stateId, rec, claim, failure, rec.leafTool)
     } finally {
+        _keepRequestSettings(null)
         mrtrWorkerSliceStartedAt = previousWorkerStart
         synchronized (WRITE_RESERVATION_LOCK) {
             def current = MRTR_WORK_ITEMS.get(claimId)

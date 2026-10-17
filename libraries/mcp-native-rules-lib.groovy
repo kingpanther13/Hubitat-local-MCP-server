@@ -7846,8 +7846,8 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 // some apps (HPM) use to reset a wizard's pending input.
 // The toggles as the request read them (a detached write carries that view), else as stored;
 // a form save keeps a toggle as text, so the text decides.
-private boolean _rmPreEditBackupsOff() { (_memoRequestSetting("backupBeforeRuleEdits") ?: settings?.backupBeforeRuleEdits?.toString()) == "false" }
-private boolean _rmStrictBackupsOn() { (_memoRequestSetting("backupEveryRuleWrite") ?: settings?.backupEveryRuleWrite?.toString()) == "true" }
+private boolean _rmPreEditBackupsOff() { (_requestSetting("backupBeforeRuleEdits") ?: settings?.backupBeforeRuleEdits?.toString()) == "false" }
+private boolean _rmStrictBackupsOn() { (_requestSetting("backupEveryRuleWrite") ?: settings?.backupEveryRuleWrite?.toString()) == "true" }
 
 Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
     if (_rmPreEditBackupsOff()) {
