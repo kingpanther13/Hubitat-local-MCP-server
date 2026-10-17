@@ -155,7 +155,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         stateMap.lastBackupTimestamp = 1234567890000L
         def backupCalls = []
         def posts = []
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, String activePage = null ->
             backupCalls << [id: id, reason: reason]
             [backupKey: 'must-not-exist']
         }

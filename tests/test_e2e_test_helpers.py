@@ -2154,9 +2154,10 @@ def test_assert_bulk_stop_rejects_a_broken_stop(override, tail, message):
 def test_patch_rule_rejects_a_refusal_without_the_stop_contract():
     class FakeClient:
         def call_tool(self, _name, _arguments):
+            # Refused at its first op (so not partial) yet a later op ran: not a stopped batch.
             return {
                 "success": False,
-                "partial": True,
+                "partial": False,
                 "patches": [{"op": "addAction", "success": False, "error": "refused"},
                             {"op": "addAction", "success": True}],
                 "health": {"ok": True},

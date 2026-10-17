@@ -90,30 +90,24 @@ jobs:
     steps:
       - run: echo "Ephemeral hub approved for this revision."
 
-  request-hub:
-    name: Request ephemeral hub (${{ matrix.kind }})
+  # A fork head's release files are published once, for both hub kinds.
+  publish:
+    name: Publish fork PR release artifact
     needs: [gate, approve]
-    if: needs.gate.outputs.run == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        kind: [os, jvm]
+    if: needs.gate.outputs.fork == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
     permissions:
       contents: write   # publish_fork_bundle.sh pushes shas/<sha>/ to bundle-artifacts
-      actions: read
     steps:
-      # Base ref only: nothing from the PR head is executed here.
+      # Base ref only: the publish script builds the head's files with this checkout's builder, as data.
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-python@v7
-        if: needs.gate.outputs.fork == 'true'
         with:
           python-version: '3.x'
       - name: Publish fork PR release artifact
-        if: needs.gate.outputs.fork == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_REPO: ${{ github.repository }}
@@ -121,6 +115,27 @@ jobs:
           PR_HEAD_REPO: ${{ needs.gate.outputs.repo }}
           PR_HEAD_SHA: ${{ needs.gate.outputs.sha }}
         run: bash .github/scripts/publish_fork_bundle.sh
+
+  request-hub:
+    name: Request ephemeral hub (${{ matrix.kind }})
+    needs: [gate, approve, publish]
+    # publish is skipped for a same-repo head; a failed or cancelled publish stops the request.
+    if: ${{ !cancelled() && needs.gate.outputs.run == 'true' && needs.approve.result == 'success' && (needs.publish.result == 'success' || needs.publish.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        kind: [os, jvm]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+      statuses: write   # the provider's verdict for this head
+    steps:
+      # Base ref only: nothing from the PR head is executed here.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Wait for this revision's published release files
         env:
           PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
@@ -133,6 +148,7 @@ jobs:
           HUB_KIND: ${{ matrix.kind }}
         run: bash .github/scripts/request_ephemeral_hub.sh consumer "$PUBLIC_SHA" "$RUNNER_TEMP/pub"
       - name: Dispatch the hub and fetch its results or encrypted session
+        id: hub
         env:
           GH_TOKEN: ${{ secrets.PRIVATE_CI_TOKEN }}
           PROVIDER: ${{ secrets.SOFTWARE_HUB_PROVIDER }}
@@ -162,3 +178,17 @@ jobs:
           retention-days: 1
           if-no-files-found: error
           overwrite: true
+      # The trusted result: the provider run's own conclusion, posted from base code, which the
+      # PR-controlled test workflow cannot change. With no provider run (the hub step failed, or an
+      # earlier step did and it never ran) the verdict is failure, so the head gets one whenever
+      # this job runs.
+      - name: Post the provider's verdict
+        if: ${{ !cancelled() && env.EPHEMERAL_RUN_SUITE == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.PRIVATE_CI_TOKEN }}
+          STATUS_TOKEN: ${{ github.token }}
+          PROVIDER: ${{ secrets.SOFTWARE_HUB_PROVIDER }}
+          PUBLIC_SHA: ${{ needs.gate.outputs.sha }}
+          PROVIDER_RUN: ${{ steps.hub.outputs.provider_run }}
+          HUB_KIND: ${{ matrix.kind }}
+        run: bash .github/scripts/request_ephemeral_hub.sh verdict "$PROVIDER_RUN"

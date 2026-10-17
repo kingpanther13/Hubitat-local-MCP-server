@@ -819,7 +819,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 
 ```json
 {
-  "setup_prompt": "Create virtual devices: BAT-RM-Garage (driver: Virtual Garage Door Opener), BAT-RM-Lock (driver: Virtual Lock), BAT-RM-Valve (driver: Virtual Valve). Verify none of them are production devices.",
+  "setup_prompt": "Create virtual devices: BAT-RM-Garage (driver: Virtual Garage Door Controller), BAT-RM-Lock (driver: Virtual Lock), BAT-RM-Valve (driver: Virtual Valve). Verify none of them are production devices.",
   "test_prompt": "Create rule 'BAT-RM-GarageLockValve-DoNotRun' paused with a year-2099 Certain Time trigger (so actions never fire). Actions: (1) Open BAT-RM-Garage, (2) Close BAT-RM-Garage, (3) Lock BAT-RM-Lock, (4) Unlock BAT-RM-Lock, (5) Open BAT-RM-Valve, (6) Close BAT-RM-Valve. Verify all six round-trip by reading the rule back. Rule must stay paused; actions must NOT fire against the virtual devices.",
   "teardown_prompt": "Delete rule and all three virtual devices."
 }
@@ -1916,7 +1916,7 @@ Each section below lives in its own `## Section N` heading. Sections are appende
 }
 ```
 
-**Expected**: `hub_set_rule(appId, addAction={capability:'switch', action:'off', deviceIds:[<id>], onlyOn:true})` commits; the wire writes `optSwitch.<N>=true` AFTER `onOffSwitch.<N>` (its reveal gate). `partial:false`. `hub_get_app_config` shows the off action with the "only switches that are on" qualifier. SAFETY: only BAT-prefixed devices/rules touched.
+**Expected**: `hub_set_rule(appId, addAction={capability:'switch', action:'off', deviceIds:[<id>], onlyIfChanged:true})` commits; the wire writes `optSwitch.<N>=true` AFTER `onOffSwitch.<N>` (its reveal gate). `partial:false`. `hub_get_app_config` shows the off action with the "only switches that are on" qualifier. SAFETY: only BAT-prefixed devices/rules touched.
 
 ### T462 — waitEvents per-event "and stays that way for" duration
 

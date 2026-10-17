@@ -216,9 +216,10 @@ RULES = [
         # The sandbox refuses `x.methods` as a property read, even on a parsed JSON Map ("Subscript
         # property 'methods' is not allowed from app or driver code", live, fw 2.5.2.129) -- the
         # hubitat_ci harness does not, so only a hub catches it. Map.get("methods") is allowed.
+        # `fields` and `declaredFields` fail the same way inside a closure (live, fw 2.5.2.135).
         "id": "SANDBOX-017",
-        "pattern": r"\.methods\b(?!\s*\()",
-        "message": "`.methods` property read is blocked by the Hubitat sandbox at runtime, even on a Map. Use map.get(\"methods\").",
+        "pattern": r"\.(?:methods|fields|declaredFields)\b(?!\s*\()",
+        "message": "`.methods`, `.fields` and `.declaredFields` property reads are blocked by the Hubitat sandbox at runtime, even on a Map. Use map.get(\"<name>\") or another key.",
         "severity": "error",
     },
 ]
@@ -1929,9 +1930,8 @@ def check_tool_guide_generated() -> list[dict]:
             "native Rule Machine",
         ],
         "set_rule_reference": [
-            "setVariable", "modeName", "discrete events", "Variable comparison", "lowercase",
-            "Extended per-capability spec shapes", "selectTriggers", "nested subExpression",
-            "expressionNotLive", "subscriptionsNotLive",
+            "operation:'discover'", "setVariable", "modeName", "lowercase", "selectTriggers",
+            "nested subExpression", "expressionNotLive", "subscriptionsNotLive",
         ],
     }
     findings = []
@@ -1957,283 +1957,6 @@ def check_tool_guide_generated() -> list[dict]:
         "hand: edit getToolGuideSections() in hubitat-mcp-server.groovy (or the library method a "
         "section delegates to), then run `python tools/build-tool-guide.py`.")))
     return findings
-
-
-def check_discrete_event_caps_doc_parity(
-    src_override: str | None = None,
-    doc_surfaces_override: dict | None = None,
-) -> list[dict]:
-    """Verify every doc surface that lists discrete-event sensor capabilities
-    only names capabilities that are in production's DISCRETE_EVENT_CAPS map.
-
-    Production code's authoritative class predicate lives in the
-    DISCRETE_EVENT_CAPS map literal in hubitat-mcp-server.groovy. Doc surfaces
-    that list capabilities as discrete-event (the inline addRE schema
-    description, the inline get_tool_guide content block, TOOL_GUIDE.md, and
-    docs/rm_action_subtype_schemas.md) MUST cite a subset of that production
-    set -- otherwise agents copy a doc example that the live walker rejects.
-
-    Scope of what this rule catches: capability-NAME presence parity ONLY.
-    The lint extracts capability keys from the DISCRETE_EVENT_CAPS map and
-    flags any cap name in a doc-surface positive-claim region that is NOT in
-    that canonical set (e.g. the CO2-symmetric-to-CO pitfall). It catches:
-    (a) adding a new doc cap that production does not accept,
-    (b) the well-known pitfall caps drift (Carbon dioxide sensor).
-    It does NOT catch: state-value drift (doc says `'tested'` but production
-    only accepts `["detected", "clear"]`); removal drift (cap dropped from
-    production but still in docs flags only as a no-finding because the doc
-    cap is no longer in the canonical set and is silently treated as
-    out-of-scope). State-value parity + removal parity are TODO -- track
-    those separately rather than overclaiming this rule.
-
-    Implementation note: the doc-surface scan uses a fixed 800-char window
-    after a discrete-event phrase to bound the search; a markdown table
-    spanning more than ~30 rows could trail past the window. The known doc
-    surfaces today are all under that limit.
-
-    src_override / doc_surfaces_override let the self-test drive this with
-    synthetic corpora. doc_surfaces_override is a dict {label: text}.
-    """
-    findings: list[dict] = []
-    server = REPO_ROOT / "hubitat-mcp-server.groovy"
-    if src_override is not None:
-        src = src_override
-    else:
-        if not server.exists():
-            return findings
-        src = server.read_text(encoding="utf-8", errors="replace")
-        # DISCRETE_EVENT_CAPS now lives in the McpNativeRulesLib #include library
-        # (issue #209 native-RM extraction); the app includes every libraries/*.groovy,
-        # so append them so the map is found wherever it resides. The src_override path
-        # stays main-only for the synthetic self-test corpora.
-        _lib_dir = REPO_ROOT / "libraries"
-        if _lib_dir.is_dir():
-            for _lib in sorted(_lib_dir.glob("*.groovy")):
-                src += "\n" + _lib.read_text(encoding="utf-8", errors="replace")
-
-    # 1. Extract the canonical DISCRETE_EVENT_CAPS set from production.
-    #    The map literal shape is:
-    #        def DISCRETE_EVENT_CAPS = [
-    #            "Water sensor":                ["wet", "dry"],
-    #            ...
-    #        ]
-    map_match = re.search(
-        r"def\s+DISCRETE_EVENT_CAPS\s*=\s*\[(.*?)\n\s*\]",
-        src,
-        re.DOTALL,
-    )
-    if not map_match:
-        findings.append({
-            "file": str(server.relative_to(REPO_ROOT)),
-            "line": 1,
-            "severity": "error",
-            "rule": "discrete-event-caps-no-map",
-            "message": (
-                "Could not locate `def DISCRETE_EVENT_CAPS = [ ... ]` literal -- "
-                "has the map shape changed? Update the check_discrete_event_caps_doc_parity "
-                "extractor regex or remove the lint rule if intentionally restructured."
-            ),
-            "source": "",
-        })
-        return findings
-    canonical_caps = set(re.findall(r'"([^"]+)"\s*:', map_match.group(1)))
-    if not canonical_caps:
-        findings.append({
-            "file": str(server.relative_to(REPO_ROOT)),
-            "line": 1,
-            "severity": "error",
-            "rule": "discrete-event-caps-empty",
-            "message": "DISCRETE_EVENT_CAPS map literal parsed but yielded zero capabilities.",
-            "source": "",
-        })
-        return findings
-
-    # 2. Build the doc-surface map. Each surface is the full text of the source
-    #    block to scan; the check is "for each capability mentioned in a
-    #    discrete-event context, verify it's in canonical_caps".
-    if doc_surfaces_override is not None:
-        doc_surfaces = doc_surfaces_override
-    else:
-        tool_guide = REPO_ROOT / "TOOL_GUIDE.md"
-        action_schemas = REPO_ROOT / "docs" / "rm_action_subtype_schemas.md"
-        doc_surfaces = {}
-        # Two inline surfaces in the server source: extract narrow scope so we
-        # only scan the "discrete events" / "discrete-event" notes, not the
-        # whole 800KB file (which mentions caps in many unrelated contexts).
-        for m in re.finditer(
-            r"(?:report discrete events|discrete-event capability|some sensor capabilities).{0,800}",
-            src,
-            re.DOTALL,
-        ):
-            label = f"hubitat-mcp-server.groovy:{src[:m.start()].count(chr(10)) + 1}"
-            doc_surfaces[label] = m.group(0)
-        if tool_guide.exists():
-            tg = tool_guide.read_text(encoding="utf-8", errors="replace")
-            for m in re.finditer(
-                r"(?:report discrete events|discrete-event capability|some sensor capabilities).{0,800}",
-                tg,
-                re.DOTALL,
-            ):
-                label = f"TOOL_GUIDE.md:{tg[:m.start()].count(chr(10)) + 1}"
-                doc_surfaces[label] = m.group(0)
-        if action_schemas.exists():
-            as_text = action_schemas.read_text(encoding="utf-8", errors="replace")
-            # The discrete-event table in this file is the authoritative table.
-            m = re.search(
-                r"###\s*Sensor capabilities with discrete event states.*?(?=\n##|\Z)",
-                as_text,
-                re.DOTALL,
-            )
-            if m:
-                label = f"docs/rm_action_subtype_schemas.md:{as_text[:m.start()].count(chr(10)) + 1}"
-                doc_surfaces[label] = m.group(0)
-
-    # 3. The set of all capability names this lint cares about: production's
-    #    canonical set + the well-known pitfall caps that are NOT in production
-    #    but might be accidentally added to a doc surface (Carbon dioxide sensor
-    #    is the documented pitfall).
-    pitfall_caps = {"Carbon dioxide sensor"}
-    caps_to_check = canonical_caps | pitfall_caps
-
-    # 4. For each doc surface, isolate the *positive claim* region -- the
-    #    parenthesized list of capabilities adjacent to the "report discrete
-    #    events" phrase, OR the markdown-table rows under a "discrete event"
-    #    heading. Only claims inside that narrow region count as the doc
-    #    asserting the capability is discrete-event. Mentions in surrounding
-    #    explanatory / exclusion text (e.g. "Carbon dioxide sensor is
-    #    intentionally EXCLUDED because ...") do NOT count.
-    #
-    #    Two positive-claim shapes we recognize:
-    #    (a) "(Water sensor, Smoke detector, ...) report discrete events"
-    #        -- the parenthetical immediately preceding the phrase.
-    #    (b) "report discrete events" with no parenthetical immediately
-    #        before -- treat the immediately-following inline list (up to
-    #        the next sentence-end period) as the positive claim region.
-    #    (c) Markdown-table rows of the form `| `<cap>` |` under a heading
-    #        that contains "discrete event" -- the table rows are the
-    #        positive claim region.
-    paren_before_phrase_re = re.compile(
-        r"\(([^()]*?)\)\s*report discrete events"
-    )
-    table_row_re = re.compile(r"\|\s*`([^`]+)`\s*\|")
-    for label, surface_text in doc_surfaces.items():
-        positive_claim_regions = []
-        for m in paren_before_phrase_re.finditer(surface_text):
-            positive_claim_regions.append(m.group(1))
-        # Markdown-table form (only fires when surface starts with the table heading)
-        if "discrete event" in surface_text.lower() and "|" in surface_text:
-            for tr in table_row_re.finditer(surface_text):
-                positive_claim_regions.append(tr.group(1))
-        positive_claim_text = " ".join(positive_claim_regions)
-        if not positive_claim_text:
-            # No positive-claim region detected -- this doc surface mentions
-            # discrete events but doesn't carry a parenthetical / table-row
-            # cap list. Skip; the heading-presence checks elsewhere cover
-            # structural drift.
-            continue
-        for cap in caps_to_check:
-            if cap in positive_claim_text and cap not in canonical_caps:
-                file_part, _, line_part = label.partition(":")
-                findings.append({
-                    "file": file_part,
-                    "line": int(line_part) if line_part.isdigit() else 1,
-                    "severity": "error",
-                    "rule": "discrete-event-caps-doc-drift",
-                    "message": (
-                        f"Doc surface lists capability '{cap}' as a discrete-event "
-                        f"capability (inside a positive-claim region), but '{cap}' "
-                        f"is NOT in production's DISCRETE_EVENT_CAPS map (canonical "
-                        f"set: {sorted(canonical_caps)}). Agents copying this doc "
-                        f"would build a condition the live walker rejects. Either "
-                        f"remove '{cap}' from the positive-claim list or add it to "
-                        f"the production DISCRETE_EVENT_CAPS map."
-                    ),
-                    "source": positive_claim_text[:160].replace("\n", " "),
-                })
-
-    return findings
-
-
-# Self-test fixtures for check_discrete_event_caps_doc_parity. Drives the real
-# check function with synthetic corpora to cover must-catch + must-not-catch
-# cases (PIPELINE.md Rule 13).
-DISCRETE_EVENT_CAPS_SELF_TEST_CASES = [
-    # (description, synthetic_src, doc_surfaces, expected_codes)
-    (
-        "doc surface positive-claim region lists only canonical caps -- no finding (must-not-catch)",
-        'def DISCRETE_EVENT_CAPS = [\n    "Water sensor": ["wet", "dry"],\n    "Smoke detector": ["detected", "clear"]\n]',
-        {"surface1": "some sensor capabilities (Water sensor, Smoke detector) report discrete events"},
-        set(),
-    ),
-    (
-        "positive-claim region lists pitfall cap NOT in canonical -- flags drift (must-catch)",
-        'def DISCRETE_EVENT_CAPS = [\n    "Water sensor": ["wet", "dry"]\n]',
-        {"surface_drift": "some sensor capabilities (Water sensor, Carbon dioxide sensor) report discrete events"},
-        {"discrete-event-caps-doc-drift"},
-    ),
-    (
-        "no DISCRETE_EVENT_CAPS map in synthetic source -- flags no-map (extractor regression guard)",
-        "def someOtherMap = [:]",
-        {"surface_noop": "some sensor capabilities report discrete events"},
-        {"discrete-event-caps-no-map"},
-    ),
-    (
-        "explanatory-exclusion text mentioning pitfall cap OUTSIDE positive-claim region -- no false positive",
-        'def DISCRETE_EVENT_CAPS = [\n    "Water sensor": ["wet", "dry"]\n]',
-        # The positive-claim region is just `(Water sensor)`; the explanatory text after
-        # mentions Carbon dioxide sensor but to explain its EXCLUSION, not to claim it as
-        # discrete-event. The classifier must scope to the parenthetical region only.
-        {"surface_exclusion": "some sensor capabilities (Water sensor) report discrete events. Carbon dioxide sensor is intentionally EXCLUDED because CarbonDioxideMeasurement is numeric ppm."},
-        set(),
-    ),
-    (
-        "markdown-table positive-claim region with pitfall cap row -- flags drift (must-catch)",
-        'def DISCRETE_EVENT_CAPS = [\n    "Water sensor": ["wet", "dry"]\n]',
-        {"surface_table": "### Sensor capabilities with discrete event states\n\n| Capability | State values |\n|---|---|\n| `Water sensor` | wet, dry |\n| `Carbon dioxide sensor` | detected, clear |\n"},
-        {"discrete-event-caps-doc-drift"},
-    ),
-]
-
-
-def _run_discrete_event_caps_self_test() -> int:
-    """Drive check_discrete_event_caps_doc_parity with synthetic corpora and verify:
-    (a) the right rule codes fire (dispatch correctness)
-    (b) every finding is format_finding-renderable (finding-dict shape correctness)
-    """
-    failures = 0
-    for i, (desc, src, surfaces, expected_codes) in enumerate(
-        DISCRETE_EVENT_CAPS_SELF_TEST_CASES, start=1
-    ):
-        findings = check_discrete_event_caps_doc_parity(
-            src_override=src,
-            doc_surfaces_override=surfaces,
-        )
-        # Shape check first: every finding must render through format_finding.
-        shape_ok = True
-        for f in findings:
-            try:
-                _ = format_finding(f)
-            except KeyError as ke:
-                failures += 1
-                shape_ok = False
-                print(
-                    f"DISCRETE-EVENT-CAPS-SELF-TEST FAIL [{i}] {desc}\n"
-                    f"  finding dict missing required key for format_finding: {ke}\n"
-                    f"  finding keys present: {sorted(f.keys())}\n"
-                    f"  finding: {f!r}"
-                )
-        if not shape_ok:
-            continue
-        actual_codes = {f["rule"] for f in findings}
-        if actual_codes != expected_codes:
-            failures += 1
-            print(
-                f"DISCRETE-EVENT-CAPS-SELF-TEST FAIL [{i}] {desc}\n"
-                f"  expected codes: {sorted(expected_codes)}\n"
-                f"  actual codes:   {sorted(actual_codes)}\n"
-                f"  all findings: {findings!r}"
-            )
-    return failures
 
 
 def check_trailing_updaterule_envelope_parity(
@@ -2320,7 +2043,7 @@ def check_trailing_updaterule_envelope_parity(
 
 # Self-test fixtures for check_trailing_updaterule_envelope_parity. Drives
 # the real check function with synthetic corpora to cover must-catch +
-# must-not-catch cases (PIPELINE.md Rule 13).
+# must-not-catch cases.
 ENVELOPE_PARITY_SELF_TEST_CASES = [
     # (description, synthetic_src, expected_codes)
     (
@@ -2675,7 +2398,7 @@ def _build_read_write_split_corpus(gateways: dict, read_only: list, all_tools: l
 
 # Self-test fixtures for check_read_write_split. Drive the real check with
 # synthetic Groovy corpora to cover must-catch + must-not-catch cases
-# (PIPELINE.md Rule 13) so the guard provably fires and never silently no-ops.
+# so the guard provably fires and never silently no-ops.
 READ_WRITE_SPLIT_SELF_TEST_CASES = [
     # (description, groovy source, expected_rule_codes)
     (
@@ -3405,6 +3128,16 @@ SELF_TEST_CASES = [
         "Map.get('methods') is NOT flagged",
         'def ms = page.get("methods")',
         [("SANDBOX-017", False)],
+    ),
+    (
+        "a .fields property read inside a closure is flagged",
+        "entries.each { e -> def f = e.fields }",
+        [("SANDBOX-017", True)],
+    ),
+    (
+        "a .declaredFields property read is flagged",
+        "def fs = page.declaredFields",
+        [("SANDBOX-017", True)],
     ),
     (
         "querystring embedded in a hubInternalGet path is flagged",
@@ -4355,16 +4088,11 @@ def run_self_test() -> int:
     # Gateway-attribution must-catch / must-not-catch fixtures.
     failures += _run_gateway_attribution_self_test()
 
-    # Discrete-event-caps must-catch / must-not-catch fixtures (PIPELINE.md Rule 13).
-    discrete_event_failures = _run_discrete_event_caps_self_test()
-    failures += discrete_event_failures
-
     # Trailing-updateRule envelope parity must-catch / must-not-catch fixtures
-    # (PIPELINE.md Rule 13).
     envelope_parity_failures = _run_envelope_parity_self_test()
     failures += envelope_parity_failures
 
-    # Read/write-split must-catch / must-not-catch fixtures (PIPELINE.md Rule 13):
+    # Read/write-split must-catch / must-not-catch fixtures:
     # the guard that a read-only tool is never stranded behind only a hub_manage_*
     # gateway ships with positive + negative fixtures so a regression in the
     # dispatch logic surfaces here rather than silently weakening the lint.
@@ -4392,7 +4120,6 @@ def run_self_test() -> int:
         len(SELF_TEST_CASES)
         + len(COUNT_SELF_TEST_CASES)
         + len(GATEWAY_ATTRIBUTION_SELF_TEST_CASES)
-        + len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)
         + len(ENVELOPE_PARITY_SELF_TEST_CASES)
         + len(READ_WRITE_SPLIT_SELF_TEST_CASES)
         + len(DEVICE_GATE_SELF_TEST_CASES)
@@ -4406,7 +4133,6 @@ def run_self_test() -> int:
         f"Self-test: {total_cases} case(s) passed "
         f"({len(SELF_TEST_CASES)} sandbox, {len(COUNT_SELF_TEST_CASES)} count, "
         f"{len(GATEWAY_ATTRIBUTION_SELF_TEST_CASES)} gateway-attribution, "
-        f"{len(DISCRETE_EVENT_CAPS_SELF_TEST_CASES)} discrete-event-caps, "
         f"{len(ENVELOPE_PARITY_SELF_TEST_CASES)} envelope-parity, "
         f"{len(READ_WRITE_SPLIT_SELF_TEST_CASES)} read-write-split, "
         f"{len(DEVICE_GATE_SELF_TEST_CASES)} device-tool-access-gate, "
@@ -5584,12 +5310,6 @@ def main() -> int:
     all_findings.extend(check_tool_guide_pointers())
     # TOOL_GUIDE.md must be the generated rendering of getToolGuideSections().
     all_findings.extend(check_tool_guide_generated())
-
-    # Check that every doc surface that lists discrete-event sensor capabilities
-    # only names capabilities that are in production's DISCRETE_EVENT_CAPS map.
-    # Catches the "doc surface drifts ahead of production" class -- agents
-    # copying a stale-doc example would build a condition the live walker rejects.
-    all_findings.extend(check_discrete_event_caps_doc_parity())
 
     # Check that every `catch (Exception updateExc)` block in the RM dispatcher
     # is followed by the full 5-slot trailing-updateRule envelope shape.

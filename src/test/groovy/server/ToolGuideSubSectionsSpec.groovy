@@ -125,24 +125,17 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         'builtin_app_tools_apps'        | '### hub_list_hpm_packages'                                   | '### hub_set_native_app'
         'builtin_app_tools_rules'       | '### hub_get_rule_health'                                     | '### hub_list_drivers'
         'builtin_app_tools_crud'        | '### Safety model for native CRUD'                            | '### hub_get_rule_health'
-        'set_rule_reference_overview'   | '## `hub_set_rule` capability reference'                      | '### `addTrigger` capability families'
-        'set_rule_reference_triggers'   | '### `addTrigger` capability families'                        | '### `addAction` capability families'
-        'set_rule_reference_actions'    | '### `addAction` capability families'                         | '### `addTrigger` capability families'
-        'set_rule_reference_conditions' | '### `addRequiredExpression` STPage capability list'          | '### `walkStep` schema-aware wizard walker'
-        'set_rule_reference_walkstep'   | '### `walkStep` schema-aware wizard walker'                   | '### `addRequiredExpression` STPage capability list'
-        'set_rule_reference_responses'  | '### Partial-success and trailing-updateRule response slots'  | '### Raw `settings`/`button` mode'
-        'set_rule_reference_guards'     | '### Did-you-mean on unknown capability names'                | '### `addTrigger` capability families'
+        'set_rule_reference_overview'   | '## `hub_set_rule` capability reference'                      | '### Shapes come from discover'
+        'set_rule_reference_shapes'     | '### Shapes come from discover'                               | '### `walkStep` schema-aware wizard walker'
+        'set_rule_reference_conditions' | '### `addRequiredExpression` operator contract'               | '### Shapes come from discover'
+        'set_rule_reference_walkstep'   | '### `walkStep` schema-aware wizard walker'                   | '### `addRequiredExpression` operator contract'
+        'set_rule_reference_responses'  | '### Responses: applied, activated, verified'                 | '### Raw `settings`/`button` mode'
     }
 
-    def "the fail-loud shape guards each land with the shortcut they steer -- the pointers promise it"() {
-        // The addAction guards used to sit inside the addTrigger block, so retargeting addAction's
-        // description at _actions would have sent a caller whose write just failed to a page that
-        // did not contain its own recovery rule.
+    def "the shapes page points at discover for every kind"() {
         expect:
-        (script.toolGetToolGuide('set_rule_reference_actions').content as String)
-            .contains('### Fail-loud `addAction` shape guards')
-        (script.toolGetToolGuide('set_rule_reference_triggers').content as String)
-            .contains('### Fail-loud `addTrigger` shape guards')
+        (script.toolGetToolGuide('set_rule_reference_shapes').content as String)
+            .contains("kind:'trigger'|'condition'|'action'")
     }
 
     def "toolGetToolGuide serves a sub-section with its parent named, and the parent still serves the whole section"() {
@@ -154,9 +147,9 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         sub.section == 'set_rule_reference_conditions'
         sub.parentSection == 'set_rule_reference'
         (sub.note as String).contains("section='set_rule_reference'")
-        (sub.content as String).contains('`addRequiredExpression` STPage capability list')
-        (sub.content as String).contains('Extended per-capability spec shapes')
-        !(sub.content as String).contains('`addTrigger` capability families')
+        (sub.content as String).contains('`addRequiredExpression` operator contract')
+        (sub.content as String).contains('`replaceRequiredExpression`')
+        !(sub.content as String).contains('Shapes come from discover')
 
         when: 'the parent key goes through the same dispatcher'
         def parent = script.toolGetToolGuide('set_rule_reference')
@@ -179,7 +172,7 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         // `set_rule_reference.conditions` spelling lands on the same key.
         expect:
         script.toolGetToolGuide('set_rule_reference.conditions').section == 'set_rule_reference_conditions'
-        script.toolGetToolGuide('SET_RULE_REFERENCE_TRIGGERS').section == 'set_rule_reference_triggers'
+        script.toolGetToolGuide('SET_RULE_REFERENCE_SHAPES').section == 'set_rule_reference_shapes'
     }
 
     def "an unknown section lists the sub-sections alongside the sections"() {
@@ -189,7 +182,7 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         then: 'the error hands the caller both levels of the key space'
         result.success == false
         (result.availableSections as List).contains('set_rule_reference')
-        (result.availableSubSections['set_rule_reference'] as List).contains('set_rule_reference_triggers')
+        (result.availableSubSections['set_rule_reference'] as List).contains('set_rule_reference_shapes')
     }
 
     def "the preamble sub-key serves the section intro and none of the ### blocks"() {

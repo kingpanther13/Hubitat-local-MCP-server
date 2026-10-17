@@ -33,12 +33,15 @@ def _lane_decision(files, labels=(), action="opened", label=None, author=("fixtu
 ])
 @pytest.mark.parametrize("pr_author", [("fixture", "User"), ("renovate[bot]", "Bot"), ("dependabot[bot]", "Bot")])
 def test_guide_stack_gate_uses_actual_changed_files(changed_files, relevant, pr_author):
-    # Both workflows must accept the guide's base, without trusting arbitrary bases.
-    for name, event in [("hub-e2e.yml", "pull_request_target"), ("pr-guard.yml", "pull_request")]:
+    # The physical lane books the shared hub only for PRs into main; PR Guard runs on every PR,
+    # whatever its base, like the other fast lanes (a stacked PR's base is another PR's branch).
+    for name, event, expected in [("hub-e2e.yml", "pull_request_target", {"main"}),
+                                  ("pr-guard.yml", "pull_request", None)]:
         source = (ROOT / ".github/workflows" / name).read_text()
         event_body = re.search(rf"^  {event}:\n((?:    .*\n|\n)*)", source, re.M).group(1)
-        branches = re.search(r"^    branches: \[(.*?)\]", event_body, re.M).group(1)
-        assert {b.strip() for b in branches.split(",")} == {"main", "pr/fixes-447-449-455-471"}
+        branches = re.search(r"^    branches: \[(.*?)\]", event_body, re.M)
+        actual = {b.strip() for b in branches.group(1).split(",")} if branches else None
+        assert actual == expected, f"{name}: {event} branches filter is {actual}, expected {expected}"
     # A docs-only diff gets the gate without the hub, with or without the full-run label.
     unlabeled = _lane_decision(changed_files, author=pr_author)
     labeled = _lane_decision(changed_files, ["e2e:full"], "labeled", "e2e:full", pr_author)
@@ -180,6 +183,28 @@ gh() { printf '%s\\n' "$@" > "$POSTED_ARGS"; }
     condition = step.split("        if: >-\n", 1)[1].split("        env:", 1)[0]
     assert sorted(re.findall(r"steps\.decide\.outputs\.(\w+) == 'true'", condition)) == [
         "dependency_skip", "not_required", "pending", "skip"]
+
+
+@pytest.mark.parametrize("available, lane, expected_state", [
+    ("", "", "failure"),               # the job failed before the gate step decided anything
+    ("false", "no-secret", "success"),  # a repo without the test-hub secrets
+    ("false", "pending", "pending"),
+    ("false", "skipped", "pending"),
+])
+def test_run_gate_status_reads_only_a_decided_gate(available, lane, expected_state, tmp_path):
+    workflow = (ROOT / ".github/workflows/hub-e2e.yml").read_text()
+    step = workflow.split("      - name: Post e2e gate status\n", 1)[1].split("\n      - ", 1)[0]
+    command = textwrap.dedent(step.split("        run: |\n", 1)[1])
+    values = {"steps.gate.outputs.available": available, "steps.gate.outputs.lane": lane,
+              "github.event.pull_request.head.sha": "a" * 40, "github.repository": "owner/repo"}
+    command = re.sub(r"\$\{\{\s*(.*?)\s*\}\}", lambda m: values.get(m.group(1), ""), command)
+    posted = tmp_path / "posted"
+    script = f"gh() {{ printf '%s\\n' \"$@\" > '{posted}'; }}\n" + command
+    subprocess.run(["bash", "-eo", "pipefail", "-c", script], check=True, capture_output=True, text=True)
+    assert f"state={expected_state}" in posted.read_text().splitlines()
+    # Both no-secret exits name their lane, so only a gate that never ran leaves it empty.
+    gate = workflow.split("        id: gate\n", 1)[1].split("\n      - ", 1)[0]
+    assert gate.count('echo "available=false" >> "$GITHUB_OUTPUT"\n            echo "lane=no-secret"') == 2
 
 
 @pytest.mark.parametrize("step_name, flag", [
@@ -357,10 +382,12 @@ def test_ephemeral_mode_toggle_and_kind_matrix_agree_and_reach_the_script():
         assert "\nenv:\n  EPHEMERAL_RUN_SUITE: 'true'\n\n" in head and "EPHEMERAL_HUB_KIND" not in workflow
         request = jobs["request-hub"]
         assert KIND_MATRIX in request and "    name: Request ephemeral hub (${{ matrix.kind }})\n" in request
-        # The key or consumer lookup and the dispatch both take this job's kind.
-        assert request.count("HUB_KIND: ${{ matrix.kind }}") == 2 and "RUN_SUITE: ${{ env.EPHEMERAL_RUN_SUITE }}" in request
-        # Exactly one relay per mode: the results, or the encrypted session.
-        assert request.count("env.EPHEMERAL_RUN_SUITE == 'true'") == 1 and request.count("env.EPHEMERAL_RUN_SUITE != 'true'") == 1
+        # The key or consumer lookup and the dispatch both take this job's kind; on PRs the
+        # provider's verdict does too.
+        verdict = 1 if workflow is REQUEST else 0
+        assert request.count("HUB_KIND: ${{ matrix.kind }}") == 2 + verdict and "RUN_SUITE: ${{ env.EPHEMERAL_RUN_SUITE }}" in request
+        # Exactly one relay per mode: the results, or the encrypted session (plus the suite-mode verdict).
+        assert request.count("env.EPHEMERAL_RUN_SUITE == 'true'") == 1 + verdict and request.count("env.EPHEMERAL_RUN_SUITE != 'true'") == 1
     e2e = _jobs(EPHEMERAL)[1]["e2e"]
     assert KIND_MATRIX in e2e and "    name: e2e (ephemeral hub, ${{ matrix.kind }})\n" in e2e
     assert "matrix" not in _jobs(REQUEST)[1]["gate"]
@@ -374,18 +401,26 @@ def test_ephemeral_request_workflow_never_runs_pr_code():
     head, jobs = _jobs(REQUEST)
     assert "on:\n  pull_request_target:\n    types: [opened, synchronize, reopened]\n\npermissions:" in head
     assert "\npermissions:\n  contents: read\n" in head
-    assert set(jobs) == {"gate", "approve", "request-hub"}
+    assert set(jobs) == {"gate", "approve", "publish", "request-hub"}
     # Only contributors with a merged change skip the reviewer-gated environment, and no hub is
     # requested before that job succeeds.
     trusted = """contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR", "CONTRIBUTOR"]'), github.event.pull_request.author_association)"""
     assert f"      name: ${{{{ {trusted} && 'e2e-auto' || 'e2e-approval' }}}}\n" in jobs["approve"]
     assert "    permissions: {}\n" in jobs["approve"] and "secrets." not in jobs["approve"]
-    assert "    needs: [gate, approve]\n" in jobs["request-hub"] and "always()" not in jobs["request-hub"]
+    assert "    needs: [gate, approve]\n" in jobs["publish"] and "    needs: [gate, approve, publish]\n" in jobs["request-hub"]
+    assert "always()" not in jobs["request-hub"] and "needs.approve.result == 'success'" in jobs["request-hub"]
+    # The fork head is published once, before either hub kind is requested.
+    assert "publish_fork_bundle.sh" in jobs["publish"] and "publish_fork_bundle.sh" not in jobs["request-hub"]
+    assert "matrix" not in jobs["publish"]
     # Base checkouts only, and nothing that installs or runs the head's Python.
     assert "ref:" not in REQUEST and "allow-unsafe-pr-checkout" not in REQUEST
     assert "python tests/" not in REQUEST and "pip install" not in REQUEST and "cache" not in REQUEST
-    assert "contents: write" in jobs["request-hub"] and "contents: write" not in jobs["gate"]
-    assert jobs["request-hub"].count("secrets.PRIVATE_CI_TOKEN") == 1
+    assert "contents: write" in jobs["publish"]
+    assert "contents: write" not in jobs["request-hub"] and "contents: write" not in jobs["gate"]
+    assert jobs["request-hub"].count("secrets.PRIVATE_CI_TOKEN") == 2  # the provider dispatch and its verdict
+    # The trusted verdict is posted from base code out of the provider run's conclusion.
+    assert "request_ephemeral_hub.sh verdict" in jobs["request-hub"] and "statuses: write" in jobs["request-hub"]
+    assert "steps.hub.outputs.provider_run" in jobs["request-hub"]
     assert "openssl" not in REQUEST and "session-priv" not in REQUEST
     assert "request_ephemeral_hub.sh consumer" in jobs["request-hub"]
     run = "${{ steps.consumer.outputs.run_id }}-${{ steps.consumer.outputs.attempt }}-${{ matrix.kind }}"
@@ -428,6 +463,117 @@ bash "$SCRIPT" key 100 2 "$STUB/pub"
     assert f"ephemeral-hub-public-key-2-{kind}" in (tmp_path / "download").read_text().splitlines()
 
 
+@pytest.mark.parametrize("provider_state, expected", [
+    ("completed success", "success"),
+    ("completed failure", "failure"),
+    ("completed cancelled", "failure"),
+])
+def test_ephemeral_verdict_posts_the_provider_runs_conclusion(provider_state, expected, tmp_path):
+    script = '''
+gh() {
+  case "$1 $2" in
+    "run view") echo "$PROVIDER_STATE" ;;
+    "api -X") [ "$GH_TOKEN" = status-token ] || { echo "posted with the provider token" >&2; return 1; }
+      printf '%s\\n' "$@" > "$STUB/posted" ;;
+    *) return 1 ;;
+  esac
+}
+sleep() { :; }
+export -f gh sleep
+bash "$SCRIPT" verdict 77
+'''
+    env = {**os.environ, "STUB": str(tmp_path), "SCRIPT": str(ROOT / ".github/scripts/request_ephemeral_hub.sh"),
+           "GITHUB_REPOSITORY": "owner/repo", "HUB_KIND": "os", "PROVIDER": "owner/provider",
+           "PUBLIC_SHA": FORK_SHA, "GH_TOKEN": "provider-token", "STATUS_TOKEN": "status-token",
+           "PROVIDER_STATE": provider_state}
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    posted = (tmp_path / "posted").read_text().splitlines()
+    assert f"repos/owner/repo/statuses/{FORK_SHA}" in posted and f"state={expected}" in posted
+    assert "context=Ephemeral e2e verdict (os)" in posted
+
+
+@pytest.mark.parametrize("provider_state, lookup_ok, expected_desc", [
+    ("77 in_progress ", True, "did not pass (unfinished)"),
+    ("", False, "could not be read"),
+])
+def test_ephemeral_verdict_fails_closed_at_its_deadline(provider_state, lookup_ok, expected_desc, tmp_path):
+    script = '''
+gh() {
+  case "$1 $2" in
+    "run view") [ "$LOOKUP_OK" = 1 ] || return 1; echo "$PROVIDER_STATE" ;;
+    "api -X") printf '%s\\n' "$@" > "$STUB/posted" ;;
+    *) return 1 ;;
+  esac
+}
+sleep() { :; }
+export -f gh sleep
+bash "$SCRIPT" verdict 77
+'''
+    env = {**os.environ, "STUB": str(tmp_path), "SCRIPT": str(ROOT / ".github/scripts/request_ephemeral_hub.sh"),
+           "GITHUB_REPOSITORY": "owner/repo", "HUB_KIND": "os", "PROVIDER": "owner/provider",
+           "PUBLIC_SHA": FORK_SHA, "GH_TOKEN": "provider-token", "STATUS_TOKEN": "status-token",
+           "PROVIDER_STATE": provider_state.split(" ", 1)[1] if provider_state else "", "LOOKUP_OK": "1" if lookup_ok else "0",
+           "VERDICT_DEADLINE": "0"}
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    posted = (tmp_path / "posted").read_text().splitlines()
+    assert "state=failure" in posted and any(expected_desc in line for line in posted), posted
+
+
+def test_ephemeral_verdict_is_failure_when_no_provider_run_started(tmp_path):
+    script = '''
+gh() {
+  case "$1 $2" in
+    "run view") echo "should not look up a run" >&2; return 1 ;;
+    "api -X") printf '%s\\n' "$@" > "$STUB/posted" ;;
+    *) return 1 ;;
+  esac
+}
+export -f gh
+bash "$SCRIPT" verdict ""
+'''
+    env = {**os.environ, "STUB": str(tmp_path), "SCRIPT": str(ROOT / ".github/scripts/request_ephemeral_hub.sh"),
+           "GITHUB_REPOSITORY": "owner/repo", "HUB_KIND": "jvm", "PROVIDER": "owner/provider",
+           "PUBLIC_SHA": FORK_SHA, "GH_TOKEN": "provider-token", "STATUS_TOKEN": "status-token"}
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    posted = (tmp_path / "posted").read_text().splitlines()
+    assert "state=failure" in posted and "context=Ephemeral e2e verdict (jvm)" in posted
+    assert any("no provider run" in line for line in posted)
+
+
+@pytest.mark.parametrize("run_id, unset, expected_desc", [
+    ("abc", (), "the os hub's provider run id was unusable"),
+    ("77", ("PROVIDER",), "the os hub's provider run could not be read (provider secrets unavailable)"),
+    ("77", ("GH_TOKEN",), "the os hub's provider run could not be read (provider secrets unavailable)"),
+])
+def test_ephemeral_verdict_without_a_readable_run_posts_one_failure(run_id, unset, expected_desc, tmp_path):
+    script = '''
+gh() {
+  case "$1 $2" in
+    "run view") echo "should not look up a run" >&2; return 1 ;;
+    "api -X") printf '%s\\n' "$@" >> "$STUB/posted"; echo --- >> "$STUB/posted" ;;
+    *) return 1 ;;
+  esac
+}
+export -f gh
+bash "$SCRIPT" verdict "$RUN_ID"
+'''
+    env = {**os.environ, "STUB": str(tmp_path), "SCRIPT": str(ROOT / ".github/scripts/request_ephemeral_hub.sh"),
+           "GITHUB_REPOSITORY": "owner/repo", "HUB_KIND": "os", "PROVIDER": "owner/provider",
+           "PUBLIC_SHA": FORK_SHA, "GH_TOKEN": "provider-token", "STATUS_TOKEN": "status-token", "RUN_ID": run_id}
+    for name in unset:
+        env.pop(name)
+    result = subprocess.run([_bash(), "-c", script], env=env, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "should not look up a run" not in result.stderr
+    posted = (tmp_path / "posted").read_text().splitlines()
+    assert posted.count("---") == 1, posted
+    assert "state=failure" in posted and "context=Ephemeral e2e verdict (os)" in posted
+    assert f"description={expected_desc}" in posted, posted
+
+
 @pytest.mark.parametrize("event, base, request_state, artifacts, outcome", [
     ("pull_request", "present", "7 completed success", "ephemeral-hub-unavailable", "skip"),  # the gate's shared reason
     ("pull_request", "present", "7 in_progress ", "ephemeral-hub-session-100-1-jvm\nephemeral-hub-session-100-1-os", "session"),
@@ -467,8 +613,8 @@ def test_ephemeral_test_job_waits_for_its_own_session_or_a_skip_reason(event, ba
     ("pull_request", "7 completed success", "ephemeral-hub-results-100-2-os", "true", "ended"),  # another attempt's results
     ("pull_request", "7 completed success", "ephemeral-hub-results-100-1-jvm", "true", "ended"),  # the other kind's results
     ("push", "failure", "", "true", "ended"),
-    ("pull_request", "7 in_progress ", "", "true", "90 minutes"),
-    ("pull_request", "7 in_progress ", "", "false", "45 minutes"),
+    ("pull_request", "7 in_progress ", "", "true", "35 minutes"),
+    ("pull_request", "7 in_progress ", "", "false", "35 minutes"),
 ])
 def test_ephemeral_test_job_takes_provider_run_results(event, request_state, artifacts, run_suite, outcome, tmp_path):
     result, output, _ = _wait_for_hub(tmp_path, event, "present", request_state, artifacts, run_suite)
@@ -481,10 +627,19 @@ def test_ephemeral_test_job_takes_provider_run_results(event, request_state, art
         assert result.returncode == 1 and f"No hub results or session within {outcome}." in result.stdout
 
 
+@pytest.mark.parametrize("run_suite", ["true", "false"])
+def test_ephemeral_test_job_skips_without_waiting(run_suite, tmp_path):
+    # A request run that already skipped the lane ends the test job on its first read, in either mode.
+    result, output, _ = _wait_for_hub(tmp_path, "pull_request", "present", "7 completed success",
+                                      "ephemeral-hub-unavailable", run_suite)
+    assert result.returncode == 0 and "ready=false" in output.read_text()
+    assert not (tmp_path / "sleeps").exists()
+
+
 def _wait_for_hub(tmp_path, event, base, request_state, artifacts, run_suite):
     loop = _run_block(EPHEMERAL, "        id: session\n").split("\nkey=", 1)[0]
     script = '''
-sleep() { SECONDS=$((SECONDS + 600)); }
+sleep() { SECONDS=$((SECONDS + 600)); echo "$1" >> "$RUNNER_TEMP/sleeps"; }
 gh() {
   case "$1 $2" in
     "api repos/owner/repo/contents/.github/workflows/hub-e2e-ephemeral-request.yml")

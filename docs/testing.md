@@ -51,9 +51,12 @@ runtime is Groovy 2.4.x, so a 3.0-green can still hide hub failures:
   remains unproven. See [the live evidence](issue-407-findings.md). The lane also checks syntax
   and, after CANONICALIZATION, fails every class reference outside the hub sandbox allowlist:
   [`allowed-classes.txt`](../ci/groovy24-parse/allowed-classes.txt), transcribed from Hubitat's
-  [Allowed Classes for Import](https://docs2.hubitat.com/en/developer/allowed-imports) page, plus
-  primitives, Throwable subclasses, the file's own classes and the `hubitat.*` / `com.hubitat.*`
-  namespaces. It checks class expressions (`instanceof`, static calls), casts, constructor calls,
+  [Allowed Classes for Import](https://docs2.hubitat.com/en/developer/allowed-imports) page plus
+  three classes the hub accepts that the page omits, and, as the hub does, primitives, Throwable
+  subclasses, the file's own classes and the whole `hubitat.*` namespace; a `com.hubitat.*` class
+  passes only when listed. Hub classes are not on the lane's classpath, so their names resolve to
+  stand-ins and the check never skips; any other class it cannot resolve fails the file. It checks
+  class expressions (`instanceof`, static calls), casts, constructor calls,
   declared variable, field, parameter, return, catch and loop types, imports and annotations.
   `parse24` runs its positive/negative fixtures first;
   they can also run directly via `parse_check.groovy --self-test <absolute-repo-root>`.
@@ -609,7 +612,7 @@ The regular E2E runner also has one protocol mode: `HubitatMcpClient` derives `M
 
 The ordinary `mrtr` E2E group independently repeats the configured Rule Machine edit through `HubitatMcpClient`. Its existing automatic `requestState` path must reach terminal `complete` after multiple continuation rounds, return every requested successful action result, take more than 10 seconds as one logical call, and keep each ANSWERED HTTP POST below 9.5 seconds (relay-dropped legs are absorbed on the same terms as the SDK proof, and bounded the same way). It applies the same positive-owner-count/fewer-than-continuations invariant as the official SDK proof. Outside that call's timing window, it independently makes the same authoritative raw-settings read through its normal gateway path and applies the exact requested row/value assertion. This regular lane does not depend on the official-SDK scenario passing (and the SDK scenario does not consume the regular client's telemetry).
 
-Both proofs default to six actual log actions. `E2E_MRTR_ACTION_COUNT` accepts integers from 6 through 120 to configure a larger workload. This changes the number of real mutations; the elapsed-time, continuation, per-request ceiling, and exact persisted-state assertions remain mandatory. `E2E_WRITE_CAP_VARIABLE_COUNT` (integers 4 through 120, default 4) sets how many hub variables the concurrent write-cap test bulk-creates. The physical-hub lane uses the defaults; the ephemeral lane sets 36 and 120, because a fast hub finishes the default workloads inside one HTTP leg.
+Both proofs default to six actual log actions. `E2E_MRTR_ACTION_COUNT` accepts integers from 6 through 120 to configure a larger workload. This changes the number of real mutations; the elapsed-time, continuation, per-request ceiling, and exact persisted-state assertions remain mandatory. `E2E_WRITE_CAP_VARIABLE_COUNT` (integers 4 through 120, default 16) sets how many hub variables the concurrent write-cap test bulk-creates. The physical-hub lane uses the defaults; the ephemeral lane sets 36 and 120, because a fast hub finishes the default workloads inside one HTTP leg.
 
 The observer checks every real SDK POST, not reconstructed requests: each must carry `MCP-Protocol-Version: 2026-07-28`, a matching `Mcp-Method`, and `Mcp-Name` on `tools/call` and `resources/read`; every response must be observed and served as 200/202. Legacy header compatibility remains in the offline schema/server specs, not in live E2E.
 

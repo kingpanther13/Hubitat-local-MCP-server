@@ -154,6 +154,158 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         script._setRuleFromEnvelope([operation: 'guide']).args == [guide: true]
         script._setRuleFromEnvelope([operation: 'discover']).args == [addAction: [discover: true]]
         script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'trigger']]).args == [addTrigger: [discover: true]]
+        script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'action', capability: 'switch', action: 'on']]).args == [addAction: [discover: [capability: 'switch', action: 'on']]]
+        script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'trigger', capability: 'Switch']]).args == [addTrigger: [discover: [kind: 'trigger', capability: 'Switch']]]
+        script._setRuleFromEnvelope([operation: 'discover', args: [kind: 'condition']]).args == [addTrigger: [discover: [kind: 'condition', capability: null]]]
+    }
+
+    def "discover with a capability selector and no rule id returns that capability's schema, never the create arm"() {
+        when:
+        def r = script.toolSetRule([operation: 'discover', args: [kind: 'action', capability: 'switch', action: 'on']])
+
+        then:
+        notThrown(IllegalArgumentException)
+        r.toString().contains('switchActs')
+        script._isSetRuleSchemaOnlyCall([addAction: [discover: [capability: 'switch']]])
+    }
+
+    def "an edit that restarts a stopped rule says so, from Rule Machine's own state"() {
+        given:
+        settingsMap.enableWrite = true
+        def reads = 0
+        hubGet.register('/installedapp/statusJson/5') { params -> reads++; groovy.json.JsonOutput.toJson([appState: [[name: "stopped", value: reads == 1]]]) }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true, updateRuleFailed: false] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addTrigger: [capability: "Switch", deviceIds: [1], state: "on"], confirm: true])
+
+        then:
+        r.restartedStoppedRule == true
+        r.note.contains("restarted it and set its private boolean to true")
+        reads == 2
+    }
+
+    def "a bulk action edit runs Rule Machine's update too, so its restart of a stopped rule is reported"() {
+        given:
+        settingsMap.enableWrite = true
+        def reads = 0
+        hubGet.register('/installedapp/statusJson/5') { params -> reads++; groovy.json.JsonOutput.toJson([appState: [[name: "stopped", value: reads == 1]]]) }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addActions: [[capability: "log", message: "x"]], confirm: true])
+
+        then:
+        r.restartedStoppedRule == true
+        reads == 2
+    }
+
+    @spock.lang.Unroll
+    def "#op runs Rule Machine's update, so its restart of a stopped rule is reported"() {
+        given:
+        settingsMap.enableWrite = true
+        def reads = 0
+        hubGet.register('/installedapp/statusJson/5') { params -> reads++; groovy.json.JsonOutput.toJson([appState: [[name: "stopped", value: reads == 1]]]) }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, (op): value, confirm: true])
+
+        then:
+        r.restartedStoppedRule == true
+        reads == 2
+
+        where:
+        op               | value
+        "replaceActions" | [[capability: "log", message: "x"]]
+        "clearActions"   | true
+        "removeAction"   | [index: 1]
+        "moveAction"     | [index: 1, direction: "up"]
+    }
+
+    def "a stopped rule whose state cannot be read after the edit is reported unverified, from the known pre-state"() {
+        given:
+        settingsMap.enableWrite = true
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null -> logs << [level: level, msg: msg] }
+        def reads = 0
+        hubGet.register('/installedapp/statusJson/5') { params ->
+            if (++reads > 1) throw new IllegalStateException("hub busy")
+            groovy.json.JsonOutput.toJson([appState: [[name: "stopped", value: true]]])
+        }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addTrigger: [capability: "Switch", deviceIds: [1], state: "on"], confirm: true])
+
+        then:
+        r.stoppedStateUnverified == true
+        !r.containsKey("restartedStoppedRule")
+        r.note.endsWith("The rule was stopped before this edit and its state could not be read afterwards; Rule Machine's update may have restarted it (check hub_get_rule_health).")
+        logs.any { it.level == "warn" && it.msg.contains("stopped state of app 5 could not be read after the edit (hub busy)") }
+    }
+
+    def "an unreadable stopped state on a refused edit is logged but adds no restart note"() {
+        given:
+        settingsMap.enableWrite = true
+        def logs = []
+        script.metaClass.mcpLog = { String level, String component, String msg, String ruleId = null, Map extra = null -> logs << [level: level, msg: msg] }
+        hubGet.register('/installedapp/statusJson/5') { params -> throw new IllegalStateException("hub busy") }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: false, error: "refused"] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addTrigger: [capability: "Switch", deviceIds: [1], state: "on"], confirm: true])
+
+        then:
+        r.applied == false
+        !r.containsKey("stoppedStateUnverified")
+        r.note == null
+        logs.any { it.level == "warn" && it.msg.contains("stopped state of app 5 could not be read before the edit (hub busy)") }
+    }
+
+    def "a single addAction runs no update, so the stopped state is not read"() {
+        given:
+        settingsMap.enableWrite = true
+        def reads = 0
+        hubGet.register('/installedapp/statusJson/5') { params -> reads++; groovy.json.JsonOutput.toJson([appState: [[name: "stopped", value: true]]]) }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addAction: [capability: "log", message: "x"], confirm: true])
+
+        then:
+        !r.containsKey("restartedStoppedRule")
+        reads == 0
+    }
+
+    def "an unreadable stopped state is reported instead of dropped"() {
+        given:
+        settingsMap.enableWrite = true
+        hubGet.register('/installedapp/statusJson/5') { params -> throw new IllegalStateException("hub busy") }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addTrigger: [capability: "Switch", deviceIds: [1], state: "on"], confirm: true])
+
+        then:
+        r.stoppedStateUnverified == true
+        r.note.contains("stopped state could not be read")
+        !r.containsKey("restartedStoppedRule")
+    }
+
+    def "an edit of a running rule reads its state once and reports no restart"() {
+        given:
+        settingsMap.enableWrite = true
+        def reads = 0
+        hubGet.register('/installedapp/statusJson/5') { params -> reads++; groovy.json.JsonOutput.toJson([appState: [[name: "stopped", value: false]]]) }
+        script.metaClass._applyNativeAppEdit = { Map a -> [success: true] }
+
+        when:
+        def r = script.toolSetRule([appId: 5, addTrigger: [capability: "Switch", deviceIds: [1], state: "on"], confirm: true])
+
+        then:
+        !r.containsKey("restartedStoppedRule")
+        reads == 1
     }
 
     def "an unknown operation is rejected with the valid list"() {
@@ -205,14 +357,14 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         script.executeTool('hub_set_rule', [operation: 'addAction', appId: 5, args: [capability: 'switch', action: 'on', deviceIds: [3]], confirm: true])
 
         then: 'reaches _applyNativeAppEdit with the legacy-shaped args'
-        captured.edit == [appId: 5, confirm: true, addAction: [capability: 'switch', action: 'on', deviceIds: [3]]]
+        captured.edit == [appId: 5, confirm: true, addAction: [capability: 'switch', action: 'on', deviceIds: [3]], __rmRule: true]
 
         when: 'a clearActions envelope (boolean op, no payload)'
         captured.clear()
         script.executeTool('hub_set_rule', [operation: 'clearActions', appId: 5, confirm: true])
 
         then:
-        captured.edit == [appId: 5, confirm: true, clearActions: true]
+        captured.edit == [appId: 5, confirm: true, clearActions: true, __rmRule: true]
 
         when: 'a create envelope -- reaches _createNativeAppShell, no appId, name + bundle lifted from args'
         captured.clear()
@@ -235,7 +387,7 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         script.executeTool('hub_set_rule', [appId: 5, addAction: [capability: 'switch'], confirm: true])
 
         then: 'operation absent => no normalizer rewrite; passes straight through'
-        captured.edit == [appId: 5, addAction: [capability: 'switch'], confirm: true]
+        captured.edit == [appId: 5, addAction: [capability: 'switch'], confirm: true, __rmRule: true]
     }
 
     def "probe schema is sourced from the fat def (no drift), not a hand-maintained copy"() {
@@ -316,7 +468,7 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
 
         then:
         def e = thrown(IllegalArgumentException)
-        e.message.contains("must be 'trigger' or 'action'")
+        e.message.contains("must be 'action', 'trigger' or 'condition'")
     }
 
     def "envelope probe via the gateway bypasses the required-param pre-check and returns schema"() {

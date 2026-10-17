@@ -139,7 +139,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         content.endsWith(rawBody(section))
 
         where:
-        section << ['set_rule_reference_conditions', 'set_rule_reference_triggers', 'set_rule_reference_guards']
+        section << ['set_rule_reference_conditions', 'set_rule_reference_shapes', 'set_rule_reference_walkstep']
     }
 
     def "the full guide publishes no key and says where keys are"() {

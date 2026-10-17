@@ -83,11 +83,11 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
     def 'read-only authoring discovery remains available for a protected target'() {
         when:
-        def result = script.toolSetRule([appId: 42, addTrigger: [discover: true]])
+        def result = script.toolSetRule([appId: 42, addTrigger: [discover: [kind: 'trigger', capability: 'Switch']]])
 
         then:
         result.discriminator == 'capability'
-        result.capabilities.find { it.name == 'Switch' }?.requiredFields*.name == ['deviceIds', 'state']
+        result.capability.requiredFields*.name == ['deviceIds', 'state']
         writes.empty
     }
 

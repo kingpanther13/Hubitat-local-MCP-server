@@ -12,7 +12,6 @@ on:
   # books the single shared test hub for an hour of e2e. Path filters don't gate a dispatch.
   workflow_dispatch:
   pull_request:
-    branches: [main]
     # The extraction logic under test lives in the deploy scripts, so guard that surface.
     paths:
       - '.github/scripts/**'
