@@ -850,7 +850,7 @@ Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[writ
 
 Under **Settings > Advanced > Per-client access tokens** you can give an MCP client its own token for the same endpoint, with narrower access than the main token. The main token and everything set on the main page keep working exactly as before. Each client token has its own page:
 
-- **Tools** — the tools this client may call. Every tool that can be granted is on when the token is created; untick what the client should not have (**Select all** / **Deselect all** buttons sit under the list). A tool added by a later update stays off for the client until you turn it on. `hub_get_tool_guide` and `hub_search_tools` are always included. MCP self-administration, the Developer Mode deploy and code management stay with the main token and cannot be granted.
+- **Tools** — the tools this client may call. Every tool that can be granted is on when the token is created; untick what the client should not have. A tool added by a later update stays off for the client until you turn it on. `hub_get_tool_guide` and `hub_search_tools` are always included. MCP self-administration, the Developer Mode deploy and code management stay with the main token and cannot be granted.
 - **Read / Write** — can only narrow: the main-page Read and Write switches still apply.
 - **Local / cloud** — which endpoints this token may use (the main-page endpoint switches still apply).
 - **Tool names** — the client's own tool-name number, or the same as the main token, or none.
