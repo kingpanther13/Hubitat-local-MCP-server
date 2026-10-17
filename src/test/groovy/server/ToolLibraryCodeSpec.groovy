@@ -1119,7 +1119,7 @@ def helperMethod() { return "ok" }
         capturedBody.version == 1
         result.success == true
         result.sourceBackup == 'skipped: backup=false was passed'
-        !(atomicStateMap.itemBackupManifest?.containsKey('library_42'))
+        !(backupIndex?.containsKey('library_42'))
     }
 
     def "hub_update_library (source mode) backs up, fetches version, POSTs to saveOrUpdateJson"() {
@@ -1160,7 +1160,7 @@ def helperMethod() { return "ok" }
         result.sourceLength == SAMPLE_SOURCE.length()
 
         and: 'backup manifest entry was created'
-        atomicStateMap.itemBackupManifest?.containsKey('library_42')
+        backupIndex?.containsKey('library_42')
     }
 
     @spock.lang.Unroll
@@ -1195,7 +1195,7 @@ def helperMethod() { return "ok" }
         inner.newVersion == 2
         inner.sourceMode == 'source'
         inner.sourceLength == SAMPLE_SOURCE.length()
-        atomicStateMap.itemBackupManifest?.containsKey('library_42')
+        backupIndex?.containsKey('library_42')
 
         where:
         useGateways << [true, false]
@@ -1207,7 +1207,7 @@ def helperMethod() { return "ok" }
         // Pre-populate manifest with a recent backup (60s ago, well inside 1-hour window).
         // Original baseline must be preserved through rapid edits — second update should NOT
         // overwrite the existing backup file.
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'library_42': [
                 type: 'library', id: '42',
                 version: 1,
@@ -1234,11 +1234,11 @@ def helperMethod() { return "ok" }
         uploads == []
         sentVersions == [7]
         hubGet.calls.count { it.path == '/library/list/single/data/42' } == 1
-        atomicStateMap.itemBackupManifest.get('library_42').version == 1
+        backupIndex.get('library_42').version == 1
 
         and: 'existing manifest entry was preserved (fileName + original timestamp unchanged)'
-        atomicStateMap.itemBackupManifest['library_42'].fileName == 'mcp-backup-library-42.groovy'
-        atomicStateMap.itemBackupManifest['library_42'].timestamp == (1234567890000L - 60_000L)
+        backupIndex['library_42'].fileName == 'mcp-backup-library-42.groovy'
+        backupIndex['library_42'].timestamp == (1234567890000L - 60_000L)
 
         and: 'update itself still succeeded'
         result.success == true
@@ -1251,7 +1251,7 @@ def helperMethod() { return "ok" }
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'library_42': [
                 type: 'library', id: '42',
                 version: 1,
@@ -1276,9 +1276,9 @@ def helperMethod() { return "ok" }
         uploads == []
         sentVersions == [7]
         hubGet.calls.count { it.path == '/library/list/single/data/42' } == 1
-        atomicStateMap.itemBackupManifest.get('library_42').version == 1
-        atomicStateMap.itemBackupManifest['library_42'].fileName == 'mcp-backup-library-42.groovy'
-        atomicStateMap.itemBackupManifest['library_42'].timestamp == (1234567890000L - 60_000L)
+        backupIndex.get('library_42').version == 1
+        backupIndex['library_42'].fileName == 'mcp-backup-library-42.groovy'
+        backupIndex['library_42'].timestamp == (1234567890000L - 60_000L)
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
@@ -1648,6 +1648,11 @@ def helperMethod() { return "ok" }
         result.backupFile == 'mcp-backup-library-42.groovy'
         uploads == ['mcp-backup-library-42.groovy']
         result.restoreHint.contains('hub_create_library')
+
+        and: 'the response says the backup is pinned and when it can be removed'
+        result.backupRetention == 'pinned'
+        result.backupRetentionNote.startsWith('Pinned baseline')
+        result.restoreHint.endsWith(result.backupRetentionNote)
     }
 
     @spock.lang.Unroll
@@ -1681,7 +1686,7 @@ def helperMethod() { return "ok" }
         given:
         enableWrite()
         // Pre-populate manifest with a recent backup (60s ago).
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'library_42': [
                 type: 'library', id: '42',
                 version: 1,
@@ -1707,9 +1712,9 @@ def helperMethod() { return "ok" }
         !hubGet.calls.any { it.path == '/library/list/single/data/42' }
 
         and: 'the original baseline remains addressable by its public String key'
-        atomicStateMap.itemBackupManifest.keySet() == ['library_42'] as Set
-        atomicStateMap.itemBackupManifest.get('library_42').timestamp == 1234567890000L - 60_000L
-        atomicStateMap.itemBackupManifest.get('library_42').version == 1
+        backupIndex.keySet() == ['library_42'] as Set
+        backupIndex.get('library_42').timestamp == 1234567890000L - 60_000L
+        backupIndex.get('library_42').version == 1
 
         and: 'response still references the existing backup file'
         result.success == true
@@ -1723,7 +1728,7 @@ def helperMethod() { return "ok" }
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'library_42': [
                 type: 'library', id: '42',
                 version: 1,
@@ -1743,9 +1748,9 @@ def helperMethod() { return "ok" }
         then:
         uploads == []
         !hubGet.calls.any { it.path == '/library/list/single/data/42' }
-        atomicStateMap.itemBackupManifest.keySet() == ['library_42'] as Set
-        atomicStateMap.itemBackupManifest.get('library_42').timestamp == 1234567890000L - 60_000L
-        atomicStateMap.itemBackupManifest.get('library_42').version == 1
+        backupIndex.keySet() == ['library_42'] as Set
+        backupIndex.get('library_42').timestamp == 1234567890000L - 60_000L
+        backupIndex.get('library_42').version == 1
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)

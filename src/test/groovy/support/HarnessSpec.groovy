@@ -120,6 +120,11 @@ abstract class HarnessSpec extends Specification {
     private static final McpRequestDriver SHARED_MCP_DRIVER = new McpRequestDriver()
     private static final List SHARED_RUN_IN_CALLS = java.util.Collections.synchronizedList([])
     private static final List SHARED_RUN_IN_MILLIS_CALLS = java.util.Collections.synchronizedList([])
+    // On a hub the backup index is a File Manager file; specs see its JSON text here
+    // (json == null: no index file; readError set: the listed file cannot be read).
+    // BackupIndexFileSpec drives the real file path.
+    private static final Map SHARED_BACKUP_INDEX_STORE = [:]
+    static final String EMPTY_BACKUP_INDEX_JSON = '{"version":1,"entries":{}}'
 
     // Records parent-app unsubscribe() calls. A `1 * appExecutor.unsubscribe()`
     // cardinality check from a then-block doesn't fire reliably on the @Shared
@@ -161,6 +166,7 @@ abstract class HarnessSpec extends Specification {
     @Shared protected script
     @Shared protected final Map stateMap = SHARED_STATE_MAP
     @Shared protected final Map atomicStateMap = SHARED_ATOMIC_STATE_MAP
+    @Shared protected final Map backupIndexStore = SHARED_BACKUP_INDEX_STORE
     @Shared protected final Map settingsMap = SHARED_SETTINGS_MAP
     @Shared protected final List childDevicesList = SHARED_CHILD_DEVICES_LIST
     @Shared protected final List childAppsList = SHARED_CHILD_APPS_LIST
@@ -349,6 +355,10 @@ abstract class HarnessSpec extends Specification {
         (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).clear()
         // Committed backup/recovery views must not leak between test app instances.
         (scriptStaticField('ITEM_BACKUP_MANIFESTS') as Map).clear()
+        (scriptStaticField('ITEM_BACKUP_LEGACY_PENDING') as Set).clear()
+        (scriptStaticField('ITEM_BACKUP_BUDGET_WARNED') as Set).clear()
+        backupIndexStore.clear()
+        backupIndexStore.json = EMPTY_BACKUP_INDEX_JSON
         (scriptStaticField('PRED_CLEAR_STORES') as Map).clear()
         // The hub's last returned pageBreadcrumbs trail per app; a leftover entry would steer a later
         // feature's submit off the caller's fallback trail.
@@ -543,6 +553,21 @@ abstract class HarnessSpec extends Specification {
         wireInstanceOverrides(script)
     }
 
+    /** false runs the real index file read/write through downloadHubFile/uploadHubFile. */
+    protected boolean stubBackupIndexStore() { true }
+
+    /** The persisted backup index entries (the index file's content), or null with no file. */
+    protected Map getBackupIndex() {
+        String json = backupIndexStore.json
+        if (json == null) return null
+        return (new groovy.json.JsonSlurper().parseText(json) as Map).entries as Map
+    }
+
+    /** Replace the persisted backup index, as a file another app version wrote. */
+    protected void setBackupIndex(Map entries) {
+        backupIndexStore.json = entries == null ? null : groovy.json.JsonOutput.toJson([version: 1, entries: entries])
+    }
+
     private void wireInstanceOverrides(Object target) {
         def hubGetRef = hubGet
         def childAppsRef = childAppsList
@@ -572,6 +597,14 @@ abstract class HarnessSpec extends Specification {
         // in setupSpec routes all tests to a fresh-feeling stub.
         target.metaClass.hubInternalGet = { String p, Map pp = [:], Integer t = 30 ->
             hubGetRef.call(p, pp)
+        }
+        if (stubBackupIndexStore()) {
+            def storeRef = backupIndexStore
+            target.metaClass._readItemBackupIndexStore = { ->
+                if (storeRef.readError) throw storeRef.readError
+                storeRef.json
+            }
+            target.metaClass._writeItemBackupIndexStore = { String json -> storeRef.json = json }
         }
         // A backup's App Cloner export drives a whole cloner session; specs about it opt in by
         // overriding this.

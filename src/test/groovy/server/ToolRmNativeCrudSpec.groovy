@@ -1090,7 +1090,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.backup?.type == "rm-rule"
 
         and: "the snapshot is registered in the unified item-backup manifest so hub_list_backups picks it up"
-        atomicStateMap.itemBackupManifest?.values()?.any { it.type == "rm-rule" && it.ruleId == 200 }
+        backupIndex?.values()?.any { it.type == "rm-rule" && it.ruleId == 200 }
 
         when: "a client reads the generated handle as a JSON String"
         def backup = script.toolGetItemBackup([backupKey: result.backup.backupKey.toString()])
@@ -1201,7 +1201,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         files[next.fileName] != null
     }
 
-    def "native baseline reuse repairs an oversized manifest without evicting the baseline"() {
+    def "native baseline reuse repairs an over-budget index without evicting the baseline"() {
         given:
         hubGet.register('/installedapp/configure/json/503') { params -> ruleConfigJson(503, "cap") }
         hubGet.register('/installedapp/statusJson/503') { params -> statusJson(503) }
@@ -1212,9 +1212,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.deleteHubFile = { String name -> deleted << name; files.remove(name) }
         def first = script._rmBackupBeforeEdit(503, "pre-addAction")
         Map oversized = script._itemBackupManifest()
-        (1..22).each {
+        (1..12).each {
             oversized["app_${it}".toString()] = [type: 'app', id: it.toString(), fileName: "mcp-backup-app-${it}.groovy".toString(),
-                                                 timestamp: (long) it, version: 1, sourceLength: 3]
+                                                 timestamp: (long) it, version: 1, sourceLength: 3, sizeBytes: 1024L * 1024L]
         }
         script._commitItemBackupManifest(oversized)
 
@@ -1224,8 +1224,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         next.baselineReused == true
         next.backupKey == first.backupKey
-        atomicStateMap.itemBackupManifest.size() == 20
-        atomicStateMap.itemBackupManifest.containsKey(first.backupKey.toString())
+        backupIndex.size() == 10
+        backupIndex.containsKey(first.backupKey.toString())
         deleted == (1..3).collect { "mcp-backup-app-${it}.groovy".toString() }
     }
 
@@ -1239,9 +1239,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         script.metaClass.uploadHubFile = { String fn, byte[] b -> files[fn] = b }
         script.metaClass.downloadHubFile = { String fn -> files[fn] }
 
-        when: 'a baseline is taken, then the next execution reads atomicState from before that write'
+        when: 'a baseline is taken, then the index file is replaced by a copy from before that write'
         def first = script._rmBackupBeforeEdit(503, "pre-addAction")
-        atomicStateMap.itemBackupManifest = [:]   // the stale snapshot has no entry for it
+        backupIndex = [:]   // the stale copy has no entry for it
         clock[0] += 30 * 1000L
         def second = script._rmBackupBeforeEdit(503, "pre-addActions-bulk")
 
@@ -1272,7 +1272,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: 'the retry sees the file and the manifest handle is not unlinked'
         second.baselineReused == true
         second.backupKey == first.backupKey
-        atomicStateMap.itemBackupManifest.containsKey(first.backupKey.toString())
+        backupIndex.containsKey(first.backupKey.toString())
     }
 
     def "ordinary edit discards a recent manifest entry whose backup file is missing"() {
@@ -1282,7 +1282,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         NOW_OVERRIDE.set({ -> clock[0] })
         hubGet.register('/installedapp/configure/json/505') { params -> ruleConfigJson(505, "missing-backup") }
         hubGet.register('/installedapp/statusJson/505') { params -> statusJson(505) }
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_505_missing": [type: "rm-rule", id: 505, ruleId: 505,
                                     fileName: "mcp-rm-backup-505-missing.json",
                                     reason: "pre-addAction", appLabel: "missing-backup",
@@ -1300,11 +1300,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // Two reads: the probe retries a missing file once before declaring it dead,
         // so a transient hiccup cannot trigger the permanent unlink below.
         downloads == ["mcp-rm-backup-505-missing.json", "mcp-rm-backup-505-missing.json"]
-        !atomicStateMap.itemBackupManifest.containsKey("rm-rule_505_missing")
+        !backupIndex.containsKey("rm-rule_505_missing")
         result.backupKey != "rm-rule_505_missing"
         uploads.size() == 1
         result.fileName == uploads[0]
-        atomicStateMap.itemBackupManifest[result.backupKey]?.fileName == result.fileName
+        backupIndex[result.backupKey]?.fileName == result.fileName
     }
 
     def "ordinary edit refuses to reuse a backup file that belongs to another rule"() {
@@ -1315,7 +1315,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/506') { params -> ruleConfigJson(506, "identity-check") }
         hubGet.register('/installedapp/statusJson/506') { params -> statusJson(506) }
         byte[] wrongSnapshot = JsonOutput.toJson([schemaVersion: 1, appId: 999, ruleId: 999]).getBytes("UTF-8")
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_506_wrong": [type: "rm-rule", id: 506, ruleId: 506,
                                   fileName: "mcp-rm-backup-506-wrong.json",
                                   timestamp: clock[0] - 60_000L, sourceLength: wrongSnapshot.length]
@@ -1328,7 +1328,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def result = script._rmBackupBeforeEdit(506, "pre-update")
 
         then:
-        !atomicStateMap.itemBackupManifest.containsKey("rm-rule_506_wrong")
+        !backupIndex.containsKey("rm-rule_506_wrong")
         result.backupKey != "rm-rule_506_wrong"
         uploads.size() == 1
         result.fileName == uploads[0]
@@ -1342,7 +1342,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/508') { params -> ruleConfigJson(508, "truncated-backup") }
         hubGet.register('/installedapp/statusJson/508') { params -> statusJson(508) }
         byte[] truncated = JsonOutput.toJson([schemaVersion: 1, appId: 508, ruleId: 508]).getBytes("UTF-8")
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_508_truncated": [type: "rm-rule", id: 508, ruleId: 508,
                                        fileName: "mcp-rm-backup-508-truncated.json",
                                        timestamp: clock[0] - 60_000L, sourceLength: truncated.length]
@@ -1355,7 +1355,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def result = script._rmBackupBeforeEdit(508, "pre-update")
 
         then: 'the unusable handle is discarded instead of advertised as a rollback baseline'
-        !atomicStateMap.itemBackupManifest.containsKey("rm-rule_508_truncated")
+        !backupIndex.containsKey("rm-rule_508_truncated")
         result.backupKey != "rm-rule_508_truncated"
         result.baselineReused == false
         uploads.size() == 1
@@ -1369,7 +1369,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def savedConfig = new JsonSlurper().parseText(ruleConfigJson(507, "transient-diagnostic"))
         byte[] snapshot = JsonOutput.toJson([schemaVersion: 1, appId: 507, ruleId: 507,
                                              appType: "rule_machine", configJson: savedConfig]).getBytes("UTF-8")
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_507_recent": [type: "rm-rule", id: 507, ruleId: 507,
                                    fileName: "mcp-rm-backup-507-recent.json",
                                    timestamp: clock[0] - 60_000L, sourceLength: snapshot.length]
@@ -1429,9 +1429,126 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         clock[0] += 1L
         def second = script._rmBackupBeforeEdit(504, "pre-walkStep")
 
-        then:
+        then: 'the session baseline is pinned and the later per-write snapshot is a rolling step'
         first.backupKey != second.backupKey
         uploads.size() == 2
+        first.retention == "pinned"
+        first.retentionNote.startsWith("Pinned baseline")
+        second.retention == "rolling"
+        second.retentionNote.startsWith("Rolling step")
+        backupIndex[first.backupKey].retention == "pinned"
+        backupIndex[second.backupKey].retention == "rolling"
+    }
+
+    def "backupEveryRuleWrite keeps every rolling step while the budget has room"() {
+        given:
+        enableWrite()
+        settingsMap.backupEveryRuleWrite = true
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "strict-cap") }
+        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
+        def files = [:]
+        List deleted = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> files[fn] = b }
+        script.metaClass.deleteHubFile = { String fn -> deleted << fn; files.remove(fn) }
+        backupIndex = ["rm-rule_77_other": [type: "rm-rule", id: 77, ruleId: 77, fileName: "mcp-rm-backup-77-other.json",
+                                             timestamp: clock[0] - 120_000L, sourceLength: 10, sizeBytes: 10, retention: "rolling"]]
+
+        when: 'eight strict writes land inside one editing session'
+        List backups = (1..8).collect {
+            clock[0] += 1000L
+            script._rmBackupBeforeEdit(504, "pre-update")
+        }
+
+        then: 'the first is pinned, the rest are rolling steps, and nothing is evicted by count'
+        backups[0].retention == "pinned"
+        backups.drop(1).every { it.retention == "rolling" }
+        def kept = backupIndex.findAll { k, v -> v.ruleId == 504 }.keySet()
+        kept == backups.collect { it.backupKey.toString() } as Set
+        deleted.isEmpty()
+
+        and: "another rule's rolling step is untouched"
+        backupIndex.containsKey("rm-rule_77_other")
+    }
+
+    def "a strict-mode replaceRequiredExpression snapshot stays pinned inside a session"() {
+        given:
+        enableWrite()
+        settingsMap.backupEveryRuleWrite = true
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, "strict-re") }
+        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+
+        when:
+        def first = script._rmBackupBeforeEdit(504, "pre-addAction")
+        clock[0] += 1000L
+        def replace = script._rmBackupBeforeEdit(504, "pre-replaceRequiredExpression")
+
+        then:
+        first.retention == "pinned"
+        replace.retention == "pinned"
+        replace.backupKey != first.backupKey
+    }
+
+    private List strictRule504(String label) {
+        enableWrite()
+        settingsMap.backupEveryRuleWrite = true
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, label) }
+        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        return clock
+    }
+
+    def "a strict-mode snapshot more than an hour after the rule's last one starts a new pinned session"() {
+        given:
+        def clock = strictRule504("strict-gap")
+
+        when:
+        def first = script._rmBackupBeforeEdit(504, "pre-addAction")
+        clock[0] += 61 * 60 * 1000L
+        def later = script._rmBackupBeforeEdit(504, "pre-addAction")
+
+        then:
+        first.retention == "pinned"
+        later.retention == "pinned"
+    }
+
+    def "a continuous strict-mode chain keeps the session open past the baseline's hour"() {
+        given:
+        def clock = strictRule504("strict-chain")
+
+        when: 'writes every 40 minutes'
+        def steps = (0..3).collect {
+            if (it) clock[0] += 40 * 60 * 1000L
+            script._rmBackupBeforeEdit(504, "pre-update")
+        }
+
+        then: 'only the first is pinned, even two hours on'
+        steps*.retention == ["pinned", "rolling", "rolling", "rolling"]
+    }
+
+    def "strict-mode pre-delete and pre-forcedelete snapshots inside a session stay pinned"() {
+        given:
+        def clock = strictRule504("strict-delete")
+
+        when:
+        script._rmBackupBeforeEdit(504, "pre-update")
+        clock[0] += 1000L
+        def step = script._rmBackupBeforeEdit(504, "pre-update")
+        clock[0] += 1000L
+        def delete = script._rmBackupRuleSnapshot(504, reason)
+
+        then:
+        step.retention == "rolling"
+        delete.retention == "pinned"
+
+        where:
+        reason << ["pre-delete", "pre-forcedelete"]
     }
 
     // ---------- unified backup integration: hub_list_backups + hub_restore_backup ----------
@@ -1439,7 +1556,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     def "hub_list_backups surfaces rm-rule entries with rule-specific metadata alongside app/driver entries"() {
         given:
         enableReadOnly()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "app_50": [type: "app", id: "50", fileName: "mcp-backup-app-50.groovy", version: 12, timestamp: 1000, sourceLength: 100],
             "rm-rule_100_20260101-000001": [type: "rm-rule", id: 100, ruleId: 100, fileName: "mcp-rm-backup-100-20260101-000001.json",
                                             reason: "pre-update", appLabel: "rule A", timestamp: 2000, sourceLength: 500],
@@ -1485,7 +1602,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             statusJson: [:]
         ]
         def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_300_x": [type: "rm-rule", id: 300, ruleId: 300,
                               fileName: "mcp-rm-backup-300-x.json", reason: "pre-update",
                               appLabel: "restored", timestamp: 1000, sourceLength: snapshotBytes.length]
@@ -1527,7 +1644,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         def snapshot = [schemaVersion: 1, ruleId: 400, appLabel: 'existing rule',
                         configJson: [settings: [origLabel: 'existing rule']], statusJson: [:]]
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'rm-rule_400_x': [type: 'rm-rule', id: 400, ruleId: 400, fileName: 'snapshot.json']
         ]
         script.metaClass.downloadHubFile = { String name -> JsonOutput.toJson(snapshot).getBytes('UTF-8') }
@@ -1587,7 +1704,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             statusJson: [:]
         ]
         def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_400_y": [type: "rm-rule", id: 400, ruleId: 400,
                               fileName: "mcp-rm-backup-400-y.json", reason: "pre-delete",
                               appLabel: "gone-rule", timestamp: 1000, sourceLength: snapshotBytes.length]
@@ -1643,7 +1760,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             statusJson: [:]
         ]
         def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_350_z": [type: "rm-rule", id: 350, ruleId: 350,
                               fileName: "mcp-rm-backup-350-z.json", reason: "pre-delete",
                               appLabel: "legacy-rule", timestamp: 1000, sourceLength: snapshotBytes.length]
@@ -1693,7 +1810,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             statusJson: [:]
         ]
         def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_360_w": [type: "rm-rule", id: 360, ruleId: 360,
                               fileName: "mcp-rm-backup-360-w.json", reason: "pre-update",
                               appLabel: "replay-err", timestamp: 1000, sourceLength: snapshotBytes.length]
@@ -1736,7 +1853,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             statusJson: [:]
         ]
         def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_361_w": [type: "rm-rule", id: 361, ruleId: 361,
                               fileName: "mcp-rm-backup-361-w.json", reason: "pre-test",
                               appLabel: "click-err", timestamp: 1000, sourceLength: snapshotBytes.length]
@@ -1783,7 +1900,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ]]
         ]
         def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_362_w": [type: "rm-rule", id: 362, ruleId: 362,
                               fileName: "mcp-rm-backup-362-w.json", reason: "pre-test",
                               appLabel: "btn-skip", timestamp: 1000, sourceLength: snapshotBytes.length]
@@ -1836,7 +1953,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ]]
         ]
         def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_363_w": [type: "rm-rule", id: 363, ruleId: 363,
                               fileName: "mcp-rm-backup-363-w.json", reason: "pre-test",
                               appLabel: "picker", timestamp: 1000, sourceLength: snapshotBytes.length]
@@ -1897,7 +2014,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             ]]
         ]
         def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_364_w": [type: "rm-rule", id: 364, ruleId: 364,
                               fileName: "mcp-rm-backup-364-w.json", reason: "pre-test",
                               appLabel: "diag", timestamp: 1000, sourceLength: snapshotBytes.length]
@@ -1934,7 +2051,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             statusJson: [:]
         ]
         def snapshotBytes = JsonOutput.toJson(snapshot).getBytes("UTF-8")
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             "rm-rule_364_w": [type: "rm-rule", id: 364, ruleId: 364, fileName: "mcp-rm-backup-364-w.json",
                               reason: "pre-test", appLabel: "parked", timestamp: 1000, sourceLength: snapshotBytes.length]
         ]
@@ -4857,6 +4974,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         and: "restoreHint is the roll-back form, NOT the pre-flight not-touched form"
         result.restoreHint.contains("Backup baseline available")
         !result.restoreHint.contains("Pre-flight refusal")
+
+        and: "the hint and the backup both say when that backup can be evicted"
+        result.backup.retention == "pinned"
+        result.restoreHint.contains(result.backup.retentionNote)
+        result.restoreHint.contains("Pinned baseline")
     }
 
     def "modifyAction re-add FAILURE returns the half-mutated envelope with subscriptionsNotLive"() {

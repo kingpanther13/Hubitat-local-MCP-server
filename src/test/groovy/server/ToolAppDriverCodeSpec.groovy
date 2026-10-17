@@ -1939,7 +1939,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.previousVersion == 12
 
         and: 'the pre-edit backup manifest entry is preserved so the user can still hub_restore_backup to roll back the update'
-        atomicStateMap.itemBackupManifest?.containsKey('app_50')
+        backupIndex?.containsKey('app_50')
     }
 
     // -------- hub_update_app OAuth fold (#259): enable/configure OAuth on an app code definition --------
@@ -2219,7 +2219,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.sourceLength == 'new source'.length()
         inner.appId == '50'
         inner.previousVersion == 12
-        atomicStateMap.itemBackupManifest?.containsKey('app_50')
+        backupIndex?.containsKey('app_50')
 
         where:
         useGateways << [true, false]
@@ -3247,6 +3247,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.backupFile == 'mcp-backup-app-33.groovy'
         uploads == ['mcp-backup-app-33.groovy']
         result.restoreHint.contains('hub_create_app')
+
+        and: 'the response says the backup is pinned and when it can be removed'
+        result.backupRetention == 'pinned'
+        result.backupRetentionNote.startsWith('Pinned baseline')
+        result.restoreHint.endsWith(result.backupRetentionNote)
+        result.restoreHint.contains('10 MB budget')
     }
 
     @spock.lang.Unroll
@@ -3487,7 +3493,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup returns error response when the key is unknown"() {
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_existing': [type: 'app', id: '1', fileName: 'f.groovy',
                              version: 1, timestamp: 1L, sourceLength: 0]
         ]
@@ -3506,7 +3512,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_existing': [type: 'app', id: '1', fileName: 'f.groovy',
                              version: 1, timestamp: 1L, sourceLength: 0]
         ]
@@ -3531,7 +3537,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         and: 'a manifest entry for an app backup'
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
@@ -3585,8 +3591,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.undoHint.contains('prerestore_app_99')
 
         and: 'both the pre-restore entry and the original backup entry are preserved (original kept so the user can restore again if needed)'
-        atomicStateMap.itemBackupManifest.containsKey('prerestore_app_99')
-        atomicStateMap.itemBackupManifest.containsKey('app_99')
+        backupIndex.containsKey('prerestore_app_99')
+        backupIndex.containsKey('app_99')
 
         when: 'a client reads the generated undo handle as a JSON String'
         def undo = script.toolGetItemBackup([backupKey: result.preRestoreBackup.toString()])
@@ -3602,7 +3608,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
@@ -3624,7 +3630,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.error.contains('pre-restore backup')
         inner.note.contains('nothing needs undoing')
         writes.isEmpty()
-        atomicStateMap.itemBackupManifest.keySet() == ['app_99'] as Set
+        backupIndex.keySet() == ['app_99'] as Set
 
         where:
         useGateways << [true, false]
@@ -3635,7 +3641,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
@@ -3673,8 +3679,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.undoAvailable == true
         inner.preRestoreBackup == 'prerestore_app_99'
         inner.undoHint.contains('prerestore_app_99')
-        atomicStateMap.itemBackupManifest.containsKey('prerestore_app_99')
-        atomicStateMap.itemBackupManifest.containsKey('app_99')
+        backupIndex.containsKey('prerestore_app_99')
+        backupIndex.containsKey('app_99')
 
         where:
         useGateways << [true, false]
@@ -3683,11 +3689,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup reports failure and preserves the backup when the hub POST fails"() {
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'driver_88': [type: 'driver', id: '88', fileName: 'mcp-backup-driver-88.groovy',
                           version: 2, timestamp: 1_234_000_000_000L, sourceLength: 10]
         ]
-        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'backup bytes'.getBytes('UTF-8')])
+        stubSourceFiles([(backupIndex.values().first().fileName.toString()): 'backup bytes'.getBytes('UTF-8')])
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 3, "source": "current"}'
         }
@@ -3707,7 +3713,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.success == false
         result.error.contains('bad code')
         result.message.contains('Check the live source') && result.message.contains('hub_get_backup')
-        atomicStateMap.itemBackupManifest.containsKey('driver_88')
+        backupIndex.containsKey('driver_88')
     }
 
     @spock.lang.Unroll
@@ -3715,11 +3721,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'driver_88': [type: 'driver', id: '88', fileName: 'mcp-backup-driver-88.groovy',
                           version: 2, timestamp: 1_234_000_000_000L, sourceLength: 10]
         ]
-        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'backup bytes'.getBytes('UTF-8')])
+        stubSourceFiles([(backupIndex.values().first().fileName.toString()): 'backup bytes'.getBytes('UTF-8')])
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 3, "source": "current"}'
         }
@@ -3740,7 +3746,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         inner.success == false
         inner.error.contains('bad code')
         inner.message.contains('Check the live source') && inner.message.contains('hub_get_backup')
-        atomicStateMap.itemBackupManifest.containsKey('driver_88')
+        backupIndex.containsKey('driver_88')
 
         where:
         useGateways << [true, false]
@@ -3749,11 +3755,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup fails closed on an empty hub response (non-self restore)"() {
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
-        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'old source v4'.getBytes('UTF-8')])
+        stubSourceFiles([(backupIndex.values().first().fileName.toString()): 'old source v4'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
@@ -3766,7 +3772,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.success == false
         result.error.contains('Empty response from /app/saveOrUpdateJson')
         result.message.contains('Check the live source') && result.message.contains('hub_get_backup')
-        atomicStateMap.itemBackupManifest.containsKey('app_99')
+        backupIndex.containsKey('app_99')
     }
 
     def "hub_restore_backup self-restore treats an empty response as assumed success and stashes lastSelfDeploy"() {
@@ -3777,12 +3783,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         enableWrite()
 
         and: 'backup entry id matches app.id (sharedAppStub id 1); class-id lookup resolves nothing'
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_1': [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
         script.metaClass._resolveSelfAppClassId = { -> null }
-        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
+        stubSourceFiles([(backupIndex.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
@@ -3806,11 +3812,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup fails closed when the hub echoes success for a DIFFERENT id (duplicate-save signature)"() {
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
-        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'old source v4'.getBytes('UTF-8')])
+        stubSourceFiles([(backupIndex.values().first().fileName.toString()): 'old source v4'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
@@ -3828,7 +3834,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.error.contains('duplicate')
         result.error.contains('777')
         result.error.contains('99')
-        atomicStateMap.itemBackupManifest.containsKey('app_99')
+        backupIndex.containsKey('app_99')
     }
 
     def "hub_restore_backup self-restore is detected via the Apps Code CLASS id (the real CI deploy path), not just the instance id"() {
@@ -3838,12 +3844,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         // would fail closed instead of getting the empty-body leniency.
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_178': [type: 'app', id: '178', fileName: 'mcp-backup-app-178.groovy',
                         version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
         hubGet.register('/hub2/userAppTypes') { params -> '[{"id":178,"namespace":"mcp","name":"MCP Rule Server"}]' }
-        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
+        stubSourceFiles([(backupIndex.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
@@ -3868,12 +3874,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         // block must still persist a failure record so a follow-up hub_get_info can recover it.
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_1': [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
         script.metaClass._resolveSelfAppClassId = { -> null }
-        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
+        stubSourceFiles([(backupIndex.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
@@ -3899,12 +3905,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup self-restore records the hub's VERBATIM error to lastSelfDeploy on a rejected save"() {
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_1': [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
         script.metaClass._resolveSelfAppClassId = { -> null }
-        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
+        stubSourceFiles([(backupIndex.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
@@ -3930,11 +3936,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup failure with neither message nor errorMessage still returns a concrete error"() {
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
-        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'old source v4'.getBytes('UTF-8')])
+        stubSourceFiles([(backupIndex.values().first().fileName.toString()): 'old source v4'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
@@ -3949,17 +3955,17 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         result.success == false
         result.error.contains('hub response lacked success=true')
         result.error.contains('foo')
-        atomicStateMap.itemBackupManifest.containsKey('app_99')
+        backupIndex.containsKey('app_99')
     }
 
     def "hub_restore_backup success without an echoed id is accepted (id-echo guard tolerates a missing id)"() {
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_99': [type: 'app', id: '99', fileName: 'mcp-backup-app-99.groovy',
                        version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
-        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'old source v4'.getBytes('UTF-8')])
+        stubSourceFiles([(backupIndex.values().first().fileName.toString()): 'old source v4'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current source on hub"}'
         }
@@ -3981,11 +3987,11 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         // MCP server's instance id must NOT inherit the self-restore empty-body leniency.
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'driver_1': [type: 'driver', id: '1', fileName: 'mcp-backup-driver-1.groovy',
                          version: 2, timestamp: 1_234_000_000_000L, sourceLength: 10]
         ]
-        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'driver backup'.getBytes('UTF-8')])
+        stubSourceFiles([(backupIndex.values().first().fileName.toString()): 'driver backup'.getBytes('UTF-8')])
         hubGet.register('/driver/ajax/code') { params ->
             '{"status": "ok", "version": 3, "source": "current"}'
         }
@@ -3997,7 +4003,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         then: 'fails closed on the DRIVER save path -- no leniency bleed across types'
         result.success == false
         result.error.contains('Empty response from /driver/saveOrUpdateJson')
-        atomicStateMap.itemBackupManifest.containsKey('driver_1')
+        backupIndex.containsKey('driver_1')
 
         and: 'no self-deploy stash was written'
         atomicStateMap.lastSelfDeploy == null
@@ -4006,12 +4012,12 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup self-restore with a Map-confirmed success carries no assumed flag (hub-confirmed, not inferred)"() {
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'app_1': [type: 'app', id: '1', fileName: 'mcp-backup-app-1.groovy',
                       version: 4, timestamp: 1_234_000_000_000L, sourceLength: 50]
         ]
         script.metaClass._resolveSelfAppClassId = { -> null }
-        stubSourceFiles([(atomicStateMap.itemBackupManifest.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
+        stubSourceFiles([(backupIndex.values().first().fileName.toString()): 'self backup source'.getBytes('UTF-8')])
         hubGet.register('/app/ajax/code') { params ->
             '{"status": "ok", "version": 9, "source": "current self source"}'
         }
@@ -4039,7 +4045,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
     def "hub_restore_backup returns clear error for library type and directs user to hub_update_library"() {
         given:
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'library_42': [type: 'library', id: '42', fileName: 'mcp-backup-library-42.groovy',
                            version: 3, timestamp: 1L, sourceLength: 200]
         ]
@@ -5060,7 +5066,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        atomicStateMap.itemBackupManifest = [
+        backupIndex = [
             'library_42': [type: 'library', id: '42', fileName: 'mcp-backup-library-42.groovy',
                            version: 3, timestamp: 1L, sourceLength: 200]
         ]
