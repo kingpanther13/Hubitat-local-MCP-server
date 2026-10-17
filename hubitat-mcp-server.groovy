@@ -612,14 +612,20 @@ private Set _installedAppTargetTools() {
     return ["hub_get_app_config", "hub_list_app_pages", "hub_export_native_app", "hub_clone_native_app",
             "hub_set_native_app", "hub_delete_native_app", "hub_set_app_disabled", "hub_set_rule",
             "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule",
-            "hub_set_visual_rule", "hub_delete_visual_rule"] as Set
+            "hub_set_visual_rule", "hub_delete_visual_rule", "hub_call_rule", "hub_set_rule_paused",
+            "hub_set_rule_private_boolean"] as Set
 }
 
+// Every argument these tools accept as the target app: appId, the cloner's sourceAppId alias
+// and the rule tools' ruleId, each a single id or a list.
 private boolean _targetsThisApp(Map args) {
-    def target = args?.appId
-    def ids = (target instanceof Collection) ? target : [target]
     String self = app?.id?.toString()
-    return self && ids.any { it?.toString() == self }
+    if (!self || args == null) return false
+    return ["appId", "sourceAppId", "ruleId"].any { key ->
+        def target = args.get(key)
+        def ids = (target instanceof Collection) ? target : [target]
+        ids.any { it?.toString() == self }
+    }
 }
 
 private void _selectAllClientTools(String id) {
