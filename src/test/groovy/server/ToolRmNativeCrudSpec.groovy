@@ -1493,6 +1493,64 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         replace.backupKey != first.backupKey
     }
 
+    private List strictRule504(String label) {
+        enableWrite()
+        settingsMap.backupEveryRuleWrite = true
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0] })
+        hubGet.register('/installedapp/configure/json/504') { params -> ruleConfigJson(504, label) }
+        hubGet.register('/installedapp/statusJson/504') { params -> statusJson(504) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        return clock
+    }
+
+    def "a strict-mode snapshot more than an hour after the rule's last one starts a new pinned session"() {
+        given:
+        def clock = strictRule504("strict-gap")
+
+        when:
+        def first = script._rmBackupBeforeEdit(504, "pre-addAction")
+        clock[0] += 61 * 60 * 1000L
+        def later = script._rmBackupBeforeEdit(504, "pre-addAction")
+
+        then:
+        first.retention == "pinned"
+        later.retention == "pinned"
+    }
+
+    def "a continuous strict-mode chain keeps the session open past the baseline's hour"() {
+        given:
+        def clock = strictRule504("strict-chain")
+
+        when: 'writes every 40 minutes'
+        def steps = (0..3).collect {
+            if (it) clock[0] += 40 * 60 * 1000L
+            script._rmBackupBeforeEdit(504, "pre-update")
+        }
+
+        then: 'only the first is pinned, even two hours on'
+        steps*.retention == ["pinned", "rolling", "rolling", "rolling"]
+    }
+
+    def "strict-mode pre-delete and pre-forcedelete snapshots inside a session stay pinned"() {
+        given:
+        def clock = strictRule504("strict-delete")
+
+        when:
+        script._rmBackupBeforeEdit(504, "pre-update")
+        clock[0] += 1000L
+        def step = script._rmBackupBeforeEdit(504, "pre-update")
+        clock[0] += 1000L
+        def delete = script._rmBackupRuleSnapshot(504, reason)
+
+        then:
+        step.retention == "rolling"
+        delete.retention == "pinned"
+
+        where:
+        reason << ["pre-delete", "pre-forcedelete"]
+    }
+
     // ---------- unified backup integration: hub_list_backups + hub_restore_backup ----------
 
     def "hub_list_backups surfaces rm-rule entries with rule-specific metadata alongside app/driver entries"() {

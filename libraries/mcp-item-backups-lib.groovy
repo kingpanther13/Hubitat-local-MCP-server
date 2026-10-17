@@ -43,14 +43,20 @@ def toolListItemBackups(args = null) {
 }
 
 private _listSourceItemBackups(args) {
-    def manifest = _itemBackupManifest()
+    def manifest
+    try { manifest = _itemBackupManifest() }
+    catch (Exception e) {
+        Map unavailable = _itemBackupIndexUnavailableResult(e)
+        if (unavailable == null) throw e
+        return unavailable + [backups: [], count: 0, total: 0]
+    }
 
     if (manifest.isEmpty()) {
         return [
             backups: [],
             count: 0,
             total: 0,
-            message: "No item backups exist yet. Backups are created automatically when you use hub_update_app, hub_update_driver, hub_update_library, or hub_delete_item.",
+            message: "No item backups exist yet. Backups are created automatically when you use hub_update_app, hub_update_driver, hub_update_library, or hub_delete_item, and before Rule Machine edits and deletes.",
             storageBudget: _itemBackupBudgetUsage(manifest),
             retentionPolicy: _itemBackupRetentionPolicy(),
             storage: "Backups are stored as .groovy files in the hub's File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager.",
@@ -107,7 +113,7 @@ private _listSourceItemBackups(args) {
 }
 
 private String _itemBackupRetentionPolicy() {
-    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupByteBudget().intdiv(1024L * 1024L)} MB storage budget (the Backup storage budget setting); then rolling steps go first, then pinned baselines, oldest first. Apps, drivers and libraries keep one pinned baseline, replaced by the item's next backup after the one-hour reuse window. A rule keeps a pinned baseline per editing session plus pinned pre-delete snapshots; with backupEveryRuleWrite on, its later writes in a session are rolling steps."
+    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget (the Backup storage budget setting). Another item's backup never replaces this one, but once the budget is exceeded any new backup can evict older backups of any item: rolling steps first, then pinned baselines, oldest first. Apps, drivers and libraries keep one pinned baseline, replaced by the item's next backup after the one-hour reuse window. A rule's first snapshot in an editing session is pinned, and so is every pre-delete, pre-forcedelete and replaceRequiredExpression snapshot; with backupEveryRuleWrite on, its other snapshots in the session are rolling steps. A rule's editing session ends once an hour passes with no snapshot of that rule; with backupEveryRuleWrite on, a continuous chain of writes keeps it open."
 }
 
 // A pending-deletion marker is written before the delete, so a delete that failed
@@ -146,7 +152,13 @@ private Map _healPendingItemBackup(String backupKey, Map entry) {
 def toolGetItemBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', or 'library_42')")
 
-    def manifest = _itemBackupManifest()
+    def manifest
+    try { manifest = _itemBackupManifest() }
+    catch (Exception e) {
+        Map unavailable = _itemBackupIndexUnavailableResult(e)
+        if (unavailable == null) throw e
+        return unavailable + [backupKey: args.backupKey]
+    }
     def entry = manifest.get(args.backupKey)
 
     if (!entry) {
@@ -236,7 +248,12 @@ def toolRestoreItemBackup(args) {
         throw new IllegalArgumentException("scope must be 'source' (default), 'hub_local', 'hub_cloud', or 'hub_uploaded'.")
     }
     requireDestructiveConfirm(args.confirm)
-    return _toolRestoreSourceBackup(args)
+    try { return _toolRestoreSourceBackup(args) }
+    catch (Exception e) {
+        Map unavailable = _itemBackupIndexUnavailableResult(e)
+        if (unavailable == null) throw e
+        return unavailable + [backupKey: args.backupKey]
+    }
 }
 
 private Map _toolRestoreSourceBackup(args) {
@@ -488,9 +505,12 @@ private Map _toolRestoreSourceBackup(args) {
                 undoAvailable: undoAvailable
             ]
             if (undoAvailable) {
+                String undoNote = _itemBackupRetentionNote([type: entry.type, retention: "pinned", undoForBackupKey: args.backupKey.toString()])
                 restoreResult.preRestoreBackup = preRestoreBackupKey
                 restoreResult.preRestoreFile = preRestoreFileName
-                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'. ${_itemBackupRetentionNote([type: entry.type, retention: "pinned", undoForBackupKey: args.backupKey.toString()])}"
+                restoreResult.backupRetention = "pinned"
+                restoreResult.backupRetentionNote = undoNote
+                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'. ${undoNote}"
             } else {
                 restoreResult.warning = undoWarning
             }

@@ -3250,7 +3250,8 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
 
         and: 'the response says the backup is pinned and when it can be removed'
         result.backupRetention == 'pinned'
-        result.restoreHint.contains('Pinned baseline')
+        result.backupRetentionNote.startsWith('Pinned baseline')
+        result.restoreHint.endsWith(result.backupRetentionNote)
         result.restoreHint.contains('10 MB budget')
     }
 

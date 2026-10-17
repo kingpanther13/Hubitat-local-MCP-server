@@ -7,13 +7,11 @@ import support.TestChildApp
 import support.ToolSpecBase
 
 class RetainedStateCloseoutSpec extends ToolSpecBase {
-    private static class FailingManifest extends LinkedHashMap {
+    // atomicState whose predClearPending writes fail while fail is set.
+    private static class FailingPredClearState extends LinkedHashMap {
         boolean fail
-        String failedKey = "predClearPending"
-        int failAt
-        int writes
         Object put(Object key, Object value) {
-            if (key == failedKey && (++writes == failAt || fail)) throw new IllegalStateException('manifest unavailable')
+            if (key == 'predClearPending' && fail) throw new IllegalStateException('manifest unavailable')
             super.put(key, value)
         }
     }
@@ -481,7 +479,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
     def 'failed writes keep newer committed backup and predicate views over stale snapshots'() {
         given:
         def index = new FailingIndex()
-        def backing = new FailingManifest()
+        def backing = new FailingPredClearState()
         def peer = peerWithIndex(index, null, backing)
         peer._publishItemBackup('app_1', entry('1'))
         backupIndex = [:]
@@ -672,7 +670,9 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         then:
         result.success == true
         result.undoAvailable == true
-        result.undoHint.contains('Pinned baseline')
+        result.backupRetention == 'pinned'
+        result.backupRetentionNote.contains("next pre-restore undo replaces it")
+        result.undoHint.endsWith(result.backupRetentionNote)
         backupIndex.size() == 10
         backupIndex.keySet().containsAll(['app_99', 'prerestore_app_99'])
         backupIndex.prerestore_app_99.retention == 'pinned'

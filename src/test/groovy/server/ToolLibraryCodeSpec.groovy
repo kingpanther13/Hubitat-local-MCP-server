@@ -1648,6 +1648,11 @@ def helperMethod() { return "ok" }
         result.backupFile == 'mcp-backup-library-42.groovy'
         uploads == ['mcp-backup-library-42.groovy']
         result.restoreHint.contains('hub_create_library')
+
+        and: 'the response says the backup is pinned and when it can be removed'
+        result.backupRetention == 'pinned'
+        result.backupRetentionNote.startsWith('Pinned baseline')
+        result.restoreHint.endsWith(result.backupRetentionNote)
     }
 
     @spock.lang.Unroll

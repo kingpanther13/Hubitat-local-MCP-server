@@ -678,13 +678,14 @@ class ToolManageFilesSpec extends ToolSpecBase {
         ex.message.contains('fileName is required')
     }
 
-    // A listing that reflects uploads and deletes, seeded with six older copies of notes.txt and
+    // A listing that reflects uploads and deletes, seeded with six copies of notes.txt older than
+    // the harness clock (2009), in the second-only name form, and
     // look-alike names that must never be pruned (another base name, another extension, no timestamp).
     private Map fileManagerWithOldCopies() {
         Map files = [:]
-        (1..6).each { files["notes_backup_20260101-00000${it}.txt".toString()] = 'old'.getBytes('UTF-8') }
-        ['notes-2_backup_20260101-000000.txt', 'notes_backup_20260101-000000.json', 'notes_backup_old.txt',
-         'xnotes_backup_20260101-000000.txt'].each { files[it] = 'other'.getBytes('UTF-8') }
+        (1..6).each { files["notes_backup_20080101-00000${it}.txt".toString()] = 'old'.getBytes('UTF-8') }
+        ['notes-2_backup_20080101-000000.txt', 'notes_backup_20080101-000000.json', 'notes_backup_old.txt',
+         'xnotes_backup_20080101-000000.txt'].each { files[it] = 'other'.getBytes('UTF-8') }
         files['notes.txt'] = 'current'.getBytes('UTF-8')
         hubGet.register('/hub/fileManager/json') { params ->
             JsonOutput.toJson([files: files.keySet().collect { [name: it, type: 'file', size: '3', date: '1'] }])
@@ -705,14 +706,17 @@ class ToolManageFilesSpec extends ToolSpecBase {
 
         then: 'the new copy plus the four newest older copies remain; the two oldest are removed'
         result.success == true
-        result.removedOldBackups == ['notes_backup_20260101-000002.txt', 'notes_backup_20260101-000001.txt']
-        result.backupRetention.contains('newest 5 backup copies')
-        files.keySet().findAll { it ==~ /notes_backup_\d{8}-\d{6}\.txt/ }.size() == 5
+        result.removedOldBackups == ['notes_backup_20080101-000002.txt', 'notes_backup_20080101-000001.txt']
+        result.backupRetention == 'copies'
+        result.backupRetentionNote.contains('newest 5 backup copies')
+        result.backupFile ==~ /notes_backup_\d{8}-\d{6}-\d{3}\.txt/
+        !result.containsKey('pruneWarning')
+        files.keySet().findAll { it ==~ /notes_backup_\d{8}-\d{6}(-\d{3})?\.txt/ }.size() == 5
         files.containsKey(result.backupFile)
 
         and: 'look-alike names are untouched'
-        ['notes-2_backup_20260101-000000.txt', 'notes_backup_20260101-000000.json', 'notes_backup_old.txt',
-         'xnotes_backup_20260101-000000.txt'].every { files.containsKey(it) }
+        ['notes-2_backup_20080101-000000.txt', 'notes_backup_20080101-000000.json', 'notes_backup_old.txt',
+         'xnotes_backup_20080101-000000.txt'].every { files.containsKey(it) }
     }
 
     def "hub_delete_file applies the same five-copy cap to its pre-delete copy"() {
@@ -726,8 +730,9 @@ class ToolManageFilesSpec extends ToolSpecBase {
         then:
         result.success == true
         !files.containsKey('notes.txt')
-        result.removedOldBackups == ['notes_backup_20260101-000002.txt', 'notes_backup_20260101-000001.txt']
-        files.keySet().findAll { it ==~ /notes_backup_\d{8}-\d{6}\.txt/ }.size() == 5
+        result.removedOldBackups == ['notes_backup_20080101-000002.txt', 'notes_backup_20080101-000001.txt']
+        result.backupRetention == 'copies'
+        files.keySet().findAll { it ==~ /notes_backup_\d{8}-\d{6}(-\d{3})?\.txt/ }.size() == 5
     }
 
     def "hub_write_file still writes when the listing for pruning fails"() {
@@ -741,11 +746,90 @@ class ToolManageFilesSpec extends ToolSpecBase {
         when:
         def result = script.toolWriteFile([fileName: 'notes.txt', content: 'new', confirm: true])
 
-        then:
+        then: 'the write lands and the response says the old copies were not checked'
         result.success == true
         !result.containsKey('removedOldBackups')
+        result.pruneWarning.contains('listing failed')
         uploads.size() == 2
         uploads[1] == 'notes.txt'
+    }
+
+    def "hub_write_file writes nothing when the backup copy of an existing file fails"() {
+        given:
+        enableWrite()
+        def uploads = []
+        script.metaClass.downloadHubFile = { String name -> name == 'notes.txt' ? 'old'.getBytes('UTF-8') : null }
+        script.metaClass.uploadHubFile = { String name, byte[] content ->
+            uploads << name
+            if (name.contains('_backup_')) throw new RuntimeException('hub storage full')
+        }
+
+        when:
+        def result = script.toolWriteFile([fileName: 'notes.txt', content: 'new', confirm: true])
+
+        then:
+        result.success == false
+        result.error == "Could not back up existing 'notes.txt' before overwriting: hub storage full"
+        result.note.contains('Nothing was written')
+        uploads.size() == 1
+        uploads[0].startsWith('notes_backup_')
+    }
+
+    def "a failed write prunes nothing, so every older copy survives"() {
+        given:
+        enableWrite()
+        Map files = fileManagerWithOldCopies()
+        script.metaClass.uploadHubFile = { String name, byte[] content ->
+            if (name == 'notes.txt') throw new RuntimeException('write refused')
+            files[name] = content
+        }
+
+        when:
+        def result = script.toolWriteFile([fileName: 'notes.txt', content: 'new content', confirm: true])
+
+        then:
+        result.success == false
+        files.keySet().findAll { it ==~ /notes_backup_\d{8}-\d{6}(-\d{3})?\.txt/ }.size() == 7
+    }
+
+    def "a failed old-copy delete is reported as pruneWarning"() {
+        given:
+        enableWrite()
+        Map files = fileManagerWithOldCopies()
+        script.metaClass.deleteHubFile = { String name ->
+            if (name == 'notes_backup_20080101-000001.txt') throw new RuntimeException('busy')
+            files.remove(name)
+        }
+
+        when:
+        def result = script.toolWriteFile([fileName: 'notes.txt', content: 'new content', confirm: true])
+
+        then:
+        result.success == true
+        result.removedOldBackups == ['notes_backup_20080101-000002.txt']
+        result.pruneWarning.contains('notes_backup_20080101-000001.txt')
+    }
+
+    def "two writes in the same second get distinct copy names, and both name forms are pruned by age"() {
+        given:
+        enableWrite()
+        Map files = fileManagerWithOldCopies()
+
+        and: 'a clock that advances one millisecond per read, as two back-to-back writes see it'
+        def clock = [1234567890000L]
+        NOW_OVERRIDE.set({ -> clock[0]++ })
+
+        when:
+        def first = script.toolWriteFile([fileName: 'notes.txt', content: 'one', confirm: true])
+        def second = script.toolWriteFile([fileName: 'notes.txt', content: 'two', confirm: true])
+
+        then:
+        first.backupFile != second.backupFile
+        files.containsKey(first.backupFile) && files.containsKey(second.backupFile)
+        def kept = files.keySet().findAll { it ==~ /notes_backup_\d{8}-\d{6}(-\d{3})?\.txt/ }
+        kept.size() == 5
+        // the newest three second-only copies stay beside the two millisecond copies
+        kept.containsAll(['notes_backup_20080101-000004.txt', 'notes_backup_20080101-000005.txt', 'notes_backup_20080101-000006.txt'])
     }
 
     def "hub_delete_file backs up then deletes a normal file"() {

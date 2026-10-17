@@ -5661,9 +5661,8 @@ class TestRunner:
                 assert strict_backup.get("retention") == "rolling" and note.startswith("Rolling step") \
                     and "removed only when" in note and "MB budget" in note, \
                     f"a strict-mode write inside the session should be a budget-evicted rolling step: {strict_backup}"
-            listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": {"cursor": ""}}) or {}
             kinds: dict = {}
-            page = listed
+            page = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": {"cursor": ""}}) or {}
             for _ in range(20):
                 for entry in page.get("backups") or []:
                     kinds[entry.get("backupKey")] = entry.get("retention")
@@ -13604,29 +13603,39 @@ class TestRunner:
     @test("system_tools")
     def test_write_file_keeps_newest_backup_copies(self) -> None:
         # hub_write_file copies the previous content to <name>_backup_<ts><ext> before an
-        # overwrite and keeps only the newest five copies of that file name (issue #517).
+        # overwrite and keeps only the newest five copies of that file name (issue #517). The
+        # copy name carries milliseconds, so back-to-back writes never share one.
         name = f"{PREFIX}517_copy_cap_{int(time.time())}.txt"
         stem = name[:-len(".txt")] + "_backup_"
+        copy_name = re.compile(re.escape(stem) + r"\d{8}-\d{6}(-\d{3})?\.txt$")
         removed: list = []
-        copies: list = []
+        made: list = []
         try:
             for i in range(7):
                 res = self.client.call_tool("hub_manage_files", {
                     "tool": "hub_write_file", "args": {"fileName": name, "content": f"version {i}", "confirm": True}})
                 assert isinstance(res, dict) and res.get("success") is True, f"write {i} failed: {res}"
                 if i > 0:
-                    assert str(res.get("backupFile", "")).startswith(stem), f"write {i} made no backup copy: {res}"
-                    assert "newest 5" in str(res.get("backupRetention")), f"write {i} does not state the copy cap: {res}"
+                    assert copy_name.match(str(res.get("backupFile", ""))), f"write {i} made no backup copy: {res}"
+                    assert res.get("backupRetention") == "copies" and "newest 5" in str(res.get("backupRetentionNote")), \
+                        f"write {i} does not state the copy cap: {res}"
+                    assert res["backupFile"] not in made, f"write {i} reused an earlier copy name: {res['backupFile']}"
+                    made.append(res["backupFile"])
                 removed += res.get("removedOldBackups") or []
-                time.sleep(1.1)  # copy names carry a one-second timestamp; keep every copy distinct
             names, authoritative = self._list_all_file_names(stem)
-            copies = [n for n in names if isinstance(n, str) and n.startswith(stem)]
+            copies = [n for n in names if isinstance(n, str) and copy_name.match(n)]
             assert len(copies) <= 5, f"more than five backup copies of {name} remain: {copies}"
             if authoritative:
                 assert len(copies) == 5 and len(removed) == 1 and removed[0] not in copies, \
                     f"six overwrites should leave the newest five copies and remove one: copies={copies}, removed={removed}"
         finally:
-            for nm in [name, *copies]:
+            # Deleting the file itself takes one more copy, so list the copies only afterwards.
+            try:
+                self.client.call_tool("hub_manage_files", {"tool": "hub_delete_file", "args": {"fileName": name, "confirm": True}})
+            except Exception as exc:
+                print(f"    [WARN] could not delete {name}: {exc}")
+            leftovers, _ = self._list_all_file_names(stem)
+            for nm in [n for n in leftovers if isinstance(n, str) and n.startswith(stem)]:
                 try:
                     self.client.call_tool("hub_manage_files", {"tool": "hub_delete_file", "args": {"fileName": nm, "confirm": True}})
                 except Exception as exc:
@@ -15455,7 +15464,8 @@ class TestRunner:
             msg = str(e)
             assert "Setting 'maxCapturedStates' expects a number" in msg and "(object)" in msg \
                 and "simpleName" not in msg, f"malformed-value refusal has the wrong message: {msg}"
-        # backupBudgetMb is allowlisted with the Advanced page's 1 MB minimum.
+        # backupBudgetMb is allowlisted; the tool refuses values outside 1..1000000 MB (the
+        # Advanced page field takes any number and the server clamps it instead).
         try:
             self.client.call_tool("hub_manage_mcp", {
                 "tool": "hub_update_mcp_settings",
@@ -15463,7 +15473,7 @@ class TestRunner:
             })
             raise AssertionError("backupBudgetMb=0 should be refused (minimum 1)")
         except McpError as e:
-            assert "backupBudgetMb" in str(e) and "at least 1" in str(e), f"wrong refusal for backupBudgetMb=0: {e}"
+            assert "backupBudgetMb" in str(e) and "from 1 to" in str(e), f"wrong refusal for backupBudgetMb=0: {e}"
         assert read_settings() == before, "a refused malformed setting changed the MCP app's settings"
 
     @test("developer_mode")

@@ -8160,6 +8160,16 @@ private String _rmRetentionSuffix(Map backup) {
     return backup?.retentionNote ? " ${backup.retentionNote}".toString() : ""
 }
 
+// The roll-back hint for a write that may have changed the rule.
+private String _rmRestoreBaselineHint(Map backup) {
+    return "Backup baseline available. Call hub_restore_backup with backupKey='${backup?.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.${_rmRetentionSuffix(backup)}".toString()
+}
+
+// The roll-back hint for a write whose commit is unconfirmed.
+private String _rmRollbackIfNotCommittedHint(Map backup) {
+    return "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup?.backupKey}').${_rmRetentionSuffix(backup)}".toString()
+}
+
 // Single source of truth for the restoreHint wording emitted when a
 // pre-flight refusal (the "RM is not touched" sentinel) is detected in a
 // caught error message. Both the structured _rmBuildUpdateErrorResponse
@@ -8218,7 +8228,7 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
         // themselves carry no page info, so callers thread it in.
         restoreHint = "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain. Or, before your next write, close the in-flight wizard manually: hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, or hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a stuck action editor.${_rmRetentionSuffix(backup)}"
     } else {
-        restoreHint = "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.${_rmRetentionSuffix(backup)}"
+        restoreHint = _rmRestoreBaselineHint(backup)
     }
     def result = [
         success: false,
@@ -9972,7 +9982,13 @@ def _createButtonRuleViaController(args) {
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def beforeIds = (cfg?.childApps ?: []).collect { it?.id?.toString() } as Set
 
-    def backup = _rmBackupRuleSnapshot(controllerId, "pre-buttonRule")
+    def backup
+    try { backup = _rmBackupRuleSnapshot(controllerId, "pre-buttonRule") }
+    catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable == null) throw backupErr
+        return unavailable + [controllerId: controllerId]
+    }
 
     // Runtime-error envelope: a mid-flow throw after the backup would otherwise
     // surface as a flat "Tool error: <msg>" with no backupKey/controllerId and
@@ -15009,7 +15025,13 @@ def _applyNativeAppEdit(args) {
         (modifyTriggerSpec ? "pre-modifyTrigger" :
         (modifyActionSpec ? "pre-modifyAction" :
         (walkStepSpec ? "pre-walkStep" : "pre-update"))))))))))))))))
-    def backup = _rmBackupBeforeEdit(appId, backupReason)
+    def backup
+    try { backup = _rmBackupBeforeEdit(appId, backupReason) }
+    catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable == null) throw backupErr
+        return unavailable + [appId: appId]
+    }
 
     // walkStep — schema-aware single-step wizard walker. Lets a caller
     // (typically an LLM) drive any RM wizard page dynamically: introspect
@@ -15082,7 +15104,7 @@ def _applyNativeAppEdit(args) {
                 error: e.message ?: e.toString(),
                 backup: backup,
                 restoreHint: uiRefusal ? _rmPreflightRestoreHint(null, backup, "Refused before submitting: no settings were written and no Done was sent, so nothing needs to be restored. The page was still opened to read its inputs, which runs the app's page code.") :
-                    "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.${_rmRetentionSuffix(backup)}"
+                    _rmRestoreBaselineHint(backup)
             ]
         }
     }
@@ -15186,7 +15208,7 @@ def _applyNativeAppEdit(args) {
             addResult: maResult?.addResult,
             moveResults: maResult?.moveResults,
             error: maError,
-            restoreHint: maOk ? null : "Backup baseline available. Call hub_restore_backup with backupKey='${backup?.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.${_rmRetentionSuffix(backup)}",
+            restoreHint: maOk ? null : _rmRestoreBaselineHint(backup),
             updateRuleFailed: updateRuleFailed,
             // TRUE whenever the rule mutated without a successful re-init: a
             // rejected click, or a skipped click after the delete committed
@@ -15380,7 +15402,7 @@ def _applyNativeAppEdit(args) {
                     possibleStateEditAct: possibleStateEditAct,
                     wizardStuck: false,
                     backup: backup,
-                    restoreHint: "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').${_rmRetentionSuffix(backup)}",
+                    restoreHint: _rmRollbackIfNotCommittedHint(backup),
                     verifyHint: "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the deletion actually committed asynchronously after the response, do NOT call hub_restore_backup.",
                     safeRecovery: [
                         recommended: 'verify-then-decide',
@@ -15420,7 +15442,7 @@ def _applyNativeAppEdit(args) {
             // also failed to land; BUG-13 had rewritten the original wording).
             def isRetryExhaustion = e.message?.contains("one verified re-click")
             if (isRetryExhaustion) {
-                result.restoreHint = "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').${_rmRetentionSuffix(backup)}"
+                result.restoreHint = _rmRollbackIfNotCommittedHint(backup)
                 result.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
             }
             return result
@@ -15557,8 +15579,8 @@ def _applyNativeAppEdit(args) {
                 restoreHint: isPreflightRefusal ?
                     _rmPreflightRestoreHint(null, backup) :
                     (isRetryExhaustion ?
-                        "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').${_rmRetentionSuffix(backup)}" :
-                        "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.${_rmRetentionSuffix(backup)}")
+                        _rmRollbackIfNotCommittedHint(backup) :
+                        _rmRestoreBaselineHint(backup))
             ]
             if (isRetryExhaustion) {
                 trigResult.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
@@ -16712,7 +16734,13 @@ def toolDeleteNativeApp(args) {
     _requireUnprotectedAppDeletion(appId)
     def force = args?.force == true
 
-    def backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete")
+    def backup
+    try { backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete") }
+    catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable == null) throw backupErr
+        return unavailable + [appId: appId]
+    }
 
     try {
         if (force) {

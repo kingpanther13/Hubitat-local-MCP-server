@@ -629,11 +629,12 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         listing.storageBudget.limitBytes == (expected as long) * 1024L * 1024L
 
         where:
-        value  | expected
-        1      | 1
-        25     | 25
-        '3'    | 3
-        5000   | 5000
+        value   | expected
+        1       | 1
+        25      | 25
+        '3'     | 3
+        5000    | 5000
+        1000000 | 1000000
     }
 
     @spock.lang.Unroll
@@ -654,11 +655,13 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
         script.toolListItemBackups([:]).storageBudget.limitBytes == 10L * 1024L * 1024L
 
         where:
-        badValue | message
-        0        | 'at least 1'
-        -4       | 'at least 1'
-        2.5      | 'whole number'
-        'lots'   | 'expects a number'
+        badValue          | message
+        0                 | 'from 1 to 1000000'
+        -4                | 'from 1 to 1000000'
+        1000001           | 'from 1 to 1000000'
+        99999999999999    | 'from 1 to 1000000'
+        2.5               | 'whole number'
+        'lots'            | 'expects a number'
     }
 
     @spock.lang.Unroll

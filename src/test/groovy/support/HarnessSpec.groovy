@@ -121,7 +121,8 @@ abstract class HarnessSpec extends Specification {
     private static final List SHARED_RUN_IN_CALLS = java.util.Collections.synchronizedList([])
     private static final List SHARED_RUN_IN_MILLIS_CALLS = java.util.Collections.synchronizedList([])
     // On a hub the backup index is a File Manager file; specs see its JSON text here
-    // (json == null: no index file). BackupIndexStoreSpec drives the real file path.
+    // (json == null: no index file; readError set: the listed file cannot be read).
+    // BackupIndexFileSpec drives the real file path.
     private static final Map SHARED_BACKUP_INDEX_STORE = [:]
     static final String EMPTY_BACKUP_INDEX_JSON = '{"version":1,"entries":{}}'
 
@@ -355,6 +356,7 @@ abstract class HarnessSpec extends Specification {
         // Committed backup/recovery views must not leak between test app instances.
         (scriptStaticField('ITEM_BACKUP_MANIFESTS') as Map).clear()
         (scriptStaticField('ITEM_BACKUP_LEGACY_PENDING') as Set).clear()
+        (scriptStaticField('ITEM_BACKUP_BUDGET_WARNED') as Set).clear()
         backupIndexStore.clear()
         backupIndexStore.json = EMPTY_BACKUP_INDEX_JSON
         (scriptStaticField('PRED_CLEAR_STORES') as Map).clear()
@@ -598,7 +600,10 @@ abstract class HarnessSpec extends Specification {
         }
         if (stubBackupIndexStore()) {
             def storeRef = backupIndexStore
-            target.metaClass._readItemBackupIndexStore = { -> storeRef.json }
+            target.metaClass._readItemBackupIndexStore = { ->
+                if (storeRef.readError) throw storeRef.readError
+                storeRef.json
+            }
             target.metaClass._writeItemBackupIndexStore = { String json -> storeRef.json = json }
         }
         // A backup's App Cloner export drives a whole cloner session; specs about it opt in by

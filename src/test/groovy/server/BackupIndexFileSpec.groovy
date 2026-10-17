@@ -44,17 +44,64 @@ class BackupIndexFileSpec extends ToolSpecBase {
         !atomicStateMap.containsKey('itemBackupManifest')
     }
 
+    private void listFilesLive() {
+        hubGet.register('/hub/fileManager/json') { params ->
+            JsonOutput.toJson([files: files.keySet().collect { [name: it, type: 'file', size: '2', date: '100'] }])
+        }
+    }
+
     def 'a new class load reads the index file back'() {
         given:
         files['mcp-backup-index.json'] = JsonOutput.toJson([version: 1, entries: [
             app_7: [type: 'app', id: '7', fileName: 'mcp-backup-app-7.groovy', timestamp: 9L, retention: 'pinned']]]).getBytes('UTF-8')
+        listFilesLive()
+
+        when:
+        def view = script._itemBackupManifest()
+
+        then: 'one listing to see the file, then the read'
+        view.keySet() == ['app_7'] as Set
+        hubGet.calls*.path == ['/hub/fileManager/json']
+    }
+
+    def 'a listed index whose read keeps failing is retried, then left alone'() {
+        given:
+        byte[] good = JsonOutput.toJson([version: 1, entries: [app_7: [type: 'app', id: '7', fileName: 'mcp-backup-app-7.groovy']]]).getBytes('UTF-8')
+        files['mcp-backup-index.json'] = good
+        listFilesLive()
+        int reads = 0
+        script.metaClass.downloadHubFile = { String name ->
+            reads++
+            throw new IOException('read timed out')
+        }
+
+        when:
+        script._itemBackupManifest()
+
+        then: 'three reads, an error naming the file, and the index file untouched'
+        def e = thrown(IllegalStateException)
+        e.message.startsWith('Backup index unavailable')
+        e.message.contains('could not be read after 3 attempts')
+        reads == 3
+        files['mcp-backup-index.json'] == good
+    }
+
+    def 'a read that recovers on a retry loads normally'() {
+        given:
+        files['mcp-backup-index.json'] = JsonOutput.toJson([version: 1, entries: [app_7: [type: 'app', id: '7']]]).getBytes('UTF-8')
+        listFilesLive()
+        int reads = 0
+        script.metaClass.downloadHubFile = { String name ->
+            if (++reads == 1) throw new IOException('read timed out')
+            files[name]
+        }
 
         when:
         def view = script._itemBackupManifest()
 
         then:
+        reads == 2
         view.keySet() == ['app_7'] as Set
-        hubGet.calls.empty
     }
 
     def 'a missing index file is rebuilt from the listing and saved'() {

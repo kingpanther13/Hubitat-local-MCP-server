@@ -134,32 +134,178 @@ class BackupRetentionSpec extends ToolSpecBase {
         backupIndex.keySet() == view.keySet()
     }
 
-    def 'an unreadable index file is rebuilt from the listing'() {
+    def 'an index file that is not valid JSON is copied aside before the rebuild'() {
         given:
         backupIndexStore.json = '{not json'
         listFiles([[name: 'mcp-backup-driver-4.groovy', type: 'file', size: '40', date: '400']])
+        Map uploads = [:]
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> uploads[name] = new String(bytes, 'UTF-8') }
 
         when:
         def view = script._itemBackupManifest()
 
         then:
+        uploads.size() == 1
+        uploads.keySet().first() ==~ /mcp-backup-index\.corrupt-\d{8}-\d{6}\.json/
+        uploads.values().first() == '{not json'
         view.keySet() == ['driver_4'] as Set
         backupIndex.keySet() == ['driver_4'] as Set
     }
 
-    def 'a failed listing leaves the index empty without writing or deleting anything'() {
+    def 'an index file without an entries map is copied aside the same way'() {
+        given:
+        backupIndexStore.json = '{"version":1}'
+        listFiles([])
+        List uploads = []
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> uploads << name }
+
+        when:
+        script._itemBackupManifest()
+
+        then:
+        uploads.size() == 1
+        uploads[0].startsWith('mcp-backup-index.corrupt-')
+        backupIndex == [:]
+    }
+
+    def 'an invalid index is kept when it cannot be copied aside'() {
+        given:
+        backupIndexStore.json = '{not json'
+        listFiles([[name: 'mcp-backup-driver-4.groovy', type: 'file', size: '40', date: '400']])
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> throw new IllegalStateException('disk full') }
+
+        when:
+        script._itemBackupManifest()
+
+        then:
+        def e = thrown(IllegalStateException)
+        e.message.startsWith('Backup index unavailable')
+        backupIndexStore.json == '{not json'
+        (scriptStaticField('ITEM_BACKUP_MANIFESTS') as Map).isEmpty()
+    }
+
+    def 'a listed index that cannot be read is never rebuilt over, and loads once it reads again'() {
+        given:
+        backupIndex = [app_1: app('1', 5L, 10L), app_2: app('2', 6L, 10L)]
+        String good = backupIndexStore.json
+        backupIndexStore.readError = new IllegalStateException("'mcp-backup-index.json' is listed in File Manager but could not be read after 3 attempts (timeout)")
+        listFiles([])
+
+        when:
+        script._itemBackupManifest()
+
+        then: 'the load throws, nothing is written over the index and nothing is cached'
+        def e = thrown(IllegalStateException)
+        e.message.startsWith('Backup index unavailable')
+        e.message.contains('could not be read')
+        backupIndexStore.json == good
+        (scriptStaticField('ITEM_BACKUP_MANIFESTS') as Map).isEmpty()
+
+        when: 'the read recovers'
+        backupIndexStore.readError = null
+        script._publishItemBackup('app_3', app('3', 7L, 10L))
+
+        then: 'the publish sees the full index'
+        backupIndex.keySet() == ['app_1', 'app_2', 'app_3'] as Set
+    }
+
+    def 'a failed listing while rebuilding throws, caches nothing, and a later load works'() {
         given:
         backupIndex = null
-        hubGet.register('/hub/fileManager/json') { params -> throw new RuntimeException('listing unavailable') }
+        boolean listingDown = true
+        hubGet.register('/hub/fileManager/json') { params ->
+            if (listingDown) throw new RuntimeException('listing unavailable')
+            JsonOutput.toJson([files: [[name: 'mcp-backup-app-7.groovy', type: 'file', size: '9', date: '70']]])
+        }
         List deleted = deletedFiles()
+
+        when:
+        script._itemBackupManifest()
+
+        then:
+        def e = thrown(IllegalStateException)
+        e.message.contains('listing unavailable')
+        backupIndex == null
+        deleted.isEmpty()
+        (scriptStaticField('ITEM_BACKUP_MANIFESTS') as Map).isEmpty()
+
+        when:
+        listingDown = false
+        def view = script._itemBackupManifest()
+
+        then:
+        view.keySet() == ['app_7'] as Set
+    }
+
+    def 'with the index unavailable, readers and backup-taking writes return a recoverable refusal'() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        backupIndexStore.readError = new IllegalStateException('listed but unreadable')
+
+        when:
+        def listing = script.toolListItemBackups([:])
+        def fetched = script.toolGetItemBackup([backupKey: 'app_1'])
+        def deleted = script.toolDeleteItem([type: 'app', item_id: '33', confirm: true])
+
+        then:
+        [listing, fetched, deleted].every {
+            it.success == false && it.error.startsWith('Backup index unavailable') && it.note.contains('Nothing was changed')
+        }
+        listing.backups == []
+        deleted.appId == '33'
+        !hubGet.calls.any { it.path.contains('delete') }
+    }
+
+    // ---------- migration merge ----------
+
+    def 'a legacy index and an index file merge, the file winning on shared keys'() {
+        given:
+        backupIndex = [app_1: app('1', 9L, 10L, [version: 2]), app_3: app('3', 9L, 10L)]
+        atomicStateMap.itemBackupManifest = [app_1: app('1', 5L, 10L, [version: 1]), app_2: app('2', 5L, 10L)]
 
         when:
         def view = script._itemBackupManifest()
 
         then:
-        view.isEmpty()
-        backupIndex == null
-        deleted.isEmpty()
+        view.keySet() == ['app_1', 'app_2', 'app_3'] as Set
+        view.app_1.version == 2
+        backupIndex.keySet() == ['app_1', 'app_2', 'app_3'] as Set
+        !atomicStateMap.containsKey('itemBackupManifest')
+    }
+
+    // atomicState whose removal of the legacy index key fails.
+    private static class StickyLegacyState extends LinkedHashMap {
+        Object remove(Object key) {
+            if (key == 'itemBackupManifest') throw new IllegalStateException('state store busy')
+            super.remove(key)
+        }
+    }
+
+    def 'a stale legacy index left by a failed removal cannot overwrite newer file entries after a reload'() {
+        given:
+        def state = new StickyLegacyState()
+        state.put('itemBackupManifest', [app_1: app('1', 5L, 10L, [version: 1])])
+        backupIndex = null
+        def peer = newCompiledScriptInstance([app: new support.TestChildApp(id: 1L), state: stateMap, atomicState: state])
+        peer.metaClass.deleteHubFile = { String name -> }
+
+        when: 'the move succeeds but the key stays, then newer backups are published'
+        peer._itemBackupManifest()
+        peer._publishItemBackup('app_1', app('1', 8L, 10L, [version: 2, fileName: 'mcp-backup-app-1-new.groovy']))
+        peer._publishItemBackup('app_3', app('3', 9L, 10L))
+
+        and: 'a reload loses the in-memory record that the key was left behind'
+        (scriptStaticField('ITEM_BACKUP_MANIFESTS') as Map).clear()
+        (scriptStaticField('ITEM_BACKUP_LEGACY_PENDING') as Set).clear()
+        def view = peer._itemBackupManifest()
+
+        then:
+        state.containsKey('itemBackupManifest')
+        view.keySet() == ['app_1', 'app_3'] as Set
+        view.app_1.version == 2
+        backupIndex.app_1.fileName == 'mcp-backup-app-1-new.groovy'
+        backupIndex.containsKey('app_3')
     }
 
     // ---------- byte budget ----------
@@ -210,6 +356,73 @@ class BackupRetentionSpec extends ToolSpecBase {
         backupIndex.keySet() == ['app_9'] as Set
     }
 
+    def 'pending-deletion entries do not count toward the reported budget usage'() {
+        expect:
+        script._itemBackupBudgetUsage([a: [sizeBytes: 10], b: [sizeBytes: 20, deletePending: true]]).usedBytes == 10L
+    }
+
+    def 'reuse does not republish an index that is within its budget'() {
+        given:
+        backupIndex = [app_1: app('1', 5L, 10L)]
+        Map view = script._itemBackupManifest()
+        int writes = 0
+        def storeRef = backupIndexStore
+        script.metaClass._writeItemBackupIndexStore = { String json -> writes++; storeRef.json = json }
+
+        when:
+        script._repairItemBackupRetention(view, 'app_1', view.app_1)
+
+        then:
+        writes == 0
+    }
+
+    def 'a code backup records its size in bytes, not characters'() {
+        given:
+        hubGet.register('/app/ajax/code') { params -> JsonOutput.toJson([source: 'déjà vu', version: 2]) }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> }
+
+        when:
+        def entry = script.backupItemSource('app', '41')
+
+        then:
+        entry.sourceLength == 7
+        entry.sizeBytes == 'déjà vu'.getBytes('UTF-8').length
+        entry.sizeBytes == 9
+    }
+
+    // ---------- File Manager listing shapes ----------
+
+    def 'the File Manager listing is read from every shape hub_list_files accepts'() {
+        given:
+        hubGet.register('/hub/fileManager/json') { params -> JsonOutput.toJson(body) }
+
+        expect:
+        script._fileManagerRootFiles() == expected
+
+        where:
+        body                                                                  | expected
+        [[name: 'a.txt', size: '3', date: '4']]                               | [[name: 'a.txt', size: 3L, date: 4L]]
+        ['a.txt', 'b.txt']                                                    | [[name: 'a.txt', size: null, date: null], [name: 'b.txt', size: null, date: null]]
+        [files: [[name: 'a.txt', size: 'big', date: 'today'], [name: 'd', type: 'dir']]] | [[name: 'a.txt', size: null, date: null]]
+        [rootFiles: [[name: 'a.txt', size: 5]]]                               | [[name: 'a.txt', size: 5L, date: null]]
+    }
+
+    def 'adopted files with no listed date are the oldest, so the budget evicts them first'() {
+        given:
+        settingsMap.backupBudgetMb = 1
+        backupIndex = null
+        listFiles([[name: 'mcp-backup-app-1.groovy', type: 'file', size: String.valueOf(600 * 1024)],
+                   [name: 'mcp-backup-app-2.groovy', type: 'file', size: String.valueOf(300 * 1024), date: '5000']])
+        List deleted = deletedFiles()
+
+        when:
+        script._publishItemBackup('app_9', app('9', 10000L, 300 * 1024L))
+
+        then:
+        deleted == ['mcp-backup-app-1.groovy']
+        backupIndex.keySet() == ['app_2', 'app_9'] as Set
+    }
+
     def 'entries without sizeBytes count their sourceLength against the budget'() {
         expect:
         script._itemBackupEntryBytes([sourceLength: 1234]) == 1234L
@@ -251,7 +464,22 @@ class BackupRetentionSpec extends ToolSpecBase {
         0       | 1     // below the 1 MB minimum
         -5      | 1
         'lots'  | 10    // unreadable value keeps the default
-        5000    | 5000  // no upper bound
+        5000    | 5000
+        1000000 | 1000000
+        1000001 | 1000000         // above the 1 TB ceiling
+        99999999999999 | 1000000  // would overflow the byte count unclamped
+        '12.9'  | 12    // fractions truncate
+    }
+
+    def 'an unreadable budget setting is remembered so it warns once'() {
+        given:
+        settingsMap.backupBudgetMb = 'lots'
+
+        when:
+        3.times { script._itemBackupByteBudget() }
+
+        then:
+        scriptStaticField('ITEM_BACKUP_BUDGET_WARNED') as Set == ['lots'] as Set
     }
 
     def 'a 1 MB budget evicts what the default budget keeps'() {
@@ -328,6 +556,11 @@ class BackupRetentionSpec extends ToolSpecBase {
         result.total == 0
         result.storageBudget.usedBytes == 0L
         result.storageBudget.limitBytes == 10 * MIB
+    }
+
+    def 'the served guide states the file-copy cap the code keeps'() {
+        expect: 'the guide is a fixed literal, so this pins it to FILE_BACKUP_COPIES'
+        script.getToolGuideSections().file_manager.contains("the newest ${scriptStaticField('FILE_BACKUP_COPIES')} copies of each file name are kept")
     }
 
     def 'retention notes name the eviction rule for each kind of backup'() {

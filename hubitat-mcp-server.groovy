@@ -63,9 +63,15 @@
 // The backup index lives in File Manager, not app state: every atomicState access
 // parses and serialises the app's whole state blob.
 @groovy.transform.Field static final String ITEM_BACKUP_INDEX_FILE = "mcp-backup-index.json"
-// Default for the backupBudgetMb setting: indexed backup bytes kept across every item
-// before rolling steps, then pinned baselines, are evicted oldest first.
+// Default and ceiling for the backupBudgetMb setting: indexed backup bytes kept across every
+// item before rolling steps, then pinned baselines, are evicted oldest first. The ceiling
+// (1 TB) keeps the byte count far from long overflow.
 @groovy.transform.Field static final long ITEM_BACKUP_DEFAULT_BUDGET_MB = 10L
+@groovy.transform.Field static final long ITEM_BACKUP_MAX_BUDGET_MB = 1000000L
+// Unparseable backupBudgetMb values already warned about, so the warning is logged once.
+@groovy.transform.Field static final Set ITEM_BACKUP_BUDGET_WARNED = java.util.Collections.synchronizedSet(new java.util.HashSet())
+// Message prefix of the error _itemBackupManifest() throws when the index cannot be loaded.
+@groovy.transform.Field static final String ITEM_BACKUP_INDEX_UNAVAILABLE = "Backup index unavailable"
 // <name>_backup_<ts> copies hub_write_file / hub_delete_file keep per file name.
 @groovy.transform.Field static final int FILE_BACKUP_COPIES = 5
 // Apps whose legacy atomicState index was copied to the file but not yet removed from
@@ -570,13 +576,13 @@ def advancedOverridesPage() {
         section("Native app edit backups") {
             paragraph "By default, edits to the same native app reuse its newest File Manager baseline for one hour. Restoring that baseline returns the app to the start of the edit chain, undoing every later edit in the hour. This avoids uploading the same app before every small edit. Deletes and a standalone Required Expression replacement still take a fresh snapshot."
             input "backupEveryRuleWrite", "bool", title: "Back up before every native app edit",
-                  description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit: the first in an hour-long editing session is kept as its pinned baseline, and the later ones are rolling steps, the first removed when the backup storage budget is exceeded.",
+                  description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit: the first in an editing session is kept as its pinned baseline, and the later ones are rolling steps, the first removed when the backup storage budget is exceeded. A session ends once an hour passes with no snapshot of that app.",
                   defaultValue: false
         }
         section("Backup storage") {
-            paragraph "Automatic code and rule backups live in File Manager, and every file there goes into hub backups. Backups are removed only when they exceed this budget together: rolling steps first, then pinned baselines, oldest first. The backup just taken and a restore in progress are never removed."
+            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together: rolling steps first, then pinned baselines, oldest first. The backup just taken and a restore in progress are never removed."
             input "backupBudgetMb", "number", title: "Backup storage budget (MB)",
-                  description: "Total size of the automatic code and rule backups (default: 10; minimum 1, lower values use 1).",
+                  description: "Total size of the automatic code and rule backups (default: 10; range 1 to 1000000, values outside it use the nearest end).",
                   defaultValue: 10, required: false
         }
         section("Bug report error retention") {
@@ -8009,12 +8015,19 @@ def _withBackupLock(String what, Closure work) {
     }
 }
 
-// Return detached entries: consumers cannot mutate the shared committed view.
+// Return detached entries: consumers cannot mutate the shared committed view. A failed
+// load caches nothing and throws, so the next call retries instead of serving a partial view.
 Map _itemBackupManifest() {
     synchronized (ITEM_BACKUP_MANIFESTS) {
         String owner = _stateOwnerKey()
         if (!ITEM_BACKUP_MANIFESTS.containsKey(owner)) {
-            ITEM_BACKUP_MANIFESTS.put(owner, new LinkedHashMap(_loadItemBackupIndex(owner)))
+            Map loaded
+            try { loaded = _loadItemBackupIndex(owner) }
+            catch (Exception e) {
+                mcpLog("error", "hub-admin", "${ITEM_BACKUP_INDEX_UNAVAILABLE}: ${e.message}")
+                throw new IllegalStateException("${ITEM_BACKUP_INDEX_UNAVAILABLE}: ${e.message}", e)
+            }
+            ITEM_BACKUP_MANIFESTS.put(owner, new LinkedHashMap(loaded))
         }
         return (ITEM_BACKUP_MANIFESTS[owner] as Map).collectEntries { key, entry ->
             [(key): entry instanceof Map ? new LinkedHashMap(entry) : entry]
@@ -8022,10 +8035,33 @@ Map _itemBackupManifest() {
     }
 }
 
-// The index file read/write pair; specs replace these two with an in-memory store.
+// The refusal a backup-taking or backup-reading tool returns when the index could not be
+// loaded, or null for any other error.
+Map _itemBackupIndexUnavailableResult(Throwable error) {
+    Throwable t = error
+    while (t != null && !(t.message?.startsWith(ITEM_BACKUP_INDEX_UNAVAILABLE))) t = t.cause
+    if (t == null) return null
+    return [success: false, error: t.message,
+            note: "Nothing was changed: the backup index file '${ITEM_BACKUP_INDEX_FILE}' could not be loaded, so no backup could be read or recorded. Check that Settings > File Manager answers, then retry; hub_list_backups reports whether the index loads."]
+}
+
+// The index file's text, or null when File Manager does not list it. Throws when the
+// listing fails or a listed file cannot be read: rebuilding then would replace an index
+// that exists. Specs replace this method and _writeItemBackupIndexStore with an in-memory store.
 String _readItemBackupIndexStore() {
-    byte[] bytes = downloadHubFile(ITEM_BACKUP_INDEX_FILE)
-    return bytes == null ? null : new String(bytes, "UTF-8")
+    if (!_fileManagerRootFiles().any { it.name == ITEM_BACKUP_INDEX_FILE }) return null
+    String failure = null
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        if (attempt > 1) pauseExecution(500)
+        try {
+            byte[] bytes = downloadHubFile(ITEM_BACKUP_INDEX_FILE)
+            if (bytes != null) return new String(bytes, "UTF-8")
+            failure = "the read returned no data"
+        } catch (Exception e) {
+            failure = e.message
+        }
+    }
+    throw new IllegalStateException("'${ITEM_BACKUP_INDEX_FILE}' is listed in File Manager but could not be read after 3 attempts (${failure})")
 }
 
 void _writeItemBackupIndexStore(String json) {
@@ -8036,36 +8072,40 @@ private String _itemBackupIndexJson(Map manifest) {
     return groovy.json.JsonOutput.toJson([version: 1, entries: manifest])
 }
 
-// Load order: a legacy atomicState index (an older version, or a downgrade and upgrade,
-// wrote it after the file), then the index file, then a rebuild from the File Manager
-// listing, which adopts backup files no index lists.
+// The index file's entries, or null when the file is absent. Unparseable bytes are copied
+// aside before anything replaces them, then the index is rebuilt from the listing. A
+// legacy atomicState index is merged in under its absent keys (the file wins), saved, and
+// removed from app state.
 private Map _loadItemBackupIndex(String owner) {
+    String json = _readItemBackupIndexStore()
+    Map index = null
+    boolean rebuild = json == null
+    if (json != null) {
+        def parsed = null
+        try { parsed = new groovy.json.JsonSlurper().parseText(json) } catch (Exception ignored) { }
+        if (parsed instanceof Map && parsed.entries instanceof Map) {
+            index = new LinkedHashMap(parsed.entries as Map)
+        } else {
+            String aside = "mcp-backup-index.corrupt-${new Date(now()).format("yyyyMMdd-HHmmss")}.json"
+            uploadHubFile(aside, json.getBytes("UTF-8"))
+            mcpLog("error", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' is not a valid index; its content was copied to '${aside}' and the index is rebuilt from the File Manager listing")
+            rebuild = true
+        }
+    }
     if (atomicState.containsKey("itemBackupManifest")) {
-        Map legacy = new LinkedHashMap((atomicState.itemBackupManifest ?: [:]) as Map)
+        Map merged = new LinkedHashMap(index ?: [:])
+        ((atomicState.itemBackupManifest ?: [:]) as Map).each { k, v -> if (!merged.containsKey(k)) merged.put(k, v) }
         ITEM_BACKUP_LEGACY_PENDING.add(owner)
         try {
-            _writeItemBackupIndexStore(_itemBackupIndexJson(legacy))
+            _writeItemBackupIndexStore(_itemBackupIndexJson(merged))
             _finishLegacyItemBackupMigration(owner)
-            mcpLog("info", "hub-admin", "Moved the backup index (${legacy.size()} entries) from app state to File Manager file '${ITEM_BACKUP_INDEX_FILE}'")
         } catch (Exception e) {
-            mcpLog("error", "hub-admin", "Could not write the backup index file '${ITEM_BACKUP_INDEX_FILE}' (${e.message}); the index stays in app state until a backup write succeeds")
+            mcpLog("error", "hub-admin", "Could not write the backup index file '${ITEM_BACKUP_INDEX_FILE}' (${e.message}); the old index stays in app state until a backup write succeeds")
         }
-        return legacy
+        return merged
     }
-    String json = null
-    try { json = _readItemBackupIndexStore() }
-    catch (Exception e) { mcpLog("warn", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' could not be read (${e.message}); rebuilding it from the File Manager listing") }
-    if (json) {
-        try {
-            def parsed = new groovy.json.JsonSlurper().parseText(json)
-            if (parsed instanceof Map && parsed.entries instanceof Map) return new LinkedHashMap(parsed.entries as Map)
-            mcpLog("warn", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' has no entries map; rebuilding it from the File Manager listing")
-        } catch (Exception e) {
-            mcpLog("warn", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' is not valid JSON (${e.message}); rebuilding it from the File Manager listing")
-        }
-    }
+    if (!rebuild) return index
     Map rebuilt = _rebuildItemBackupIndex()
-    if (rebuilt == null) return [:]
     try { _writeItemBackupIndexStore(_itemBackupIndexJson(rebuilt)) }
     catch (Exception e) { mcpLog("warn", "hub-admin", "Rebuilt backup index (${rebuilt.size()} entries) could not be saved (${e.message}); the next backup write saves it") }
     return rebuilt
@@ -8076,6 +8116,7 @@ private void _finishLegacyItemBackupMigration(String owner) {
     try {
         atomicState.remove("itemBackupManifest")
         ITEM_BACKUP_LEGACY_PENDING.remove(owner)
+        mcpLog("info", "hub-admin", "Moved the backup index from app state to File Manager file '${ITEM_BACKUP_INDEX_FILE}'")
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "Backup index is saved to File Manager but the old app-state copy could not be removed (${e.message}); the next backup write retries")
     }
@@ -8083,16 +8124,12 @@ private void _finishLegacyItemBackupMigration(String owner) {
 
 // Index every managed backup file in File Manager by its name. Metadata the name does
 // not carry (version, rule label, undo hashes) is lost, and an adopted entry is pinned.
-// A listing failure returns null: nothing is adopted and nothing is deleted.
+// Throws when the listing fails, so nothing is adopted or deleted.
 private Map _rebuildItemBackupIndex() {
-    List files
-    try { files = _fileManagerRootFiles() }
-    catch (Exception e) {
-        mcpLog("warn", "hub-admin", "Backup index rebuild skipped: the File Manager listing failed (${e.message}); unindexed backup files are left in place")
-        return null
-    }
+    List files = _fileManagerRootFiles()
     String uuid = "(?:-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?"
     List found = []
+    int unsized = 0
     files.each { f ->
         String name = f.name
         Long listedAt = f.date as Long
@@ -8100,15 +8137,23 @@ private Map _rebuildItemBackupIndex() {
         def rule = name =~ /^mcp-rm-backup-(\d+)-((\d{8}-\d{6}-\d{3})${uuid})\.json$/
         if (code.matches()) {
             List g = code[0] as List
+            // Library restores go through hub_update_library and take no pre-restore copy.
             if (g[1] == "prerestore" && g[2] == "library") return
             String base = (g[1] == "prerestore" ? "prerestore_" : "") + "${g[2]}_${g[3]}"
+            if (f.size == null) unsized++
             found << [base: base, entry: [type: g[2], id: g[3].toString(), fileName: name, timestamp: listedAt ?: 0L,
                                           sourceLength: f.size, sizeBytes: f.size, retention: "pinned"]]
         } else if (rule.matches()) {
             List g = rule[0] as List
-            Long namedAt = null
-            try { namedAt = Date.parse("yyyyMMdd-HHmmss-SSS", g[3].toString()).time } catch (Exception ignored) { }
+            if (!g[1].toString().isInteger()) {
+                mcpLog("warn", "hub-admin", "Backup index rebuild skipped '${name}': rule id ${g[1]} is out of range")
+                return
+            }
             Integer ruleId = g[1].toString() as Integer
+            Long namedAt = null
+            try { namedAt = Date.parse("yyyyMMdd-HHmmss-SSS", g[3].toString()).time }
+            catch (Exception parseErr) { mcpLog("debug", "hub-admin", "Backup index rebuild: '${name}' has no parseable time in its name (${parseErr.message}); using the listed date") }
+            if (f.size == null) unsized++
             found << [base: "rm-rule_${ruleId}_${g[2]}".toString(), entry: [type: "rm-rule", id: ruleId, ruleId: ruleId, fileName: name,
                      timestamp: namedAt ?: listedAt ?: 0L, sourceLength: f.size, sizeBytes: f.size, retention: "pinned"]]
         }
@@ -8122,17 +8167,24 @@ private Map _rebuildItemBackupIndex() {
         while (rebuilt.containsKey(key)) key = "${item.base}_${n++}".toString()
         rebuilt.put(key, item.entry)
     }
+    if (unsized) mcpLog("warn", "hub-admin", "Backup index rebuild: ${unsized} adopted backup file(s) have no size in the File Manager listing and count 0 bytes against the backup storage budget")
     mcpLog("info", "hub-admin", "Rebuilt the backup index from File Manager: ${rebuilt.size()} backup file(s) indexed")
     return rebuilt
 }
 
 // Root File Manager files as [name, size, date] (size in bytes, date in epoch ms; null when
-// the firmware omits them). Throws when the listing is unavailable or unrecognised.
+// the firmware omits them or sends a non-number). Accepts the shapes hub_list_files does.
+// Throws when the listing is unavailable or unrecognised.
 List _fileManagerRootFiles() {
     String text = hubInternalGet("/hub/fileManager/json")?.toString()
     if (!text) throw new IllegalStateException("/hub/fileManager/json returned no data")
     def parsed = new groovy.json.JsonSlurper().parseText(text)
-    def files = parsed instanceof List ? parsed : (parsed instanceof Map ? parsed.files : null)
+    def files = null
+    if (parsed instanceof List) {
+        files = parsed
+    } else if (parsed instanceof Map) {
+        files = parsed.containsKey("files") ? parsed.files : parsed.values()?.flatten()
+    }
     if (!(files instanceof List)) throw new IllegalStateException("/hub/fileManager/json returned an unrecognised shape")
     Closure asLong = { v -> v != null && v.toString().isLong() ? v.toString().toLong() : null }
     return (files as List).findAll { !(it instanceof Map) || it.type != "dir" }.collect { f ->
@@ -8245,39 +8297,61 @@ List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
     return victims
 }
 
-// The "Backup storage budget (MB)" setting in bytes: default 10 MB, at least 1 MB, no upper bound.
-long _itemBackupByteBudget() {
-    long mb = ITEM_BACKUP_DEFAULT_BUDGET_MB
+// The "Backup storage budget (MB)" setting: default 10, clamped to 1..ITEM_BACKUP_MAX_BUDGET_MB,
+// fractions truncated. The Advanced page input is a plain number field; only
+// hub_update_mcp_settings refuses out-of-range values.
+long _itemBackupBudgetMb() {
     def value = settings?.backupBudgetMb
-    if (value != null) {
-        try { mb = Math.max(1L, new BigDecimal(value.toString()).longValue()) }
-        catch (Exception ignored) { }
+    if (value == null) return ITEM_BACKUP_DEFAULT_BUDGET_MB
+    BigDecimal mb = null
+    try { mb = new BigDecimal(value.toString()) } catch (Exception ignored) { }
+    if (mb == null) {
+        if (ITEM_BACKUP_BUDGET_WARNED.add(value.toString())) {
+            mcpLog("warn", "hub-admin", "Backup storage budget setting '${value}' is not a number; using the ${ITEM_BACKUP_DEFAULT_BUDGET_MB} MB default")
+        }
+        return ITEM_BACKUP_DEFAULT_BUDGET_MB
     }
-    return mb * 1024L * 1024L
+    if (mb < 1) return 1L
+    if (mb > ITEM_BACKUP_MAX_BUDGET_MB) return ITEM_BACKUP_MAX_BUDGET_MB
+    return mb.longValue()
+}
+
+long _itemBackupByteBudget() {
+    return _itemBackupBudgetMb() * 1024L * 1024L
 }
 
 // Bytes a backup counts against the budget. Older entries carry only sourceLength
 // (characters for code, bytes for rule snapshots).
 long _itemBackupEntryBytes(entry) {
-    def n = entry instanceof Map ? (entry.sizeBytes != null ? entry.sizeBytes : entry.sourceLength) : null
-    return n instanceof Number ? (n as Long) : (n?.toString()?.isLong() ? n.toString().toLong() : 0L)
+    if (!(entry instanceof Map)) return 0L
+    def n = entry.sizeBytes != null ? entry.sizeBytes : entry.sourceLength
+    if (n instanceof Number) return n as Long
+    if (n?.toString()?.isLong()) return n.toString().toLong()
+    return 0L
 }
 
+// Pending-deletion entries are excluded, as they are from eviction.
 Map _itemBackupBudgetUsage(Map manifest) {
     long used = 0L
-    manifest.values().each { used += _itemBackupEntryBytes(it) }
+    manifest.values().each { if (!it?.deletePending) used += _itemBackupEntryBytes(it) }
     return [usedBytes: used, limitBytes: _itemBackupByteBudget()]
 }
 
-// Plain-language eviction rule for one backup, served beside its backupKey.
+// Plain-language eviction rule for one backup: the retentionNote / backupRetentionNote
+// field, and the tail of restore and undo hints.
 String _itemBackupRetentionNote(Map entry) {
-    String budget = "the ${_itemBackupByteBudget().intdiv(1024L * 1024L)} MB budget shared by all MCP backups"
+    String budget = "the ${_itemBackupBudgetMb()} MB budget shared by all MCP backups"
     if (entry?.retention == "rolling") {
         return "Rolling step: a per-write snapshot inside this rule's editing session. It is removed only when ${budget} is exceeded, and rolling steps are the first backups removed then, oldest first."
     }
-    String replacedBy = entry?.type?.toString() == "rm-rule" ? "Backups of this or other rules never replace it" :
-        (entry?.undoForBackupKey ? "This item's next pre-restore undo replaces it" :
-            "This item's next backup after the one-hour reuse window replaces it; other items' backups never do")
+    String replacedBy
+    if (entry?.type?.toString() == "rm-rule") {
+        replacedBy = "Backups of this or other rules never replace it"
+    } else if (entry?.undoForBackupKey) {
+        replacedBy = "This item's next pre-restore undo replaces it"
+    } else {
+        replacedBy = "This item's next backup after the one-hour reuse window replaces it; other items' backups never do"
+    }
     return "Pinned baseline: ${replacedBy}. It is removed only when ${budget} is exceeded, after every rolling step and every older pinned baseline."
 }
 
@@ -11388,13 +11462,17 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid edits preserve original (1-hour protection)
 
 ### Backup retention
-- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, so edits or deletes of other items alone never remove a backup.
-- The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, minimum 1, no upper limit. With Developer Mode on it can also be set through hub_update_mcp_settings, which refuses a value that is not a whole number of at least 1.
-- Past the budget, **rolling** steps are removed first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget. Another item's backup never replaces this one, but once the shared budget is exceeded any new backup can evict older backups of any item: **rolling** steps first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
+- The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
 - Apps, drivers and libraries keep one **pinned** baseline, replaced by that item's next backup after the one-hour window.
-- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete or replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's later writes in that session are **rolling** steps. So "before I started" outlasts the per-write steps when space runs short.
-- A response that returns a backupKey carries `retention` (`pinned` or `rolling`) and `retentionNote`, and its restoreHint says when that backup can be removed. hub_list_backups reports `storageBudget` (`usedBytes` / `limitBytes`) and each entry's `retention`.
-- If the index file is missing, it is rebuilt from the File Manager listing, which also brings backup files left by older versions under retention.
+- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete, pre-forcedelete and replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's other snapshots in that session are **rolling** steps, so "before I started" outlasts the per-write steps when space runs short. An editing session ends once an hour passes with no snapshot of that rule; with `backupEveryRuleWrite` on, a continuous chain of writes keeps it open.
+- Where each response says it:
+  - Rule Machine writes and deletes: the `backup` object carries `retention` (`pinned` or `rolling`) and `retentionNote`, and the restoreHint ends with that note.
+  - hub_delete_item / library deletes: `backupRetention` and `backupRetentionNote`; the restoreHint ends with the note.
+  - hub_restore_backup (app/driver source): `backupRetention` and `backupRetentionNote` describe the `preRestoreBackup` undo entry; the `undoHint` ends with the note.
+  - hub_write_file / hub_delete_file: `backupRetention: "copies"` and `backupRetentionNote` for the `<name>_backup_<ts>` copy.
+  - hub_list_backups: `storageBudget` (`usedBytes` / `limitBytes`, pending deletions excluded), `retentionPolicy`, and each entry's `retention` and `sizeBytes`.
+- If the index file is missing, it is rebuilt from the File Manager listing, which also brings backup files left by older versions under retention. An index file that is listed but cannot be read is never rebuilt over: backup reads and backup-taking writes return `success: false` until it reads again. An index file that is not valid JSON is copied to `mcp-backup-index.corrupt-<time>.json` before the rebuild.
 
 ### Rule Backups (Automatic)
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
@@ -11447,7 +11525,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 - Each chunk must be <60KB
 - Follow `nextOffset` while `hasMore` is true to read the next chunk
 
-**Backup copies:** hub_write_file (when it overwrites different content) and hub_delete_file first copy the file to `<name>_backup_<yyyyMMdd-HHmmss><ext>`. The newest 5 copies of each file name are kept; older copies of that same name are deleted at that point and listed in `removedOldBackups`.
+**Backup copies:** hub_write_file (when it overwrites different content) and hub_delete_file first copy the file to `<name>_backup_<yyyyMMdd-HHmmss-SSS><ext>` (older copies use `<yyyyMMdd-HHmmss>`). If that copy cannot be written, hub_write_file writes nothing and returns `success: false`; hub_delete_file deletes anyway with a `warning`. After the write or delete succeeds, the newest 5 copies of each file name are kept; older copies of that same name are deleted and listed in `removedOldBackups`. A failed listing or delete leaves them and adds `pruneWarning`.
 
 ### hub_list_files
 
