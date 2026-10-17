@@ -108,6 +108,16 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         return JsonOutput.toJson(base)
     }
 
+    // /installedapp/statusJson/<id>: appSettings types every setting of the app, whichever page
+    // declares it. hub_get_app_config reads it for includeSettings=true redaction.
+    private void registerStatusJson(Map<String, String> types, int appId = 35) {
+        hubGet.register("/installedapp/statusJson/${appId}".toString()) { params ->
+            JsonOutput.toJson([installedApp: [id: appId],
+                               appSettings: types.collect { n, t -> [name: n, type: t, value: null, multiple: false] },
+                               appState: []])
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Gate enforcement
     // -------------------------------------------------------------------------
@@ -608,6 +618,9 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         !result.containsKey('settings')
         result.settingsNote != null
         result.settingsNote.contains('includeSettings=true')
+
+        and: 'no settings are returned, so the setting-type read is skipped'
+        !hubGet.calls.any { it.path.startsWith('/installedapp/statusJson/') }
     }
 
     @spock.lang.Unroll
@@ -641,6 +654,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         hubGet.register('/installedapp/configure/json/35') { params ->
             makeAppConfigJson()
         }
+        registerStatusJson([triggerDevice: 'capability.*', ruleEnable: 'bool'])
 
         when:
         def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
@@ -659,6 +673,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson() }
+        registerStatusJson([triggerDevice: 'capability.*', ruleEnable: 'bool'])
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeSettings: true])
@@ -830,6 +845,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         given:
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
+        registerStatusJson([apiKey: 'password', username: 'text'])
 
         when:
         def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
@@ -851,6 +867,7 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         settingsMap.enableRead = true
         hubGet.register('/installedapp/configure/json/35') { params -> makePasswordConfigJson() }
+        registerStatusJson([apiKey: 'password', username: 'text'])
 
         when:
         def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeSettings: true])
@@ -879,6 +896,8 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
             ],
             settings: [apiKey: 'hunter2-SECRET']
         ]) }
+        // statusJson knows nothing about the key: the page's own password input still redacts it.
+        registerStatusJson([:])
 
         when:
         def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
@@ -891,6 +910,303 @@ class ToolGetAppConfigSpec extends ToolSpecBase {
 
         and: 'no secret anywhere in the result'
         !JsonOutput.toJson(result).contains('hunter2-SECRET')
+    }
+
+    // -------------------------------------------------------------------------
+    // Cross-page password redaction: a multi-page app declares its passwords on pages the
+    // fetched configPage never renders, so the settings map is redacted from statusJson's
+    // per-setting types (every page) plus a credential-name fallback.
+    // -------------------------------------------------------------------------
+
+    // Hubitat Package Manager's shape: the default page prefOptions is navigation only (no
+    // inputs), while hpmPassword -- often the hub admin password -- lives on prefSettings.
+    private static String makeHpmConfigJson() {
+        makeAppConfigJson([
+            app: [id: 35, trueLabel: 'Hubitat Package Manager', label: 'Hubitat Package Manager',
+                  name: 'Hubitat Package Manager', disabled: false, installed: true, parentAppId: null,
+                  appType: [name: 'Hubitat Package Manager', namespace: 'dcm.hpm', author: 'Dominick Meglio']],
+            configPage: [
+                name: 'prefOptions', title: 'Package Manager', install: true, refreshInterval: null,
+                sections: [[
+                    title: '',
+                    input: [],
+                    body: [[description: 'What would you like to do?']]
+                ]]
+            ],
+            settings: [hpmPassword: 'HubAdmin-S3cret!', hpmUsername: 'admin', hpmSecurity: true,
+                       updateMismatchBehavior: 'ignore', linkPhrase: 'xpage-typed-secret'],
+            childApps: []
+        ])
+    }
+
+    private static final Map<String, String> HPM_TYPES = [hpmPassword: 'password', hpmUsername: 'text',
+                                                          hpmSecurity: 'bool', updateMismatchBehavior: 'enum',
+                                                          linkPhrase: 'password']
+
+    def "a password declared on another page (HPM hpmPassword) is redacted in the settings map"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeHpmConfigJson() }
+        registerStatusJson(HPM_TYPES)
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then: 'the fetched page has no inputs at all, yet both password-typed settings are redacted'
+        result.success == true
+        result.page.sections[0].inputs.isEmpty()
+        result.settings.hpmPassword == '***redacted (password)***'
+
+        and: 'a password-typed setting whose name looks harmless is redacted by its hub type alone'
+        result.settings.linkPhrase == '***redacted (password)***'
+
+        and: 'non-secret settings are untouched'
+        result.settings.hpmUsername == 'admin'
+        result.settings.hpmSecurity == true
+        result.settings.updateMismatchBehavior == 'ignore'
+
+        and: 'neither secret appears anywhere, and the note describes all-page redaction'
+        def json = JsonOutput.toJson(result)
+        !json.contains('HubAdmin-S3cret!')
+        !json.contains('xpage-typed-secret')
+        result.settingsRedactionNote.contains('any page')
+        !result.settingsRedactionNote.contains('#')
+
+        and: 'the setting types came from the one statusJson read'
+        hubGet.calls.count { it.path == '/installedapp/statusJson/35' } == 1
+    }
+
+    @spock.lang.Unroll
+    def "hub_get_app_config via dispatch redacts a password declared on another page (useGateways=#useGateways)"() {
+        given:
+        settingsMap.useGateways = useGateways
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeHpmConfigJson() }
+        registerStatusJson(HPM_TYPES)
+
+        when:
+        def response = mcpDriver.callTool('hub_get_app_config', [appId: 35, includeSettings: true])
+
+        then:
+        response.error == null
+        !response.result.isError
+        !response.result.content[0].text.contains('HubAdmin-S3cret!')
+        !response.result.content[0].text.contains('xpage-typed-secret')
+        def inner = mcpDriver.parseInner(response)
+        inner.success == true
+        inner.settings.hpmPassword == '***redacted (password)***'
+        inner.settings.linkPhrase == '***redacted (password)***'
+        inner.settings.hpmUsername == 'admin'
+
+        where:
+        useGateways << [true, false]
+    }
+
+    def "a credential-named setting is redacted even when statusJson does not type it"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
+            settings: [mqttPassword: 'mqtt-pw-value', cloudApiKey: 'ak-123', authToken: 'tok-456',
+                       tokenCount: 7, usePassword: true, passThrough: 'yes', bypassMode: 'strict',
+                       emptyPassword: '', ruleEnable: true]
+        ]) }
+        // mqttPassword, cloudApiKey, authToken: missing from statusJson, so only the name decides.
+        registerStatusJson([tokenCount: 'number', usePassword: 'bool', passThrough: 'text', bypassMode: 'enum',
+                            emptyPassword: 'text', ruleEnable: 'bool'])
+
+        when:
+        def s = script.toolGetAppConfig([appId: 35, includeSettings: true]).settings
+
+        then:
+        s.mqttPassword == '***redacted (password)***'
+        s.cloudApiKey == '***redacted (password)***'
+        s.authToken == '***redacted (password)***'
+
+        and: 'metadata, toggles, look-alike names, and empty values are left as they are'
+        s.tokenCount == 7
+        s.usePassword == true
+        s.passThrough == 'yes'
+        s.bypassMode == 'strict'
+        s.emptyPassword == ''
+        s.ruleEnable == true
+    }
+
+    def "a credential-named free-text input on the page is redacted without includeSettings"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([
+            configPage: [
+                name: 'mainPage', title: 'Broker', install: true, refreshInterval: null,
+                sections: [[
+                    title: 'MQTT',
+                    input: [
+                        [name: 'brokerPassword', type: 'text', title: 'Password', defaultValue: 'plain-text-pw'],
+                        [name: 'brokerUser', type: 'text', title: 'User', defaultValue: 'mqttuser'],
+                        [name: 'tokenDevice', type: 'capability.switch', title: 'Device', defaultValue: 'Porch Light'],
+                        [name: 'requirePassword', type: 'bool', title: 'Require password', defaultValue: true]
+                    ],
+                    body: []
+                ]]
+            ],
+            settings: [brokerPassword: 'plain-text-pw', brokerUser: 'mqttuser']
+        ]) }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35])
+        def inputs = result.page.sections[0].inputs.collectEntries { [(it.name): it] }
+
+        then:
+        inputs.brokerPassword.value == '***redacted (password)***'
+        inputs.brokerUser.value == 'mqttuser'
+        inputs.tokenDevice.value == 'Porch Light'
+        inputs.requirePassword.value == true
+        !JsonOutput.toJson(result).contains('plain-text-pw')
+    }
+
+    @spock.lang.Unroll
+    def "raw settings are withheld, not returned partly redacted, when the setting types cannot be read (#why)"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeHpmConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params -> statusBody }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then: 'the config page still comes back'
+        result.success == true
+        result.page.name == 'prefOptions'
+        result.settingsKeyCount == 5
+
+        and: 'the settings map is absent and the note says why'
+        !result.containsKey('settings')
+        !result.containsKey('settingsRedactionNote')
+        result.settingsNote.contains('withheld')
+        !JsonOutput.toJson(result).contains('HubAdmin-S3cret!')
+
+        where:
+        why                | statusBody
+        'empty body'       | ''
+        'no appSettings'   | JsonOutput.toJson([installedApp: [id: 35], appState: []])
+        'unparseable body' | 'not json'
+    }
+
+    def "raw settings are withheld when the statusJson read throws"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeHpmConfigJson() }
+        hubGet.register('/installedapp/statusJson/35') { params -> throw new RuntimeException('read timed out') }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.success == true
+        !result.containsKey('settings')
+        result.settingsNote.contains('withheld')
+        !JsonOutput.toJson(result).contains('HubAdmin-S3cret!')
+    }
+
+    def "an app with no settings skips the setting-type read"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/installedapp/configure/json/35') { params -> makeAppConfigJson([settings: [:]]) }
+
+        when:
+        def result = script.toolGetAppConfig([appId: 35, includeSettings: true])
+
+        then:
+        result.settings == [:]
+        !result.containsKey('settingsRedactionNote')
+        !hubGet.calls.any { it.path.startsWith('/installedapp/statusJson/') }
+    }
+
+    @spock.lang.Unroll
+    def "_appConfigSecretName('#name') == #expected"() {
+        expect:
+        script._appConfigSecretName(name) == expected
+
+        where:
+        name                    | expected
+        // credential-shaped names
+        'hpmPassword'           | true
+        'HPMPassword'           | true
+        'password'              | true
+        'hubpassword'           | true
+        'password2'             | true
+        'smtp_passwd'           | true
+        'routerPwd'             | true
+        'mqttPass'              | true
+        'MQTT_PASS'             | true
+        'passWord'              | true
+        'wifiPassphrase'        | true
+        'lockPasscode'          | true
+        'clientSecret'          | true
+        'oauthClientSecret'     | true
+        'refresh_token'         | true
+        'authtoken'             | true
+        'apiTokens'             | true
+        'apiKey'                | true
+        'API_KEY'               | true
+        'apikey'                | true
+        'openWeatherApiKey'     | true
+        'privateKey'            | true
+        'awsAccessKey'          | true
+        'credentials'           | true
+        'cloudCredential'       | true
+        'psk'                   | true
+        'accessTokenRefresh'    | true
+        // look-alikes and metadata about a secret
+        'bypass'                | false
+        'bypassDeviceAllowlist' | false
+        'byPass'                | false
+        'passThrough'           | false
+        'passMode'              | false
+        'compass'               | false
+        'passive'               | false
+        'tokenizer'             | false
+        'secretary'             | false
+        'tokenCount'            | false
+        'tokenExpiry'           | false
+        'passwordSet'           | false
+        'passwordLength'        | false
+        'apiKeyCount'           | false
+        'tokenUrl'              | false
+        // OAuth access tokens are left to the redactAccessTokens setting
+        'accessToken'           | false
+        'access_token'          | false
+        'ACCESS_TOKEN'          | false
+        'keypadDevice'          | false
+        'monkey'                | false
+        'triggerDevice'         | false
+        'dm~123~Day'            | false
+        ''                      | false
+        null                    | false
+    }
+
+    @spock.lang.Unroll
+    def "_appConfigIsSecretSetting(#name, #type, #value) == #expected"() {
+        expect:
+        script._appConfigIsSecretSetting(name, type, value) == expected
+
+        where:
+        name           | type                | value      | expected
+        'linkPhrase'   | 'password'          | 'abc'      | true
+        'linkPhrase'   | 'password'          | ''         | false
+        'linkPhrase'   | 'password'          | null       | false
+        'linkPhrase'   | 'text'              | 'abc'      | false
+        'hubPassword'  | null                | 'abc'      | true
+        'hubPassword'  | 'text'              | 'abc'      | true
+        'hubPassword'  | 'textarea'          | 'abc'      | true
+        'lockPin'      | 'number'            | 1234       | false
+        'lockPasscode' | 'number'            | 1234       | true
+        'apiTokens'    | null                | ['a', 'b'] | true
+        'apiTokens'    | null                | []         | false
+        'usePassword'  | 'bool'              | true       | false
+        'usePassword'  | null                | false      | false
+        'passwordMode' | 'enum'              | 'strict'   | false
+        'tokenDevice'  | 'capability.switch' | 'Porch'    | false
+        'tokenDevice'  | 'device.Switch'     | 'Porch'    | false
     }
 
     // -------------------------------------------------------------------------
