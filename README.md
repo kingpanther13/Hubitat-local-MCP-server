@@ -855,7 +855,7 @@ Under **Settings > Advanced > Per-client access tokens** you can give an MCP cli
 - **Local / cloud** — which endpoints this token may use (the main-page endpoint switches still apply).
 - **Tool names** — the client's own tool-name number, or the same as the main token, or none.
 
-The client sees only its tools in `tools/list`, the gateway catalogs and `hub_search_tools`. A call it may not make is refused with a message naming the client and what blocks it, and `hub_get_info` returns its access under `clientAccess`. MCP log entries made during a client's request carry the client's name, and `recentWrites` shows a client only its own writes. **Rotate** issues a new token for that client (its URL changes); **Revoke** removes it. Either takes effect at once, even though the hub itself keeps accepting the old token for up to a minute. Access tokens in tool results are always masked for a client token.
+The client sees only its tools in `tools/list`, the gateway catalogs and `hub_search_tools`. A call it may not make is refused with a message naming the client and what blocks it, and `hub_get_info` returns its access under `clientAccess`. MCP log entries made during a client's request carry the client's name, and `recentWrites` shows a client only its own writes. **Rotate** issues a new token for that client (its URL changes); **Revoke** removes it. Either takes effect at once, even though the hub itself keeps accepting the old token for up to a minute. Access tokens in tool results are always masked for a client token. With Developer Mode on, the main token can do all of this through `hub_update_mcp_settings` (`clientToken`: list, create, update, rotate, revoke).
 
 </details>
 

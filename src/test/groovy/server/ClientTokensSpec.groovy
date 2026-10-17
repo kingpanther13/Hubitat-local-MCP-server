@@ -263,6 +263,105 @@ class ClientTokensSpec extends ToolSpecBase {
         !script._isRetiredAccessToken('old')
     }
 
+    private Map manage(Map op) {
+        settingsMap.enableDeveloperMode = true
+        stateMap.lastBackupTimestamp = 1234567890000L  // HarnessSpec's fixed now()
+        return script.toolUpdateMcpSettings([confirm: true, clientToken: op]) as Map
+    }
+
+    def "hub_update_mcp_settings clientToken: create with access, list, update, rotate, revoke"() {
+        given:
+        script.metaClass.getFullLocalApiServerUrl = { -> 'http://hub/apps/api/1' }
+        script.metaClass.getFullApiServerUrl = { -> 'https://cloud/apps/1' }
+
+        when:
+        def created = manage([action: 'create', label: 'Agent', access: [tools: ['hub_list_modes', 'hub_get_tool_guide'], write: false]])
+
+        then: 'the token comes back with its URLs, and access is applied (the always-on guide is dropped from the list)'
+        created.success == true
+        created.clientId == '1'
+        created.token == 'client-1'
+        created.localUrl == 'http://hub/apps/api/1/mcp?access_token=client-1'
+        (sharedAppStub.settingsStore['clientTools_1'] as Map).value == ['hub_list_modes']
+        (sharedAppStub.settingsStore['clientWrite_1'] as Map).value == false
+
+        when:
+        settingsMap['clientTools_1'] = ['hub_list_modes']
+        settingsMap['clientWrite_1'] = false
+        def listed = manage([action: 'list'])
+
+        then:
+        listed.clients == [[clientId: '1', label: 'Agent', token: 'client-1',
+                            access: [tools: ['hub_list_modes'], read: true, write: false, local: true, cloud: true, toolNumber: 'main']]]
+
+        when:
+        def updated = manage([action: 'update', clientId: '1', access: [cloud: false, toolNumber: '7', tools: 'all']])
+
+        then:
+        updated.success == true
+        (sharedAppStub.settingsStore['clientCloud_1'] as Map).value == false
+        (sharedAppStub.settingsStore['clientToolNumber_1'] as Map).value == '7'
+        ((sharedAppStub.settingsStore['clientTools_1'] as Map).value as Set) == script._grantableToolOptions().keySet() as Set
+
+        when:
+        def rotated = manage([action: 'rotate', clientId: '1'])
+        def revoked = manage([action: 'revoke', clientId: '1'])
+
+        then:
+        rotated.success == true
+        rotated.token == 'client-1-rotated'
+        script._isRetiredAccessToken('client-1')
+        revoked.success == true
+        !stateMap.clientTokens
+        script._isRetiredAccessToken('client-1-rotated')
+    }
+
+    @spock.lang.Unroll
+    def "hub_update_mcp_settings clientToken refuses #reason before anything changes"() {
+        given:
+        stateMap.accessToken = 'main,client-a'
+        stateMap.clientTokens = ['1': [label: 'Alpha', token: 'client-a']]
+
+        when:
+        manage(op)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains(expected)
+        calls.isEmpty()
+        stateMap.clientTokens == ['1': [label: 'Alpha', token: 'client-a']]
+
+        where:
+        reason                   | op                                                                    | expected
+        'a main-token-only tool' | [action: 'create', label: 'New', access: [tools: ['hub_update_package']]] | 'work only with the main token'
+        'an unknown tool'        | [action: 'update', clientId: '1', access: [tools: ['hub_no_such']]]  | 'Unknown tool names'
+        'a bad tool number'      | [action: 'update', clientId: '1', access: [toolNumber: '12']]        | 'toolNumber must be'
+        'a non-boolean switch'   | [action: 'update', clientId: '1', access: [read: 'maybe']]           | 'access.read must be true or false'
+        'an unknown access key'  | [action: 'update', clientId: '1', access: [devices: ['5']]]          | 'Unknown clientToken.access keys'
+        'a missing clientId'     | [action: 'revoke']                                                    | 'clientId is required'
+        'an unknown clientId'    | [action: 'rotate', clientId: '9']                                     | 'No client token with clientId 9'
+        'an unknown action'      | [action: 'delete', clientId: '1']                                     | 'must be one of list, create, update, rotate, revoke'
+    }
+
+    def "clientToken is refused alongside settings, and the tool still needs Developer Mode"() {
+        when:
+        settingsMap.enableDeveloperMode = true
+        stateMap.lastBackupTimestamp = 1234567890000L
+        script.toolUpdateMcpSettings([confirm: true, clientToken: [action: 'list'], settings: [mcpLogLevel: 'warn']])
+
+        then:
+        def both = thrown(IllegalArgumentException)
+        both.message.contains('without settings')
+
+        when:
+        settingsMap.enableDeveloperMode = false
+        script.toolUpdateMcpSettings([confirm: true, clientToken: [action: 'list']])
+
+        then:
+        def off = thrown(IllegalArgumentException)
+        off.message.contains('Developer Mode tools are disabled')
+    }
+
     def "_primaryAccessToken reads the first token of the comma-joined list"() {
         expect:
         script._primaryAccessToken() == 'main'

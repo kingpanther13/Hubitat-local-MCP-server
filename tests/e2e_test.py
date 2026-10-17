@@ -1229,10 +1229,12 @@ class LegacyEraClient:
 TEST_REGISTRY: list[tuple[str, str, str]] = []  # (group, display_name, method_name)
 
 
-def test(group: str):
-    """Decorator that registers a TestRunner method in a named group."""
+def test(group: str, *, ephemeral_only: bool = False):
+    """Decorator that registers a TestRunner method in a named group. ephemeral_only registers it
+    only when E2E_LANE=ephemeral at import, so the shared test hub never lists it."""
     def decorator(func):
-        TEST_REGISTRY.append((group, func.__name__, func.__name__))
+        if not ephemeral_only or os.environ.get("E2E_LANE") == "ephemeral":
+            TEST_REGISTRY.append((group, func.__name__, func.__name__))
         return func
     return decorator
 
@@ -15268,6 +15270,72 @@ class TestRunner:
                 "args": {"settings": {"mcpLogLevel": original_level}, "confirm": True}})
             assert restored.get("success") is True, "could not restore original logging level"
             assert read_settings() == before, "settings differ after self-admin restoration"
+
+    @test("developer_mode", ephemeral_only=True)
+    def test_per_client_access_token_lifecycle(self) -> None:
+        """A per-client token made through hub_update_mcp_settings(clientToken) gets only its own
+        access over the suite's connection (query token and Bearer header); its own cloud switch
+        refuses only it; rotate and revoke refuse the old token at once; the main token is never
+        narrowed. Ephemeral lane only: the created token is a live secret, scrubbed there."""
+        def manage(operation: dict) -> Any:
+            return self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings",
+                                         "args": {"clientToken": operation, "confirm": True}})
+
+        def status(token: str) -> int:
+            probe = HubitatMcpClient(self.client.hub_url, self.client.app_id, token)
+            probe.session.trust_env = False
+            return probe.raw_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}).status_code
+
+        label = f"{PREFIX}Client"
+        stale = [c["clientId"] for c in manage({"action": "list"}).get("clients", []) if c.get("label") == label]
+        for client_id in stale:
+            manage({"action": "revoke", "clientId": client_id})
+        created = manage({"action": "create", "label": label, "access": {"tools": ["hub_list_modes"]}})
+        assert created.get("success") is True, {k: v for k, v in created.items() if k not in ("token", "localUrl", "cloudUrl")}
+        client_id, token = created["clientId"], created["token"]
+        _ephemeral_literals.add(token)
+        revoked = False
+        try:
+            client = HubitatMcpClient(self.client.hub_url, self.client.app_id, token)
+            client.session.trust_env = False
+            names = {tool["name"] for tool in client.list_tools()["tools"]}
+            assert names == {"hub_get_tool_guide", "hub_search_tools", "hub_list_modes"}, sorted(names)
+            assert "modes" in client.call_tool("hub_list_modes", {})
+            try:
+                client.call_tool("hub_get_info", {})
+                raise AssertionError("a client token without hub_get_info was allowed to call it")
+            except McpToolError as exc:
+                assert f"is not enabled for client '{label}'" in str(exc), str(exc)
+
+            bearer = requests.post(client.endpoint, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+                                   headers={"Authorization": f"Bearer {token}"}, timeout=30)
+            assert bearer.status_code == 200, f"Bearer client token: HTTP {bearer.status_code}"
+            assert {tool["name"] for tool in bearer.json()["result"]["tools"]} == names
+
+            main_info = self.client.call_tool("hub_get_info", {})
+            assert "clientAccess" not in main_info, "the main token was given a clientAccess block"
+
+            # This suite reaches the hub through the cloud relay, so the client's cloud switch applies.
+            assert manage({"action": "update", "clientId": client_id, "access": {"cloud": False}}).get("success") is True
+            assert status(token) == 403, "a client with cloud access off was served over the cloud relay"
+            assert self.client.call_tool("hub_list_modes", {}), "the main token was refused by a client's switch"
+            assert manage({"action": "update", "clientId": client_id, "access": {"cloud": True}}).get("success") is True
+            assert status(token) == 200
+
+            rotated = manage({"action": "rotate", "clientId": client_id})
+            assert rotated.get("success") is True, rotated.get("error")
+            _ephemeral_literals.add(rotated["token"])
+            assert status(token) == 401, "a rotated client token still authenticated"
+            assert status(rotated["token"]) == 200
+            token = rotated["token"]
+
+            assert manage({"action": "revoke", "clientId": client_id}).get("success") is True
+            revoked = True
+            assert status(token) == 401, "a revoked client token still authenticated"
+            assert not [c for c in manage({"action": "list"}).get("clients", []) if c.get("clientId") == client_id]
+        finally:
+            if not revoked:
+                manage({"action": "revoke", "clientId": client_id})
 
     @test("developer_mode")
     def test_endpoint_access_toggles_block_their_own_transport(self) -> None:

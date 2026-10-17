@@ -628,6 +628,121 @@ private boolean _targetsThisApp(Map args) {
     }
 }
 
+// Client-token lifecycle shared by the token page buttons and hub_update_mcp_settings(clientToken).
+// Each returns [success: true, ...] or [success: false, error: <text for the page or the caller>].
+Map _createClientToken(String rawLabel) {
+    String label = rawLabel?.trim()
+    if (!label || label.length() > 40 || label.contains(",") || _clientTokens().values().any { it?.label == label }) {
+        String named = label ? " ('${label}' is not)" : ""
+        return [success: false, error: "No token created: the client name must be 1-40 characters, contain no comma, and not already be used${named}."]
+    }
+    String token = null
+    try {
+        token = createAnotherAccessToken()?.toString()
+    } catch (Exception e) {
+        mcpLogError("server", "createAnotherAccessToken failed for client '${label}'", e)
+    }
+    if (!token || !_liveAccessTokens().contains(token)) {
+        return [success: false, error: "No token created for '${label}': the hub did not issue one (per-client tokens need firmware 2.5.2 or later)."]
+    }
+    int next = (state.nextClientTokenId instanceof Number) ? (state.nextClientTokenId as int) : 1
+    String id = next.toString()
+    _saveClientToken(id, [label: label, token: token])
+    state.nextClientTokenId = next + 1
+    // Starts with every grantable tool on; a tool added by a later update is not in this list, so it
+    // stays off for the client until the owner turns it on.
+    _selectAllClientTools(id)
+    mcpLog("warn", "server", "MCP client token created for '${label}'")
+    return [success: true, clientId: id, label: label, token: token]
+}
+
+Map _revokeClientToken(String id) {
+    def client = _clientTokens().get(id)
+    if (!(client instanceof Map)) return [success: false, error: "No client token with id ${id}."]
+    // Fail closed: the client stays listed (and revocable) unless the token is gone from the hub's
+    // token list, so a failed revoke never hides a token that still works.
+    boolean revoked = false
+    try {
+        revokeSpecificAccessToken(client.token)
+        revoked = !_liveAccessTokens().contains(client.token)
+    } catch (Exception e) {
+        mcpLogError("server", "revokeSpecificAccessToken failed for client '${client.label}'", e)
+    }
+    if (!revoked) return [success: false, error: "'${client.label}' was not revoked: its token is still in the hub's token list. Try Revoke again."]
+    _retireAccessToken(client.token)
+    _saveClientToken(id, null)
+    ["clientTools", "clientRead", "clientWrite", "clientLocal", "clientCloud", "clientToolNumber"].each {
+        app.removeSetting("${it}_${id}".toString())
+    }
+    mcpLog("warn", "server", "MCP client token revoked for '${client.label}'")
+    return [success: true, clientId: id, label: client.label]
+}
+
+Map _rotateClientToken(String id) {
+    def client = _clientTokens().get(id)
+    if (!(client instanceof Map)) return [success: false, error: "No client token with id ${id}."]
+    // resetSpecificAccessToken returns nothing; the new token is the one the list gained.
+    def before = _liveAccessTokens() as Set
+    String fresh = null
+    try {
+        resetSpecificAccessToken(client.token)
+        fresh = _liveAccessTokens().find { !before.contains(it) }
+    } catch (Exception e) {
+        mcpLogError("server", "resetSpecificAccessToken failed for client '${client.label}'", e)
+    }
+    if (!fresh) return [success: false, error: "'${client.label}' was not rotated: the hub did not issue a new token. Its current URL still works."]
+    _retireAccessToken(client.token)
+    _saveClientToken(id, [label: client.label, token: fresh])
+    mcpLog("warn", "server", "MCP client token rotated for '${client.label}'; that client must re-copy its URL")
+    return [success: true, clientId: id, label: client.label, token: fresh]
+}
+
+// One client's access as stored, for hub_update_mcp_settings(clientToken).
+Map _clientAccessView(String id) {
+    return [tools: (_clientAllowedTools(id) - _alwaysGrantedToolNames()).sort(),
+            read: _clientAllows(id, "clientRead"), write: _clientAllows(id, "clientWrite"),
+            local: _clientAllows(id, "clientLocal"), cloud: _clientAllows(id, "clientCloud"),
+            toolNumber: (_clientSetting(id, "clientToolNumber") ?: "main").toString()]
+}
+
+// Validates a client access change ({tools, read, write, local, cloud, toolNumber}, every key
+// optional; tools is a list of tool names or "all") and returns the setting writes it implies.
+// Throws IllegalArgumentException before anything is written.
+Map _clientAccessWrites(String id, Map access) {
+    def writes = [:]
+    def unknown = access.keySet().findAll { !(it in ["tools", "read", "write", "local", "cloud", "toolNumber"]) }
+    if (unknown) throw new IllegalArgumentException("Unknown clientToken.access keys: ${unknown.sort()}. Allowed: tools, read, write, local, cloud, toolNumber.")
+    if (access.containsKey("tools")) {
+        def grantable = _grantableToolOptions().keySet()
+        def tools = access.tools
+        if (tools == "all") {
+            writes["clientTools_${id}".toString()] = [type: "enum", value: grantable as List]
+        } else if (tools instanceof Collection) {
+            def names = tools.collect { it.toString() }.findAll { !_alwaysGrantedToolNames().contains(it) }
+            def mainOnly = names.findAll { _ungrantableToolNames().contains(it) }
+            if (mainOnly) throw new IllegalArgumentException("These tools work only with the main token and cannot be granted: ${mainOnly.sort()}.")
+            def bad = names.findAll { !grantable.contains(it) }
+            if (bad) throw new IllegalArgumentException("Unknown tool names in clientToken.access.tools: ${bad.sort()}.")
+            writes["clientTools_${id}".toString()] = [type: "enum", value: names.unique()]
+        } else {
+            throw new IllegalArgumentException("clientToken.access.tools must be a list of tool names or \"all\".")
+        }
+    }
+    ["read": "clientRead", "write": "clientWrite", "local": "clientLocal", "cloud": "clientCloud"].each { key, setting ->
+        if (!access.containsKey(key)) return
+        def value = access.get(key)
+        if (value instanceof String && value in ["true", "false"]) value = (value == "true")
+        if (!(value instanceof Boolean)) throw new IllegalArgumentException("clientToken.access.${key} must be true or false.")
+        writes["${setting}_${id}".toString()] = [type: "bool", value: value]
+    }
+    if (access.containsKey("toolNumber")) {
+        String number = access.toolNumber?.toString()
+        if (!(number in ["main", "none"] || number ==~ /^[0-9]$/)) throw new IllegalArgumentException("clientToken.access.toolNumber must be \"main\", \"none\" or a digit 0-9.")
+        writes["clientToolNumber_${id}".toString()] = [type: "enum", value: number]
+    }
+    return writes
+}
+
 private void _selectAllClientTools(String id) {
     app.updateSetting("clientTools_${id}".toString(), [type: "enum", value: _grantableToolOptions().keySet() as List])
 }
@@ -953,54 +1068,12 @@ def appButtonHandler(btn) {
         _retireAccessToken(oldMain)
         mcpLog("warn", "server", "MCP access token regenerated via UI; endpoint URLs changed, clients must re-copy the new URL")
     } else if (btn == "createClientTokenBtn") {
-        def label = settings.newClientTokenLabel?.toString()?.trim()
-        if (!label || label.length() > 40 || label.contains(",") || _clientTokens().values().any { it?.label == label }) {
-            String named = label ? " ('${label}' is not)" : ""
-            _clientTokenNotice("No token created: the client name must be 1-40 characters, contain no comma, and not already be used${named}.")
-        } else {
-            String token = null
-            try {
-                token = createAnotherAccessToken()?.toString()
-            } catch (Exception e) {
-                mcpLogError("server", "createAnotherAccessToken failed for client '${label}'", e)
-            }
-            if (!token || !_liveAccessTokens().contains(token)) {
-                _clientTokenNotice("No token created for '${label}': the hub did not issue one (per-client tokens need firmware 2.5.2 or later).")
-            } else {
-                int next = (state.nextClientTokenId instanceof Number) ? (state.nextClientTokenId as int) : 1
-                _saveClientToken(next.toString(), [label: label, token: token])
-                state.nextClientTokenId = next + 1
-                // Starts with every grantable tool on; a tool added by a later update is not in this
-                // list, so it stays off for the client until the owner turns it on.
-                _selectAllClientTools(next.toString())
-                app.removeSetting("newClientTokenLabel")
-                mcpLog("warn", "server", "MCP client token created for '${label}'")
-            }
-        }
+        def created = _createClientToken(settings.newClientTokenLabel?.toString())
+        if (created.success) app.removeSetting("newClientTokenLabel")
+        else _clientTokenNotice(created.error.toString())
     } else if (btn?.startsWith("revokeClientToken_")) {
-        String id = btn.substring("revokeClientToken_".length())
-        def client = _clientTokens().get(id)
-        if (client instanceof Map) {
-            // Fail closed: the client stays listed (and revocable) unless the token is gone from
-            // the hub's token list, so a failed revoke never hides a token that still works.
-            boolean revoked = false
-            try {
-                revokeSpecificAccessToken(client.token)
-                revoked = !_liveAccessTokens().contains(client.token)
-            } catch (Exception e) {
-                mcpLogError("server", "revokeSpecificAccessToken failed for client '${client.label}'", e)
-            }
-            if (revoked) {
-                _retireAccessToken(client.token)
-                _saveClientToken(id, null)
-                ["clientTools", "clientRead", "clientWrite", "clientLocal", "clientCloud", "clientToolNumber"].each {
-                    app.removeSetting("${it}_${id}".toString())
-                }
-                mcpLog("warn", "server", "MCP client token revoked for '${client.label}'")
-            } else {
-                _clientTokenNotice("'${client.label}' was not revoked: its token is still in the hub's token list. Try Revoke again.")
-            }
-        }
+        def revoked = _revokeClientToken(btn.substring("revokeClientToken_".length()))
+        if (!revoked.success) _clientTokenNotice(revoked.error.toString())
     } else if (btn?.startsWith("clientToolsAll_")) {
         String id = btn.substring("clientToolsAll_".length())
         if (_clientTokens().containsKey(id)) _selectAllClientTools(id)
@@ -1008,26 +1081,8 @@ def appButtonHandler(btn) {
         String id = btn.substring("clientToolsNone_".length())
         if (_clientTokens().containsKey(id)) app.removeSetting("clientTools_${id}".toString())
     } else if (btn?.startsWith("rotateClientToken_")) {
-        String id = btn.substring("rotateClientToken_".length())
-        def client = _clientTokens().get(id)
-        if (client instanceof Map) {
-            // resetSpecificAccessToken returns nothing; the new token is the one the list gained.
-            def before = _liveAccessTokens() as Set
-            String fresh = null
-            try {
-                resetSpecificAccessToken(client.token)
-                fresh = _liveAccessTokens().find { !before.contains(it) }
-            } catch (Exception e) {
-                mcpLogError("server", "resetSpecificAccessToken failed for client '${client.label}'", e)
-            }
-            if (fresh) {
-                _retireAccessToken(client.token)
-                _saveClientToken(id, [label: client.label, token: fresh])
-                mcpLog("warn", "server", "MCP client token rotated for '${client.label}'; that client must re-copy its URL")
-            } else {
-                _clientTokenNotice("'${client.label}' was not rotated: the hub did not issue a new token. Its current URL still works.")
-            }
-        }
+        def rotated = _rotateClientToken(btn.substring("rotateClientToken_".length()))
+        if (!rotated.success) _clientTokenNotice(rotated.error.toString())
     } else if (btn == "resetOverridesBtn") {
         app.removeSetting("disabled_tools")
         app.removeSetting("disabled_gateways")
@@ -5420,10 +5475,10 @@ def getGatewayConfig() {
             description: "Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration, scope, and operational state without manual UI intervention. Requires `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each write is logged at WARN level for audit. Covers self-settings including the device-access scope (selectedDevices); additional self-admin tools (true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.",
             tools: ["hub_update_mcp_settings"],
             summaries: [
-                hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices). Args: settings (map of key→value), confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
+                hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices), or manage per-client access tokens. Args: settings (map of key→value) | clientToken {action, clientId?, label?, access?}, confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access enableLocalAccess enableCloudAccess local cloud remote LAN endpoint access disable block connection"
+                hub_update_mcp_settings: "self-admin developer mode per-client access token client token create revoke rotate grant narrow tools toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access enableLocalAccess enableCloudAccess local cloud remote LAN endpoint access disable block connection"
             ]
         ],
         hub_read_devices: [
@@ -11336,6 +11391,8 @@ For replace/add every id is validated against the full hub device list (discover
 If the hub's device inventory is incomplete (its device tree could not be read, or it disagrees with the picker feed), an id it lacks is reported as "could not validate" instead of unknown. Nothing is written, so retry later. An empty scope still leaves MCP-managed virtual devices reachable. On success the response carries `selectedDevices: {mode, authorizedDeviceIds, authorizedCount, added, removed}`.
 
 **`enableLocalAccess` / `enableCloudAccess`** -- allow requests over the LAN endpoint / the Hubitat cloud endpoint (both ON by default). A disabled endpoint answers HTTP 403 to every request, even with a valid token; turning it back on restores access with the same token and URL. A call cannot turn off the connection it arrived on (that would lock the caller out) -- switch it off from the other connection or the app page on the hub. `hub_get_info` reports both as `localAccessEnabled` / `cloudAccessEnabled`.
+
+**`clientToken`** (instead of `settings`) -- manage per-client access tokens, the same operations as Advanced > Per-client access tokens on the app page. `{action: "list"}` returns every client with its `clientId`, `label`, `token` and `access`. `{action: "create", label, access?}` issues a token (firmware 2.5.2+; the label is 1-40 characters, no comma, unused) that starts with every grantable tool on, applies `access` if given, and returns the token plus its `localUrl` / `cloudUrl`. `{action: "update", clientId, access}` changes a client's access, `{action: "rotate", clientId}` issues it a new token (the old one is refused at once) and `{action: "revoke", clientId}` removes it. `access` takes any of `tools` (a list of tool names, or `"all"`; the main-token-only tools cannot be granted, and `hub_get_tool_guide` / `hub_search_tools` are always included), `read`, `write`, `local`, `cloud` (booleans; they can only narrow the main-page settings) and `toolNumber` (`main`, `none` or a digit). A bad `access` map is refused before anything changes. Only the main token reaches this tool, so the tokens it returns give nothing the caller lacks; treat them as secrets all the same.
 
 **Deliberately NOT allowlisted:**
 - `enableWrite` -- would disable this tool's own write path mid-session.
