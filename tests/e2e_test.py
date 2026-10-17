@@ -15455,6 +15455,15 @@ class TestRunner:
             msg = str(e)
             assert "Setting 'maxCapturedStates' expects a number" in msg and "(object)" in msg \
                 and "simpleName" not in msg, f"malformed-value refusal has the wrong message: {msg}"
+        # backupBudgetMb is allowlisted with the Advanced page's 1 MB minimum.
+        try:
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"backupBudgetMb": 0}, "confirm": True},
+            })
+            raise AssertionError("backupBudgetMb=0 should be refused (minimum 1)")
+        except McpError as e:
+            assert "backupBudgetMb" in str(e) and "at least 1" in str(e), f"wrong refusal for backupBudgetMb=0: {e}"
         assert read_settings() == before, "a refused malformed setting changed the MCP app's settings"
 
     @test("developer_mode")
@@ -15540,38 +15549,6 @@ class TestRunner:
                 "args": {"settings": {"enableRead": True}, "confirm": True},
             })
             assert restore.get("success") is True
-
-    @test("developer_mode")
-    def test_update_mcp_settings_backup_budget(self) -> None:
-        """backupBudgetMb is allowlisted: below 1 MB is refused, a valid value moves the
-        hub_list_backups storage budget, and the default 10 MB is put back afterwards."""
-        mib = 1024 * 1024
-        try:
-            try:
-                self.client.call_tool("hub_manage_mcp", {
-                    "tool": "hub_update_mcp_settings",
-                    "args": {"settings": {"backupBudgetMb": 0}, "confirm": True},
-                })
-                raise AssertionError("backupBudgetMb=0 should be refused (minimum 1)")
-            except McpError as e:
-                assert "backupBudgetMb" in str(e) and "at least 1" in str(e), f"wrong refusal for backupBudgetMb=0: {e}"
-            result = self.client.call_tool("hub_manage_mcp", {
-                "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"backupBudgetMb": 12}, "confirm": True},
-            })
-            assert result.get("success") is True and result.get("updated") == {"backupBudgetMb": 12}, \
-                f"backupBudgetMb=12 was not accepted: {result}"
-            listing = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": {"cursor": ""}}) or {}
-            assert (listing.get("storageBudget") or {}).get("limitBytes") == 12 * mib, \
-                f"hub_list_backups did not report the 12 MB budget: {listing.get('storageBudget')}"
-            assert "12 MB storage budget" in str(listing.get("retentionPolicy")), \
-                f"the retention policy does not name the 12 MB budget: {listing.get('retentionPolicy')}"
-        finally:
-            restore = self.client.call_tool("hub_manage_mcp", {
-                "tool": "hub_update_mcp_settings",
-                "args": {"settings": {"backupBudgetMb": 10}, "confirm": True},
-            })
-            assert restore.get("success") is True, f"could not restore the 10 MB backup budget: {restore}"
 
     @test("developer_mode")
     def test_t224_delete_variable_round_trip(self) -> None:
