@@ -52,6 +52,7 @@ def toolUpdateMcpSettings(args) {
         "maxConcurrentWrites":    "number",
         "backupBeforeRuleEdits":  "bool",
         "backupEveryRuleWrite":   "bool",
+        "backupBudgetMb":         "number",
         "enableLocalAccess":      "bool",
         "enableCloudAccess":      "bool",
         "redactAccessTokens":     "bool"
@@ -102,6 +103,15 @@ def toolUpdateMcpSettings(args) {
             BigDecimal numeric = coerced as BigDecimal
             if (numeric < 0 || numeric > 100 || numeric.remainder(BigDecimal.ONE) != BigDecimal.ZERO) {
                 throw new IllegalArgumentException("Setting 'maxConcurrentWrites' must be an integer between 0 and 100 (0 disables the cap), got: ${coerced}")
+            }
+            coerced = numeric.intValue()
+        }
+        // The Advanced page input is a plain number field and _itemBackupBudgetMb clamps what it
+        // stores; here an out-of-range or fractional value is refused instead of clamped.
+        if (keyStr == "backupBudgetMb") {
+            BigDecimal numeric = coerced as BigDecimal
+            if (numeric < 1 || numeric > ITEM_BACKUP_MAX_BUDGET_MB || numeric.remainder(BigDecimal.ONE) != BigDecimal.ZERO) {
+                throw new IllegalArgumentException("Setting 'backupBudgetMb' must be a whole number of MB from 1 to ${ITEM_BACKUP_MAX_BUDGET_MB}, got: ${coerced}")
             }
             coerced = numeric.intValue()
         }
@@ -983,7 +993,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): OFF skips the pre-edit baseline[[FLAT_TRIM]] (edit responses say backup.skipped with no backupKey, so nothing can be restored; deletes still snapshot; overrides backupEveryRuleWrite)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh backup before every native-app edit[[FLAT_TRIM]] instead of reusing a same-app baseline for one hour (only while backupBeforeRuleEdits is on)[[/FLAT_TRIM]]. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write_system'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): OFF skips the pre-edit baseline[[FLAT_TRIM]] (edit responses say backup.skipped with no backupKey, so nothing can be restored; deletes still snapshot; overrides backupEveryRuleWrite)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour (only while backupBeforeRuleEdits is on).[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write_system'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]

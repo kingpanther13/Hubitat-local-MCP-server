@@ -6707,6 +6707,21 @@ private List _rmStructuralSequenceFromSpecList(List specList) {
     out
 }
 
+// A restoreHint that points at a backup also says when that backup can be evicted.
+private String _rmRetentionSuffix(Map backup) {
+    return backup?.retentionNote ? " ${backup.retentionNote}".toString() : ""
+}
+
+// The roll-back hint for a write that may have changed the rule; without a key, why there is none.
+private String _rmRestoreBaselineHint(Map backup) { _rmBackupHint(backup) }
+
+// The roll-back hint for a write whose commit is unconfirmed.
+private String _rmRollbackIfNotCommittedHint(Map backup) {
+    return backup?.backupKey
+        ? "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').${_rmRetentionSuffix(backup)}".toString()
+        : "If hub_get_app_config confirms the operation did NOT commit, repair the rule in place: ${_rmNoBackupReason(backup, false)}.".toString()
+}
+
 // Single source of truth for the restoreHint wording emitted when a
 // pre-flight refusal (the "RM is not touched" sentinel) is detected in a
 // caught error message. Both the structured _rmBuildUpdateErrorResponse
@@ -6730,7 +6745,7 @@ private String _rmPreflightRestoreHint(String reason = null, Map backup = null, 
 // The restore sentence after a committed edit went wrong: the baseline when one exists, else why there is none.
 private String _rmBackupHint(Map backup, String withBackup = null) {
     if (backup?.backupKey) {
-        return (withBackup ?: "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.").toString()
+        return ((withBackup ?: "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.") + _rmRetentionSuffix(backup)).toString()
     }
     return "${_rmNoBackupReason(backup)}, so there is no snapshot to restore; read the rule with hub_get_app_config and repair it in place.".toString()
 }
@@ -6745,12 +6760,6 @@ private String _rmNoBackupReason(Map backup, boolean sentenceStart = true) {
 private String _rmRestoreClause(Map backup) {
     return backup?.backupKey ? "restore via hub_restore_backup with backupKey='${backup.backupKey}'".toString()
         : "${_rmNoBackupReason(backup, false)}, so repair the rule in place".toString()
-}
-
-private String _rmRollbackHint(Map backup) {
-    return backup?.backupKey
-        ? "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').".toString()
-        : "If hub_get_app_config confirms the operation did NOT commit, repair the rule in place: ${_rmNoBackupReason(backup, false)}.".toString()
 }
 
 
@@ -7840,7 +7849,7 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 
 // Reuse the newest same-rule edit baseline for one hour unless strict per-write
 // backups are enabled. Deletes call _rmBackupRuleSnapshot directly and a standalone
-// replaceRequiredExpression is exempted below, so both always get a fresh image.
+// replaceRequiredExpression is exempted below, so both always get a fresh, pinned image.
 // A fresh snapshot is taken after the lock is released, since its App Cloner export is slow.
 // activePage: the page a wizard edit is on; its render is read instead of the default page, which
 // some apps (HPM) use to reset a wizard's pending input.
@@ -7874,12 +7883,9 @@ Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null)
     return activePage ? _rmBackupRuleSnapshot(ruleId, reason, activePage) : _rmBackupRuleSnapshot(ruleId, reason)
 }
 
-private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
-    if (_rmStrictBackupsOn() || reason == "pre-replaceRequiredExpression") return null
-
-    long nowMs = now()
-    def mfst = _itemBackupManifest()
-    def recent = mfst.findAll { key, value ->
+// The newest non-pending snapshot of ruleId taken within the last hour (a map entry), or null.
+private def _rmRecentRuleBackup(Map mfst, Integer ruleId, long nowMs) {
+    return mfst.findAll { key, value ->
         if (!(value instanceof Map) || value.deletePending || value.type?.toString() != "rm-rule") return false
         def savedRuleId = value.ruleId != null ? value.ruleId : value.id
         if (savedRuleId?.toString() != ruleId?.toString()) return false
@@ -7889,6 +7895,13 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String acti
         long age = nowMs - savedAt
         return age >= 0L && age < 60L * 60L * 1000L
     }.max { a, b -> (a.value.timestamp as Long) <=> (b.value.timestamp as Long) }
+}
+
+private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
+    if (_rmStrictBackupsOn() || reason == "pre-replaceRequiredExpression") return null
+
+    def mfst = _itemBackupManifest()
+    def recent = _rmRecentRuleBackup(mfst, ruleId, now())
 
     if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
         def staleFile = recent.value?.fileName?.toString()
@@ -7925,7 +7938,8 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String acti
                 brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
                 baselineReused: true,
                 rollbackScope: "Restoring this baseline reverts every edit to rule ${ruleId} since ${formatTimestamp(recent.value.timestamp as Long)}."] +
-            new LinkedHashMap(recent.value as Map)
+            new LinkedHashMap(recent.value as Map) +
+            [retention: (recent.value.retention ?: "pinned"), retentionNote: _itemBackupRetentionNote(recent.value as Map)]
     }
 
     return null
@@ -7942,7 +7956,7 @@ private boolean _rmNoteRuleMachineConfig(Integer ruleId, Map config) {
 
 // Snapshot the current state of an RM rule into the hub's File Manager
 // as a single JSON file (configure/json + statusJson combined), recorded
-// in the unified atomicState.itemBackupManifest alongside app/driver backups.
+// in the unified backup index alongside app/driver backups.
 //
 // Entries get type="rm-rule" so hub_list_backups + hub_restore_backup
 // (the existing tools) handle them too — no separate RM-only backup
@@ -8105,6 +8119,12 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason, String activePag
 }
 
 private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config) {
+    // Under strict per-write backups an edit inside an editing session is a rolling step. The
+    // session's first snapshot, and a delete's or Required Expression replacement's recovery
+    // point, stay pinned. Decided under the lock, against the committed index.
+    boolean editStep = _rmStrictBackupsOn() &&
+        !(reason in ["pre-delete", "pre-forcedelete", "pre-replaceRequiredExpression"])
+    String retention = editStep && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
@@ -8132,7 +8152,9 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
         reason: snapshot.reason,
         appLabel: snapshot.appLabel,
         timestamp: snapshot.timestamp,
-        sourceLength: jsonBytes.length  // reusing the existing field name for byte size
+        sourceLength: jsonBytes.length,  // reusing the existing field name for byte size
+        sizeBytes: jsonBytes.length,
+        retention: retention
     ]
     _publishUploadedItemBackup(backupKey, entry)
 
@@ -8146,7 +8168,8 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
     return [backupKey: backupKey,
             brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
             baselineReused: false,
-            rollbackScope: "Restoring this baseline returns rule ${ruleId} to its state at ${formatTimestamp(snapshot.timestamp as Long)}."] + entry
+            rollbackScope: "Restoring this baseline returns rule ${ruleId} to its state at ${formatTimestamp(snapshot.timestamp as Long)}."] +
+        entry + [retentionNote: _itemBackupRetentionNote(entry)]
 }
 
 // Soft delete via /installedapp/delete/<id>. Refuses if the app has
@@ -8650,7 +8673,13 @@ def _createButtonRuleViaController(args) {
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def beforeIds = (cfg?.childApps ?: []).collect { it?.id?.toString() } as Set
 
-    def backup = _rmBackupRuleSnapshot(controllerId, "pre-buttonRule")
+    def backup
+    try { backup = _rmBackupRuleSnapshot(controllerId, "pre-buttonRule") }
+    catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable == null) throw backupErr
+        return unavailable + [controllerId: controllerId]
+    }
 
     // Runtime-error envelope: a mid-flow throw after the backup would otherwise
     // surface as a flat "Tool error: <msg>" with no backupKey/controllerId and
@@ -12949,7 +12978,13 @@ def _applyNativeAppEdit(args) {
     // the backup decision's config read records whether the app is an RM rule.
     String wsPage = (walkStepSpec instanceof Map) ? ((walkStepSpec.page ?: ((walkStepSpec.steps instanceof List && walkStepSpec.steps) ? (walkStepSpec.steps[0] instanceof Map ? walkStepSpec.steps[0].page : null) : null))?.toString()) : null
     if (wsPage && args?.__rmRule == true) wsPage = null
-    def backup = wsPage ? _rmBackupBeforeEdit(appId, backupReason, wsPage) : _rmBackupBeforeEdit(appId, backupReason)
+    def backup
+    try { backup = wsPage ? _rmBackupBeforeEdit(appId, backupReason, wsPage) : _rmBackupBeforeEdit(appId, backupReason) }
+    catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable == null) throw backupErr
+        return unavailable + [appId: appId]
+    }
     // When the backup decision read no config (a transient failure), the kind is read here.
     if (wsPage && !_memoKnowsRuleMachine(appId)) {
         try { _rmNoteRuleMachineConfig(appId, _rmFetchConfigJson(appId, wsPage)) } catch (Exception kindExc) {
@@ -13018,7 +13053,7 @@ def _applyNativeAppEdit(args) {
                 backup: backup,
                 restoreHint: uiRefusal ? _rmPreflightRestoreHint(null, backup, "Refused before submitting: no settings were written and no Done was sent, so nothing needs to be restored. The page was still opened to read its inputs, which runs the app's page code.") :
                     walkRefusal ? _rmPreflightRestoreHint(null, backup, "Refused before any write or click was sent, so nothing needs to be restored.") :
-                    _rmBackupHint(backup)
+                    _rmRestoreBaselineHint(backup)
             ]
         }
     }
@@ -13184,7 +13219,7 @@ def _applyNativeAppEdit(args) {
                     possibleStateEditAct: possibleStateEditAct,
                     wizardStuck: false,
                     backup: backup,
-                    restoreHint: _rmRollbackHint(backup),
+                    restoreHint: _rmRollbackIfNotCommittedHint(backup),
                     verifyHint: "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the deletion actually committed asynchronously after the response, do NOT call hub_restore_backup.",
                     safeRecovery: [
                         recommended: 'verify-then-decide',
@@ -13217,7 +13252,7 @@ def _applyNativeAppEdit(args) {
             // phrase in _rmDeleteAction's throw.
             def isRetryExhaustion = e.message?.contains("one re-click")
             if (isRetryExhaustion) {
-                result.restoreHint = _rmRollbackHint(backup)
+                result.restoreHint = _rmRollbackIfNotCommittedHint(backup)
                 result.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
             }
             return result
@@ -13318,7 +13353,9 @@ def _applyNativeAppEdit(args) {
                 backup: backup,
                 restoreHint: isPreflightRefusal ?
                     _rmPreflightRestoreHint(null, backup) :
-                    (isRetryExhaustion ? _rmRollbackHint(backup) : _rmBackupHint(backup))
+                    (isRetryExhaustion ?
+                        _rmRollbackIfNotCommittedHint(backup) :
+                        _rmRestoreBaselineHint(backup))
             ]
             if (isRetryExhaustion) {
                 trigResult.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
@@ -14186,7 +14223,7 @@ def _applyNativeAppEdit(args) {
         def err = finalConfig?.configPage?.error
         if (err) {
             result.warning = "App has a rendering error after update: ${err}"
-            result.restoreHint = _rmBackupHint(backup)
+            result.restoreHint = _rmRestoreBaselineHint(backup)
         }
         result.configPageError = err
 
@@ -14258,7 +14295,13 @@ def toolDeleteNativeApp(args) {
     _requireUnprotectedAppDeletion(appId)
     def force = args?.force == true
 
-    def backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete")
+    def backup
+    try { backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete") }
+    catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable == null) throw backupErr
+        return unavailable + [appId: appId]
+    }
 
     try {
         if (force) {
@@ -14269,7 +14312,7 @@ def toolDeleteNativeApp(args) {
                 appId: appId,
                 mode: "forcedelete",
                 backup: backup,
-                note: "App force-deleted. To restore, call hub_restore_backup with backupKey='${backup.backupKey}' (will recreate an empty app and apply saved settings)."
+                note: "App force-deleted. To restore, call hub_restore_backup with backupKey='${backup.backupKey}' (will recreate an empty app and apply saved settings).${_rmRetentionSuffix(backup)}"
             ]
         } else {
             def resp = _rmSoftDeleteApp(appId)

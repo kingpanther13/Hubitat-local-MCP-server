@@ -5739,6 +5739,11 @@ class TestRunner:
             default_second_key = (wrapped.get("backup") or {}).get("backupKey")
             assert default_first_key and default_second_key == default_first_key, \
                 f"same-rule edits should reuse one recent baseline by default: first={res}, second={wrapped}"
+            # The session baseline is pinned, and the response says when it can be evicted.
+            default_backup = res.get("backup") or {}
+            assert default_backup.get("retention") == "pinned" \
+                and str(default_backup.get("retentionNote", "")).startswith("Pinned baseline"), \
+                f"the default edit baseline should be reported as pinned: {default_backup}"
 
             # The baseline file keeps the app type record minus its OAuth client credentials and
             # passwords. The message names keys only, so a failure cannot print a secret.
@@ -5758,6 +5763,12 @@ class TestRunner:
                 "tool": "hub_update_mcp_settings",
                 "args": {"settings": {"backupEveryRuleWrite": True}, "confirm": True},
             })
+            # Retention is proven by listing, so the shared budget must have headroom: near the
+            # limit a publish would evict the very backups asserted on below.
+            budget = (self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_list_backups", "args": {"cursor": ""}}) or {}).get("storageBudget") or {}
+            assert int(budget.get("limitBytes") or 0) - int(budget.get("usedBytes") or 0) > 1_000_000, \
+                f"backup storage budget has no headroom for this test; eviction would hide retention: {budget}"
             strict_first = self._rm_call_soft({"appId": app_id,
                 "button": "updateRule", "confirm": True}, strict=True)
             strict_second = self._rm_call_soft({"appId": app_id,
@@ -5769,6 +5780,26 @@ class TestRunner:
                 and strict_first_key != default_first_key \
                 and strict_second_key != default_first_key, \
                 f"backupEveryRuleWrite should produce distinct baselines: first={strict_first}, second={strict_second}"
+            # Inside the editing session the per-write snapshots are rolling steps. Eviction is
+            # by the storage budget only, so the pinned baseline and both steps stay listed.
+            for strict in (strict_first, strict_second):
+                strict_backup = strict.get("backup") or {}
+                note = str(strict_backup.get("retentionNote", ""))
+                assert strict_backup.get("retention") == "rolling" and note.startswith("Rolling step") \
+                    and "removed only when" in note and "MB budget" in note, \
+                    f"a strict-mode write inside the session should be a budget-evicted rolling step: {strict_backup}"
+            kinds: dict = {}
+            page = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": {"cursor": ""}}) or {}
+            for _ in range(20):
+                for entry in page.get("backups") or []:
+                    kinds[entry.get("backupKey")] = entry.get("retention")
+                if not page.get("nextCursor"):
+                    break
+                page = self.client.call_tool("hub_read_apps_code", {
+                    "tool": "hub_list_backups", "args": {"cursor": page["nextCursor"]}}) or {}
+            assert kinds.get(default_first_key) == "pinned" and kinds.get(strict_first_key) == "rolling" \
+                and kinds.get(strict_second_key) == "rolling", \
+                f"hub_list_backups should list the pinned baseline and both rolling steps: {kinds}"
         finally:
             unwinding = sys.exc_info()[0] is not None
             cleanup_errors: list[Exception] = []
@@ -14491,11 +14522,20 @@ class TestRunner:
         src = self.client.call_tool("hub_manage_backup", {"tool": "hub_list_backups", "args": {}})
         assert isinstance(src, dict) and "backups" in src, \
             f"default scope=source missing 'backups': {sorted(src.keys()) if isinstance(src, dict) else type(src).__name__}"
-        # One 20-entry retention cap is shared by every backup type.
         total = src.get("total")
         assert isinstance(total, int) and total == len(src["backups"]), \
-            f"shared source-backup count contract failed: {src}"
-        assert total <= 20, f"shared source-backup retention contract failed: {src}"
+            f"source-backup count contract failed: {src}"
+        # Backups are evicted only past the storage budget (issues #506/#517), not by a count;
+        # the e2e hub leaves the Backup storage budget setting at its 10 MB default.
+        budget = src.get("storageBudget") or {}
+        assert budget.get("limitBytes") == 10 * 1024 * 1024 and isinstance(budget.get("usedBytes"), int) \
+            and set(budget) == {"usedBytes", "limitBytes"}, \
+            f"source-backup listing must report the storage budget: {src}"
+        policy = str(src.get("retentionPolicy"))
+        assert "maxBackups" not in src and "rolling" in policy and "10 MB storage budget" in policy, \
+            f"source-backup listing must describe the budget-only retention policy: {src}"
+        for entry in src["backups"]:
+            assert entry.get("retention") in ("pinned", "rolling"), f"backup entry without a retention kind: {entry}"
 
     @test("system_tools")
     def test_get_backup_schedule_read(self) -> None:
@@ -14633,6 +14673,47 @@ class TestRunner:
                 self.client.call_tool("hub_manage_files", {"tool": "hub_delete_file", "args": {"fileName": probe, "confirm": True}})
             except Exception:
                 pass  # refusal branch never wrote the probe file
+
+    @test("system_tools")
+    def test_write_file_keeps_newest_backup_copies(self) -> None:
+        # hub_write_file copies the previous content to <name>_backup_<ts><ext> before an
+        # overwrite and keeps only the newest five copies of that file name (issue #517). The
+        # copy name carries milliseconds, so back-to-back writes never share one.
+        name = f"{PREFIX}517_copy_cap_{int(time.time())}.txt"
+        stem = name[:-len(".txt")] + "_backup_"
+        copy_name = re.compile(re.escape(stem) + r"\d{8}-\d{6}(-\d{3})?\.txt$")
+        removed: list = []
+        made: list = []
+        try:
+            for i in range(7):
+                res = self.client.call_tool("hub_manage_files", {
+                    "tool": "hub_write_file", "args": {"fileName": name, "content": f"version {i}", "confirm": True}})
+                assert isinstance(res, dict) and res.get("success") is True, f"write {i} failed: {res}"
+                if i > 0:
+                    assert copy_name.match(str(res.get("backupFile", ""))), f"write {i} made no backup copy: {res}"
+                    assert res.get("backupRetention") == "copies" and "newest 5" in str(res.get("backupRetentionNote")), \
+                        f"write {i} does not state the copy cap: {res}"
+                    assert res["backupFile"] not in made, f"write {i} reused an earlier copy name: {res['backupFile']}"
+                    made.append(res["backupFile"])
+                removed += res.get("removedOldBackups") or []
+            names, authoritative = self._list_all_file_names(stem)
+            copies = [n for n in names if isinstance(n, str) and copy_name.match(n)]
+            assert len(copies) <= 5, f"more than five backup copies of {name} remain: {copies}"
+            if authoritative:
+                assert len(copies) == 5 and len(removed) == 1 and removed[0] not in copies, \
+                    f"six overwrites should leave the newest five copies and remove one: copies={copies}, removed={removed}"
+        finally:
+            # Deleting the file itself takes one more copy, so list the copies only afterwards.
+            try:
+                self.client.call_tool("hub_manage_files", {"tool": "hub_delete_file", "args": {"fileName": name, "confirm": True}})
+            except Exception as exc:
+                print(f"    [WARN] could not delete {name}: {exc}")
+            leftovers, _ = self._list_all_file_names(stem)
+            for nm in [n for n in leftovers if isinstance(n, str) and n.startswith(stem)]:
+                try:
+                    self.client.call_tool("hub_manage_files", {"tool": "hub_delete_file", "args": {"fileName": nm, "confirm": True}})
+                except Exception as exc:
+                    print(f"    [WARN] could not delete {nm}: {exc}")
 
     @test("system_tools")
     def test_mode_lifecycle(self) -> None:
@@ -16457,6 +16538,16 @@ class TestRunner:
             msg = str(e)
             assert "Setting 'maxCapturedStates' expects a number" in msg and "(object)" in msg \
                 and "simpleName" not in msg, f"malformed-value refusal has the wrong message: {msg}"
+        # backupBudgetMb is allowlisted; the tool refuses values outside 1..1000000 MB (the
+        # Advanced page field takes any number and the server clamps it instead).
+        try:
+            self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"backupBudgetMb": 0}, "confirm": True},
+            })
+            raise AssertionError("backupBudgetMb=0 should be refused (minimum 1)")
+        except McpError as e:
+            assert "backupBudgetMb" in str(e) and "from 1 to" in str(e), f"wrong refusal for backupBudgetMb=0: {e}"
         assert read_settings() == before, "a refused malformed setting changed the MCP app's settings"
 
     @test("developer_mode")

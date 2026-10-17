@@ -699,11 +699,23 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - hub_create_backup itself is exempt from the prior-backup requirement (it IS the backup)
 
 ### Source Code Backups (Automatic)
-- Created when using hub_update_app, hub_update_driver, hub_update_library, hub_delete_item
-- Stored in File Manager as .groovy files
+- Created when using hub_update_app, hub_update_driver, hub_update_library, hub_delete_item, and before Rule Machine edits and deletes
+- Stored in File Manager (.groovy for code, .json for rule snapshots) and indexed in `mcp-backup-index.json`
 - Persist even if MCP uninstalled
-- Max 20 kept, oldest pruned
 - Rapid edits preserve original (1-hour protection)
+
+### Backup retention
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget. Another item's backup never replaces this one, but once the shared budget is exceeded any new backup can evict older backups of any item: **rolling** steps first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
+- The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
+- Apps, drivers and libraries keep one **pinned** baseline, replaced by that item's next backup after the one-hour window.
+- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete, pre-forcedelete and replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's other snapshots in that session are **rolling** steps, so "before I started" outlasts the per-write steps when space runs short. An editing session ends once an hour passes with no snapshot of that rule; with `backupEveryRuleWrite` on, a continuous chain of writes keeps it open.
+- Where each response says it:
+  - Rule Machine writes and deletes: the `backup` object carries `retention` (`pinned` or `rolling`) and `retentionNote`, and the restoreHint ends with that note.
+  - hub_delete_item / library deletes: `backupRetention` and `backupRetentionNote`; the restoreHint ends with the note.
+  - hub_restore_backup (app/driver source): `backupRetention` and `backupRetentionNote` describe the `preRestoreBackup` undo entry; the `undoHint` ends with the note.
+  - hub_write_file / hub_delete_file: `backupRetention: "copies"` and `backupRetentionNote` for the `<name>_backup_<ts>` copy.
+  - hub_list_backups: `storageBudget` (`usedBytes` / `limitBytes`, pending deletions excluded), `retentionPolicy`, and each entry's `retention` and `sizeBytes`.
+- If the index file is missing, it is rebuilt from the File Manager listing, which also brings backup files left by older versions under retention. An index file that is listed but cannot be read is never rebuilt over: backup reads and backup-taking writes return `success: false` until it reads again. An index file that is not valid JSON is copied to `mcp-backup-index.corrupt-<time>.json` before the rebuild.
 
 ### Rule Backups (Automatic)
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
@@ -755,6 +767,8 @@ Files stored at http://<HUB_IP>/local/<filename>
 - Use offset and length for files >60KB
 - Each chunk must be <60KB
 - Follow `nextOffset` while `hasMore` is true to read the next chunk
+
+**Backup copies:** hub_write_file (when it overwrites different content) and hub_delete_file first copy the file to `<name>_backup_<yyyyMMdd-HHmmss-SSS><ext>` (older copies use `<yyyyMMdd-HHmmss>`). If that copy cannot be written, hub_write_file writes nothing and returns `success: false`; hub_delete_file deletes anyway with a `warning`. After the write or delete succeeds, the newest 5 copies of each file name are kept; older copies of that same name are deleted and listed in `removedOldBackups`. A failed listing or delete leaves them and adds `pruneWarning`.
 
 ### hub_list_files
 
@@ -1748,7 +1762,7 @@ If eight owner slices leave work unfinished, the terminal `continuation_limit` r
 
 ### Client retry limits and resume
 
-The official Python SDK pinned by this project (2.0.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
+The official Python SDK pinned by this project (2.2.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
 
 For integrations that control the SDK, configure `Client(..., input_required_max_rounds=...)` for the expected operation size, or use `client.session.call_tool(..., allow_input_required=True)` and retain each returned `request_state` before the next request. Resume with the same outer tool, original arguments and exact state; do not send only the remaining arguments. Hubitat keeps one state string for the logical call. The SDK also accepts `client.call_tool(..., request_state=saved_state)` to resume its automatic loop. Choose state capture before starting: `InputRequiredRoundsExceededError` does not contain the last state. A worked example and offline SDK coverage are in `docs/testing.md`, "Client retry policy".
 

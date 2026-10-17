@@ -168,11 +168,12 @@ Defaults: 30 executions within 60 seconds. Configurable in app settings.
 
 ## Item Backup System
 
-Source code backups are created automatically before modify/delete operations.
+Source code backups are created automatically before modify/delete operations, and rule snapshots before Rule Machine edits and deletes.
 
-- Stored in File Manager as `.groovy` files
-- Max 20 backups kept (oldest pruned automatically)
+- Stored in File Manager as `.groovy` files (code) and `.json` files (rule snapshots)
 - 1-hour protection: rapid edits preserve the pre-edit original
+- No count limit: backups are removed only when all MCP backups exceed the Backup storage budget setting (default 10 MB); then rolling steps go first, then the oldest pinned baselines
+- Responses say whether a backup is `pinned` or a `rolling` step and when it can be removed
 - Backups persist even if MCP is uninstalled
 - Accessible at `http://<HUB_IP>/local/<filename>`
 

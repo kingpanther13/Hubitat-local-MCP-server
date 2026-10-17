@@ -1732,7 +1732,15 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
     if (sourceMode == "importUrl") noBackupReason = "the source came from a URL, so its history lives where that URL is published"
     else if (args.sourceOrigin == "published") noBackupReason = "the package deploy's source is the published build"
     else if (args.backup == false) noBackupReason = "backup=false was passed"
-    def itemBackup = noBackupReason ? null : backupItemSource(type, itemId.toString())
+    def itemBackup = null
+    if (!noBackupReason) {
+        try { itemBackup = backupItemSource(type, itemId.toString()) }
+        catch (Exception backupErr) {
+            Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+            if (unavailable == null) throw backupErr
+            return unavailable + [(idParam): itemId]
+        }
+    }
     if (noBackupReason) mcpLog("info", "hub-admin", "Pre-update source backup skipped for ${type} ID ${itemId}: ${noBackupReason}")
 
     // Fresh version for optimistic locking (resave mode already fetched it). The item's list row
@@ -2312,6 +2320,9 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
     try {
         backupItemSource(type, itemId.toString())
     } catch (Exception backupErr) {
+        // An unreadable backup index refuses the delete: the backup's fate is unknown.
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable != null) return unavailable + [(idParam): itemId]
         backupSucceeded = false
         mcpLog("warn", "hub-admin", "Pre-delete backup failed for ${type} ${itemId}: ${backupErr.message} -- proceeding with delete")
     }
@@ -2341,7 +2352,9 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
                 (idParam): itemId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName,
-                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
+                backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
+                backupRetentionNote: backupEntry ? _itemBackupRetentionNote(backupEntry as Map) : null,
+                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result
@@ -2388,8 +2401,9 @@ private Map _backupLibrarySourceLocked(String libraryId) {
     def libData = parsed[0]
     def backupSource = libData.source ?: ""
     def fileName = _itemBackupFileName("mcp-backup-library-${libraryId}.groovy")
+    byte[] backupBytes = backupSource.getBytes("UTF-8")
     try {
-        uploadHubFile(fileName, backupSource.getBytes("UTF-8"))
+        uploadHubFile(fileName, backupBytes)
     } catch (Exception e) {
         mcpLogError("hub-admin", "Failed to save library backup file '${fileName}'", e)
         throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: file upload failed -- ${e.message}")
@@ -2401,7 +2415,9 @@ private Map _backupLibrarySourceLocked(String libraryId) {
         fileName: fileName,
         version: libData.version,
         timestamp: now(),
-        sourceLength: backupSource.length()
+        sourceLength: backupSource.length(),
+        sizeBytes: backupBytes.length,
+        retention: "pinned"
     ]
     _publishUploadedItemBackup(key, entry)
     mcpLog("info", "hub-admin", "Backed up library ID ${libraryId} source to File Manager: ${fileName} (version ${libData.version}, ${backupSource.length()} chars)")
@@ -2699,17 +2715,23 @@ def toolUpdateLibraryCode(args) {
     } else {
         // The reuse decision and the backup it may take must not interleave with another
         // backup writer. The source download before and the save after need no lock.
-        _withBackupLock("update library ${libraryId}") {
-            existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
-            if (existingEntry != null) {
-                backupFileName = existingEntry.fileName
-            } else {
-                // Backup needed. backupLibrarySource handles fetch, upload, manifest update, and pruning.
-                // Fail-closed: any throw propagates up and aborts the update -- same contract as
-                // toolUpdateItemCodeInner calling backupItemSource() without try/catch.
-                backupEntry = backupLibrarySource(libraryId.toString())
-                backupFileName = backupEntry.fileName
+        try {
+            _withBackupLock("update library ${libraryId}") {
+                existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
+                if (existingEntry != null) {
+                    backupFileName = existingEntry.fileName
+                } else {
+                    // Backup needed. backupLibrarySource handles fetch, upload, manifest update, and pruning.
+                    // Fail-closed: any throw propagates up and aborts the update -- same contract as
+                    // toolUpdateItemCodeInner's backupItemSource() call.
+                    backupEntry = backupLibrarySource(libraryId.toString())
+                    backupFileName = backupEntry.fileName
+                }
             }
+        } catch (Exception backupErr) {
+            Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+            if (unavailable == null) throw backupErr
+            return unavailable + [libraryId: libraryId]
         }
     }
     def skipBackup = backupEntry == null
@@ -2797,6 +2819,9 @@ def toolDeleteLibrary(args) {
         backupFileName = backupEntry.fileName
         backupSucceeded = true
     } catch (Exception backupErr) {
+        // An unreadable backup index refuses the delete: the backup's fate is unknown.
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable != null) return unavailable + [libraryId: libraryId]
         mcpLog("warn", "hub-admin", "Pre-delete backup failed for library ${libraryId}: ${backupErr.message} -- proceeding with delete")
     }
 
@@ -2846,7 +2871,9 @@ def toolDeleteLibrary(args) {
                 libraryId: libraryId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName ?: backupFileName,
-                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
+                backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
+                backupRetentionNote: backupEntry ? _itemBackupRetentionNote(backupEntry as Map) : null,
+                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result

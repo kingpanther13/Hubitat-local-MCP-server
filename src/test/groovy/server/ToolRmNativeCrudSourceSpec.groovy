@@ -60,7 +60,7 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         uploads.size() == 1
         script._rmPreflightRestoreHint(null, null).contains("pre-edit backups are off")
         script._rmBackupHint(null).contains("no snapshot to restore")
-        script._rmRollbackHint(null).contains("repair the rule in place")
+        script._rmRollbackIfNotCommittedHint(null).contains("repair the rule in place")
         script._rmBackupHint([backupKey: "rm-rule_504_x"]).contains("backupKey='rm-rule_504_x'")
     }
 
@@ -2169,12 +2169,12 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
 
         expect:
         script._rmBackupHint(skipped).contains("'Back up native apps before edits' is off in Advanced settings")
-        script._rmRollbackHint(skipped).contains("'Back up native apps before edits' is off in Advanced settings")
+        script._rmRollbackIfNotCommittedHint(skipped).contains("'Back up native apps before edits' is off in Advanced settings")
         script._rmRestoreClause(skipped).startsWith("no pre-edit backup was taken ('Back up native apps before edits' is off")
 
         and: "a backup map with no key and no skip names no setting"
         script._rmBackupHint([:]) == "No backup key was returned for this edit, so there is no snapshot to restore; read the rule with hub_get_app_config and repair it in place."
-        !script._rmRollbackHint([:]).contains("Back up native apps")
+        !script._rmRollbackIfNotCommittedHint([:]).contains("Back up native apps")
         script._rmRestoreClause([:]) == "no backup key was returned for this edit, so repair the rule in place"
 
         and: "a key is the restore handle"
