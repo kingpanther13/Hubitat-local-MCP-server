@@ -502,14 +502,12 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
     }
 
     def "a detached slice carries the request's view of the backup toggles"() {
-        given: "the request sees pre-edit backups off; every action records the toggle as the worker reads it"
+        given: "the request sees pre-edit backups off; the backup decision records what it read and what is stored"
         settingsMap.backupBeforeRuleEdits = false
-        def seen = []
-        script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validIds = null ->
-            actions << new LinkedHashMap(spec)
-            seen << script._rmPreEditBackupsOff()
-            clock.addAndGet(itemElapsed.call(actions.size()) as Long)
-            [success: true, deviceIds: spec.deviceIds]
+        def decided = []
+        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason, String page = null ->
+            decided << [off: script._rmPreEditBackupsOff(), stored: settingsMap.backupBeforeRuleEdits]
+            [skipped: "pre-edit backups are off in Advanced settings"]
         }
         RUN_IN_MILLIS_OVERRIDE.set({ List call -> runInMillisCalls << call })
 
@@ -526,9 +524,8 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         settingsMap.backupBeforeRuleEdits = true
         script.runMrtrSlice(new LinkedHashMap(runInMillisCalls[0][2].data as Map))
 
-        then: "the worker's actions still saw backups off, and the view does not outlive the slice"
-        actions.size() == 3
-        seen == [true, true, true]
+        then: "the worker decided from the request's view while the stored setting said otherwise; the view ends with the slice"
+        decided == [[off: true, stored: true]]
         script._requestSetting("backupBeforeRuleEdits") == null
         !script._rmPreEditBackupsOff()
     }
