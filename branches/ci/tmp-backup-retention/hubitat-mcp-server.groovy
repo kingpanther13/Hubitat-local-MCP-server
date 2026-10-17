@@ -36,6 +36,9 @@
 @groovy.transform.Field static final Map ITEM_BACKUP_MANIFESTS = new java.util.HashMap()
 @groovy.transform.Field static final String ITEM_BACKUP_INDEX_FILE = "mcp-backup-index.json"
 @groovy.transform.Field static final long ITEM_BACKUP_DEFAULT_BUDGET_MB = 10L
+@groovy.transform.Field static final long ITEM_BACKUP_MAX_BUDGET_MB = 1000000L
+@groovy.transform.Field static final Set ITEM_BACKUP_BUDGET_WARNED = java.util.Collections.synchronizedSet(new java.util.HashSet())
+@groovy.transform.Field static final String ITEM_BACKUP_INDEX_UNAVAILABLE = "Backup index unavailable"
 @groovy.transform.Field static final int FILE_BACKUP_COPIES = 5
 @groovy.transform.Field static final Set ITEM_BACKUP_LEGACY_PENDING = new java.util.HashSet()
 @groovy.transform.Field static final Map ITEM_BACKUP_LOCK_STATE = new java.util.HashMap()
@@ -3334,31 +3337,48 @@ private List _filesBackupNameParts(String fileName) {
 }
 private String _filesWriteBackupCopy(String fileName, byte[] bytes) {
     List parts = _filesBackupNameParts(fileName)
-    String backupFileName = "${parts[0]}_backup_${new Date().format("yyyyMMdd-HHmmss")}${parts[1]}"
+    String backupFileName = "${parts[0]}_backup_${new Date(now()).format("yyyyMMdd-HHmmss-SSS")}${parts[1]}"
     uploadHubFile(backupFileName, bytes)
     return backupFileName
 }
-private List _filesPruneBackupCopies(String fileName) {
+private String _filesCopyRetentionNote(String fileName) {
+    return "The newest ${FILE_BACKUP_COPIES} backup copies of '${fileName}' are kept; older copies are deleted after its next successful write or delete.".toString()
+}
+private Map _filesPruneBackupCopies(String fileName) {
     List parts = _filesBackupNameParts(fileName)
-    String copyPattern = "^" + java.util.regex.Pattern.quote(parts[0]) + "_backup_\\d{8}-\\d{6}" + java.util.regex.Pattern.quote(parts[1]) + "\$"
+    def copyPattern = ~("^" + java.util.regex.Pattern.quote(parts[0]) + "_backup_(\\d{8}-\\d{6})(-\\d{3})?" + java.util.regex.Pattern.quote(parts[1]) + "\$")
     List names
     try { names = _fileManagerRootFiles().collect { it.name } }
     catch (Exception e) {
         mcpLog("warn", "file-manager", "Could not list File Manager to prune old backup copies of '${fileName}': ${e.message}")
-        return []
+        return [removed: [], warning: "Old backup copies of '${fileName}' were not pruned: the File Manager listing failed (${e.message}). More than ${FILE_BACKUP_COPIES} copies may remain.".toString()]
     }
-    List stale = names.findAll { it ==~ copyPattern }.sort().reverse().drop(FILE_BACKUP_COPIES)
+    Closure age = { String name ->
+        def m = name =~ copyPattern
+        m.matches() ? (m.group(1) + (m.group(2) ?: "-000")) : ""
+    }
+    List copies = names.findAll { it ==~ copyPattern }
+    List stale = copies.sort { a, b -> age(b) <=> age(a) }.drop(FILE_BACKUP_COPIES)
     List removed = []
+    List failed = []
     stale.each { name ->
         try {
             deleteHubFile(name)
             removed << name
         } catch (Exception e) {
+            failed << name
             mcpLog("warn", "file-manager", "Could not delete old backup copy '${name}': ${e.message}")
         }
     }
     if (removed) mcpLog("info", "file-manager", "Removed ${removed.size()} old backup copies of '${fileName}' (keeping the newest ${FILE_BACKUP_COPIES})")
-    return removed
+    String warning = failed ? "Could not delete old backup copies ${failed} of '${fileName}'; more than ${FILE_BACKUP_COPIES} copies remain.".toString() : null
+    return [removed: removed, warning: warning]
+}
+private void _filesReportCopyRetention(Map result, String fileName, Map prune) {
+    result.backupRetention = "copies"
+    result.backupRetentionNote = _filesCopyRetentionNote(fileName)
+    if (prune?.removed) result.removedOldBackups = prune.removed
+    if (prune?.warning) result.pruneWarning = prune.warning
 }
 def toolListFiles(args = null) {
     if (args?.filter != null && !(args.filter instanceof CharSequence)) {
@@ -3540,20 +3560,28 @@ def toolWriteFile(args) {
     def backedUp = false
     def backupFileName = null
     def identicalContent = false
-    try {
-        def existingBytes = downloadHubFile(args.fileName)
-        if (existingBytes != null && new String(existingBytes, "UTF-8") == args.content.toString()) {
-            identicalContent = true
-            mcpLog("info", "file-manager", "Existing '${args.fileName}' already matches the incoming content -- skipping backup")
-        } else if (existingBytes != null) {
-            backupFileName = _filesWriteBackupCopy(args.fileName.toString(), existingBytes)
-            backedUp = true
-            mcpLog("info", "file-manager", "Backed up existing '${args.fileName}' to '${backupFileName}' before overwriting (${existingBytes.length} bytes)")
-        }
-    } catch (Exception e) {
+    byte[] existingBytes = null
+    try { existingBytes = downloadHubFile(args.fileName) }
+    catch (Exception e) {
         mcpLog("debug", "file-manager", "No existing file '${args.fileName}' to back up: ${e.message}")
     }
-    List removedOldBackups = backedUp ? _filesPruneBackupCopies(args.fileName.toString()) : []
+    if (existingBytes != null && new String(existingBytes, "UTF-8") == args.content.toString()) {
+        identicalContent = true
+        mcpLog("info", "file-manager", "Existing '${args.fileName}' already matches the incoming content -- skipping backup")
+    } else if (existingBytes != null) {
+        try {
+            backupFileName = _filesWriteBackupCopy(args.fileName.toString(), existingBytes)
+        } catch (Exception e) {
+            mcpLogError("file-manager", "Could not back up existing '${args.fileName}' before overwriting", e)
+            return [
+                success: false,
+                error: "Could not back up existing '${args.fileName}' before overwriting: ${e.message}",
+                note: "Nothing was written; '${args.fileName}' still holds its previous content. Retry once File Manager accepts writes."
+            ]
+        }
+        backedUp = true
+        mcpLog("info", "file-manager", "Backed up existing '${args.fileName}' to '${backupFileName}' before overwriting (${existingBytes.length} bytes)")
+    }
     try {
         uploadHubFile(args.fileName, args.content.getBytes("UTF-8"))
         mcpLog("info", "file-manager", "Wrote file '${args.fileName}' (${args.content.length()} chars)")
@@ -3571,9 +3599,8 @@ def toolWriteFile(args) {
         if (backedUp) {
             result.backupFile = backupFileName
             result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
-            result.backupRetention = "The newest ${FILE_BACKUP_COPIES} backup copies of '${args.fileName}' are kept; older copies are deleted on its next write or delete."
+            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString()))
         }
-        if (removedOldBackups) result.removedOldBackups = removedOldBackups
         return result
     } catch (Exception e) {
         mcpLogError("file-manager", "Failed to write file '${args.fileName}'", e)
@@ -3603,7 +3630,6 @@ def toolDeleteFile(args) {
     } else {
         mcpLog("debug", "file-manager", "Skipping auto-backup for '${args.fileName}' -- file is itself a backup")
     }
-    List removedOldBackups = backedUp ? _filesPruneBackupCopies(args.fileName.toString()) : []
     try {
         Map deletionDetails = _deleteHubFileAndUnlinkBackups(args.fileName.toString())
         mcpLog("info", "file-manager", "Deleted file '${args.fileName}'")
@@ -3622,9 +3648,8 @@ def toolDeleteFile(args) {
             try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) {   }
             result.backupDownload = "http://${hubIp ?: '<HUB_IP>'}/local/${backupFileName}"
             result.undoHint = "To recover: use 'hub_read_file' on '${backupFileName}' to view contents, or 'hub_write_file' to recreate '${args.fileName}' from the backup."
-            result.backupRetention = "The newest ${FILE_BACKUP_COPIES} backup copies of '${args.fileName}' are kept; older copies are deleted on its next write or delete."
+            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString()))
         }
-        if (removedOldBackups) result.removedOldBackups = removedOldBackups
         if (!backedUp && !isBackupFile) {
             result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
         }
@@ -3675,7 +3700,7 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_write_file",
-            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery; the newest 5 copies per file are kept). Requires Write master and confirm=true — confirm the write with the user before calling.",
+            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery; the newest ${FILE_BACKUP_COPIES} copies per file are kept). Requires Write master and confirm=true — confirm the write with the user before calling.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3753,13 +3778,19 @@ def toolListItemBackups(args = null) {
     return ([scope: scope] + _listSourceItemBackups(args) + hubSections)
 }
 private _listSourceItemBackups(args) {
-    def manifest = _itemBackupManifest()
+    def manifest
+    try { manifest = _itemBackupManifest() }
+    catch (Exception e) {
+        Map unavailable = _itemBackupIndexUnavailableResult(e)
+        if (unavailable == null) throw e
+        return unavailable + [backups: [], count: 0, total: 0]
+    }
     if (manifest.isEmpty()) {
         return [
             backups: [],
             count: 0,
             total: 0,
-            message: "No item backups exist yet. Backups are created automatically when you use hub_update_app, hub_update_driver, hub_update_library, or hub_delete_item.",
+            message: "No item backups exist yet. Backups are created automatically when you use hub_update_app, hub_update_driver, hub_update_library, or hub_delete_item, and before Rule Machine edits and deletes.",
             storageBudget: _itemBackupBudgetUsage(manifest),
             retentionPolicy: _itemBackupRetentionPolicy(),
             storage: "Backups are stored as .groovy files in the hub's File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager.",
@@ -3809,7 +3840,7 @@ private _listSourceItemBackups(args) {
     return result
 }
 private String _itemBackupRetentionPolicy() {
-    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupByteBudget().intdiv(1024L * 1024L)} MB storage budget (the Backup storage budget setting); then rolling steps go first, then pinned baselines, oldest first. Apps, drivers and libraries keep one pinned baseline, replaced by the item's next backup after the one-hour reuse window. A rule keeps a pinned baseline per editing session plus pinned pre-delete snapshots; with backupEveryRuleWrite on, its later writes in a session are rolling steps."
+    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget (the Backup storage budget setting). Another item's backup never replaces this one, but once the budget is exceeded any new backup can evict older backups of any item: rolling steps first, then pinned baselines, oldest first. Apps, drivers and libraries keep one pinned baseline, replaced by the item's next backup after the one-hour reuse window. A rule's first snapshot in an editing session is pinned, and so is every pre-delete, pre-forcedelete and replaceRequiredExpression snapshot; with backupEveryRuleWrite on, its other snapshots in the session are rolling steps. A rule's editing session ends once an hour passes with no snapshot of that rule; with backupEveryRuleWrite on, a continuous chain of writes keeps it open."
 }
 private Map _healPendingItemBackup(String backupKey, Map entry) {
     return _withBackupLock("heal ${backupKey}") {
@@ -3839,7 +3870,13 @@ private Map _healPendingItemBackup(String backupKey, Map entry) {
 }
 def toolGetItemBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', or 'library_42')")
-    def manifest = _itemBackupManifest()
+    def manifest
+    try { manifest = _itemBackupManifest() }
+    catch (Exception e) {
+        Map unavailable = _itemBackupIndexUnavailableResult(e)
+        if (unavailable == null) throw e
+        return unavailable + [backupKey: args.backupKey]
+    }
     def entry = manifest.get(args.backupKey)
     if (!entry) {
         mcpLog("debug", "hub-admin", "Backup key '${args.backupKey}' not found in manifest")
@@ -3916,7 +3953,12 @@ def toolRestoreItemBackup(args) {
         throw new IllegalArgumentException("scope must be 'source' (default), 'hub_local', 'hub_cloud', or 'hub_uploaded'.")
     }
     requireDestructiveConfirm(args.confirm)
-    return _toolRestoreSourceBackup(args)
+    try { return _toolRestoreSourceBackup(args) }
+    catch (Exception e) {
+        Map unavailable = _itemBackupIndexUnavailableResult(e)
+        if (unavailable == null) throw e
+        return unavailable + [backupKey: args.backupKey]
+    }
 }
 private Map _toolRestoreSourceBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', 'library_42', or 'rm-rule_<id>_<ts>')")
@@ -4128,9 +4170,12 @@ private Map _toolRestoreSourceBackup(args) {
                 undoAvailable: undoAvailable
             ]
             if (undoAvailable) {
+                String undoNote = _itemBackupRetentionNote([type: entry.type, retention: "pinned", undoForBackupKey: args.backupKey.toString()])
                 restoreResult.preRestoreBackup = preRestoreBackupKey
                 restoreResult.preRestoreFile = preRestoreFileName
-                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'. ${_itemBackupRetentionNote([type: entry.type, retention: "pinned", undoForBackupKey: args.backupKey.toString()])}"
+                restoreResult.backupRetention = "pinned"
+                restoreResult.backupRetentionNote = undoNote
+                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'. ${undoNote}"
             } else {
                 restoreResult.warning = undoWarning
             }
@@ -5341,7 +5386,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Cloud-relay budget (ms):** ${effNum(settings.relayBudgetMs, _relayBudgetMs())}",
             "- **LAN budget (ms):** ${effNum(settings.lanBudgetMs, _lanBudgetMs())}",
             "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
-            "- **Backup storage budget (MB):** ${effNum(settings.backupBudgetMb, _itemBackupByteBudget().intdiv(1024L * 1024L))}",
+            "- **Backup storage budget (MB):** ${effNum(settings.backupBudgetMb, _itemBackupBudgetMb())}",
             "- **Hide access tokens in responses:** ${eff(settings.redactAccessTokens, false)}",
             "- **Keep recent errors for bug reports:** ${eff(settings.retainReportErrors, false)}",
             "- **Max captured states:** ${effNum(settings.maxCapturedStates, getMaxCapturedStates())}",
@@ -18189,7 +18234,15 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
     if (sourceMode == "importUrl") noBackupReason = "the source came from a URL, so its history lives where that URL is published"
     else if (args.sourceOrigin == "published") noBackupReason = "the package deploy's source is the published build"
     else if (args.backup == false) noBackupReason = "backup=false was passed"
-    def itemBackup = noBackupReason ? null : backupItemSource(type, itemId.toString())
+    def itemBackup = null
+    if (!noBackupReason) {
+        try { itemBackup = backupItemSource(type, itemId.toString()) }
+        catch (Exception backupErr) {
+            Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+            if (unavailable == null) throw backupErr
+            return unavailable + [(idParam): itemId]
+        }
+    }
     if (noBackupReason) mcpLog("info", "hub-admin", "Pre-update source backup skipped for ${type} ID ${itemId}: ${noBackupReason}")
     def currentVersion = freshVersion
     if (currentVersion == null) currentVersion = _itemRowVersion(type, itemId)
@@ -18635,6 +18688,8 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
     try {
         backupItemSource(type, itemId.toString())
     } catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable != null) return unavailable + [(idParam): itemId]
         backupSucceeded = false
         mcpLog("warn", "hub-admin", "Pre-delete backup failed for ${type} ${itemId}: ${backupErr.message} -- proceeding with delete")
     }
@@ -18662,6 +18717,7 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName,
                 backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
+                backupRetentionNote: backupEntry ? _itemBackupRetentionNote(backupEntry as Map) : null,
                 restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
@@ -18969,14 +19025,20 @@ def toolUpdateLibraryCode(args) {
     if (noBackupReason) {
         mcpLog("info", "hub-admin", "Pre-update source backup skipped for library ${libraryId}: ${noBackupReason}")
     } else {
-        _withBackupLock("update library ${libraryId}") {
-            existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
-            if (existingEntry != null) {
-                backupFileName = existingEntry.fileName
-            } else {
-                backupEntry = backupLibrarySource(libraryId.toString())
-                backupFileName = backupEntry.fileName
+        try {
+            _withBackupLock("update library ${libraryId}") {
+                existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
+                if (existingEntry != null) {
+                    backupFileName = existingEntry.fileName
+                } else {
+                    backupEntry = backupLibrarySource(libraryId.toString())
+                    backupFileName = backupEntry.fileName
+                }
             }
+        } catch (Exception backupErr) {
+            Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+            if (unavailable == null) throw backupErr
+            return unavailable + [libraryId: libraryId]
         }
     }
     def skipBackup = backupEntry == null
@@ -19050,6 +19112,8 @@ def toolDeleteLibrary(args) {
         backupFileName = backupEntry.fileName
         backupSucceeded = true
     } catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable != null) return unavailable + [libraryId: libraryId]
         mcpLog("warn", "hub-admin", "Pre-delete backup failed for library ${libraryId}: ${backupErr.message} -- proceeding with delete")
     }
     mcpLog("warn", "hub-admin", "Deleting library ID: ${libraryId}")
@@ -19092,6 +19156,7 @@ def toolDeleteLibrary(args) {
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName ?: backupFileName,
                 backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
+                backupRetentionNote: backupEntry ? _itemBackupRetentionNote(backupEntry as Map) : null,
                 restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
@@ -20227,10 +20292,10 @@ def toolUpdateMcpSettings(args) {
         }
         if (keyStr == "backupBudgetMb") {
             BigDecimal numeric = coerced as BigDecimal
-            if (numeric < 1 || numeric.remainder(BigDecimal.ONE) != BigDecimal.ZERO) {
-                throw new IllegalArgumentException("Setting 'backupBudgetMb' must be a whole number of MB, at least 1 (no upper limit), got: ${coerced}")
+            if (numeric < 1 || numeric > ITEM_BACKUP_MAX_BUDGET_MB || numeric.remainder(BigDecimal.ONE) != BigDecimal.ZERO) {
+                throw new IllegalArgumentException("Setting 'backupBudgetMb' must be a whole number of MB from 1 to ${ITEM_BACKUP_MAX_BUDGET_MB}, got: ${coerced}")
             }
-            coerced = numeric.longValue() <= Integer.MAX_VALUE ? numeric.intValue() : numeric.longValue()
+            coerced = numeric.intValue()
         }
         String ownTransportKey = _isCloudRequest() ? "enableCloudAccess" : "enableLocalAccess"
         if (keyStr == ownTransportKey && coerced == false) {
@@ -20836,7 +20901,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB, at least 1 (default 10, no upper limit): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write_system'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write_system'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["settings", "confirm"]
@@ -27631,6 +27696,12 @@ private List _rmStructuralSequenceFromSpecList(List specList) {
 private String _rmRetentionSuffix(Map backup) {
     return backup?.retentionNote ? " ${backup.retentionNote}".toString() : ""
 }
+private String _rmRestoreBaselineHint(Map backup) {
+    return "Backup baseline available. Call hub_restore_backup with backupKey='${backup?.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.${_rmRetentionSuffix(backup)}".toString()
+}
+private String _rmRollbackIfNotCommittedHint(Map backup) {
+    return "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup?.backupKey}').${_rmRetentionSuffix(backup)}".toString()
+}
 private String _rmPreflightRestoreHint(String reason = null, Map backup = null, String lead = null) {
     def why = reason ? " Reason: ${reason}" : ""
     def snapshot = !backup?.backupKey ? " No backup was taken." :
@@ -27656,7 +27727,7 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
     } else if (wizardStuck) {
         restoreHint = "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain. Or, before your next write, close the in-flight wizard manually: hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, or hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a stuck action editor.${_rmRetentionSuffix(backup)}"
     } else {
-        restoreHint = "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.${_rmRetentionSuffix(backup)}"
+        restoreHint = _rmRestoreBaselineHint(backup)
     }
     def result = [
         success: false,
@@ -28776,7 +28847,13 @@ def _createButtonRuleViaController(args) {
     def origLabel = cfg?.settings?.origLabel?.toString() ?: ""
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def beforeIds = (cfg?.childApps ?: []).collect { it?.id?.toString() } as Set
-    def backup = _rmBackupRuleSnapshot(controllerId, "pre-buttonRule")
+    def backup
+    try { backup = _rmBackupRuleSnapshot(controllerId, "pre-buttonRule") }
+    catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable == null) throw backupErr
+        return unavailable + [controllerId: controllerId]
+    }
     try {
         _rmClickAppButton(controllerId, "true", "addBut")
         def baseSettings = [buttonDev: buttonDevIds, origLabel: origLabel]
@@ -31849,7 +31926,13 @@ def _applyNativeAppEdit(args) {
         (modifyTriggerSpec ? "pre-modifyTrigger" :
         (modifyActionSpec ? "pre-modifyAction" :
         (walkStepSpec ? "pre-walkStep" : "pre-update"))))))))))))))))
-    def backup = _rmBackupBeforeEdit(appId, backupReason)
+    def backup
+    try { backup = _rmBackupBeforeEdit(appId, backupReason) }
+    catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable == null) throw backupErr
+        return unavailable + [appId: appId]
+    }
     if (walkStepSpec) {
         try {
             def wsSpec = walkStepSpec
@@ -31891,7 +31974,7 @@ def _applyNativeAppEdit(args) {
                 error: e.message ?: e.toString(),
                 backup: backup,
                 restoreHint: uiRefusal ? _rmPreflightRestoreHint(null, backup, "Refused before submitting: no settings were written and no Done was sent, so nothing needs to be restored. The page was still opened to read its inputs, which runs the app's page code.") :
-                    "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.${_rmRetentionSuffix(backup)}"
+                    _rmRestoreBaselineHint(backup)
             ]
         }
     }
@@ -31972,7 +32055,7 @@ def _applyNativeAppEdit(args) {
             addResult: maResult?.addResult,
             moveResults: maResult?.moveResults,
             error: maError,
-            restoreHint: maOk ? null : "Backup baseline available. Call hub_restore_backup with backupKey='${backup?.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.${_rmRetentionSuffix(backup)}",
+            restoreHint: maOk ? null : _rmRestoreBaselineHint(backup),
             updateRuleFailed: updateRuleFailed,
             subscriptionsNotLive: updateRuleFailed || !updateRuleAttempted,
             updateRuleError: updateRuleError,
@@ -32077,7 +32160,7 @@ def _applyNativeAppEdit(args) {
                     possibleStateEditAct: possibleStateEditAct,
                     wizardStuck: false,
                     backup: backup,
-                    restoreHint: "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').${_rmRetentionSuffix(backup)}",
+                    restoreHint: _rmRollbackIfNotCommittedHint(backup),
                     verifyHint: "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the deletion actually committed asynchronously after the response, do NOT call hub_restore_backup.",
                     safeRecovery: [
                         recommended: 'verify-then-decide',
@@ -32108,7 +32191,7 @@ def _applyNativeAppEdit(args) {
             def result = _rmBuildUpdateErrorResponse(appId, e.message, backup)
             def isRetryExhaustion = e.message?.contains("one verified re-click")
             if (isRetryExhaustion) {
-                result.restoreHint = "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').${_rmRetentionSuffix(backup)}"
+                result.restoreHint = _rmRollbackIfNotCommittedHint(backup)
                 result.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
             }
             return result
@@ -32191,8 +32274,8 @@ def _applyNativeAppEdit(args) {
                 restoreHint: isPreflightRefusal ?
                     _rmPreflightRestoreHint(null, backup) :
                     (isRetryExhaustion ?
-                        "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').${_rmRetentionSuffix(backup)}" :
-                        "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.${_rmRetentionSuffix(backup)}")
+                        _rmRollbackIfNotCommittedHint(backup) :
+                        _rmRestoreBaselineHint(backup))
             ]
             if (isRetryExhaustion) {
                 trigResult.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
@@ -32936,7 +33019,13 @@ def toolDeleteNativeApp(args) {
     def appId = normalizeRuleId(args.appId)
     _requireUnprotectedAppDeletion(appId)
     def force = args?.force == true
-    def backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete")
+    def backup
+    try { backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete") }
+    catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable == null) throw backupErr
+        return unavailable + [appId: appId]
+    }
     try {
         if (force) {
             _rmForceDeleteApp(appId)
@@ -33346,13 +33435,13 @@ def advancedOverridesPage() {
         section("Native app edit backups") {
             paragraph "By default, edits to the same native app reuse its newest File Manager baseline for one hour. Restoring that baseline returns the app to the start of the edit chain, undoing every later edit in the hour. This avoids uploading the same app before every small edit. Deletes and a standalone Required Expression replacement still take a fresh snapshot."
             input "backupEveryRuleWrite", "bool", title: "Back up before every native app edit",
-                  description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit: the first in an hour-long editing session is kept as its pinned baseline, and the later ones are rolling steps, the first removed when the backup storage budget is exceeded.",
+                  description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit: the first in an editing session is kept as its pinned baseline, and the later ones are rolling steps, the first removed when the backup storage budget is exceeded. A session ends once an hour passes with no snapshot of that app.",
                   defaultValue: false
         }
         section("Backup storage") {
-            paragraph "Automatic code and rule backups live in File Manager, and every file there goes into hub backups. Backups are removed only when they exceed this budget together: rolling steps first, then pinned baselines, oldest first. The backup just taken and a restore in progress are never removed."
+            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together: rolling steps first, then pinned baselines, oldest first. The backup just taken and a restore in progress are never removed."
             input "backupBudgetMb", "number", title: "Backup storage budget (MB)",
-                  description: "Total size of the automatic code and rule backups (default: 10; minimum 1, lower values use 1).",
+                  description: "Total size of the automatic code and rule backups (default: 10; range 1 to 1000000, values outside it use the nearest end).",
                   defaultValue: 10, required: false
         }
         section("Bug report error retention") {
@@ -38725,16 +38814,40 @@ Map _itemBackupManifest() {
     synchronized (ITEM_BACKUP_MANIFESTS) {
         String owner = _stateOwnerKey()
         if (!ITEM_BACKUP_MANIFESTS.containsKey(owner)) {
-            ITEM_BACKUP_MANIFESTS.put(owner, new LinkedHashMap(_loadItemBackupIndex(owner)))
+            Map loaded
+            try { loaded = _loadItemBackupIndex(owner) }
+            catch (Exception e) {
+                mcpLog("error", "hub-admin", "${ITEM_BACKUP_INDEX_UNAVAILABLE}: ${e.message}")
+                throw new IllegalStateException("${ITEM_BACKUP_INDEX_UNAVAILABLE}: ${e.message}", e)
+            }
+            ITEM_BACKUP_MANIFESTS.put(owner, new LinkedHashMap(loaded))
         }
         return (ITEM_BACKUP_MANIFESTS[owner] as Map).collectEntries { key, entry ->
             [(key): entry instanceof Map ? new LinkedHashMap(entry) : entry]
         }
     }
 }
+Map _itemBackupIndexUnavailableResult(Throwable error) {
+    Throwable t = error
+    while (t != null && !(t.message?.startsWith(ITEM_BACKUP_INDEX_UNAVAILABLE))) t = t.cause
+    if (t == null) return null
+    return [success: false, error: t.message,
+            note: "Nothing was changed: the backup index file '${ITEM_BACKUP_INDEX_FILE}' could not be loaded, so no backup could be read or recorded. Check that Settings > File Manager answers, then retry; hub_list_backups reports whether the index loads."]
+}
 String _readItemBackupIndexStore() {
-    byte[] bytes = downloadHubFile(ITEM_BACKUP_INDEX_FILE)
-    return bytes == null ? null : new String(bytes, "UTF-8")
+    if (!_fileManagerRootFiles().any { it.name == ITEM_BACKUP_INDEX_FILE }) return null
+    String failure = null
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        if (attempt > 1) pauseExecution(500)
+        try {
+            byte[] bytes = downloadHubFile(ITEM_BACKUP_INDEX_FILE)
+            if (bytes != null) return new String(bytes, "UTF-8")
+            failure = "the read returned no data"
+        } catch (Exception e) {
+            failure = e.message
+        }
+    }
+    throw new IllegalStateException("'${ITEM_BACKUP_INDEX_FILE}' is listed in File Manager but could not be read after 3 attempts (${failure})")
 }
 void _writeItemBackupIndexStore(String json) {
     uploadHubFile(ITEM_BACKUP_INDEX_FILE, json.getBytes("UTF-8"))
@@ -38743,32 +38856,35 @@ private String _itemBackupIndexJson(Map manifest) {
     return groovy.json.JsonOutput.toJson([version: 1, entries: manifest])
 }
 private Map _loadItemBackupIndex(String owner) {
+    String json = _readItemBackupIndexStore()
+    Map index = null
+    boolean rebuild = json == null
+    if (json != null) {
+        def parsed = null
+        try { parsed = new groovy.json.JsonSlurper().parseText(json) } catch (Exception ignored) { }
+        if (parsed instanceof Map && parsed.entries instanceof Map) {
+            index = new LinkedHashMap(parsed.entries as Map)
+        } else {
+            String aside = "mcp-backup-index.corrupt-${new Date(now()).format("yyyyMMdd-HHmmss")}.json"
+            uploadHubFile(aside, json.getBytes("UTF-8"))
+            mcpLog("error", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' is not a valid index; its content was copied to '${aside}' and the index is rebuilt from the File Manager listing")
+            rebuild = true
+        }
+    }
     if (atomicState.containsKey("itemBackupManifest")) {
-        Map legacy = new LinkedHashMap((atomicState.itemBackupManifest ?: [:]) as Map)
+        Map merged = new LinkedHashMap(index ?: [:])
+        ((atomicState.itemBackupManifest ?: [:]) as Map).each { k, v -> if (!merged.containsKey(k)) merged.put(k, v) }
         ITEM_BACKUP_LEGACY_PENDING.add(owner)
         try {
-            _writeItemBackupIndexStore(_itemBackupIndexJson(legacy))
+            _writeItemBackupIndexStore(_itemBackupIndexJson(merged))
             _finishLegacyItemBackupMigration(owner)
-            mcpLog("info", "hub-admin", "Moved the backup index (${legacy.size()} entries) from app state to File Manager file '${ITEM_BACKUP_INDEX_FILE}'")
         } catch (Exception e) {
-            mcpLog("error", "hub-admin", "Could not write the backup index file '${ITEM_BACKUP_INDEX_FILE}' (${e.message}); the index stays in app state until a backup write succeeds")
+            mcpLog("error", "hub-admin", "Could not write the backup index file '${ITEM_BACKUP_INDEX_FILE}' (${e.message}); the old index stays in app state until a backup write succeeds")
         }
-        return legacy
+        return merged
     }
-    String json = null
-    try { json = _readItemBackupIndexStore() }
-    catch (Exception e) { mcpLog("warn", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' could not be read (${e.message}); rebuilding it from the File Manager listing") }
-    if (json) {
-        try {
-            def parsed = new groovy.json.JsonSlurper().parseText(json)
-            if (parsed instanceof Map && parsed.entries instanceof Map) return new LinkedHashMap(parsed.entries as Map)
-            mcpLog("warn", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' has no entries map; rebuilding it from the File Manager listing")
-        } catch (Exception e) {
-            mcpLog("warn", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' is not valid JSON (${e.message}); rebuilding it from the File Manager listing")
-        }
-    }
+    if (!rebuild) return index
     Map rebuilt = _rebuildItemBackupIndex()
-    if (rebuilt == null) return [:]
     try { _writeItemBackupIndexStore(_itemBackupIndexJson(rebuilt)) }
     catch (Exception e) { mcpLog("warn", "hub-admin", "Rebuilt backup index (${rebuilt.size()} entries) could not be saved (${e.message}); the next backup write saves it") }
     return rebuilt
@@ -38778,19 +38894,16 @@ private void _finishLegacyItemBackupMigration(String owner) {
     try {
         atomicState.remove("itemBackupManifest")
         ITEM_BACKUP_LEGACY_PENDING.remove(owner)
+        mcpLog("info", "hub-admin", "Moved the backup index from app state to File Manager file '${ITEM_BACKUP_INDEX_FILE}'")
     } catch (Exception e) {
         mcpLog("error", "hub-admin", "Backup index is saved to File Manager but the old app-state copy could not be removed (${e.message}); the next backup write retries")
     }
 }
 private Map _rebuildItemBackupIndex() {
-    List files
-    try { files = _fileManagerRootFiles() }
-    catch (Exception e) {
-        mcpLog("warn", "hub-admin", "Backup index rebuild skipped: the File Manager listing failed (${e.message}); unindexed backup files are left in place")
-        return null
-    }
+    List files = _fileManagerRootFiles()
     String uuid = "(?:-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?"
     List found = []
+    int unsized = 0
     files.each { f ->
         String name = f.name
         Long listedAt = f.date as Long
@@ -38800,13 +38913,20 @@ private Map _rebuildItemBackupIndex() {
             List g = code[0] as List
             if (g[1] == "prerestore" && g[2] == "library") return
             String base = (g[1] == "prerestore" ? "prerestore_" : "") + "${g[2]}_${g[3]}"
+            if (f.size == null) unsized++
             found << [base: base, entry: [type: g[2], id: g[3].toString(), fileName: name, timestamp: listedAt ?: 0L,
                                           sourceLength: f.size, sizeBytes: f.size, retention: "pinned"]]
         } else if (rule.matches()) {
             List g = rule[0] as List
-            Long namedAt = null
-            try { namedAt = Date.parse("yyyyMMdd-HHmmss-SSS", g[3].toString()).time } catch (Exception ignored) { }
+            if (!g[1].toString().isInteger()) {
+                mcpLog("warn", "hub-admin", "Backup index rebuild skipped '${name}': rule id ${g[1]} is out of range")
+                return
+            }
             Integer ruleId = g[1].toString() as Integer
+            Long namedAt = null
+            try { namedAt = Date.parse("yyyyMMdd-HHmmss-SSS", g[3].toString()).time }
+            catch (Exception parseErr) { mcpLog("debug", "hub-admin", "Backup index rebuild: '${name}' has no parseable time in its name (${parseErr.message}); using the listed date") }
+            if (f.size == null) unsized++
             found << [base: "rm-rule_${ruleId}_${g[2]}".toString(), entry: [type: "rm-rule", id: ruleId, ruleId: ruleId, fileName: name,
                      timestamp: namedAt ?: listedAt ?: 0L, sourceLength: f.size, sizeBytes: f.size, retention: "pinned"]]
         }
@@ -38818,6 +38938,7 @@ private Map _rebuildItemBackupIndex() {
         while (rebuilt.containsKey(key)) key = "${item.base}_${n++}".toString()
         rebuilt.put(key, item.entry)
     }
+    if (unsized) mcpLog("warn", "hub-admin", "Backup index rebuild: ${unsized} adopted backup file(s) have no size in the File Manager listing and count 0 bytes against the backup storage budget")
     mcpLog("info", "hub-admin", "Rebuilt the backup index from File Manager: ${rebuilt.size()} backup file(s) indexed")
     return rebuilt
 }
@@ -38825,7 +38946,12 @@ List _fileManagerRootFiles() {
     String text = hubInternalGet("/hub/fileManager/json")?.toString()
     if (!text) throw new IllegalStateException("/hub/fileManager/json returned no data")
     def parsed = new groovy.json.JsonSlurper().parseText(text)
-    def files = parsed instanceof List ? parsed : (parsed instanceof Map ? parsed.files : null)
+    def files = null
+    if (parsed instanceof List) {
+        files = parsed
+    } else if (parsed instanceof Map) {
+        files = parsed.containsKey("files") ? parsed.files : parsed.values()?.flatten()
+    }
     if (!(files instanceof List)) throw new IllegalStateException("/hub/fileManager/json returned an unrecognised shape")
     Closure asLong = { v -> v != null && v.toString().isLong() ? v.toString().toLong() : null }
     return (files as List).findAll { !(it instanceof Map) || it.type != "dir" }.collect { f ->
@@ -38906,32 +39032,49 @@ List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
     }
     return victims
 }
-long _itemBackupByteBudget() {
-    long mb = ITEM_BACKUP_DEFAULT_BUDGET_MB
+long _itemBackupBudgetMb() {
     def value = settings?.backupBudgetMb
-    if (value != null) {
-        try { mb = Math.max(1L, new BigDecimal(value.toString()).longValue()) }
-        catch (Exception ignored) { }
+    if (value == null) return ITEM_BACKUP_DEFAULT_BUDGET_MB
+    BigDecimal mb = null
+    try { mb = new BigDecimal(value.toString()) } catch (Exception ignored) { }
+    if (mb == null) {
+        if (ITEM_BACKUP_BUDGET_WARNED.add(value.toString())) {
+            mcpLog("warn", "hub-admin", "Backup storage budget setting '${value}' is not a number; using the ${ITEM_BACKUP_DEFAULT_BUDGET_MB} MB default")
+        }
+        return ITEM_BACKUP_DEFAULT_BUDGET_MB
     }
-    return mb * 1024L * 1024L
+    if (mb < 1) return 1L
+    if (mb > ITEM_BACKUP_MAX_BUDGET_MB) return ITEM_BACKUP_MAX_BUDGET_MB
+    return mb.longValue()
+}
+long _itemBackupByteBudget() {
+    return _itemBackupBudgetMb() * 1024L * 1024L
 }
 long _itemBackupEntryBytes(entry) {
-    def n = entry instanceof Map ? (entry.sizeBytes != null ? entry.sizeBytes : entry.sourceLength) : null
-    return n instanceof Number ? (n as Long) : (n?.toString()?.isLong() ? n.toString().toLong() : 0L)
+    if (!(entry instanceof Map)) return 0L
+    def n = entry.sizeBytes != null ? entry.sizeBytes : entry.sourceLength
+    if (n instanceof Number) return n as Long
+    if (n?.toString()?.isLong()) return n.toString().toLong()
+    return 0L
 }
 Map _itemBackupBudgetUsage(Map manifest) {
     long used = 0L
-    manifest.values().each { used += _itemBackupEntryBytes(it) }
+    manifest.values().each { if (!it?.deletePending) used += _itemBackupEntryBytes(it) }
     return [usedBytes: used, limitBytes: _itemBackupByteBudget()]
 }
 String _itemBackupRetentionNote(Map entry) {
-    String budget = "the ${_itemBackupByteBudget().intdiv(1024L * 1024L)} MB budget shared by all MCP backups"
+    String budget = "the ${_itemBackupBudgetMb()} MB budget shared by all MCP backups"
     if (entry?.retention == "rolling") {
         return "Rolling step: a per-write snapshot inside this rule's editing session. It is removed only when ${budget} is exceeded, and rolling steps are the first backups removed then, oldest first."
     }
-    String replacedBy = entry?.type?.toString() == "rm-rule" ? "Backups of this or other rules never replace it" :
-        (entry?.undoForBackupKey ? "This item's next pre-restore undo replaces it" :
-            "This item's next backup after the one-hour reuse window replaces it; other items' backups never do")
+    String replacedBy
+    if (entry?.type?.toString() == "rm-rule") {
+        replacedBy = "Backups of this or other rules never replace it"
+    } else if (entry?.undoForBackupKey) {
+        replacedBy = "This item's next pre-restore undo replaces it"
+    } else {
+        replacedBy = "This item's next backup after the one-hour reuse window replaces it; other items' backups never do"
+    }
     return "Pinned baseline: ${replacedBy}. It is removed only when ${budget} is exceeded, after every rolling step and every older pinned baseline."
 }
 List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
@@ -41056,13 +41199,17 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid edits preserve original (1-hour protection)
 
 ### Backup retention
-- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, so edits or deletes of other items alone never remove a backup.
-- The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, minimum 1, no upper limit. With Developer Mode on it can also be set through hub_update_mcp_settings, which refuses a value that is not a whole number of at least 1.
-- Past the budget, **rolling** steps are removed first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget. Another item's backup never replaces this one, but once the shared budget is exceeded any new backup can evict older backups of any item: **rolling** steps first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
+- The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
 - Apps, drivers and libraries keep one **pinned** baseline, replaced by that item's next backup after the one-hour window.
-- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete or replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's later writes in that session are **rolling** steps. So "before I started" outlasts the per-write steps when space runs short.
-- A response that returns a backupKey carries `retention` (`pinned` or `rolling`) and `retentionNote`, and its restoreHint says when that backup can be removed. hub_list_backups reports `storageBudget` (`usedBytes` / `limitBytes`) and each entry's `retention`.
-- If the index file is missing, it is rebuilt from the File Manager listing, which also brings backup files left by older versions under retention.
+- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete, pre-forcedelete and replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's other snapshots in that session are **rolling** steps, so "before I started" outlasts the per-write steps when space runs short. An editing session ends once an hour passes with no snapshot of that rule; with `backupEveryRuleWrite` on, a continuous chain of writes keeps it open.
+- Where each response says it:
+  - Rule Machine writes and deletes: the `backup` object carries `retention` (`pinned` or `rolling`) and `retentionNote`, and the restoreHint ends with that note.
+  - hub_delete_item / library deletes: `backupRetention` and `backupRetentionNote`; the restoreHint ends with the note.
+  - hub_restore_backup (app/driver source): `backupRetention` and `backupRetentionNote` describe the `preRestoreBackup` undo entry; the `undoHint` ends with the note.
+  - hub_write_file / hub_delete_file: `backupRetention: "copies"` and `backupRetentionNote` for the `<name>_backup_<ts>` copy.
+  - hub_list_backups: `storageBudget` (`usedBytes` / `limitBytes`, pending deletions excluded), `retentionPolicy`, and each entry's `retention` and `sizeBytes`.
+- If the index file is missing, it is rebuilt from the File Manager listing, which also brings backup files left by older versions under retention. An index file that is listed but cannot be read is never rebuilt over: backup reads and backup-taking writes return `success: false` until it reads again. An index file that is not valid JSON is copied to `mcp-backup-index.corrupt-<time>.json` before the rebuild.
 
 ### Rule Backups (Automatic)
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
@@ -41114,7 +41261,7 @@ Files stored at http://<HUB_IP>/local/<filename>
 - Each chunk must be <60KB
 - Follow `nextOffset` while `hasMore` is true to read the next chunk
 
-**Backup copies:** hub_write_file (when it overwrites different content) and hub_delete_file first copy the file to `<name>_backup_<yyyyMMdd-HHmmss><ext>`. The newest 5 copies of each file name are kept; older copies of that same name are deleted at that point and listed in `removedOldBackups`.
+**Backup copies:** hub_write_file (when it overwrites different content) and hub_delete_file first copy the file to `<name>_backup_<yyyyMMdd-HHmmss-SSS><ext>` (older copies use `<yyyyMMdd-HHmmss>`). If that copy cannot be written, hub_write_file writes nothing and returns `success: false`; hub_delete_file deletes anyway with a `warning`. After the write or delete succeeds, the newest 5 copies of each file name are kept; older copies of that same name are deleted and listed in `removedOldBackups`. A failed listing or delete leaves them and adds `pruneWarning`.
 
 ### hub_list_files
 
