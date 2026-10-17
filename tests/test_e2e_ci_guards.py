@@ -40,7 +40,8 @@ def test_guide_stack_gate_uses_actual_changed_files(changed_files, relevant, pr_
         source = (ROOT / ".github/workflows" / name).read_text()
         event_body = re.search(rf"^  {event}:\n((?:    .*\n|\n)*)", source, re.M).group(1)
         branches = re.search(r"^    branches: \[(.*?)\]", event_body, re.M)
-        assert ({b.strip() for b in branches.group(1).split(",")} if branches else None) == expected
+        actual = {b.strip() for b in branches.group(1).split(",")} if branches else None
+        assert actual == expected, f"{name}: {event} branches filter is {actual}, expected {expected}"
     # A docs-only diff gets the gate without the hub, with or without the full-run label.
     unlabeled = _lane_decision(changed_files, author=pr_author)
     labeled = _lane_decision(changed_files, ["e2e:full"], "labeled", "e2e:full", pr_author)
