@@ -1266,15 +1266,8 @@ For easier bug reporting:
   > 3. Parse and return results with pagination for large result sets
   > 4. Cache results in `state` to reduce API calls
 
-- [ ] **Install/uninstall packages via HPM** — `Difficulty: 4 | Effort: L`
-  > *Partially feasible.* HPM has no programmatic API — it's purely UI-driven. **Bypass approach**: fetch the package manifest JSON, download each app/driver source, and install via existing `hub_create_app`/`hub_create_driver` tools. However, packages installed this way won't appear in HPM's "Installed" list, creating a fragmented experience. Uninstall requires removing running app instances (not just code) via poorly documented `/installedapp/` endpoints.
-  >
-  > **Implementation plan:**
-  > 1. Create `install_package` MCP tool using the bypass approach
-  > 2. Fetch manifest → download sources → install via existing tools
-  > 3. Track installed packages in File Manager for update checking
-  > 4. Document the limitation: HPM won't know about these installations
-  > 5. For uninstall: `hub_delete_item` (type: app|driver) for code, investigate `/installedapp/disable` for instances
+- [x] **Install/uninstall packages via HPM** — resolved without a new tool (issue #543)
+  > HPM has no programmatic API; it is driven through its classic wizard pages. The assessment: `hub_update_package` stays what it is, the MCP package's own repair/deployment path, Developer Mode only, and it does not touch other packages or HPM's records. Ordinary package maintenance runs HPM itself through `hub_set_native_app`: a `walkStep` on any HPM page (install from URL, repository install, update, repair, modify, uninstall, match-up, settings) writes its fields, clicks Next/Back and polls, now that a step's health read and backup use the page the walk is on (HPM's main page clears pending wizard fields when rendered) and the reply exposes the page's `nextPage`. Because HPM performs the work, its package and version records stay correct and later HPM operations see them; the earlier plan to fetch manifests and install sources directly is dropped for that reason. Verified live: the install-from-URL walk keeps its URL and reaches the install-choices page. A dedicated HPM tool is not needed; `hub_list_hpm_packages` reads HPM's records, `hub_set_native_app` operates it.
 
 - [ ] **Check for updates across installed packages** — `Difficulty: 3 | Effort: M`
   > *Partially feasible.* For MCP-tracked packages (from the install tool above): fetch each manifest URL and compare versions -- same pattern as the existing `checkForUpdate()` for the MCP server itself. For HPM-managed packages: HPM's installed-package state IS readable via hub-internal endpoints (`/installedapp/statusJson/` + `/hub2/appsList`), as demonstrated by `hub_list_hpm_packages` (includeDrift=true; drift nests under a `drift` key). A `check_package_updates` tool could cross-reference HPM's recorded manifest URLs and versions against live manifest files to detect available updates.
