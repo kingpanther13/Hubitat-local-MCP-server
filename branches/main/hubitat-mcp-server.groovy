@@ -28,6 +28,7 @@
 @groovy.transform.Field static volatile Map MRTR_CLEANUP_CHECK_AT = [:]
 @groovy.transform.Field Long mrtrWorkerSliceStartedAt = null
 @groovy.transform.Field Map deviceReadContext = null
+@groovy.transform.Field Map callerClient = null
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
 @groovy.transform.Field static final Map NATIVE_LOG_SNAPSHOTS = new java.util.HashMap()
 @groovy.transform.Field static final Map DEVICE_READ_SNAPSHOTS = new java.util.LinkedHashMap()
@@ -8665,6 +8666,8 @@ def toolGetHubInfo(args = null) {
     }
     if (args?.includeSubscriptions == true) info.subscriptions = _hubSubscriptions()
     info.recentWrites = _mrtrRecentOperations()
+    def clientAccess = _clientAccessInfo()
+    if (clientAccess != null) info.clientAccess = clientAccess
     return info
 }
 def toolSetSystemSettings(args) {
@@ -11409,7 +11412,7 @@ private Map _deviceReadFragment(Map snapshot, String token, int start) {
             note: 'Concatenate content fragments in order, then parse the joined JSON. Repeat with nextCursor and unchanged arguments within five minutes; fields=[] discovers smaller selections.']
 }
 private String _deviceReadSelection(deviceId, String mode, sections, fields) {
-    return _mrtrSha256(groovy.json.JsonOutput.toJson([app?.id?.toString(), deviceId.toString(), mode, sections, fields]))
+    return _mrtrSha256(groovy.json.JsonOutput.toJson([app?.id?.toString(), callerClient?.id?.toString(), deviceId.toString(), mode, sections, fields]))
 }
 private Map _deviceReadContinuation(String cursor, String selection) {
     if (!(cursor ==~ /v2:[a-f0-9-]{36}:[0-9]+/)) {
@@ -20246,8 +20249,12 @@ def toolUpdateMcpSettings(args) {
         throw new IllegalArgumentException("Developer Mode tools are disabled. Enable 'Developer Mode Tools' in MCP rule app settings to use hub_update_mcp_settings.")
     }
     requireDestructiveConfirm(args.confirm)
+    if (args.clientToken != null) {
+        if (args.settings) throw new IllegalArgumentException("Send clientToken on its own, without settings.")
+        return _mcpClientTokenOperation(args.clientToken)
+    }
     if (!args.settings || !(args.settings instanceof Map) || args.settings.isEmpty()) {
-        throw new IllegalArgumentException("settings must be a non-empty map of {settingName: newValue}")
+        throw new IllegalArgumentException("settings must be a non-empty map of {settingName: newValue}, or pass clientToken instead")
     }
     def allowedSettings = [
         "mcpLogLevel":            "enum",
@@ -20352,6 +20359,61 @@ def toolUpdateMcpSettings(args) {
         result.message = result.message + " " + deviceScopeResult.message
     }
     return result
+}
+private Map _mcpClientTokenOperation(op) {
+    Map result = _mcpClientTokenResult(op)
+    if (settings.redactAccessTokens == true) {
+        String marker = "***redacted (access token)***"
+        if (result.token) result.token = marker
+        if (result.clients instanceof List) result.clients = result.clients.collect { it + [token: marker] }
+    }
+    return result
+}
+private Map _mcpClientTokenResult(op) {
+    if (!(op instanceof Map)) throw new IllegalArgumentException("clientToken must be an object: {action: list|create|update|rotate|revoke|revokeUntracked, clientId?, label?, access?}")
+    String action = op.action?.toString()
+    String id = op.clientId?.toString()
+    if (action in ["update", "rotate", "revoke"]) {
+        if (!id) throw new IllegalArgumentException("clientToken.clientId is required for action '${action}' (see action 'list').")
+        if (!_clientTokens().containsKey(id)) throw new IllegalArgumentException("No client token with clientId ${id} (see action 'list').")
+    }
+    if (op.access != null && !(op.access instanceof Map)) throw new IllegalArgumentException("clientToken.access must be an object: {tools, read, write, local, cloud, toolNumber}.")
+    switch (action) {
+        case "revokeUntracked":
+            return _revokeUntrackedAccessTokens()
+        case "list":
+            def clients = _clientTokens().collect { cid, c ->
+                [clientId: cid.toString(), label: c?.label, token: c?.token, access: _clientAccessView(cid.toString())]
+            }
+            return [success: true, clients: clients.sort { it.clientId.isInteger() ? (it.clientId as Integer) : 0 },
+                    untrackedTokens: _untrackedAccessTokens().size()]
+        case "create":
+            if (op.access) _clientAccessWrites("0", op.access as Map)
+            def created = _createClientToken(op.label?.toString())
+            if (!created.success) return created
+            String newId = created.clientId.toString()
+            if (op.access) _clientAccessWrites(newId, op.access as Map).each { name, value -> app.updateSetting(name, value) }
+            mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: created client '${created.label}' (id ${newId})")
+            return created + [access: _clientAccessView(newId),
+                              localUrl: "${getFullLocalApiServerUrl()}/mcp?access_token=${created.token}".toString(),
+                              cloudUrl: "${getFullApiServerUrl()}/mcp?access_token=${created.token}".toString()]
+        case "update":
+            if (!op.access) throw new IllegalArgumentException("clientToken.access is required for action 'update'.")
+            def writes = _clientAccessWrites(id, op.access as Map)
+            writes.each { name, value -> app.updateSetting(name, value) }
+            mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: updated access of client id ${id}: ${writes.keySet().sort()}")
+            return [success: true, clientId: id, label: _clientTokens().get(id)?.label, access: _clientAccessView(id)]
+        case "rotate":
+            def rotated = _rotateClientToken(id)
+            if (rotated.success) mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: rotated client id ${id}")
+            return rotated
+        case "revoke":
+            def revoked = _revokeClientToken(id)
+            if (revoked.success) mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: revoked client id ${id}")
+            return revoked
+        default:
+            throw new IllegalArgumentException("clientToken.action must be one of list, create, update, rotate, revoke, revokeUntracked (got: ${action}).")
+    }
 }
 private Map _validateMcpDeviceScope(scopeValue) {
     def mode = "replace"
@@ -20899,14 +20961,15 @@ def _getAllToolDefinitions_partSelfAdmin() {
     return [
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit.[[FLAT_TRIM]] Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place[[FLAT_TRIM]], or manage its per-client access tokens[[/FLAT_TRIM]] — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup.[[FLAT_TRIM]] Every successful write is logged at WARN for audit. Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write_system'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    clientToken: [type: "object", description: "Per-client tokens, instead of settings: see hub_get_tool_guide(section='hub_admin_write_system').[[FLAT_TRIM]] {action: list|create|update|rotate|revoke, ...}. Shape: clientId (update/rotate/revoke), label (create), access? {tools: [names]|\"all\", read, write, local, cloud, toolNumber: main|none|0-9}. create and rotate return the new token; a new client starts with every grantable tool on and access narrows it.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
-                required: ["settings", "confirm"]
+                required: ["confirm"]
             ]
         ],
         [
@@ -20933,7 +20996,6 @@ A real deploy is accepted quickly with `status: "in_progress"` and runs in the b
 }
 def _idempotentWriteToolNames_partSelfAdmin() {
     return [
-        "hub_update_mcp_settings",
         "hub_update_package"
     ]
 }
@@ -20949,7 +21011,7 @@ def _developerModeOnlyToolNames_partSelfAdmin() {
 }
 def _toolDisplayMeta_partSelfAdmin() {
     return [
-        hub_update_mcp_settings: [title: "Update MCP Settings", summary: "Update the MCP app's own settings + device-access scope (Developer Mode)."],
+        hub_update_mcp_settings: [title: "Update MCP Settings", summary: "Update the MCP app's own settings, device-access scope and per-client tokens (Developer Mode)."],
         hub_update_package: [title: "Deploy MCP Package", summary: "Full repair-install of the MCP package at a git ref (Developer Mode)."]
     ]
 }
@@ -33155,6 +33217,8 @@ preferences {
     page(name: "mainPage")
     page(name: "confirmDeletePage")
     page(name: "confirmRegenerateTokenPage")
+    page(name: "clientTokensPage")
+    page(name: "clientAccessPage")
     page(name: "advancedOverridesPage")
 }
 def mainPage() {
@@ -33170,9 +33234,9 @@ def mainPage() {
                 paragraph "Click 'Done' to generate access token, then reopen app to see endpoint URLs."
             } else {
                 paragraph "<b>Local Endpoint:</b> ${_transportStatusLabel(settings.enableLocalAccess)}"
-                paragraph "<code>${getFullLocalApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
+                paragraph "<code>${getFullLocalApiServerUrl()}/mcp?access_token=${_primaryAccessToken()}</code>"
                 paragraph "<b>Cloud Endpoint:</b> ${_transportStatusLabel(settings.enableCloudAccess)}"
-                paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
+                paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${_primaryAccessToken()}</code>"
                 paragraph "Clients that expect header auth can instead send the token as <code>Authorization: Bearer &lt;token&gt;</code> (no <code>?access_token=</code> needed) -- the Hubitat platform accepts it on both endpoints."
                 paragraph "<b>App ID:</b> ${app.id}"
                 paragraph "<b>Version:</b> ${currentVersion()}"
@@ -33210,7 +33274,7 @@ def mainPage() {
             }
             href name: "advancedOverrides", page: "advancedOverridesPage",
                  title: "Advanced: Per-tool Overrides, Protected apps & expert settings",
-                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), choose the apps protected from generic mutations, and configure Origin validation."
+                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), give MCP clients their own tokens with narrower access, choose the apps protected from generic mutations, and configure Origin validation."
         }
         section("Best-Practice Guidance") {
             paragraph "Surfaces this project's best practices to the AI. Reactive hints are always on: a failed write tool's error gains a pointer to that tool's own guide section. The acknowledgment gate below is ON by default."
@@ -33362,6 +33426,374 @@ def confirmDeletePage(params) {
         }
     }
 }
+private String _primaryAccessToken() {
+    def raw = state.accessToken?.toString()
+    return raw ? raw.split(",")[0].trim() : null
+}
+private Map _clientTokens() {
+    return (state.clientTokens instanceof Map) ? state.clientTokens : [:]
+}
+private void _saveClientToken(String id, Map entry) {
+    def tokens = [:] + _clientTokens()
+    if (entry == null) tokens.remove(id) else tokens.put(id, entry)
+    state.clientTokens = tokens
+}
+private List<String> _liveAccessTokens() {
+    def raw = state.accessToken?.toString()
+    return raw ? raw.split(",").collect { it.trim() }.findAll { it } : []
+}
+private void _compactAccessTokenList() {
+    String compact = _liveAccessTokens().join(",")
+    if (state.accessToken?.toString() != compact) state.accessToken = compact
+}
+private long _retiredTokenTtlMs() { 10L * 60L * 1000L }
+private boolean _retiredWithinTtl(retiredAt, long nowMs) {
+    return retiredAt instanceof Number && nowMs - (retiredAt as Long) < _retiredTokenTtlMs()
+}
+private void _retireAccessToken(String token) {
+    if (!token) return
+    long at = now()
+    def kept = (state.retiredTokenHashes instanceof Map ? state.retiredTokenHashes : [:])
+        .findAll { h, t -> _retiredWithinTtl(t, at) }
+    kept.put(_mrtrSha256(token), at)
+    state.retiredTokenHashes = kept
+}
+private boolean _isRetiredAccessToken(String token) {
+    def retired = state.retiredTokenHashes
+    if (!(retired instanceof Map) || !token) return false
+    return _retiredWithinTtl(retired.get(_mrtrSha256(token)), now())
+}
+private void _clientTokenNotice(String message) { state.clientTokenNotice = message }
+def clientTokensPage() {
+    String notice = state.clientTokenNotice?.toString()
+    if (notice) state.remove("clientTokenNotice")
+    dynamicPage(name: "clientTokensPage", title: "Per-client access tokens") {
+        if (notice) section { paragraph "<b style='color: red;'>${notice}</b>" }
+        section {
+            paragraph "Each client token can use both endpoints (subject to its own local/cloud switches), in the URL or as an <code>Authorization: Bearer</code> header. Its access is set on its own page: which tools it can call (every tool that can be granted starts on), Read/Write, local/cloud and the tool-name number. The settings on the main page still apply to every client. Once any client token exists, every client, the main token's included, must send its token as <code>?access_token=</code> or an <code>Authorization: Bearer</code> header. Revoking or rotating one token leaves the main token and every other client untouched, and regenerating the main token keeps these. Needs firmware 2.5.2 or later."
+        }
+        def tokens = _clientTokens()
+        def live = _liveAccessTokens()
+        tokens.keySet().sort { it.toString().isInteger() ? (it as Integer) : 0 }.each { id ->
+            def client = tokens.get(id)
+            section(client.label.toString()) {
+                if (!live.contains(client.token)) paragraph "<b style='color: red;'>This token is no longer accepted by the hub.</b> Revoke it and create a new one."
+                paragraph "<code>${getFullLocalApiServerUrl()}/mcp?access_token=${client.token}</code>"
+                paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${client.token}</code>"
+                href name: "clientAccess_${id}", page: "clientAccessPage", params: [clientId: id.toString()],
+                     title: "Access for ${client.label}", description: _clientAccessSummary(id.toString())
+                input "rotateClientToken_${id}", "button", title: "Rotate token (changes this client's URL)"
+                input "revokeClientToken_${id}", "button", title: "Revoke ${client.label}"
+            }
+        }
+        def untracked = _untrackedAccessTokens()
+        if (untracked) {
+            section("Untracked tokens") {
+                paragraph "<b style='color: red;'>The hub accepts ${untracked.size()} token(s) that belong to no client.</b> They are refused, but revoke them to clean up."
+                input "revokeUntrackedTokensBtn", "button", title: "Revoke untracked tokens"
+            }
+        }
+        section("Add a client") {
+            input "newClientTokenLabel", "text", title: "Client name, 1-40 characters without commas, not already used (e.g. Claude Desktop)", required: false, submitOnChange: true
+            input "createClientTokenBtn", "button", title: "Create token for this client"
+        }
+    }
+}
+def clientAccessPage(params) {
+    if (params?.clientId) state.clientAccessEditing = params.clientId.toString()
+    String id = state.clientAccessEditing?.toString()
+    def client = id ? _clientTokens().get(id) : null
+    dynamicPage(name: "clientAccessPage", title: client ? "Access for ${client.label}" : "Client not found") {
+        if (!client) {
+            section { paragraph "This client token no longer exists." }
+            return
+        }
+        section("Tools") {
+            paragraph _wrappedEnumOptionsStyle() + "Pick every tool this client may call."
+            input "clientTools_${id}", "enum", title: "Tools this client can call", multiple: true, required: false,
+                  options: _grantableToolOptions(), submitOnChange: true
+            input "clientToolsAll_${id}", "button", title: "Select all tools"
+            input "clientToolsNone_${id}", "button", title: "Deselect all tools"
+            paragraph "Every tool that could be granted was on when this token was created; untick what this client should not have. A tool added by a later update stays off for this client until you turn it on here. ${_alwaysGrantedToolNames().sort().join(' and ')} are always included, even with Read off: they only serve documentation and search the tools this client can already see. These tools work only with the main token and cannot be granted: ${_ungrantableToolNames().sort().join(', ')}. A client token also cannot read or change this MCP Rule Server app itself."
+        }
+        section("Read / Write") {
+            input "clientRead_${id}", "bool", title: "Allow read tools", defaultValue: true, submitOnChange: true
+            input "clientWrite_${id}", "bool", title: "Allow write tools", defaultValue: true, submitOnChange: true
+            paragraph "These can only narrow access: the Read and Write switches on the main page still apply."
+        }
+        section("Connection") {
+            input "clientLocal_${id}", "bool", title: "Allow local access (LAN endpoint)", defaultValue: true, submitOnChange: true
+            input "clientCloud_${id}", "bool", title: "Allow cloud access (Hubitat cloud endpoint)", defaultValue: true, submitOnChange: true
+        }
+        section("Tool names") {
+            input "clientToolNumber_${id}", "enum", title: "Number in this client's tool names (hub3_get_info)",
+                  options: [main: "Same as the main token", none: "No number"] + (0..9).collectEntries { [(it.toString()): "hub${it}_".toString()] },
+                  defaultValue: "main", required: false, submitOnChange: true
+        }
+    }
+}
+Set _ungrantableToolNames() {
+    def names = ["hub_update_mcp_settings"] as Set
+    names.addAll(getDeveloperModeOnlyToolNames())
+    names.addAll(getGatewayConfig().hub_manage_code?.tools ?: [])
+    return names
+}
+Set _alwaysGrantedToolNames() { ["hub_get_tool_guide", "hub_search_tools"] as Set }
+private Set _installedAppTargetTools() {
+    return ["hub_get_app_config", "hub_list_app_pages", "hub_export_native_app", "hub_clone_native_app",
+            "hub_set_native_app", "hub_delete_native_app", "hub_set_app_disabled", "hub_set_rule",
+            "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule",
+            "hub_set_visual_rule", "hub_delete_visual_rule", "hub_call_rule", "hub_set_rule_paused",
+            "hub_set_rule_private_boolean"] as Set
+}
+private boolean _targetsThisApp(Map args) {
+    String self = app?.id?.toString()
+    if (!self || args == null) return false
+    return ["appId", "sourceAppId", "ruleId"].any { key ->
+        def target = args.get(key)
+        def ids = (target instanceof Collection) ? target : [target]
+        ids.any { it?.toString() == self }
+    }
+}
+Map _createClientToken(String rawLabel) {
+    String label = rawLabel?.trim()
+    if (!label || label.length() > 40 || label.contains(",") || _clientTokens().values().any { it?.label == label }) {
+        String named = label ? " ('${label}' is not)" : ""
+        return [success: false, error: "No token created: the client name must be 1-40 characters, contain no comma, and not already be used${named}."]
+    }
+    String token = null
+    try {
+        token = createAnotherAccessToken()?.toString()
+    } catch (Exception e) {
+        mcpLogError("server", "createAnotherAccessToken failed for client '${label}'", e)
+    }
+    if (!token || !_liveAccessTokens().contains(token)) {
+        return [success: false, error: "No token created for '${label}': the hub did not issue one (per-client tokens need firmware 2.5.2 or later)."]
+    }
+    int next = (state.nextClientTokenId instanceof Number) ? (state.nextClientTokenId as int) : 1
+    String id = next.toString()
+    _saveClientToken(id, [label: label, token: token])
+    state.nextClientTokenId = next + 1
+    _selectAllClientTools(id)
+    mcpLog("warn", "server", "MCP client token created for '${label}'")
+    return [success: true, clientId: id, label: label, token: token]
+}
+Map _revokeClientToken(String id) {
+    def client = _clientTokens().get(id)
+    if (!(client instanceof Map)) return [success: false, error: "No client token with id ${id}."]
+    boolean revoked = false
+    try {
+        revokeSpecificAccessToken(client.token)
+        _compactAccessTokenList()
+        revoked = !_liveAccessTokens().contains(client.token)
+    } catch (Exception e) {
+        mcpLogError("server", "revokeSpecificAccessToken failed for client '${client.label}'", e)
+    }
+    if (!revoked) return [success: false, error: "'${client.label}' was not revoked: its token is still in the hub's token list. Try Revoke again."]
+    _retireAccessToken(client.token)
+    _saveClientToken(id, null)
+    ["clientTools", "clientRead", "clientWrite", "clientLocal", "clientCloud", "clientToolNumber"].each {
+        app.removeSetting("${it}_${id}".toString())
+    }
+    mcpLog("warn", "server", "MCP client token revoked for '${client.label}'")
+    return [success: true, clientId: id, label: client.label]
+}
+Map _rotateClientToken(String id) {
+    def client = _clientTokens().get(id)
+    if (!(client instanceof Map)) return [success: false, error: "No client token with id ${id}."]
+    def before = _liveAccessTokens() as Set
+    String fresh = null
+    try {
+        resetSpecificAccessToken(client.token)
+        fresh = _liveAccessTokens().find { !before.contains(it) }
+    } catch (Exception e) {
+        mcpLogError("server", "resetSpecificAccessToken failed for client '${client.label}'", e)
+    }
+    if (!fresh) return [success: false, error: "'${client.label}' was not rotated: the hub did not issue a new token. Its current URL still works."]
+    _retireAccessToken(client.token)
+    _saveClientToken(id, [label: client.label, token: fresh])
+    mcpLog("warn", "server", "MCP client token rotated for '${client.label}'; that client must re-copy its URL")
+    return [success: true, clientId: id, label: client.label, token: fresh]
+}
+List<String> _untrackedAccessTokens() {
+    def known = ([_primaryAccessToken()] + _clientTokens().values().collect { it?.token }) as Set
+    return _liveAccessTokens().findAll { !known.contains(it) }
+}
+Map _revokeUntrackedAccessTokens() {
+    def untracked = _untrackedAccessTokens()
+    untracked.each { token ->
+        try {
+            revokeSpecificAccessToken(token)
+            _compactAccessTokenList()
+            _retireAccessToken(token)
+        } catch (Exception e) {
+            mcpLogError("server", "revokeSpecificAccessToken failed for an untracked token", e)
+        }
+    }
+    def left = _untrackedAccessTokens()
+    if (untracked) mcpLog("warn", "server", "Revoked ${untracked.size() - left.size()} untracked access token(s)")
+    return left ? [success: false, error: "${left.size()} untracked token(s) are still in the hub's token list. Try again."] : [success: true, revoked: untracked.size()]
+}
+Map _clientAccessView(String id) {
+    return [tools: (_clientAllowedTools(id) - _alwaysGrantedToolNames()).sort(),
+            read: _clientAllows(id, "clientRead"), write: _clientAllows(id, "clientWrite"),
+            local: _clientAllows(id, "clientLocal"), cloud: _clientAllows(id, "clientCloud"),
+            toolNumber: (_clientSetting(id, "clientToolNumber") ?: "main").toString()]
+}
+Map _clientAccessWrites(String id, Map access) {
+    def writes = [:]
+    def unknown = access.keySet().findAll { !(it in ["tools", "read", "write", "local", "cloud", "toolNumber"]) }
+    if (unknown) throw new IllegalArgumentException("Unknown clientToken.access keys: ${unknown.sort()}. Allowed: tools, read, write, local, cloud, toolNumber.")
+    if (access.containsKey("tools")) {
+        def grantable = _grantableToolOptions().keySet()
+        def tools = access.tools
+        if (tools == "all") {
+            writes["clientTools_${id}".toString()] = [type: "enum", value: grantable as List]
+        } else if (tools instanceof Collection) {
+            def names = tools.collect { it.toString() }.findAll { !_alwaysGrantedToolNames().contains(it) }
+            def mainOnly = names.findAll { _ungrantableToolNames().contains(it) }
+            if (mainOnly) throw new IllegalArgumentException("These tools work only with the main token and cannot be granted: ${mainOnly.sort()}.")
+            def bad = names.findAll { !grantable.contains(it) }
+            if (bad) throw new IllegalArgumentException("Unknown tool names in clientToken.access.tools: ${bad.sort()}.")
+            writes["clientTools_${id}".toString()] = [type: "enum", value: names.unique()]
+        } else {
+            throw new IllegalArgumentException("clientToken.access.tools must be a list of tool names or \"all\".")
+        }
+    }
+    ["read": "clientRead", "write": "clientWrite", "local": "clientLocal", "cloud": "clientCloud"].each { key, setting ->
+        if (!access.containsKey(key)) return
+        def value = access.get(key)
+        if (value instanceof String && value in ["true", "false"]) value = (value == "true")
+        if (!(value instanceof Boolean)) throw new IllegalArgumentException("clientToken.access.${key} must be true or false.")
+        writes["${setting}_${id}".toString()] = [type: "bool", value: value]
+    }
+    if (access.containsKey("toolNumber")) {
+        String number = access.toolNumber?.toString()
+        if (!(number in ["main", "none"] || number ==~ /^[0-9]$/)) throw new IllegalArgumentException("clientToken.access.toolNumber must be \"main\", \"none\" or a digit 0-9.")
+        writes["clientToolNumber_${id}".toString()] = [type: "enum", value: number]
+    }
+    return writes
+}
+private void _selectAllClientTools(String id) {
+    app.updateSetting("clientTools_${id}".toString(), [type: "enum", value: _grantableToolOptions().keySet() as List])
+}
+private Map _grantableToolOptions() {
+    def meta = getToolDisplayMeta()
+    def skip = _ungrantableToolNames() + _alwaysGrantedToolNames()
+    def names = getAllToolDefinitions().collect { it.name as String }.findAll { !skip.contains(it) }
+    def labelled = names.collectEntries { [(it): "${meta[it]?.title ?: it} (${it})".toString()] }
+    return labelled.sort { a, b -> a.value <=> b.value }
+}
+def _clientSetting(String id, String name) { settings.get("${name}_${id}".toString()) }
+private boolean _clientAllows(String id, String name) { _clientSetting(id, name) != false }
+Set _clientAllowedTools(String id) {
+    def picked = _clientSetting(id, "clientTools")
+    Collection pickedList
+    if (picked instanceof Collection) pickedList = picked
+    else if (picked) pickedList = [picked]
+    else pickedList = []
+    Set allowed = pickedList.collect { it.toString() } as Set
+    allowed.addAll(_alwaysGrantedToolNames())
+    allowed.removeAll(_ungrantableToolNames())
+    return allowed
+}
+private String _clientAccessSummary(String id) {
+    def parts = ["${_clientAllowedTools(id).size() - _alwaysGrantedToolNames().size()} tools"]
+    if (!_clientAllows(id, "clientRead")) parts << "no read"
+    if (!_clientAllows(id, "clientWrite")) parts << "no write"
+    if (!_clientAllows(id, "clientLocal")) parts << "no local"
+    if (!_clientAllows(id, "clientCloud")) parts << "no cloud"
+    return parts.join(", ")
+}
+String _clientToolDenial(String toolName, args = null) {
+    if (callerClient == null) return null
+    String id = callerClient.id.toString()
+    String who = "client '${callerClient.label}'"
+    String ext = _externalToolName(toolName)
+    def gateway = getGatewayConfig()[toolName]
+    if (gateway != null) {
+        def clientHidden = _clientHiddenTools()
+        if ((gateway.tools ?: []).any { !clientHidden.contains(it) }) return null
+        return "${ext} has no tools enabled for ${who}. Ask the hub owner to enable them under Per-client access tokens in the MCP Rule Server app."
+    }
+    if (_ungrantableToolNames().contains(toolName)) {
+        return "${ext} works only with the main access token and cannot be granted to ${who}."
+    }
+    if (!_clientAllowedTools(id).contains(toolName)) {
+        return "${ext} is not enabled for ${who}. Ask the hub owner to enable it under Per-client access tokens in the MCP Rule Server app."
+    }
+    Map a = (args instanceof Map) ? args as Map : [:]
+    if (_installedAppTargetTools().contains(toolName) && _targetsThisApp(a)) {
+        return "${ext} cannot target the MCP Rule Server app itself from ${who}."
+    }
+    if (_alwaysGrantedToolNames().contains(toolName)) return null
+    if ((toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(a)) || (toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(a))) return null
+    boolean isRead = getReadOnlyToolNames().contains(toolName) || _isDeviceReplaceOptionsOnlyCall(toolName, a)
+    if (isRead && !_clientAllows(id, "clientRead")) return "Read tools are disabled for ${who}, so ${ext} cannot run."
+    if (!isRead && !_clientAllows(id, "clientWrite")) return "Write tools are disabled for ${who}, so ${ext} cannot run."
+    return null
+}
+private Set _clientHiddenTools() {
+    if (callerClient == null) return [] as Set
+    String id = callerClient.id.toString()
+    def allowed = _clientAllowedTools(id)
+    def always = _alwaysGrantedToolNames()
+    def readOnly = getReadOnlyToolNames()
+    boolean noRead = !_clientAllows(id, "clientRead")
+    boolean noWrite = !_clientAllows(id, "clientWrite")
+    return _toolCatalogIndexes().names.findAll { name ->
+        !allowed.contains(name) || (!always.contains(name) && (readOnly.contains(name) ? noRead : noWrite))
+    } as Set
+}
+Map _clientAccessInfo() {
+    if (callerClient == null) return null
+    String id = callerClient.id.toString()
+    def hidden = getHiddenToolNames()
+    return [client: callerClient.label,
+            readEnabled: _clientAllows(id, "clientRead"), writeEnabled: _clientAllows(id, "clientWrite"),
+            localAccessEnabled: _clientAllows(id, "clientLocal"), cloudAccessEnabled: _clientAllows(id, "clientCloud"),
+            tools: _clientAllowedTools(id).findAll { !hidden.contains(it) }.collect { _externalToolName(it as String) }.sort()]
+}
+String _requestAccessToken() {
+    def queryToken = params?.access_token
+    if (queryToken instanceof String && queryToken) return queryToken
+    String auth = _requestHeader("Authorization")
+    if (auth != null && auth.length() > 7 && auth.substring(0, 7).equalsIgnoreCase("Bearer ")) return auth.substring(7)
+    return null
+}
+def _resolveCaller() {
+    callerClient = null
+    String token = _requestAccessToken()
+    Map clients = _clientTokens()
+    if (token == null) {
+        if (!clients) return null
+        return _callerRefusal(403, "Forbidden: this server has per-client tokens, so the token must arrive as ?access_token= or an Authorization: Bearer header.")
+    }
+    if (_isRetiredAccessToken(token)) {
+        return _callerRefusal(401, "Unauthorized: this access token was revoked or rotated. Copy the current URL from the MCP Rule Server app on the hub.")
+    }
+    def match = clients.find { cid, c -> c instanceof Map && c.token == token }
+    if (match == null) {
+        if (token != _primaryAccessToken() && _liveAccessTokens().contains(token)) {
+            return _callerRefusal(401, "Unauthorized: this access token belongs to no client. Revoke untracked tokens under Per-client access tokens in the MCP Rule Server app on the hub.")
+        }
+        return null
+    }
+    if (!_liveAccessTokens().contains(token)) {
+        return _callerRefusal(401, "Unauthorized: this access token was revoked. Copy the current URL from the MCP Rule Server app on the hub.")
+    }
+    String id = match.key.toString()
+    callerClient = [id: id, label: match.value.label?.toString()]
+    boolean cloud = _isCloudRequest()
+    if (!_clientAllows(id, cloud ? "clientCloud" : "clientLocal")) {
+        return _callerRefusal(403, "Forbidden: ${cloud ? 'cloud' : 'local'} access is disabled for client '${callerClient.label}'. Turn it on under Per-client access tokens in the MCP Rule Server app on the hub.")
+    }
+    return null
+}
+private def _callerRefusal(int status, String message) {
+    return render(status: status, contentType: "application/json",
+                  data: groovy.json.JsonOutput.toJson(jsonRpcError(null, -32600, message)))
+}
 def confirmRegenerateTokenPage() {
     dynamicPage(name: "confirmRegenerateTokenPage", title: "Regenerate access token?") {
         section {
@@ -33376,14 +33808,22 @@ def confirmRegenerateTokenPage() {
         }
     }
 }
+private String _wrappedEnumOptionsStyle() {
+    return "<style>" +
+        ".SumoSelect > .optWrapper > .options li label { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; word-break: break-word; overflow-wrap: anywhere; line-height: 1.35; padding-top: 2px; padding-bottom: 2px; } " +
+        ".SumoSelect > .optWrapper > .options li.opt { height: auto !important; }" +
+        "</style>"
+}
 def advancedOverridesPage() {
     dynamicPage(name: "advancedOverridesPage", title: "Advanced: Per-tool Overrides & Expert Settings") {
         section {
-            paragraph "<style>" +
-                ".SumoSelect > .optWrapper > .options li label { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; word-break: break-word; overflow-wrap: anywhere; line-height: 1.35; padding-top: 2px; padding-bottom: 2px; } " +
-                ".SumoSelect > .optWrapper > .options li.opt { height: auto !important; }" +
-                "</style>" +
+            paragraph _wrappedEnumOptionsStyle() +
                 "Deny-only fine-grained control. These selections are applied <b>below</b> the Read/Write masters: they can only turn things OFF, never re-enable something a master already hid. A disabled tool disappears from tools/list and hub_search_tools everywhere it appears (including shared tools in multiple gateways) and returns a clear error if a cached client still calls it; it remains documented in hub_get_tool_guide."
+        }
+        section("Per-client access tokens") {
+            href name: "clientTokens", page: "clientTokensPage",
+                 title: "Per-client access tokens (${_clientTokens().size()})",
+                 description: "Give an MCP client its own token with narrower access: which tools it can call, Read/Write, local/cloud and the tool-name number. The main token above is unaffected."
         }
         section("Protected apps") {
             def choices = _protectedAppChoices()
@@ -33501,9 +33941,34 @@ def appButtonHandler(btn) {
         }
         state.remove("ruleToDelete")
     } else if (btn == "regenerateTokenBtn") {
-        state.remove("accessToken")
-        createAccessToken()
+        String oldMain = _primaryAccessToken()
+        if (_clientTokens()) {
+            resetSpecificAccessToken(oldMain)
+        } else {
+            state.remove("accessToken")
+            createAccessToken()
+        }
+        _retireAccessToken(oldMain)
         mcpLog("warn", "server", "MCP access token regenerated via UI; endpoint URLs changed, clients must re-copy the new URL")
+    } else if (btn == "createClientTokenBtn") {
+        def created = _createClientToken(settings.newClientTokenLabel?.toString())
+        if (created.success) app.removeSetting("newClientTokenLabel")
+        else _clientTokenNotice(created.error.toString())
+    } else if (btn?.startsWith("revokeClientToken_")) {
+        def revoked = _revokeClientToken(btn.substring("revokeClientToken_".length()))
+        if (!revoked.success) _clientTokenNotice(revoked.error.toString())
+    } else if (btn == "revokeUntrackedTokensBtn") {
+        def cleaned = _revokeUntrackedAccessTokens()
+        if (!cleaned.success) _clientTokenNotice(cleaned.error.toString())
+    } else if (btn?.startsWith("clientToolsAll_")) {
+        String id = btn.substring("clientToolsAll_".length())
+        if (_clientTokens().containsKey(id)) _selectAllClientTools(id)
+    } else if (btn?.startsWith("clientToolsNone_")) {
+        String id = btn.substring("clientToolsNone_".length())
+        if (_clientTokens().containsKey(id)) app.removeSetting("clientTools_${id}".toString())
+    } else if (btn?.startsWith("rotateClientToken_")) {
+        def rotated = _rotateClientToken(btn.substring("rotateClientToken_".length()))
+        if (!rotated.success) _clientTokenNotice(rotated.error.toString())
     } else if (btn == "resetOverridesBtn") {
         app.removeSetting("disabled_tools")
         app.removeSetting("disabled_gateways")
@@ -33637,6 +34102,9 @@ private Map _protectedAppChoices() {
 }
 private void _requireUnprotectedAppMutation(Object targetId, String operation, Set<String> protectedIds = null) {
     String id = _protectedAppId(targetId)
+    if (id && callerClient != null && id == app.id?.toString()) {
+        throw new IllegalArgumentException("A per-client access token cannot ${operation} the MCP Rule Server app itself.")
+    }
     if (id && (protectedIds != null ? protectedIds : _protectedAppIds()).contains(id)) {
         throw new IllegalArgumentException("App ${id} is protected: cannot ${operation}. Manage Protected apps on the Advanced page of the MCP server's Hubitat app. Developer Mode does not bypass this protection for generic tools.")
     }
@@ -33785,6 +34253,8 @@ def handleMcpRequest() {
                 jsonRpcError(null, -32600, "Forbidden: the Origin header does not name a known identity for this MCP endpoint.")))
         }
     }
+    def callerRefusal = _resolveCaller()
+    if (callerRefusal != null) return callerRefusal
     _cleanupRetiredToolState()
     _retireHubSecuritySettingsOnce()
     _refreshSetupAfterUpdate()
@@ -34226,6 +34696,11 @@ def handleServerDiscover(msg) {
     ])
 }
 String _hubToolNumber() {
+    if (callerClient != null) {
+        String choice = _clientSetting(callerClient.id.toString(), "clientToolNumber")?.toString()
+        if (choice == "none") return null
+        if (choice ==~ /^[0-9]$/) return choice
+    }
     if (settings.enableHubToolNumber != true) return null
     String digit = settings.hubToolNumber?.toString()
     return (digit != null && digit ==~ /^[0-9]$/) ? digit : null
@@ -34276,10 +34751,12 @@ def handleToolsList(msg) {
 def _guideResourceUriPrefix() { "hubitat://guide/" }
 def _contextResourcesEnabled() { !getHiddenToolNames().contains("hub_list_devices") }
 def _guideResourcesEnabled() { !getHiddenToolNames().contains("hub_get_tool_guide") }
-def _resourceGateCause() {
-    settings.enableRead == false ?
-        "Read tools are disabled in MCP Rule Server settings (Enable Read Tools)" :
-        "the mirrored tool is disabled in Advanced settings (Per-tool Overrides)"
+def _resourceGateCause(String mirroredTool) {
+    if (settings.enableRead == false) return "Read tools are disabled in MCP Rule Server settings (Enable Read Tools)"
+    if (callerClient != null && !getEffectiveDisabledTools().contains(mirroredTool)) {
+        return "the mirrored tool is not enabled for client '${callerClient.label}'"
+    }
+    return "the mirrored tool is disabled in Advanced settings (Per-tool Overrides)"
 }
 def _resourceCatalog() {
     def entries = []
@@ -34326,7 +34803,7 @@ def handleResourcesRead(msg) {
     }
     if (uri == "hubitat://context-summary" || uri == "hubitat://context") {
         if (!_contextResourcesEnabled()) {
-            return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} reads live device state and ${_resourceGateCause()}.", [uri: uri])
+            return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} reads live device state and ${_resourceGateCause('hub_list_devices')}.", [uri: uri])
         }
         try {
             if (uri == "hubitat://context-summary") {
@@ -34351,7 +34828,7 @@ def handleResourcesRead(msg) {
         def sections = getToolGuideSections()
         if (sections.containsKey(section)) {
             if (!_guideResourcesEnabled()) {
-                return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} mirrors hub_get_tool_guide and ${_resourceGateCause()}.", [uri: uri])
+                return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} mirrors hub_get_tool_guide and ${_resourceGateCause('hub_get_tool_guide')}.", [uri: uri])
             }
             return jsonRpcResult(msg.id, [
                 contents: [[uri: uri, mimeType: "text/markdown", text: _guideSectionServed(section, sections[section])]],
@@ -34958,6 +35435,8 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs, boo
     if (getEffectiveDisabledTools().contains(leaf)) {
         throw new IllegalArgumentException("${leaf} is disabled in Advanced settings (Per-tool Overrides). Re-enable it in MCP Rule Server app settings.")
     }
+    String clientDenial = _clientToolDenial(leaf, leafArgs)
+    if (clientDenial != null) throw new IllegalArgumentException(clientDenial)
     if (checkKey && !readLeaf && settings.enableMandatoryBPS != false) {
         String bpsSection = _bpsSectionForTool(leaf)
         def bpsKey = hubBpsKeyFromArgs(leafArgs)
@@ -34971,7 +35450,8 @@ private Map _mrtrBinding(outerToolName, leafToolName, Map args) {
     return [
         outerTool: outerToolName?.toString(),
         leafTool: leafToolName?.toString(),
-        argDigest: _mrtrSha256(canonical)
+        argDigest: _mrtrSha256(canonical),
+        client: callerClient?.id?.toString()
     ]
 }
 private String _mrtrSha256(String value) {
@@ -35001,7 +35481,8 @@ private def _mrtrCanonicalArgs(value) {
 private boolean _mrtrBindingMatches(Map rec, Map binding) {
     return rec.outerTool?.toString() == binding.outerTool?.toString() &&
         rec.leafTool?.toString() == binding.leafTool?.toString() &&
-        rec.argDigest?.toString() == binding.argDigest?.toString()
+        rec.argDigest?.toString() == binding.argDigest?.toString() &&
+        rec.client?.toString() == binding.client?.toString()
 }
 def _mrtrActiveTtlMs() { _writeLeaseMs() }
 def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
@@ -35342,6 +35823,7 @@ def _mrtrReserve(outerTool, leafTool, Map binding, String readSnapshotId = null)
                     outerTool: outerTool?.toString(), leafTool: leafTool?.toString(),
                     argDigest: binding.argDigest,
                     startedAt: at, updatedAt: at, expiresAt: at + _mrtrActiveTtlMs(),
+                    client: binding.client, clientLabel: callerClient?.label,
                     rounds: 0, generation: 0
                 ]
                 if (readSnapshotId) rec.readSnapshotId = readSnapshotId
@@ -35907,6 +36389,7 @@ def runMrtrSlice(Map job = [:]) {
         }
     }
     if (work == null || rec == null) return
+    if (rec.client != null) callerClient = [id: rec.client.toString(), label: rec.clientLabel?.toString()]
     Long previousWorkerStart = mrtrWorkerSliceStartedAt
     mrtrWorkerSliceStartedAt = now()
     try {
@@ -35952,6 +36435,7 @@ def _mrtrRecentOperations(int limit = 10) {
         Map rec = v as Map
         String leaf = rec.leafTool?.toString()
         if (!writes.contains(leaf)) return
+        if (callerClient != null && rec.client?.toString() != callerClient.id.toString()) return
         String status = rec.status?.toString()
         String phase
         if (status == "terminal") {
@@ -35963,6 +36447,7 @@ def _mrtrRecentOperations(int limit = 10) {
         }
         Map row = [tool: leaf, status: phase, startedAt: rec.startedAt,
                    updatedAt: rec.updatedAt ?: rec.startedAt, slices: (rec.rounds ?: 0)]
+        if (callerClient == null && rec.clientLabel) row.client = rec.clientLabel
         if (status == "terminal" && rec.terminalResult instanceof Map) {
             Map result = rec.terminalResult as Map
             ["success", "appId", "ruleId", "newAppId", "deviceId", "driverId", "error"].each {
@@ -36025,7 +36510,9 @@ def runMrtrAutoContinue(Map job = [:]) {
         mcpLog("warn", "mrtr", "Server-side continuation of ${leaf} skipped: the record expired unresumed at generation ${generation}")
         return
     }
-    Map binding = [outerTool: rec.outerTool?.toString(), leafTool: leaf, argDigest: rec.argDigest?.toString()]
+    Map binding = [outerTool: rec.outerTool?.toString(), leafTool: leaf, argDigest: rec.argDigest?.toString(),
+                   client: rec.client?.toString()]
+    if (rec.client != null) callerClient = [id: rec.client.toString(), label: rec.clientLabel?.toString()]
     Map claim
     try {
         claim = _mrtrClaim(stateId, rec.outerTool, leaf, binding) as Map
@@ -36284,7 +36771,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
             mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}")
         }
     }
-    if (settings.redactAccessTokens == true) rendered = _redactAccessTokens(rendered)
+    if (settings.redactAccessTokens == true || callerClient != null) rendered = _redactAccessTokens(rendered)
     String jsonText
     try {
         jsonText = groovy.json.JsonOutput.toJson(rendered)
@@ -36328,6 +36815,9 @@ private def _redactAccessTokens(value) {
     String marker = "***redacted (access token)***"
     if (value instanceof Map) {
         return value.collectEntries { k, v ->
+            if (k?.toString() == "clientTokens" && v instanceof Map) {
+                return [(k): v.collectEntries { id, c -> [(id): (c instanceof Map) ? c + [token: marker] : marker] }]
+            }
             boolean tokenKey = k?.toString() ==~ /(?i)access_?token/
             [(k): (tokenKey && v instanceof CharSequence) ? marker : _redactAccessTokens(v)]
         }
@@ -36335,9 +36825,11 @@ private def _redactAccessTokens(value) {
     if (value instanceof List) return value.collect { _redactAccessTokens(it) }
     if (value instanceof CharSequence) {
         String text = value.toString()
-        if (!text.toLowerCase().contains("access")) return value
-        return text.replaceAll(/(?i)(access_token=)[^&\s"'<>#]+/, '$1' + marker)
-                   .replaceAll(/(?i)("access_?token"\s*:\s*")[^"]*(")/, '$1' + marker + '$2')
+        boolean clientTokens = text.contains("clientTokens")
+        if (!clientTokens && !text.toLowerCase().contains("access")) return value
+        String masked = text.replaceAll(/(?i)(access_token=)[^&\s"'<>#]+/, '$1' + marker)
+                            .replaceAll(/(?i)("access_?token"\s*:\s*")[^"]*(")/, '$1' + marker + '$2')
+        return clientTokens ? masked.replaceAll(/("token"\s*:\s*")[^"]*(")/, '$1' + marker + '$2') : masked
     }
     return value
 }
@@ -36788,10 +37280,10 @@ def getGatewayConfig() {
             description: "Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration, scope, and operational state without manual UI intervention. Requires `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each write is logged at WARN level for audit. Covers self-settings including the device-access scope (selectedDevices); additional self-admin tools (true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.",
             tools: ["hub_update_mcp_settings"],
             summaries: [
-                hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices). Args: settings (map of key→value), confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
+                hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices), or manage per-client access tokens. Args: settings (map of key→value) | clientToken {action, clientId?, label?, access?}, confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access enableLocalAccess enableCloudAccess local cloud remote LAN endpoint access disable block connection"
+                hub_update_mcp_settings: "self-admin developer mode per-client access token client token create revoke rotate grant narrow tools toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access enableLocalAccess enableCloudAccess local cloud remote LAN endpoint access disable block connection"
             ]
         ],
         hub_read_devices: [
@@ -36977,6 +37469,7 @@ def getHiddenToolNames() {
         hide.addAll(getDeveloperModeOnlyToolNames())
     }
     hide.addAll(getEffectiveDisabledTools())
+    hide.addAll(_clientHiddenTools())
     return hide
 }
 def getDeveloperModeOnlyToolNames() {
@@ -37399,6 +37892,8 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             throw new IllegalArgumentException("Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${toolName}.")
         }
     }
+    String clientDenial = _clientToolDenial(toolName as String, args)
+    if (clientDenial != null) throw new IllegalArgumentException(clientDenial)
     if (!isGatewayName && settings.enableMandatoryBPS != false
             && !getReadOnlyToolNames().contains(toolName)
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
@@ -39244,6 +39739,7 @@ private Map _debugLogRecord(Map raw, String id) {
     if (raw.duration) entry.duration = raw.duration
     if (raw.stackTrace) entry.stackTrace = raw.stackTrace.toString().take(1000)
     if (raw.details) entry.details = raw.details
+    if (raw.client) entry.client = raw.client.toString()
     def detached = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(entry))
     return [id: id, entry: detached]
 }
@@ -39434,6 +39930,7 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     if (!shouldLog(level)) return
     def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
     ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
+    if (callerClient != null) raw.client = callerClient.label
     def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
     synchronized (buffer) {
         if (level == "error" && settings?.retainReportErrors == true) _retainReportError(raw)
@@ -40809,6 +41306,8 @@ Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime,
 - `safeMode` — whether the hub is running in Safe Mode (from /hub2/hubData; absent if /hub2/hubData was unreadable).
 - `mcpClient` — the client that sent THIS request, derived from the request itself and never stored: under `client`, the name/version/title as this request declared them (all null when it declared none), `wrapper` (computed from that name and version) true when the name is a stdio-to-HTTP bridge rather than the host app, the protocol version and, on an `initialize` call, the version the client asked for, plus the era (modern/legacy) and the source (cloud/local). `client` is null when the request carried no message that could name one, and an `error` key is present instead when the read failed.
 
+**On a per-client access token only:** `clientAccess` -- what this token may use: `client` (the name the hub owner gave it), `readEnabled`, `writeEnabled`, `localAccessEnabled`, `cloudAccessEnabled`, and `tools` (the tools it can call right now). `recentWrites` then lists only this token's writes. A call the token may not make is refused with a message that names the client and what blocks it, so an agent can ask the hub owner for that access instead of retrying. A client token cannot read or change the MCP Rule Server app itself, and access tokens are always masked in its results.
+
 **`includeHealthAlerts=true`** (default false): returns the hub's full health-alerts block under `healthAlerts`: `active` lists the firing alerts (the alert item keys on firmware 2.5.2.129 and later, the alert flags before that), `items` (2.5.2.129+) gives each alert's `key`, `message`, `version` and `dismissible` flag, and `details` carries the hub's full alert data and messages, including `spammyDeviceDetails` (the devices behind a too-many-events alert) when the hub's alert feed is available. Covers radio offline, backup failures, low memory, DB bloat, weak mesh, and power-loss recovery. Dismiss a dismissible alert with hub_set_system_settings(dismissAlert={key, version}). `platformUpdate` and `safeMode` are returned regardless of this flag.
 
 **`includeSubscriptions=true`** (default false): returns the hub's Hubitat subscriptions under `subscriptions`: `hubProtect`, `remoteAdmin`, `cloudBackup`, `fullLocalBackup`, each `{active, pendingCancellation, endsAt, trialAvailable}`, plus `fullLocalBackupSupported`, `hasAvailableTrial`, `loaded` and `updatedAt`.
@@ -40911,6 +41410,8 @@ For replace/add every id is validated against the full hub device list (discover
 If the hub's device inventory is incomplete (its device tree could not be read, or it disagrees with the picker feed), an id it lacks is reported as "could not validate" instead of unknown. Nothing is written, so retry later. An empty scope still leaves MCP-managed virtual devices reachable. On success the response carries `selectedDevices: {mode, authorizedDeviceIds, authorizedCount, added, removed}`.
 
 **`enableLocalAccess` / `enableCloudAccess`** -- allow requests over the LAN endpoint / the Hubitat cloud endpoint (both ON by default). A disabled endpoint answers HTTP 403 to every request, even with a valid token; turning it back on restores access with the same token and URL. A call cannot turn off the connection it arrived on (that would lock the caller out) -- switch it off from the other connection or the app page on the hub. `hub_get_info` reports both as `localAccessEnabled` / `cloudAccessEnabled`.
+
+**`clientToken`** (instead of `settings`) -- manage per-client access tokens, the same operations as Advanced > Per-client access tokens on the app page. `{action: "list"}` returns every client with its `clientId`, `label`, `token` and `access`. `{action: "create", label, access?}` issues a token (firmware 2.5.2+; the label is 1-40 characters, no comma, unused) that starts with every grantable tool on, applies `access` if given, and returns the token plus its `localUrl` / `cloudUrl` (those carry the token in the query string, which proxies and client logs can record; where the client supports it, send the token as an `Authorization: Bearer` header instead, which both endpoints accept). `{action: "update", clientId, access}` changes a client's access, `{action: "rotate", clientId}` issues it a new token (the old one is refused at once) and `{action: "revoke", clientId}` removes it. `list` also reports `untrackedTokens`, tokens the hub accepts that belong to no client (left by two token changes racing); they are refused, and `{action: "revokeUntracked"}` revokes them. With `redactAccessTokens` on, every token this returns is masked. `access` takes any of `tools` (a list of tool names, or `"all"`; the main-token-only tools cannot be granted, and `hub_get_tool_guide` / `hub_search_tools` are always included), `read`, `write`, `local`, `cloud` (booleans; they can only narrow the main-page settings) and `toolNumber` (`main`, `none` or a digit). A bad `access` map is refused before anything changes. Only the main token reaches this tool, so the tokens it returns give nothing the caller lacks; treat them as secrets all the same.
 
 **Deliberately NOT allowlisted:**
 - `enableWrite` -- would disable this tool's own write path mid-session.
