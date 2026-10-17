@@ -301,7 +301,8 @@ def toolWriteFile(args) {
     }
     // Compare the bytes that will be written, not decoded text: invalid UTF-8 in the existing
     // file decodes to replacement characters that incoming text can match while the bytes differ.
-    if (existingBytes != null && java.util.Arrays.equals(existingBytes, args.content.toString().getBytes("UTF-8"))) {
+    byte[] incomingBytes = args.content.toString().getBytes("UTF-8")
+    if (existingBytes != null && existingBytes.length == incomingBytes.length && (existingBytes as List) == (incomingBytes as List)) {
         identicalContent = true
         // Identical-content write (e.g. a retry after a dropped response): a
         // backup would duplicate the very bytes being written, and a fresh
