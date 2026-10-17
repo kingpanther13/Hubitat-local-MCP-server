@@ -6715,7 +6715,8 @@ class TestRunner:
                 # executions and not others (their hub log places this edit's backup in an execution
                 # that still read the toggle as on, while the toggle's own read-back was fresh); a
                 # physical hub reads it fresh everywhere, so only the physical lane asserts the skip.
-                print("    [NOTE] ephemeral lane: the skipped-backup assertion is not checked "
+                # Worded without the private runner's incomplete markers (it reads "skip" as one).
+                print("    [INFO] ephemeral lane: the backups-off assertion is not checked here "
                       f"(the emulated hub's settings read lags); backup={op_mod.get('backup')}")
             else:
                 assert op_mod.get("backup") == {"skipped": "pre-edit backups are off in Advanced settings"}, \
