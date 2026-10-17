@@ -209,6 +209,7 @@ class ClientAccessGrantSpec extends ToolSpecBase {
 
     def "a gateway the client can see still refuses its ungranted sub-tools"() {
         given:
+        settingsMap.useGateways = true
         asClient('1')
 
         when:
