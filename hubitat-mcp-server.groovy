@@ -50,6 +50,14 @@ private Map _rmOutcomeFlags(Throwable e) { (e == null) ? [:] : ((EXECUTION_CACHE
 private Map _rmOutcomeKeys(Throwable e) { _rmOutcomeFlags(e).findAll { it.value == true } }
 // A check this execution could not run (a hub read failed) is named in the response, not only logged.
 private void _memoNoteSkippedCheck(String what) { def l = (EXECUTION_CACHE.get("checksSkipped") as List) ?: []; if (!(what in l)) l << what; EXECUTION_CACHE.put("checksSkipped", l) }
+// The backup toggles as the request's own execution read them. A detached write runs in a
+// scheduled job, and on some hub builds that job reads a setting changed since the app loaded
+// as its old value; the request's view travels with the work item instead.
+private Map _requestSettingsSnapshot() {
+    [backupBeforeRuleEdits: settings?.backupBeforeRuleEdits?.toString(), backupEveryRuleWrite: settings?.backupEveryRuleWrite?.toString()]
+}
+private void _memoKeepRequestSettings(Map snap) { if (snap) EXECUTION_CACHE.put("requestSettings", snap) }
+private String _memoRequestSetting(String key) { ((EXECUTION_CACHE.get("requestSettings") as Map) ?: [:]).get(key)?.toString() }
 private List _memoSkippedChecks() { (EXECUTION_CACHE.get("checksSkipped") as List) ?: [] }
 // Ordinary-write leases, keyed by leaseId. The global write cap is overload
 // protection, not crash safety: nothing here has to survive a recompile, and a
@@ -3868,7 +3876,8 @@ private Map _mrtrScheduleSlice(String stateId, Map rec, Map claim, Map execution
         }
         MRTR_WORK_ITEMS.put(claimId, [
             stateId: stateId, claimId: claimId, generation: generation,
-            arguments: _mrtrCopyMap(executionArgs), started: false
+            arguments: _mrtrCopyMap(executionArgs), started: false,
+            requestSettings: _requestSettingsSnapshot()
         ])
     }
     try {
@@ -3939,6 +3948,7 @@ def runMrtrSlice(Map job = [:]) {
     mrtrWorkerSliceStartedAt = now()
     try {
         Map executionArgs = _mrtrCopyMap(work.arguments as Map)
+        _memoKeepRequestSettings(work.requestSettings as Map)
         def result = _mrtrExecuteSlice(stateId, rec, executionArgs)
         _mrtrLogBackgroundCommit(stateId, rec, _mrtrCommitSlice(stateId, rec, claim, executionArgs, result))
     } catch (Exception workerErr) {

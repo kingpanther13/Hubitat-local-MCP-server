@@ -500,4 +500,27 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         'bulk'    | 'addActionsRemaining'
         'patches' | 'patchesRemaining'
     }
+
+    def "a detached slice carries the request's view of the backup toggles"() {
+        given: "the request sees pre-edit backups off; the worker is captured, not run"
+        settingsMap.backupBeforeRuleEdits = false
+        RUN_IN_MILLIS_OVERRIDE.set({ List call -> runInMillisCalls << call })
+
+        when:
+        def paused = modernCall('hub_set_rule', [appId: 1, confirm: true, addActions: actionSpecs()])
+        String stateId = paused.result.requestState
+
+        then: "the queued work item holds the toggle as the request read it"
+        stateId != null
+        runInMillisCalls.size() == 1
+        script.MRTR_WORK_ITEMS.values().find { it.stateId == stateId }.requestSettings.backupBeforeRuleEdits == "false"
+
+        when: "the scheduled job reads the setting as it was before the toggle"
+        settingsMap.backupBeforeRuleEdits = true
+        script.runMrtrSlice(new LinkedHashMap(runInMillisCalls[0][2].data as Map))
+
+        then: "the slice decided from the request's view"
+        script._memoRequestSetting("backupBeforeRuleEdits") == "false"
+        script._rmPreEditBackupsOff()
+    }
 }

@@ -7844,8 +7844,10 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 // A fresh snapshot is taken after the lock is released, since its App Cloner export is slow.
 // activePage: the page a wizard edit is on; its render is read instead of the default page, which
 // some apps (HPM) use to reset a wizard's pending input.
-// The toggle as stored: a form save keeps it as text, so the text decides.
-private boolean _rmPreEditBackupsOff() { settings?.backupBeforeRuleEdits?.toString() == "false" }
+// The toggles as the request read them (a detached write carries that view), else as stored;
+// a form save keeps a toggle as text, so the text decides.
+private boolean _rmPreEditBackupsOff() { (_memoRequestSetting("backupBeforeRuleEdits") ?: settings?.backupBeforeRuleEdits?.toString()) == "false" }
+private boolean _rmStrictBackupsOn() { (_memoRequestSetting("backupEveryRuleWrite") ?: settings?.backupEveryRuleWrite?.toString()) == "true" }
 
 Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
     if (_rmPreEditBackupsOff()) {
@@ -7873,7 +7875,7 @@ Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null)
 }
 
 private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason, String activePage = null) {
-    if (settings?.backupEveryRuleWrite == true || reason == "pre-replaceRequiredExpression") return null
+    if (_rmStrictBackupsOn() || reason == "pre-replaceRequiredExpression") return null
 
     long nowMs = now()
     def mfst = _itemBackupManifest()

@@ -2951,4 +2951,27 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         "thermostat_controller" | "Thermostat Controllers" | "Thermostat Controller 2.0"
     }
 
+    def "the backup toggles read the request's own view before the stored setting"() {
+        given: "the stored toggles say backups on and strict off"
+        settingsMap.backupBeforeRuleEdits = true
+        settingsMap.backupEveryRuleWrite = false
+
+        expect: "without a request view the stored values decide"
+        !script._rmPreEditBackupsOff()
+        !script._rmStrictBackupsOn()
+
+        when: "a detached write carries the request's view"
+        script._memoKeepRequestSettings([backupBeforeRuleEdits: "false", backupEveryRuleWrite: "true"])
+
+        then:
+        script._rmPreEditBackupsOff()
+        script._rmStrictBackupsOn()
+
+        when: "the stored value is text from a form save"
+        script.EXECUTION_CACHE.remove("requestSettings")
+        settingsMap.backupBeforeRuleEdits = "false"
+
+        then:
+        script._rmPreEditBackupsOff()
+    }
 }
