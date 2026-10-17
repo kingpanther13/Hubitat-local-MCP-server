@@ -3344,7 +3344,7 @@ private String _filesWriteBackupCopy(String fileName, byte[] bytes) {
 private String _filesCopyRetentionNote(String fileName) {
     return "The newest ${FILE_BACKUP_COPIES} backup copies of '${fileName}' are kept; older copies are deleted after its next successful write or delete.".toString()
 }
-private Map _filesPruneBackupCopies(String fileName) {
+private Map _filesPruneBackupCopies(String fileName, String keepName = null) {
     List parts = _filesBackupNameParts(fileName)
     def copyPattern = ~("^" + java.util.regex.Pattern.quote(parts[0]) + "_backup_(\\d{8}-\\d{6})(-\\d{3})?" + java.util.regex.Pattern.quote(parts[1]) + "\$")
     List names
@@ -3357,8 +3357,9 @@ private Map _filesPruneBackupCopies(String fileName) {
         def m = name =~ copyPattern
         m.matches() ? (m.group(1) + (m.group(2) ?: "-000")) : ""
     }
-    List copies = names.findAll { it ==~ copyPattern }
-    List stale = copies.sort { a, b -> age(b) <=> age(a) }.drop(FILE_BACKUP_COPIES)
+    boolean keepingNew = keepName != null && names.contains(keepName)
+    List copies = names.findAll { it ==~ copyPattern && it != keepName }
+    List stale = copies.sort { a, b -> age(b) <=> age(a) }.drop(FILE_BACKUP_COPIES - (keepingNew ? 1 : 0))
     List removed = []
     List failed = []
     stale.each { name ->
@@ -3565,7 +3566,7 @@ def toolWriteFile(args) {
     catch (Exception e) {
         mcpLog("debug", "file-manager", "No existing file '${args.fileName}' to back up: ${e.message}")
     }
-    if (existingBytes != null && new String(existingBytes, "UTF-8") == args.content.toString()) {
+    if (existingBytes != null && java.util.Arrays.equals(existingBytes, args.content.toString().getBytes("UTF-8"))) {
         identicalContent = true
         mcpLog("info", "file-manager", "Existing '${args.fileName}' already matches the incoming content -- skipping backup")
     } else if (existingBytes != null) {
@@ -3599,7 +3600,7 @@ def toolWriteFile(args) {
         if (backedUp) {
             result.backupFile = backupFileName
             result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
-            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString()))
+            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString(), backupFileName))
         }
         return result
     } catch (Exception e) {
@@ -3648,7 +3649,7 @@ def toolDeleteFile(args) {
             try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) {   }
             result.backupDownload = "http://${hubIp ?: '<HUB_IP>'}/local/${backupFileName}"
             result.undoHint = "To recover: use 'hub_read_file' on '${backupFileName}' to view contents, or 'hub_write_file' to recreate '${args.fileName}' from the backup."
-            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString()))
+            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString(), backupFileName))
         }
         if (!backedUp && !isBackupFile) {
             result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
@@ -38866,8 +38867,12 @@ private Map _loadItemBackupIndex(String owner) {
             index = new LinkedHashMap(parsed.entries as Map)
         } else {
             String aside = "mcp-backup-index.corrupt-${new Date(now()).format("yyyyMMdd-HHmmss")}.json"
-            uploadHubFile(aside, json.getBytes("UTF-8"))
-            mcpLog("error", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' is not a valid index; its content was copied to '${aside}' and the index is rebuilt from the File Manager listing")
+            try {
+                uploadHubFile(aside, json.getBytes("UTF-8"))
+                mcpLog("error", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' is not a valid index; its content was copied to '${aside}' and the index is rebuilt from the File Manager listing")
+            } catch (Exception e) {
+                mcpLog("error", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' is not a valid index and its content could not be preserved as '${aside}' (${e.message}); the index is rebuilt from the File Manager listing")
+            }
             rebuild = true
         }
     }
