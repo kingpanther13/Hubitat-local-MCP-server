@@ -566,7 +566,7 @@ PERSISTED_STATE_INVENTORY = {
         "accessToken", "ruleToDelete", "customEngineMigrated", "ruleVariables",
         "headersReadable", "originLocalIpReadable", "updateCheck",
         "lastBackupTimestamp", "debugLogs", "hubSecurityRetired", "hubSecurityFwUnreadable", "setupVersion",
-        "clientTokens", "nextClientTokenId", "retiredTokenHashes", "clientAccessEditing",
+        "clientTokens", "nextClientTokenId", "retiredTokenHashes", "clientAccessEditing", "clientTokenNotice",
     },
     "atomicState": {
         "mrtrRequests", "packageDeployInFlight", "lastSelfDeploy", "reportErrors",

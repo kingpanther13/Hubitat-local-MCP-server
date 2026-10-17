@@ -3892,6 +3892,44 @@ class MrtrContinuationSpec extends ToolSpecBase {
         !seenByAlpha[0].containsKey('client')
     }
 
+    def "a per-client token is gated before a detached write reserves anything, and the worker runs as that client (#457)"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.accessToken = 'main,client-a'
+        stateMap.clientTokens = ['1': [label: 'Alpha', token: 'client-a']]
+        settingsMap['clientTools_1'] = ['hub_set_rule']
+        settingsMap['clientWrite_1'] = false
+        script.metaClass._requestAccessToken = { -> 'client-a' }
+        List seenByLeaf = []
+        script.metaClass.toolSetRule = { Map actual -> seenByLeaf << script.callerClient?.id; [success: true, appId: actual.appId, settingsApplied: true] }
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
+            runInMillisCalls << call
+            // A scheduled worker is a fresh execution: nothing carries over from the request.
+            script.callerClient = null
+            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
+        })
+        def args = [appId: 331, confirm: true, settings: [description: 'client write']]
+
+        when: 'the client has Write off'
+        def refused = modernCall('hub_set_rule', args)
+
+        then: 'the refusal names the client and nothing was reserved or scheduled'
+        refused.result.isError == true
+        mcpDriver.parseInner(refused).error.contains("Write tools are disabled for client 'Alpha'")
+        !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
+        runInMillisCalls.isEmpty()
+        seenByLeaf.isEmpty()
+
+        when: 'Write is turned back on'
+        settingsMap['clientWrite_1'] = true
+        def done = modernCall('hub_set_rule', args)
+
+        then: 'the detached worker ran the leaf as Alpha'
+        done.error == null
+        runInMillisCalls.size() == 1
+        seenByLeaf == ['1']
+    }
+
     def "a bulk trigger stop in a later slice is restated in the original request's trigger indices"() {
         given: 'two triggers ran in earlier slices; this slice fails its second trigger'
         String stopText = 'not attempted: bulk stopped after addTriggers[1] failed or was partial'

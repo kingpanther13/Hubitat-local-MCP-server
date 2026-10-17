@@ -1,6 +1,8 @@
 package server
 
+import spock.lang.Shared
 import spock.lang.Unroll
+import support.TestChildApp
 import support.ToolSpecBase
 
 /**
@@ -10,6 +12,12 @@ import support.ToolSpecBase
  * own tool-name number.
  */
 class ClientAccessGrantSpec extends ToolSpecBase {
+
+    @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 7L, label: 'MCP')
+
+    def setupSpec() {
+        appExecutor.getApp() >> sharedAppStub
+    }
 
     def setup() {
         script.callerClient = null
@@ -22,13 +30,24 @@ class ClientAccessGrantSpec extends ToolSpecBase {
 
     def cleanup() {
         script.callerClient = null
+        injectedParams().remove('params')
+    }
+
+    private Map injectedParams() {
+        def f = me.biocomp.hubitat_ci.app.HubitatAppScript.getDeclaredField('injectedMappingHandlerData')
+        f.accessible = true
+        return f.get(script) as Map
+    }
+
+    private void queryTokenIs(Object value) {
+        injectedParams()['params'] = [access_token: value]
     }
 
     private void tokenIs(String token) {
         script.metaClass._requestAccessToken = { -> token }
     }
 
-    private Map asClient(String id) {
+    private void asClient(String id) {
         script.callerClient = [id: id, label: stateMap.clientTokens[id].label]
     }
 
@@ -125,6 +144,124 @@ class ClientAccessGrantSpec extends ToolSpecBase {
         script._requestAccessToken() == 'client-a'
     }
 
+    def "the request token is read the way the hub reads it: the access_token parameter first, then Bearer"() {
+        when: 'query only'
+        queryTokenIs('client-a')
+
+        then:
+        script._requestAccessToken() == 'client-a'
+
+        when: 'query and Bearer both present: the query wins'
+        mcpDriver.pushHeaders(['Authorization': 'Bearer main'])
+
+        then:
+        script._requestAccessToken() == 'client-a'
+
+        when: 'a repeated parameter is not a String, so the hub falls through to Bearer'
+        queryTokenIs(['client-a', 'client-b'])
+
+        then:
+        script._requestAccessToken() == 'main'
+
+        when: 'lowercase scheme, and a bare scheme with no token'
+        injectedParams().remove('params')
+        mcpDriver.pushHeaders(['Authorization': 'bearer client-b'])
+        def lower = script._requestAccessToken()
+        mcpDriver.pushHeaders(['Authorization': 'Bearer '])
+
+        then:
+        lower == 'client-b'
+        script._requestAccessToken() == null
+    }
+
+    def "a client token in the query reaches its own access through the real resolver"() {
+        given:
+        queryTokenIs('client-b')
+
+        when:
+        def refusal = script._resolveCaller()
+
+        then:
+        refusal == null
+        script.callerClient == [id: '2', label: 'Beta']
+    }
+
+    @Unroll
+    def "a client's refused call is a tool error naming the client, not a protocol error (useGateways=#gateways)"() {
+        given:
+        settingsMap.useGateways = gateways
+        tokenIs('client-b')
+
+        when:
+        def response = gateways ? mcpDriver.callTool('hub_read_rooms', [tool: 'hub_list_rooms', args: [:]])
+                                : mcpDriver.callTool('hub_list_rooms', [:])
+
+        then:
+        response.error == null
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains(expected)
+
+        where:
+        gateways | expected
+        true     | "hub_read_rooms has no tools enabled for client 'Beta'"
+        false    | "hub_list_rooms is not enabled for client 'Beta'"
+    }
+
+    def "a gateway the client can see still refuses its ungranted sub-tools"() {
+        given:
+        asClient('1')
+
+        when:
+        script.executeTool('hub_manage_rooms', [tool: 'hub_create_room', args: [name: 'x', confirm: true]])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains("hub_create_room is not enabled for client 'Alpha'")
+    }
+
+    def "a gateway hidden by a main-page gate keeps that gate's message, not a client one"() {
+        given:
+        asClient('1')
+        settingsMap.disabled_gateways = ['hub_manage_rooms']
+
+        expect:
+        script._clientToolDenial('hub_manage_rooms') == null
+    }
+
+    def "a client cannot point an app tool at the MCP Rule Server app itself"() {
+        given:
+        settingsMap['clientTools_1'] = ['hub_get_app_config', 'hub_set_native_app']
+        asClient('1')
+
+        expect: 'reads and writes on this app are refused; other apps are not'
+        script._clientToolDenial('hub_get_app_config', [appId: 7, pageName: 'mainPage']).contains('cannot target the MCP Rule Server app itself')
+        script._clientToolDenial('hub_get_app_config', [appId: '7']) != null
+        script._clientToolDenial('hub_set_native_app', [appId: [12, 7]]) != null
+        script._clientToolDenial('hub_get_app_config', [appId: 12]) == null
+
+        when: 'a generic app mutation reaches the protected-app guard on a client token'
+        script._requireUnprotectedAppMutation(7, 'update')
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('cannot update the MCP Rule Server app itself')
+    }
+
+    def "a client token's tool results are token-redacted even with redaction off"() {
+        given:
+        settingsMap.redactAccessTokens = false
+        def result = [page: 'http://hub/apps/api/7/mcp?access_token=main-secret', state: [accessToken: 'main-secret']]
+
+        when:
+        String mainView = groovy.json.JsonOutput.toJson(script._renderToolResult(1, 'hub_get_app_config', 'hub_get_app_config', [:], result))
+        asClient('1')
+        String clientView = groovy.json.JsonOutput.toJson(script._renderToolResult(2, 'hub_get_app_config', 'hub_get_app_config', [:], result))
+
+        then:
+        mainView.contains('main-secret')
+        !clientView.contains('main-secret')
+    }
+
     def "a refused client request never reaches dispatch"() {
         given:
         stateMap.accessToken = 'main'
@@ -141,9 +278,15 @@ class ClientAccessGrantSpec extends ToolSpecBase {
     // ---- what the client may call ----
 
     def "the main token is not narrowed by any client's access"() {
+        given:
+        def clients = stateMap.clientTokens
+        stateMap.remove('clientTokens')
+        def withoutClients = script.getHiddenToolNames()
+        stateMap.clientTokens = clients
+
         expect:
         script._clientToolDenial('hub_update_mcp_settings') == null
-        !script.getHiddenToolNames().contains('hub_list_variables')
+        script.getHiddenToolNames() == withoutClients
     }
 
     def "a tool the client was not given is refused with the client's name"() {
@@ -202,14 +345,53 @@ class ClientAccessGrantSpec extends ToolSpecBase {
         script._clientToolDenial('hub_set_rule', [operation: 'update', confirm: true]) != null
     }
 
-    def "the guide and tool search are always available to a client"() {
+    def "the guide and tool search are always available to a client, even with its Read switch off"() {
         given:
         asClient('2')
+        settingsMap['clientRead_2'] = false
 
         expect:
         script._clientToolDenial('hub_get_tool_guide') == null
         script._clientToolDenial('hub_search_tools') == null
+        !script.getHiddenToolNames().contains('hub_get_tool_guide')
+        !script.getHiddenToolNames().contains('hub_search_tools')
         script.executeTool('hub_get_tool_guide', [:]) != null
+    }
+
+    def "the client's Write switch also drops its writes from the catalog"() {
+        given:
+        asClient('1')
+        settingsMap['clientWrite_1'] = false
+
+        expect:
+        script.getHiddenToolNames().contains('hub_manage_mode')
+        !script.getHiddenToolNames().contains('hub_list_modes')
+    }
+
+    def "a resource whose tool the client lacks names the client"() {
+        given:
+        asClient('2')
+
+        when:
+        def response = script.handleResourcesRead([id: 5, params: [uri: 'hubitat://context-summary']])
+
+        then:
+        response.error.code == -32002
+        response.error.message.contains("not enabled for client 'Beta'")
+    }
+
+    def "inbound tool names use the client's own number"() {
+        given:
+        settingsMap['clientTools_1'] = ['hub_list_modes']
+        settingsMap['clientToolNumber_1'] = '7'
+        tokenIs('client-a')
+
+        when:
+        def numbered = mcpDriver.callTool('hub7_get_tool_guide', [section: 'tool_access'])
+
+        then:
+        numbered.error == null
+        numbered.result.isError != true
     }
 
     def "a client's catalog lists only what it can call"() {
@@ -276,9 +458,15 @@ class ClientAccessGrantSpec extends ToolSpecBase {
     }
 
     def "log records made during a client's request carry the client's name"() {
-        expect:
-        script._debugLogRecord([level: 'info', component: 'server', message: 'm', client: 'Alpha'], 'x').entry.client == 'Alpha'
-        !script._debugLogRecord([level: 'info', component: 'server', message: 'm'], 'x').entry.containsKey('client')
+        when:
+        script.mcpLog('error', 'server', 'main line 457')
+        asClient('1')
+        script.mcpLog('error', 'server', 'client line 457')
+        def entries = script.initDebugLogs().entries*.entry
+
+        then:
+        !entries.find { it.message == 'main line 457' }.containsKey('client')
+        entries.find { it.message == 'client line 457' }.client == 'Alpha'
     }
 
     def "one client's requestState cannot continue another client's or the main token's operation"() {

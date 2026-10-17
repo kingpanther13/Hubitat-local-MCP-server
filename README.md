@@ -848,14 +848,14 @@ Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[writ
 <details>
 <summary><b>Advanced: Per-client access tokens (firmware 2.5.2+)</b></summary>
 
-Under **Settings > Advanced > Per-client access tokens** you can give an MCP client its own token for the same endpoint, with narrower access than the main token. The main token and everything set on the main page keep working exactly as before. Each client token has its own page:
+Under **Settings > Advanced > Per-client access tokens** you can give an MCP client its own token for the same endpoint, with narrower access than the main token. The main token and everything set on the main page keep working as before, with one change: once any client token exists, every client, the main token included, must send its token as `?access_token=` or an `Authorization: Bearer` header (the URLs this page shows already do). Each client token has its own page:
 
-- **Tools** — the tools this client may call. Every tool that can be granted is on when the token is created; untick what the client should not have. A tool added by a later update stays off for the client until you turn it on. `hub_get_tool_guide` and `hub_search_tools` are always included. MCP self-administration, the Developer Mode deploy and code management stay with the main token and cannot be granted.
+- **Tools** — the tools this client may call. Every tool that can be granted is on when the token is created; untick what the client should not have. A tool added by a later update stays off for the client until you turn it on. `hub_get_tool_guide` and `hub_search_tools` are always included, even with Read off. MCP self-administration, the Developer Mode deploy and code management stay with the main token and cannot be granted, and a client token can never read or change the MCP Rule Server app itself.
 - **Read / Write** — can only narrow: the main-page Read and Write switches still apply.
 - **Local / cloud** — which endpoints this token may use (the main-page endpoint switches still apply).
 - **Tool names** — the client's own tool-name number, or the same as the main token, or none.
 
-The client sees only its tools in `tools/list`, the gateway catalogs and `hub_search_tools`. A call it may not make is refused with a message naming the client and what blocks it, and `hub_get_info` returns its access under `clientAccess`. MCP log entries made during a client's request carry the client's name, and `recentWrites` shows a client only its own writes. **Rotate** issues a new token for that client (its URL changes); **Revoke** removes it. Either takes effect at once, even though the hub itself keeps accepting the old token for up to a minute. A client token must be sent as `?access_token=` or an `Authorization: Bearer` header.
+The client sees only its tools in `tools/list`, the gateway catalogs and `hub_search_tools`. A call it may not make is refused with a message naming the client and what blocks it, and `hub_get_info` returns its access under `clientAccess`. MCP log entries made during a client's request carry the client's name, and `recentWrites` shows a client only its own writes. **Rotate** issues a new token for that client (its URL changes); **Revoke** removes it. Either takes effect at once, even though the hub itself keeps accepting the old token for up to a minute. Access tokens in tool results are always masked for a client token.
 
 </details>
 

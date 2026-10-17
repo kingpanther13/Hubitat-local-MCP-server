@@ -17,11 +17,13 @@ class ClientTokensSpec extends ToolSpecBase {
     @Shared List<String> calls = []
     @Shared int nextToken = 0
     @Shared boolean revokeSticks = true
+    @Shared boolean createThrows = false
 
     def setupSpec() {
         appExecutor.getApp() >> sharedAppStub
         appExecutor.createAccessToken() >> { calls << 'create'; stateMap.accessToken = 'main-new'; 'main-new' }
         appExecutor.createAnotherAccessToken() >> {
+            if (createThrows) throw new MissingMethodException('createAnotherAccessToken', Object, [] as Object[])
             def t = "client-${++nextToken}".toString()
             calls << "another:${t}"
             stateMap.accessToken = "${stateMap.accessToken},${t}".toString()
@@ -44,6 +46,7 @@ class ClientTokensSpec extends ToolSpecBase {
         calls.clear()
         nextToken = 0
         revokeSticks = true
+        createThrows = false
         stateMap.accessToken = 'main'
         ['clientTokens', 'nextClientTokenId', 'retiredTokenHashes'].each { stateMap.remove(it) }
         script.metaClass.mcpLog = { String level, String component, String msg -> }
@@ -100,6 +103,34 @@ class ClientTokensSpec extends ToolSpecBase {
         !sharedAppStub.settingsStore.containsKey('clientTools_9')
     }
 
+    def "a hub that cannot issue a token creates no client and says so"() {
+        given:
+        createThrows = true
+        settingsMap.newClientTokenLabel = 'Old Firmware'
+        script.metaClass.mcpLogError = { String component, String msg, Exception e = null, String ruleId = null -> }
+
+        when:
+        script.appButtonHandler('createClientTokenBtn')
+
+        then:
+        !stateMap.clientTokens
+        stateMap.nextClientTokenId == null
+        stateMap.clientTokenNotice.contains('firmware 2.5.2')
+    }
+
+    def "a failed revoke or rotate is shown on the page"() {
+        given:
+        revokeSticks = false
+        stateMap.accessToken = 'main,client-a'
+        stateMap.clientTokens = ['1': [label: 'Alpha', token: 'client-a']]
+
+        when:
+        script.appButtonHandler('revokeClientToken_1')
+
+        then:
+        stateMap.clientTokenNotice.contains("'Alpha' was not revoked")
+    }
+
     def "ids are never reused after a revoke"() {
         given:
         stateMap.accessToken = 'main,client-a'
@@ -124,9 +155,10 @@ class ClientTokensSpec extends ToolSpecBase {
         when:
         script.appButtonHandler('createClientTokenBtn')
 
-        then:
+        then: 'nothing is created and the page says why'
         calls.isEmpty()
         stateMap.clientTokens == ['1': [label: 'Phone', token: 'client-0']]
+        stateMap.clientTokenNotice.startsWith('No token created')
 
         where:
         label << ['', 'a,b', 'x' * 41, 'Phone']
