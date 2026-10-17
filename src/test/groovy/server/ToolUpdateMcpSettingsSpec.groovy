@@ -609,6 +609,59 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
+    def "writes backupBudgetMb=#value as the backup storage budget and the listing reports it"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        def result = script.toolUpdateMcpSettings([settings: [backupBudgetMb: value], confirm: true])
+
+        then:
+        result.success == true
+        result.updated == [backupBudgetMb: expected]
+        sharedAppStub.settingsStore['backupBudgetMb'] == [type: 'number', value: expected]
+
+        when: 'the hub applies the written setting'
+        settingsMap.backupBudgetMb = sharedAppStub.settingsStore['backupBudgetMb'].value
+        def listing = script.toolListItemBackups([:])
+
+        then:
+        listing.storageBudget.limitBytes == (expected as long) * 1024L * 1024L
+
+        where:
+        value  | expected
+        1      | 1
+        25     | 25
+        '3'    | 3
+        5000   | 5000
+    }
+
+    @spock.lang.Unroll
+    def "rejects backupBudgetMb=#badValue and writes nothing"() {
+        given:
+        enableDeveloperModeAndAdminWrite()
+
+        when:
+        script.toolUpdateMcpSettings([settings: [backupBudgetMb: badValue, debugLogging: true], confirm: true])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains('backupBudgetMb')
+        ex.message.contains(message)
+        sharedAppStub.settingsStore.isEmpty()
+
+        and: 'the budget stays at its default'
+        script.toolListItemBackups([:]).storageBudget.limitBytes == 10L * 1024L * 1024L
+
+        where:
+        badValue | message
+        0        | 'at least 1'
+        -4       | 'at least 1'
+        2.5      | 'whole number'
+        'lots'   | 'expects a number'
+    }
+
+    @spock.lang.Unroll
     def "writes redactAccessTokens=#value as the response token-redaction toggle"() {
         given:
         enableDeveloperModeAndAdminWrite()

@@ -706,7 +706,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 
 ### Backup retention
 - There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, so edits or deletes of other items alone never remove a backup.
-- The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, minimum 1, no upper limit.
+- The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, minimum 1, no upper limit. With Developer Mode on it can also be set through hub_update_mcp_settings, which refuses a value that is not a whole number of at least 1.
 - Past the budget, **rolling** steps are removed first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
 - Apps, drivers and libraries keep one **pinned** baseline, replaced by that item's next backup after the one-hour window.
 - A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete or replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's later writes in that session are **rolling** steps. So "before I started" outlasts the per-write steps when space runs short.
