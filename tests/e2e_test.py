@@ -5642,6 +5642,12 @@ class TestRunner:
                 "tool": "hub_update_mcp_settings",
                 "args": {"settings": {"backupEveryRuleWrite": True}, "confirm": True},
             })
+            # Retention is proven by listing, so the shared budget must have headroom: near the
+            # limit a publish would evict the very backups asserted on below.
+            budget = (self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_list_backups", "args": {"cursor": ""}}) or {}).get("storageBudget") or {}
+            assert int(budget.get("limitBytes") or 0) - int(budget.get("usedBytes") or 0) > 1_000_000, \
+                f"backup storage budget has no headroom for this test; eviction would hide retention: {budget}"
             strict_first = self._rm_call_soft({"appId": app_id,
                 "button": "updateRule", "confirm": True}, strict=True)
             strict_second = self._rm_call_soft({"appId": app_id,

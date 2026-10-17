@@ -8086,9 +8086,15 @@ private Map _loadItemBackupIndex(String owner) {
         if (parsed instanceof Map && parsed.entries instanceof Map) {
             index = new LinkedHashMap(parsed.entries as Map)
         } else {
+            // The aside copy is best-effort: a full File Manager must not leave every backup
+            // operation refusing until someone repairs the index by hand.
             String aside = "mcp-backup-index.corrupt-${new Date(now()).format("yyyyMMdd-HHmmss")}.json"
-            uploadHubFile(aside, json.getBytes("UTF-8"))
-            mcpLog("error", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' is not a valid index; its content was copied to '${aside}' and the index is rebuilt from the File Manager listing")
+            try {
+                uploadHubFile(aside, json.getBytes("UTF-8"))
+                mcpLog("error", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' is not a valid index; its content was copied to '${aside}' and the index is rebuilt from the File Manager listing")
+            } catch (Exception e) {
+                mcpLog("error", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' is not a valid index and its content could not be preserved as '${aside}' (${e.message}); the index is rebuilt from the File Manager listing")
+            }
             rebuild = true
         }
     }

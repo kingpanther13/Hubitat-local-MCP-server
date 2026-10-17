@@ -15,15 +15,15 @@ private List _filesApplyListFilters(List fileList, String filterLower) {
     return out
 }
 
-// <base>_backup_<yyyyMMdd-HHmmss-SSS><ext>: the copy hub_write_file and hub_delete_file take
-// first. Milliseconds keep two writes in one second from sharing a name; older copies carry
-// the second-only form, which pruning still recognises.
 private List _filesBackupNameParts(String fileName) {
     int dotIndex = fileName.lastIndexOf('.')
     return dotIndex > 0 ? [fileName.substring(0, dotIndex), fileName.substring(dotIndex)] : [fileName, ""]
 }
 
 private String _filesWriteBackupCopy(String fileName, byte[] bytes) {
+    // <base>_backup_<yyyyMMdd-HHmmss-SSS><ext>: the copy hub_write_file and hub_delete_file take
+    // first. Milliseconds keep two writes in one second from sharing a name; older copies carry
+    // the second-only form, which pruning still recognises.
     List parts = _filesBackupNameParts(fileName)
     String backupFileName = "${parts[0]}_backup_${new Date(now()).format("yyyyMMdd-HHmmss-SSS")}${parts[1]}"
     uploadHubFile(backupFileName, bytes)
@@ -34,10 +34,11 @@ private String _filesCopyRetentionNote(String fileName) {
     return "The newest ${FILE_BACKUP_COPIES} backup copies of '${fileName}' are kept; older copies are deleted after its next successful write or delete.".toString()
 }
 
-// Keep the newest FILE_BACKUP_COPIES copies of exactly this file name. Best-effort: a
-// failed listing or delete leaves copies in place, is reported as warning, and never fails
-// the write or delete it follows.
-private Map _filesPruneBackupCopies(String fileName) {
+private Map _filesPruneBackupCopies(String fileName, String keepName = null) {
+    // Keep the newest FILE_BACKUP_COPIES copies of exactly this file name. Best-effort: a
+    // failed listing or delete leaves copies in place, is reported as warning, and never fails
+    // the write or delete it follows. keepName is the copy this operation just took: it is
+    // never a candidate, even if a clock step or a repeated DST hour makes its name sort oldest.
     List parts = _filesBackupNameParts(fileName)
     def copyPattern = ~("^" + java.util.regex.Pattern.quote(parts[0]) + "_backup_(\\d{8}-\\d{6})(-\\d{3})?" + java.util.regex.Pattern.quote(parts[1]) + "\$")
     List names
@@ -51,8 +52,9 @@ private Map _filesPruneBackupCopies(String fileName) {
         def m = name =~ copyPattern
         m.matches() ? (m.group(1) + (m.group(2) ?: "-000")) : ""
     }
-    List copies = names.findAll { it ==~ copyPattern }
-    List stale = copies.sort { a, b -> age(b) <=> age(a) }.drop(FILE_BACKUP_COPIES)
+    boolean keepingNew = keepName != null && names.contains(keepName)
+    List copies = names.findAll { it ==~ copyPattern && it != keepName }
+    List stale = copies.sort { a, b -> age(b) <=> age(a) }.drop(FILE_BACKUP_COPIES - (keepingNew ? 1 : 0))
     List removed = []
     List failed = []
     stale.each { name ->
@@ -69,8 +71,8 @@ private Map _filesPruneBackupCopies(String fileName) {
     return [removed: removed, warning: warning]
 }
 
-// Copy-retention fields for a write or delete result that took a backup copy.
 private void _filesReportCopyRetention(Map result, String fileName, Map prune) {
+    // Copy-retention fields for a write or delete result that took a backup copy.
     result.backupRetention = "copies"
     result.backupRetentionNote = _filesCopyRetentionNote(fileName)
     if (prune?.removed) result.removedOldBackups = prune.removed
@@ -297,7 +299,9 @@ def toolWriteFile(args) {
         // File doesn't exist or can't be read — that's fine, proceed with write
         mcpLog("debug", "file-manager", "No existing file '${args.fileName}' to back up: ${e.message}")
     }
-    if (existingBytes != null && new String(existingBytes, "UTF-8") == args.content.toString()) {
+    // Compare the bytes that will be written, not decoded text: invalid UTF-8 in the existing
+    // file decodes to replacement characters that incoming text can match while the bytes differ.
+    if (existingBytes != null && java.util.Arrays.equals(existingBytes, args.content.toString().getBytes("UTF-8"))) {
         identicalContent = true
         // Identical-content write (e.g. a retry after a dropped response): a
         // backup would duplicate the very bytes being written, and a fresh
@@ -341,7 +345,7 @@ def toolWriteFile(args) {
             result.backupFile = backupFileName
             result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
             // Pruned only after the write landed, so a failed write keeps every older copy.
-            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString()))
+            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString(), backupFileName))
         }
         return result
     } catch (Exception e) {
@@ -402,7 +406,7 @@ def toolDeleteFile(args) {
             result.backupDownload = "http://${hubIp ?: '<HUB_IP>'}/local/${backupFileName}"
             result.undoHint = "To recover: use 'hub_read_file' on '${backupFileName}' to view contents, or 'hub_write_file' to recreate '${args.fileName}' from the backup."
             // Pruned only after the delete landed, so a failed delete keeps every older copy.
-            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString()))
+            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString(), backupFileName))
         }
         if (!backedUp && !isBackupFile) {
             result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."

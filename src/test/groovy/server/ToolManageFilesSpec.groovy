@@ -832,6 +832,41 @@ class ToolManageFilesSpec extends ToolSpecBase {
         kept.containsAll(['notes_backup_20080101-000004.txt', 'notes_backup_20080101-000005.txt', 'notes_backup_20080101-000006.txt'])
     }
 
+    def "the copy just taken is never pruned, even when a clock step makes its name sort oldest"() {
+        given:
+        enableWrite()
+        Map files = fileManagerWithOldCopies()
+
+        and: 'a clock that reads 2007, before every existing 2008 copy'
+        NOW_OVERRIDE.set({ -> 1167609600000L })
+
+        when:
+        def result = script.toolWriteFile([fileName: 'notes.txt', content: 'new content', confirm: true])
+
+        then: 'the new copy survives and two old copies go instead, keeping five in all'
+        result.success == true
+        result.backupFile.startsWith('notes_backup_2007')
+        files.containsKey(result.backupFile)
+        result.removedOldBackups == ['notes_backup_20080101-000002.txt', 'notes_backup_20080101-000001.txt']
+        files.keySet().findAll { it ==~ /notes_backup_\d{8}-\d{6}(-\d{3})?\.txt/ }.size() == 5
+    }
+
+    def "an existing file whose bytes differ is backed up even when its decoded text matches the incoming content"() {
+        given:
+        enableWrite()
+        Map files = fileManagerWithOldCopies()
+        byte[] invalidUtf8 = [-61] as byte[]   // a lone 0xC3 decodes to the replacement character
+        files['notes.txt'] = invalidUtf8
+
+        when:
+        def result = script.toolWriteFile([fileName: 'notes.txt', content: '\uFFFD', confirm: true])
+
+        then: 'the write is not treated as identical content, so the old bytes are copied first'
+        result.success == true
+        result.backupFile ==~ /notes_backup_\d{8}-\d{6}-\d{3}\.txt/
+        files[result.backupFile] == invalidUtf8
+    }
+
     def "hub_delete_file backs up then deletes a normal file"() {
         given:
         enableWrite()

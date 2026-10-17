@@ -168,20 +168,18 @@ class BackupRetentionSpec extends ToolSpecBase {
         backupIndex == [:]
     }
 
-    def 'an invalid index is kept when it cannot be copied aside'() {
+    def 'an invalid index is still rebuilt when it cannot be copied aside'() {
         given:
         backupIndexStore.json = '{not json'
         listFiles([[name: 'mcp-backup-driver-4.groovy', type: 'file', size: '40', date: '400']])
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> throw new IllegalStateException('disk full') }
 
         when:
-        script._itemBackupManifest()
+        def view = script._itemBackupManifest()
 
-        then:
-        def e = thrown(IllegalStateException)
-        e.message.startsWith('Backup index unavailable')
-        backupIndexStore.json == '{not json'
-        (scriptStaticField('ITEM_BACKUP_MANIFESTS') as Map).isEmpty()
+        then: 'the failed aside copy does not hold every backup operation hostage'
+        view.keySet() == ['driver_4'] as Set
+        backupIndex.keySet() == ['driver_4'] as Set
     }
 
     def 'a listed index that cannot be read is never rebuilt over, and loads once it reads again'() {
