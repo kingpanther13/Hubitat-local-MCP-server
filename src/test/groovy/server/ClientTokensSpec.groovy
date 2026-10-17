@@ -62,6 +62,42 @@ class ClientTokensSpec extends ToolSpecBase {
         stateMap.clientTokens == ['1': [label: 'Claude Desktop', token: 'client-1']]
         stateMap.nextClientTokenId == 2
         script._primaryAccessToken() == 'main'
+
+        and: 'the new client starts with every grantable tool on, and no main-token-only tool'
+        def written = sharedAppStub.settingsStore['clientTools_1'] as Map
+        written.type == 'enum'
+        def granted = written.value as List
+        granted as Set == script._grantableToolOptions().keySet() as Set
+        granted.contains('hub_list_modes')
+        !granted.contains('hub_update_mcp_settings')
+        !granted.contains('hub_update_package')
+    }
+
+    def "Select all and Deselect all set or clear only that client's tools"() {
+        given:
+        stateMap.clientTokens = ['1': [label: 'Alpha', token: 'client-a'], '2': [label: 'Beta', token: 'client-b']]
+        sharedAppStub.settingsStore['clientTools_1'] = ['hub_list_modes']
+        sharedAppStub.settingsStore['clientTools_2'] = ['hub_list_rooms']
+
+        when:
+        script.appButtonHandler('clientToolsAll_1')
+
+        then:
+        ((sharedAppStub.settingsStore['clientTools_1'] as Map).value as Set) == script._grantableToolOptions().keySet() as Set
+        sharedAppStub.settingsStore['clientTools_2'] == ['hub_list_rooms']
+
+        when:
+        script.appButtonHandler('clientToolsNone_1')
+
+        then:
+        !sharedAppStub.settingsStore.containsKey('clientTools_1')
+        sharedAppStub.settingsStore['clientTools_2'] == ['hub_list_rooms']
+
+        when: 'a button for a client that no longer exists changes nothing'
+        script.appButtonHandler('clientToolsAll_9')
+
+        then:
+        !sharedAppStub.settingsStore.containsKey('clientTools_9')
     }
 
     def "ids are never reused after a revoke"() {

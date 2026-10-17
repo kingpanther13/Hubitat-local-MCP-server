@@ -515,7 +515,7 @@ private boolean _isRetiredAccessToken(String token) {
 def clientTokensPage() {
     dynamicPage(name: "clientTokensPage", title: "Per-client access tokens") {
         section {
-            paragraph "Each client token works on both endpoints, in the URL or as an <code>Authorization: Bearer</code> header. Its access is set on its own page: which tools it can call (none until you pick them), Read/Write, local/cloud and the tool-name number. The settings on the main page still apply to every client. Revoking or rotating one token leaves the main token and every other client untouched, and regenerating the main token keeps these. Needs firmware 2.5.2 or later."
+            paragraph "Each client token works on both endpoints, in the URL or as an <code>Authorization: Bearer</code> header. Its access is set on its own page: which tools it can call (every tool that can be granted starts on), Read/Write, local/cloud and the tool-name number. The settings on the main page still apply to every client. Revoking or rotating one token leaves the main token and every other client untouched, and regenerating the main token keeps these. Needs firmware 2.5.2 or later."
         }
         def tokens = _clientTokens()
         def live = _liveAccessTokens()
@@ -552,7 +552,9 @@ def clientAccessPage(params) {
             paragraph _wrappedEnumOptionsStyle() + "Pick every tool this client may call."
             input "clientTools_${id}", "enum", title: "Tools this client can call", multiple: true, required: false,
                   options: _grantableToolOptions(), submitOnChange: true
-            paragraph "A tool added by a later update stays off for this client until you turn it on here. ${_alwaysGrantedToolNames().sort().join(' and ')} are always included: they only serve documentation and search the tools this client can already see. These tools work only with the main token and cannot be granted: ${_ungrantableToolNames().sort().join(', ')}."
+            input "clientToolsAll_${id}", "button", title: "Select all tools"
+            input "clientToolsNone_${id}", "button", title: "Deselect all tools"
+            paragraph "Every tool that could be granted was on when this token was created; untick what this client should not have. A tool added by a later update stays off for this client until you turn it on here. ${_alwaysGrantedToolNames().sort().join(' and ')} are always included: they only serve documentation and search the tools this client can already see. These tools work only with the main token and cannot be granted: ${_ungrantableToolNames().sort().join(', ')}."
         }
         section("Read / Write") {
             input "clientRead_${id}", "bool", title: "Allow read tools", defaultValue: true, submitOnChange: true
@@ -583,6 +585,10 @@ Set _ungrantableToolNames() {
 // Documentation and search over what the client already sees; without the guide a client could
 // never pass the best-practice gate on a write it was granted.
 Set _alwaysGrantedToolNames() { ["hub_get_tool_guide", "hub_search_tools"] as Set }
+
+private void _selectAllClientTools(String id) {
+    app.updateSetting("clientTools_${id}".toString(), [type: "enum", value: _grantableToolOptions().keySet() as List])
+}
 
 private Map _grantableToolOptions() {
     def meta = getToolDisplayMeta()
@@ -905,6 +911,9 @@ def appButtonHandler(btn) {
             tokens.put(next.toString(), [label: label, token: token])
             state.clientTokens = tokens
             state.nextClientTokenId = next + 1
+            // Starts with every grantable tool on; a tool added by a later update is not in this
+            // list, so it stays off for the client until the owner turns it on.
+            _selectAllClientTools(next.toString())
             app.removeSetting("newClientTokenLabel")
             mcpLog("warn", "server", "MCP client token created for '${label}'")
         }
@@ -935,6 +944,12 @@ def appButtonHandler(btn) {
                 mcpLog("error", "server", "MCP client token for '${client.label}' is still in the hub's token list after the revoke; it stays listed -- revoke again")
             }
         }
+    } else if (btn?.startsWith("clientToolsAll_")) {
+        String id = btn.substring("clientToolsAll_".length())
+        if (_clientTokens().containsKey(id)) _selectAllClientTools(id)
+    } else if (btn?.startsWith("clientToolsNone_")) {
+        String id = btn.substring("clientToolsNone_".length())
+        if (_clientTokens().containsKey(id)) app.removeSetting("clientTools_${id}".toString())
     } else if (btn?.startsWith("rotateClientToken_")) {
         String id = btn.substring("rotateClientToken_".length())
         def client = _clientTokens().get(id)
