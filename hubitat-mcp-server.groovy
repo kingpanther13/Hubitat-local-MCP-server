@@ -63,11 +63,9 @@
 // The backup index lives in File Manager, not app state: every atomicState access
 // parses and serialises the app's whole state blob.
 @groovy.transform.Field static final String ITEM_BACKUP_INDEX_FILE = "mcp-backup-index.json"
-// Indexed backup bytes kept across every item; past it, rolling steps then pinned
-// baselines are evicted oldest first.
-@groovy.transform.Field static final long ITEM_BACKUP_BYTE_BUDGET = 10L * 1024L * 1024L
-// Per-write rule snapshots kept per rule beside its pinned baselines.
-@groovy.transform.Field static final int ITEM_BACKUP_ROLLING_STEPS = 5
+// Default for the backupBudgetMb setting: indexed backup bytes kept across every item
+// before rolling steps, then pinned baselines, are evicted oldest first.
+@groovy.transform.Field static final long ITEM_BACKUP_DEFAULT_BUDGET_MB = 10L
 // <name>_backup_<ts> copies hub_write_file / hub_delete_file keep per file name.
 @groovy.transform.Field static final int FILE_BACKUP_COPIES = 5
 // Apps whose legacy atomicState index was copied to the file but not yet removed from
@@ -572,8 +570,14 @@ def advancedOverridesPage() {
         section("Native app edit backups") {
             paragraph "By default, edits to the same native app reuse its newest File Manager baseline for one hour. Restoring that baseline returns the app to the start of the edit chain, undoing every later edit in the hour. This avoids uploading the same app before every small edit. Deletes and a standalone Required Expression replacement still take a fresh snapshot."
             input "backupEveryRuleWrite", "bool", title: "Back up before every native app edit",
-                  description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit: the first in an hour-long editing session is kept as its baseline, and the newest 5 after it are kept as rolling steps.",
+                  description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit: the first in an hour-long editing session is kept as its pinned baseline, and the later ones are rolling steps, the first removed when the backup storage budget is exceeded.",
                   defaultValue: false
+        }
+        section("Backup storage") {
+            paragraph "Automatic code and rule backups live in File Manager, and every file there goes into hub backups. Backups are removed only when they exceed this budget together: rolling steps first, then pinned baselines, oldest first. The backup just taken and a restore in progress are never removed."
+            input "backupBudgetMb", "number", title: "Backup storage budget (MB)",
+                  description: "Total size of the automatic code and rule backups (default: 10; minimum 1, lower values use 1).",
+                  defaultValue: 10, required: false
         }
         section("Bug report error retention") {
             paragraph "Every MCP server error is already written to the hub's own Past Logs, which hub_report_issue reads. This option additionally keeps the ten newest errors in app state, so a bug report still includes them after they have rolled out of Past Logs. It costs an app-state write on every error, so it is off by default."
@@ -8194,9 +8198,9 @@ void _publishUploadedItemBackup(String key, Map entry, String protectedKey = nul
     }
 }
 
-// Retention is per item: a backup only pushes out its own item's older rolling steps.
-// Only the shared byte budget reaches across items. The published key and protectedKey
-// (an active restore target) are never evicted.
+// Backups are evicted only when the byte budget is exceeded; an app, driver or library key
+// is otherwise replaced in place by that item's next baseline. The published key and
+// protectedKey (an active restore target) are never evicted.
 void _publishItemBackup(String key, Map entry, String protectedKey = null) {
     synchronized (ITEM_BACKUP_MANIFESTS) {
         // previous must survive the removals below: it is what finds the files no entry references any more.
@@ -8220,35 +8224,36 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
     }
 }
 
-// Keys to evict, in order: each rule's rolling steps beyond its newest
-// ITEM_BACKUP_ROLLING_STEPS, then, while indexed bytes exceed ITEM_BACKUP_BYTE_BUDGET,
-// rolling steps and then pinned baselines, oldest first across all items. Pending
-// entries are left to the pending purge; keepKeys are never chosen.
+// Keys to evict while indexed bytes exceed the backup budget: rolling steps first, then
+// pinned baselines, oldest first across all items. Pending entries are left to the
+// pending purge; keepKeys are never chosen.
 List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
+    long budget = _itemBackupByteBudget()
+    long used = 0L
+    manifest.each { k, v -> if (!v?.deletePending) used += _itemBackupEntryBytes(v) }
+    List victims = []
+    if (used <= budget) return victims
     Closure stamp = { k -> def t = manifest[k]?.timestamp; t instanceof Number ? (t as Long) : 0L }
     Closure rolling = { k -> manifest[k]?.retention == "rolling" }
-    List victims = []
-    manifest.keySet().findAll { rolling(it) }.groupBy { _itemBackupItemKey(manifest[it] as Map) }.each { item, keys ->
-        (keys as List).sort { a, b -> stamp(b) <=> stamp(a) }.drop(ITEM_BACKUP_ROLLING_STEPS)
-            .findAll { !keepKeys.contains(it) }.each { victims << it }
-    }
-    long used = 0L
-    manifest.each { k, v -> if (!victims.contains(k) && !v?.deletePending) used += _itemBackupEntryBytes(v) }
-    if (used <= ITEM_BACKUP_BYTE_BUDGET) return victims
-    List candidates = manifest.keySet().findAll { !victims.contains(it) && !keepKeys.contains(it) && !manifest[it]?.deletePending }
+    List candidates = manifest.keySet().findAll { !keepKeys.contains(it) && !manifest[it]?.deletePending }
         .sort { a, b -> (rolling(a) ? 0 : 1) <=> (rolling(b) ? 0 : 1) ?: stamp(a) <=> stamp(b) }
     for (k in candidates) {
-        if (used <= ITEM_BACKUP_BYTE_BUDGET) break
+        if (used <= budget) break
         victims << k
         used -= _itemBackupEntryBytes(manifest[k])
     }
     return victims
 }
 
-// The item a backup belongs to: retention never lets one item's backups evict another's.
-String _itemBackupItemKey(Map entry) {
-    if (entry?.type?.toString() == "rm-rule") return "rm-rule_${entry.ruleId != null ? entry.ruleId : entry.id}".toString()
-    return "${entry?.type}_${entry?.id}".toString()
+// The "Backup storage budget (MB)" setting in bytes: default 10 MB, at least 1 MB, no upper bound.
+long _itemBackupByteBudget() {
+    long mb = ITEM_BACKUP_DEFAULT_BUDGET_MB
+    def value = settings?.backupBudgetMb
+    if (value != null) {
+        try { mb = Math.max(1L, new BigDecimal(value.toString()).longValue()) }
+        catch (Exception ignored) { }
+    }
+    return mb * 1024L * 1024L
 }
 
 // Bytes a backup counts against the budget. Older entries carry only sourceLength
@@ -8261,14 +8266,14 @@ long _itemBackupEntryBytes(entry) {
 Map _itemBackupBudgetUsage(Map manifest) {
     long used = 0L
     manifest.values().each { used += _itemBackupEntryBytes(it) }
-    return [usedBytes: used, limitBytes: ITEM_BACKUP_BYTE_BUDGET, rollingStepsPerRule: ITEM_BACKUP_ROLLING_STEPS]
+    return [usedBytes: used, limitBytes: _itemBackupByteBudget()]
 }
 
 // Plain-language eviction rule for one backup, served beside its backupKey.
 String _itemBackupRetentionNote(Map entry) {
-    String budget = "the ${ITEM_BACKUP_BYTE_BUDGET.intdiv(1024L * 1024L)} MB budget shared by all MCP backups"
+    String budget = "the ${_itemBackupByteBudget().intdiv(1024L * 1024L)} MB budget shared by all MCP backups"
     if (entry?.retention == "rolling") {
-        return "Rolling step: this rule keeps its newest ${ITEM_BACKUP_ROLLING_STEPS} per-write snapshots, so later writes to the rule push this one out; rolling steps are also the first backups removed when ${budget} is exceeded."
+        return "Rolling step: a per-write snapshot inside this rule's editing session. It is removed only when ${budget} is exceeded, and rolling steps are the first backups removed then, oldest first."
     }
     String replacedBy = entry?.type?.toString() == "rm-rule" ? "Backups of this or other rules never replace it" :
         (entry?.undoForBackupKey ? "This item's next pre-restore undo replaces it" :
@@ -11383,10 +11388,11 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Rapid edits preserve original (1-hour protection)
 
 ### Backup retention
-- Retention is per item: one item's backups never push out another item's backups.
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget, so edits or deletes of other items alone never remove a backup.
+- The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, minimum 1, no upper limit.
+- Past the budget, **rolling** steps are removed first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
 - Apps, drivers and libraries keep one **pinned** baseline, replaced by that item's next backup after the one-hour window.
-- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete or replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's later writes in that session are **rolling** steps, and the newest 5 are kept. So "before I started" and "one step back" both stay available.
-- All MCP backups share a 10 MB storage budget. Past it, rolling steps are removed first, then pinned baselines, oldest first. The backup just taken and an active restore target are never removed.
+- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete or replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's later writes in that session are **rolling** steps. So "before I started" outlasts the per-write steps when space runs short.
 - A response that returns a backupKey carries `retention` (`pinned` or `rolling`) and `retentionNote`, and its restoreHint says when that backup can be removed. hub_list_backups reports `storageBudget` (`usedBytes` / `limitBytes`) and each entry's `retention`.
 - If the index file is missing, it is rebuilt from the File Manager listing, which also brings backup files left by older versions under retention.
 

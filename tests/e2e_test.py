@@ -5653,13 +5653,14 @@ class TestRunner:
                 and strict_first_key != default_first_key \
                 and strict_second_key != default_first_key, \
                 f"backupEveryRuleWrite should produce distinct baselines: first={strict_first}, second={strict_second}"
-            # Inside the editing session the per-write snapshots are rolling steps; the pinned
-            # baseline stays listed beside them.
+            # Inside the editing session the per-write snapshots are rolling steps. Eviction is
+            # by the storage budget only, so the pinned baseline and both steps stay listed.
             for strict in (strict_first, strict_second):
                 strict_backup = strict.get("backup") or {}
-                assert strict_backup.get("retention") == "rolling" \
-                    and str(strict_backup.get("retentionNote", "")).startswith("Rolling step"), \
-                    f"a strict-mode write inside the session should be a rolling step: {strict_backup}"
+                note = str(strict_backup.get("retentionNote", ""))
+                assert strict_backup.get("retention") == "rolling" and note.startswith("Rolling step") \
+                    and "removed only when" in note and "MB budget" in note, \
+                    f"a strict-mode write inside the session should be a budget-evicted rolling step: {strict_backup}"
             listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": {"cursor": ""}}) or {}
             kinds: dict = {}
             page = listed
@@ -5670,8 +5671,9 @@ class TestRunner:
                     break
                 page = self.client.call_tool("hub_read_apps_code", {
                     "tool": "hub_list_backups", "args": {"cursor": page["nextCursor"]}}) or {}
-            assert kinds.get(default_first_key) == "pinned" and kinds.get(strict_second_key) == "rolling", \
-                f"hub_list_backups should list the pinned baseline and the rolling step: {kinds}"
+            assert kinds.get(default_first_key) == "pinned" and kinds.get(strict_first_key) == "rolling" \
+                and kinds.get(strict_second_key) == "rolling", \
+                f"hub_list_backups should list the pinned baseline and both rolling steps: {kinds}"
         finally:
             unwinding = sys.exc_info()[0] is not None
             cleanup_errors: list[Exception] = []
@@ -13450,12 +13452,15 @@ class TestRunner:
         total = src.get("total")
         assert isinstance(total, int) and total == len(src["backups"]), \
             f"source-backup count contract failed: {src}"
-        # Retention is per item under a shared byte budget (issues #506/#517), not a count cap.
+        # Backups are evicted only past the storage budget (issues #506/#517), not by a count;
+        # the e2e hub leaves the Backup storage budget setting at its 10 MB default.
         budget = src.get("storageBudget") or {}
-        assert budget.get("limitBytes") == 10 * 1024 * 1024 and isinstance(budget.get("usedBytes"), int), \
+        assert budget.get("limitBytes") == 10 * 1024 * 1024 and isinstance(budget.get("usedBytes"), int) \
+            and set(budget) == {"usedBytes", "limitBytes"}, \
             f"source-backup listing must report the storage budget: {src}"
-        assert "maxBackups" not in src and "rolling" in str(src.get("retentionPolicy")), \
-            f"source-backup listing must describe the per-item retention policy: {src}"
+        policy = str(src.get("retentionPolicy"))
+        assert "maxBackups" not in src and "rolling" in policy and "10 MB storage budget" in policy, \
+            f"source-backup listing must describe the budget-only retention policy: {src}"
         for entry in src["backups"]:
             assert entry.get("retention") in ("pinned", "rolling"), f"backup entry without a retention kind: {entry}"
 

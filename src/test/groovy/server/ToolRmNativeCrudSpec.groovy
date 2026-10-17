@@ -1440,7 +1440,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         backupIndex[second.backupKey].retention == "rolling"
     }
 
-    def "backupEveryRuleWrite keeps a rule's pinned baseline and its newest rolling steps"() {
+    def "backupEveryRuleWrite keeps every rolling step while the budget has room"() {
         given:
         enableWrite()
         settingsMap.backupEveryRuleWrite = true
@@ -1461,14 +1461,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
             script._rmBackupBeforeEdit(504, "pre-update")
         }
 
-        then: 'the first is pinned, the newest five steps stay, the two oldest steps are evicted'
+        then: 'the first is pinned, the rest are rolling steps, and nothing is evicted by count'
         backups[0].retention == "pinned"
         backups.drop(1).every { it.retention == "rolling" }
         def kept = backupIndex.findAll { k, v -> v.ruleId == 504 }.keySet()
-        kept == ([backups[0]] + backups.drop(3)).collect { it.backupKey.toString() } as Set
-        deleted as Set == [backups[1].fileName, backups[2].fileName] as Set
+        kept == backups.collect { it.backupKey.toString() } as Set
+        deleted.isEmpty()
 
-        and: "another rule's rolling step is never pushed out by this rule's writes"
+        and: "another rule's rolling step is untouched"
         backupIndex.containsKey("rm-rule_77_other")
     }
 

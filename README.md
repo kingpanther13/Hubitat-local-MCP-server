@@ -862,8 +862,8 @@ When you use `hub_update_app`, `hub_update_driver`, `hub_update_library`, or `hu
 - Persist even if the MCP app is uninstalled
 - Downloadable at `http://<your-hub-ip>/local/<filename>`
 - 1-hour protection window: multiple edits preserve the pre-edit original
-- Retention is per item: one app, driver, library or rule's backups never push out another's. Each app, driver and library keeps one pinned baseline; a rule keeps a pinned baseline per editing session plus its pre-delete snapshots, and with **Back up before every native app edit** on, the newest 5 per-write snapshots as rolling steps
-- All MCP backups share a 10 MB budget; past it, rolling steps are removed first, then the oldest pinned baselines. `hub_list_backups` shows the budget and whether each backup is pinned or rolling
+- No count limit: backups are removed only when all MCP backups together exceed the **Backup storage budget (MB)** advanced setting (default 10, minimum 1); then rolling steps go first, then the oldest pinned baselines
+- Each app, driver and library keeps one pinned baseline; a rule keeps a pinned baseline per editing session plus its pre-delete snapshots, and with **Back up before every native app edit** on, its later per-write snapshots as rolling steps. `hub_list_backups` shows the budget and whether each backup is pinned or rolling
 - `hub_write_file` and `hub_delete_file` keep the newest 5 `<name>_backup_<timestamp>` copies of each file
 
 **Restore via MCP:**

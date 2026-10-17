@@ -107,7 +107,7 @@ private _listSourceItemBackups(args) {
 }
 
 private String _itemBackupRetentionPolicy() {
-    return "Each item's backups only push out that item's own older backups. Apps, drivers and libraries keep one pinned baseline, replaced by the item's next backup after the one-hour reuse window. A rule keeps a pinned baseline per editing session plus pinned pre-delete snapshots; with backupEveryRuleWrite on, its later writes in a session are rolling steps, of which the newest ${ITEM_BACKUP_ROLLING_STEPS} are kept. When all backups together exceed ${ITEM_BACKUP_BYTE_BUDGET.intdiv(1024L * 1024L)} MB, rolling steps and then pinned baselines are removed, oldest first."
+    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupByteBudget().intdiv(1024L * 1024L)} MB storage budget (the Backup storage budget setting); then rolling steps go first, then pinned baselines, oldest first. Apps, drivers and libraries keep one pinned baseline, replaced by the item's next backup after the one-hour reuse window. A rule keeps a pinned baseline per editing session plus pinned pre-delete snapshots; with backupEveryRuleWrite on, its later writes in a session are rolling steps."
 }
 
 // A pending-deletion marker is written before the delete, so a delete that failed

@@ -172,8 +172,8 @@ Source code backups are created automatically before modify/delete operations.
 
 - Stored in File Manager as `.groovy` files
 - 1-hour protection: rapid edits preserve the pre-edit original
-- Retention is per item: other items' backups never push a backup out. Responses say whether a backup is `pinned` or a `rolling` step and when it can be removed
-- All MCP backups share a 10 MB budget; past it, rolling steps go first, then the oldest pinned baselines
+- No count limit: backups are removed only when all MCP backups exceed the Backup storage budget setting (default 10 MB); then rolling steps go first, then the oldest pinned baselines
+- Responses say whether a backup is `pinned` or a `rolling` step and when it can be removed
 - Backups persist even if MCP is uninstalled
 - Accessible at `http://<HUB_IP>/local/<filename>`
 

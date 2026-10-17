@@ -6,7 +6,7 @@ import support.ToolSpecBase
 /**
  * Backup index storage and retention (issues #506 / #517): the index lives in a File Manager
  * file instead of atomicState, an older atomicState index migrates into it, a missing index is
- * rebuilt from the File Manager listing, retention is per item with a shared byte budget.
+ * rebuilt from the File Manager listing, and backups are evicted only past the configurable byte budget.
  * The index file itself is the harness store here; BackupIndexFileSpec drives the real file calls.
  */
 class BackupRetentionSpec extends ToolSpecBase {
@@ -217,22 +217,84 @@ class BackupRetentionSpec extends ToolSpecBase {
         script._itemBackupEntryBytes([:]) == 0L
     }
 
-    def 'a rule cannot push out another rule or app, only its own older rolling steps'() {
-        given: 'rule 5 already holds five rolling steps; rule 6 and an app hold one each'
-        Map seeded = (1..5).collectEntries { [("rm-rule_5_s${it}".toString()): rule(5, "s${it}", (long) it, 10L, 'rolling')] }
+    def 'under the budget no backup is evicted, however many rolling steps or items there are'() {
+        given: 'forty rolling steps of one rule, plus another rule and an app'
+        Map seeded = (1..40).collectEntries { [("rm-rule_5_s${it}".toString()): rule(5, "s${it}", (long) it, 10L, 'rolling')] }
         seeded['rm-rule_6_s1'] = rule(6, 's1', 0L, 10L, 'rolling')
         seeded['app_1'] = app('1', 0L, 10L)
         backupIndex = seeded
         List deleted = deletedFiles()
 
         when:
-        script._publishItemBackup('rm-rule_5_s6', rule(5, 's6', 6L, 10L, 'rolling'))
+        script._publishItemBackup('rm-rule_5_s41', rule(5, 's41', 41L, 10L, 'rolling'))
 
         then:
-        deleted == ['mcp-rm-backup-5-s1.json']
-        backupIndex.containsKey('rm-rule_6_s1')
-        backupIndex.containsKey('app_1')
-        backupIndex.findAll { k, v -> v.ruleId == 5 }.size() == 5
+        deleted.isEmpty()
+        backupIndex.size() == 43
+    }
+
+    // ---------- the Backup storage budget setting ----------
+
+    def 'the budget defaults to 10 MB and follows the backupBudgetMb setting'() {
+        when:
+        if (setting != null) settingsMap.backupBudgetMb = setting
+
+        then:
+        script._itemBackupByteBudget() == expectedMb * MIB
+
+        where:
+        setting | expectedMb
+        null    | 10
+        25      | 25
+        '3'     | 3
+        1       | 1
+        0       | 1     // below the 1 MB minimum
+        -5      | 1
+        'lots'  | 10    // unreadable value keeps the default
+        5000    | 5000  // no upper bound
+    }
+
+    def 'a 1 MB budget evicts what the default budget keeps'() {
+        given:
+        settingsMap.backupBudgetMb = 1
+        backupIndex = [
+            app_1: app('1', 1L, 600 * 1024L),
+            'rm-rule_5_a': rule(5, 'a', 5L, 300 * 1024L, 'rolling'),
+            app_2: app('2', 2L, 300 * 1024L)
+        ]
+        List deleted = deletedFiles()
+
+        when: 'the new backup takes the total to 1.4 MB'
+        script._publishItemBackup('app_9', app('9', 10L, 200 * 1024L))
+
+        then: 'the rolling step goes first, then the oldest pinned baseline'
+        deleted as Set == ['mcp-rm-backup-5-a.json', 'mcp-backup-app-1.groovy'] as Set
+        backupIndex.keySet() == ['app_2', 'app_9'] as Set
+
+        when:
+        def listing = script.toolListItemBackups([:])
+
+        then: 'the listing and the notes report the configured budget'
+        listing.storageBudget == [usedBytes: 500 * 1024L, limitBytes: MIB]
+        listing.retentionPolicy.contains('1 MB storage budget')
+        script._itemBackupRetentionNote([type: 'app']).contains('the 1 MB budget')
+    }
+
+    def 'the same index stays untouched under the default budget'() {
+        given:
+        backupIndex = [
+            app_1: app('1', 1L, 600 * 1024L),
+            'rm-rule_5_a': rule(5, 'a', 5L, 300 * 1024L, 'rolling'),
+            app_2: app('2', 2L, 300 * 1024L)
+        ]
+        List deleted = deletedFiles()
+
+        when:
+        script._publishItemBackup('app_9', app('9', 10L, 200 * 1024L))
+
+        then:
+        deleted.isEmpty()
+        backupIndex.size() == 4
     }
 
     // ---------- what callers are told ----------
@@ -249,8 +311,8 @@ class BackupRetentionSpec extends ToolSpecBase {
         def result = script.toolListItemBackups([:])
 
         then:
-        result.storageBudget == [usedBytes: 3 * MIB + 500, limitBytes: 10 * MIB, rollingStepsPerRule: 5]
-        result.retentionPolicy.contains('only push out that item')
+        result.storageBudget == [usedBytes: 3 * MIB + 500, limitBytes: 10 * MIB]
+        result.retentionPolicy.contains('removed only when')
         result.retentionPolicy.contains('10 MB')
         !result.containsKey('maxBackups')
         result.backups.collectEntries { [(it.backupKey): it.retention] } ==
@@ -271,7 +333,8 @@ class BackupRetentionSpec extends ToolSpecBase {
     def 'retention notes name the eviction rule for each kind of backup'() {
         expect:
         script._itemBackupRetentionNote([type: 'rm-rule', retention: 'rolling']).startsWith('Rolling step')
-        script._itemBackupRetentionNote([type: 'rm-rule', retention: 'rolling']).contains('newest 5')
+        script._itemBackupRetentionNote([type: 'rm-rule', retention: 'rolling']).contains('removed only when the 10 MB budget')
+        !script._itemBackupRetentionNote([type: 'rm-rule', retention: 'rolling']).contains('newest')
         script._itemBackupRetentionNote([type: 'rm-rule', retention: 'pinned']).contains('Backups of this or other rules never replace it')
         script._itemBackupRetentionNote([type: 'app', retention: 'pinned']).contains('next backup after the one-hour reuse window')
         script._itemBackupRetentionNote([type: 'app', retention: 'pinned', undoForBackupKey: 'app_1']).contains('next pre-restore undo')
