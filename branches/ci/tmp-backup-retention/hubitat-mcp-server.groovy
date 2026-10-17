@@ -3566,7 +3566,8 @@ def toolWriteFile(args) {
     catch (Exception e) {
         mcpLog("debug", "file-manager", "No existing file '${args.fileName}' to back up: ${e.message}")
     }
-    if (existingBytes != null && java.util.Arrays.equals(existingBytes, args.content.toString().getBytes("UTF-8"))) {
+    byte[] incomingBytes = args.content.toString().getBytes("UTF-8")
+    if (existingBytes != null && existingBytes.length == incomingBytes.length && (existingBytes as List) == (incomingBytes as List)) {
         identicalContent = true
         mcpLog("info", "file-manager", "Existing '${args.fileName}' already matches the incoming content -- skipping backup")
     } else if (existingBytes != null) {
