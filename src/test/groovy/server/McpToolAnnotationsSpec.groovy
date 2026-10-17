@@ -344,6 +344,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
             'hub_create_custom_rule', 'hub_import_custom_rule', 'hub_clone_custom_rule',
             'hub_export_custom_rule',
+            'hub_update_mcp_settings',   // clientToken create / rotate issue a new token each call
             'hub_create_variable',
             // hub_set_variable(increment) adds again on a retry; a hub restore reboots again.
             'hub_set_variable', 'hub_restore_backup',

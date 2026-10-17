@@ -73,6 +73,25 @@ class ClientAccessGrantSpec extends ToolSpecBase {
         script.callerClient == [id: '2', label: 'Beta']
     }
 
+    def "a token the hub accepts that belongs to no client is refused, not treated as the main token"() {
+        given: 'a client entry lost to two token-page writes racing: the hub still lists the token'
+        stateMap.accessToken = 'main,client-a,client-b,client-orphan'
+
+        when:
+        tokenIs('client-orphan')
+        def refusal = script._resolveCaller()
+
+        then:
+        refusal.status == 401
+        refusal.data.contains('belongs to no client')
+        script.callerClient == null
+        script._untrackedAccessTokens() == ['client-orphan']
+
+        and: 'an OAuth bearer of the app type is not in the app token list, so it keeps main access'
+        tokenIs('oauth-bearer')
+        script._resolveCaller() == null
+    }
+
     def "a client token the hub no longer lists is refused with 401"() {
         given:
         stateMap.accessToken = 'main,client-a'

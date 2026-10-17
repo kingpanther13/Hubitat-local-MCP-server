@@ -15396,11 +15396,13 @@ class TestRunner:
             main_info = self.client.call_tool("hub_get_info", {})
             assert "clientAccess" not in main_info, "the main token was given a clientAccess block"
 
-            # This suite reaches the hub through the cloud relay, so the client's cloud switch applies.
-            assert manage({"action": "update", "clientId": client_id, "access": {"cloud": False}}).get("success") is True
-            assert status(token) == 403, "a client with cloud access off was served over the cloud relay"
+            # Switch off the client's own access on whichever transport this suite arrives over.
+            source = ((main_info.get("mcpClient") or {}).get("client") or {}).get("source")
+            assert source in ("cloud", "local"), f"hub_get_info did not report the request source: {source!r}"
+            assert manage({"action": "update", "clientId": client_id, "access": {source: False}}).get("success") is True
+            assert status(token) == 403, f"a client with {source} access off was served over {source}"
             assert self.client.call_tool("hub_list_modes", {}), "the main token was refused by a client's switch"
-            assert manage({"action": "update", "clientId": client_id, "access": {"cloud": True}}).get("success") is True
+            assert manage({"action": "update", "clientId": client_id, "access": {source: True}}).get("success") is True
             assert status(token) == 200
 
             rotated = manage({"action": "rotate", "clientId": client_id})

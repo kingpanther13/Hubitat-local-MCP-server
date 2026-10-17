@@ -516,6 +516,14 @@ private List<String> _liveAccessTokens() {
     return raw ? raw.split(",").collect { it.trim() }.findAll { it } : []
 }
 
+// The hub's revoke cuts the token out of the comma-joined list and leaves an empty entry behind
+// ("main," or ",client"). The hub itself skips empties, but a reader that takes the whole value as
+// the main token (the e2e watchdog's peer check) does not, so the list is rewritten without them.
+private void _compactAccessTokenList() {
+    String compact = _liveAccessTokens().join(",")
+    if (state.accessToken?.toString() != compact) state.accessToken = compact
+}
+
 // The hub caches each token check for 60 s and revoke/rotate do not clear that cache, so a
 // revoked or rotated token still authenticates for up to a minute. Its hash stays here for
 // 10 minutes so _resolveCaller refuses it at once. A revoked client token would otherwise
@@ -565,6 +573,13 @@ def clientTokensPage() {
                      title: "Access for ${client.label}", description: _clientAccessSummary(id.toString())
                 input "rotateClientToken_${id}", "button", title: "Rotate token (changes this client's URL)"
                 input "revokeClientToken_${id}", "button", title: "Revoke ${client.label}"
+            }
+        }
+        def untracked = _untrackedAccessTokens()
+        if (untracked) {
+            section("Untracked tokens") {
+                paragraph "<b style='color: red;'>The hub accepts ${untracked.size()} token(s) that belong to no client.</b> They are refused, but revoke them to clean up."
+                input "revokeUntrackedTokensBtn", "button", title: "Revoke untracked tokens"
             }
         }
         section("Add a client") {
@@ -680,6 +695,7 @@ Map _revokeClientToken(String id) {
     boolean revoked = false
     try {
         revokeSpecificAccessToken(client.token)
+        _compactAccessTokenList()
         revoked = !_liveAccessTokens().contains(client.token)
     } catch (Exception e) {
         mcpLogError("server", "revokeSpecificAccessToken failed for client '${client.label}'", e)
@@ -711,6 +727,28 @@ Map _rotateClientToken(String id) {
     _saveClientToken(id, [label: client.label, token: fresh])
     mcpLog("warn", "server", "MCP client token rotated for '${client.label}'; that client must re-copy its URL")
     return [success: true, clientId: id, label: client.label, token: fresh]
+}
+
+// Tokens the hub accepts that are neither the main token nor any client's (see _resolveCaller).
+List<String> _untrackedAccessTokens() {
+    def known = ([_primaryAccessToken()] + _clientTokens().values().collect { it?.token }) as Set
+    return _liveAccessTokens().findAll { !known.contains(it) }
+}
+
+Map _revokeUntrackedAccessTokens() {
+    def untracked = _untrackedAccessTokens()
+    untracked.each { token ->
+        try {
+            revokeSpecificAccessToken(token)
+            _compactAccessTokenList()
+            _retireAccessToken(token)
+        } catch (Exception e) {
+            mcpLogError("server", "revokeSpecificAccessToken failed for an untracked token", e)
+        }
+    }
+    def left = _untrackedAccessTokens()
+    if (untracked) mcpLog("warn", "server", "Revoked ${untracked.size() - left.size()} untracked access token(s)")
+    return left ? [success: false, error: "${left.size()} untracked token(s) are still in the hub's token list. Try again."] : [success: true, revoked: untracked.size()]
 }
 
 // One client's access as stored, for hub_update_mcp_settings(clientToken).
@@ -869,7 +907,9 @@ String _requestAccessToken() {
 
 // Sets callerClient for a per-client token, or returns the refusal to render. A token that is
 // neither a client token nor retired is the main token or the app type's OAuth bearer (the hub
-// checked it already), which keep full access as before.
+// checked it already, and an OAuth bearer is not in the app's own token list), which keep full
+// access as before. A token in that list that is neither the main token nor a client's -- a
+// client entry lost to two token-page writes racing -- is refused, never treated as the main one.
 def _resolveCaller() {
     callerClient = null
     String token = _requestAccessToken()
@@ -882,7 +922,12 @@ def _resolveCaller() {
         return _callerRefusal(401, "Unauthorized: this access token was revoked or rotated. Copy the current URL from the MCP Rule Server app on the hub.")
     }
     def match = clients.find { cid, c -> c instanceof Map && c.token == token }
-    if (match == null) return null
+    if (match == null) {
+        if (token != _primaryAccessToken() && _liveAccessTokens().contains(token)) {
+            return _callerRefusal(401, "Unauthorized: this access token belongs to no client. Revoke untracked tokens under Per-client access tokens in the MCP Rule Server app on the hub.")
+        }
+        return null
+    }
     if (!_liveAccessTokens().contains(token)) {
         return _callerRefusal(401, "Unauthorized: this access token was revoked. Copy the current URL from the MCP Rule Server app on the hub.")
     }
@@ -1096,6 +1141,9 @@ def appButtonHandler(btn) {
     } else if (btn?.startsWith("revokeClientToken_")) {
         def revoked = _revokeClientToken(btn.substring("revokeClientToken_".length()))
         if (!revoked.success) _clientTokenNotice(revoked.error.toString())
+    } else if (btn == "revokeUntrackedTokensBtn") {
+        def cleaned = _revokeUntrackedAccessTokens()
+        if (!cleaned.success) _clientTokenNotice(cleaned.error.toString())
     } else if (btn?.startsWith("clientToolsAll_")) {
         String id = btn.substring("clientToolsAll_".length())
         if (_clientTokens().containsKey(id)) _selectAllClientTools(id)
@@ -11671,7 +11719,7 @@ If the hub's device inventory is incomplete (its device tree could not be read, 
 
 **`enableLocalAccess` / `enableCloudAccess`** -- allow requests over the LAN endpoint / the Hubitat cloud endpoint (both ON by default). A disabled endpoint answers HTTP 403 to every request, even with a valid token; turning it back on restores access with the same token and URL. A call cannot turn off the connection it arrived on (that would lock the caller out) -- switch it off from the other connection or the app page on the hub. `hub_get_info` reports both as `localAccessEnabled` / `cloudAccessEnabled`.
 
-**`clientToken`** (instead of `settings`) -- manage per-client access tokens, the same operations as Advanced > Per-client access tokens on the app page. `{action: "list"}` returns every client with its `clientId`, `label`, `token` and `access`. `{action: "create", label, access?}` issues a token (firmware 2.5.2+; the label is 1-40 characters, no comma, unused) that starts with every grantable tool on, applies `access` if given, and returns the token plus its `localUrl` / `cloudUrl`. `{action: "update", clientId, access}` changes a client's access, `{action: "rotate", clientId}` issues it a new token (the old one is refused at once) and `{action: "revoke", clientId}` removes it. `access` takes any of `tools` (a list of tool names, or `"all"`; the main-token-only tools cannot be granted, and `hub_get_tool_guide` / `hub_search_tools` are always included), `read`, `write`, `local`, `cloud` (booleans; they can only narrow the main-page settings) and `toolNumber` (`main`, `none` or a digit). A bad `access` map is refused before anything changes. Only the main token reaches this tool, so the tokens it returns give nothing the caller lacks; treat them as secrets all the same.
+**`clientToken`** (instead of `settings`) -- manage per-client access tokens, the same operations as Advanced > Per-client access tokens on the app page. `{action: "list"}` returns every client with its `clientId`, `label`, `token` and `access`. `{action: "create", label, access?}` issues a token (firmware 2.5.2+; the label is 1-40 characters, no comma, unused) that starts with every grantable tool on, applies `access` if given, and returns the token plus its `localUrl` / `cloudUrl`. `{action: "update", clientId, access}` changes a client's access, `{action: "rotate", clientId}` issues it a new token (the old one is refused at once) and `{action: "revoke", clientId}` removes it. `list` also reports `untrackedTokens`, tokens the hub accepts that belong to no client (left by two token changes racing); they are refused, and `{action: "revokeUntracked"}` revokes them. With `redactAccessTokens` on, every token this returns is masked. `access` takes any of `tools` (a list of tool names, or `"all"`; the main-token-only tools cannot be granted, and `hub_get_tool_guide` / `hub_search_tools` are always included), `read`, `write`, `local`, `cloud` (booleans; they can only narrow the main-page settings) and `toolNumber` (`main`, `none` or a digit). A bad `access` map is refused before anything changes. Only the main token reaches this tool, so the tokens it returns give nothing the caller lacks; treat them as secrets all the same.
 
 **Deliberately NOT allowlisted:**
 - `enableWrite` -- would disable this tool's own write path mid-session.

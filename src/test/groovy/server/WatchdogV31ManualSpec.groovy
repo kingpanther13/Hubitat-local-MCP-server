@@ -380,6 +380,24 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         'a catalog with no code-update tool'    | [[id: 38, type: 'MCP Rule Server']]                                         | [[name: 'accessToken', value: 't']] | '{"result":{"tools":[{"name":"hub_list_devices"}]}}'  | false     | 'no code-update tool'
     }
 
+    def "the peer check sends only the main token when the MCP server also holds per-client tokens"() {
+        given:
+        def sent = []
+        script.metaClass.hubGet = { String p, Map q ->
+            if (p == '/hub2/appsList') return groovy.json.JsonOutput.toJson([apps: [[data: [id: 38, type: 'MCP Rule Server'], children: []]]])
+            if (p.startsWith('/installedapp/statusJson/')) return groovy.json.JsonOutput.toJson([appState: [[name: 'accessToken', value: tokens]]])
+            null
+        }
+        script.metaClass.peerPost = { String id, String token, String json -> sent << token; '{"result":{"tools":[{"name":"hub_manage_code"}]}}' }
+
+        expect:
+        script.peerEndpointStatus().available == true
+        sent == ['main']
+
+        where:
+        tokens << ['main,client-1,client-2', 'main,']
+    }
+
     def "the watchdog deletes no app whose code it cannot read"() {
         given: 'the read that would rule out the watchdog\'s own code fails'
         def deletes = []

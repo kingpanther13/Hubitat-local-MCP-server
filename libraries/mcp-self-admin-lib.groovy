@@ -225,7 +225,18 @@ def toolUpdateMcpSettings(args) {
 // page (the page buttons share these helpers). Only the main token reaches it -- the tool cannot
 // be granted to a client -- so returning tokens here gives nothing the caller lacks.
 private Map _mcpClientTokenOperation(op) {
-    if (!(op instanceof Map)) throw new IllegalArgumentException("clientToken must be an object: {action: list|create|update|rotate|revoke, clientId?, label?, access?}")
+    Map result = _mcpClientTokenResult(op)
+    // redactAccessTokens masks the URLs on the way out; mask the bare tokens the same way.
+    if (settings.redactAccessTokens == true) {
+        String marker = "***redacted (access token)***"
+        if (result.token) result.token = marker
+        if (result.clients instanceof List) result.clients = result.clients.collect { it + [token: marker] }
+    }
+    return result
+}
+
+private Map _mcpClientTokenResult(op) {
+    if (!(op instanceof Map)) throw new IllegalArgumentException("clientToken must be an object: {action: list|create|update|rotate|revoke|revokeUntracked, clientId?, label?, access?}")
     String action = op.action?.toString()
     String id = op.clientId?.toString()
     if (action in ["update", "rotate", "revoke"]) {
@@ -234,11 +245,14 @@ private Map _mcpClientTokenOperation(op) {
     }
     if (op.access != null && !(op.access instanceof Map)) throw new IllegalArgumentException("clientToken.access must be an object: {tools, read, write, local, cloud, toolNumber}.")
     switch (action) {
+        case "revokeUntracked":
+            return _revokeUntrackedAccessTokens()
         case "list":
             def clients = _clientTokens().collect { cid, c ->
                 [clientId: cid.toString(), label: c?.label, token: c?.token, access: _clientAccessView(cid.toString())]
             }
-            return [success: true, clients: clients.sort { it.clientId.isInteger() ? (it.clientId as Integer) : 0 }]
+            return [success: true, clients: clients.sort { it.clientId.isInteger() ? (it.clientId as Integer) : 0 },
+                    untrackedTokens: _untrackedAccessTokens().size()]
         case "create":
             // Validated before the token exists, so a bad access map creates nothing.
             if (op.access) _clientAccessWrites("0", op.access as Map)
@@ -265,7 +279,7 @@ private Map _mcpClientTokenOperation(op) {
             if (revoked.success) mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: revoked client id ${id}")
             return revoked
         default:
-            throw new IllegalArgumentException("clientToken.action must be one of list, create, update, rotate, revoke (got: ${action}).")
+            throw new IllegalArgumentException("clientToken.action must be one of list, create, update, rotate, revoke, revokeUntracked (got: ${action}).")
     }
 }
 
@@ -1037,12 +1051,12 @@ def _getAllToolDefinitions_partSelfAdmin() {
     return [
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place, or manage its per-client access tokens — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit.[[FLAT_TRIM]] Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place[[FLAT_TRIM]], or manage its per-client access tokens[[/FLAT_TRIM]] — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup.[[FLAT_TRIM]] Every successful write is logged at WARN for audit. Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write_system'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
-                    clientToken: [type: "object", description: "Instead of settings: manage per-client access tokens. {action: list|create|update|rotate|revoke, clientId (update/rotate/revoke), label (create), access? {tools: [names]|\"all\", read, write, local, cloud, toolNumber: main|none|0-9}}. create and rotate return the new token.[[FLAT_TRIM]] A new client starts with every grantable tool on; access narrows it. See hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]]"],
+                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    clientToken: [type: "object", description: "Per-client tokens, instead of settings: see hub_get_tool_guide(section='hub_admin_write_system').[[FLAT_TRIM]] {action: list|create|update|rotate|revoke, ...}. Shape: clientId (update/rotate/revoke), label (create), access? {tools: [names]|\"all\", read, write, local, cloud, toolNumber: main|none|0-9}. create and rotate return the new token; a new client starts with every grantable tool on and access narrows it.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
                 required: ["confirm"]

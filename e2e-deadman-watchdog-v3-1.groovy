@@ -880,7 +880,9 @@ Map peerEndpointStatus() {
         if (found[0].disabled == true) return [available: false, appId: id, reason: "the MCP server instance is disabled"]
         def status = _parseJsonBody(hubGet("/installedapp/statusJson/${id}".toString(), [:]))
         def entry = (status instanceof Map ? (status.appState ?: []) : []).find { it?.name?.toString() == "accessToken" }
-        String token = entry?.value?.toString()
+        // With per-client tokens the hub keeps every token in this one comma-joined value; the main
+        // token is the first.
+        String token = entry?.value?.toString()?.split(",")?.find { it.trim() }?.trim()
         if (!token) return [available: false, appId: id, reason: "could not read the MCP server's access token"]
         def answer = _parseJsonBody(peerPost(id, token, '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'))
         def tools = (answer instanceof Map && answer.result instanceof Map) ? answer.result.tools : null

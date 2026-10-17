@@ -36,10 +36,13 @@ class ClientTokensSpec extends ToolSpecBase {
         appExecutor.revokeSpecificAccessToken(_) >> { args ->
             calls << "revoke:${args[0]}"
             if (revokeSticks) {
-                stateMap.accessToken = stateMap.accessToken.toString().split(',').findAll { it != args[0] }.join(',')
+                // The firmware's own edit: cut the token out of the string, collapse ",,".
+                stateMap.accessToken = stateMap.accessToken.toString().replace(args[0].toString(), '').replace(',,', ',')
             }
         }
         appExecutor.getAccessTokens() >> { stateMap.accessToken.toString().split(',').toList() }
+        appExecutor.getFullLocalApiServerUrl() >> 'http://hub/apps/api/1'
+        appExecutor.getFullApiServerUrl() >> 'https://cloud/apps/1'
     }
 
     def setup() {
@@ -116,6 +119,23 @@ class ClientTokensSpec extends ToolSpecBase {
         !stateMap.clientTokens
         stateMap.nextClientTokenId == null
         stateMap.clientTokenNotice.contains('firmware 2.5.2')
+    }
+
+    def "a revoke leaves no empty entry in the hub's token list, wherever the token sat"() {
+        given:
+        stateMap.accessToken = tokens
+        stateMap.clientTokens = ['1': [label: 'Alpha', token: 'client-a']]
+
+        when:
+        script.appButtonHandler('revokeClientToken_1')
+
+        then: 'a reader that takes the whole value as the main token still gets just the main token'
+        stateMap.accessToken == expected
+
+        where:
+        tokens                  | expected
+        'main,client-a'         | 'main'
+        'main,client-a,client-b'| 'main,client-b'
     }
 
     def "a failed revoke or rotate is shown on the page"() {
@@ -270,10 +290,6 @@ class ClientTokensSpec extends ToolSpecBase {
     }
 
     def "hub_update_mcp_settings clientToken: create with access, list, update, rotate, revoke"() {
-        given:
-        script.metaClass.getFullLocalApiServerUrl = { -> 'http://hub/apps/api/1' }
-        script.metaClass.getFullApiServerUrl = { -> 'https://cloud/apps/1' }
-
         when:
         def created = manage([action: 'create', label: 'Agent', access: [tools: ['hub_list_modes', 'hub_get_tool_guide'], write: false]])
 
@@ -341,6 +357,30 @@ class ClientTokensSpec extends ToolSpecBase {
         'a missing clientId'     | [action: 'revoke']                                                    | 'clientId is required'
         'an unknown clientId'    | [action: 'rotate', clientId: '9']                                     | 'No client token with clientId 9'
         'an unknown action'      | [action: 'delete', clientId: '1']                                     | 'must be one of list, create, update, rotate, revoke'
+    }
+
+    def "clientToken revokeUntracked revokes only the tokens that belong to no client, and redaction masks returned tokens"() {
+        given:
+        stateMap.accessToken = 'main,client-a,orphan-1'
+        stateMap.clientTokens = ['1': [label: 'Alpha', token: 'client-a']]
+
+        when:
+        def listed = manage([action: 'list'])
+        def cleaned = manage([action: 'revokeUntracked'])
+
+        then:
+        listed.untrackedTokens == 1
+        cleaned == [success: true, revoked: 1]
+        calls == ['revoke:orphan-1']
+        stateMap.accessToken == 'main,client-a'
+        script._isRetiredAccessToken('orphan-1')
+
+        when:
+        settingsMap.redactAccessTokens = true
+        def masked = manage([action: 'list'])
+
+        then:
+        masked.clients*.token == ['***redacted (access token)***']
     }
 
     def "clientToken is refused alongside settings, and the tool still needs Developer Mode"() {
