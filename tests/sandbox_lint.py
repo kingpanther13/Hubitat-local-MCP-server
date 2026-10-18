@@ -1816,7 +1816,7 @@ def check_tool_guide_pointers(src_override: str | None = None,
     # 1. Extract every section key from getToolGuideSections().
     #    Match lines like `        device_authorization: '''## Device Authorization (CRITICAL)`
     sections_block_match = re.search(
-        r"def getToolGuideSections\(\)\s*\{\s*(?:def table = \{ ->\s*)?return\s*\[(.*?)\n\s*\]\s*(?:\}\s*return table\(\)\s*)?\}",
+        r"def getToolGuideSections\(\)\s*\{\s*(?:def table = \{\s*)?return\s*\[(.*?)\n\s*\]\s*(?:\}\s*return table\(\)\s*)?\}",
         src,
         re.DOTALL,
     )

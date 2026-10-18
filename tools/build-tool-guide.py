@@ -55,7 +55,7 @@ def groovy_unescape(raw: str) -> str:
 
 def served_sections(server_src: str, lib_src: str) -> list:
     """Return [(key, text)] in getToolGuideSections() order."""
-    block = re.search(r"def getToolGuideSections\(\)\s*\{\s*(?:def table = \{ ->\s*)?return\s*\[(.*?)\n\s*\]\s*(?:\}\s*return table\(\)\s*)?\}", server_src, re.DOTALL)
+    block = re.search(r"def getToolGuideSections\(\)\s*\{\s*(?:def table = \{\s*)?return\s*\[(.*?)\n\s*\]\s*(?:\}\s*return table\(\)\s*)?\}", server_src, re.DOTALL)
     if not block:
         raise ValueError("getToolGuideSections() return literal not found")
     body = block.group(1)
