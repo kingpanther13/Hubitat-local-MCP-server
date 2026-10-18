@@ -78,13 +78,13 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
         ],
         [
             name: "hub_set_rule",
-            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. Fields per capability: operation:'discover'. RM-only — for NON-RM classic apps (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule) use hub_set_native_app; not the legacy custom engine (hub_*_custom_rule). Requires the Write master + confirm=true + recent backup; each edit keeps a File Manager baseline (backup.backupKey; reused for an hour).
+            description: """Create OR edit a Hubitat Rule Machine rule (RM 5.1) — one upsert tool. Omit appId to CREATE (name required; optionally bundle addTriggers/addActions/addRequiredExpression to populate in the same call). Provide appId to EDIT. Fields per capability: operation:'discover'. RM-only — NON-RM classic apps use hub_set_native_app[[FLAT_TRIM]] (Room Lighting, Button Controller, Notifier, Groups+Scenes, Visual Rule); not the legacy custom engine (hub_*_custom_rule)[[/FLAT_TRIM]]. Requires the Write master + confirm=true + recent backup; each edit keeps a File Manager baseline[[FLAT_TRIM]] (backup.backupKey; reused for an hour)[[/FLAT_TRIM]].
 
 ALWAYS prefer the one-call shortcuts (addTrigger, addAction, addRequiredExpression/replaceRequiredExpression, bulk addTriggers/addActions/replaceActions, remove/modify/move/clear, addLocalVariable/removeLocalVariable, patches); walkStep and raw settings+button are for what they cannot express.[[FLAT_TRIM]] Each shortcut orchestrates the full RM 5.1 wizard in one call.
 
 Partial-success (every shortcut): success:true can pair with partial:true — inspect partial/repairHints. A rejected trailing updateRule leaves the change written-but-not-live (subscriptionsNotLive / expressionNotLive / variableNotLive / patchesNotLive); retry hub_set_rule(button='updateRule', confirm=true). If wizardStuck:true, first run the close-editor click restoreHint names (cancelCapab for a condition sub-wizard or the trigger editor, actionCancel for a new action's editor, actionDone for an editor modifyAction opened on a committed action). On CREATE the new appId is returned even if a bundled item only partially bakes (partialTriggers/partialActions).[[/FLAT_TRIM]]
 
-Deep reference + worked examples: guide:true inline, or hub_get_tool_guide(section='set_rule_reference').[[FLAT_TRIM]] Full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
+Deep reference[[FLAT_TRIM]] + worked examples: guide:true inline, or[[/FLAT_TRIM]]: hub_get_tool_guide(section='set_rule_reference').[[FLAT_TRIM]] Full create + repair protocol: hub_get_tool_guide(section='set_rule_create_reference'). Pass {discover:true} on addTrigger/addAction for the live machine-readable schema.
 
 On MCP 2026-07-28, eligible slow writes continue automatically across bounded Streamable HTTP requests and return one final result. Older clients retain the status:'in_progress' remainder envelope. See hub_get_tool_guide(section='slow_ops').[[/FLAT_TRIM]]""",
             inputSchema: [
@@ -2732,6 +2732,7 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
 // "and stays". The live tCapab/rCapab pickers still decide what a hub offers: RM drops a capability
 // no hub device has, HSM without Safety Monitor, Button LED without Lutron, Rule paused with no rules.
 private Map _rmCondTables() {
+    def table = { ->
     [trigger: ["Acceleration", "Battery", "Button", "Carbon monoxide detector", "Carbon dioxide sensor", "Certain Time (and optional date)", "Periodic Schedule", "Contact", "Dimmer", "Energy meter", "Garage door", "Humidity", "Illuminance", "Lock", "Physical Lock", "Valve", "Mode", "Motion", "Digital Switch", "Variable", "Physical dimmer level", "Physical Switch", "Power meter", "Presence", "Rule paused", "Smoke detector", "Switch", "Fan Speed", "Sound", "Shock sensor", "Temperature", "Door", "HSM Status", "HSM Alert", "Thermostat mode", "Thermostat state", "Thermostat heat setpoint", "Thermostat cool setpoint", "Gas detector", "Water sensor", "Private Boolean", "Music player", "Location Event", "Cloud End Point", "Local End Point", "Security keypad", "Tamper alert", "Power source", "Keypad codes", "Lock codes", "Button LED", "Thermostat fan mode", "Custom Attribute", "Days of Week Schedule", "Last Event Device", "Window Shade", "Window Blind"],
      condition: ["Acceleration", "Battery", "Carbon monoxide detector", "Carbon dioxide sensor", "Contact", "Days of week", "Between two dates", "Dimmer", "Energy meter", "Garage door", "Humidity", "Illuminance", "Lock", "Valve", "Fan Speed", "Mode", "Motion", "Power meter", "Presence", "Rule paused", "Smoke detector", "Sound", "Shock sensor", "Gas detector", "Switch", "Temperature", "Private Boolean", "Door", "HSM Status", "Thermostat mode", "Thermostat state", "Thermostat heat setpoint", "Variable", "Power source", "On a Day", "Thermostat cool setpoint", "Time of day", "Between two times", "Water sensor", "Music player", "Security keypad", "Tamper alert", "Keypad codes", "Lock codes", "Thermostat fan mode", "Custom Attribute", "Last Event Device", "Time Since Event", "Window Shade", "Window Blind"],
      numeric: ["Battery", "Carbon dioxide sensor", "Dimmer", "Energy meter", "Humidity", "Illuminance", "Physical dimmer level", "Power meter", "Temperature", "Thermostat heat setpoint", "Thermostat cool setpoint"],
@@ -2751,6 +2752,8 @@ private Map _rmCondTables() {
      // Device-state triggers whose state picker has no *changed* option.
      noChangeState: ["Rule paused"],
      timeOpts: ["A specific time", "Sunrise", "Sunset"]]
+    }
+    return table()
 }
 
 // RM's spelling of a trigger/condition capability, matched regardless of case; null when RM has none.
@@ -3044,6 +3047,7 @@ private Map _rmActionDiscover(Object selector) {
 // of the entry takes); requires and exclusive apply per entry and per action.
 // custom = handled by the dedicated code in _rmMapActionSpec (the catalog still describes it).
 private Map _rmActionCatalog() {
+    def table = { ->
     def dev = { String key, String desc = null -> def f = [name: "deviceIds", key: key, type: "List<Integer>", required: true]; if (desc) f.desc = desc; f }
     def delay = [name: "delay", type: "Map", desc: "{hours?, minutes?, seconds?, cancelable?, random?} or {variable}"]
     def raw = [name: "rawSettings", type: "Map"]
@@ -3247,6 +3251,8 @@ private Map _rmActionCatalog() {
         "else": [actType: "condActs", sub: "getElse", family: "flow", slots: []],
         endIf:  [actType: "condActs", sub: "getEndIf", family: "flow", slots: []]
     ]
+    }
+    return table()
 }
 
 // The per-condition fields an expression's conditions[] takes; shared with the trigger schema.

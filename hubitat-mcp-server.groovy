@@ -5278,7 +5278,7 @@ def _cleanupRetiredToolState() {
 def getGatewayConfig() {
     def cached = _toolMetadataGet("getGatewayConfig")
     if (cached != null) return cached
-    def built = [
+    def built = ({ -> [
         hub_manage_custom_rules: [
             description: "Legacy MCP custom-rule engine (sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI): create, read, update, delete, test, export, import, and clone. Write ops (create/delete/export/import/clone) require the Custom Rule Engine toggle ON in MCP settings; when OFF only get/test (and the enabled toggle via update) work. For native Rule Machine rules visible in the hub UI use hub_manage_rule_machine / hub_manage_native_rules_and_apps instead. Read-only views are also in hub_read_rules.",
             tools: ["hub_get_custom_rule", "hub_create_custom_rule", "hub_update_custom_rule", "hub_delete_custom_rule", "hub_test_custom_rule", "hub_export_custom_rule", "hub_import_custom_rule", "hub_clone_custom_rule"],
@@ -5750,7 +5750,7 @@ def getGatewayConfig() {
                 hub_get_dashboard: "view read inspect easy legacy hubitat dashboard tiles layout grid template config one read"
             ]
         ]
-    ]
+    ] })()
     return _toolMetadataPut("getGatewayConfig", built)
 }
 
@@ -11470,6 +11470,7 @@ def _applyReactiveBpsWarning(toolName, args, result) {
 }
 
 def getToolGuideSections() {
+    def table = { ->
     return [
         device_authorization: '''## Device Authorization (CRITICAL)
 
@@ -13077,6 +13078,8 @@ The advanced `relayBudgetMs` setting (default 6000 ms, 0 disables) controls clou
 No custom operation-token or deployment-job protocol is exposed. If a non-continuation write loses its response, read current hub state before deciding whether it is safe to retry.
 '''
     ]
+    }
+    return table()
 }
 
 // Sub-section registry (issue #392). Four sections carry ~70% of the guide, so a caller after one
