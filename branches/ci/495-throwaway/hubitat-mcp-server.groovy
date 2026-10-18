@@ -9984,7 +9984,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
                 result.nextCursor = endIndex.toString()
             }
         }
-        if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, limit)
+        if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit)
         return result
     }
     def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
@@ -10081,18 +10081,19 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
         if (cursor != null && endIndex < totalCount) result.nextCursor = endIndex.toString()
     }
-    if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, limit)
+    if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit)
     return result
 }
-private void _applyListBudgetCut(Map result, int startIndex, int endIndex, limit) {
+private void _applyListBudgetCut(Map result, int startIndex, int endIndex, int totalCount, limit) {
     result.offset = startIndex
     result.limit = limit ?: 0
     result.hasMore = true
     result.nextOffset = endIndex
     result.nextCursor = endIndex.toString()
     result.budgetLimited = true
-    result.note = ("This page stopped after ${endIndex - startIndex} device(s) to answer within the request time limit; " +
-        "more devices remain. Repeat the call with cursor '${endIndex}' (other arguments unchanged) to continue.").toString()
+    result.note = ("Partial page: devices ${startIndex + 1}-${endIndex} of ${totalCount}. It stopped early to answer within the " +
+        "request time limit and ${totalCount - endIndex} more device(s) remain. Repeat the call with cursor '${endIndex}' " +
+        "(other arguments unchanged) to continue.").toString()
 }
 private Boolean isDeviceDisabled(device) {
     return device.disabled == true || device.disabled?.toString()?.toLowerCase() == "true" ||
