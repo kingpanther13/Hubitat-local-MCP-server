@@ -4964,7 +4964,7 @@ A transport drop can lose the response while the hub still commits this write; v
                 type: "object",
                 properties: [
                     scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub", "all"], description: "Which backups to list; default source."],
-                    cursor: [type: "string", description: "Source backups come 50 per page, newest first; a page with more after it carries hasMore:true and nextCursor. Pass that nextCursor to continue."]
+                    cursor: [type: "string", description: "Source backups page 50 at a time, newest first; pass the returned nextCursor to continue."]
                 ],
                 required: []
             ]
