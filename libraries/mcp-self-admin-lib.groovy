@@ -10,8 +10,12 @@ def toolUpdateMcpSettings(args) {
     }
     requireDestructiveConfirm(args.confirm)
 
+    if (args.clientToken != null) {
+        if (args.settings) throw new IllegalArgumentException("Send clientToken on its own, without settings.")
+        return _mcpClientTokenOperation(args.clientToken)
+    }
     if (!args.settings || !(args.settings instanceof Map) || args.settings.isEmpty()) {
-        throw new IllegalArgumentException("settings must be a non-empty map of {settingName: newValue}")
+        throw new IllegalArgumentException("settings must be a non-empty map of {settingName: newValue}, or pass clientToken instead")
     }
 
     // Allowlist of SCALAR settings that can be modified via this tool, with their Hubitat input
@@ -219,6 +223,68 @@ def toolUpdateMcpSettings(args) {
         result.message = result.message + " " + deviceScopeResult.message
     }
     return result
+}
+
+// Per-client access tokens through the Developer Mode tool: the same operations as the Advanced
+// page (the page buttons share these helpers). Only the main token reaches it -- the tool cannot
+// be granted to a client -- so returning tokens here gives nothing the caller lacks.
+private Map _mcpClientTokenOperation(op) {
+    Map result = _mcpClientTokenResult(op)
+    // redactAccessTokens masks the URLs on the way out; mask the bare tokens the same way.
+    if (settings.redactAccessTokens == true) {
+        String marker = "***redacted (access token)***"
+        if (result.token) result.token = marker
+        if (result.clients instanceof List) result.clients = result.clients.collect { it + [token: marker] }
+    }
+    return result
+}
+
+private Map _mcpClientTokenResult(op) {
+    if (!(op instanceof Map)) throw new IllegalArgumentException("clientToken must be an object: {action: list|create|update|rotate|revoke|revokeUntracked, clientId?, label?, access?}")
+    String action = op.action?.toString()
+    String id = op.clientId?.toString()
+    if (action in ["update", "rotate", "revoke"]) {
+        if (!id) throw new IllegalArgumentException("clientToken.clientId is required for action '${action}' (see action 'list').")
+        if (!_clientTokens().containsKey(id)) throw new IllegalArgumentException("No client token with clientId ${id} (see action 'list').")
+    }
+    if (op.access != null && !(op.access instanceof Map)) throw new IllegalArgumentException("clientToken.access must be an object: {tools, read, write, local, cloud, toolNumber}.")
+    switch (action) {
+        case "revokeUntracked":
+            return _revokeUntrackedAccessTokens()
+        case "list":
+            def clients = _clientTokens().collect { cid, c ->
+                [clientId: cid.toString(), label: c?.label, token: c?.token, access: _clientAccessView(cid.toString())]
+            }
+            return [success: true, clients: clients.sort { it.clientId.isInteger() ? (it.clientId as Integer) : 0 },
+                    untrackedTokens: _untrackedAccessTokens().size()]
+        case "create":
+            // Validated before the token exists, so a bad access map creates nothing.
+            if (op.access) _clientAccessWrites("0", op.access as Map)
+            def created = _createClientToken(op.label?.toString())
+            if (!created.success) return created
+            String newId = created.clientId.toString()
+            if (op.access) _clientAccessWrites(newId, op.access as Map).each { name, value -> app.updateSetting(name, value) }
+            mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: created client '${created.label}' (id ${newId})")
+            return created + [access: _clientAccessView(newId),
+                              localUrl: "${getFullLocalApiServerUrl()}/mcp?access_token=${created.token}".toString(),
+                              cloudUrl: "${getFullApiServerUrl()}/mcp?access_token=${created.token}".toString()]
+        case "update":
+            if (!op.access) throw new IllegalArgumentException("clientToken.access is required for action 'update'.")
+            def writes = _clientAccessWrites(id, op.access as Map)
+            writes.each { name, value -> app.updateSetting(name, value) }
+            mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: updated access of client id ${id}: ${writes.keySet().sort()}")
+            return [success: true, clientId: id, label: _clientTokens().get(id)?.label, access: _clientAccessView(id)]
+        case "rotate":
+            def rotated = _rotateClientToken(id)
+            if (rotated.success) mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: rotated client id ${id}")
+            return rotated
+        case "revoke":
+            def revoked = _revokeClientToken(id)
+            if (revoked.success) mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: revoked client id ${id}")
+            return revoked
+        default:
+            throw new IllegalArgumentException("clientToken.action must be one of list, create, update, rotate, revoke, revokeUntracked (got: ${action}).")
+    }
 }
 
 // VALIDATE + COMPUTE a device-access scope change to selectedDevices (no write). Used by
@@ -989,14 +1055,15 @@ def _getAllToolDefinitions_partSelfAdmin() {
     return [
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit.[[FLAT_TRIM]] Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place[[FLAT_TRIM]], or manage its per-client access tokens[[/FLAT_TRIM]] — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup.[[FLAT_TRIM]] Every successful write is logged at WARN for audit. Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): OFF skips the pre-edit baseline[[FLAT_TRIM]] (edit responses say backup.skipped with no backupKey, so nothing can be restored; deletes still snapshot; overrides backupEveryRuleWrite)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh backup before every native-app edit[[FLAT_TRIM]] instead of reusing a same-app baseline for one hour (only while backupBeforeRuleEdits is on). backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write_system').[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics[[/FLAT_TRIM]]."],
+                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): OFF skips the pre-edit baseline[[FLAT_TRIM]] (edit responses say backup.skipped with no backupKey, so nothing can be restored; deletes still snapshot; overrides backupEveryRuleWrite)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh backup before every native-app edit[[FLAT_TRIM]] instead of reusing a same-app baseline for one hour (only while backupBeforeRuleEdits is on). backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    clientToken: [type: "object", description: "Per-client tokens, instead of settings: see hub_get_tool_guide(section='hub_admin_write_system').[[FLAT_TRIM]] {action: list|create|update|rotate|revoke, ...}. Shape: clientId (update/rotate/revoke), label (create), access? {tools: [names]|\"all\", read, write, local, cloud, toolNumber: main|none|0-9}. create and rotate return the new token; a new client starts with every grantable tool on and access narrows it.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
-                required: ["settings", "confirm"]
+                required: ["confirm"]
             ]
         ],
         [
@@ -1026,10 +1093,8 @@ def _idempotentWriteToolNames_partSelfAdmin() {
     // Retry-safe writes (MCP idempotentHint) for this library's tools -- contributed to the
     // app's getIdempotentWriteToolNames() aggregator; see the classification rules there.
     return [
-        // MCP self-admin + logging (selectedDevices (replace/add/remove), when carried in the
-        // settings batch, is idempotent too -- re-delivery converges on the same authorized set
-        // for all three modes)
-        "hub_update_mcp_settings",
+        // hub_update_mcp_settings is NOT here: its clientToken create / rotate issue a new token on
+        // every call, so a retry is not safe.
         // Developer Mode self-deploy (full repair to a ref converges, while the
         // public boundary refuses a duplicate that is already in flight)
         "hub_update_package"
@@ -1064,7 +1129,7 @@ def _toolDisplayMeta_partSelfAdmin() {
     // overrides menu) -- merged into the app's getToolDisplayMeta() aggregator (issue #209).
     return [
         // MCP self-administration (Developer Mode)
-        hub_update_mcp_settings: [title: "Update MCP Settings", summary: "Update the MCP app's own settings + device-access scope (Developer Mode)."],
+        hub_update_mcp_settings: [title: "Update MCP Settings", summary: "Update the MCP app's own settings, device-access scope and per-client tokens (Developer Mode)."],
         hub_update_package: [title: "Deploy MCP Package", summary: "Full repair-install of the MCP package at a git ref (Developer Mode)."]
     ]
 }

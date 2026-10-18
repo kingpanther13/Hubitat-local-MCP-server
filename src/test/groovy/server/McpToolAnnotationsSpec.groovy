@@ -323,7 +323,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_update_custom_rule', 'hub_delete_custom_rule',
             'hub_set_hsm', 'hub_set_mode_manager', 'hub_update_hub_mesh',
             'hub_delete_variable', 'hub_create_connector', 'hub_delete_connector',
-            'hub_update_mcp_settings', 'hub_set_log_level', 'hub_delete_debug_logs',
+            'hub_set_log_level', 'hub_delete_debug_logs',
             'hub_delete_captured_state',
             'hub_update_device', 'hub_delete_device',
             'hub_update_room', 'hub_delete_room',
@@ -344,6 +344,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_call_device_command', 'hub_call_device_swap', 'hub_call_device_replace',
             'hub_create_custom_rule', 'hub_import_custom_rule', 'hub_clone_custom_rule',
             'hub_export_custom_rule',
+            'hub_update_mcp_settings',   // clientToken create / rotate issue a new token each call
             'hub_create_variable',
             // hub_set_variable(increment) adds again on a retry; a hub restore reboots again.
             'hub_set_variable', 'hub_restore_backup',

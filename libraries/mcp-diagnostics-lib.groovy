@@ -409,9 +409,13 @@ private String _deviceReadAccessScope() {
 }
 
 private def _deviceReadSnapshot(String tool, Map args, Map context) {
+    // The worker runs without the request clock: the request's budget belongs to the observing request,
+    // and a leaf that honours it would cut a read the continuation exists to finish.
+    Map workArgs = _mrtrCopyMap(args)
+    workArgs.remove("__reqT0")
     Map work = [id: context.id, fresh: context.fresh, tool: tool,
                 outerTool: context.outerTool ?: tool,
-                args: _mrtrCopyMap(args), scope: _deviceReadAccessScope()]
+                args: workArgs, scope: _deviceReadAccessScope()]
     Map snapshot = _hubReadSnapshot(null, args, work)
     if (work.scope != _deviceReadAccessScope()) {
         throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")
@@ -547,8 +551,9 @@ def runNativeLogFetch(Map job = [:]) {
             def payload = _executeWithDeviceReadContext(outer, outerArgs, null)
             String text = groovy.json.JsonOutput.toJson(payload)
             int bytes = text.getBytes("UTF-8").length
-            if (bytes > 120000) text = groovy.json.JsonOutput.toJson(
-                _responseTooLargeEnvelope(work.tool.toString(), bytes, 120000))
+            int limit = _responseSizeLimitBytes()
+            if (bytes > limit) text = groovy.json.JsonOutput.toJson(
+                _responseTooLargeEnvelope(work.tool.toString(), bytes, limit))
             result = [text: text, scope: work.scope]
         } else {
             result = [text: hubInternalGet("/logs/past/json", job.query as Map, 30)]
@@ -967,7 +972,7 @@ def toolGetHubLogs(args) {
     // count, the per-message take(200) bounds the message body so a single oversized
     // entry can't push the page past the cap on its own.
     def estimatedJsonSize = paged.page.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
-    if (estimatedJsonSize > hubResponseCapBytes() - 11072) {  // =120000; matches handleToolsCall responseSizeLimit
+    if (estimatedJsonSize > _responseSizeLimitBytes()) {  // matches handleToolsCall responseSizeLimit
         paged.page.each { it.message = it.message?.take(200) }
         result.truncated = true
         result.note = "Log messages truncated to fit response size limit"

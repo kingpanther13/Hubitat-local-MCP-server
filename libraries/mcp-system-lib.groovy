@@ -370,6 +370,9 @@ def toolGetHubInfo(args = null) {
 
     // A client that saw only a generic error for a write can learn here whether it ran.
     info.recentWrites = _mrtrRecentOperations()
+    // Only on a per-client token: what this token may do, so an agent can ask for access.
+    def clientAccess = _clientAccessInfo()
+    if (clientAccess != null) info.clientAccess = clientAccess
     return info
 }
 

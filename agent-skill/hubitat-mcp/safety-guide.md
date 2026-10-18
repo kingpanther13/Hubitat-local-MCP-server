@@ -42,6 +42,8 @@ Both are enforced centrally at dispatch — no tool slips past. Turning a master
 
 **Destructive write tools require more.** Beyond the Write master, the destructive/sensitive tools (reboot, shutdown, delete-device, file write/delete, native-rule CRUD, etc.) still demand `confirm=true` **and** a hub backup within 24h — see the pre-flight checklist below.
 
+**Per-client access tokens.** The hub owner can connect you with a token of your own that allows only some tools, Read or Write only, or only the local or cloud endpoint. You see only what the token allows. A refusal that names a client ("…is not enabled for client 'X'…") is that token's setting: `tools/list` shows exactly what the token allows (and `hub_get_info`, when it is one of them, lists it under `clientAccess`); ask the hub owner for the access, since retrying will not help.
+
 **Advanced per-tool / per-gateway overrides (deny-only).** Under *Advanced: Per-tool Overrides*, individual tools or whole gateways can be disabled below the masters. A disabled tool drops from `tools/list` and `hub_search_tools` everywhere it appears (including a tool shared across gateways, and every tool inside a disabled gateway), and a cached call returns a distinct error: "…is disabled in Advanced settings (Per-tool Overrides)…". A disabled tool still appears in `hub_get_tool_guide` documentation. These overrides can only turn things OFF — they never re-enable something a master already hid.
 
 ---

@@ -1229,10 +1229,12 @@ class LegacyEraClient:
 TEST_REGISTRY: list[tuple[str, str, str]] = []  # (group, display_name, method_name)
 
 
-def test(group: str):
-    """Decorator that registers a TestRunner method in a named group."""
+def test(group: str, *, ephemeral_only: bool = False):
+    """Decorator that registers a TestRunner method in a named group. ephemeral_only registers it
+    only when E2E_LANE=ephemeral at import, so the shared test hub never lists it."""
     def decorator(func):
-        TEST_REGISTRY.append((group, func.__name__, func.__name__))
+        if not ephemeral_only or os.environ.get("E2E_LANE") == "ephemeral":
+            TEST_REGISTRY.append((group, func.__name__, func.__name__))
         return func
     return decorator
 
@@ -7462,10 +7464,14 @@ class TestRunner:
             # gained afterwards are emptied, and it is finished with Done, never the updateRule click
             # that a Basic Rule stores as a pending action delete and then fails to render.
             backup_key = None if ew["relayDropped"] else (ew["response"].get("backup") or {}).get("backupKey")
-            if not backup_key:
-                listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": {}}) or {}
+            list_args: dict = {}
+            while not backup_key:
+                listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": list_args}) or {}
                 backup_key = next((b.get("backupKey") for b in (listed.get("backups") or [])
                                    if str(b.get("id")) == str(app_id)), None)
+                if not listed.get("nextCursor"):
+                    break
+                list_args = {"cursor": listed["nextCursor"]}
             assert backup_key, f"no baseline backup was recorded for Basic Rule {app_id}"
             switch_id = self._ensure_perm_fixture("switch_a")
             for step in ({"trigCapab": "Switch"}, {"switchDev": [int(switch_id)]}, {"trigger": "Turns on"}):
@@ -14523,8 +14529,12 @@ class TestRunner:
         assert isinstance(src, dict) and "backups" in src, \
             f"default scope=source missing 'backups': {sorted(src.keys()) if isinstance(src, dict) else type(src).__name__}"
         total = src.get("total")
-        assert isinstance(total, int) and total == len(src["backups"]), \
+        shown = len(src["backups"])
+        assert isinstance(total, int) and src.get("count") == shown <= min(total, 50), \
             f"source-backup count contract failed: {src}"
+        if total > shown:
+            assert src.get("hasMore") is True and src.get("nextCursor") == str(shown), \
+                f"a partial source-backup page must say where the next page starts: {sorted(src)}"
         # Backups are evicted only past the storage budget (issues #506/#517), not by a count;
         # the e2e hub leaves the Backup storage budget setting at its 10 MB default.
         budget = src.get("storageBudget") or {}
@@ -16418,6 +16428,74 @@ class TestRunner:
             assert restored.get("success") is True, "could not restore original logging level"
             assert read_settings() == before, "settings differ after self-admin restoration"
 
+    @test("developer_mode", ephemeral_only=True)
+    def test_per_client_access_token_lifecycle(self) -> None:
+        """A per-client token made through hub_update_mcp_settings(clientToken) gets only its own
+        access over the suite's connection (query token and Bearer header); its own cloud switch
+        refuses only it; rotate and revoke refuse the old token at once; the main token is never
+        narrowed. Ephemeral lane only: the created token is a live secret, scrubbed there."""
+        def manage(operation: dict) -> Any:
+            return self.client.call_tool("hub_manage_mcp", {"tool": "hub_update_mcp_settings",
+                                         "args": {"clientToken": operation, "confirm": True}})
+
+        def status(token: str) -> int:
+            probe = HubitatMcpClient(self.client.hub_url, self.client.app_id, token)
+            probe.session.trust_env = False
+            return probe.raw_request({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}).status_code
+
+        label = f"{PREFIX}Client"
+        stale = [c["clientId"] for c in manage({"action": "list"}).get("clients", []) if c.get("label") == label]
+        for client_id in stale:
+            manage({"action": "revoke", "clientId": client_id})
+        created = manage({"action": "create", "label": label, "access": {"tools": ["hub_list_modes"]}})
+        assert created.get("success") is True, {k: v for k, v in created.items() if k not in ("token", "localUrl", "cloudUrl")}
+        client_id, token = created["clientId"], created["token"]
+        _ephemeral_literals.add(token)
+        revoked = False
+        try:
+            client = HubitatMcpClient(self.client.hub_url, self.client.app_id, token)
+            client.session.trust_env = False
+            names = {tool["name"] for tool in client.list_tools()["tools"]}
+            assert names == {"hub_get_tool_guide", "hub_search_tools", "hub_list_modes"}, sorted(names)
+            assert "modes" in client.call_tool("hub_list_modes", {})
+            try:
+                client.call_tool("hub_get_info", {})
+                raise AssertionError("a client token without hub_get_info was allowed to call it")
+            except McpToolError as exc:
+                assert f"is not enabled for client '{label}'" in str(exc), str(exc)
+
+            bearer = requests.post(client.endpoint, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
+                                   headers={"Authorization": f"Bearer {token}"}, timeout=30)
+            assert bearer.status_code == 200, f"Bearer client token: HTTP {bearer.status_code}"
+            assert {tool["name"] for tool in bearer.json()["result"]["tools"]} == names
+
+            main_info = self.client.call_tool("hub_get_info", {})
+            assert "clientAccess" not in main_info, "the main token was given a clientAccess block"
+
+            # Switch off the client's own access on whichever transport this suite arrives over.
+            source = ((main_info.get("mcpClient") or {}).get("client") or {}).get("source")
+            assert source in ("cloud", "local"), f"hub_get_info did not report the request source: {source!r}"
+            assert manage({"action": "update", "clientId": client_id, "access": {source: False}}).get("success") is True
+            assert status(token) == 403, f"a client with {source} access off was served over {source}"
+            assert self.client.call_tool("hub_list_modes", {}), "the main token was refused by a client's switch"
+            assert manage({"action": "update", "clientId": client_id, "access": {source: True}}).get("success") is True
+            assert status(token) == 200
+
+            rotated = manage({"action": "rotate", "clientId": client_id})
+            assert rotated.get("success") is True, rotated.get("error")
+            _ephemeral_literals.add(rotated["token"])
+            assert status(token) == 401, "a rotated client token still authenticated"
+            assert status(rotated["token"]) == 200
+            token = rotated["token"]
+
+            assert manage({"action": "revoke", "clientId": client_id}).get("success") is True
+            revoked = True
+            assert status(token) == 401, "a revoked client token still authenticated"
+            assert not [c for c in manage({"action": "list"}).get("clients", []) if c.get("clientId") == client_id]
+        finally:
+            if not revoked:
+                manage({"action": "revoke", "clientId": client_id})
+
     @test("developer_mode")
     def test_endpoint_access_toggles_block_their_own_transport(self) -> None:
         """Each access toggle refuses valid-token requests on its own transport only, and turning it
@@ -17470,6 +17548,13 @@ class TestRunner:
         """Gate ON -> a write is blocked (no key leak) until the AI reads the guide, extracts the
         key, and passes it as bestPracticeKey -> the write then succeeds. The flagship #299 proof."""
         var_name = f"{PREFIX}BPS_Unlock"
+        # A relay 504 can lose the response of a create that landed, and the runner then re-runs
+        # this test: start from a hub without the variable (gate still off, so no key is needed).
+        try:
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}})
+        except McpError:
+            pass
         self._set_bps(enableMandatoryBPS=True)
         try:
             # 1. WRITE WITHOUT KEY -> blocked with a guide pointer; the key is NOT leaked.
@@ -18625,6 +18710,48 @@ class TestRunner:
         info = json.loads(text)
         assert isinstance(info, dict) and "platformUpdate" in info and "safeMode" in info, \
             f"legacy hub_get_info payload is not the hub-info shape: {sorted(info) if isinstance(info, dict) else type(info)}"
+
+    @test("legacy_protocol")
+    def test_legacy_unfiltered_device_list_pages_within_the_budget(self) -> None:
+        """A legacy client lists every device without outlasting the relay.
+
+        A legacy client has no requestState continuation, so each page must answer inside one
+        request. The walk is 10 devices per page so a page stays well inside the relay timeout
+        and the suite never fails on relay lag; a budget cut is therefore rare here (the Spock
+        specs pin it), but any cut page must still say where the next one starts. Following the
+        cursors must cover the whole population exactly once (#495).
+        """
+        legacy = LegacyEraClient(self.client, verbose=self.verbose)
+        legacy.initialize(LEGACY_PROTOCOL_VERSION)
+
+        seen: list[str] = []
+        total = None
+        start = 0
+        args: dict = {"limit": 10, "cursor": ""}
+        pages = 0
+        while True:
+            page = legacy.call_tool("hub_read_devices", {"tool": "hub_list_devices", "args": args},
+                                    replay_safe=True)
+            pages += 1
+            assert isinstance(page, dict) and isinstance(page.get("devices"), list), \
+                f"legacy hub_list_devices did not return a device page: {str(page)[:300]}"
+            total = page.get("total") if total is None else total
+            assert isinstance(total, int) and total > 0, f"legacy listing reported no total: {total!r}"
+            seen.extend(str(d.get("id")) for d in page["devices"])
+            if page.get("budgetLimited"):
+                assert page.get("hasMore") is True and page.get("nextCursor"), \
+                    f"a budget-cut page must say where the next page starts: {sorted(page)}"
+                assert page["devices"], "a budget-cut page must still return at least one device"
+            if not page.get("nextCursor"):
+                break
+            # Every page returns at least one device, so a walk longer than `total` pages has stalled.
+            nxt = int(page["nextCursor"])
+            assert nxt > start, f"the cursor did not advance: {start} -> {nxt}"
+            assert pages <= total, f"legacy listing still paging after {pages} pages for {total} devices"
+            start = nxt
+            args = {"limit": 10, "cursor": page["nextCursor"]}
+        assert len(seen) == len(set(seen)) == total, \
+            f"the pages must cover all {total} devices exactly once: read {len(seen)}, unique {len(set(seen))}"
 
     @test("legacy_protocol")
     def test_legacy_bulk_stop_is_terminal(self) -> None:

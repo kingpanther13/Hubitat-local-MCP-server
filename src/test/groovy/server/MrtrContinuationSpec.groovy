@@ -32,6 +32,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
         lifecycleApp.settingsStore.clear()
     }
 
+    // The compiled script is shared across specs, and a server-side resume sets the field.
+    def cleanup() {
+        script.callerClient = null
+    }
+
     private List<Map> race(int count, Closure<Map> action) {
         def ready = new CountDownLatch(count)
         def start = new CountDownLatch(1)
@@ -3849,6 +3854,80 @@ class MrtrContinuationSpec extends ToolSpecBase {
         done[0].status == 'finished'
         done[0].success == true
         (atomicStateMap.mrtrRequests as Map)[stateId].status == 'terminal'
+    }
+
+    def "a per-client token's paused write resumes server-side as that client, and recentWrites shows it only to that client and the main token (#457)"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.accessToken = 'main,client-a,client-b'
+        stateMap.clientTokens = ['1': [label: 'Alpha', token: 'client-a'], '2': [label: 'Beta', token: 'client-b']]
+        settingsMap['clientTools_1'] = ['hub_call_rule']
+        script.metaClass._requestAccessToken = { -> 'client-a' }
+        script.metaClass.toolRunRmRule = pausingMultiRuleWrite()
+
+        when: 'Alpha starts a write that pauses, then the server finishes it from a schedule'
+        String stateId = modernCall('hub_call_rule', [ruleId: [97, 98], action: 'stop']).result.requestState
+        script.callerClient = null
+        script.metaClass.toolRunRmRule = { Map a -> [success: true, ruleIds: a.ruleId, results: a.ruleId.collect { [success: true, ruleId: it] }] }
+        script.runMrtrAutoContinue(new LinkedHashMap(autoContinueJobs()[0][2].data as Map))
+
+        then: 'the resume claimed the record under Alpha, so it completed'
+        stateId != null
+        (atomicStateMap.mrtrRequests as Map)[stateId].status == 'terminal'
+        (atomicStateMap.mrtrRequests as Map)[stateId].client == '1'
+
+        when:
+        script.callerClient = null
+        List seenByMain = script._mrtrRecentOperations() as List
+        script.callerClient = [id: '2', label: 'Beta']
+        List seenByBeta = script._mrtrRecentOperations() as List
+        script.callerClient = [id: '1', label: 'Alpha']
+        List seenByAlpha = script._mrtrRecentOperations() as List
+        script.callerClient = null
+
+        then:
+        seenByMain*.client == ['Alpha']
+        seenByBeta.isEmpty()
+        seenByAlpha.size() == 1
+        !seenByAlpha[0].containsKey('client')
+    }
+
+    def "a per-client token is gated before a detached write reserves anything, and the worker runs as that client (#457)"() {
+        given:
+        settingsMap.enableWrite = true
+        stateMap.accessToken = 'main,client-a'
+        stateMap.clientTokens = ['1': [label: 'Alpha', token: 'client-a']]
+        settingsMap['clientTools_1'] = ['hub_set_rule']
+        settingsMap['clientWrite_1'] = false
+        script.metaClass._requestAccessToken = { -> 'client-a' }
+        List seenByLeaf = []
+        script.metaClass.toolSetRule = { Map actual -> seenByLeaf << script.callerClient?.id; [success: true, appId: actual.appId, settingsApplied: true] }
+        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
+            runInMillisCalls << call
+            // A scheduled worker is a fresh execution: nothing carries over from the request.
+            script.callerClient = null
+            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
+        })
+        def args = [appId: 331, confirm: true, settings: [description: 'client write']]
+
+        when: 'the client has Write off'
+        def refused = modernCall('hub_set_rule', args)
+
+        then: 'the refusal names the client and nothing was reserved or scheduled'
+        refused.result.isError == true
+        mcpDriver.parseInner(refused).error.contains("Write tools are disabled for client 'Alpha'")
+        !(atomicStateMap.mrtrRequests instanceof Map) || (atomicStateMap.mrtrRequests as Map).isEmpty()
+        runInMillisCalls.isEmpty()
+        seenByLeaf.isEmpty()
+
+        when: 'Write is turned back on'
+        settingsMap['clientWrite_1'] = true
+        def done = modernCall('hub_set_rule', args)
+
+        then: 'the detached worker ran the leaf as Alpha'
+        done.error == null
+        runInMillisCalls.size() == 1
+        seenByLeaf == ['1']
     }
 
     def "a bulk trigger stop in a later slice is restated in the original request's trigger indices"() {

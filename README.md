@@ -846,6 +846,20 @@ Each picker entry shows the bare tool name, its friendly name, a `[read]`/`[writ
 </details>
 
 <details>
+<summary><b>Advanced: Per-client access tokens (firmware 2.5.2+)</b></summary>
+
+Under **Settings > Advanced > Per-client access tokens** you can give an MCP client its own token for the same endpoint, with narrower access than the main token. The main token and everything set on the main page keep working as before, with one change: once any client token exists, every client, the main token included, must send its token as `?access_token=` or an `Authorization: Bearer` header (the URLs this page shows already do). Each client token has its own page:
+
+- **Tools** — the tools this client may call. Every tool that can be granted is on when the token is created; untick what the client should not have. A tool added by a later update stays off for the client until you turn it on. `hub_get_tool_guide` and `hub_search_tools` are always included, even with Read off. MCP self-administration, the Developer Mode deploy and code management stay with the main token and cannot be granted, and a client token can never read or change the MCP Rule Server app itself.
+- **Read / Write** — can only narrow: the main-page Read and Write switches still apply.
+- **Local / cloud** — which endpoints this token may use (the main-page endpoint switches still apply).
+- **Tool names** — the client's own tool-name number, or the same as the main token, or none.
+
+The client sees only its tools in `tools/list`, the gateway catalogs and `hub_search_tools`. A call it may not make is refused with a message naming the client and what blocks it, and `hub_get_info` returns its access under `clientAccess`. MCP log entries made during a client's request carry the client's name, and `recentWrites` shows a client only its own writes. **Rotate** issues a new token for that client (its URL changes); **Revoke** removes it. Either takes effect at once, even though the hub itself keeps accepting the old token for up to a minute. Access tokens in tool results are always masked for a client token. With Developer Mode on, the main token can do all of this through `hub_update_mcp_settings` (`clientToken`: list, create, update, rotate, revoke).
+
+</details>
+
+<details>
 <summary><b>Protected apps</b></summary>
 
 The **Protected apps** picker on the app's **Advanced** page blocks generic app, native-rule, and Dashboard mutations (Easy and legacy) for selected installed apps. It defaults to the MCP server itself on new installs and upgrades, and preserves later choices, including an empty list. Protection applies even with Developer Mode on. Read-only inspection and authorized dedicated Developer Mode settings/package maintenance remain available. Change the selection there, then return to the main page and click **Done** to apply it.
@@ -1659,6 +1673,8 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.8.1** - fix: end a legacy hub_list_devices page at the request budget. PRs: [#553](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/553)
+- **v4.8.0** - feat: per-client access tokens with their own tool, read/write and connection access. PRs: [#551](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/551)
 - **v4.7.3** - build(deps): bump mcp from 2.0.0 to 2.2.0 in /tests in the pip group across 1 directory ([#548](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/548), @app/dependabot); fix: evict code and rule backups only past a configurable storage budget, with a File Manager backup index. PRs: [#548](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/548), [#550](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/550)
 - **v4.7.2** - Chore: Update pull request template for testing section; chore: update test dependencies and track compatibility lanes and forks; ci: skip dependency-only bot E2E and prevent bot-triggered app releases; chore(deps): update gradle to v9.8.1 ([#537](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/537), @app/renovate); build(deps): bump actions/setup-node from 6 to 7 in the github-actions group across 1 directory ([#540](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/540), @app/dependabot); chore(deps): update dependency renovate to v44.154.0 ([#538](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/538), @app/renovate); test: compile watchdog v3.1 once per test process; feat: native Hub Variables endpoints and Software E2E result consumption. PRs: [#535](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/535), [#534](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/534), [#541](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/541), [#537](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/537), [#540](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/540), [#538](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/538), [#542](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/542), [#545](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/545)
 - **v4.7.1** - feat: add appTypeId to hub_list_apps(scope='instances') rows. PRs: [#527](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/527)
