@@ -7132,10 +7132,14 @@ class TestRunner:
             # gained afterwards are emptied, and it is finished with Done, never the updateRule click
             # that a Basic Rule stores as a pending action delete and then fails to render.
             backup_key = None if ew["relayDropped"] else (ew["response"].get("backup") or {}).get("backupKey")
-            if not backup_key:
-                listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": {}}) or {}
+            list_args: dict = {}
+            while not backup_key:
+                listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": list_args}) or {}
                 backup_key = next((b.get("backupKey") for b in (listed.get("backups") or [])
                                    if str(b.get("id")) == str(app_id)), None)
+                if not listed.get("nextCursor"):
+                    break
+                list_args = {"cursor": listed["nextCursor"]}
             assert backup_key, f"no baseline backup was recorded for Basic Rule {app_id}"
             switch_id = self._ensure_perm_fixture("switch_a")
             for step in ({"trigCapab": "Switch"}, {"switchDev": [int(switch_id)]}, {"trigger": "Turns on"}):
@@ -13457,8 +13461,12 @@ class TestRunner:
         assert isinstance(src, dict) and "backups" in src, \
             f"default scope=source missing 'backups': {sorted(src.keys()) if isinstance(src, dict) else type(src).__name__}"
         total = src.get("total")
-        assert isinstance(total, int) and total == len(src["backups"]), \
+        shown = len(src["backups"])
+        assert isinstance(total, int) and src.get("count") == shown <= min(total, 50), \
             f"source-backup count contract failed: {src}"
+        if total > shown:
+            assert src.get("hasMore") is True and src.get("nextCursor") == str(shown), \
+                f"a partial source-backup page must say where the next page starts: {sorted(src)}"
         # Backups are evicted only past the storage budget (issues #506/#517), not by a count;
         # the e2e hub leaves the Backup storage budget setting at its 10 MB default.
         budget = src.get("storageBudget") or {}
@@ -16472,6 +16480,13 @@ class TestRunner:
         """Gate ON -> a write is blocked (no key leak) until the AI reads the guide, extracts the
         key, and passes it as bestPracticeKey -> the write then succeeds. The flagship #299 proof."""
         var_name = f"{PREFIX}BPS_Unlock"
+        # A relay 504 can lose the response of a create that landed, and the runner then re-runs
+        # this test: start from a hub without the variable (gate still off, so no key is needed).
+        try:
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}})
+        except McpError:
+            pass
         self._set_bps(enableMandatoryBPS=True)
         try:
             # 1. WRITE WITHOUT KEY -> blocked with a guide pointer; the key is NOT leaked.

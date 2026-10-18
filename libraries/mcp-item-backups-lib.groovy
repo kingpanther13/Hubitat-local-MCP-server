@@ -93,8 +93,9 @@ private _listSourceItemBackups(args) {
         return base
     }.sort { a, b -> (b.timestampEpoch <=> a.timestampEpoch) } // Newest first
 
+    // Always paged: an unpaged listing of a full storage budget outgrows what the cloud relay delivers.
     def cursor = args?.cursor
-    def paged = _paginateList(backupList, cursor, 50, "hub_list_backups")
+    def paged = _paginateList(backupList, cursor ?: "", 50, "hub_list_backups")
     def result = [
         backups: paged.page,
         count: paged.page.size(),
@@ -108,7 +109,11 @@ private _listSourceItemBackups(args) {
     if (backupList.any { it.deletePending }) {
         result.deletePendingNote = "Entries with deletePending=true record an incomplete deletion. If the file is still readable, hub_get_backup or hub_restore_backup can clear the marker and recover the backup. Recover promptly: the next backup publication purges unprotected pending entries and attempts to delete their files, even if still readable. Pending entries cannot be reused as baselines."
     }
-    if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    if (paged.nextCursor != null) {
+        result.hasMore = true
+        result.nextCursor = paged.nextCursor
+        result.note = "Showing ${paged.page.size()} of ${backupList.size()} backups, newest first. Repeat the call with cursor '${paged.nextCursor}' for the next page.".toString()
+    }
     return result
 }
 
@@ -1453,7 +1458,7 @@ A transport drop can lose the response while the hub still commits this write; v
                 type: "object",
                 properties: [
                     scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub", "all"], description: "Which backups to list; default source."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor (source only); pass \"\" for the first page, iterate nextCursor."]
+                    cursor: [type: "string", description: "Source backups come 50 per page, newest first; a page with more after it carries hasMore:true and nextCursor. Pass that nextCursor to continue."]
                 ],
                 required: []
             ]

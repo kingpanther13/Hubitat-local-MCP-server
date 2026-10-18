@@ -974,6 +974,30 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         result.backups[0].sourceLength == 200
     }
 
+    def "hub_list_backups returns one page of 50 and says where the next page starts"() {
+        given: '60 manifest entries'
+        backupIndex = (1..60).collectEntries { i ->
+            ["app_${i}".toString(), [type: 'app', id: i.toString(), fileName: "mcp-backup-app-${i}.groovy".toString(),
+                                     version: 1, timestamp: 1_000_000_000_000L + i, sourceLength: 10]]
+        }
+
+        when:
+        def first = script.toolListItemBackups()
+        def second = script.toolListItemBackups([cursor: first.nextCursor])
+
+        then: 'newest first, 50 then the remaining 10'
+        first.total == 60
+        first.count == 50
+        first.backups[0].backupKey == 'app_60'
+        first.hasMore == true
+        first.nextCursor == '50'
+        first.note.contains("Showing 50 of 60")
+        second.count == 10
+        second.backups[-1].backupKey == 'app_1'
+        !second.containsKey('hasMore')
+        !second.containsKey('nextCursor')
+    }
+
     @spock.lang.Unroll
     def "hub_list_backups via dispatch returns all manifest entries sorted newest first (useGateways=#useGateways)"() {
         given:
