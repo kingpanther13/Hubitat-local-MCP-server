@@ -17644,26 +17644,30 @@ class TestRunner:
 
         seen: list[str] = []
         total = None
+        start = 0
         args: dict = {"limit": 10, "cursor": ""}
-        for _ in range(50):
+        pages = 0
+        while True:
             page = legacy.call_tool("hub_read_devices", {"tool": "hub_list_devices", "args": args},
                                     replay_safe=True)
+            pages += 1
             assert isinstance(page, dict) and isinstance(page.get("devices"), list), \
                 f"legacy hub_list_devices did not return a device page: {str(page)[:300]}"
             total = page.get("total") if total is None else total
+            assert isinstance(total, int) and total > 0, f"legacy listing reported no total: {total!r}"
             seen.extend(str(d.get("id")) for d in page["devices"])
             if page.get("budgetLimited"):
                 assert page.get("hasMore") is True and page.get("nextCursor"), \
                     f"a budget-cut page must say where the next page starts: {sorted(page)}"
                 assert page["devices"], "a budget-cut page must still return at least one device"
-                args = {"limit": 10, "cursor": page["nextCursor"]}
-                continue
             if not page.get("nextCursor"):
                 break
+            # Every page returns at least one device, so a walk longer than `total` pages has stalled.
+            nxt = int(page["nextCursor"])
+            assert nxt > start, f"the cursor did not advance: {start} -> {nxt}"
+            assert pages <= total, f"legacy listing still paging after {pages} pages for {total} devices"
+            start = nxt
             args = {"limit": 10, "cursor": page["nextCursor"]}
-        else:
-            raise AssertionError(f"legacy listing did not finish within 50 pages ({len(seen)} devices read)")
-        assert isinstance(total, int) and total > 0, f"legacy listing reported no total: {total!r}"
         assert len(seen) == len(set(seen)) == total, \
             f"the pages must cover all {total} devices exactly once: read {len(seen)}, unique {len(set(seen))}"
 
