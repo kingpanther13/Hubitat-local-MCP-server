@@ -2227,6 +2227,8 @@ class ToolListDevicesSpec extends ToolSpecBase {
         result.offset == 0
         result.nextOffset == 3
         result.nextCursor == '3'
+        result.note.contains('devices 1-3 of 10')
+        result.note.contains('7 more device(s) remain')
         result.note.contains("cursor '3'")
     }
 

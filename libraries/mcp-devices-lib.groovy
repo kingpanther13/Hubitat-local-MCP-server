@@ -364,7 +364,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
                 result.nextCursor = endIndex.toString()
             }
         }
-        if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, limit)
+        if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit)
         return result
     }
 
@@ -491,22 +491,23 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
         if (cursor != null && endIndex < totalCount) result.nextCursor = endIndex.toString()
     }
-    if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, limit)
+    if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit)
 
     return result
 }
 
 // A legacy client has no request-to-request continuation, so a page whose per-device reads reach
 // the request budget ends early and says where the next page starts.
-private void _applyListBudgetCut(Map result, int startIndex, int endIndex, limit) {
+private void _applyListBudgetCut(Map result, int startIndex, int endIndex, int totalCount, limit) {
     result.offset = startIndex
     result.limit = limit ?: 0
     result.hasMore = true
     result.nextOffset = endIndex
     result.nextCursor = endIndex.toString()
     result.budgetLimited = true
-    result.note = ("This page stopped after ${endIndex - startIndex} device(s) to answer within the request time limit; " +
-        "more devices remain. Repeat the call with cursor '${endIndex}' (other arguments unchanged) to continue.").toString()
+    result.note = ("Partial page: devices ${startIndex + 1}-${endIndex} of ${totalCount}. It stopped early to answer within the " +
+        "request time limit and ${totalCount - endIndex} more device(s) remain. Repeat the call with cursor '${endIndex}' " +
+        "(other arguments unchanged) to continue.").toString()
 }
 
 private Boolean isDeviceDisabled(device) {
