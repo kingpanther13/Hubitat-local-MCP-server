@@ -1543,16 +1543,18 @@ def toolUpdateItemCode(String type, String idParam, args) {
     return toolUpdateItemCodeInner(type, idParam, args)
 }
 
-// Version of an app/driver from its list row (/<type>/list/single/data/<id>: small JSON, no
-// source). Null when the row is unreadable, so the caller falls back to the full code fetch.
+// Version of an app/driver from the hub's code list (/app/list/all/data, /driver/list/data). The
+// single-item read (/<type>/list/single/data/<id>) carries it too, but the hub compiles the whole
+// item to answer it and keeps the memory, so a version check never uses it. Null when the list is
+// unreadable, so the caller falls back to the full code fetch.
 private _itemRowVersion(String type, itemId) {
     try {
-        def txt = hubInternalGet("/${type}/list/single/data/${java.net.URLEncoder.encode(itemId.toString(), 'UTF-8')}", null, 30)
-        def d = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        def row = (d instanceof List && d) ? d[0] : (d instanceof Map ? d : null)
+        def txt = type == "driver" ? hubInternalGet("/driver/list/data", null, 30) : hubInternalGet("/app/list/all/data", null, 30)
+        def rows = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+        def row = (rows instanceof List) ? rows.find { it instanceof Map && it.id?.toString() == itemId?.toString() } : null
         return (row instanceof Map) ? row.version : null
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} row version: ${e.message}")
+        mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} version: ${e.message}")
         return null
     }
 }
