@@ -18138,12 +18138,12 @@ def toolUpdateItemCode(String type, String idParam, args) {
 }
 private _itemRowVersion(String type, itemId) {
     try {
-        def txt = hubInternalGet("/${type}/list/single/data/${java.net.URLEncoder.encode(itemId.toString(), 'UTF-8')}", null, 30)
-        def d = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        def row = (d instanceof List && d) ? d[0] : (d instanceof Map ? d : null)
+        def txt = type == "driver" ? hubInternalGet("/driver/list/data", null, 30) : hubInternalGet("/app/list/all/data", null, 30)
+        def rows = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+        def row = (rows instanceof List) ? rows.find { it instanceof Map && it.id?.toString() == itemId?.toString() } : null
         return (row instanceof Map) ? row.version : null
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} row version: ${e.message}")
+        mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} version: ${e.message}")
         return null
     }
 }
