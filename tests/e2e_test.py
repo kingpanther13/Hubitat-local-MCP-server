@@ -17633,10 +17633,11 @@ class TestRunner:
     def test_legacy_unfiltered_device_list_pages_within_the_budget(self) -> None:
         """A legacy client lists every device without outlasting the relay.
 
-        A legacy client has no requestState continuation, so the whole listing must answer
-        inside one request. When the per-device reads reach the request budget the page ends
-        early with budgetLimited, hasMore and a nextCursor at the first device not returned;
-        following those cursors must cover the whole population exactly once (#495).
+        A legacy client has no requestState continuation, so each page must answer inside one
+        request. The walk is 10 devices per page so a page stays well inside the relay timeout
+        and the suite never fails on relay lag; a budget cut is therefore rare here (the Spock
+        specs pin it), but any cut page must still say where the next one starts. Following the
+        cursors must cover the whole population exactly once (#495).
         """
         legacy = LegacyEraClient(self.client, verbose=self.verbose)
         legacy.initialize(LEGACY_PROTOCOL_VERSION)

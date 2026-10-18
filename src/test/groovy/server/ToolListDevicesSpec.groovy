@@ -2207,7 +2207,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
     }
 
     private Map listBudgeted(AtomicLong clock, Map opts = [:]) {
-        script.toolListDevices(false, 0, opts.limit ?: 0, null, null, null, opts.format, null, opts.cursor,
+        script.toolListDevices(opts.detailed ?: false, opts.offset ?: 0, opts.limit ?: 0, opts.filter, null, null, opts.format, null, opts.cursor,
             null, null, null, null, null, opts.containsKey('reqT0') ? opts.reqT0 : clock.get())
     }
 
@@ -2216,7 +2216,7 @@ class ToolListDevicesSpec extends ToolSpecBase {
         def clock = budgetedDevices(10)
 
         when:
-        def result = listBudgeted(clock)
+        def result = listBudgeted(clock, [detailed: detailed])
 
         then:
         result.devices*.id == ['1', '2', '3']
@@ -2229,7 +2229,10 @@ class ToolListDevicesSpec extends ToolSpecBase {
         result.nextCursor == '3'
         result.note.contains('devices 1-3 of 10')
         result.note.contains('7 more device(s) remain')
-        result.note.contains("cursor '3'")
+        result.note.contains('offset 3')
+
+        where: 'the detailed format shares the cut'
+        detailed << [false, true]
     }
 
     def "following the budget cursor pages through every device exactly once, in order"() {
@@ -2239,17 +2242,74 @@ class ToolListDevicesSpec extends ToolSpecBase {
         when:
         def ids = []
         def cursor = ''
-        int pages = 0
+        def pageResults = []
         while (cursor != null) {
             def page = listBudgeted(clock, [cursor: cursor])
+            pageResults << page
             ids.addAll(page.devices*.id)
             cursor = page.nextCursor
-            assert ++pages < 10 : 'pagination runaway'
+            assert pageResults.size() < 10 : 'pagination runaway'
         }
 
         then: 'three budget-cut pages, then a last page that fits'
         ids == (1..10).collect { it.toString() }
-        pages == 4
+        pageResults.size() == 4
+        pageResults[1].offset == 3
+        pageResults[1].limit == 50
+        pageResults[1].note.contains('devices 4-6 of 10')
+        pageResults[1].note.contains("cursor '6'")
+    }
+
+    def "an offset-paged caller is told to continue by offset, and that call succeeds"() {
+        given:
+        def clock = budgetedDevices(10)
+
+        when:
+        def first = listBudgeted(clock, [offset: 2, limit: 5])
+        def next = listBudgeted(clock, [offset: first.nextOffset, limit: 5])
+
+        then:
+        first.devices*.id == ['3', '4', '5']
+        first.note.contains('offset 5')
+        !first.note.contains('cursor')
+        next.devices*.id == ['6', '7', '8']
+    }
+
+    def "a request that reaches the page with its budget already spent still returns one device"() {
+        given:
+        def clock = budgetedDevices(10)
+
+        when:
+        def result = listBudgeted(clock, [reqT0: clock.get() - 7000L])
+
+        then:
+        result.devices*.id == ['1']
+        result.budgetLimited == true
+        result.nextOffset == 1
+    }
+
+    def "devices already read while filtering are not cut from the page"() {
+        given: 'no bulk inventory, so the filter reads every device and spends the budget'
+        def clock = budgetedDevices(10)
+
+        when:
+        def result = listBudgeted(clock, [filter: 'enabled'])
+
+        then:
+        result.devices.size() == 10
+        !result.containsKey('budgetLimited')
+    }
+
+    def "a non-numeric request clock from a client is ignored"() {
+        given:
+        def clock = budgetedDevices(10)
+
+        when:
+        def result = listBudgeted(clock, [reqT0: 'banana'])
+
+        then:
+        result.devices.size() == 10
+        !result.containsKey('budgetLimited')
     }
 
     def "the context format cuts its page at the budget and names the cursor in its header"() {

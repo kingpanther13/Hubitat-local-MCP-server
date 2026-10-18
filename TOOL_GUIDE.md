@@ -806,7 +806,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - Server-side label/capability filtering: use labelFilter (substring) and capabilityFilter (exact capability name) instead of fetching all devices and filtering client-side
 - format='ids' returns a flat integer array (cheapest for "which devices exist" queries)
 - fields=[...] projects named fields only: currentStates and attributes are the expensive ones (per-device hub reads) -- project those out to save hub CPU; capabilities and commands are in-memory and cheap. id is always included regardless of projection. Unknown field names throw.
-- On a client without request-to-request continuation, a page whose per-device reads reach the request time budget ends early: the result carries budgetLimited:true, hasMore:true, nextOffset and nextCursor at the first device not returned. Repeat the call with that cursor and the other arguments unchanged.
+- A page can end early with budgetLimited:true (on a client without request-to-request continuation, when its per-device reads reach the request time budget). The result then carries hasMore:true, nextOffset and nextCursor at the first device not returned. Repeat the call from there with the other arguments unchanged: pass nextCursor as cursor if the call used a cursor, otherwise nextOffset as offset.
 
 **hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)

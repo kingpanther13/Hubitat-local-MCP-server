@@ -326,7 +326,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
         finish(runInMillisCalls[0])
         def completed = call('hub_read_devices', args, token)
 
-        then: 'the worker reads the whole page; continuation, not a cut, carries it past the budget'
+        then: 'the worker gets no request clock, so continuation, not a cut, carries it past the budget'
         completed.result.resultType == 'complete'
         clocks == [null]
     }

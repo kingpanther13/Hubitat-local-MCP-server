@@ -409,7 +409,7 @@ private String _deviceReadAccessScope() {
 }
 
 private def _deviceReadSnapshot(String tool, Map args, Map context) {
-    // The worker runs on its own clock: the request's budget belongs to the observing request,
+    // The worker runs without the request clock: the request's budget belongs to the observing request,
     // and a leaf that honours it would cut a read the continuation exists to finish.
     Map workArgs = _mrtrCopyMap(args)
     workArgs.remove("__reqT0")

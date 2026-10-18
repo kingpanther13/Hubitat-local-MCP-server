@@ -10,6 +10,8 @@ private List _capabilityNames(def caps) {
 }
 
 def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null, reqT0 = null) {
+    // Only the server injects a numeric clock; anything else a client sent is ignored.
+    Long clockT0 = reqT0 instanceof Number ? reqT0 as Long : null
     // Opt-in cursor pagination decodes onto the existing offset/limit mechanics. The
     // real range check against the filtered total happens further down (the
     // offset-exceeds early return) because we don't have the filtered count yet; pass
@@ -22,7 +24,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             throw new IllegalArgumentException("cursor and offset are mutually exclusive (got cursor=${cursor}, offset=${offset}); pick one")
         }
         offset = _parseListCursor(cursor, Integer.MAX_VALUE, "hub_list_devices")
-        // Default page size in cursor mode so nextCursor arithmetic is deterministic.
+        // Default page size in cursor mode so nextCursor is offset + limit unless the page is budget-cut.
         // Callers who want a different page size set limit explicitly (cursor still wins
         // on offset; limit just sizes the page).
         if (!limit || limit <= 0) limit = 50
@@ -328,7 +330,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // like format='ids'.
     if (resolvedFormat == "context") {
         def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
-        int hydrated = _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'], true, reqT0 as Long)
+        int hydrated = _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'], true, clockT0)
         boolean budgetCut = hydrated < pagedDevices.size()
         if (budgetCut) {
             pagedDevices = pagedDevices.subList(0, hydrated)
@@ -364,7 +366,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
                 result.nextCursor = endIndex.toString()
             }
         }
-        if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit)
+        if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit, cursor != null)
         return result
     }
 
@@ -416,7 +418,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         } else if (fieldSet == null || fieldSet.contains('currentStates')) {
             requiredCollections << 'currentStates'
         }
-        int hydrated = _hydrateNativeInventory(pagedDevices, requiredCollections, true, reqT0 as Long)
+        int hydrated = _hydrateNativeInventory(pagedDevices, requiredCollections, true, clockT0)
         budgetCut = hydrated < pagedDevices.size()
         if (budgetCut) {
             pagedDevices = pagedDevices.subList(0, hydrated)
@@ -491,14 +493,15 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
         if (cursor != null && endIndex < totalCount) result.nextCursor = endIndex.toString()
     }
-    if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit)
+    // A budget cut adds the pagination fields even to a call that did not paginate.
+    if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit, cursor != null)
 
     return result
 }
 
 // A legacy client has no request-to-request continuation, so a page whose per-device reads reach
 // the request budget ends early and says where the next page starts.
-private void _applyListBudgetCut(Map result, int startIndex, int endIndex, int totalCount, limit) {
+private void _applyListBudgetCut(Map result, int startIndex, int endIndex, int totalCount, limit, boolean cursorMode) {
     result.offset = startIndex
     result.limit = limit ?: 0
     result.hasMore = true
@@ -506,8 +509,8 @@ private void _applyListBudgetCut(Map result, int startIndex, int endIndex, int t
     result.nextCursor = endIndex.toString()
     result.budgetLimited = true
     result.note = ("Partial page: devices ${startIndex + 1}-${endIndex} of ${totalCount}. It stopped early to answer within the " +
-        "request time limit and ${totalCount - endIndex} more device(s) remain. Repeat the call with cursor '${endIndex}' " +
-        "(other arguments unchanged) to continue.").toString()
+        "request time limit and ${totalCount - endIndex} more device(s) remain. Repeat the call with " +
+        (cursorMode ? "cursor '${endIndex}'" : "offset ${endIndex}") + " (other arguments unchanged) to continue.").toString()
 }
 
 private Boolean isDeviceDisabled(device) {
@@ -680,12 +683,12 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
     return byId.values() as List
 }
 
-// With reqT0, stops before the next record once the request budget is spent (always after at
-// least one) and returns how many records it processed; a page caller cuts the page there.
+// Returns how many records it processed. With reqT0 it stops before the next record that needs a
+// read once the request budget is spent, never before the first record.
 private int _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false, Long reqT0 = null) {
     int processed = 0
     for (record in records) {
-        if (processed > 0 && reqT0 != null && _timeBudgetExceeded(reqT0)) return processed
+        if (processed > 0 && reqT0 != null && record._nativeLoaded != true && _timeBudgetExceeded(reqT0)) return processed
         processed++
         if (record._nativeLoaded != true) {
             def fj = _fetchDeviceFullJson(record.id)
