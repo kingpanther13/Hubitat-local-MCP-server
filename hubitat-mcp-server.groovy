@@ -1697,7 +1697,7 @@ def handleMcpRequest() {
         def errResp = jsonRpcError(
             echoId,
             -32603,
-            "Response too large (${responseBytes} bytes exceeds hub's 128KB limit). Try requesting less data or use a more specific query."
+            "Response too large (${responseBytes} bytes exceeds the ${maxResponseSize}-byte limit ${_isCloudRequest() ? 'of the cloud relay' : 'under the hub\'s 128 KiB cap'}). Try requesting less data or use a more specific query."
         )
         jsonResponse = groovy.json.JsonOutput.toJson(errResp)
         // Body and status must stay in lockstep. The guard REPLACED the body, so any
