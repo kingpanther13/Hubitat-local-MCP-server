@@ -9737,6 +9737,7 @@ private List _capabilityNames(def caps) {
     }.findAll { it != null }
 }
 def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null, reqT0 = null) {
+    Long clockT0 = reqT0 instanceof Number ? reqT0 as Long : null
     if (cursor != null) {
         if (offset != null && (offset as Integer) > 0) {
             throw new IllegalArgumentException("cursor and offset are mutually exclusive (got cursor=${cursor}, offset=${offset}); pick one")
@@ -9951,7 +9952,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     }
     if (resolvedFormat == "context") {
         def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
-        int hydrated = _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'], true, reqT0 as Long)
+        int hydrated = _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'], true, clockT0)
         boolean budgetCut = hydrated < pagedDevices.size()
         if (budgetCut) {
             pagedDevices = pagedDevices.subList(0, hydrated)
@@ -9984,7 +9985,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
                 result.nextCursor = endIndex.toString()
             }
         }
-        if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit)
+        if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit, cursor != null)
         return result
     }
     def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
@@ -10019,7 +10020,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         } else if (fieldSet == null || fieldSet.contains('currentStates')) {
             requiredCollections << 'currentStates'
         }
-        int hydrated = _hydrateNativeInventory(pagedDevices, requiredCollections, true, reqT0 as Long)
+        int hydrated = _hydrateNativeInventory(pagedDevices, requiredCollections, true, clockT0)
         budgetCut = hydrated < pagedDevices.size()
         if (budgetCut) {
             pagedDevices = pagedDevices.subList(0, hydrated)
@@ -10081,10 +10082,10 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
         if (cursor != null && endIndex < totalCount) result.nextCursor = endIndex.toString()
     }
-    if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit)
+    if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit, cursor != null)
     return result
 }
-private void _applyListBudgetCut(Map result, int startIndex, int endIndex, int totalCount, limit) {
+private void _applyListBudgetCut(Map result, int startIndex, int endIndex, int totalCount, limit, boolean cursorMode) {
     result.offset = startIndex
     result.limit = limit ?: 0
     result.hasMore = true
@@ -10092,8 +10093,8 @@ private void _applyListBudgetCut(Map result, int startIndex, int endIndex, int t
     result.nextCursor = endIndex.toString()
     result.budgetLimited = true
     result.note = ("Partial page: devices ${startIndex + 1}-${endIndex} of ${totalCount}. It stopped early to answer within the " +
-        "request time limit and ${totalCount - endIndex} more device(s) remain. Repeat the call with cursor '${endIndex}' " +
-        "(other arguments unchanged) to continue.").toString()
+        "request time limit and ${totalCount - endIndex} more device(s) remain. Repeat the call with " +
+        (cursorMode ? "cursor '${endIndex}'" : "offset ${endIndex}") + " (other arguments unchanged) to continue.").toString()
 }
 private Boolean isDeviceDisabled(device) {
     return device.disabled == true || device.disabled?.toString()?.toLowerCase() == "true" ||
@@ -10228,7 +10229,7 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
 private int _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false, Long reqT0 = null) {
     int processed = 0
     for (record in records) {
-        if (processed > 0 && reqT0 != null && _timeBudgetExceeded(reqT0)) return processed
+        if (processed > 0 && reqT0 != null && record._nativeLoaded != true && _timeBudgetExceeded(reqT0)) return processed
         processed++
         if (record._nativeLoaded != true) {
             def fj = _fetchDeviceFullJson(record.id)
@@ -41831,7 +41832,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - Server-side label/capability filtering: use labelFilter (substring) and capabilityFilter (exact capability name) instead of fetching all devices and filtering client-side
 - format='ids' returns a flat integer array (cheapest for "which devices exist" queries)
 - fields=[...] projects named fields only: currentStates and attributes are the expensive ones (per-device hub reads) -- project those out to save hub CPU; capabilities and commands are in-memory and cheap. id is always included regardless of projection. Unknown field names throw.
-- On a client without request-to-request continuation, a page whose per-device reads reach the request time budget ends early: the result carries budgetLimited:true, hasMore:true, nextOffset and nextCursor at the first device not returned. Repeat the call with that cursor and the other arguments unchanged.
+- A page can end early with budgetLimited:true (on a client without request-to-request continuation, when its per-device reads reach the request time budget). The result then carries hasMore:true, nextOffset and nextCursor at the first device not returned. Repeat the call from there with the other arguments unchanged: pass nextCursor as cursor if the call used a cursor, otherwise nextOffset as offset.
 
 **hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)
