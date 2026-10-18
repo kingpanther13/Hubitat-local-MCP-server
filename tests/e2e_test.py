@@ -7132,10 +7132,14 @@ class TestRunner:
             # gained afterwards are emptied, and it is finished with Done, never the updateRule click
             # that a Basic Rule stores as a pending action delete and then fails to render.
             backup_key = None if ew["relayDropped"] else (ew["response"].get("backup") or {}).get("backupKey")
-            if not backup_key:
-                listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": {}}) or {}
+            list_args: dict = {}
+            while not backup_key:
+                listed = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_backups", "args": list_args}) or {}
                 backup_key = next((b.get("backupKey") for b in (listed.get("backups") or [])
                                    if str(b.get("id")) == str(app_id)), None)
+                if not listed.get("nextCursor"):
+                    break
+                list_args = {"cursor": listed["nextCursor"]}
             assert backup_key, f"no baseline backup was recorded for Basic Rule {app_id}"
             switch_id = self._ensure_perm_fixture("switch_a")
             for step in ({"trigCapab": "Switch"}, {"switchDev": [int(switch_id)]}, {"trigger": "Turns on"}):
@@ -13457,8 +13461,12 @@ class TestRunner:
         assert isinstance(src, dict) and "backups" in src, \
             f"default scope=source missing 'backups': {sorted(src.keys()) if isinstance(src, dict) else type(src).__name__}"
         total = src.get("total")
-        assert isinstance(total, int) and total == len(src["backups"]), \
+        shown = len(src["backups"])
+        assert isinstance(total, int) and src.get("count") == shown <= min(total, 50), \
             f"source-backup count contract failed: {src}"
+        if total > shown:
+            assert src.get("hasMore") is True and src.get("nextCursor") == str(shown), \
+                f"a partial source-backup page must say where the next page starts: {sorted(src)}"
         # Backups are evicted only past the storage budget (issues #506/#517), not by a count;
         # the e2e hub leaves the Backup storage budget setting at its 10 MB default.
         budget = src.get("storageBudget") or {}
@@ -16472,6 +16480,13 @@ class TestRunner:
         """Gate ON -> a write is blocked (no key leak) until the AI reads the guide, extracts the
         key, and passes it as bestPracticeKey -> the write then succeeds. The flagship #299 proof."""
         var_name = f"{PREFIX}BPS_Unlock"
+        # A relay 504 can lose the response of a create that landed, and the runner then re-runs
+        # this test: start from a hub without the variable (gate still off, so no key is needed).
+        try:
+            self.client.call_tool("hub_manage_variables", {
+                "tool": "hub_delete_variable", "args": {"name": var_name, "confirm": True}})
+        except McpError:
+            pass
         self._set_bps(enableMandatoryBPS=True)
         try:
             # 1. WRITE WITHOUT KEY -> blocked with a guide pointer; the key is NOT leaked.
@@ -17628,6 +17643,48 @@ class TestRunner:
         info = json.loads(text)
         assert isinstance(info, dict) and "platformUpdate" in info and "safeMode" in info, \
             f"legacy hub_get_info payload is not the hub-info shape: {sorted(info) if isinstance(info, dict) else type(info)}"
+
+    @test("legacy_protocol")
+    def test_legacy_unfiltered_device_list_pages_within_the_budget(self) -> None:
+        """A legacy client lists every device without outlasting the relay.
+
+        A legacy client has no requestState continuation, so each page must answer inside one
+        request. The walk is 10 devices per page so a page stays well inside the relay timeout
+        and the suite never fails on relay lag; a budget cut is therefore rare here (the Spock
+        specs pin it), but any cut page must still say where the next one starts. Following the
+        cursors must cover the whole population exactly once (#495).
+        """
+        legacy = LegacyEraClient(self.client, verbose=self.verbose)
+        legacy.initialize(LEGACY_PROTOCOL_VERSION)
+
+        seen: list[str] = []
+        total = None
+        start = 0
+        args: dict = {"limit": 10, "cursor": ""}
+        pages = 0
+        while True:
+            page = legacy.call_tool("hub_read_devices", {"tool": "hub_list_devices", "args": args},
+                                    replay_safe=True)
+            pages += 1
+            assert isinstance(page, dict) and isinstance(page.get("devices"), list), \
+                f"legacy hub_list_devices did not return a device page: {str(page)[:300]}"
+            total = page.get("total") if total is None else total
+            assert isinstance(total, int) and total > 0, f"legacy listing reported no total: {total!r}"
+            seen.extend(str(d.get("id")) for d in page["devices"])
+            if page.get("budgetLimited"):
+                assert page.get("hasMore") is True and page.get("nextCursor"), \
+                    f"a budget-cut page must say where the next page starts: {sorted(page)}"
+                assert page["devices"], "a budget-cut page must still return at least one device"
+            if not page.get("nextCursor"):
+                break
+            # Every page returns at least one device, so a walk longer than `total` pages has stalled.
+            nxt = int(page["nextCursor"])
+            assert nxt > start, f"the cursor did not advance: {start} -> {nxt}"
+            assert pages <= total, f"legacy listing still paging after {pages} pages for {total} devices"
+            start = nxt
+            args = {"limit": 10, "cursor": page["nextCursor"]}
+        assert len(seen) == len(set(seen)) == total, \
+            f"the pages must cover all {total} devices exactly once: read {len(seen)}, unique {len(set(seen))}"
 
     @test("legacy_protocol")
     def test_legacy_bulk_stop_is_terminal(self) -> None:

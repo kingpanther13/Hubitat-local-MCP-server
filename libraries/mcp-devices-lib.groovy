@@ -9,7 +9,9 @@ private List _capabilityNames(def caps) {
     }.findAll { it != null }
 }
 
-def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null) {
+def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null, reqT0 = null) {
+    // Only the server injects a numeric clock; anything else a client sent is ignored.
+    Long clockT0 = reqT0 instanceof Number ? reqT0 as Long : null
     // Opt-in cursor pagination decodes onto the existing offset/limit mechanics. The
     // real range check against the filtered total happens further down (the
     // offset-exceeds early return) because we don't have the filtered count yet; pass
@@ -22,7 +24,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
             throw new IllegalArgumentException("cursor and offset are mutually exclusive (got cursor=${cursor}, offset=${offset}); pick one")
         }
         offset = _parseListCursor(cursor, Integer.MAX_VALUE, "hub_list_devices")
-        // Default page size in cursor mode so nextCursor arithmetic is deterministic.
+        // Default page size in cursor mode so nextCursor is offset + limit unless the page is budget-cut.
         // Callers who want a different page size set limit explicitly (cursor still wins
         // on offset; limit just sizes the page).
         if (!limit || limit <= 0) limit = 50
@@ -328,7 +330,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // like format='ids'.
     if (resolvedFormat == "context") {
         def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
-        _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'], true)
+        int hydrated = _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'], true, clockT0)
+        boolean budgetCut = hydrated < pagedDevices.size()
+        if (budgetCut) {
+            pagedDevices = pagedDevices.subList(0, hydrated)
+            endIndex = startIndex + hydrated
+        }
         def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
         def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
         def header = _contextHeaderLines()
@@ -359,6 +366,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
                 result.nextCursor = endIndex.toString()
             }
         }
+        if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit, cursor != null)
         return result
     }
 
@@ -392,6 +400,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     // (id + metadataUnavailable) so the caller can enumerate around it, and the response says
     // partial. Failing the whole page for one device would hide every other device with it.
     def requiredCollections = []
+    boolean budgetCut = false
     boolean labelOnlyProjection = fieldSet != null && !useDetailed && fieldSet.contains("label") &&
         fieldSet.every { it in ["id", "mcpManaged", "label"] }
     if (labelOnlyProjection) {
@@ -409,7 +418,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         } else if (fieldSet == null || fieldSet.contains('currentStates')) {
             requiredCollections << 'currentStates'
         }
-        _hydrateNativeInventory(pagedDevices, requiredCollections, true)
+        int hydrated = _hydrateNativeInventory(pagedDevices, requiredCollections, true, clockT0)
+        budgetCut = hydrated < pagedDevices.size()
+        if (budgetCut) {
+            pagedDevices = pagedDevices.subList(0, hydrated)
+            endIndex = startIndex + hydrated
+        }
     }
 
     def devices = pagedDevices.collect { device ->
@@ -479,8 +493,24 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
         if (cursor != null && endIndex < totalCount) result.nextCursor = endIndex.toString()
     }
+    // A budget cut adds the pagination fields even to a call that did not paginate.
+    if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit, cursor != null)
 
     return result
+}
+
+// A legacy client has no request-to-request continuation, so a page whose per-device reads reach
+// the request budget ends early and says where the next page starts.
+private void _applyListBudgetCut(Map result, int startIndex, int endIndex, int totalCount, limit, boolean cursorMode) {
+    result.offset = startIndex
+    result.limit = limit ?: 0
+    result.hasMore = true
+    result.nextOffset = endIndex
+    result.nextCursor = endIndex.toString()
+    result.budgetLimited = true
+    result.note = ("Partial page: devices ${startIndex + 1}-${endIndex} of ${totalCount}. It stopped early to answer within the " +
+        "request time limit and ${totalCount - endIndex} more device(s) remain. Repeat the call with " +
+        (cursorMode ? "cursor '${endIndex}'" : "offset ${endIndex}") + " (other arguments unchanged) to continue.").toString()
 }
 
 private Boolean isDeviceDisabled(device) {
@@ -653,15 +683,20 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
     return byId.values() as List
 }
 
-private void _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false) {
-    records.each { record ->
+// Returns how many records it processed. With reqT0 it stops before the next record that needs a
+// read once the request budget is spent, never before the first record.
+private int _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false, Long reqT0 = null) {
+    int processed = 0
+    for (record in records) {
+        if (processed > 0 && reqT0 != null && record._nativeLoaded != true && _timeBudgetExceeded(reqT0)) return processed
+        processed++
         if (record._nativeLoaded != true) {
             def fj = _fetchDeviceFullJson(record.id)
             if (!(fj?.device instanceof Map)) {
                 if (!allowPartial) throw new IllegalStateException("Native device metadata is unavailable for device ${record.id}; no SDK fallback was used.")
                 record.putAll([_nativeLoaded: true, _nativeReadError: true,
                     _nativeUnavailableCollections: ['currentStates', 'capabilities', 'commands']])
-                return
+                continue
             }
             def d = fj.device
             def states = d.currentStates instanceof Map ? [] : null
@@ -686,6 +721,7 @@ private void _hydrateNativeInventory(List records, List requiredCollections, boo
             throw new IllegalStateException("Native device collections are unavailable for device ${record.id}: ${unavailable.join(', ')}.")
         }
     }
+    return processed
 }
 
 // Seed identity, room, activity, disabled flag and current states for a whole population from
@@ -5579,7 +5615,7 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
                     attributeNames: [type: "array", items: [type: "string"], description: "format='context' only (rejected on other formats): which attributes to show per device line[[FLAT_TRIM]], replacing the default set. Empty array = the default set[[/FLAT_TRIM]]."],
                     format: [type: "string", enum: ["summary", "detailed", "ids", "context"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands. 'ids' = flat array of device ID integers (cheapest, ignores fields arg). 'context' = plain-text house snapshot in `summary`[[FLAT_TRIM]] (mode + 'Label (id, room) - capabilities; attr=value' lines; page size 50 unless limit set; ignores fields arg)[[/FLAT_TRIM]]."],
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section='performance_devices')` for valid field names and projection semantics."],
-                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor."],
+                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor. A page can also end early with budgetLimited:true and a nextCursor when the request time limit is reached."],
                     scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = selected devices plus MCP-owned children, or all devices with bypass enabled[[FLAT_TRIM]] (full detail/currentStates)[[/FLAT_TRIM]]. 'all' = EVERY device on the hub, each tagged with current effective access as mcpAuthorized true/false."]
                 ]
             ]

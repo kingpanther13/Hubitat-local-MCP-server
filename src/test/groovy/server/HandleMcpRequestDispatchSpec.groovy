@@ -337,6 +337,34 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         inner.rooms == null
     }
 
+    def "a result the LAN carries is held to the cloud relay's smaller limit over the cloud"() {
+        given: 'a hub_list_rooms result between the cloud limit (99,000 bytes) and the LAN limit (120,000)'
+        def padding = 'x' * 80
+        def bigRooms = (0..<720).collect { i -> [id: i as Long, name: "Room-${i}-${padding}"] }
+        def roomList = bigRooms.collect { [id: it.id?.toString(), name: it.name, deviceCount: 0, deviceIds: []] }
+        int raw = groovy.json.JsonOutput.toJson([rooms: roomList, count: roomList.size()]).getBytes("UTF-8").length
+        assert raw > 99000 && raw < 110000
+        script.metaClass.getRooms = { -> bigRooms }
+        script.metaClass._isCloudRequest = { -> cloud }
+        mcpDriver.pushBody([
+            jsonrpc: '2.0', id: 101, method: 'tools/call',
+            params: [name: 'hub_list_rooms', arguments: [:]]
+        ])
+
+        when:
+        script.handleMcpRequest()
+
+        then:
+        def response = mcpDriver.parseResponseJson()
+        response.error == null
+        def inner = new groovy.json.JsonSlurper().parseText(response.result.content[0].text)
+        (inner.response_too_large == true) == cloud
+        cloud ? inner.sizeLimitBytes == 99000 : inner.rooms.size() == 720
+
+        where:
+        cloud << [true, false]
+    }
+
     def "JsonOutput escapes non-ASCII to ASCII, so the outer size guard's char-length sizing equals UTF-8 byte length (refutes the issue #105 multibyte-undercount finding)"() {
         // The #105 backend audit flagged the outer guard at handleMcpRequest (which sizes by
         // jsonResponse.length() for sub-threshold responses) as undercounting multibyte UTF-8.
