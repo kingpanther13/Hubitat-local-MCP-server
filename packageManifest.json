@@ -1,12 +1,12 @@
 {
     "packageName": "MCP Rule Server",
     "author": "kingpanther13",
-    "version": "4.8.0",
+    "version": "4.8.1",
     "minimumHEVersion": "2.3.0",
-    "dateReleased": "2026-10-17",
+    "dateReleased": "2026-10-18",
     "documentationLink": "https://github.com/kingpanther13/Hubitat-local-MCP-server/blob/main/README.md",
     "communityLink": "",
-    "releaseNotes": "v4.8.0 - 2026-10-17\n- feat: per-client access tokens with their own tool, read/write and connection access (#551)\n  - New under Advanced settings: per-client access tokens (firmware 2.5.2 or later). Give an MCP client its own token (all tools on to start) and choose exactly which tools it can call, whether it can read or write, whether it can connect locally or through the cloud, and its own tool-name number. The main token is unchanged.\n    - A client sees only its own tools, and a refused call tells it which setting blocks it. A client token can never read or change the MCP Rule Server app itself, and access tokens are always masked in its results.\n    - Rotating or revoking a client token takes effect immediately and leaves every other client working.",
+    "releaseNotes": "v4.8.1 - 2026-10-18\n- fix: end a legacy hub_list_devices page at the request budget (#553)\n  - Listing devices over the cloud from an MCP client that does not support request continuation no longer times out on large hubs. A page that runs out of time returns the devices read so far with `budgetLimited: true` and a `nextCursor` to fetch the rest.\n  - A tool result over 99,000 bytes on the cloud connection (the relay was seen dropping responses of 104,261 bytes and more) now comes back as a `response_too_large` answer naming how to narrow the call, instead of a gateway timeout.\n  - `hub_list_backups` returns code backups 50 at a time, newest first, with a `nextCursor` for the next page.\n\nv4.8.0 - 2026-10-17\n- feat: per-client access tokens with their own tool, read/write and connection access (#551)\n  - New under Advanced settings: per-client access tokens (firmware 2.5.2 or later). Give an MCP client its own token (all tools on to start) and choose exactly which tools it can call, whether it can read or write, whether it can connect locally or through the cloud, and its own tool-name number. The main token is unchanged.\n    - A client sees only its own tools, and a refused call tells it which setting blocks it. A client token can never read or change the MCP Rule Server app itself, and access tokens are always masked in its results.\n    - Rotating or revoking a client token takes effect immediately and leaves every other client working.",
     "apps": [
         {
             "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
