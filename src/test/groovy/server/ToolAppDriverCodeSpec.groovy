@@ -4734,6 +4734,18 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         !atomicStateMap.lastSelfDeploy.containsKey('assumed')
     }
 
+    def "the version check reads the code list, never the single-item read the hub compiles to answer"() {
+        given: 'list rows for an app and a driver; the single-item reads are left unstubbed'
+        hubGet.register('/app/list/all/data') { params -> '[{"id": 7, "version": 3}, {"id": 12, "version": 9}]' }
+        hubGet.register('/driver/list/data') { params -> '[{"id": 40, "version": 4}]' }
+
+        expect:
+        script._itemRowVersion('app', '12') == 9
+        script._itemRowVersion('driver', 40) == 4
+        script._itemRowVersion('app', '99') == null
+        !hubGet.calls.any { it.path.contains('/list/single/data/') }
+    }
+
     def "hub_update_app self-update still fails on a non-timeout POST exception"() {
         given:
         enableWrite()
