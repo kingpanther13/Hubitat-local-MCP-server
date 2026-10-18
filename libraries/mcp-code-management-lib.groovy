@@ -2202,7 +2202,8 @@ private Map _updateAppOAuth(appId, oauth) {
 // existing creds on re-enable. Returns a Map {clientId, clientSecret} (values may be null for a fresh
 // app) on a SUCCESSFUL read, or NULL if the detail could not be read. The caller MUST distinguish
 // these: "fresh app, no creds yet" (send empty -> hub generates) vs "read failed, don't know" (refuse
-// to submit empty, which would clobber an already-enabled app's live creds).
+// to submit empty, which would clobber an already-enabled app's live creds). No other read returns
+// the creds; the hub compiles the whole app to answer this one, so only an OAuth change makes it.
 private _readAppOAuthCreds(appId) {
     try {
         def txt = hubInternalGet("/app/list/single/data/${java.net.URLEncoder.encode(appId.toString(), 'UTF-8')}", null, 30)
