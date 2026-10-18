@@ -1764,11 +1764,16 @@ def serverCapabilities() {
 // correctly without the handshake. resultType is explicit (DiscoverResult requires it; discover
 // may arrive headerless as a compat probe) and jsonRpcResult preserves a caller-set value.
 def handleServerDiscover(msg) {
+    // The recovery hint follows the header: a legacy revision means every write this client
+    // makes takes the ordinary (logged) path, so it must not be sent to recentWrites. A
+    // headerless discover is a modern client's compat probe and keeps the modern hint.
+    String headerVersion = _requestHeader("MCP-Protocol-Version")
+    boolean modern = headerVersion == null || _modernEraVersion(headerVersion)
     return jsonRpcResult(msg.id, [
         supportedVersions: supportedProtocolVersions(),
         capabilities: serverCapabilities(),
         serverInfo: serverIdentity(),
-        instructions: serverInstructions(true),
+        instructions: serverInstructions(modern),
         ttlMs: cacheHintTtlMs(),
         cacheScope: "private",
         resultType: "complete"

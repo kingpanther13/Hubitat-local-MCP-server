@@ -242,6 +242,15 @@ class WriteAuditLogSpec extends ToolSpecBase {
         modern.endsWith(script._writeRecoveryHint(true) as String)
         modern.contains('check recentWrites')
         modern.contains("For every other write, call hub_get_logs(mode='mcp', component='write')")
+
+        when: 'discover under a legacy header, and headerless as a compat probe'
+        String legacyHeader = rpc('server/discover', [:], ['MCP-Protocol-Version': '2025-11-25']).result.instructions
+        String headerless = rpc('server/discover', [:], [:]).result.instructions
+
+        then: 'a legacy header selects the legacy hint; no header keeps the modern one'
+        legacyHeader.endsWith(script._writeRecoveryHint(false) as String)
+        !legacyHeader.contains('recentWrites')
+        headerless.endsWith(script._writeRecoveryHint(true) as String)
     }
 
     def "tools/list chooses the recovery hint by the request's era on leaves and gateways"() {
