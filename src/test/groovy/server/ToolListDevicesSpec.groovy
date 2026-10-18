@@ -1,5 +1,6 @@
 package server
 
+import java.util.concurrent.atomic.AtomicLong
 import spock.lang.Shared
 import support.NativeInventoryFixture
 import support.TestDevice
@@ -2186,5 +2187,99 @@ class ToolListDevicesSpec extends ToolSpecBase {
 
         then:
         !ok.containsKey('attributeNamesMatchedNoAttributes')
+    }
+
+    // ---- legacy request budget (#495) -----------------------------------
+
+    // Each native device read advances the request clock by 2500 ms, so a 6000 ms cloud budget is
+    // spent once the third device of a page has been read.
+    private AtomicLong budgetedDevices(int count) {
+        def clock = new AtomicLong(1234567890000L)
+        NOW_OVERRIDE.set({ -> clock.get() })
+        settingsMap.relayBudgetMs = 6000
+        script.metaClass._isCloudRequest = { -> true }
+        settingsMap.selectedDevices = (1..count).collect { i ->
+            def d = makeDevice(id: i, name: "D${i}", label: "Device-${i}")
+            NativeInventoryFixture.register(hubGet, i.toString()) { clock.addAndGet(2500L); d }
+            d
+        }
+        return clock
+    }
+
+    private Map listBudgeted(AtomicLong clock, Map opts = [:]) {
+        script.toolListDevices(false, 0, opts.limit ?: 0, null, null, null, opts.format, null, opts.cursor,
+            null, null, null, null, null, opts.containsKey('reqT0') ? opts.reqT0 : clock.get())
+    }
+
+    def "a page whose device reads reach the request budget ends early at the first device not returned"() {
+        given:
+        def clock = budgetedDevices(10)
+
+        when:
+        def result = listBudgeted(clock)
+
+        then:
+        result.devices*.id == ['1', '2', '3']
+        result.count == 3
+        result.total == 10
+        result.budgetLimited == true
+        result.hasMore == true
+        result.offset == 0
+        result.nextOffset == 3
+        result.nextCursor == '3'
+        result.note.contains("cursor '3'")
+    }
+
+    def "following the budget cursor pages through every device exactly once, in order"() {
+        given:
+        def clock = budgetedDevices(10)
+
+        when:
+        def ids = []
+        def cursor = ''
+        int pages = 0
+        while (cursor != null) {
+            def page = listBudgeted(clock, [cursor: cursor])
+            ids.addAll(page.devices*.id)
+            cursor = page.nextCursor
+            assert ++pages < 10 : 'pagination runaway'
+        }
+
+        then: 'three budget-cut pages, then a last page that fits'
+        ids == (1..10).collect { it.toString() }
+        pages == 4
+    }
+
+    def "the context format cuts its page at the budget and names the cursor in its header"() {
+        given:
+        def clock = budgetedDevices(10)
+
+        when:
+        def result = listBudgeted(clock, [format: 'context', limit: 20])
+
+        then:
+        result.count == 3
+        result.budgetLimited == true
+        result.nextCursor == '3'
+        result.summary.contains('Devices: 3 of 10 (nextCursor=3')
+    }
+
+    def "no page is cut without a request clock or on a LAN with no budget"() {
+        given:
+        def clock = budgetedDevices(10)
+        if (lan) script.metaClass._isCloudRequest = { -> false }
+
+        when:
+        def result = listBudgeted(clock, withClock ? [:] : [reqT0: null])
+
+        then:
+        result.devices.size() == 10
+        !result.containsKey('budgetLimited')
+        !result.containsKey('nextCursor')
+
+        where:
+        withClock | lan
+        false     | false
+        true      | true
     }
 }

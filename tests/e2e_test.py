@@ -17630,6 +17630,40 @@ class TestRunner:
             f"legacy hub_get_info payload is not the hub-info shape: {sorted(info) if isinstance(info, dict) else type(info)}"
 
     @test("legacy_protocol")
+    def test_legacy_unfiltered_device_list_pages_within_the_budget(self) -> None:
+        """A legacy client lists every device without outlasting the relay.
+
+        A legacy client has no requestState continuation, so the whole listing must answer
+        inside one request. When the per-device reads reach the request budget the page ends
+        early with budgetLimited, hasMore and a nextCursor at the first device not returned;
+        following those cursors must cover the whole population exactly once (#495).
+        """
+        legacy = LegacyEraClient(self.client, verbose=self.verbose)
+        legacy.initialize(LEGACY_PROTOCOL_VERSION)
+
+        seen: list[str] = []
+        total = None
+        args: dict = {}
+        for _ in range(50):
+            page = legacy.call_tool("hub_read_devices", {"tool": "hub_list_devices", "args": args},
+                                    replay_safe=True)
+            assert isinstance(page, dict) and isinstance(page.get("devices"), list),                 f"legacy hub_list_devices did not return a device page: {str(page)[:300]}"
+            total = page.get("total") if total is None else total
+            seen.extend(str(d.get("id")) for d in page["devices"])
+            if page.get("budgetLimited"):
+                assert page.get("hasMore") is True and page.get("nextCursor"),                     f"a budget-cut page must say where the next page starts: {sorted(page)}"
+                assert page["devices"], "a budget-cut page must still return at least one device"
+                args = {"cursor": page["nextCursor"]}
+                continue
+            if not page.get("nextCursor"):
+                break
+            args = {"cursor": page["nextCursor"]}
+        else:
+            raise AssertionError(f"legacy listing did not finish within 50 pages ({len(seen)} devices read)")
+        assert isinstance(total, int) and total > 0, f"legacy listing reported no total: {total!r}"
+        assert len(seen) == len(set(seen)) == total,             f"the pages must cover all {total} devices exactly once: read {len(seen)}, unique {len(set(seen))}"
+
+    @test("legacy_protocol")
     def test_legacy_bulk_stop_is_terminal(self) -> None:
         """A legacy client receives a fail-closed bulk stop as a terminal envelope with no tail to re-issue.
 

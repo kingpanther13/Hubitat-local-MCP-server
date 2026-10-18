@@ -409,9 +409,13 @@ private String _deviceReadAccessScope() {
 }
 
 private def _deviceReadSnapshot(String tool, Map args, Map context) {
+    // The worker runs on its own clock: the request's budget belongs to the observing request,
+    // and a leaf that honours it would cut a read the continuation exists to finish.
+    Map workArgs = _mrtrCopyMap(args)
+    workArgs.remove("__reqT0")
     Map work = [id: context.id, fresh: context.fresh, tool: tool,
                 outerTool: context.outerTool ?: tool,
-                args: _mrtrCopyMap(args), scope: _deviceReadAccessScope()]
+                args: workArgs, scope: _deviceReadAccessScope()]
     Map snapshot = _hubReadSnapshot(null, args, work)
     if (work.scope != _deviceReadAccessScope()) {
         throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")

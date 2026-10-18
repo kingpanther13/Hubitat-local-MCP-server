@@ -1,6 +1,7 @@
 package server
 
 import java.util.concurrent.atomic.AtomicLong
+import support.NativeInventoryFixture
 import support.ToolSpecBase
 import support.TestDevice
 
@@ -120,7 +121,7 @@ class DeviceMrtrSpec extends ToolSpecBase {
             [id: '88', label: label, nextCursor: 'unchanged-cursor', preferences: [token: 'private-pref']]
         }
         script.metaClass.toolListDevices = { detailed, offset, limit, filter, labelFilter, capabilityFilter,
-                format, fields, cursor, scope, roomFilter, onlyOn, changedSince, attributeNames ->
+                format, fields, cursor, scope, roomFilter, onlyOn, changedSince, attributeNames, reqT0 ->
             reads++; clock.addAndGet(12000L); [devices: [[id: '88', label: label]]]
         }
         script.metaClass.toolListVirtualDevices = { args ->
@@ -284,5 +285,49 @@ class DeviceMrtrSpec extends ToolSpecBase {
             it.level == 'error' && it.details?.tool == 'hub_manage_virtual_device' &&
                 it.details.error == 'No MCP-managed virtual device found'
         }
+    }
+
+    def "a legacy client's hub_list_devices page ends at the relay budget with a cursor to continue"() {
+        given: 'each native device read costs 2500 ms of the request clock'
+        settingsMap.selectedDevices = (1..10).collect { i ->
+            def d = new TestDevice(id: i, name: "D${i}", label: "Device-${i}")
+            NativeInventoryFixture.register(hubGet, i.toString()) { clock.addAndGet(2500L); d }
+            d
+        }
+
+        when: 'a 2025-11-25 client lists every device in one request'
+        mcpDriver.pushHeaders(['MCP-Protocol-Version': '2025-11-25'])
+        mcpDriver.pushBody([jsonrpc: '2.0', id: ++mcpDriver.lastSentId, method: 'tools/call',
+            params: [name: 'hub_read_devices', arguments: [tool: 'hub_list_devices', args: [:]]]])
+        script.handleMcpRequest()
+        def response = mcpDriver.parseResponseJson() as Map
+        def page = mcpDriver.parseInner(response)
+
+        then: 'the page stops once the 6000 ms budget is spent instead of outlasting the relay'
+        !response.result.containsKey('requestState')
+        page.devices*.id == ['1', '2', '3']
+        page.total == 10
+        page.budgetLimited == true
+        page.hasMore == true
+        page.nextCursor == '3'
+    }
+
+    def "a modern hub_list_devices background read runs without the request clock"() {
+        given:
+        def clocks = []
+        script.metaClass.toolListDevices = { detailed, offset, limit, filter, labelFilter, capabilityFilter,
+                format, fields, cursor, scope, roomFilter, onlyOn, changedSince, attributeNames, reqT0 ->
+            clocks << reqT0; clock.addAndGet(12000L); [devices: [], count: 0, total: 0]
+        }
+        Map args = [tool: 'hub_list_devices', args: [:]]
+
+        when:
+        String token = call('hub_read_devices', args).result.requestState
+        finish(runInMillisCalls[0])
+        def completed = call('hub_read_devices', args, token)
+
+        then: 'the worker reads the whole page; continuation, not a cut, carries it past the budget'
+        completed.result.resultType == 'complete'
+        clocks == [null]
     }
 }
