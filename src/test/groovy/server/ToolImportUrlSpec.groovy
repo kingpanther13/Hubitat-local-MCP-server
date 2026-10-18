@@ -212,10 +212,10 @@ class ToolImportUrlSpec extends ToolSpecBase {
         settingsMap.enableDeveloperMode = true   // self-update guard
         script.metaClass._selfSaveWaitMs = { -> 0L }
         stubHttpGet(200, 'fetched-source-here')
-        // The app's list row carries the current version without its source (issue #522: no full
+        // The app code list carries the current version without its source (issue #522: no full
         // ajax/code fetch, and no pre-update backup for the package's own app -- its previous build
         // is published -- so the request holds one copy of the source while the hub compiles).
-        hubGet.register('/app/list/single/data/178') { params -> '[{"id": 178, "version": 7}]' }
+        hubGet.register('/app/list/all/data') { params -> '[{"id": 178, "version": 7}]' }
         def captured = [:]
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 ->
             captured.path = path
@@ -247,7 +247,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     def "hub_update_app drops a public sourceOrigin, so inline source cannot skip the backup"() {
         given:
         enableWrite()
-        hubGet.register('/app/list/single/data/42') { params -> '[{"id": 42, "version": 7}]' }
+        hubGet.register('/app/list/all/data') { params -> '[{"id": 42, "version": 7}]' }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, id: 42] }
         int backups = 0
         script.metaClass.backupItemSource = { String type, String itemId -> backups++; [version: 7, fileName: 'b.json'] }
@@ -265,7 +265,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         given:
         enableWrite()
         stubHttpGet(200, 'fetched-source-here')
-        hubGet.register('/app/list/single/data/42') { params -> '[{"id": 42, "version": 7}]' }
+        hubGet.register('/app/list/all/data') { params -> '[{"id": 42, "version": 7}]' }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, id: 42] }
         int backups = 0
         script.metaClass.backupItemSource = { String type, String itemId -> backups++; [version: 7, fileName: 'b.json'] }
@@ -285,7 +285,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
         enableWrite()
         settingsMap.enableDeveloperMode = true
         stubHttpGet(200, 'fetched-source-here')
-        hubGet.register('/app/list/single/data/178') { params -> '<html>login</html>' }
+        hubGet.register('/app/list/all/data') { params -> '<html>login</html>' }
         script.metaClass._selfSaveWaitMs = { -> 0L }
         hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "source": "old-source", "version": 9}' }
         def captured = [:]
@@ -306,7 +306,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     def "hub_update_app with inline source and backup false takes no backup"() {
         given:
         enableWrite()
-        hubGet.register('/app/list/single/data/42') { params -> '[{"id": 42, "version": 7}]' }
+        hubGet.register('/app/list/all/data') { params -> '[{"id": 42, "version": 7}]' }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, id: 42] }
         int backups = 0
         script.metaClass.backupItemSource = { String type, String itemId -> backups++; [version: 7, fileName: 'b.json'] }
@@ -323,7 +323,7 @@ class ToolImportUrlSpec extends ToolSpecBase {
     def "hub_update_app with inline source still backs up the current source first"() {
         given:
         enableWrite()
-        hubGet.register('/app/list/single/data/42') { params -> '[{"id": 42, "version": 7}]' }
+        hubGet.register('/app/list/all/data') { params -> '[{"id": 42, "version": 7}]' }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> [success: true, id: 42] }
         int backups = 0
         script.metaClass.backupItemSource = { String type, String itemId -> backups++; [version: 7, fileName: 'b.json'] }
