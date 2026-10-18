@@ -3825,7 +3825,7 @@ private _listSourceItemBackups(args) {
         return base
     }.sort { a, b -> (b.timestampEpoch <=> a.timestampEpoch) }
     def cursor = args?.cursor
-    def paged = _paginateList(backupList, cursor, 50, "hub_list_backups")
+    def paged = _paginateList(backupList, cursor ?: "", 50, "hub_list_backups")
     def result = [
         backups: paged.page,
         count: paged.page.size(),
@@ -3839,7 +3839,11 @@ private _listSourceItemBackups(args) {
     if (backupList.any { it.deletePending }) {
         result.deletePendingNote = "Entries with deletePending=true record an incomplete deletion. If the file is still readable, hub_get_backup or hub_restore_backup can clear the marker and recover the backup. Recover promptly: the next backup publication purges unprotected pending entries and attempts to delete their files, even if still readable. Pending entries cannot be reused as baselines."
     }
-    if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    if (paged.nextCursor != null) {
+        result.hasMore = true
+        result.nextCursor = paged.nextCursor
+        result.note = "Showing ${paged.page.size()} of ${backupList.size()} backups, newest first. Repeat the call with cursor '${paged.nextCursor}' for the next page.".toString()
+    }
     return result
 }
 private String _itemBackupRetentionPolicy() {
@@ -4960,7 +4964,7 @@ A transport drop can lose the response while the hub still commits this write; v
                 type: "object",
                 properties: [
                     scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub", "all"], description: "Which backups to list; default source."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor (source only); pass \"\" for the first page, iterate nextCursor."]
+                    cursor: [type: "string", description: "Source backups page 50 at a time, newest first; pass the returned nextCursor to continue."]
                 ],
                 required: []
             ]
@@ -6079,9 +6083,11 @@ private String _deviceReadAccessScope() {
     ])
 }
 private def _deviceReadSnapshot(String tool, Map args, Map context) {
+    Map workArgs = _mrtrCopyMap(args)
+    workArgs.remove("__reqT0")
     Map work = [id: context.id, fresh: context.fresh, tool: tool,
                 outerTool: context.outerTool ?: tool,
-                args: _mrtrCopyMap(args), scope: _deviceReadAccessScope()]
+                args: workArgs, scope: _deviceReadAccessScope()]
     Map snapshot = _hubReadSnapshot(null, args, work)
     if (work.scope != _deviceReadAccessScope()) {
         throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")
@@ -6204,8 +6210,9 @@ def runNativeLogFetch(Map job = [:]) {
             def payload = _executeWithDeviceReadContext(outer, outerArgs, null)
             String text = groovy.json.JsonOutput.toJson(payload)
             int bytes = text.getBytes("UTF-8").length
-            if (bytes > 120000) text = groovy.json.JsonOutput.toJson(
-                _responseTooLargeEnvelope(work.tool.toString(), bytes, 120000))
+            int limit = _responseSizeLimitBytes()
+            if (bytes > limit) text = groovy.json.JsonOutput.toJson(
+                _responseTooLargeEnvelope(work.tool.toString(), bytes, limit))
             result = [text: text, scope: work.scope]
         } else {
             result = [text: hubInternalGet("/logs/past/json", job.query as Map, 30)]
@@ -6506,7 +6513,7 @@ def toolGetHubLogs(args) {
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
     def estimatedJsonSize = paged.page.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
-    if (estimatedJsonSize > hubResponseCapBytes() - 11072) {
+    if (estimatedJsonSize > _responseSizeLimitBytes()) {
         paged.page.each { it.message = it.message?.take(200) }
         result.truncated = true
         result.note = "Log messages truncated to fit response size limit"
@@ -9734,7 +9741,8 @@ private List _capabilityNames(def caps) {
         (c instanceof CharSequence) ? c.toString() : (c?.name?.toString() ?: c?.toString())
     }.findAll { it != null }
 }
-def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null) {
+def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null, reqT0 = null) {
+    Long clockT0 = reqT0 instanceof Number ? reqT0 as Long : null
     if (cursor != null) {
         if (offset != null && (offset as Integer) > 0) {
             throw new IllegalArgumentException("cursor and offset are mutually exclusive (got cursor=${cursor}, offset=${offset}); pick one")
@@ -9949,7 +9957,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     }
     if (resolvedFormat == "context") {
         def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
-        _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'], true)
+        int hydrated = _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'], true, clockT0)
+        boolean budgetCut = hydrated < pagedDevices.size()
+        if (budgetCut) {
+            pagedDevices = pagedDevices.subList(0, hydrated)
+            endIndex = startIndex + hydrated
+        }
         def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
         def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
         def header = _contextHeaderLines()
@@ -9977,6 +9990,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
                 result.nextCursor = endIndex.toString()
             }
         }
+        if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit, cursor != null)
         return result
     }
     def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
@@ -9995,6 +10009,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     def useDetailed = (resolvedFormat == "detailed") || detailed ||
         (fieldSet != null && fieldSet.any { detailFields.contains(it) })
     def requiredCollections = []
+    boolean budgetCut = false
     boolean labelOnlyProjection = fieldSet != null && !useDetailed && fieldSet.contains("label") &&
         fieldSet.every { it in ["id", "mcpManaged", "label"] }
     if (labelOnlyProjection) {
@@ -10010,7 +10025,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         } else if (fieldSet == null || fieldSet.contains('currentStates')) {
             requiredCollections << 'currentStates'
         }
-        _hydrateNativeInventory(pagedDevices, requiredCollections, true)
+        int hydrated = _hydrateNativeInventory(pagedDevices, requiredCollections, true, clockT0)
+        budgetCut = hydrated < pagedDevices.size()
+        if (budgetCut) {
+            pagedDevices = pagedDevices.subList(0, hydrated)
+            endIndex = startIndex + hydrated
+        }
     }
     def devices = pagedDevices.collect { device ->
         def deviceIdStr = device.id.toString()
@@ -10067,7 +10087,19 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
         if (cursor != null && endIndex < totalCount) result.nextCursor = endIndex.toString()
     }
+    if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit, cursor != null)
     return result
+}
+private void _applyListBudgetCut(Map result, int startIndex, int endIndex, int totalCount, limit, boolean cursorMode) {
+    result.offset = startIndex
+    result.limit = limit ?: 0
+    result.hasMore = true
+    result.nextOffset = endIndex
+    result.nextCursor = endIndex.toString()
+    result.budgetLimited = true
+    result.note = ("Partial page: devices ${startIndex + 1}-${endIndex} of ${totalCount}. It stopped early to answer within the " +
+        "request time limit and ${totalCount - endIndex} more device(s) remain. Repeat the call with " +
+        (cursorMode ? "cursor '${endIndex}'" : "offset ${endIndex}") + " (other arguments unchanged) to continue.").toString()
 }
 private Boolean isDeviceDisabled(device) {
     return device.disabled == true || device.disabled?.toString()?.toLowerCase() == "true" ||
@@ -10199,15 +10231,18 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
     }
     return byId.values() as List
 }
-private void _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false) {
-    records.each { record ->
+private int _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false, Long reqT0 = null) {
+    int processed = 0
+    for (record in records) {
+        if (processed > 0 && reqT0 != null && record._nativeLoaded != true && _timeBudgetExceeded(reqT0)) return processed
+        processed++
         if (record._nativeLoaded != true) {
             def fj = _fetchDeviceFullJson(record.id)
             if (!(fj?.device instanceof Map)) {
                 if (!allowPartial) throw new IllegalStateException("Native device metadata is unavailable for device ${record.id}; no SDK fallback was used.")
                 record.putAll([_nativeLoaded: true, _nativeReadError: true,
                     _nativeUnavailableCollections: ['currentStates', 'capabilities', 'commands']])
-                return
+                continue
             }
             def d = fj.device
             def states = d.currentStates instanceof Map ? [] : null
@@ -10229,6 +10264,7 @@ private void _hydrateNativeInventory(List records, List requiredCollections, boo
             throw new IllegalStateException("Native device collections are unavailable for device ${record.id}: ${unavailable.join(', ')}.")
         }
     }
+    return processed
 }
 private boolean _seedNativeInventoryFromTree(List records, Map inventory = null) {
     if (inventory == null) inventory = _fetchAllHubDeviceRecords("device", "native bulk device read")
@@ -14116,7 +14152,7 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
                     attributeNames: [type: "array", items: [type: "string"], description: "format='context' only (rejected on other formats): which attributes to show per device line[[FLAT_TRIM]], replacing the default set. Empty array = the default set[[/FLAT_TRIM]]."],
                     format: [type: "string", enum: ["summary", "detailed", "ids", "context"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands. 'ids' = flat array of device ID integers (cheapest, ignores fields arg). 'context' = plain-text house snapshot in `summary`[[FLAT_TRIM]] (mode + 'Label (id, room) - capabilities; attr=value' lines; page size 50 unless limit set; ignores fields arg)[[/FLAT_TRIM]]."],
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section='performance_devices')` for valid field names and projection semantics."],
-                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor."],
+                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor. A page can also end early with budgetLimited:true and a nextCursor when the request time limit is reached."],
                     scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = selected devices plus MCP-owned children, or all devices with bypass enabled[[FLAT_TRIM]] (full detail/currentStates)[[/FLAT_TRIM]]. 'all' = EVERY device on the hub, each tagged with current effective access as mcpAuthorized true/false."]
                 ]
             ]
@@ -34224,6 +34260,7 @@ mappings {
     }
 }
 def hubResponseCapBytes() { 131072 }
+def _responseSizeLimitBytes() { _isCloudRequest() ? 99000 : hubResponseCapBytes() - 11072 }
 def handleHealth() {
     if (!_transportEnabled()) {
         return render(status: 403, contentType: "application/json",
@@ -34318,7 +34355,7 @@ def handleMcpRequest() {
     } else {
         jsonResponse = groovy.json.JsonOutput.toJson(response)
     }
-    def maxResponseSize = hubResponseCapBytes() - 7072
+    def maxResponseSize = _isCloudRequest() ? 99500 : hubResponseCapBytes() - 7072
     def responseBytes = jsonResponse.length() > (maxResponseSize - 8000) ? jsonResponse.getBytes("UTF-8").length : jsonResponse.length()
     if (responseBytes > maxResponseSize) {
         mcpLog("error", "server", "MCP response too large: ${responseBytes} bytes (limit ${maxResponseSize}). Returning error instead.")
@@ -34326,7 +34363,7 @@ def handleMcpRequest() {
         def errResp = jsonRpcError(
             echoId,
             -32603,
-            "Response too large (${responseBytes} bytes exceeds hub's 128KB limit). Try requesting less data or use a more specific query."
+            "Response too large (${responseBytes} bytes exceeds the ${maxResponseSize}-byte limit ${_isCloudRequest() ? 'of the cloud relay' : 'under the hub\'s 128 KiB cap'}). Try requesting less data or use a more specific query."
         )
         jsonResponse = groovy.json.JsonOutput.toJson(errResp)
         httpStatus = null
@@ -36798,7 +36835,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     def candidateResponse = jsonRpcResult(id, envelopeBody)
     String candidateJson = groovy.json.JsonOutput.toJson(candidateResponse)
     int wireBytes = candidateJson.getBytes("UTF-8").length
-    final int responseSizeLimit = hubResponseCapBytes() - 11072
+    final int responseSizeLimit = _responseSizeLimitBytes()
     if (wireBytes > responseSizeLimit) {
         mcpLog("warn", "server", "Tool ${reactiveToolName} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
             details: _toolLogDetails(reactiveToolName, toolName, args, [bytes: wireBytes, limit: responseSizeLimit])
@@ -37937,7 +37974,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
                 }
                 return toolListVirtualDevices(args)
             }
-            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames)
+            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames, args.__reqT0)
         case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.fields, args.cursor)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
@@ -41801,6 +41838,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - Server-side label/capability filtering: use labelFilter (substring) and capabilityFilter (exact capability name) instead of fetching all devices and filtering client-side
 - format='ids' returns a flat integer array (cheapest for "which devices exist" queries)
 - fields=[...] projects named fields only: currentStates and attributes are the expensive ones (per-device hub reads) -- project those out to save hub CPU; capabilities and commands are in-memory and cheap. id is always included regardless of projection. Unknown field names throw.
+- A page can end early with budgetLimited:true (on a client without request-to-request continuation, when its per-device reads reach the request time budget). The result then carries hasMore:true, nextOffset and nextCursor at the first device not returned. Repeat the call from there with the other arguments unchanged: pass nextCursor as cursor if the call used a cursor, otherwise nextOffset as offset.
 
 **hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)
@@ -41812,9 +41850,9 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 - Use the attribute filter to reduce data volume
 
-**Response-size guard.** Every tool result is measured before sending. A result over 120,000 bytes (the hub caps responses at 128 KiB) has its content replaced with `{response_too_large: true, truncated: true, estimatedBytes, sizeLimitBytes, tool, suggestion}`. The call itself still succeeds. On gateway calls, `tool` names the actual sub-tool. `suggestion` names the knob to narrow with (filters, limit, fields, `saveAs`, or `cursor`). Re-issue a narrower call; do not repeat the same one.
+**Response-size guard.** Every tool result is measured before sending. A result over 120,000 bytes on the LAN (the hub caps responses at 128 KiB), or over 99,000 bytes through the cloud relay (which drops larger responses), has its content replaced with `{response_too_large: true, truncated: true, estimatedBytes, sizeLimitBytes, tool, suggestion}`. The call itself still succeeds. On gateway calls, `tool` names the actual sub-tool. `suggestion` names the knob to narrow with (filters, limit, fields, `saveAs`, or `cursor`). Re-issue a narrower call; do not repeat the same one.
 
-**Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
+**Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard; `hub_list_backups` (scope=source) is the exception and always returns one page, with `hasMore: true` and `nextCursor` when more backups follow. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
 - 25: `hub_list_hpm_packages`.
 - 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices`. For `hub_list_devices`, 50 applies when `limit` is unset (virtual filter included); the cursor is an alternative to `offset`, and the two cannot be combined.
 - 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs`, `hub_get_memory_history`, `hub_get_device_health` (staleDevices), and `hub_get_jobs` (scheduledJobs).
@@ -42781,7 +42819,7 @@ Clients negotiated below MCP 2026-07-28 do not understand requestState. They ret
 Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
 A legacy client that receives `status: "in_progress"` from a log read or from `hub_delete_debug_logs` repeats the identical call.
 
-`hub_get_device` (every mode), `hub_list_devices` (including virtual devices), and `hub_get_device_health` use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot reject continuation. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous. Health retains its 30-second traceroute and 90-second speedtest timeouts, but eight observation slices or a client's retry limit can end the wait before a long probe finishes. A health `slow_read_timeout` does not cancel probes or the optional identify LED blink; do not automatically retry it as a new call.
+`hub_get_device` (every mode), `hub_list_devices` (including virtual devices), and `hub_get_device_health` use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot reject continuation. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous; a legacy `hub_list_devices` page that reaches the request budget ends early with `budgetLimited: true` and a cursor to continue from (see the `performance_devices` section). Health retains its 30-second traceroute and 90-second speedtest timeouts, but eight observation slices or a client's retry limit can end the wait before a long probe finishes. A health `slow_read_timeout` does not cancel probes or the optional identify LED blink; do not automatically retry it as a new call.
 
 Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 
