@@ -724,6 +724,10 @@ def toolGetAppConfig(args) {
             else if (i.value != null && (i.value != true || i.type == "bool")) input.value = i.value
             if (i.type == "password" && i.name) passwordInputNames << i.name.toString()
             if (input.containsKey("value") && _appConfigIsSecretSetting(i.name, i.type, input.value)) input.value = redactedPw
+            // An accessToken input stores its token under "value", which the whole-result
+            // _redactAccessTokens pass (keyed on the setting NAME) cannot see, so apply the toggle here.
+            else if (input.containsKey("value") && settings.redactAccessTokens == true && input.value instanceof CharSequence &&
+                     i.name?.toString() ==~ /(?i)access_?token/) input.value = _accessTokenRedactedMarker()
             if (i.type == "mode") {
                 // A type="mode" input carries no defaultValue; its configured value lives in the page
                 // JSON settings[name] as a comma-joined string (e.g. "Day,Night").

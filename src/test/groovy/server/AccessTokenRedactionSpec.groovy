@@ -27,7 +27,7 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
                   installed: true, appType: [name: 'MCP Rule Server', namespace: 'mcp']],
             configPage: [name: 'mainPage', title: 'MCP Rule Server', install: true, sections: [[
                 title: 'Endpoints',
-                input: [],
+                input: [[name: 'accessToken', type: 'text', title: 'Token', value: TOKEN]],
                 body: [
                     [description: "<code>http://192.168.1.2/apps/api/35/mcp?access_token=${TOKEN}&debug=1</code>"],
                     [description: 'Version: 4.5.2']
@@ -53,6 +53,7 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
         then:
         !response.result.isError
         inner.page.sections[0].paragraphs[0].contains("access_token=${TOKEN}&debug=1")
+        inner.page.sections[0].inputs.find { it.name == 'accessToken' }.value == TOKEN
         inner.settings.accessToken == TOKEN
         inner.settings.exported.contains("\"access_token\":\"${TOKEN}\"")
 
@@ -80,6 +81,7 @@ class AccessTokenRedactionSpec extends ToolSpecBase {
         !response.result.content[0].text.contains(TOKEN)
         inner.page.sections[0].paragraphs[0].contains("access_token=${MARKER}&debug=1")
         inner.page.sections[0].paragraphs[1] == 'Version: 4.5.2'
+        inner.page.sections[0].inputs.find { it.name == 'accessToken' }.value == MARKER
         inner.settings.accessToken == MARKER
         inner.settings.pinToken == PASSWORD_MARKER
         inner.settings.exported.contains("\"access_token\":\"${MARKER}\"")

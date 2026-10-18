@@ -5022,8 +5022,10 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
 // an access_token= URL parameter (app page paragraphs), an accessToken/access_token map key
 // (app settings and state) or the clientTokens map of per-client tokens, and that same key
 // inside JSON carried as a string (a file read or an exported setting).
+private String _accessTokenRedactedMarker() { return "***redacted (access token)***" }
+
 private def _redactAccessTokens(value) {
-    String marker = "***redacted (access token)***"
+    String marker = _accessTokenRedactedMarker()
     if (value instanceof Map) {
         return value.collectEntries { k, v ->
             // clientTokens (per-client tokens: id -> [label, token]): mask each token, keep the name.
