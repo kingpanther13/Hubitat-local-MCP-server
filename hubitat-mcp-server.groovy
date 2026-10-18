@@ -13269,3 +13269,6 @@ def guideSubSectionLookup(subKey) {
     if (!mine) return null
     return [parent: parentKey, content: mine.join("\n")]
 }
+
+// Throwaway deploy probe (never merged): changes the compiled source on each probe commit.
+def _deployProbeMarker() { "probe-1" }
