@@ -569,9 +569,9 @@ private Map _toolRestoreSourceBackup(args) {
 // schedule = POST /hub2/updateBackupSchedule. hub_uploaded and the full-restore paths multipart-upload the
 // archive the way the browser does (_postMultipartBackup).
 
-// The confirm checks hub_create_backup makes before any hub call. The request-to-request path runs
-// them before it reserves a write slot, so a missing confirm is a plain validation refusal there too.
 void _requireCreateBackupConfirm(args) {
+    // The confirm checks hub_create_backup makes before any hub call. The request-to-request path runs
+    // them before it reserves a write slot, so a missing confirm is a plain validation refusal there too.
     args = args ?: [:]
     if (args.cloudDownload != null) {
         if (args.schedule != null || args.networkBackup != null || args.testNetworkBackup == true || args.full == true) {
@@ -580,10 +580,14 @@ void _requireCreateBackupConfirm(args) {
         if (!args.confirm) throw new IllegalArgumentException("cloudDownload writes the backup to File Manager: pass confirm=true.")
         return
     }
-    boolean willCreate = !(args.scheduleOnly == true && (args.schedule != null || args.networkBackup != null || args.testNetworkBackup == true))
-    if (willCreate && !args.confirm) {
+    if (_backupCallCreates(args) && !args.confirm) {
         throw new IllegalArgumentException("You must set confirm=true to create a backup (or pass scheduleOnly=true WITH schedule / networkBackup / testNetworkBackup to only change settings).")
     }
+}
+
+private boolean _backupCallCreates(Map args) {
+    // Only scheduleOnly WITH a schedule / networkBackup / testNetworkBackup skips creating a backup.
+    return !(args.scheduleOnly == true && (args.schedule != null || args.networkBackup != null || args.testNetworkBackup == true))
 }
 
 def toolCreateHubBackup(args) {
@@ -595,12 +599,10 @@ def toolCreateHubBackup(args) {
     def schedulePresent = args.schedule != null
     def networkPresent = args.networkBackup != null
     def testNetwork = args.testNetworkBackup == true
-    def scheduleOnly = args.scheduleOnly == true
     // Settings ride along on the same call: a `schedule` object (/hub2/updateBackupSchedule) and the
-    // network-share settings. Only scheduleOnly WITH one of them skips creating a backup (and
-    // confirm, checked above); every other shape creates one. Everything is validated before the
-    // first write, so a refused call changes nothing.
-    def willCreate = !(scheduleOnly && (schedulePresent || networkPresent || testNetwork))
+    // network-share settings. Everything is validated before the first write, so a refused call
+    // changes nothing.
+    def willCreate = _backupCallCreates(args)
     if (willCreate && args.full == true && args.mock != true) {
         def unavailable = _fullBackupUnavailable()
         if (unavailable) return unavailable

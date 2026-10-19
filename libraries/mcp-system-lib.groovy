@@ -238,9 +238,21 @@ def toolGetHubInfo(args = null) {
     info.setupCurrent = SETUP_CURRENT
     info.setupVersion = state.setupVersion
     info.mcpClient = mcpClientIdentity()
-    // Every device the MCP tools reach: the selected devices plus the MCP-managed virtual devices.
-    info.mcpDeviceCount = (((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it?.id?.toString() }.findAll { it } as Set).size()
-    if (_bypassEnabled()) info.deviceAllowlistBypassed = true
+    // Every device the MCP tools reach: the selected devices plus the MCP-managed virtual devices,
+    // or with the allowlist bypassed every device in the hub's device tree.
+    def reachable = ((settings.selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it?.id?.toString() }.findAll { it } as Set
+    if (_bypassEnabled()) {
+        info.deviceAllowlistBypassed = true
+        try {
+            def tree = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/devicesList") ?: "{}")
+            def records = _flattenHub2DeviceTree(tree instanceof Map ? tree.devices : null)
+            if (!(records instanceof List)) throw new IllegalStateException("the device tree was not a list")
+            records.each { r -> if (r?.id != null) reachable << r.id.toString() }
+        } catch (Exception e) {
+            info.mcpDeviceCountNote = "The allowlist is bypassed, so every hub device is reachable, but the hub's device list could not be read (${e.message}); the count covers the selected and MCP-managed devices only.".toString()
+        }
+    }
+    info.mcpDeviceCount = reachable.size()
     info.mcpRuleCount = getChildApps()?.size() ?: 0
     info.mcpLogEntries = logHistory.entries == null ? null : logHistory.entries.size()
     if (logHistory.error) {
@@ -341,11 +353,11 @@ def toolGetHubInfo(args = null) {
             // Kick the async refresh off first so checkInProgress reflects whether it actually
             // started (asynchttpGet can throw before scheduling). It's async -- handleUpdateCheckResponse
             // writes state LATER -- so the snapshot below still reflects the PRIOR check. A check that
-            // completed in the last five minutes is reported as is, with no new one started, so the
-            // follow-up call the description asks for settles at checkInProgress:false.
+            // succeeded in the last five minutes is reported as is, with no new one started, so a
+            // repeat call settles at checkInProgress:false; a failed one is retried.
             def uc = state.updateCheck ?: [:]
             long sinceCheck = uc.checkedAt instanceof Number ? now() - (uc.checkedAt as long) : -1L
-            boolean fresh = sinceCheck >= 0L && sinceCheck < 300000L
+            boolean fresh = !uc.lastError && sinceCheck >= 0L && sinceCheck < 300000L
             def refreshStarted = fresh ? false : doUpdateCheck()
             def installed = currentVersion()
             info.appUpdate = [
@@ -1040,7 +1052,8 @@ def toolManageMode(args) {
             def created = _modeWriteResult("create", _modePost("/modes/jsonCreate", body))
             // The hub's answer carries no id; the location's own mode list does, with no extra request.
             if (created.success == true) {
-                def newId = _resolveModeId(name)
+                // By name only: a numeric name could also match another mode's id.
+                def newId = location.modes?.find { it?.name?.equalsIgnoreCase(name) }?.id
                 if (newId != null) { created.modeId = newId.toString(); created.name = name }
                 else created.note = "Created; its id was not in this request's mode list yet -- read it with hub_list_modes."
             }
@@ -1422,15 +1435,6 @@ def checkForUpdate() {
 // Returns true when the async request was scheduled, false when asynchttpGet threw before scheduling
 // it -- the boolean lets a caller surface an honest checkInProgress rather than claim a refresh that
 // isn't actually pending.
-// A hub status reading as a number (the /hub/advanced endpoints answer plain text), else the text.
-def _hubNumber(raw) {
-    String s = raw?.toString()?.trim()
-    if (s == null || s.isEmpty()) return s
-    if (s.isLong()) return s.toLong()
-    if (s.isBigDecimal()) return s.toBigDecimal()
-    return s
-}
-
 def doUpdateCheck() {
     try {
         def params = [

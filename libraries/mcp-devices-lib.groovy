@@ -2963,8 +2963,8 @@ def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow
     return [matched, true]
 }
 
-// A poll on a budgeted transport (the cloud relay; LAN only when a LAN budget is set) waits no
-// longer than the request's remaining budget, so the relay never drops the answer; the result then
+// A poll on a budgeted transport (the cloud relay; LAN only when a LAN budget is set) ends by the
+// request's deadline, device reads included, so the relay never drops the answer; the result then
 // says so. The request clock rides in as __reqT0 and never reaches the engine's arg check.
 def toolPollUntilAttribute(args) {
     if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _pollUntilAttributeCore(args)
@@ -2972,22 +2972,30 @@ def toolPollUntilAttribute(args) {
     def t0 = pollArgs.remove("__reqT0")
     long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
     def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
-    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number)) return _pollUntilAttributeCore(pollArgs)
-    long left = budget - (now() - (t0 as long))
+    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || asked < 100 || asked > 60000) return _pollUntilAttributeCore(pollArgs)
+    long deadline = (t0 as long) + budget
+    long left = deadline - now()
+    String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
     def stable = pollArgs.stableForMs
-    if (left >= (asked as long) || asked < 100 || asked > 60000 || (stable instanceof Number && stable >= left)) return _pollUntilAttributeCore(pollArgs)
-    pollArgs.timeoutMs = Math.max(100L, left) as Integer
-    def result = _pollUntilAttributeCore(pollArgs)
-    if (result instanceof Map) {
+    if (left < (asked as long) && stable instanceof Number && (stable as long) >= left) {
+        throw new IllegalArgumentException("stableForMs ${stable} cannot settle in the ${Math.max(0L, left)} ms this request has left (${why}); use a shorter stableForMs.")
+    }
+    if (left < 100L) {
+        return [success: false, timedOut: true, budgetLimited: true, requestedTimeoutMs: asked, timeoutMs: 0,
+                budgetNote: "Not polled: the request had ${Math.max(0L, left)} ms left (${why}). Poll again in a new call.".toString()]
+    }
+    if (left < (asked as long)) pollArgs.timeoutMs = left as Integer
+    def result = _pollUntilAttributeCore(pollArgs, deadline)
+    if (result instanceof Map && (result.remove("budgetStopped") == true || left < (asked as long))) {
         result.requestedTimeoutMs = asked
-        result.timeoutMs = pollArgs.timeoutMs
+        result.timeoutMs = Math.min(left, asked as long)
         result.budgetLimited = true
-        result.budgetNote = "The poll waited ${pollArgs.timeoutMs} ms instead of ${asked} ms: ${_isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'}. Poll again to keep waiting.".toString()
+        result.budgetNote = "The poll stopped after ${result.elapsedMs ?: 0} ms instead of waiting ${asked} ms: ${why}. Poll again to keep waiting.".toString()
     }
     return result
 }
 
-def _pollUntilAttributeCore(args) {
+def _pollUntilAttributeCore(args, Long deadlineMs = null) {
     // 0. Reject unknown args early to surface caller mistakes (e.g., timeoutSeconds vs timeoutMs).
     def validArgKeys = ["deviceId", "deviceIds", "mode", "attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs", "comparator", "stableForMs"] as Set
     if (args instanceof Map) {
@@ -3238,6 +3246,12 @@ def _pollUntilAttributeCore(args) {
     }
     // Single-path label kept for the existing single-device return shape and the read-fault log.
     def deviceLabel = deviceLabels[0]
+    // A request deadline covers the identity reads above: the window is what is left of it.
+    boolean budgetCut = false
+    if (deadlineMs != null && deadlineMs - now() < timeoutMs) {
+        timeoutMs = Math.max(0L, deadlineMs - now()) as Integer
+        budgetCut = true
+    }
 
     // 6. Build the expected-value set for match checking (eq/ne comparators only). Exactly one
     //    of the two is present (enforced above), so this populates from whichever was supplied;
@@ -3254,7 +3268,7 @@ def _pollUntilAttributeCore(args) {
     if (multiDevice) {
         return _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator,
                                 matchSet, numericThreshold, betweenLow, betweenHigh,
-                                timeoutMs, pollIntervalMs, stableForMs)
+                                timeoutMs, pollIntervalMs, stableForMs, deadlineMs, budgetCut)
     }
 
     // 7. Poll loop.
@@ -3354,7 +3368,8 @@ def _pollUntilAttributeCore(args) {
             conditionTrueSince = null
         }
 
-        if (elapsedMs >= timeoutMs || polledCount >= maxPolls) {
+        boolean pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
+        if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) {
             def response = [
                 success     : false,
                 finalValue  : finalValue,
@@ -3374,6 +3389,7 @@ def _pollUntilAttributeCore(args) {
             // Attribute exists in supportedAttributes but never reported a value during
             // the entire poll window -- driver has not yet emitted a reading.
             if (!everNonNull) response.neverReported = true
+            if (budgetCut || pastDeadline) response.budgetStopped = true
             // Numeric comparator on an attribute that DID report but never parsed numeric:
             // the comparator can never match it (e.g. gt 5 on switch="on"). Distinct from
             // neverReported (a numeric comparator on a never-reported attribute is neverReported,
@@ -3447,11 +3463,11 @@ private _readPollValue(dev, deviceId, attribute) {
 // are pre-validated there.
 def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator,
                      matchSet, numericThreshold, betweenLow, betweenHigh,
-                     timeoutMs, pollIntervalMs, stableForMs) {
+                     timeoutMs, pollIntervalMs, stableForMs, Long deadlineMs = null, boolean budgetCut = false) {
     // Defense-in-depth for this private helper: the caller already validates these, so this is
     // a no-op for valid input -- it just guards against a 0/null reaching the maxPolls divide.
     // Defaults match the single-device path.
-    timeoutMs      = (timeoutMs && timeoutMs > 0) ? timeoutMs : 5000
+    timeoutMs      = (timeoutMs != null && (timeoutMs > 0 || deadlineMs != null)) ? timeoutMs : 5000
     pollIntervalMs = (pollIntervalMs && pollIntervalMs > 0) ? pollIntervalMs : 200
     stableForMs    = (stableForMs && stableForMs > 0) ? stableForMs : 0
     def n           = devices.size()
@@ -3536,7 +3552,8 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
             conditionTrueSince = null
         }
 
-        if (elapsedMs >= timeoutMs || polledCount >= maxPolls) {
+        boolean pastDeadline = deadlineMs != null && now() + (now() - tickStartMs) >= deadlineMs
+        if (elapsedMs >= timeoutMs || polledCount >= maxPolls || pastDeadline) {
             def numericComparator = (comparator != "eq" && comparator != "ne")
             def nonNumericCount = 0
             def anyTransitioning = false
@@ -3581,6 +3598,7 @@ def _pollMultiDevice(args, devices, deviceLabels, deviceIdList, mode, comparator
             if (nonNumericCount > 0) {
                 response.note = "comparator '${comparator}' can never match attribute '${args.attribute}' on ${nonNumericCount} device(s) that reported a non-numeric value the whole window (use eq/ne for a string attribute)"
             }
+            if (budgetCut || pastDeadline) response.budgetStopped = true
             return response
         }
 
@@ -3767,8 +3785,10 @@ def toolGetDeviceHistory(args) {
         def hubRows = []
         String hubEventsError = null
         try {
-            def parsedHub = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub/eventsJson")?.toString() ?: "[]")
-            if (parsedHub instanceof List) hubRows = parsedHub
+            String hubText = hubInternalGet("/hub/eventsJson")?.toString()
+            def parsedHub = hubText?.trim() ? new groovy.json.JsonSlurper().parseText(hubText) : null
+            if (parsedHub == null) hubEventsError = "the hub returned an empty response"
+            else if (parsedHub instanceof List) hubRows = parsedHub
             else hubEventsError = "the hub events list was not a JSON array"
         } catch (Exception e) {
             hubEventsError = (e.message ?: e.toString()).take(200)
@@ -3809,7 +3829,8 @@ def toolGetDeviceHistory(args) {
         hubCount = locResults.size() - hubCount
         if (hubCount > 0) locResults = locResults.sort { a, b -> (b._at ?: 0L) <=> (a._at ?: 0L) }
         locResults.each { it.remove("_at") }
-        if (locResults.size() > limit) locResults = locResults.take(limit)
+        int matchedCount = locResults.size()
+        if (matchedCount > limit) locResults = locResults.take(limit)
 
         mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history event${locResults.size() == 1 ? '' : 's'} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}) from /logs/eventsJson")
         def locResult = [
@@ -3823,6 +3844,10 @@ def toolGetDeviceHistory(args) {
         if (sinceMode == "relative") locResult.hoursBack = effectiveHoursBack
         else locResult.since = sinceEcho
         if (untilEcho) locResult.untilTimestamp = untilEcho
+        if (matchedCount > locResults.size()) {
+            locResult.truncated = true
+            locResult.matchedCount = matchedCount
+        }
         // Mirror the hub-log path: surface rows that escaped the always-active
         // time window because their date would not parse.
         if (timeFilterUnparseable > 0) locResult.timeFilterUnparseable = timeFilterUnparseable

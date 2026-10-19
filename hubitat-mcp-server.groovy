@@ -5686,8 +5686,8 @@ def getGatewayConfig() {
             description: "Manage Hubitat dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards: list, view, create, update, delete, and clone. Easy update REPLACES the config wholesale (read it first with hub_get_dashboard); legacy update edits name, authorized devices, or the tile layout (grid, background, colors) either wholesale or via granular tile ops. Delete is destructive (confirm + recent backup). Reads are also in hub_read_dashboards.",
             tools: ["hub_list_dashboards", "hub_get_dashboard", "hub_create_dashboard", "hub_update_dashboard", "hub_delete_dashboard", "hub_clone_dashboard"],
             summaries: [
-                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). Args: pinToken? (optional; resolved automatically)",
-                hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: dashboardId, pinToken?",
+                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). No args",
+                hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: dashboardId",
                 hub_create_dashboard: "Create an Easy Dashboard, or an empty legacy one (type='legacy'). Args: name, type?, deviceIds, options?",
                 hub_update_dashboard: "Update by id: Easy wholesale, or legacy name/deviceIds/layout (or tile ops). Args: dashboardId, name?, deviceIds?, options?/layout?/addTiles?/updateTiles?/removeTileIds?/setOptions?",
                 hub_delete_dashboard: "Permanently delete an Easy or legacy dashboard (DESTRUCTIVE). Args: dashboardId, confirm=true",
@@ -5706,8 +5706,8 @@ def getGatewayConfig() {
             description: "Read-only dashboard inspection: list dashboards (Easy and legacy Hubitat®) and view one dashboard's full config -- Easy tiles/navigation/theme/devices, or a legacy dashboard's authorized devices and tile layout (grid, colors). All operations are read-only; create/update/delete/clone live in hub_manage_dashboards.",
             tools: ["hub_list_dashboards", "hub_get_dashboard"],
             summaries: [
-                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). Args: pinToken? (optional; resolved automatically)",
-                hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: dashboardId, pinToken?"
+                hub_list_dashboards: "List Easy + legacy Hubitat® Dashboards (id, name, type). No args",
+                hub_get_dashboard: "Get one dashboard's full config by id: Easy tiles/theme or legacy layout. Args: dashboardId"
             ],
             searchHints: [
                 hub_list_dashboards: "list show easy legacy hubitat dashboards dashboard tiles panels touch UI screen wall tablet read",
@@ -7934,6 +7934,12 @@ private Map _meshJson() {
     }
 }
 
+// A GET sent in an existing hub session (the name=value cookie a hubInternalGetRaw answer carried
+// as setCookie): some page tokens are only honoured in the session that issued them.
+def hubInternalGetInSession(String path, Map query, String sessionCookie, int timeout = 30) {
+    _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', cookie: sessionCookie])
+}
+
 /**
  * Authenticated GET that captures status + Location header + body without
  * following redirects. Needed for /installedapp/createchild/<ns>/<app>/parent/<pid>
@@ -7948,12 +7954,6 @@ private Map _meshJson() {
  * groovyx.net.http.HttpResponseException by name — that class isn't on the
  * Spock test classpath, and naming it would NCDFE at parse time.
  */
-// A GET sent in an existing hub session (the name=value cookie a hubInternalGetRaw answer carried
-// as setCookie): some page tokens are only honoured in the session that issued them.
-def hubInternalGetInSession(String path, Map query, String sessionCookie, int timeout = 30) {
-    _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', cookie: sessionCookie])
-}
-
 def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     // followRedirects:false + handle3xx so the 302 Location header (new-child id) is readable.
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'struct',
@@ -8344,29 +8344,40 @@ def _probeUrl(String url, long maxBytes) {
 }
 
 // Bytes as MB with one decimal, rounded up, so a size just over a limit never prints as the limit.
+// A hub status reading as a number (the /hub/advanced endpoints answer plain text), else the text.
+def _hubNumber(raw) {
+    String s = raw?.toString()?.trim()
+    if (s == null || s.isEmpty()) return s
+    if (s.isLong()) return s.toLong()
+    if (s.isBigDecimal()) return s.toBigDecimal()
+    return s
+}
+
 String _mbText(long bytes) {
     long tenths = (bytes * 10L + 1048575L).intdiv(1048576L)
     return tenths % 10L == 0L ? "${tenths.intdiv(10L)} MB".toString() : "${tenths.intdiv(10L)}.${tenths % 10L} MB".toString()
 }
 
-// The File Manager file name a backup URL names on this hub (loopback, localhost or the hub's own
-// address, path /local/<name>, percent-decoded), else null. [self: true] alone when the URL is this
-// hub but not a single File Manager file.
+// Null when the URL is not a plain http(s) URL with a host name or IPv4 address; [self: false, ...]
+// for another host. For this hub (loopback, localhost or its own address), fileName is the
+// percent-decoded <name> of a /local/<name> path on its web ports (default, 80, 443, 8080), else
+// null, with badEncoding when that name is not valid percent-encoding.
 Map _backupUrlTarget(String url) {
-    def m = url =~ /(?i)^https?:\/\/([a-z0-9.-]+)(?::\d{1,5})?(\/[^?#]*)?(?:[?#].*)?$/
+    def m = url =~ /(?i)^https?:\/\/([a-z0-9.-]+)(?::(\d{1,5}))?(\/[^?#]*)?(?:[?#].*)?$/
     if (url.contains("\\") || !m.matches()) return null
     String host = m.group(1).toLowerCase().replaceAll(/\.$/, "")
     boolean numeric = host.tokenize(".").every { it ==~ /0x[0-9a-f]*|\d+/ }
     boolean self = host == "localhost" || host.endsWith(".localhost") ||
         (numeric && (host.startsWith("127.") || host.startsWith("0."))) || host == location?.hub?.localIP?.toString()
     if (!self) return [self: false, host: host, numeric: numeric]
-    String path = m.group(2) ?: ""
+    String path = m.group(3) ?: ""
     String name = null
-    if (path.startsWith("/local/") && !path.substring(7).contains("/")) {
-        try { name = java.net.URLDecoder.decode(path.substring(7).replace("+", "%2B"), "UTF-8") } catch (Exception ignored) { name = null }
+    boolean badEncoding = false
+    if (path.startsWith("/local/") && !path.substring(7).contains("/") && (m.group(2) == null || m.group(2) in ["80", "443", "8080"])) {
+        try { name = java.net.URLDecoder.decode(path.substring(7).replace("+", "%2B"), "UTF-8") } catch (Exception ignored) { badEncoding = true }
     }
     if (name == null || name.isEmpty() || name ==~ /\.+/ || name.contains("/") || name.contains("\\")) name = null
-    return [self: true, host: host, numeric: numeric, fileName: name]
+    return [self: true, host: host, numeric: numeric, fileName: name, badEncoding: badEncoding]
 }
 
 // A backup URL may not aim the app at the hub's own admin endpoints, which its loopback requests
@@ -8382,8 +8393,11 @@ void _requireBackupUrl(String url, String param) {
     if (target.numeric && !(host ==~ /(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}/)) {
         throw new IllegalArgumentException("${param} must spell an IPv4 address as four decimal parts, got: ${host}")
     }
+    if (target.self && target.badEncoding) {
+        throw new IllegalArgumentException("${param} names a File Manager file whose name is not valid percent-encoding (a % must start a two-digit hex escape), got: ${url}")
+    }
     if (target.self && target.fileName == null) {
-        throw new IllegalArgumentException("${param} points at this hub (${host}); only its File Manager files (/local/<file name>) can be fetched from it.")
+        throw new IllegalArgumentException("${param} points at this hub (${host}); only its File Manager files (/local/<file name>, on the hub's own web port) can be fetched from it.")
     }
 }
 
@@ -9557,8 +9571,8 @@ private Integer normalizeRuleId(def ruleId) {
  * Verified live on firmware 2.4.4.135 / 2.5.0.123:
  *   - rule_machine: namespace=hubitat appName=Rule-5.1 parentType="Rule Machine"
  *
- * Sources for additional entries (per #120 scope expansion notes —
- * confirm namespace+appName via hub_list_apps (scope='instances') before enabling):
+ * Also registered (each namespace+appName confirmed via hub_list_apps (scope='instances')
+ * before it was added; #120 scope expansion):
  *   - button_controller (parent),  Button Controller-5.1, parentType="Button Controllers"
  *   - button_rule (under controller), Button Rule-5.1, parentType=<a specific Button Controller>
  *   - basic_rule, parentType="Basic Rules"
@@ -12132,7 +12146,7 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 - Without a native export (or with the default `preserveRuleId: true`), a native rule snapshot replays its settings in place when the rule still exists. If the rule was deleted, the restore creates a NEW rule and replays the settings onto it. The result then carries the new `ruleId`, the `originalRuleId` and `recreated: true`, so update anything that referenced the old id. A Required Expression lives in Rule Machine's app state, which a settings replay cannot write, so the restore then makes the rule's expression match the snapshot: it rebuilds the snapshot's expression (each condition re-walked from its saved settings), or removes the live one when the snapshot had none, and confirms the rendered result before the old expression's tokens are removed. `requiredExpressionRestored: true` means it matches. A snapshot expression naming a device deleted since the backup is not rebuilt: the live expression stays (`preRestoreExpressionKept: true`) and the error names the device. Conditions are compared by their rendered text, so a device renamed since the backup reads as a mismatch: the rebuild is backed out with `requiredExpressionRestored: false`, and the expression is set with `hub_set_rule`. A failed rebuild puts back what was committed before it: `preRestoreExpressionKept` (true or false) when the rule had an expression; otherwise `requiredExpressionPartial` when part of the snapshot's expression got committed (the error says whether it is only the first condition). Conditions it could not remove are listed in `leftoverConditionIds`. `requiredExpressionRestored: false` turns the result into `success: false` + `partial: true` with the reason in `error`, and the rule's expression must be rebuilt with `hub_set_rule`. Triggers and actions also live in app state: a trigger, action or condition the live rule has beyond the snapshot is removed (`removedTriggers` / `removedActions` / `removedConditionIds`), while one the snapshot has and the rule lacks cannot be rebuilt by a replay. It is named in `missingTriggers` / `missingActions` with `structureRestored: false`, `success: false` and `partial: true`; add it back with `hub_set_rule`. Actions the backup also has are moved back into its order; an order the moves cannot restore is reported in `actionOrder` with `structureRestored: false`, and a failed closing Update Rule in `updateRuleFailed`. A device deleted since the backup is left out of the replay (listed in `settingsSkipped`, `partial: true`), because Rule Machine stops rendering a rule whose picker names a missing device. A settings replay writes back the settings the backup holds. For a Rule Machine rule, settings added after the backup go with the trigger, action or condition the restore removes. For any other app type (Basic Rules among them), every non-button setting the app gained after the backup is emptied and listed in `settingsCleared` (the hub keeps no way to delete one), and the app is finished with its own commit -- its Done where it has no Update button, since an Update click breaks a Basic Rule's page (a Done that does not commit returns `success: false`). The App Cloner restore has no such leftovers, since it builds a new app from the backup alone.
 
 - `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub. A full local backup (`fullBackup:true`) never goes to the database restore: it runs the full-restore flow the web UI uses (the archive is read off the hub, uploaded to the full-restore endpoint, then restored).
-- `scope=hub_uploaded` -- fetch a backup from `backupUrl` and restore it (open-world). The fetched file decides the route: a `.tar.gz` full backup runs the full-restore flow, a `.lzf` database backup the database restore, and anything else is refused. `fullRestore` needs a full backup and is refused with a `.lzf` URL. The URL's size is read first with a one-byte range request (or the declared length of a host that ignores it): a backup over 16 MB (8 MB for a `.lzf` URL), or one whose size the host does not report, is refused before it is fetched. The URL may not point at this hub (loopback or its own address) except a File Manager file under `/local/<file name>` (a percent-encoded name works), which is read through the File Manager with its listed size; it must use a host name or a dotted-quad IPv4 address. A size check that fails names its reason (an HTTP status, a DNS failure). A full local backup whose size the hub's list does not give is refused rather than downloaded.
+- `scope=hub_uploaded` -- fetch a backup from `backupUrl` and restore it (open-world). The fetched file decides the route: a `.tar.gz` full backup runs the full-restore flow, a `.lzf` database backup the database restore, and anything else is refused. `fullRestore` needs a full backup and is refused with a `.lzf` URL. The URL's size is read first with a one-byte range request (or the declared length of a host that ignores it): a backup over 16 MB (8 MB for a `.lzf` URL), or one whose size the host does not report, is refused before it is fetched. The URL may not point at this hub (loopback or its own address) except a File Manager file under `/local/<file name>` on the hub's web port (a percent-encoded name works), which is read through the File Manager with its listed size; it must use a host name or a dotted-quad IPv4 address. A size check that fails names its reason (an HTTP status, a DNS failure). A full local backup whose size the hub's list does not give is refused rather than downloaded.
 - `fullRestore={restoreZigbee, restoreZwave, restoreFiles, deleteExistingFiles, allowZwaveFirmwareMismatch}` (booleans, all default false) picks what a full restore brings back besides the database, for a full `hub_local` backup or a `hub_uploaded` archive; `scope=hub_cloud` restores the database only and refuses it. `deleteExistingFiles` needs `restoreFiles`. A restore request the hub never answers returns `outcome: "unknown"`: the hub may be rebooting into the restore, so check it before retrying. A Z-Wave firmware or Z-Wave stack mismatch between hub and backup is refused with the reason; `allowZwaveFirmwareMismatch=true` restores over a hub whose Z-Wave firmware is newer. Full archives over 16 MB are refused in-app before they are downloaded (the web UI takes up to 150 MB).''',
 
         file_manager: '''## File Manager
@@ -12248,8 +12262,8 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - **Cursor pagination (staleDevices):** page size 100. Omit the cursor to get all stale devices in one response (subject to the response-size guard). unknownDevices and healthyDevices are always returned in full alongside the page.
 
 ### hub_get_metrics (hub metrics + the hub's own health alerts)
-- `current` snapshot fields: timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeMB (the hub reports its database size in MB), uptimeSeconds, uptimeFormatted; the readings are numbers. `current` also carries locally-derived warning notes when thresholds are crossed: memoryWarning (<50 MB free), temperatureWarning (>70 °C), databaseWarning (>500 MB) — with softer memoryNote/temperatureNote variants below those thresholds.
-- `trends`: recent history points {timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeMB, uptimeSeconds}. `trendPoints` chooses how many (default 10, max 50). `trendPointsAvailable` = total rows on file; `historyFile` = the CSV name in File Manager (mcp-performance-history.csv); `trendNote` says when there are no points or the newest is over a day old.
+- `current` snapshot fields: timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeMB (the hub reports its database size in MB), uptimeSeconds, uptimeFormatted; the readings are numbers (a reading the hub did not answer with a number stays as its text). `current` also carries locally-derived warning notes when thresholds are crossed: memoryWarning (<50 MB free), temperatureWarning (>70 °C), databaseWarning (>500 MB) — with softer memoryNote/temperatureNote variants below those thresholds.
+- `trends`: recent history points {timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeMB, uptimeSeconds}. `trendPoints` chooses how many (default 10, max 50). `trendPointsAvailable` = total rows on file; `historyFile` = the CSV name in File Manager (mcp-performance-history.csv); `trendNote` says when there are no points or the newest is over a day old, and `trendRowsSkipped` counts history rows that could not be read.
 - Trend history is sparse/stale: the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls and reset if that CSV is cleared. Call recordSnapshot=true periodically to build a trend — it appends one row to the performance-history CSV (rolling 500-row window) and is the tool's ONLY write side-effect (default false = read-only).
 - `healthAlerts`: the hub's own active health alerts (the hub's alert feed on firmware 2.5.2.129 and later, /hub2/hubData before that) — {safeMode, active (currently-firing alerts: the alert item keys on 2.5.2.129 and later, flags such as hubLowMemory / zwaveOffline / localBackupFailed / weakZigbee before that), items (2.5.2.129+: key, message, version, dismissible), details (the hub's full alert data + message strings, with spammyDeviceDetails when present)}. Covers radio offline, backup failures, low memory, DB bloat, weak mesh, and safeMode. Complements the locally-derived warnings on `current` (and may differ in threshold from them). null if /hub2/hubData was unreadable.
 
@@ -13034,7 +13048,7 @@ Per-tool details below.
 
 ### hub_list_dashboards
 
-Read-only; each entry carries id, name, and `type` ('easy' or 'legacy'). Easy entries also include tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed.
+Read-only; each entry carries id, name, and `type` ('easy' or 'legacy'). Easy entries also include tile/theme config.
 
 ### hub_get_dashboard
 
@@ -13154,7 +13168,7 @@ If eight owner slices leave work unfinished, the terminal `continuation_limit` r
 
 ### The `mrtr` block
 
-A result that ran through request-to-request continuation carries `mrtr: {continued, rounds, startedAt}`: `continued` is always true there, `rounds` is how many owner work slices ran (1 when the background worker finished it in one), and `startedAt` is when the first slice started (epoch ms). A replayed or joined result also carries `rejoined: true`. A result without `mrtr` ran inside its first request.
+A result that ran through request-to-request continuation carries `mrtr: {continued, rounds, startedAt}`: `continued` is always true there, `rounds` is how many owner work slices ran (1 when the background worker finished it in one), and `startedAt` is when the first slice started (epoch ms). A replayed or joined result also carries `rejoined: true`. A successful result without `mrtr` ran inside its first request. An error result can lack `mrtr` even after earlier slices ran (a later slice that could not be scheduled ends the write there), so read the target before retrying it.
 
 ### Client retry limits and resume
 
@@ -13287,8 +13301,9 @@ def guideSectionBlocks(text) {
 // ~95 KB against the 120,000-byte guard. Every section fits one page today; the full guide (~188 KB)
 // does not, and never did.
 def guidePageChars() { 90000 }
-// The no-section full guide pages smaller: a 90,000-character first page is over some clients' tool-result limit.
-def fullGuidePageChars() { 30000 }
+// Default size of a chunked source, file or full-guide read, kept well under common client tool-result limits.
+def defaultReadChunkChars() { 30000 }
+def fullGuidePageChars() { defaultReadChunkChars() }
 
 // Page a guide payload so NO hub_get_tool_guide call can dead-end on the response-size guard: the
 // documented no-section call used to exceed the cap outright, and a size-guard envelope hands the

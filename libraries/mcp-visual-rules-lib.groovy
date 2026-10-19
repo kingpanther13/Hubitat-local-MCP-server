@@ -152,7 +152,7 @@ private List _vrbListRules() {
     // returns the authoritative rulePaused.
     //
     // paused/disabled are OMITTED (not asserted false) when the node data can't support them:
-    // a null stripped name means paused is undeterminable, and an absent data.disabled key
+    // a null name means paused is undeterminable, and an absent data.disabled key
     // means disabled is undeterminable. Present keys behave exactly as before.
     return (parent.children ?: []).findAll { it?.data?.id != null }.collect {
         def rawName = it.data.name?.toString()

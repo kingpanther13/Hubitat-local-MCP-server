@@ -2087,7 +2087,10 @@ class Issue490Firmware252Spec extends ToolSpecBase {
                 'http://127.1:8080/hub/x', 'http://0x7f.0.0.1/hub/x', 'http://2130706433/hub/x', 'http://[::ffff:127.0.0.1]/hub/x',
                 'http://evil.com@127.0.0.1/hub/x', 'http://127.0.0.1\\@evil.com/hub/x', 'http://0.0.0.0:8080/hub/x', 'http://localhost./hub/x',
                 'http://api.localhost/hub/x', 'http://192.168.1.50./hub/x',
-                'http://127.0.0.1:8080/local/../hub/zwave2/enable', 'http://127.0.0.1/local/%2e%2e/hub/x', 'http://127.0.0.1/local/..']
+                'http://127.0.0.1:8080/local/../hub/zwave2/enable', 'http://127.0.0.1/local/%2e%2e/hub/x', 'http://127.0.0.1/local/..',
+                'http://127.0.0.1:9090/local/x.lzf', 'http://192.168.1.50:39501/local/x.lzf', 'http://127.0.0.1/local/a%2Fb',
+                'http://127.0.0.1/local/a%5Cb', 'http://127.0.0.1/local/%2e%2e', 'http://127.0.0.1/local/', 'http://127.0.0.1/local/sub/x',
+                'http://127.0.0.1/local/%zz.lzf']
     }
 
     def "a backup URL to the hub's File Manager or another host is allowed: #url"() {
@@ -2104,7 +2107,49 @@ class Issue490Firmware252Spec extends ToolSpecBase {
 
         where:
         url << ['http://192.168.1.50/local/db.lzf', 'http://127.0.0.1:8080/local/full.tar.gz', 'https://backups.example.com/b.lzf', 'http://192.168.1.60/hub/x',
-                'http://0.backups.example.com/b.lzf', 'https://127.example.com/b.lzf', 'http://127.0.0.1/local/my%20backup.lzf']
+                'http://0.backups.example.com/b.lzf', 'https://127.example.com/b.lzf', 'http://127.0.0.1/local/my%20backup.lzf',
+                'http://127.0.0.1:80/local/x.lzf', 'https://127.0.0.1:443/local/x.lzf']
+    }
+
+    def "the File Manager name a backup URL on this hub names: #url"() {
+        expect:
+        script._backupUrlTarget(url)?.fileName == name
+
+        where:
+        url                                        || name
+        'http://127.0.0.1/local/a+b.lzf'           || 'a+b.lzf'
+        'http://127.0.0.1/local/my%20backup.lzf'   || 'my backup.lzf'
+        'http://127.0.0.1:8080/local/x.lzf'        || 'x.lzf'
+        'http://127.0.0.1:9090/local/x.lzf'        || null
+        'http://127.0.0.1/local/a%2Fb'             || null
+        'http://127.0.0.1/local/%zz'               || null
+    }
+
+    def "a File Manager name that is not valid percent-encoding is refused as such"() {
+        when:
+        script._requireBackupUrl('http://127.0.0.1/local/BAT%zz.lzf', 'backupUrl')
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('not valid percent-encoding')
+    }
+
+    def "a File Manager backup read refuses what it cannot vouch for: #label"() {
+        given:
+        script.metaClass._fileManagerRootFiles = { -> if (listingThrows) throw new IOException('down'); listing }
+        script.metaClass.downloadHubFile = { String name -> if (downloadThrows) throw new IOException('gone'); body }
+
+        expect:
+        (script._fetchCappedLocalFile('b.lzf', 8L * 1048576L).error as String).contains(says)
+
+        where:
+        label                   | listingThrows | listing                                        | downloadThrows | body                || says
+        'listing unreadable'    | true          | null                                           | false          | null                || 'could not read the File Manager listing'
+        'no size listed'        | false         | [[name: 'b.lzf', size: null]]                  | false          | null                || 'gives no size'
+        'over the limit'        | false         | [[name: 'b.lzf', size: 8912896L]]              | false          | null                || '8.5 MB (8912896 bytes)'
+        'download fails'        | false         | [[name: 'b.lzf', size: 4L]]                    | true           | null                || "could not read 'b.lzf'"
+        'empty file'            | false         | [[name: 'b.lzf', size: 4L]]                    | false          | new byte[0]         || 'is empty'
+        'short read'            | false         | [[name: 'b.lzf', size: 4L]]                    | false          | ([1, 2] as byte[])  || 'incomplete file'
     }
 
     def "local_backup_import needs confirm before anything is fetched"() {

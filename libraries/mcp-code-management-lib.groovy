@@ -67,7 +67,10 @@ def toolListHubApps(args) {
         result.note = "Hub internal API unavailable (${e.message}). Showing only MCP Rule Server apps. This may require Hub Security credentials or a firmware update."
     }
 
-    if (args?.nameFilter && result.apps instanceof List) result.apps = _nameFiltered(result.apps, args.nameFilter)
+    if (args?.nameFilter && result.apps instanceof List) {
+        result.apps = _nameFiltered(result.apps, args.nameFilter)
+        result.count = result.apps.size()
+    }
     if (cursor != null && result.apps instanceof List) {
         def paged = _paginateList(result.apps, cursor, 50, "hub_list_apps")
         result.total = result.apps.size()
@@ -148,8 +151,8 @@ def _projectAppType(Map t, boolean builtIn, Map enrich) {
     return out
 }
 
-// Rows whose name contains the filter, ignoring case and the hub's HTML (a list's own names).
 private List _nameFiltered(List rows, filter) {
+    // Rows whose name contains the filter, ignoring case and the hub's HTML (a list's own names).
     String f = filter?.toString()?.trim()?.toLowerCase()
     if (!f) return rows
     return rows.findAll { it instanceof Map && (stripAppConfigHtml(it.name) ?: "").toLowerCase().contains(f) }
@@ -311,10 +314,9 @@ def toolGetItemSource(String type, String idParam, args) {
     def itemId = args[idParam]
     if (!itemId) throw new IllegalArgumentException("${idParam} is required")
 
-    // The default chunk stays inside a client's tool-result limit (Claude Code refuses ~25k tokens).
     def maxChunkSize = 64000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : 30000
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : defaultReadChunkChars()
 
     def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
 
@@ -2447,10 +2449,9 @@ def toolGetLibrarySource(args) {
     if (!libraryId) throw new IllegalArgumentException("libraryId is required")
     if (!libraryId.toString().isInteger() || libraryId.toString().toInteger() <= 0) throw new IllegalArgumentException("libraryId must be a positive integer (got: '${libraryId}')")
 
-    // The default chunk stays inside a client's tool-result limit (Claude Code refuses ~25k tokens).
     def maxChunkSize = 64000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : 30000
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : defaultReadChunkChars()
 
     try {
         def responseText = hubInternalGet("/library/list/single/data/${libraryId}")

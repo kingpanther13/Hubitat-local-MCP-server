@@ -234,10 +234,9 @@ def toolListFiles(args = null) {
 def toolReadFile(args) {
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
 
-    // The default chunk stays inside a client's tool-result limit (Claude Code refuses ~25k tokens).
     def maxChunkSize = 60000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : 30000
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : defaultReadChunkChars()
 
     mcpLog("debug", "file-manager", "Reading file: ${args.fileName} (offset: ${requestedOffset}, length: ${requestedLength})")
     def content

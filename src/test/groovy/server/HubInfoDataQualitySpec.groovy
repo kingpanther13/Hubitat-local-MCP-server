@@ -59,6 +59,49 @@ class HubInfoDataQualitySpec extends ToolSpecBase {
         script.toolGetHubInfo([:]).mcpDeviceCount == 3
     }
 
+    def "with the allowlist bypassed every device in the hub's tree counts, and the bypass is flagged"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        settingsMap.selectedDevices = [new TestDevice(id: 1)]
+        hubGet.register('/hub2/devicesList') { p ->
+            groovy.json.JsonOutput.toJson([devices: [[data: [id: 1], children: [[data: [id: 2]]]], [data: [id: 3]]]])
+        }
+
+        when:
+        def info = script.toolGetHubInfo([:])
+
+        then:
+        info.deviceAllowlistBypassed == true
+        info.mcpDeviceCount == 3
+        !info.containsKey('mcpDeviceCountNote')
+    }
+
+    def "an unreadable device tree under the bypass keeps the selected count and says why"() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        settingsMap.selectedDevices = [new TestDevice(id: 1)]
+        hubGet.register('/hub2/devicesList') { p -> throw new IOException('tree down') }
+
+        when:
+        def info = script.toolGetHubInfo([:])
+
+        then:
+        info.mcpDeviceCount == 1
+        info.mcpDeviceCountNote.contains('tree down')
+    }
+
+    def "without the bypass no device tree is read and the bypass is not flagged"() {
+        given:
+        settingsMap.selectedDevices = [new TestDevice(id: 1)]
+
+        when:
+        def info = script.toolGetHubInfo([:])
+
+        then:
+        !info.containsKey('deviceAllowlistBypassed')
+        !hubGet.calls.any { it.path == '/hub2/devicesList' }
+    }
+
     def "hubSecurityConfigured is listed only while the firmware still uses the credentials: retired=#retired"() {
         given:
         stateMap.hubSecurityRetired = retired

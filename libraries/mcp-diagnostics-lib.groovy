@@ -1500,10 +1500,12 @@ def toolGetHubPerformance(args) {
 
     // Parse recent trend points for response
     def trends = []
+    int skippedRows = 0
     def startIdx = Math.max(0, history.size() - trendPoints)
     for (int i = startIdx; i < history.size(); i++) {
         def parts = history[i].split(",", -1)
-        if (parts.size() >= 5) {
+        if (parts.size() < 5) skippedRows++
+        else {
             try {
                 trends << [
                     timestamp: formatTimestamp(parts[0] as Long),
@@ -1514,7 +1516,7 @@ def toolGetHubPerformance(args) {
                     uptimeSeconds: _hubNumber(parts[4])
                 ]
             } catch (Exception e) {
-                // Skip malformed rows
+                skippedRows++
             }
         }
     }
@@ -1524,7 +1526,8 @@ def toolGetHubPerformance(args) {
     // or more than a day old, so an empty or months-old trend is not read as the hub's history.
     String trendNote = null
     Long newest = trends ? trends[-1].timestampEpoch as Long : null
-    if (newest == null) trendNote = "No trend points: they are recorded only by calls with recordSnapshot=true. For the hub's own memory history use hub_get_memory_history."
+    if (newest == null && skippedRows > 0) trendNote = "No readable trend points: ${skippedRows} row(s) of ${csvFileName} could not be read. For the hub's own memory history use hub_get_memory_history.".toString()
+    else if (newest == null) trendNote = "No trend points: they are recorded only by calls with recordSnapshot=true. For the hub's own memory history use hub_get_memory_history."
     else if (now() - newest > 86400000L) trendNote = "The newest trend point is from ${formatTimestamp(newest)}: points are recorded only by calls with recordSnapshot=true. For the hub's own memory history use hub_get_memory_history.".toString()
     return [
         current: current,
@@ -1536,6 +1539,7 @@ def toolGetHubPerformance(args) {
         trends: trends,
         trendPointsAvailable: history.size(),
         trendNote: trendNote,
+        trendRowsSkipped: skippedRows ?: null,
         historyFile: csvFileName
     ]
 }

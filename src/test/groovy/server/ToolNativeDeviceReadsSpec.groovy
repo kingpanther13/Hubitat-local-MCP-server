@@ -134,6 +134,40 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         result.readError == true
     }
 
+    @Unroll
+    def 'a request deadline already reached stops the #label poll after one read and says so'() {
+        given:
+        settingsMap.bypassDeviceAllowlist = true
+        fixture('selected')
+        hubGet.register('/device/fullJson/11') { JsonOutput.toJson(nativeModel) }
+
+        when:
+        def result = script._pollUntilAttributeCore([attribute: 'switch', expectedValue: 'off', timeoutMs: 20000] + target, script.now() - 1L)
+
+        then:
+        result.success == false
+        result.timedOut == true
+        result.budgetStopped == true
+        result.polledCount == 1
+
+        where:
+        label    | target
+        'single' | [deviceId: '10']
+        'multi'  | [deviceIds: ['10', '11']]
+    }
+
+    def 'with no request deadline the engine keeps its own timeout and reports no budget stop'() {
+        given:
+        fixture('selected')
+
+        when:
+        def result = script._pollUntilAttributeCore([deviceId: '10', attribute: 'switch', expectedValue: 'off', timeoutMs: 100, pollIntervalMs: 100])
+
+        then:
+        result.timedOut == true
+        !result.containsKey('budgetStopped')
+    }
+
     def 'native numeric values retain their numeric JSON type in summaries attributes and polling'() {
         given:
         fixture('selected')

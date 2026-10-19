@@ -339,6 +339,67 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.hubEventsError.contains('hub events unavailable')
     }
 
+    @spock.lang.Unroll
+    def "hub_list_device_events location mode reports a hub events read that is #label"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params ->
+            '[{"name":"mode","value":"Night","descriptionText":"m1","isStateChange":true,"type":"API","date":"2026-06-02T20:19:00.000-0400"}]'
+        }
+        hubGet.register('/hub/eventsJson') { params -> body }
+
+        when:
+        def result = script.toolGetDeviceHistory([hoursBack: 168])
+
+        then:
+        result.count == 1
+        result.hubEventsError.contains(says)
+
+        where:
+        label            | body          || says
+        'empty'          | ''            || 'empty response'
+        'not an array'   | '{"a":1}'     || 'not a JSON array'
+    }
+
+    def "hub_list_device_events limit keeps the newest rows across both kinds and says it cut"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params ->
+            '''[
+              {"name":"mode","value":"Night","descriptionText":"m1","isStateChange":true,"type":"API","date":"2026-06-02T20:19:00.000-0400"},
+              {"name":"mode","value":"Day","descriptionText":"m2","isStateChange":true,"type":"API","date":"2026-06-02T20:10:00.000-0400"}
+            ]'''
+        }
+        hubGet.register('/hub/eventsJson') { params ->
+            '[{"name":"lowMemory","value":"","descriptionText":"low","date":"2026-06-02T20:15:00.000-0400"}]'
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([hoursBack: 168, limit: 2])
+
+        then:
+        result.events*.description == ['m1', 'low']
+        result.truncated == true
+        result.matchedCount == 3
+    }
+
+    def "hub_list_device_events since drops hub events at or before the bookmark"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params -> '[]' }
+        hubGet.register('/hub/eventsJson') { params ->
+            '''[
+              {"name":"systemStart","value":"","descriptionText":"after","date":"2026-06-02T20:16:00.000-0400"},
+              {"name":"lowMemory","value":"","descriptionText":"at","date":"2026-06-02T20:15:00.000-0400"}
+            ]'''
+        }
+
+        when:
+        def result = script.toolGetDeviceHistory([since: '2026-06-02T20:15:00.000-0400'])
+
+        then:
+        result.events*.description == ['after']
+        result.events[0].kind == 'hub'
+        !result.containsKey('truncated')
+    }
+
     def "hub_list_device_events applies attribute filter to location events"() {
         given:
         hubGet.register('/logs/eventsJson') { params ->

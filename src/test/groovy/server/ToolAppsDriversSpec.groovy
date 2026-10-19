@@ -455,6 +455,22 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path == '/device/drivers' }
     }
 
+    def "hub_list_apps types nameFilter narrows the list and its count, ignoring case and markup"() {
+        given:
+        enableRead()
+        hubGet.register('/hub2/userAppTypes') { params ->
+            '[{"id": 1, "name": "App One", "namespace": "acme", "usedBy": []}, {"id": 2, "name": "<b>APP</b> Two", "namespace": "acme", "usedBy": []}]'
+        }
+        hubGet.register('/hub2/appsList') { params -> APPS_LIST_ENRICH }
+
+        when:
+        def result = script.toolListHubApps([nameFilter: 'app two'])
+
+        then:
+        result.apps*.id == [2]
+        result.count == 1
+    }
+
     def "hub_list_drivers nameFilter keeps only drivers whose name contains the text"() {
         given:
         enableRead()

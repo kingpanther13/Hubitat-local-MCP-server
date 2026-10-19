@@ -1824,7 +1824,8 @@ class TestRunner:
         # hub_create_device returns success:true WITH warnings when both label-setting paths fail on
         # some firmwares. An unlabelled device is invisible to the exact-label lookup above, so the
         # next run creates another one, forever. Fail here instead.
-        assert created.get("label") == label and not created.get("warnings"),             (f"permanent fixture created as device {dev_id} but its label did not land as '{label}' "
+        assert created.get("label") == label and not created.get("warnings"), \
+            (f"permanent fixture created as device {dev_id} but its label did not land as '{label}' "
              f"(got {created.get('label')!r}, warnings={created.get('warnings')!r}) -- a later run "
              f"would not find it and would create a duplicate")
         print(f"    [PERM FIXTURE] created '{label}' (id {dev_id}, driver-type {type_id}) -- "
@@ -4466,31 +4467,30 @@ class TestRunner:
         assert created.get("success") is True, f"create from driver failed: {created}"
         new_id = str(created.get("deviceId") or "")
         assert new_id, f"create from driver returned no deviceId: {created}"
-        # A created device joins the MCP device selection.
-        count_after = self.client.call_tool("hub_get_info", {}).get("mcpDeviceCount")
-        assert count_after == count_before + 1, (
-            f"mcpDeviceCount {count_before} -> {count_after}: the created device did not join the selection "
-            f"(warnings={created.get('warnings')!r})")
-
-        # The label leg is /device/updateLabel -- and this is its only UNCONDITIONAL live proof.
-        # (The bypass-block leg that also exercises it is gated on the arbitrarily-picked device
-        # having a label, so it can skip entirely; see the [COVERAGE GAP] print there.) The envelope
-        # reports `label` as the APPLIED label, falling back to the driver's own default when the
-        # dedicated setter AND the wholesale /device/update fallback both missed -- so a requested
-        # label reading back means the leg worked, and a label warning is the tool's own admission
-        # that it did not.
-        assert created.get("label") == f"{PREFIX}FromDriver",             ("hub_create_device did not apply the requested label -- /device/updateLabel and the "
-             f"wholesale /device/update fallback both missed: label={created.get('label')!r} "
-             f"warnings={created.get('warnings')!r}")
-        assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()], \
-            f"hub_create_device warned about the label: {created.get('warnings')!r}"
         try:
-            # A freshly created REAL device is NOT MCP-selected, so the scoped hub_get_device
-            # (selected/child devices only) can't resolve it. Confirm it exists via the
-            # scope='all' list (every hub device, from the hub-wide inventory -- see test_list_devices_scope_all).
-            all_devs = self.client.call_tool("hub_list_devices", {"scope": "all"})
-            ids = {str(d.get("id")) for d in all_devs.get("devices", [])} if isinstance(all_devs, dict) else set()
-            assert new_id in ids, f"created device {new_id} not present in scope='all' listing"
+            # A created device joins the MCP device selection: the count grows and the scoped
+            # device read (selected/child devices only) resolves it.
+            count_after = self.client.call_tool("hub_get_info", {}).get("mcpDeviceCount")
+            assert count_after == count_before + 1, (
+                f"mcpDeviceCount {count_before} -> {count_after}: the created device did not join the selection "
+                f"(warnings={created.get('warnings')!r})")
+            got = self.client.call_tool("hub_read_devices", {"tool": "hub_get_device", "args": {"deviceId": new_id}})
+            assert isinstance(got, dict) and str(got.get("id")) == new_id, \
+                f"the device tools do not reach the created device {new_id}: {str(got)[:300]}"
+
+            # The label leg is /device/updateLabel -- and this is its only UNCONDITIONAL live proof.
+            # (The bypass-block leg that also exercises it is gated on the arbitrarily-picked device
+            # having a label, so it can skip entirely; see the [COVERAGE GAP] print there.) The envelope
+            # reports `label` as the APPLIED label, falling back to the driver's own default when the
+            # dedicated setter AND the wholesale /device/update fallback both missed -- so a requested
+            # label reading back means the leg worked, and a label warning is the tool's own admission
+            # that it did not.
+            assert created.get("label") == f"{PREFIX}FromDriver", (
+                "hub_create_device did not apply the requested label -- /device/updateLabel and the "
+                f"wholesale /device/update fallback both missed: label={created.get('label')!r} "
+                f"warnings={created.get('warnings')!r}")
+            assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()], \
+                f"hub_create_device warned about the label: {created.get('warnings')!r}"
         finally:
             # Created via the catalog path (a real device, not an MCP child) -- delete by id
             # through hub_delete_device. Best-effort: the confirm gate needs a recent backup,
@@ -12550,10 +12550,19 @@ class TestRunner:
         assert inst.get("apps") and all(isinstance(a.get("deprecated"), bool) for a in inst["apps"]), \
             f"app instances lack the deprecated flag: {(inst.get('apps') or [])[:3]}"
         # nameFilter narrows both scopes to names containing the text, ignoring case.
-        own = self.client.call_tool("hub_list_apps", {"scope": "instances", "nameFilter": "mcp rule server"})
+        # Filter on the name the instance list itself reports for this server (hubs label it differently).
+        own_label, page = "", inst
+        while True:
+            own_label = next((str(a.get("name") or "") for a in page.get("apps") or []
+                              if str(a.get("id")) == str(self.client.app_id)), "")
+            if own_label or not page.get("nextCursor"):
+                break
+            page = self.client.call_tool("hub_list_apps", {"scope": "instances", "cursor": page["nextCursor"]})
+        assert own_label, f"the instance list carries no name for the MCP server (app {self.client.app_id})"
+        own = self.client.call_tool("hub_list_apps", {"scope": "instances", "nameFilter": own_label.upper()})
         assert any(str(a.get("id")) == str(self.client.app_id) for a in own.get("apps") or []) and \
-            all("mcp rule server" in str(a.get("name")).lower() for a in own.get("apps") or []), \
-            f"instances nameFilter did not narrow to the MCP server: {own.get('apps')}"
+            all(own_label.lower() in str(a.get("name")).lower() for a in own.get("apps") or []), \
+            f"instances nameFilter {own_label!r} did not narrow to the MCP server: {own.get('apps')}"
         own_type = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": "types", "nameFilter": "MCP Rule Server"}})
         assert own_type.get("apps") and all("mcp rule server" in str(a.get("name")).lower() for a in own_type["apps"]), \
             f"types nameFilter did not narrow the app types: {own_type.get('apps')}"
@@ -13608,6 +13617,11 @@ class TestRunner:
             assert isinstance(res, dict) and res.get("success") is False and needle in str(res.get("error")), \
                 f"restore from {url} must be refused naming {needle!r}: {res}"
             assert "points at this hub" not in str(res.get("error")), f"{url} misread as an admin URL on this hub: {res}"
+        # On this hub only its own web port serves File Manager files, and a name must be valid percent-encoding.
+        for url, needle in ((f"http://127.0.0.1:9090/local/{PREFIX}x.lzf", "on the hub's own web port"),
+                            (f"http://127.0.0.1/local/{PREFIX}%zz.lzf", "not valid percent-encoding")):
+            self._expect_tool_refusal("hub_manage_backup", {"tool": "hub_restore_backup", "args": {
+                "scope": "hub_uploaded", "backupUrl": url, "confirm": True}}, needle)
 
     @test("system_tools")
     def test_backup_gate_list_fallback(self) -> None:
@@ -13744,6 +13758,32 @@ class TestRunner:
                     print(f"    [WARN] could not delete {nm}: {exc}")
 
     @test("system_tools")
+    def test_mode_create_numeric_name_returns_its_own_id(self) -> None:
+        # A mode named like another mode's id: create must report the NEW mode's id. The cleanup
+        # deletes by that id (an id resolves before a name, so deleting by the name would hit the
+        # other mode).
+        modes = self.client.call_tool("hub_list_modes", {}).get("modes") or []
+        names = {str(m.get("name")) for m in modes}
+        taken = next((str(m.get("id")) for m in modes if str(m.get("id")) not in names), None)
+        if taken is None:
+            raise SkipTest("every mode id is also a mode name on this hub")
+        new_id = None
+        try:
+            cr = self.client.call_tool("hub_manage_mode", {"action": "create", "name": taken})
+            assert isinstance(cr, dict) and cr.get("success") is True, f"create of mode {taken!r} failed: {cr}"
+            listed = self.client.call_tool("hub_list_modes", {}).get("modes") or []
+            new_id = next((str(m.get("id")) for m in listed if str(m.get("name")) == taken), None)
+            assert new_id and new_id != taken, f"created mode {taken!r} not listed under its own id: {listed}"
+            assert str(cr.get("modeId")) == new_id, \
+                f"create of mode {taken!r} returned modeId {cr.get('modeId')!r}, not the new mode's id {new_id}"
+        finally:
+            if new_id:
+                try:
+                    self.client.call_tool("hub_manage_mode", {"action": "delete", "mode": new_id, "confirm": True})
+                except Exception as exc:
+                    print(f"    [WARN] numeric-name mode cleanup failed (delete id {new_id}): {exc}")
+
+    @test("system_tools")
     def test_mode_lifecycle(self) -> None:
         # FULL live coverage of the mode surface on the sacrificial e2e hub -- proves every
         # capability of hub_manage_mode / hub_list_modes / hub_set_mode_manager by e2e alone
@@ -13812,7 +13852,8 @@ class TestRunner:
             assert created is not None, f"created mode not in hub_list_modes: {listed.get('modes')}"
             assert created.get("icon") == "fa-moon", f"create icon did not round-trip via /modes/json: {created}"
             created_id = str(created.get("id"))
-            assert str(cr.get("modeId")) == created_id,                 f"create must return the new mode's id ({created_id}): {cr}"
+            assert str(cr.get("modeId")) == created_id, \
+                f"create must return the new mode's id ({created_id}): {cr}"
             mm = listed.get("modeManager")
             assert isinstance(mm, dict), f"hub_list_modes missing the modeManager block: {sorted(listed.keys())}"
             assert mm.get("selected") in settable_managers, f"modeManager.selected not a valid manager: {mm}"
@@ -13954,7 +13995,8 @@ class TestRunner:
         assert "healthAlerts" not in result, "healthAlerts must be absent without includeHealthAlerts=true"
         # Readings are numbers, and the database size carries the hub's own unit (MB).
         assert isinstance(result.get("freeMemoryKB"), int), f"freeMemoryKB must be a number: {result.get('freeMemoryKB')!r}"
-        assert isinstance(result.get("databaseSizeMB"), int) and "databaseSizeKB" not in result,             f"database size must be databaseSizeMB, a number: {result.get('databaseSizeMB')!r}"
+        assert isinstance(result.get("databaseSizeMB"), int) and "databaseSizeKB" not in result, \
+            f"database size must be databaseSizeMB, a number: {result.get('databaseSizeMB')!r}"
         assert isinstance(result.get("mcpDeviceCount"), int), f"mcpDeviceCount must be a number: {result.get('mcpDeviceCount')!r}"
         # Client identity is derived from THIS request and nothing is persisted, so the record
         # handed back describes the very call that fetched it. Shape only here -- the
@@ -14490,10 +14532,12 @@ class TestRunner:
         ha = res["healthAlerts"]
         assert ha is not None and "active" in ha and "safeMode" in ha, f"healthAlerts shape wrong: {redact_hub_payload(ha, 'healthAlerts')}"
         # Alert messages arrive as text, without the hub's link markup.
-        assert all("<a " not in str(item.get("message")) for item in (ha.get("items") or [])),             f"alert messages still carry HTML: {redact_hub_payload(ha, 'healthAlerts')}"
+        assert all("<a " not in str(item.get("message")) for item in (ha.get("items") or [])), \
+            f"alert messages still carry HTML: {redact_hub_payload(ha, 'healthAlerts')}"
         # The current readings are numbers; an empty or day-old trend says so instead of passing as history.
         cur = res.get("current") or {}
-        assert isinstance(cur.get("freeMemoryKB"), int) and isinstance(cur.get("databaseSizeMB"), int),             f"current readings must be numbers, database size in MB: {cur}"
+        assert isinstance(cur.get("freeMemoryKB"), int) and isinstance(cur.get("databaseSizeMB"), int), \
+            f"current readings must be numbers, database size in MB: {cur}"
         trends = res.get("trends") or []
         if not trends:
             assert "recordSnapshot=true" in str(res.get("trendNote")), f"an empty trend must say why: {res.get('trendNote')!r}"
@@ -17129,6 +17173,10 @@ class TestRunner:
             assert long_poll.get("timedOut") is True and long_poll.get("budgetLimited") is True \
                 and long_poll.get("requestedTimeoutMs") == 25000 and long_poll.get("timeoutMs", 25000) < 25000, \
                 f"a 25 s poll over the relay must stop at the budget and say so: {long_poll}"
+            # A stableForMs that cannot settle in the time left is refused before anything is read.
+            self._expect_tool_refusal("hub_get_device_attribute", {
+                "deviceId": dev_id, "attribute": "switch", "expectedValue": expected,
+                "timeoutMs": 40000, "stableForMs": 30000}, "cannot settle")
 
     @test("poll_until_attribute")
     def test_poll_multi_device(self) -> None:

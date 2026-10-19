@@ -160,13 +160,13 @@ class ToolDashboardSpec extends ToolSpecBase {
         r.dashboards[0].deviceIds == ['12', '34']
     }
 
-    def "list passes pinToken through to /dashboard/all when supplied"() {
+    def "a caller pinToken is never sent: the hub honours only the token of its own page session"() {
         when:
         script.toolListDashboards([pinToken: 'tok-123'])
 
         then:
         def call = hubGet.calls.find { it.path == '/dashboard/all' }
-        call.params.pinToken == 'tok-123'
+        !call.params.containsKey('pinToken')
     }
 
     def "list omits pinToken when none is supplied and the page token can't be scraped"() {
@@ -189,10 +189,11 @@ class ToolDashboardSpec extends ToolSpecBase {
         when:
         def r = script.toolListDashboards([:])
 
-        then: 'a CONFIRMED-empty hub reports count:0 and suggests a pinToken'
+        then: 'a CONFIRMED-empty hub reports count:0 and no longer asks for a pinToken (none would work)'
         r.count == 0
         r.dashboards == []
-        r.note.toLowerCase().contains('pintoken')
+        r.note.contains('No dashboards found')
+        !r.note.toLowerCase().contains('pintoken')
     }
 
     def "list surfaces success:false when /dashboard/all is empty but the child-app READ fails (not a fake 'zero')"() {
