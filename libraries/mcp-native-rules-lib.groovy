@@ -12574,11 +12574,13 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Map backup
                 "replaceRequiredExpression: app ${appId} shows a committed Required Expression but its token list reads empty. Nothing was changed -- inspect it via hub_get_app_config(appId=${appId}).").toString()
         ]
     }
-    // An unreadable baseline counts every later issue as new, so the rollback errs toward the original.
+    // An unreadable baseline is an empty one, so every later issue and warning counts as new and the
+    // rollback errs toward the original (null would mean the add path, which skips warnings).
     def baselineHealth = null
     try { baselineHealth = _rmCheckRuleHealth(appId) } catch (Exception baseExc) {
         mcpLog("warn", "rm-native", "replaceRequiredExpression: baseline health of app ${appId} could not be read (${baseExc.message})")
     }
+    if (!(baselineHealth instanceof Map)) baselineHealth = [issues: [], structuralIssues: [], warnings: [], brokenMarkerCounts: [:]]
 
     def rmCache = [:]
     def applied = []
