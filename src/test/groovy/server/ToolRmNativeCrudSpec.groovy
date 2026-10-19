@@ -33948,7 +33948,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         label                        | spec                                                              | expected
         'dimmer.setLevel no level'   | [capability: "dimmer", action: "setLevel", deviceIds: [8]]        | "dimmer.setLevel requires one of level, levelVariable"
         'dimmer.toggle no level'     | [capability: "dimmer", action: "toggle", deviceIds: [8]]          | "dimmer.toggle requires 'level'"
-        'color.setColor no color'    | [capability: "color", action: "setColor", deviceIds: [8]]         | "color.setColor requires one of colorName, rawSettings"
+        'color.setColor no color'    | [capability: "color", action: "setColor", deviceIds: [8]]         | "color.setColor requires one of colorName, hue, rgb, rawSettings"
         'color.toggleColor no name'  | [capability: "color", action: "toggleColor", deviceIds: [8], level: 50]        | "color.toggleColor requires 'colorName'"
         'color.toggleColor no level' | [capability: "color", action: "toggleColor", deviceIds: [8], colorName: "Red"] | "color.toggleColor requires 'level'"
         'setColorTemp no kelvin'     | [capability: "colorTemp", action: "setColorTemp", deviceIds: [8]]              | "colorTemp.setColorTemp requires 'kelvin'"
