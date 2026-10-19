@@ -469,6 +469,17 @@ def command_prepare(_args):
     restore_mcp_access(transport, v3, mcp)
 
 
+# Recent e2e package installs took 254-398 s; one well past that means the compile got slower.
+INSTALL_WARN_MS = 420_000
+
+
+def warn_if_slow_install(result):
+    elapsed = result.get("elapsedMs")
+    if isinstance(elapsed, int) and elapsed > INSTALL_WARN_MS:
+        log(f"::warning::The package install took {elapsed // 1000}s, past the {INSTALL_WARN_MS // 1000}s "
+            "recent installs stayed under; check what made it slower.")
+
+
 def command_deploy_pr(args):
     transport, v3, mcp = endpoints()
     base, sha = os.environ["PR_RAW_BASE"], os.environ["PR_HEAD_SHA_RESOLVED"]
@@ -484,6 +495,7 @@ def command_deploy_pr(args):
             raise HubError(f"The published {name} differs from the one built from this checkout")
     result = deploy(transport, v3, mcp, {**plan, "baseUrl": base, "bundleBaseUrl": base}, operation_id("pr"))
     log(f"Installed {sha}: {json.dumps({k: result.get(k) for k in ('requestId', 'phase', 'hold', 'elapsedMs')})}")
+    warn_if_slow_install(result)
 
 
 def purge_fixtures(transport, v3, *, interval=15, attempts=60):

@@ -894,3 +894,9 @@ def test_status_reads_that_never_answer_are_bounded_by_time_not_only_by_attempts
     with pytest.raises(module.HubError, match="timed out at no status was ever read"):
         module.deploy(hub, "watchdog", "main", PLAN, "op", attempts=50, interval=0, wait_s=300)
     assert hub.count("hub_get_package_deployment") < 10
+
+
+@pytest.mark.parametrize("elapsed, warned", [(398_000, False), (420_000, False), (421_000, True), (None, False)])
+def test_a_slow_package_install_is_flagged_as_a_warning(module, capsys, elapsed, warned):
+    module.warn_if_slow_install({"elapsedMs": elapsed})
+    assert ("::warning::The package install took" in capsys.readouterr().out) == warned
