@@ -9186,6 +9186,17 @@ class TestRunner:
                 and "removetrigger" in str(rejected.get("error", "")).lower() \
                 and "not touched" in str(rejected.get("restoreHint", "")).lower(), \
                 f"modifyTrigger state-change token should refuse pre-write: {rejected}"
+            # The addTrigger-shaped mistake gets the whole modifyTrigger shape in one refusal.
+            misshaped = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule",
+                "args": {"appId": app_id, "modifyTrigger": {"triggerIndex": tidx, "capability": "Switch",
+                                                            "deviceIds": [sw], "state": "off"},
+                         "confirm": True}})
+            mis_error = str(misshaped.get("error", ""))
+            assert misshaped.get("success") is False \
+                and "the key is index, not triggerIndex" in mis_error \
+                and "mods: {state: '<new-state>'}" in mis_error \
+                and "not touched" in str(misshaped.get("restoreHint", "")).lower(), \
+                f"a misshaped modifyTrigger should name the whole shape in its first refusal: {misshaped}"
             # Retarget in ONE patches call: removeTrigger + addTrigger both run under the single
             # trailing updateRule. The replacement uses state "on" so it cannot be confused with the
             # removed trigger (modified to "off" above) if RM hands the freed index back.

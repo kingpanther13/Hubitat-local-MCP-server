@@ -4252,11 +4252,20 @@ private boolean _rmModifyTriggerInnerPartial(Map res) {
     ((res?.settingsSkipped as List)?.size() ?: 0) > 0 || res?.verificationFetchFailed == true
 }
 
+// The whole call shape rides on the first refusal, so a caller fixes index and mods in one round.
+private void _rmCheckModifyTriggerShape(Object spec) {
+    Map m = spec instanceof Map ? spec as Map : [:]
+    String missing = m.index == null ? (m.triggerIndex != null ? "modifyTrigger.index is required (the key is index, not triggerIndex)" : "modifyTrigger.index is required") :
+        !(m.mods instanceof Map) ? "modifyTrigger.mods is required and must be a Map" : null
+    if (missing) throw new IllegalArgumentException("${missing}. modifyTrigger takes {index: <the triggerIndex addTrigger returned>, mods: {state: '<new-state>'}}; only the state field can change in place (capability/devices: removeTrigger + addTrigger). RM is not touched.".toString())
+}
+
 // One patches[] removeTrigger / modifyTrigger / modifyAction op, via the same helpers as the
 // top-level ops. No updateRule here: the batch fires it once at the end.
 private Map _rmPatchModifyOp(Integer appId, Map pm, Long reqT0) {
     String op = _rmPatchModifyOpKeys().find { pm.containsKey(it) }
     def spec = pm[op]
+    if (op == "modifyTrigger") _rmCheckModifyTriggerShape(spec)
     if (!(spec instanceof Map) || spec.index == null) throw new IllegalArgumentException("${op}.index required")
     Integer index = _rmPatchOpIndex(op, spec.index)
     if (op == "removeTrigger") {
@@ -4265,8 +4274,7 @@ private Map _rmPatchModifyOp(Integer appId, Map pm, Long reqT0) {
                 beforeIndices: rtRes?.beforeIndices, afterIndices: rtRes?.afterIndices, partial: rtRes?.partial == true]
     }
     if (!(spec.mods instanceof Map)) {
-        String example = (op == "modifyTrigger") ? "{state: 'on'}" : "{ruleIds: [123]}"
-        throw new IllegalArgumentException("${op}.mods is required and must be a Map (e.g. ${example})")
+        throw new IllegalArgumentException("${op}.mods is required and must be a Map (e.g. {ruleIds: [123]})")
     }
     if (op == "modifyTrigger") {
         def mtRes = _rmModifyTrigger(appId, index, spec.mods as Map) ?: [:]
@@ -13361,8 +13369,7 @@ def _applyNativeAppEdit(args) {
                 trigIdxOut = (removeTriggerSpec.index as Integer)
                 trigMutResult = _rmRemoveTrigger(appId, trigIdxOut)
             } else if (modifyTriggerSpec) {
-                if (modifyTriggerSpec.index == null) throw new IllegalArgumentException("modifyTrigger.index is required")
-                if (!(modifyTriggerSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyTrigger.mods is required and must be a Map (e.g. {state: 'on'})")
+                _rmCheckModifyTriggerShape(modifyTriggerSpec)
                 trigIdxOut = (modifyTriggerSpec.index as Integer)
                 trigMutResult = _rmModifyTrigger(appId, trigIdxOut, modifyTriggerSpec.mods as Map)
             }

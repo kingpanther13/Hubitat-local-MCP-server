@@ -22953,6 +22953,36 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         !result.restoreHint?.contains("Backup saved before write")
     }
 
+    def "a modifyTrigger missing #missing names the whole call shape in its first refusal"() {
+        // Callers sent {triggerIndex, capability, deviceIds, state} and needed two refusals to find the
+        // shape. The first refusal now carries all of it.
+        given:
+        enableWrite()
+        def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Switch"]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]; [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, modifyTrigger: spec, confirm: true])
+
+        then:
+        result.success == false
+        result.error?.contains(lead)
+        result.error?.contains("modifyTrigger takes {index: <the triggerIndex addTrigger returned>, mods: {state: '<new-state>'}}; only the state field can change in place (capability/devices: removeTrigger + addTrigger). RM is not touched.")
+        result.restoreHint?.contains("the app was not touched")
+        !posts.any { it.path == "/installedapp/btn" || it.path == "/installedapp/update/json" }
+
+        where:
+        missing                | spec                                                                       || lead
+        "index (triggerIndex)" | [triggerIndex: 1, capability: "Motion", deviceIds: [8], state: "inactive"] || "modifyTrigger.index is required (the key is index, not triggerIndex)."
+        "index"                | [mods: [state: "on"]]                                                      || "modifyTrigger.index is required."
+        "mods"                 | [index: 1, state: "inactive"]                                              || "modifyTrigger.mods is required and must be a Map."
+    }
+
     @spock.lang.Unroll
     def "modifyTrigger closes the editor when #cap has no state field"() {
         given:
@@ -41223,8 +41253,8 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         where:
         op              | field   | opSpec                          | message
         "removeTrigger" | "index" | [index: "first"]                | "removeTrigger.index must be an integer index"
-        "modifyTrigger" | "index" | [mods: [state: "on"]]           | "modifyTrigger.index required"
-        "modifyTrigger" | "mods"  | [index: 1]                      | "modifyTrigger.mods is required and must be a Map (e.g. {state: 'on'})"
+        "modifyTrigger" | "index" | [triggerIndex: 1, state: "on"]  | "modifyTrigger.index is required (the key is index, not triggerIndex). modifyTrigger takes {index: <the triggerIndex addTrigger returned>, mods: {state: '<new-state>'}}"
+        "modifyTrigger" | "mods"  | [index: 1]                      | "modifyTrigger.mods is required and must be a Map. modifyTrigger takes {index: <the triggerIndex addTrigger returned>, mods: {state: '<new-state>'}}"
         "modifyAction"  | "mods"  | [index: 1, mods: "ruleIds=300"] | "modifyAction.mods is required and must be a Map (e.g. {ruleIds: [123]})"
     }
 
