@@ -1325,7 +1325,10 @@ class ToolDeviceEditSpec extends ToolSpecBase {
     def "a selection write that fails still reports the created device, with a warning"() {
         given:
         settingsMap.selectedDevices = [new TestDevice(id: 1)]
-        appStub.metaClass.updateSetting = { String n, Map v -> throw new IllegalStateException('settings locked') }
+        def lockedApp = new TestChildApp() {
+            @Override void updateSetting(String settingName, Map val) { throw new IllegalStateException('settings locked') }
+        }
+        appExecutor.getApp() >> lockedApp
         hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
         hubGet.register('/device/fullJson/777') { params ->
             groovy.json.JsonOutput.toJson([device: [id: 777, name: 'Generic LAN Driver', deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]])
@@ -1338,9 +1341,6 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.success == true
         result.deviceId == '777'
         result.warnings.any { it.contains('could not be added') && it.contains('settings locked') }
-
-        cleanup:
-        appStub.metaClass = GroovySystem.metaClassRegistry.getMetaClass(TestChildApp)
     }
 
     // Outcome 2 (silent no-op): the GET returns 200 but the source stays in availableLinkedDevices

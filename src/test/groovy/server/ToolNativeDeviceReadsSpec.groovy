@@ -139,7 +139,7 @@ class ToolNativeDeviceReadsSpec extends ToolSpecBase {
         given:
         settingsMap.bypassDeviceAllowlist = true
         fixture('selected')
-        hubGet.register('/device/fullJson/11') { JsonOutput.toJson(nativeModel) }
+        hubGet.register('/device/fullJson/11') { JsonOutput.toJson(nativeModel + [device: nativeModel.device + [id: 11]]) }
 
         when:
         def result = script._pollUntilAttributeCore([attribute: 'switch', expectedValue: 'off', timeoutMs: 20000] + target, script.now() - 1L)
