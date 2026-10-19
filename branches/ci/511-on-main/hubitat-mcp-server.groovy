@@ -9929,7 +9929,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         allDevices = allDevices.findAll { d -> d.roomName?.toString()?.equalsIgnoreCase(roomFilter) }
     }
     if (onlyOn == true) {
-        allDevices = allDevices.findAll { d -> d.currentStates?.find { it.name == "switch" }?.value?.toString() == "on" }
+        allDevices = allDevices.findAll { d -> _deviceStatesByName(d).get("switch")?.value?.toString() == "on" }
     }
     if (changedSinceDate != null) {
         allDevices = allDevices.findAll { d ->
@@ -10118,8 +10118,9 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         } else {
             if (fieldSet == null || fieldSet.contains("currentStates")) {
                 info.currentStates = [:]
+                def byName = _deviceStatesByName(device)
                 ["switch", "level", "motion", "contact", "temperature", "humidity", "battery"].each { attr ->
-                    def val = device.currentStates?.find { it.name == attr }?.value
+                    def val = byName.get(attr)?.value
                     if (val != null) info.currentStates[attr] = val
                 }
             }
@@ -10228,13 +10229,18 @@ private List _contextHeaderLines() {
     if (hsm) header << "HSM: ${hsm}".toString()
     return header
 }
+private Map _deviceStatesByName(device) {
+    def states = [:]
+    device?.currentStates?.each { st ->
+        if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
+    }
+    return states
+}
 private String _contextDeviceLine(device, List attrNames) {
     def states = [:]
     boolean stateReadFailed = device._nativeReadError == true || device._nativeUnavailableCollections?.contains('currentStates') == true
     try {
-        device.currentStates?.each { st ->
-            if (st?.name != null && st.value != null) states.put(st.name.toString(), st)
-        }
+        states = _deviceStatesByName(device)
     } catch (Exception e) {
         stateReadFailed = true
         mcpLog("warn", "device", "context snapshot: currentStates read failed for device ${device?.id}: ${e.message}")
@@ -10449,10 +10455,8 @@ def _buildContextJson() {
         def attrs = [:]
         boolean stateReadFailed = d._nativeReadError == true || d._nativeUnavailableCollections?.contains('currentStates') == true
         try {
-            d.currentStates?.each { st ->
-                if (st?.name != null && st.value != null && contextAttrs.contains(st.name.toString())) {
-                    attrs.put(st.name.toString(), st.value.toString())
-                }
+            _deviceStatesByName(d).each { name, st ->
+                if (contextAttrs.contains(name)) attrs.put(name, st.value.toString())
             }
         } catch (Exception e) {
             stateReadFailed = true
@@ -13552,6 +13556,8 @@ def toolCreateDevice(args) {
     if (ctype in ["ZWV", "ZGB"] || readable.contains("z-wave") || readable.contains("zwave") || readable.contains("zigbee") || readable.contains("matter")) {
         warnings << "This is a radio-type driver. Creating it here makes a non-functional orphan shell (no paired node). Add real Z-Wave/Zigbee/Matter devices by PAIRING (hub_call_zwave / hub_call_zigbee / hub_call_matter), then delete this shell with hub_delete_device."
     }
+    def selectWarning = _selectCreatedDevice(newId)
+    if (selectWarning) warnings << selectWarning
     mcpLog("info", "device", "hub_create_device: created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}")
     return [
         success: true,
@@ -13564,11 +13570,18 @@ def toolCreateDevice(args) {
         capabilities: info?.capabilities,
         warnings: warnings ?: null,
         message: "Created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}." + (warnings ? " WARNING: see warnings." : ""),
-        mcpAccessible: _bypassEnabled(),
-        note: _bypassEnabled()
-            ? "Set room/preferences/showOnHome with hub_update_device, or delete it with hub_delete_device."
-            : "The device tools reach only the devices selected in this app, and a new device is not selected: add it with hub_update_mcp_settings(settings: {selectedDevices: {mode: 'add', ids: ['${newId}']}}) (Developer Mode) or the app's device picker before hub_get_device / hub_update_device can use it. hub_manage_virtual_device makes virtual devices the tools reach at once.".toString()
+        note: "Set room/preferences/showOnHome with hub_update_device, or delete it with hub_delete_device."
     ]
+}
+private String _selectCreatedDevice(String deviceId) {
+    try {
+        def ids = (settings.selectedDevices ?: []).collect { it.id.toString() }
+        if (!ids.contains(deviceId)) app.updateSetting("selectedDevices", [type: "capability.*", value: ids + [deviceId]])
+        return null
+    } catch (Exception e) {
+        mcpLog("warn", "device", "Could not add device ${deviceId} to the selected devices: ${e.message}")
+        return "Device ${deviceId} was created but could not be added to this app's selected devices (${e.message}); add it in the app's device picker.".toString()
+    }
 }
 private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     Map beforeJson = _meshJson()
@@ -13669,6 +13682,10 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         warnings << "Sent the link request, but could not confirm it against hub_get_hub_mesh availableLinkedDevices (read-back lag or an unreadable mesh list). Verify with hub_get_hub_mesh."
     } else if (newId == null) {
         warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag or an ambiguous diff). Find it with hub_get_hub_mesh."
+    }
+    if (newId != null) {
+        def selectWarning = _selectCreatedDevice(newId)
+        if (selectWarning) warnings << selectWarning
     }
     mcpLog("info", "device", "hub_create_device: linked Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId})${newId ? " as local ${newId}" : ''}")
     return [
@@ -22725,7 +22742,7 @@ def toolGetToolGuide(section, cursor = null, Map apiDocs = null) {
         availableSections: sections.keySet().toList(),
         availableSubSections: subSections.collectEntries { k, v -> [(k): v.keySet().toList()] }
     ]
-    return _withGuidePage(result, fullGuide, cursor)
+    return _withGuidePage(result, fullGuide, cursor, fullGuidePageChars())
 }
 private Map _platformApiSearch(String query, cursor) {
     def terms = query.toLowerCase().split(/\s+/).findAll { it }
@@ -22807,8 +22824,8 @@ private Map _platformApiPage(String pageId, cursor) {
     if (paged.nextCursor != null) out.nextCursor = paged.nextCursor
     return out
 }
-private Map _withGuidePage(Map result, content, cursor) {
-    def paged = paginateGuideContent(content, cursor)
+private Map _withGuidePage(Map result, content, cursor, int pageChars = guidePageChars()) {
+    def paged = paginateGuideContent(content, cursor, pageChars)
     result.content = paged.content
     if (paged.nextCursor != null || paged.offset > 0) {
         result.offset = paged.offset
@@ -22821,7 +22838,7 @@ def _getAllToolDefinitions_partDiscovery() {
     return [
         [
             name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (paged via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
+            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (30,000-character pages via nextCursor).[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -22974,7 +22991,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     addLocalVariable: [
                         type: "object",
-                        description: "Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions."
+                        description: "Add a local variable: {name, type, value}, all three required. type: Number/Decimal/String/Boolean/DateTime (DateTime is ISO, e.g. 2026-05-06T12:00:00); value must match it. An existing name is refused.[[FLAT_TRIM]] RM commits the variable only when the value is written. Unlike the setLocalVariable ACTION (exactly one of value/sourceVariable/fromDevice/math), all three keys are needed. Use as %name% in actions/expressions; change an existing variable's value with a setLocalVariable action.[[/FLAT_TRIM]]"
                     ],
                     removeLocalVariable: [
                         type: "object",
@@ -23031,7 +23048,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
         ],
         [
             name: "hub_get_rule_health",
-            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule). This standalone read adds live eventSubscriptionCount/scheduledJobCount, runtime stopped, and status/markup fallbacks for paused. paused is true/false/null (unknown); explicit stopped state outranks display markup. Embedded health from write tools carries the structural verdict and compiled paused only, without these extra reads. With auto or ruleBuilderJson, Visual Rule labels preserve the raw own name; forcing configPage uses the rendered label.[[/FLAT_TRIM]] Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
+            description: """Inspect a rule's current state and return a structured health report.[[FLAT_TRIM]] Works for Rule Machine, Visual Rules Builder, and other classic apps (Button Controller, Basic Rule). This standalone read adds live eventSubscriptionCount/scheduledJobCount, runtime stopped, and status/markup fallbacks for paused. paused is true/false/null (unknown); explicit stopped state outranks display markup. Embedded health from write tools carries the structural verdict and compiled paused only, without these extra reads. With auto or ruleBuilderJson, Visual Rule labels preserve the raw own name; forcing configPage uses the rendered label.[[/FLAT_TRIM]] Run after every mutation. ok=false with unreadable=false means at least one issue was found (the issues list explains what[[FLAT_TRIM]]; `warnings` lists states the rule runs with as asked, such as Required Expression on with no expression, and never lowers ok[[/FLAT_TRIM]]); ok=false with unreadable=true means NEITHER source could be read (a transient fetch failure, or the app does not exist) -- a couldn't-check verdict, not evidence of breakage.""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -24744,14 +24761,16 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
         String cmp = _rmNormalizeComparator(spec.comparator)?.toString()
         boolean change = _rmComparatorIsRhsOptional(spec.comparator)
         List allowed = null
+        boolean trigOnly = (change && fam != "time") || (cmp in ((t.changeOps as List) + (t.overOps as List)) && fam in ["numeric", "variable"])
+        String condSteer = kind == "condition" && trigOnly ? " '${cmp}' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.".toString() : ""
         boolean trigChange = kind == "trigger" && spec.allOfThese != true
         if (fam == "numeric") allowed = (t.numericOps as List) + (trigChange ? (t.changeOps as List) + (t.overOps as List) : [])
         else if (fam == "variable") allowed = (((t.variableOps as List) - (kind == "condition" ? (t.changeOps as List) + (t.overOps as List) : [])) + (t.stringOps as List)).unique()
         else if (fam == "custom-attribute") allowed = ((t.numericOps as List) + (t.stringOps as List)).unique() - (kind == "condition" ? ["*changed*"] : [])
         else if ((fam in ["device-state", "button-led"] || cap == "Mode") && kind == "trigger" && change && !(cap in (t.noChangeState as List))) allowed = null
-        else throw new IllegalArgumentException("${where}: Rule Machine has no comparator for a ${cap} ${kind}${kind == 'trigger' && (fam in ['device-state', 'button-led'] || cap == 'Mode') && !(cap in (t.noChangeState as List)) ? " other than '*changed*'" : ''}; pass state. ${hint}".toString())
+        else throw new IllegalArgumentException("${where}: Rule Machine has no comparator for a ${cap} ${kind}${kind == 'trigger' && (fam in ['device-state', 'button-led'] || cap == 'Mode') && !(cap in (t.noChangeState as List)) ? " other than '*changed*'" : ''}; pass state.${condSteer} ${hint}".toString())
         if (allowed != null && !(cmp in allowed) && !(fam == "numeric" && trigChange && change)) {
-            throw new IllegalArgumentException("${where}: comparator '${spec.comparator}' is not one Rule Machine offers for a ${cap} ${kind}: ${allowed.join(' ')}. ${hint}".toString())
+            throw new IllegalArgumentException("${where}: comparator '${spec.comparator}' is not one Rule Machine offers for a ${cap} ${kind}: ${allowed.join(' ')}.${condSteer} ${hint}".toString())
         }
     }
     if (cap == "Mode" && spec.state == null && spec.modeIds == null && !(kind == "trigger" && spec.comparator != null)) {
@@ -24759,6 +24778,9 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     }
     if (spec.andStays != null && (kind != "trigger" || cap in (t.noDuration as List))) {
         throw new IllegalArgumentException("${where}: Rule Machine has no 'and stays' duration for a ${cap} ${kind}. ${hint}".toString())
+    }
+    if (spec.andStays != null && (_rmComparatorIsRhsOptional(spec.comparator) || _rmNormalizeComparator(spec.comparator)?.toString() in (t.changeOps as List))) {
+        throw new IllegalArgumentException("${where}: Rule Machine offers 'and stays' only for a state, not with the change comparator '${spec.comparator}'; drop andStays or pass a state. ${hint}".toString())
     }
 }
 private List _rmCondNotModelled() { ["Between two dates", "Days of week", "On a Day", "Lock codes", "Last Event Device", "Time of day", "Time Since Event"] }
@@ -24859,7 +24881,7 @@ private Map _rmCondEntry(String cap, String kind) {
             }
             break
     }
-    if (trig && !((t.noDuration as List).contains(cap)) && fam != "time") opt << f("andStays", "Map", [description: "{hours?, minutes?, seconds?}"])
+    if (trig && !((t.noDuration as List).contains(cap)) && fam != "time") opt << f("andStays", "Map", [description: "{hours?, minutes?, seconds?}; with a state, never a change comparator"])
     if (trig) opt << f("condition", "Map", [description: "a condition (discover kind:'condition') gating this trigger"])
     else opt << f("not", "Boolean")
     opt << f("rawSettings", "Map", [description: "RM settings for fields not listed; '@N' becomes the row index"])
@@ -24947,8 +24969,8 @@ private Map _rmActionCatalog() {
             choosePerMode: [sub: "getChooseSwitch", custom: true, slots: [[name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: {on: [deviceIds], off: [deviceIds]}, ...}"]]]
         ], common: [delay, raw]],
         dimmer: [actType: "dimmerActs", family: "device", actions: [
-            setLevel: [sub: "getSetDimmer", custom: true, requires: [["level", "levelVariable"]], slots: [dev("dimA.@N"), [name: "level", key: "dimLA.@N", type: "Integer", desc: "0-100; or levelVariable"],
-                       [name: "levelVariable", key: "xVar.@N", type: "String", desc: "hub variable holding the level"], [name: "fadeSeconds", key: "dimRA.@N", type: "Integer"]]],
+            setLevel: [sub: "getSetDimmer", custom: true, requires: [["level", "levelVariable"]], exclusive: [["level", "levelVariable"]], slots: [dev("dimA.@N"), [name: "level", key: "dimLA.@N", type: "Integer", desc: "0-100; or levelVariable"],
+                       [name: "levelVariable", key: "uVar.@N", whenSet: true, type: "String"], [name: "levelVariable", key: "xVar.@N", type: "String", desc: "hub variable holding the level"], [name: "fadeSeconds", key: "dimRA.@N", type: "Integer"]]],
             toggle:   [sub: "getToggleDimmer", slots: [dev("dimA.@N"), [name: "level", key: "dimLA.@N", type: "Integer", required: true, desc: "0-100, the level when toggling on"], [name: "fadeSeconds", key: "dimRA.@N", type: "Integer"]]],
             adjust:   [sub: "getAdjustDimmer", slots: [dev("dimA.@N"), [name: "adjustBy", key: "dimAdj.@N", type: "Integer", required: true, desc: "-100..100"], [name: "fadeSeconds", key: "dimAdjR.@N", type: "Integer"]]],
             fade:     [sub: "getFadeDimmer", slots: [dev("dimFade.@N"), [name: "direction", key: "dimFadeUp.@N", type: "enum", values: ["raise", "lower"], direction: true, desc: "default lower"],
@@ -24960,7 +24982,14 @@ private Map _rmActionCatalog() {
             setLevelPerMode: [sub: "getDimmersPerMode", custom: true, slots: [dev("dimM.@N"), [name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: level, ...}"], [name: "fadeSeconds", key: "dimMR.@N", type: "Integer"]]]
         ], common: [delay, raw]],
         color: [actType: "dimmerActs", family: "device", actions: [
-            setColor:    [sub: "getSetColor", custom: true, requires: [["colorName", "rawSettings"]], slots: [dev("bulbs.@N"), [name: "colorName", key: "color.@N", type: "String", desc: "e.g. 'Red'; or a custom HSV color via rawSettings colorH.@N"], [name: "level", key: "colorLevel.@N", type: "Integer"]]],
+            setColor:    [sub: "getSetColor", custom: true, requires: [["colorName", "hue", "rgb", "rawSettings"]],
+                          exclusive: [["colorName", "hue", "rgb"], ["colorName", "saturation", "rgb"], ["rgb", "level"]], together: [["hue", "saturation"]],
+                          notes: "a custom color is hue + saturation (RM's Custom HSB color) or rgb (its Custom RGB color, which RM gives no level)",
+                          slots: [dev("bulbs.@N"), [name: "colorName", key: "color.@N", type: "String", desc: "e.g. 'Red'"],
+                                  [name: "hue", key: "color.@N", whenSet: "Custom HSB color", type: "Number"], [name: "hue", key: "colorHex.@N", type: "Number", desc: "0-360, with saturation"],
+                                  [name: "saturation", key: "color.@N", whenSet: "Custom HSB color", type: "Number"], [name: "saturation", key: "colorSat.@N", type: "Number", desc: "0-100, with hue"],
+                                  [name: "rgb", key: "color.@N", whenSet: "Custom RGB color", type: "String"], [name: "rgb", key: "colorH.@N", type: "String", desc: "'#rrggbb'"],
+                                  [name: "level", key: "colorLevel.@N", type: "Integer", desc: "0-100; not with rgb"]]],
             toggleColor: [sub: "getToggleColor", slots: [dev("bulbsTog.@N"), [name: "colorName", key: "colorTog.@N", type: "String", required: true, desc: "e.g. 'Red'"], [name: "level", key: "colorTogLevel.@N", type: "Integer", required: true, desc: "0-100"]]],
             setColorPerMode: [sub: "getColorPerMode", custom: true, slots: [dev("bulbsM.@N"), [name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: {color: 'Red', level: 70}, ...}"]]]
         ], common: [delay, raw]],
@@ -25050,7 +25079,7 @@ private Map _rmActionCatalog() {
                slots: [[name: "command", key: "cCmd.@N", type: "String", required: true, desc: "checked against the commands RM lists for the devices"], [name: "deviceIds", key: "devices.@N", type: "List<Integer>", desc: "required unless useLastEventDevice"],
                         [name: "capabilityFilter", key: "myCapab.@N", type: "String", desc: "a capability RM's picker offers, by key or label (e.g. SwitchLevel or Dimmer); default Switch"],
                         [name: "parameters", type: "List", desc: "each {type, value} or {type, variable}; type number, decimal or string"],
-                        [name: "useLastEventDevice", key: "useLastDev.@N", type: "Boolean"]], common: [delay, raw]],
+                        [name: "useLastEventDevice", key: "useLastDev.@N", type: "Boolean", desc: "commands the device that fired a trigger; the rule needs an enabled trigger on a device with capabilityFilter"]], common: [delay, raw]],
         fileWrite:  [actType: "modeActs", sub: "getWriteLocalFile", family: "hub", slots: [[name: "fileName", key: "localFile.@N", type: "String", required: true, dflt: ""], [name: "content", key: "fileContents.@N", type: "String", dflt: ""]], common: [delay, raw]],
         fileAppend: [actType: "modeActs", sub: "getAppendLocalFile", family: "hub", notes: "The file must exist", slots: [[name: "fileName", key: "localFile.@N", type: "String", required: true, dflt: ""], [name: "content", key: "fileContents.@N", type: "String", dflt: ""]], common: [delay, raw]],
         fileDelete: [actType: "modeActs", sub: "getDeleteLocalFile", family: "hub", notes: "The file must exist", slots: [[name: "fileName", key: "deleteFile.@N", type: "String", required: true, dflt: ""]], common: [delay, raw]],
@@ -25196,6 +25225,8 @@ private Map _rmActionSchemaForDiscover() {
         if (entry.requires) out.requires = entry.requires
         def exclusive = (((entry.exclusive ?: []) as List) + perAction.collectMany { act, Map ae -> act == null ? [] : ((ae.exclusive ?: []) as List) }).unique()
         if (exclusive) out.exclusive = exclusive
+        def together = (((entry.together ?: []) as List) + perAction.collectMany { act, Map ae -> act == null ? [] : ((ae.together ?: []) as List) }).unique()
+        if (together) out.together = together
         def notes = [entry.notes] + perAction.collect { act, Map ae -> ae.notes ? "${act}: ${ae.notes}".toString() : null }
         notes = notes.findAll { it }
         if (notes) out.notes = notes.join(". ")
@@ -25344,29 +25375,52 @@ private void _rmRequireConditionDeviceCapability(String label, Map spec) {
     if (hit == null) return
     _rmRequireDevicesWithCapability(label, spec.deviceIds ?: (spec.deviceId != null ? [spec.deviceId] : null), hit.value?.toString())
 }
+private Map _rmDeviceCapsById(String label, String cap) {
+    def byId = _memoDeviceList()
+    if (byId != null) return byId
+    byId = [:]
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/vrb/devices") ?: "[]") } catch (Exception e) {
+        mcpLog("warn", "rm-native", "${label}: device capabilities could not be read (${e.message ?: e}); the ${cap} check is skipped for this call")
+        _memoKeepDeviceList([:])
+        _memoNoteSkippedCheck("device capabilities (the device list could not be read)")
+        return [:]
+    }
+    if (!(parsed instanceof List)) {
+        mcpLog("warn", "rm-native", "${label}: the device list had an unexpected shape (${_typeName(parsed)}); the ${cap} check is skipped for this call")
+        _memoKeepDeviceList([:])
+        _memoNoteSkippedCheck("device capabilities (the device list had an unexpected shape)")
+        return [:]
+    }
+    parsed.each { d ->
+        if (d instanceof Map && d.id != null) byId.put(d.id.toString(), [label: d.label, caps: ((d.capabilities ?: []) as List).collect { it?.toString()?.toLowerCase() }])
+    }
+    _memoKeepDeviceList(byId)
+    return byId
+}
+private void _rmRequireLastEventDeviceTrigger(String label, Integer appId, Object capabilityFilter, Map status = null, List pendingIds = null) {
+    if (appId == null) return
+    if (status == null) status = _rmFetchStatusJson(appId)
+    String wanted = capabilityFilter?.toString()?.trim() ?: "Switch"
+    def hit = (_rmCondTables().deviceCapability as Map).find { k, v -> k.toString().equalsIgnoreCase(wanted) }
+    String cap = (hit != null ? hit.value : wanted.replaceAll(/\s+/, "")).toString()
+    def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+    def trigs = _rmAppStateValue(status, "capabstrue")
+    Set indices = ((trigs instanceof Map) ? (trigs as Map).keySet().collect { it.toString() } : []) as Set
+    indices.addAll(settingsByName.keySet().findResults { String n -> def m = (n =~ /^tDev(\d+)$/); m.matches() ? m[0][1] : null })
+    def disabled = _rmAppStateValue(status, "disabledTriggers")
+    Set off = ((disabled instanceof List) ? (disabled as List) : []).collect { it?.toString() } as Set
+    List ids = indices.findAll { !(it in off) }.collectMany { _rmStatusEntryDeviceIds(settingsByName["tDev${it}".toString()]) as List }
+    ids.addAll((pendingIds ?: []).collect { it?.toString() })
+    if (ids) {
+        Map byId = _rmDeviceCapsById(label, cap)
+        if (byId.isEmpty() || ids.any { def d = byId.get(it); d == null || !d.caps || cap.toLowerCase() in d.caps }) return
+    }
+    throw new IllegalArgumentException("${label}: with useLastEventDevice on, Rule Machine lists the commands of the rule's enabled trigger devices that have the '${wanted}' capability, and this rule has none. Add a trigger on such a device, or turn useLastEventDevice off and give deviceIds. RM is not touched.".toString())
+}
 private void _rmRequireDevicesWithCapability(String label, Object ids, String cap) {
     if (cap == null || !(ids instanceof List) || (ids as List).isEmpty()) return
-    def byId = _memoDeviceList()
-    if (byId == null) {
-        byId = [:]
-        def parsed
-        try { parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/vrb/devices") ?: "[]") } catch (Exception e) {
-            mcpLog("warn", "rm-native", "${label}: device capabilities could not be read (${e.message ?: e}); the ${cap} check is skipped for this call")
-            _memoKeepDeviceList([:])
-            _memoNoteSkippedCheck("device capabilities (the device list could not be read)")
-            return
-        }
-        if (!(parsed instanceof List)) {
-            mcpLog("warn", "rm-native", "${label}: the device list had an unexpected shape (${_typeName(parsed)}); the ${cap} check is skipped for this call")
-            _memoKeepDeviceList([:])
-            _memoNoteSkippedCheck("device capabilities (the device list had an unexpected shape)")
-            return
-        }
-        parsed.each { d ->
-            if (d instanceof Map && d.id != null) byId.put(d.id.toString(), [label: d.label, caps: ((d.capabilities ?: []) as List).collect { it?.toString()?.toLowerCase() }])
-        }
-        _memoKeepDeviceList(byId)
-    }
+    Map byId = _rmDeviceCapsById(label, cap)
     if (byId.isEmpty()) return
     def lacking = (ids as List).findAll { id -> def d = byId.get(id?.toString()); d != null && d.caps && !(cap.toLowerCase() in d.caps) }
     if (lacking) {
@@ -25400,7 +25454,7 @@ private Map _rmMapCatalogAction(String cap, String action, Map actionSpec, Map e
             if (f.direction != null) value = (f.direction == true) ? (value == "raise") : (value != "raise")
             else if (value == null && f.containsKey("dflt")) value = f.dflt
             if (f.trueWhen != null && value != null) value = value.toString() == f.trueWhen.toString()
-            if (f.whenSet) value = (value != null) ? true : null
+            if (f.whenSet) value = (value != null) ? (f.whenSet instanceof String ? f.whenSet : true) : null
         }
         if (f.required && (value == null || (f.nonBlank && !value.toString().trim()))) {
             throw new IllegalArgumentException("${label} requires '${f.name}'${f.desc ? ' (' + f.desc + ')' : ''}.".toString())
@@ -25672,14 +25726,15 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
         settingsSkipped: skipped
     ]
 }
-private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long reqT0 = null) {
-    Map plan = _rmPlanModifyAction(appId, actionIdx, mods)
+private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long reqT0 = null, Map plan = null) {
+    if (plan == null) plan = _rmPlanModifyAction(appId, actionIdx, mods)
     String cap = plan.cap
     String action = plan.action
     Map writes = plan.writes as Map
     List fieldDefs = plan.fieldDefs as List
     def before = _rmOrderedActionIndices(appId)
-    _rmClickAppButton(appId, "${actionIdx}.0.false".toString(), "doActN", "selectActions")
+    Map pageCache = [:]
+    _rmClickAppButton(appId, _rmActionRowButton(appId, actionIdx, plan.cond as Integer, pageCache), "doActN", "selectActions", pageCache)
     def applied = []
     def skipped = []
     def openNames = []
@@ -25751,6 +25806,18 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     }
     return out.findAll { k, v -> v != null }
 }
+private String _rmActionRowButton(Integer appId, Integer actionIdx, Integer committedCond, Map cache) {
+    String rowPattern = "${actionIdx}\\.\\d+\\.\\w+".toString()
+    String rendered = null
+    try {
+        rendered = _rmRenderedButtons(_rmFetchConfigJson(appId, "selectActions", cache)?.configPage as Map)
+            .collect { it?.name?.toString() }.find { it && it ==~ rowPattern }
+    } catch (Exception readExc) {
+        mcpLog("warn", "rm-native", "modifyAction: selectActions could not be read for action ${actionIdx}'s edit button (${readExc.message ?: readExc}); the committed condition index is used")
+    }
+    def cond = rendered ? rendered.tokenize(".")[1] : (committedCond ?: 0)
+    return "${actionIdx}.${cond}.false".toString()
+}
 private void _rmRequireVariableName(Integer appId, Object name) {
     String target = name?.toString()
     List hub = null
@@ -25785,6 +25852,10 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
     }
     def editAct = (status?.appState ?: []).find { it?.name?.toString() == "editAct" }?.value
     if (editAct != null) throw new IllegalStateException(_rmStuckEditActMessage("modifyAction(${actionIdx})", appId, editAct))
+    def stateActions = (status?.appState ?: []).find { it?.name?.toString() == "actions" }?.value
+    def stateRow = (stateActions instanceof Map) ? (stateActions as Map).get(actionIdx.toString()) : null
+    String condText = (stateRow instanceof Map) ? stateRow.cond?.toString() : null
+    Integer cond = condText?.isInteger() ? (condText as Integer) : null
     Map target = _rmCatalogEntryForSubType(subType, committed)
     if (target?.cap == "returnValue") target = null
     if (target == null) {
@@ -25815,6 +25886,13 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
         def given = g.findAll { mods.containsKey(it?.toString()) && mods.get(it?.toString()) != null }
         if (given.size() > 1) throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes one of ${g.join(', ')}, not ${given.join(' and ')}. RM is not touched.".toString())
     }
+    (((entry.together ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.together ?: [])) as List)).each { List g ->
+        def given = g.findAll { mods.get(it?.toString()) != null }
+        if (!given || given.size() == g.size()) return
+        Map form = fieldDefs.find { it.name in given && it.whenSet instanceof String } as Map
+        if (form != null && committed(form.key.toString().replace(".@N", ""))?.toString() == form.whenSet) return
+        throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes ${g.join(' and ')} together unless the action already uses them, not ${given.join(' and ')} alone. RM is not touched.".toString())
+    }
     mods.each { k, v ->
         String name = k.toString()
         if (name == "action") return
@@ -25822,10 +25900,11 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
         if (!named) {
             throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: '${name}' is not a field that can be edited in place. Editable: ${editable.join(', ')}. RM is not touched.")
         }
-        named.findAll { it.whenSet && v != null }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = true }
+        named.findAll { it.whenSet && v != null }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = (t.whenSet instanceof String) ? t.whenSet : true }
         (((entry.exclusive ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.exclusive ?: [])) as List)).findAll { List g -> name in g }.each { List g ->
             g.findAll { it != name }.each { other ->
-                fieldDefs.findAll { it.name == other && it.whenSet }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = false }
+                fieldDefs.findAll { it.name == other && it.whenSet == true && committed(it.key.toString().replace(".@N", ""))?.toString() == "true" }
+                    .each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = false }
             }
         }
         Map f = named.find { !it.whenSet } as Map
@@ -25854,15 +25933,19 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
     Map runCommand = null
     if (cap == "runCommand" && ["capabilityFilter", "command", "deviceIds", "useLastEventDevice"].any { mods.containsKey(it) }) {
         def committedIds = _rmStatusEntryDeviceIds(settingsByName["devices.${actionIdx}".toString()]).collect { it as Integer }
+        boolean useLast = mods.containsKey("useLastEventDevice") ? (mods.useLastEventDevice == true) : (committed("useLastDev")?.toString() == "true")
+        if (useLast && mods.deviceIds != null) throw new IllegalArgumentException("modifyAction on runCommand: deviceIds cannot be set while useLastEventDevice is true, because Rule Machine hides the device picker then. RM is not touched.")
+        def deviceIds = useLast ? null : (mods.containsKey("deviceIds") ? mods.deviceIds : (committedIds ?: null))
+        if (!useLast && !deviceIds) throw new IllegalArgumentException("modifyAction on runCommand: 'deviceIds' is needed when useLastEventDevice is false. RM is not touched.")
         runCommand = [capabilityFilter: mods.containsKey("capabilityFilter") ? mods.capabilityFilter : committed("myCapab"),
                       command: mods.containsKey("command") ? mods.command : committed("cCmd"),
-                      deviceIds: mods.containsKey("deviceIds") ? mods.deviceIds : (committedIds ?: null),
-                      useLastEventDevice: mods.containsKey("useLastEventDevice") ? (mods.useLastEventDevice == true) : (committed("useLastDev")?.toString() == "true")]
+                      deviceIds: deviceIds, useLastEventDevice: useLast]
         if (runCommand.command == null) throw new IllegalArgumentException("modifyAction on runCommand: 'command' is needed. RM is not touched.")
-        ["myCapab", "cCmd", "devices", "useLastDev"].each { writes.remove("${it}.${actionIdx}".toString()) }
+        if (useLast) _rmRequireLastEventDeviceTrigger("modifyAction on runCommand", appId, runCommand.capabilityFilter, status)
+        ["myCapab", "cCmd", "devices"].each { writes.remove("${it}.${actionIdx}".toString()) }
     }
     if (writes.isEmpty() && runCommand == null) throw new IllegalArgumentException("modifyAction.mods changes nothing on action ${actionIdx}. RM is not touched.")
-    return [cap: cap, action: action, subType: subType, writes: writes, fieldDefs: fieldDefs, runCommand: runCommand]
+    return [cap: cap, action: action, subType: subType, writes: writes, fieldDefs: fieldDefs, runCommand: runCommand, cond: cond]
 }
 private Map _rmCatalogEntryForSubType(String subType, Closure committed) {
     if (subType in ["getIfThen", "getElseIf", "getWhile", "getUntil", "getWaitRule", "getWaitEvents"]) return null
@@ -25922,9 +26005,16 @@ private Integer _rmPatchOpIndex(String op, Object raw) {
 private boolean _rmModifyTriggerInnerPartial(Map res) {
     ((res?.settingsSkipped as List)?.size() ?: 0) > 0 || res?.verificationFetchFailed == true
 }
+private void _rmCheckModifyTriggerShape(Object spec) {
+    Map m = spec instanceof Map ? spec as Map : [:]
+    String missing = m.index == null ? (m.triggerIndex != null ? "modifyTrigger.index is required (the key is index, not triggerIndex)" : "modifyTrigger.index is required") :
+        !(m.mods instanceof Map) ? "modifyTrigger.mods is required and must be a Map" : null
+    if (missing) throw new IllegalArgumentException("${missing}. modifyTrigger takes {index: <the triggerIndex addTrigger returned>, mods: {state: '<new-state>'}}; only the state field can change in place (capability/devices: removeTrigger + addTrigger). RM is not touched.".toString())
+}
 private Map _rmPatchModifyOp(Integer appId, Map pm, Long reqT0) {
     String op = _rmPatchModifyOpKeys().find { pm.containsKey(it) }
     def spec = pm[op]
+    if (op == "modifyTrigger") _rmCheckModifyTriggerShape(spec)
     if (!(spec instanceof Map) || spec.index == null) throw new IllegalArgumentException("${op}.index required")
     Integer index = _rmPatchOpIndex(op, spec.index)
     if (op == "removeTrigger") {
@@ -25933,8 +26023,7 @@ private Map _rmPatchModifyOp(Integer appId, Map pm, Long reqT0) {
                 beforeIndices: rtRes?.beforeIndices, afterIndices: rtRes?.afterIndices, partial: rtRes?.partial == true]
     }
     if (!(spec.mods instanceof Map)) {
-        String example = (op == "modifyTrigger") ? "{state: 'on'}" : "{ruleIds: [123]}"
-        throw new IllegalArgumentException("${op}.mods is required and must be a Map (e.g. ${example})")
+        throw new IllegalArgumentException("${op}.mods is required and must be a Map (e.g. {ruleIds: [123]})")
     }
     if (op == "modifyTrigger") {
         def mtRes = _rmModifyTrigger(appId, index, spec.mods as Map) ?: [:]
@@ -26491,6 +26580,10 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         def given = g.findAll { def got = actionSpec.get(it?.toString()); got != null && !(got == false && boolField(it.toString())) }
         if (given.size() > 1) throw new IllegalArgumentException("${specLabel} takes one of ${g.join(', ')}, not ${given.join(' and ')}.".toString())
     }
+    perLevel("together").each { List g ->
+        def given = g.findAll { actionSpec.get(it?.toString()) != null }
+        if (given && given.size() < g.size()) throw new IllegalArgumentException("${specLabel} takes ${g.join(' and ')} together, not ${given.join(' and ')} alone.".toString())
+    }
     if (!(catEntry.custom == true || catAction.custom == true)) {
         return _rmMapCatalogAction(cap, action, actionSpec, catEntry, catAction)
     }
@@ -26558,10 +26651,11 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actType = "dimmerActs"
         switch (action) {
             case "setColor":
-                if (actionSpec.colorName == null && !(actionSpec.rawSettings instanceof Map)) throw new IllegalArgumentException("color.setColor requires 'colorName' (e.g. 'Red') or a custom HSV color via rawSettings (colorH.@N).")
                 actSubType = "getSetColor"
                 fields = ["bulbs.@N": deviceIds]
                 if (actionSpec.colorName != null) fields["color.@N"] = actionSpec.colorName
+                if (actionSpec.hue != null) fields += ["color.@N": "Custom HSB color", "colorHex.@N": actionSpec.hue, "colorSat.@N": actionSpec.saturation]
+                if (actionSpec.rgb != null) fields += ["color.@N": "Custom RGB color", "colorH.@N": actionSpec.rgb]
                 if (actionSpec.level != null) fields["colorLevel.@N"] = actionSpec.level
                 break
             case "setColorPerMode":
@@ -26808,6 +26902,9 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actSubType = "getDefinedAction"
         if (!actionSpec.command) throw new IllegalArgumentException("runCommand requires 'command' (the device driver method name)")
         fields = ["useLastDev.@N": (actionSpec.useLastEventDevice == true)]
+        if (actionSpec.useLastEventDevice == true) {
+            _rmRequireLastEventDeviceTrigger("runCommand", appId, actionSpec.capabilityFilter, null, actionSpec.__pendingTriggerDeviceIds as List)
+        }
         if (actionSpec.parameters instanceof List && !actionSpec.parameters.isEmpty()) {
             actionSpec.parameters.eachWithIndex { p, paramIdx ->
                 if (!(p instanceof Map)) return
@@ -27149,7 +27246,7 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
         }
     }
 }
-private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null) {
+private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null, List pendingTriggerDeviceIds = null) {
     specs.eachWithIndex { spec, i ->
         if (!(spec instanceof Map)) {
             throw new IllegalArgumentException("${label}[${i}] must be an action spec object, got '${spec}'. RM is not touched.")
@@ -27161,7 +27258,9 @@ private void _rmPrevalidateActionSpecList(List specs, String label, Set validRul
         try {
             _rmValidateRoundZeroActionSpec(sm)
             _rmPrevalidateActionSpec(sm, cap, validRuleIds)
-            _rmMapActionSpec(appId, new LinkedHashMap(sm), cap, sm.action?.toString()?.trim())
+            def copy = new LinkedHashMap(sm)
+            if (pendingTriggerDeviceIds) copy.__pendingTriggerDeviceIds = pendingTriggerDeviceIds
+            _rmMapActionSpec(appId, copy, cap, sm.action?.toString()?.trim())
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException(_rmNotTouched("${label}[${i}]: ${e.message}".toString()), e)
         }
@@ -27678,6 +27777,19 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
                 miss.reason = "comparator_not_offered"
                 miss.capability = condSpec.capability?.toString()
             }
+        }
+    }
+    if (condSpec.compareToDevice instanceof Map) {
+        def ctd = condSpec.compareToDevice as Map
+        _rmWriteSettingOnPage(appId, "selectTriggers", "isDev_${idx}", true, applied, null, skipped)
+        def relPage = _rmFetchConfigJson(appId, "selectTriggers")
+        def relInput = (relPage?.configPage?.sections ?: []).collectMany { it?.input ?: [] }.find { it?.name?.toString() == "relDevice_${idx}".toString() }
+        if (relInput == null) {
+            throw new IllegalStateException("addTrigger.condition: compareToDevice: the reference-device picker relDevice_${idx} did not appear after isDev_${idx}=true.".toString())
+        }
+        _rmWriteSettingOnPage(appId, "selectTriggers", "relDevice_${idx}", ctd.deviceId.toString(), applied, null, skipped)
+        if (ctd.offset != null) {
+            _rmWriteSettingOnPage(appId, "selectTriggers", "state_${idx}", ctd.offset, applied, null, skipped)
         }
     }
     if (condSpec.buttonNumber != null) {
@@ -28549,8 +28661,11 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
         return false
     }
 }
-private boolean _rmPreEditBackupsOff() { (_requestSetting("backupBeforeRuleEdits") ?: settings?.backupBeforeRuleEdits?.toString()) == "false" }
-private boolean _rmStrictBackupsOn() { (_requestSetting("backupEveryRuleWrite") ?: settings?.backupEveryRuleWrite?.toString()) == "true" }
+private boolean _rmPreEditBackupsOff() { _rmBackupToggle("backupBeforeRuleEdits") == "false" }
+private boolean _rmStrictBackupsOn() { _rmBackupToggle("backupEveryRuleWrite") == "true" }
+private String _rmBackupToggle(String key) {
+    (REQUEST_SETTINGS instanceof Map && (REQUEST_SETTINGS as Map).containsKey(key)) ? _requestSetting(key) : settings?.get(key)?.toString()
+}
 Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
     if (_rmPreEditBackupsOff()) {
         _memoDropPreEditStatus(ruleId)
@@ -29017,7 +29132,7 @@ Map _rmStampOutcome(Object result) {
     if (skippedChecks) r.checksSkipped = skippedChecks
     boolean applied = r.rolledBack != true && (r.success == true || (r.partial == true && !unsettled))
     Boolean appliedFlag = applied ? true : (unsettled ? null : false)
-    boolean activated = applied && r.updateRuleFailed != true && r.subscriptionsNotLive != true &&
+    boolean activated = applied && r.status != "in_progress" && r.updateRuleFailed != true && r.subscriptionsNotLive != true &&
         r.mainPageDoneFailed != true && r.mainPageDoneSkipped != true && r.finalisationNotAttempted != true
     boolean verified = activated && r.success == true && r.verificationFetchFailed != true && r.healthUnverified != true &&
         (r.health == null || ((r.health as Map).ok == true && (r.health as Map).unreadable != true))
@@ -29377,11 +29492,6 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
     if (value == null) {
         throw new IllegalArgumentException("addLocalVariable.value is required (RM auto-commits the variable when varValue is written)")
     }
-    def applied = []
-    def skipped = []
-    _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
-    _rmWriteSettingOnPage(appId, "selectActions", "hbVar", name, applied, null, skipped)
-    _rmWriteSettingOnPage(appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
     def serializedValue = value
     if (typeCanonical == "Boolean") {
         if (value instanceof Boolean) serializedValue = value ? "true" : "false"
@@ -29394,6 +29504,19 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
             }
         }
     }
+    def existing = _rmReadLocalVarsMap(appId)
+    if (existing.ok && existing.vars.containsKey(name)) {
+        def meta = existing.vars.get(name)
+        def live = existing.live?.get(name)
+        def curValue = (live instanceof Map && live.containsKey("value")) ? live.value : (meta instanceof Map ? meta.value : null)
+        def curType = meta instanceof Map ? meta.type : null
+        throw new IllegalArgumentException("addLocalVariable: local variable '${name}' already exists on rule ${appId} (type ${curType}, value ${curValue}); use an action setLocalVariable to change its value, or removeLocalVariable first. RM is not touched.")
+    }
+    def applied = []
+    def skipped = []
+    _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
+    _rmWriteSettingOnPage(appId, "selectActions", "hbVar", name, applied, null, skipped)
+    _rmWriteSettingOnPage(appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
     _rmWriteSettingOnPage(appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
     def committed = false
     def attempts = 0
@@ -29879,16 +30002,20 @@ private Map _rmWriteRunCommandFields(Integer appId, Integer idx, Map actionSpec,
     String cmdKey = "cCmd.${idx}".toString()
     def ids = (actionSpec.deviceIds instanceof List) ? (actionSpec.deviceIds as List).join(", ") : actionSpec.deviceIds?.toString()
     String wrote = useLast ? "useLastDev=true" : "deviceIds [${ids}]".toString()
+    String rmRule = useLast
+        ? "with Use Last Event Device on, RM lists the commands of the rule's enabled trigger devices that have that capability (check that a trigger is on a device reporting '${capFilter}')"
+        : "RM lists commands only for devices it accepted into that capability's picker (check that the devices report '${capFilter}')"
+    String source = useLast ? "the rule's trigger device(s) with capability '${capFilter}'" : "the selected device(s)"
     def cmdInput = _rmRevealedInputOrThrow(appId, cmdKey,
-        "the command picker '${cmdKey}' was not revealed after writing ${wrote} for capability '${capFilter}' on action ${idx} -- RM lists commands only for devices it accepted into that capability's picker (check that the devices report '${capFilter}').".toString(),
+        "the command picker '${cmdKey}' was not revealed after writing ${wrote} for capability '${capFilter}' on action ${idx} -- ${rmRule}.".toString(),
         "runCommand")
     List opts = _rmReadPickerOptionStrings(cmdInput)
     if (!opts) {
-        throw new IllegalArgumentException("runCommand: RM found no commands for the selected device(s) on action ${idx} (its picker shows 'No commands found').")
+        throw new IllegalArgumentException("runCommand: RM found no commands for ${source} on action ${idx} (its picker shows 'No commands found').")
     }
     String canonical = opts.find { it == cmd } ?: opts.find { it?.equalsIgnoreCase(cmd) }
     if (canonical == null) {
-        throw new IllegalArgumentException("runCommand: '${cmd}' is not a command of the selected device(s) on action ${idx}. RM offers: ${opts.sort().join(', ')}.")
+        throw new IllegalArgumentException("runCommand: '${cmd}' is not a command of ${source} on action ${idx}. RM offers: ${opts.sort().join(', ')}.")
     }
     _rmWriteSettingOnPage(appId, "doActPage", cmdKey, canonical, applied, null, skipped)
     written.put(cmdKey, canonical)
@@ -31088,6 +31215,9 @@ private List _rmHealthRegressionNewIssues(Map baselineHealth, Map nowHealth) {
     def nowIssues = (nowHealth?.issues ?: []) as Set
     def nowStructural = (nowHealth?.structuralIssues ?: []) as Set
     def newIssues = ((nowIssues - baselineIssues) + (nowStructural - baselineStructural)).collect { it.toString() }
+    if (baselineHealth != null) {
+        newIssues.addAll((((nowHealth?.warnings ?: []) as Set) - ((baselineHealth.warnings ?: []) as Set)).collect { it.toString() })
+    }
     def baselineMarkerCounts = (baselineHealth?.brokenMarkerCounts instanceof Map) ? (baselineHealth.brokenMarkerCounts as Map) : [:]
     def nowMarkerCounts = (nowHealth?.brokenMarkerCounts instanceof Map) ? (nowHealth.brokenMarkerCounts as Map) : [:]
     nowMarkerCounts.each { marker, cnt ->
@@ -32166,28 +32296,30 @@ def _applyNativeAppEdit(args) {
             && !addRequiredExpressionSpec && !replaceRequiredExpressionSpec && !addLocalVariableSpec && !removeLocalVariableSpec && !patchesList && !removeActionSpec && !clearActionsFlag && replaceActionsList == null && !moveActionSpec && !walkStepSpec && !removeTriggerSpec && !modifyTriggerSpec && !modifyActionSpec) {
         throw new IllegalArgumentException("Editing an app requires one of: 'settings' (Map) or 'button' (String) for any classic app; or, for Rule Machine rules via hub_set_rule, a structured shortcut -- 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'replaceRequiredExpression' (Map), 'addLocalVariable' (Map), 'removeLocalVariable' ({name}), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), 'modifyAction' ({index:N, mods:{ruleIds:[...]}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
     }
+    Map modifyActionPlan = null
     try {
         if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
         addActionsList?.each { if (it instanceof Map) _rmRejectUnwalkableExpressionConditions(it as Map) }
         if (patchesList != null) _rmRejectMultiOpPatchItems(patchesList)
         def preActs = (addActionSpec ? [addActionSpec] : []) + (addActionsList ?: []) + (replaceActionsList ?: [])
-        if (preActs) _rmPrevalidateActionSpecList(preActs, addActionSpec ? "addAction" : (addActionsList ? "addActions" : "replaceActions"),
-            _rmSpecListTargetsRule(preActs) ? _rmValidRuleIds() : null, appId)
         def preTrigs = (addTriggerSpec ? [addTriggerSpec] : []) + (addTriggersList ?: [])
+        def preTrigDeviceIds = preTrigs.findAll { it instanceof Map }.collectMany { Map t -> (t.deviceIds instanceof List) ? (t.deviceIds as List) : (t.deviceId != null ? [t.deviceId] : []) }
+        if (preActs) _rmPrevalidateActionSpecList(preActs, addActionSpec ? "addAction" : (addActionsList ? "addActions" : "replaceActions"),
+            _rmSpecListTargetsRule(preActs) ? _rmValidRuleIds() : null, appId, preTrigDeviceIds)
         if (preTrigs) _rmPrevalidateTriggerSpecList(preTrigs, addTriggerSpec ? "addTrigger" : "addTriggers")
         if (addRequiredExpressionSpec) _rmPrevalidateConditionList(addRequiredExpressionSpec, "addRequiredExpression")
         if (replaceRequiredExpressionSpec) _rmPrevalidateConditionList(replaceRequiredExpressionSpec, "replaceRequiredExpression")
         if (modifyActionSpec) {
             if (modifyActionSpec.index == null) throw new IllegalArgumentException("modifyAction.index is required. RM is not touched.")
             if (!(modifyActionSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyAction.mods is required: the fields to change, e.g. {ruleIds: [123]}. RM is not touched.")
-            _rmPlanModifyAction(appId, _rmPatchOpIndex("modifyAction", modifyActionSpec.index), modifyActionSpec.mods as Map)
+            modifyActionPlan = _rmPlanModifyAction(appId, _rmPatchOpIndex("modifyAction", modifyActionSpec.index), modifyActionSpec.mods as Map)
         }
         _rmRejectDisabledAppEdit(appId, _rmEditOpLabel(args))
         if (settingsMap?.values()?.any { it instanceof Map }) {
             _rmRejectNonDeviceMapSettings(appId, args?.pageName?.toString()?.trim() ?: null, settingsMap)
         }
-    } catch (IllegalArgumentException preflightExc) {
-        return _rmBuildUpdateErrorResponse(appId, preflightExc.message, null, "doActPage", preflightExc)
+    } catch (Exception preflightExc) {
+        return _rmBuildUpdateErrorResponse(appId, preflightExc.message ?: preflightExc.toString(), null, "doActPage", preflightExc)
     }
     if (replaceRequiredExpressionSpec) {
         def stNames = null
@@ -32281,7 +32413,7 @@ def _applyNativeAppEdit(args) {
     if (modifyActionSpec) {
         def maResult
         try {
-            maResult = _rmModifyAction(appId, modifyActionSpec.index as Integer, modifyActionSpec.mods as Map, args?.__reqT0 as Long)
+            maResult = _rmModifyAction(appId, modifyActionSpec.index as Integer, modifyActionSpec.mods as Map, args?.__reqT0 as Long, modifyActionPlan)
         } catch (Exception e) {
             mcpLogError("rm-native", "modifyAction failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
@@ -32293,7 +32425,8 @@ def _applyNativeAppEdit(args) {
             mcpLog("warn", "rm-native", "modifyAction: post-edit health probe failed for app ${appId}: ${healthExc.message}")
         }
         boolean maOk = (maResult?.success == true) && _rmHealthGatePass(maHealth)
-        def maOut = [success: maOk, partial: !maOk, appId: appId, backup: backup] + (maResult ?: [:]) + [
+        def maOut = [appId: appId, backup: backup] + (maResult ?: [:]) + [
+            success: maOk, partial: !maOk,
             health: maHealth,
             error: maOk ? null : (maResult?.error ?: "modifyAction: the edit committed but the health check reports the rule broken -- inspect health.issues and ${_rmRestoreClause(backup)} if the damage is real."),
             restoreHint: maOk ? null : _rmBackupHint(backup),
@@ -32492,8 +32625,7 @@ def _applyNativeAppEdit(args) {
                 trigIdxOut = (removeTriggerSpec.index as Integer)
                 trigMutResult = _rmRemoveTrigger(appId, trigIdxOut)
             } else if (modifyTriggerSpec) {
-                if (modifyTriggerSpec.index == null) throw new IllegalArgumentException("modifyTrigger.index is required")
-                if (!(modifyTriggerSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyTrigger.mods is required and must be a Map (e.g. {state: 'on'})")
+                _rmCheckModifyTriggerShape(modifyTriggerSpec)
                 trigIdxOut = (modifyTriggerSpec.index as Integer)
                 trigMutResult = _rmModifyTrigger(appId, trigIdxOut, modifyTriggerSpec.mods as Map)
             }
@@ -33116,6 +33248,7 @@ def _applyNativeAppEdit(args) {
     try {
         def result = [success: true, appId: appId, backup: backup]
         def implicitCommitButton = null
+        boolean settingsWritten = false
         if (settingsMap) {
             def config = _rmFetchConfigJson(appId, pageName)
             def schema = _rmCollectInputSchema(config?.configPage)
@@ -33131,7 +33264,7 @@ def _applyNativeAppEdit(args) {
             def isSubPageWrite = (pageName && pageName != "mainPage")
             def subPageApplied = []
             def subPageSkipped = []
-            if (button && pageName) _rmRequireRenderedButton(config?.configPage as Map, button, pageName)
+            settingsWritten = !knownSettings.isEmpty()
             if (knownSettings && isSubPageWrite) {
                 knownSettings.each { k, v ->
                     _rmWriteSettingOnPage(appId, pageName, k.toString(), v, subPageApplied, null, subPageSkipped)
@@ -33175,7 +33308,12 @@ def _applyNativeAppEdit(args) {
             if (pageName) {
                 try { _rmClickRenderedButton(appId, button, args?.stateAttribute?.toString(), pageName) }
                 catch (IllegalArgumentException notRendered) {
-                    if (settingsMap || _rmOutcomeFlags(notRendered).notSent != true) throw notRendered
+                    if (_rmOutcomeFlags(notRendered).notSent != true) throw notRendered
+                    if (settingsWritten) {
+                        return result + [success: false, partial: true, mainPageDoneSkipped: true,
+                                         error: "${notRendered.message} The settings in this call were written first and stay applied: ${result.settingsApplied}.".toString(),
+                                         restoreHint: _rmBackupHint(backup)]
+                    }
                     return [success: false, appId: appId, error: notRendered.message, backup: backup,
                             restoreHint: _rmPreflightRestoreHint(null, backup, "Refused before the click was sent, so nothing needs to be restored.")]
                 }
@@ -40832,7 +40970,7 @@ private Map _rmEmptyHealthVerdict(Map overrides) {
              label: null, disabled: null, paused: null, configPageError: null,
              brokenMarkers: [], brokenMarkerCounts: [:],
              multipleFlagPoison: [], structuralIssues: [], orphanedActionRows: [],
-             validationErrors: [], issues: [], checkErrors: []]
+             validationErrors: [], issues: [], warnings: [], checkErrors: []]
     v.putAll(overrides ?: [:])
     return v
 }
@@ -40841,6 +40979,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
         return _rmEmptyHealthVerdict(unreadable: true, issues: ["health check failed: appId is null"])
     }
     def issues = []
+    def warnings = []
     def checkErrors = []
     def label = null
     Boolean appDisabled = null
@@ -40910,7 +41049,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
             }
             if (cfg?.settings?.useST?.toString() == "true") {
                 if (ruleFormat == "rm" && requiredExpressionTokens == 0) {
-                    issues << "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED. Rebuild it with hub_set_rule(addRequiredExpression=...), or turn useST off if no gate is wanted.".toString()
+                    warnings << "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED. Rebuild it with hub_set_rule(addRequiredExpression=...), or turn useST off if no gate is wanted.".toString()
                 } else if (requiredExpressionTokens == null) {
                     checkErrors << "Required Expression is enabled (useST) but the committed expression was not read, so an ungated rule is not ruled out -- re-check it, or read its expression with hub_get_app_config.".toString()
                 }
@@ -40973,6 +41112,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
     brokenMarkers.each { m -> brokenMarkerCounts.put(m, (brokenMarkerCounts.get(m) ?: 0) + 1) }
     def result = [
         ok: issues.isEmpty() && broken != true && validationErrors.isEmpty(),
+        warnings: warnings,
         unreadable: sourcesUsed.isEmpty(),
         broken: broken,
         source: (sourcesUsed ? sourcesUsed.join("+") : "none"),
@@ -42079,7 +42219,7 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 - Without a native export (or with the default `preserveRuleId: true`), a native rule snapshot replays its settings in place when the rule still exists. If the rule was deleted, the restore creates a NEW rule and replays the settings onto it. The result then carries the new `ruleId`, the `originalRuleId` and `recreated: true`, so update anything that referenced the old id. A Required Expression lives in Rule Machine's app state, which a settings replay cannot write, so the restore then makes the rule's expression match the snapshot: it rebuilds the snapshot's expression (each condition re-walked from its saved settings), or removes the live one when the snapshot had none, and confirms the rendered result before the old expression's tokens are removed. `requiredExpressionRestored: true` means it matches. A snapshot expression naming a device deleted since the backup is not rebuilt: the live expression stays (`preRestoreExpressionKept: true`) and the error names the device. Conditions are compared by their rendered text, so a device renamed since the backup reads as a mismatch: the rebuild is backed out with `requiredExpressionRestored: false`, and the expression is set with `hub_set_rule`. A failed rebuild puts back what was committed before it: `preRestoreExpressionKept` (true or false) when the rule had an expression; otherwise `requiredExpressionPartial` when part of the snapshot's expression got committed (the error says whether it is only the first condition). Conditions it could not remove are listed in `leftoverConditionIds`. `requiredExpressionRestored: false` turns the result into `success: false` + `partial: true` with the reason in `error`, and the rule's expression must be rebuilt with `hub_set_rule`. Triggers and actions also live in app state: a trigger, action or condition the live rule has beyond the snapshot is removed (`removedTriggers` / `removedActions` / `removedConditionIds`), while one the snapshot has and the rule lacks cannot be rebuilt by a replay. It is named in `missingTriggers` / `missingActions` with `structureRestored: false`, `success: false` and `partial: true`; add it back with `hub_set_rule`. Actions the backup also has are moved back into its order; an order the moves cannot restore is reported in `actionOrder` with `structureRestored: false`, and a failed closing Update Rule in `updateRuleFailed`. A device deleted since the backup is left out of the replay (listed in `settingsSkipped`, `partial: true`), because Rule Machine stops rendering a rule whose picker names a missing device. A settings replay writes back the settings the backup holds. For a Rule Machine rule, settings added after the backup go with the trigger, action or condition the restore removes. For any other app type (Basic Rules among them), every non-button setting the app gained after the backup is emptied and listed in `settingsCleared` (the hub keeps no way to delete one), and the app is finished with its own commit -- its Done where it has no Update button, since an Update click breaks a Basic Rule's page (a Done that does not commit returns `success: false`). The App Cloner restore has no such leftovers, since it builds a new app from the backup alone.
 
 - `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub. A full local backup (`fullBackup:true`) never goes to the database restore: it runs the full-restore flow the web UI uses (the archive is read off the hub, uploaded to the full-restore endpoint, then restored).
-- `scope=hub_uploaded` -- fetch a backup from `backupUrl` and restore it (open-world). The fetched file decides the route: a `.tar.gz` full backup runs the full-restore flow, a `.lzf` database backup the database restore, and anything else is refused. `fullRestore` needs a full backup and is refused with a `.lzf` URL. The URL's size is read first with a one-byte range request (or the declared length of a host that ignores it): a backup over 16 MB (8 MB for a `.lzf` URL), or one whose size the host does not report, is refused before it is fetched. The URL may not point at this hub (loopback or its own address) except a File Manager file under `/local/`, and must use a host name or a dotted-quad IPv4 address. A full local backup whose size the hub's list does not give is refused rather than downloaded.
+- `scope=hub_uploaded` -- fetch a backup from `backupUrl` and restore it (open-world). The fetched file decides the route: a `.tar.gz` full backup runs the full-restore flow, a `.lzf` database backup the database restore, and anything else is refused. `fullRestore` needs a full backup and is refused with a `.lzf` URL. The URL's size is read first with a one-byte range request (or the declared length of a host that ignores it): a backup over 16 MB (8 MB for a `.lzf` URL), or one whose size the host does not report, is refused before it is fetched. The URL may not point at this hub (loopback or its own address) except a File Manager file under `/local/<file name>` (a percent-encoded name works), which is read through the File Manager with its listed size; it must use a host name or a dotted-quad IPv4 address. A size check that fails names its reason (an HTTP status, a DNS failure). A full local backup whose size the hub's list does not give is refused rather than downloaded.
 - `fullRestore={restoreZigbee, restoreZwave, restoreFiles, deleteExistingFiles, allowZwaveFirmwareMismatch}` (booleans, all default false) picks what a full restore brings back besides the database, for a full `hub_local` backup or a `hub_uploaded` archive; `scope=hub_cloud` restores the database only and refuses it. `deleteExistingFiles` needs `restoreFiles`. A restore request the hub never answers returns `outcome: "unknown"`: the hub may be rebooting into the restore, so check it before retrying. A Z-Wave firmware or Z-Wave stack mismatch between hub and backup is refused with the reason; `allowZwaveFirmwareMismatch=true` restores over a hub whose Z-Wave firmware is newer. Full archives over 16 MB are refused in-app before they are downloaded (the web UI takes up to 150 MB).''',
         file_manager: '''## File Manager
 
@@ -42505,13 +42645,14 @@ The report surfaces the compiled-state broken verdict, validationErrors, config-
 - `ruleBuilderJson`: the compiled-state verdict only.
 - `configPage`: the legacy RM HTML render scan only.
 
-`unreadable:true` (with `ok:false`) means neither source could be read. The rule may be missing or the read hit a transient failure, so this is not evidence of breakage. If only one source failed, `ok` reflects the source that was read and `checkErrors` names the failed leg (or a failed statusJson read for the live counts); re-run for a full verdict. `brokenMarkerCounts` counts each broken marker. Apps with no compiled verdict (vrb-classic, button-controller, basic-rule, classic-app) report `broken: null`. Mutation responses from `hub_set_rule` may include a structural verdict under `health`; schema probes and some refusal/error paths omit it. Embedded health has fewer fields than the standalone diagnostic. Call `hub_get_rule_health(appId)` for a fresh full report. `hub_set_visual_rule` attaches it on every response that resolves to a rule id; an early create failure has no id.
+`unreadable:true` (with `ok:false`) means neither source could be read. The rule may be missing or the read hit a transient failure, so this is not evidence of breakage. If only one source failed, `ok` reflects the source that was read and `checkErrors` names the failed leg (or a failed statusJson read for the live counts); re-run for a full verdict. `warnings` lists states the rule runs with as asked, such as Required Expression on with no expression committed (the rule runs ungated); a warning never lowers `ok`, so a write that set exactly that state still succeeds. `brokenMarkerCounts` counts each broken marker. Apps with no compiled verdict (vrb-classic, button-controller, basic-rule, classic-app) report `broken: null`. Mutation responses from `hub_set_rule` may include a structural verdict under `health`; schema probes and some refusal/error paths omit it. Embedded health has fewer fields than the standalone diagnostic. Call `hub_get_rule_health(appId)` for a fresh full report. `hub_set_visual_rule` attaches it on every response that resolves to a rule id; an early create failure has no id.
 
 ### hub_list_rule_local_variables
 
 List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals). Requires the Read master.
 
 - Hub globals are covered by `hub_list_variables`; locals are created via `hub_set_rule` `addLocalVariable` / `removeLocalVariable`.
+- `addLocalVariable` takes `{name, type, value}`, all three required: RM commits the variable only when its value is written. `type` is Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime is an ISO timestamp, e.g. 2026-05-06T12:00:00) and the value must match it. The `setLocalVariable` action differs: it takes exactly one of value/sourceVariable/fromDevice/math. Use a local as `%name%` in actions and expressions. An existing name is refused before the wizard opens; change its value with a `setLocalVariable` action, or `removeLocalVariable` first.
 - Reads the rule's `statusJson` appState: names and types from `allLocalVars`, current values from each variable's live `lv_<name>` entry (`allLocalVars` keeps the old value after an action sets the variable until someone opens the rule's page).
 - Pure read -- no wizard, no mutation.
 - Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is the hub's internal token, not the `addLocalVariable` enum. Map it back before reuse: integer→Number, bigdecimal→Decimal, string→String, boolean→Boolean, datetime→DateTime.
@@ -42587,7 +42728,7 @@ With **Back up native apps before edits** on (the default), each edit response i
 
 ### Shapes come from discover
 
-Trigger, condition and action fields are served, not written here: `hub_set_rule(operation:'discover', args:{kind:'trigger'|'condition'|'action', capability?, action?})`. Without `capability` it lists every capability Rule Machine has for that kind; with one it returns that capability's required and optional fields, Rule Machine's attribute, default state and device picker, and an example. An action's `conditionalRequired` lists the fields each of its actions needs; an inner list means one of those fields. `requires` lists the same for the whole entry, and `exclusive` lists groups of which at most one field may be given. Capability names are Rule Machine's own (any case). Rule Machine offers a capability only when the hub has something for it (a device with that capability, Safety Monitor, rules), and a value its live picker does not list is refused with the picker's list. What the schema cannot carry:
+Trigger, condition and action fields are served, not written here: `hub_set_rule(operation:'discover', args:{kind:'trigger'|'condition'|'action', capability?, action?})`. Without `capability` it lists every capability Rule Machine has for that kind; with one it returns that capability's required and optional fields, Rule Machine's attribute, default state and device picker, and an example. An action's `conditionalRequired` lists the fields each of its actions needs; an inner list means one of those fields. `requires` lists the same for the whole entry, and `exclusive` lists groups of which at most one field may be given; `together` lists fields given all at once (an in-place edit may change one of them alone on a row that already uses them). Capability names are Rule Machine's own (any case). Rule Machine offers a capability only when the hub has something for it (a device with that capability, Safety Monitor, rules), and a value its live picker does not list is refused with the picker's list. What the schema cannot carry:
 
 - **Sub-expression** (`addRequiredExpression` only; nested subExpression is refused on action expressions): `{subExpression:{conditions:[...], operator?, operators?}}`.
 - **Device attribute vs a hub variable** has no direct shape: copy the attribute into a variable with an `addAction setVariable` using `fromDevice`, then compare with `compareToVariable`.
@@ -42619,13 +42760,13 @@ Also a valid `patches[]` op (reported as `op: 'replaceRequiredExpression'`). Ins
 
 ### `walkStep` schema-aware wizard walker
 
-For what the shortcuts cannot express (Periodic sub-pages, newer RM fields). Spec: `{page, operation, write?:{<field>:<value>}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, validateEnum?, steps?:[...]}`. Operations: `introspect`; `write` (one field); `click`; `navigate` (into a sub-page by its href); `done` (submit a sub-page to its parent; a Periodic row needs it); `drive` (run `steps=[...]` in one call; a step without `page` continues where the last ended; `stopOnError=false` runs on past a failure).
+For what the shortcuts cannot express (Periodic sub-pages, newer RM fields). Spec: `{page, operation, write?:{<field>:<value>}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, validateEnum?, steps?:[...]}`. Operations: `introspect`; `write` (one field); `click`; `navigate` (into a sub-page by its href); `done` (submit a sub-page to its parent; a Periodic row needs it); `drive` (run `steps=[...]` in one call; a step without `page` stays on the last one; `stopOnError=false` runs on past a failure).
 
-Each step returns `before`/`after` schemas, `diff`, `valueEcho`, `silentRejection`, `opResult` and `health`; a failure carries `error` and `repairHints`. Refused before anything is sent: a `write` to a field the page does not show or of a value its picker does not list (`opResult.refused`), a `click` on a button the page does not render (the error lists the rendered buttons), and `navigate`/`done` while a required input is empty or invalid, as the UI refuses them.
+Each step returns `before`/`after` schemas, `diff`, `valueEcho`, `silentRejection`, `opResult` and `health`; a failure carries `error` and `repairHints`. Refused before anything is sent: a `write` to a field the page does not show or of a value its picker does not list (`opResult.refused`), a `click` on a button the page does not render (the error lists those it renders), and `navigate`/`done` while a required input is empty or invalid.
 
-RM builds some pages only inside an open editor; the walker's prerequisite table, quoted in its refusals and `repairHints`: `doActPage` needs an action editor (`N` with stateAttribute `doActN`, or `<n>.0.false` with `doAct`, on `selectActions`); a trigger or condition slot needs `true` with `moreCond` (or `<n>` with `editCond`); a saved Required Expression opens in its editor after `editST` on `STPage`; `periodic` needs `hrefContext` with its `n`; `cancelCapab` drops the open condition on the page's next render.
+Pages RM builds only inside an open editor (quoted in refusals and `repairHints`): `doActPage` needs an action editor (`N` with stateAttribute `doActN`, or `<n>.0.false` with `doAct`, on `selectActions`); a trigger or condition slot needs `true` with `moreCond` (or `<n>` with `editCond`); a saved Required Expression opens in its editor after `editST` on `STPage`; `periodic` needs `hrefContext` with its `n`; `cancelCapab` drops the open condition on the page's next render.
 
-End a drive with `done` to run the mainPage Done (the `updateRule` equivalent); without it the change is written but not subscribed. A multi-device switch trigger in one call:
+End a drive with `done` (the mainPage Done, like `updateRule`); without it the change is written but not subscribed. A multi-device switch trigger:
 ```
 hub_set_rule(appId=N, confirm=true, walkStep={operation:'drive', steps:[
   {page:'selectTriggers', operation:'click', click:{name:'true', stateAttribute:'moreCond'}},
@@ -42636,15 +42777,15 @@ hub_set_rule(appId=N, confirm=true, walkStep={operation:'drive', steps:[
   {page:'selectTriggers', operation:'done'}]})
 ```
 
-Raw mode is the same flow one call per step: `settings` (+ `pageName`) writes inputs the page shows, `button` (+ `stateAttribute`, `pageName`) clicks one; with `pageName` it is checked against the page's buttons before any `settings` are written. A mainPage `settings` write is followed by `updateRule`; a sub-page write is not, so close the editor with its Done (`hasAll`, `actionDone`), then `button='updateRule'`. After `hasAll` the tool clears RM's leftover `isCondTrig.<N>` prompt (`wizardDoneAutoRetry`). `settings:{useST:true}` only shows the Required Expression page (build it with `addRequiredExpression`); `settings:{isFunction:true}` makes the rule return a value.
+Raw mode is the same flow one call per step: `settings` (+ `pageName`) writes inputs the page shows, `button` (+ `stateAttribute`, `pageName`) clicks one; with `pageName` it is checked against the page as re-rendered after the call's `settings` land; an unrendered button is not clicked, and after a settings write the result is `partial` with `settingsApplied`. A mainPage `settings` write is followed by `updateRule`; after a sub-page write, close the editor with its Done (`hasAll`, `actionDone`), then `button='updateRule'`. After `hasAll` the tool clears RM's leftover `isCondTrig.<N>` prompt (`wizardDoneAutoRetry`). `settings:{useST:true}` only shows the Required Expression page (build it with `addRequiredExpression`); `settings:{isFunction:true}` makes the rule return a value.
 
 ### Responses: applied, activated, verified
 
-Every write answers `success`, `partial` and three outcome flags: `applied` (something was written and stays; a refused or rolled-back call is `applied:false`; `null` when a failure left fields written or an editor open, so read the target before retrying), `activated` (the rule runs with it: the re-initialization that follows a trigger, expression, variable or bulk action change was fired and accepted; a single addAction or modifyAction needs nothing more) and `verified` (activated, and the readback and the health check confirmed it). When `activated` is false the response names why (`updateRuleFailed` with `updateRuleError` and the part that is not live: `subscriptionsNotLive`, `expressionNotLive`, `variableNotLive` or `patchesNotLive`; or `finalisationNotAttempted` after a stopped batch) and `repairHints` says what to run, normally `hub_set_rule(button='updateRule', confirm=true)` once the rule is complete.
+Every `hub_set_rule` response answers `success`, `partial` and three outcome flags (`hub_set_native_app` responses do not carry them): `applied` (something was written and stays; a refused or rolled-back call is `applied:false`; `null` when a failure left fields written or an editor open, so read the target before retrying), `activated` (the rule runs with it: the re-initialization that follows a trigger, expression, variable or bulk action change was fired and accepted; a single addAction or modifyAction needs nothing more) and `verified` (activated, and the readback and the health check confirmed it). When `activated` is false the response names why (`updateRuleFailed` with `updateRuleError` and the part that is not live: `subscriptionsNotLive`, `expressionNotLive`, `variableNotLive` or `patchesNotLive`; `finalisationNotAttempted` after a stopped batch; or `mainPageDoneFailed`/`mainPageDoneSkipped` when the closing mainPage Done failed or was not run) and `repairHints` says what to run, normally `hub_set_rule(button='updateRule', confirm=true)` once the rule is complete.
 
 A trigger, expression or local-variable edit, and `addActions`, `replaceActions`, `clearActions`, `removeAction` and `moveAction`, run Rule Machine's update, which rebuilds the rule's subscriptions: a paused rule stays paused, and a stopped rule is restarted with its private boolean set to true (`restartedStoppedRule:true`; `stoppedStateUnverified:true` when that state could not be read). A single `addAction` or `modifyAction` runs no update.
 
-`settingsSkipped[]` lists each field that did not land as RM's editor showed it, with a `reason` and, where one applies, a `hint`; informational entries (`reveal_fallback_to_existing_field`, `useST_idempotent_noop`, `device_list_committed_schema_unchanged`, `state_change_comparator_ignored_explicit_value`) do not make the call `partial`. An action RM does not bake is removed by the add and reported `success:false, rolledBack:true`. A bulk add, `replaceActions` or `patches` stops at the first failed or partial item: later items are `notAttempted`, `bulkStoppedAfter` names the stop, and earlier items stay written (it is not a transaction), so repair the stopping item and add the rest, or restore `backup.backupKey`.
+`settingsSkipped[]` lists each field that did not land as RM's editor showed it, with a `reason` and, where one applies, a `hint`; informational entries (`reveal_fallback_to_existing_field`, `useST_idempotent_noop`, `device_list_committed_schema_unchanged`, `state_change_comparator_ignored_explicit_value`) do not make the call `partial`. An action RM does not bake is removed by the add and reported `success:false, rolledBack:true`. A bulk add, `replaceActions` or `patches` stops at the first failed or partial item: later items are `notAttempted`, `bulkStoppedAfter` names the stop, and earlier items stay written (it is not a transaction), so repair the stopping item and add the rest, or restore `backup.backupKey`. A time-budget pause (`status:'in_progress'`) answers `activated:false, verified:false`: what it committed stays (`applied`), and the rule's update runs when the remaining work finishes.
 
 ### deviceId vs deviceIds normalization (all condition writes)
 
@@ -42652,7 +42793,7 @@ Conditions accept either `deviceIds: [N]` (array) or singular `deviceId: N`; the
 
 ### Action mutations (clearActions / replaceActions / moveAction / modifyAction)
 
-`clearActions: true` removes every action; `replaceActions: [...]` clears them and adds the specs (`[]` clears only). `moveAction` moves one row a slot and confirms the new position; `modifyAction` edits a row through RM's own editor and reads it back. When a clear or move cannot be confirmed in the verify window the response is `asyncCommitLikely: true, partial: true` with a `verifyHint`: read the rule with `hub_get_app_config(appId)` before retrying (a late commit plus a retry doubles the change), and never click `cancelTrash` as a recovery, since in trash-confirmation mode it can commit the pending deletes.''',
+`clearActions: true` removes every action; `replaceActions: [...]` clears them and adds the specs (`[]` clears only). `moveAction` moves one row a slot and confirms the new position; `modifyAction` edits a row through RM's own editor and reads it back; a Simple Conditional Action keeps its condition. When a clear or move cannot be confirmed in the verify window the response is `asyncCommitLikely: true, partial: true` with a `verifyHint`: read the rule with `hub_get_app_config(appId)` before retrying (a late commit plus a retry doubles the change), and never click `cancelTrash` as a recovery, since in trash-confirmation mode it can commit the pending deletes.''',
         set_rule_create_reference: '''## `hub_set_rule` create reference
 
 ### appType options
@@ -42992,17 +43133,18 @@ def guideSectionBlocks(text) {
     return blocks
 }
 def guidePageChars() { 90000 }
-def paginateGuideContent(content, cursor) {
+def fullGuidePageChars() { 30000 }
+def paginateGuideContent(content, cursor, int pageChars = guidePageChars()) {
     String text = (content ?: '').toString()
     int total = text.length()
     int start = _parseListCursor(cursor, total, "hub_get_tool_guide")
-    if (start > 0 && total <= guidePageChars()) {
+    if (start > 0 && total <= pageChars) {
         throw new IllegalArgumentException(
             "cursor ${start} does not belong to this payload: it fits one response (${total} chars) and was never paged, " +
             "so paging from ${start} would silently drop the first ${start} characters. Omit cursor. " +
             "A cursor is only valid for the call that returned it -- the no-section full-guide call.")
     }
-    int end = Math.min(start + guidePageChars(), total)
+    int end = Math.min(start + pageChars, total)
     if (end < total) {
         int nl = text.lastIndexOf("\n", end)
         if (nl > start) end = nl + 1
