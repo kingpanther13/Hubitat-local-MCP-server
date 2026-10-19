@@ -240,8 +240,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '100000' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '50' }
         hubGet.register('/hub/advanced/databaseSize') { params -> '100' }
-        script.metaClass.downloadHubFile = { String fileName -> ("timestamp,freeMemoryKB,internalTempC,databaseSizeKB,uptimeSeconds
-" + rows).getBytes('UTF-8') }
+        script.metaClass.downloadHubFile = { String fileName -> (['timestamp,freeMemoryKB,internalTempC,databaseSizeKB,uptimeSeconds'] + rows).join('\n').getBytes('UTF-8') }
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
 
         when:
@@ -253,17 +252,11 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.trendRowsSkipped == skipped
 
         where:
-        label                     | rows                                                    || points | note                                  | skipped
-        'a fresh point'           | "${1234567890000L - 60000L},100000,50.0,30,600
-"       || 1      | ''                                    | null
-        'a point over a day old'  | "${1234567890000L - 90000000L},100000,50,30,600
-"      || 1      | 'The newest trend point is from'      | null
-        'only unreadable rows'    | "notatime,1,2,3,4
-short,row
-"                         || 0      | 'could not be read'                   | 2
-        'a bad row among good'    | "notatime,1,2,3,4
-${1234567890000L - 60000L},1,2,3,4
-" || 1      | ''                                    | 1
+        label                     | rows                                                        || points | note                             | skipped
+        'a fresh point'           | ["${1234567890000L - 60000L},100000,50.0,30,600"]            || 1      | ''                               | null
+        'a point over a day old'  | ["${1234567890000L - 90000000L},100000,50,30,600"]           || 1      | 'The newest trend point is from' | null
+        'only unreadable rows'    | ['notatime,1,2,3,4', 'short,row']                           || 0      | 'could not be read'              | 2
+        'a bad row among good'    | ['notatime,1,2,3,4', "${1234567890000L - 60000L},1,2,3,4"]   || 1      | ''                               | 1
     }
 
     def "a hub reading is a number when it is one, else its text"() {
@@ -273,8 +266,7 @@ ${1234567890000L - 60000L},1,2,3,4
         where:
         raw       || value
         '42'      || 42L
-        ' 42.5
-' || 42.5G
+        ' 42.5 '  || 42.5G
         ''        || ''
         null      || null
         'abc'     || 'abc'
