@@ -13241,6 +13241,8 @@ def guideSectionBlocks(text) {
 // ~95 KB against the 120,000-byte guard. Every section fits one page today; the full guide (~188 KB)
 // does not, and never did.
 def guidePageChars() { 90000 }
+// The no-section full guide pages smaller: a 90,000-character first page is over some clients' tool-result limit.
+def fullGuidePageChars() { 30000 }
 
 // Page a guide payload so NO hub_get_tool_guide call can dead-end on the response-size guard: the
 // documented no-section call used to exceed the cap outright, and a size-guard envelope hands the
@@ -13249,17 +13251,17 @@ def guidePageChars() { 90000 }
 // cursor was passed -- an unanswerable call is worse than a first page. Pages break on a line
 // boundary so no markdown line is ever split, and a cursor aimed at a payload that was never paged
 // is rejected rather than silently lopping the head off the caller's section.
-def paginateGuideContent(content, cursor) {
+def paginateGuideContent(content, cursor, int pageChars = guidePageChars()) {
     String text = (content ?: '').toString()
     int total = text.length()
     int start = _parseListCursor(cursor, total, "hub_get_tool_guide")
-    if (start > 0 && total <= guidePageChars()) {
+    if (start > 0 && total <= pageChars) {
         throw new IllegalArgumentException(
             "cursor ${start} does not belong to this payload: it fits one response (${total} chars) and was never paged, " +
             "so paging from ${start} would silently drop the first ${start} characters. Omit cursor. " +
             "A cursor is only valid for the call that returned it -- the no-section full-guide call.")
     }
-    int end = Math.min(start + guidePageChars(), total)
+    int end = Math.min(start + pageChars, total)
     if (end < total) {
         int nl = text.lastIndexOf("\n", end)
         if (nl > start) end = nl + 1

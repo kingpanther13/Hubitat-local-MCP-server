@@ -18235,6 +18235,7 @@ class TestRunner:
         assert not first.get("response_too_large"), f"full-guide call still trips the size guard: {first!r}"
         assert first.get("success") is True, f"full-guide call failed: {first!r}"
         assert len(first.get("content", "")) > 1000, "first page carried no real content"
+        assert len(first["content"]) <= 30000, f"full-guide first page is {len(first['content'])} chars, over 30000"
         assert "Acknowledgment keys are published only when a single section is read." in first["content"]
         assert not re.search(r"I-HAVE-READ-THE-GUIDE-\w+-[0-9a-f]{8}", first["content"]), \
             "the full-guide read published a key"

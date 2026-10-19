@@ -351,7 +351,7 @@ def toolGetToolGuide(section, cursor = null, Map apiDocs = null) {
         availableSections: sections.keySet().toList(),
         availableSubSections: subSections.collectEntries { k, v -> [(k): v.keySet().toList()] }
     ]
-    return _withGuidePage(result, fullGuide, cursor)
+    return _withGuidePage(result, fullGuide, cursor, fullGuidePageChars())
 }
 
 private Map _platformApiSearch(String query, cursor) {
@@ -448,8 +448,8 @@ private Map _platformApiPage(String pageId, cursor) {
 // Attach `content` to a guide result, paging it when it cannot fit one response. A payload that
 // fits comes back whole and keeps the shape every section call has today -- no nextCursor, no
 // offset. Only an actually-split payload gains the pagination fields.
-private Map _withGuidePage(Map result, content, cursor) {
-    def paged = paginateGuideContent(content, cursor)
+private Map _withGuidePage(Map result, content, cursor, int pageChars = guidePageChars()) {
+    def paged = paginateGuideContent(content, cursor, pageChars)
     result.content = paged.content
     if (paged.nextCursor != null || paged.offset > 0) {
         result.offset = paged.offset
@@ -467,7 +467,7 @@ def _getAllToolDefinitions_partDiscovery() {
         // Tool Guide
         [
             name: "hub_get_tool_guide",
-            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (paged via nextCursor)[[FLAT_TRIM]], the largest response this tool produces, so on a timeout retry a specific section[[/FLAT_TRIM]].[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
+            description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (30,000-character pages via nextCursor).[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
