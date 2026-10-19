@@ -10063,7 +10063,7 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
     def beforeKeys = (schema.keySet() ?: []) as Set
     def beforeValueStr = schema?."${key}"?.value?.toString()
     // Full sections render-hash captures any rendered shift (paragraphs, input titles, descriptions, options sets). Wizard-consumed pickers reset their own field on advance, so before/after schema keys + field value can look identical even on success; the rendered configPage is always different.
-    def beforeRenderHash = (config?.configPage?.sections?.toString() ?: "").hashCode()
+    def beforeRenderHash = _rmSanitizeRenderForHash(config?.configPage?.sections).hashCode()
     // For sub-page wizard writes (doActPage's `cond`, STPage's `cond`,
     // periodic sub-page writes) RM needs `formAction=update`,
     // `currentPage=<page>`, and `pageBreadcrumbs=["mainPage"]` in the
@@ -10178,7 +10178,10 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
     // Flatten List entries to a sorted comma-joined string so they compare
     // cleanly against newValueStr (which is also sorted-comma-joined for Lists).
     def settingsValueNorm
-    if (settingsValue instanceof List) {
+    if (settingsValue instanceof Map) {
+        // A device picker's setting is {id: label}.
+        settingsValueNorm = ((settingsValue as Map).keySet().collect { it?.toString() } as List).sort().join(",")
+    } else if (settingsValue instanceof List) {
         settingsValueNorm = ((settingsValue as List).collect { it?.toString() }.findAll { it != null } as List).sort().join(",")
     } else if (settingsValue != null) {
         def settingsValueStr = settingsValue.toString()

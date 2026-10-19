@@ -2758,6 +2758,63 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         skipped.count { it.reason == "not_offered" } == 2
     }
 
+    def "a write counts as landed on a page whose timestamps change on every render only when #desc"() {
+        given: "doActPage renders a new activity timestamp and epoch token on every fetch"
+        int fetches = 0
+        def posted = false
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            fetches++
+            def input = [name: "msg.1", type: "text"] + (posted && echoes ? [value: "hello"] : [:])
+            JsonOutput.toJson([app: [id: 100, name: "Rule-5.1", label: "r", installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                configPage: [name: "doActPage", error: null, sections: [[title: "", input: [input],
+                    paragraphs: ["Last activity: 2026-10-19 10:00:${String.format('%02d', fetches)}".toString(), "token ${1760000000000L + fetches}".toString()]]]],
+                settings: [:], childApps: []])
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if ((body as Map).containsKey("settings[msg.1]")) posted = true
+            [status: 200, location: null, data: '']
+        }
+        def applied = []
+        def skipped = []
+
+        when:
+        script._rmWriteSettingOnPage(100, "doActPage", "msg.1", "hello", applied, null, skipped)
+
+        then:
+        posted
+        applied == (echoes ? ["msg.1"] : [])
+        skipped*.reason == (echoes ? [] : ["silent_rejection"])
+
+        where:
+        desc                    | echoes
+        "the value renders"     | true
+        "only the render moves" | false
+    }
+
+    def "a device picker write counts as landed when the stored {id: label} setting holds the written id"() {
+        given: "the page never re-renders; only the settings carry the picker's devices"
+        def stored = [:]
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            ruleConfigJson(100, "r", [[name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]], null, stored)
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if ((body as Map).containsKey("settings[relDevice_1]")) stored.relDevice_1 = keeps ? ["9": "T2"] : ["8": "T1"]
+            [status: 200, location: null, data: '']
+        }
+        def applied = []
+        def skipped = []
+
+        when:
+        script._rmWriteSettingOnPage(100, "selectTriggers", "relDevice_1", "9", applied, null, skipped)
+
+        then:
+        applied == (keeps ? ["relDevice_1"] : [])
+        skipped*.reason == (keeps ? [] : ["silent_rejection"])
+
+        where:
+        keeps << [true, false]
+    }
+
     def "an action sub-type the picker does not offer is refused naming what RM offers"() {
         when:
         script._rmRequireOfferedActionSubType("hsm", "getSetHSM", 3,
