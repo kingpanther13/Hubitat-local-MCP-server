@@ -4266,10 +4266,10 @@ void _requireCreateBackupConfirm(args) {
         if (args.schedule != null || args.networkBackup != null || args.testNetworkBackup == true || args.full == true) {
             throw new IllegalArgumentException("cloudDownload runs on its own; send schedule / networkBackup / full on a separate call.")
         }
-        if (!args.confirm) throw new IllegalArgumentException("cloudDownload writes the backup to File Manager: pass confirm=true.")
+        if (args.confirm != true) throw new IllegalArgumentException("cloudDownload writes the backup to File Manager: pass confirm=true.")
         return
     }
-    if (_backupCallCreates(args) && !args.confirm) {
+    if (_backupCallCreates(args) && args.confirm != true) {
         throw new IllegalArgumentException("You must set confirm=true to create a backup (or pass scheduleOnly=true WITH schedule / networkBackup / testNetworkBackup to only change settings).")
     }
 }
@@ -6941,7 +6941,7 @@ def toolGetHubPerformance(args) {
         current.uptimeFormatted = "${days}d ${hours}h ${mins}m"
     }
     def csvFileName = "mcp-performance-history.csv"
-    def csvHeader = "timestamp,freeMemoryKB,internalTempC,databaseSizeKB,uptimeSeconds"
+    def csvHeader = "timestamp,freeMemoryKB,internalTempC,databaseSizeMB,uptimeSeconds"
     def history = []
     try {
         def existingBytes = downloadHubFile(csvFileName)
@@ -6976,7 +6976,7 @@ def toolGetHubPerformance(args) {
         if (parts.size() < 5) skippedRows++
         else {
             try {
-                trends << [
+                def point = [
                     timestamp: formatTimestamp(parts[0] as Long),
                     timestampEpoch: parts[0] as Long,
                     freeMemoryKB: _hubNumber(parts[1]),
@@ -6984,6 +6984,8 @@ def toolGetHubPerformance(args) {
                     databaseSizeMB: _hubNumber(parts[3]),
                     uptimeSeconds: _hubNumber(parts[4])
                 ]
+                if (!(point.freeMemoryKB instanceof Number && point.internalTempC instanceof Number && point.databaseSizeMB instanceof Number && point.uptimeSeconds instanceof Number)) point.incomplete = true
+                trends << point
             } catch (Exception e) {
                 skippedRows++
             }
@@ -11648,6 +11650,8 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
         throw new IllegalArgumentException("Device ${deviceLabel} does not support command: ${command}. Available: ${supportedCommands}")
     }
     def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) : null
+    String stableRefusal = (pollArgs != null) ? _pollStableRefusal(pollArgs, reqT0) : null
+    if (stableRefusal) throw new IllegalArgumentException("waitFor.${stableRefusal}")
     if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
         def declaration = fullJson.commands?.find { it?.name == command }
@@ -11667,7 +11671,7 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
             expected : (pollArgs.containsKey("expectedValues") ? pollArgs.expectedValues : pollArgs.expectedValue)
         ]
         try {
-            def poll = toolPollUntilAttribute(pollArgs)
+            def poll = toolPollUntilAttribute(reqT0 instanceof Number ? pollArgs + [__reqT0: reqT0] : pollArgs)
             waitForBlock.converged  = poll.success == true
             waitForBlock.finalValue = poll.finalValue
             waitForBlock.elapsedMs  = poll.elapsedMs
@@ -11678,6 +11682,10 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
             if (poll.nonNumericAttribute == true) waitForBlock.nonNumericAttribute = true
             if (poll.note != null) waitForBlock.note = poll.note
             if (poll.containsKey("transitioning")) waitForBlock.transitioning = poll.transitioning
+            if (poll.budgetLimited == true) {
+                waitForBlock.budgetLimited = true
+                waitForBlock.budgetNote = poll.budgetNote
+            }
         } catch (Throwable e) {
             def cls = e.class.simpleName
             mcpLog("error", "send-command", "waitFor poll failed for ${deviceLabel}: ${cls}: ${e.message ?: '(no message)'}")
@@ -12110,23 +12118,31 @@ def toolPollUntilAttribute(args) {
     long deadline = (t0 as long) + budget
     long left = deadline - now()
     String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
-    def stable = pollArgs.stableForMs
-    if (left < (asked as long) && stable instanceof Number && (stable as long) >= left) {
-        throw new IllegalArgumentException("stableForMs ${stable} cannot settle in the ${Math.max(0L, left)} ms this request has left (${why}); use a shorter stableForMs.")
-    }
+    String refusal = _pollStableRefusal(pollArgs, t0)
+    if (refusal) throw new IllegalArgumentException(refusal)
     if (left < 100L) {
         return [success: false, timedOut: true, budgetLimited: true, requestedTimeoutMs: asked, timeoutMs: 0,
                 budgetNote: "Not polled: the request had ${Math.max(0L, left)} ms left (${why}). Poll again in a new call.".toString()]
     }
     if (left < (asked as long)) pollArgs.timeoutMs = left as Integer
     def result = _pollUntilAttributeCore(pollArgs, deadline)
-    if (result instanceof Map && (result.remove("budgetStopped") == true || left < (asked as long))) {
+    if (result instanceof Map && (result.remove("budgetStopped") == true || left < (asked as long)) && result.success != true) {
         result.requestedTimeoutMs = asked
         result.timeoutMs = Math.min(left, asked as long)
         result.budgetLimited = true
         result.budgetNote = "The poll stopped after ${result.elapsedMs ?: 0} ms instead of waiting ${asked} ms: ${why}. Poll again to keep waiting.".toString()
     }
     return result
+}
+private String _pollStableRefusal(Map pollArgs, t0) {
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
+    def stable = pollArgs.stableForMs
+    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || !(stable instanceof Number)) return null
+    long left = (t0 as long) + budget - now()
+    if (left >= (asked as long) || (stable as long) < left) return null
+    String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
+    return "stableForMs ${stable} cannot settle in the ${Math.max(0L, left)} ms this request has left (${why}); use a shorter stableForMs.".toString()
 }
 def _pollUntilAttributeCore(args, Long deadlineMs = null) {
     def validArgKeys = ["deviceId", "deviceIds", "mode", "attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs", "comparator", "stableForMs"] as Set
@@ -13669,6 +13685,7 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     Boolean linked = null
     String newId = null
     String newName = null
+    boolean newIdFromSource = false
     for (int attempt = 0; attempt < 3; attempt++) {
         Map j = _meshJson()
         def after = (j?.localLinkedDevices instanceof List) ? j.localLinkedDevices : null
@@ -13677,7 +13694,7 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
             def added = after.findAll { !before.contains(it.id?.toString()) }
             def fromSource = added.findAll { it.sourceHubId?.toString() == meshHubId }
             def pick = (fromSource.size() == 1) ? fromSource[0] : (added.size() == 1 ? added[0] : null)
-            if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString() }
+            if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString(); newIdFromSource = fromSource.size() == 1 }
         }
         if (avail != null) {
             def srcRow = avail.find { it.hubId?.toString() == meshHubId && it.deviceId?.toString() == meshDeviceId }
@@ -13718,9 +13735,11 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     } else if (newId == null) {
         warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag or an ambiguous diff). Find it with hub_get_hub_mesh."
     }
-    if (newId != null) {
+    if (newId != null && newIdFromSource) {
         def selectWarning = _selectCreatedDevice(newId)
         if (selectWarning) warnings << selectWarning
+    } else if (newId != null) {
+        warnings << "Linked as local device ${newId}, but the read-back could not tie it to hub ${meshHubId}, so it was not added to this app's selected devices; add it in the app's device picker once confirmed with hub_get_hub_mesh.".toString()
     }
     mcpLog("info", "device", "hub_create_device: linked Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId})${newId ? " as local ${newId}" : ''}")
     return [
@@ -17387,7 +17406,7 @@ def toolGetItemSource(String type, String idParam, args) {
         return [success: false, error: "Failed to get ${type} source: ${e.message}"]
     }
 }
-private String stripAppConfigHtml(value) {
+String stripAppConfigHtml(value) {
     if (value == null) return null
     def s = value.toString()
     if (s.contains("<")) {
@@ -39201,8 +39220,8 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             result = [status: resp.status, location: resp.headers?."Location"?.toString(), data: (readError != null ? null : bodyText)]
             def sc = null
             try { sc = resp.headers?."Set-Cookie" } catch (Exception ignored) { sc = null }
-            if (sc instanceof List) sc = sc ? sc[0] : null
-            if (sc != null) result.setCookie = sc.toString().replaceFirst(/^(?i)set-cookie:\s*/, "").split(';')[0]
+            def cookies = (sc instanceof List ? sc : (sc != null ? [sc] : [])).collect { it.toString().replaceFirst(/^(?i)set-cookie:\s*/, "").split(';')[0] }
+            if (cookies) result.setCookie = cookies.find { it.startsWith("HUBSESSION=") } ?: cookies[0]
             readError = null
         } else if (readError == null) {
             result = bodyText
