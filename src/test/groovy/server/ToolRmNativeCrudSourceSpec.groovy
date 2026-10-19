@@ -351,6 +351,100 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         result.applied == false
     }
 
+    def "modifyAction via toolSetRule: a clean readback on a rule the health check reports broken is partial, not success"() {
+        given:
+        enableWrite()
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def settings = ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]
+        def ma = wireModifyEditorTransport(100, [1], settings, runRuleEditor(1))
+        hubGet.register('/app/ruleBuilderJson/100') { params ->
+            JsonOutput.toJson([broken: true, actionList: (ma.order as List).collect { it.toString() }])
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
+
+        then: "the readback verified, but the health verdict decides the envelope"
+        !result.containsKey("readbackMismatches")
+        result.health.ok == false
+        result.success == false
+        result.partial == true
+        result.error.contains("the health check reports the rule broken")
+        result.restoreHint != null
+        result.applied == true
+        result.verified == false
+    }
+
+    def "modifyAction clicks the edit button selectActions renders for a Simple Conditional Action row"() {
+        given: "action 1 is bound to condition 2, and its row button carries that index"
+        def settings = ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]
+        def ma = wireModifyEditorTransport(100, [1], settings, runRuleEditor(1))
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> selectActionsPage(100, ["1.2.false"]) }
+
+        when:
+        def result = script._rmModifyAction(100, 1, [ruleIds: [300]])
+
+        then:
+        (ma.clicks as List)[0] == [name: "1.2.false", stateAttribute: "doActN"]
+        result.success == true
+    }
+
+    def "modifyAction takes a row's condition index from the committed state.actions when selectActions does not render the row"() {
+        given:
+        def settings = ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]
+        def ma = wireModifyEditorTransport(100, [1, 2], settings, runRuleEditor(1))
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> selectActionsPage(100, ["2.0.false"]) }
+        committedStatus(settings, [[name: "actions", value: ["1": [cond: 3], "2": [:]]]])
+
+        when:
+        script._rmModifyAction(100, 1, [ruleIds: [300]])
+
+        then:
+        (ma.clicks as List)[0] == [name: "1.3.false", stateAttribute: "doActN"]
+    }
+
+    def "modifyAction via toolSetRule on a rule with an open action editor returns the refusal envelope before the backup"() {
+        given:
+        enableWrite()
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+        def settings = ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]
+        def ma = wireModifyEditorTransport(100, [1], settings, runRuleEditor(1))
+        committedStatus(settings, [[name: "editAct", value: 2]])
+
+        when:
+        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
+
+        then: "a structured envelope, not a thrown tool error"
+        result.success == false
+        result.error.contains("state.editAct=2")
+        result.restoreHint.contains("not touched")
+        result.backup == null
+        result.applied == false
+        uploads.isEmpty()
+        (ma.clicks as List).isEmpty()
+    }
+
+    def "modifyAction via toolSetRule reads the committed rule once before opening RM's editor"() {
+        given:
+        enableWrite()
+        settingsMap.backupBeforeRuleEdits = false
+        def settings = ["actType.1": "rulesActs", "actSubType.1": "getRuleActions", "ruleAct.1": ["200"]]
+        Integer statusReadsAtClick = null
+        wireModifyEditorTransport(100, [1], settings, runRuleEditor(1)) { String path, Map body ->
+            if (path == "/installedapp/btn" && body?.stateAttribute?.toString() == "doActN" && statusReadsAtClick == null) {
+                statusReadsAtClick = hubGet.calls.count { it.path == "/installedapp/statusJson/100" } as Integer
+            }
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, modifyAction: [index: 1, mods: [ruleIds: [300]]], confirm: true])
+
+        then: "the pre-flight plan is the one the edit runs"
+        result.success == true
+        statusReadsAtClick == 1
+    }
+
     def "trigger and condition discover come from RM's capability tables (#kind #cap)"() {
         when:
         def entry = script._rmCondDiscover(kind, cap).capability
@@ -1543,6 +1637,8 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         "subscriptions not live: not activated"            | [success: true, subscriptionsNotLive: true]     | true    | false     | false
         "a failed readback is activated, not verified"     | [success: true, verificationFetchFailed: true]  | true    | true      | false
         "a broken health is not verified"                  | [success: true, health: [ok: false]]            | true    | true      | false
+        "a bulk time-budget pause is applied, not activated"    | [success: true, partial: false, status: "in_progress", actionsCommitted: 1, addActionsRemaining: [[capability: "log"]]] | true | false | false
+        "a patches time-budget pause is applied, not activated" | [success: true, partial: false, status: "in_progress", patchesRemaining: [[addAction: [capability: "log"]]]]            | true | false | false
     }
 
     def "the catalog refuses a value outside a field's enum before any write"() {
@@ -2377,7 +2473,7 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         notThrown(IllegalArgumentException)
     }
 
-    def "modifyAction leaves useLastDev to the runCommand writer and carries the committed value"() {
+    def "modifyAction writes a changed useLastEventDevice and carries the committed one"() {
         given:
         wireModifyEditorTransport(100, [1], ["actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"], "cCmd.1": "on", "useLastDev.1": "true"], runCommandEditor(1))
 
@@ -2385,11 +2481,54 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         def kept = script._rmPlanModifyAction(100, 1, [command: "off"])
         def changed = script._rmPlanModifyAction(100, 1, [command: "off", useLastEventDevice: false])
 
-        then:
+        then: "an unchanged flag is not rewritten, and RM's hidden device picker gets no list"
         kept.runCommand.useLastEventDevice == true
+        kept.runCommand.deviceIds == null
         !kept.writes.containsKey("useLastDev.1")
+
+        and: "a changed flag is written, and the committed devices return with the picker"
         changed.runCommand.useLastEventDevice == false
-        !changed.writes.containsKey("useLastDev.1")
+        changed.writes["useLastDev.1"] == false
+        changed.runCommand.deviceIds == [8]
+    }
+
+    def "modifyAction reports a useLastEventDevice change Rule Machine did not keep"() {
+        given:
+        def settings = ["actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"], "cCmd.1": "on", "useLastDev.1": "false"]
+        def ma = wireModifyEditorTransport(100, [1], settings, [[name: "useLastDev.1", type: "bool"]] + runCommandEditor(1))
+        ma.dropKeys = ["useLastDev.1"]
+
+        when:
+        def r = script._rmModifyAction(100, 1, [useLastEventDevice: true])
+
+        then:
+        (ma.writes as List).find { it.key == "useLastDev.1" }?.value?.toString() == "true"
+        !(ma.writes as List).any { it.key == "devices.1" }
+        r.success == false
+        r.readbackMismatches == ["useLastDev.1"]
+        r.error.contains("useLastDev.1 did not read back as written")
+    }
+
+    def "modifyAction on runCommand refuses a device list Rule Machine would hide, and needs one when the flag is off"() {
+        given:
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 8, label: "S1", capabilities: ["Switch"]]]) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"S1"}' }
+        wireModifyEditorTransport(100, [1], ["actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "cCmd.1": "on", "useLastDev.1": "true"], runCommandEditor(1))
+
+        when:
+        script._rmPlanModifyAction(100, 1, [useLastEventDevice: true, deviceIds: [8]])
+
+        then:
+        def hidden = thrown(IllegalArgumentException)
+        hidden.message.contains("deviceIds cannot be set while useLastEventDevice is true")
+        hidden.message.contains("RM is not touched")
+
+        when:
+        script._rmPlanModifyAction(100, 1, [useLastEventDevice: false])
+
+        then:
+        def none = thrown(IllegalArgumentException)
+        none.message.contains("'deviceIds' is needed when useLastEventDevice is false")
     }
 
     def "modifyAction on runCommand needs a command when neither the mods nor the committed row carry one"() {
@@ -3006,5 +3145,24 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
 
         then:
         script._rmPreEditBackupsOff()
+    }
+
+    // RM's actions page with one doAct edit button per name, as its row renders it.
+    private static String selectActionsPage(int ruleId, List rowButtons) {
+        JsonOutput.toJson([
+            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+            configPage: [name: "selectActions", title: "T", install: false, error: null, sections: [[title: "", input: [],
+                body: rowButtons.collect { [description: "<input type='hidden' name='${it}.type' value='button'><span class='submitOnChange' data-stateAttribute='doAct'>IF (Switch on) Run Actions</span>".toString()] }]]],
+            settings: [:], childApps: []
+        ])
+    }
+
+    // statusJson for rule 100 with the given app state, its settings read live as the modify transport's are.
+    private void committedStatus(Map settings, List appState) {
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100],
+                               appSettings: settings.collect { k, v -> [name: k.toString(), value: v] + (v instanceof List ? [deviceIdsForDeviceList: (v as List).collect { it?.toString() }] : [:]) },
+                               eventSubscriptions: [[name: "evt1"]], scheduledJobs: [], appState: appState, childAppCount: 0, childDeviceCount: 0])
+        }
     }
 }

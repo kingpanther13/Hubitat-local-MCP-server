@@ -529,4 +529,25 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         script._requestSetting("backupBeforeRuleEdits") == null
         !script._rmPreEditBackupsOff()
     }
+
+    def "a toggle the request saw as never saved stays unsaved for the worker, whatever was stored since"() {
+        given: "the request's view carries both toggles as null; the stored ones were saved after it"
+        script._keepRequestSettings([backupBeforeRuleEdits: null, backupEveryRuleWrite: null])
+        settingsMap.backupBeforeRuleEdits = false
+        settingsMap.backupEveryRuleWrite = true
+
+        expect: "the defaults the request saw: backups on, strict off"
+        !script._rmPreEditBackupsOff()
+        !script._rmStrictBackupsOn()
+
+        when: "the view ends"
+        script._keepRequestSettings(null)
+
+        then: "the stored values decide again"
+        script._rmPreEditBackupsOff()
+        script._rmStrictBackupsOn()
+
+        cleanup:
+        script._keepRequestSettings(null)
+    }
 }

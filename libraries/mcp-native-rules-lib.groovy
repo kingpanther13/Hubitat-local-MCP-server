@@ -3069,8 +3069,8 @@ private Map _rmActionCatalog() {
             choosePerMode: [sub: "getChooseSwitch", custom: true, slots: [[name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: {on: [deviceIds], off: [deviceIds]}, ...}"]]]
         ], common: [delay, raw]],
         dimmer: [actType: "dimmerActs", family: "device", actions: [
-            setLevel: [sub: "getSetDimmer", custom: true, requires: [["level", "levelVariable"]], slots: [dev("dimA.@N"), [name: "level", key: "dimLA.@N", type: "Integer", desc: "0-100; or levelVariable"],
-                       [name: "levelVariable", key: "xVar.@N", type: "String", desc: "hub variable holding the level"], [name: "fadeSeconds", key: "dimRA.@N", type: "Integer"]]],
+            setLevel: [sub: "getSetDimmer", custom: true, requires: [["level", "levelVariable"]], exclusive: [["level", "levelVariable"]], slots: [dev("dimA.@N"), [name: "level", key: "dimLA.@N", type: "Integer", desc: "0-100; or levelVariable"],
+                       [name: "levelVariable", key: "uVar.@N", whenSet: true, type: "String"], [name: "levelVariable", key: "xVar.@N", type: "String", desc: "hub variable holding the level"], [name: "fadeSeconds", key: "dimRA.@N", type: "Integer"]]],
             toggle:   [sub: "getToggleDimmer", slots: [dev("dimA.@N"), [name: "level", key: "dimLA.@N", type: "Integer", required: true, desc: "0-100, the level when toggling on"], [name: "fadeSeconds", key: "dimRA.@N", type: "Integer"]]],
             adjust:   [sub: "getAdjustDimmer", slots: [dev("dimA.@N"), [name: "adjustBy", key: "dimAdj.@N", type: "Integer", required: true, desc: "-100..100"], [name: "fadeSeconds", key: "dimAdjR.@N", type: "Integer"]]],
             fade:     [sub: "getFadeDimmer", slots: [dev("dimFade.@N"), [name: "direction", key: "dimFadeUp.@N", type: "enum", values: ["raise", "lower"], direction: true, desc: "default lower"],
@@ -3957,11 +3957,12 @@ private Map _rmModifyTrigger(Integer appId, Integer triggerIdx, Map mods) {
     ]
 }
 
-// Edit a committed action in place through RM's row editor: the doAct button value "<index>.0.false"
-// reopens doActPage on that row with its settings, keeping its index, position and untouched
-// settings. Expression and wait-for-events actions are rebuilt with removeAction + addAction.
-private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long reqT0 = null) {
-    Map plan = _rmPlanModifyAction(appId, actionIdx, mods)
+// Edit a committed action in place through RM's row editor: the row's doAct button value reopens
+// doActPage on that row with its settings, keeping its index, position and untouched settings.
+// Expression and wait-for-events actions are rebuilt with removeAction + addAction. `plan` is the
+// caller's _rmPlanModifyAction result when it already made one.
+private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long reqT0 = null, Map plan = null) {
+    if (plan == null) plan = _rmPlanModifyAction(appId, actionIdx, mods)
     String cap = plan.cap
     String action = plan.action
     Map writes = plan.writes as Map
@@ -3969,7 +3970,8 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     def before = _rmOrderedActionIndices(appId)
     // The row's edit button value goes straight into doActN, the slot doActPage opens (the add
     // path's "N" does the same); doAct is only moved there by a selectActions render.
-    _rmClickAppButton(appId, "${actionIdx}.0.false".toString(), "doActN", "selectActions")
+    Map pageCache = [:]
+    _rmClickAppButton(appId, _rmActionRowButton(appId, actionIdx, plan.cond as Integer, pageCache), "doActN", "selectActions", pageCache)
     def applied = []
     def skipped = []
     // RM's editor on an existing row shows that row's fields (no type pickers); a new row shows
@@ -4051,6 +4053,22 @@ private Map _rmModifyAction(Integer appId, Integer actionIdx, Map mods, Long req
     return out.findAll { k, v -> v != null }
 }
 
+// The edit button selectActions renders for an action row, "<index>.<condition>.false". A Simple
+// Conditional Action's button carries its condition's index, and RM's editor keeps the row bound to
+// that condition only when the clicked value names it. The committed state.actions is the fallback.
+private String _rmActionRowButton(Integer appId, Integer actionIdx, Integer committedCond, Map cache) {
+    String rowPattern = "${actionIdx}\\.\\d+\\.\\w+".toString()
+    String rendered = null
+    try {
+        rendered = _rmRenderedButtons(_rmFetchConfigJson(appId, "selectActions", cache)?.configPage as Map)
+            .collect { it?.name?.toString() }.find { it && it ==~ rowPattern }
+    } catch (Exception readExc) {
+        mcpLog("warn", "rm-native", "modifyAction: selectActions could not be read for action ${actionIdx}'s edit button (${readExc.message ?: readExc}); the committed condition index is used")
+    }
+    def cond = rendered ? rendered.tokenize(".")[1] : (committedCond ?: 0)
+    return "${actionIdx}.${cond}.false".toString()
+}
+
 // A setVariable target is one of the rule's local variables or a hub variable (RM's xVarV picker
 // lists both). Nothing is refused when neither list can be read.
 private void _rmRequireVariableName(Integer appId, Object name) {
@@ -4092,6 +4110,10 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
     }
     def editAct = (status?.appState ?: []).find { it?.name?.toString() == "editAct" }?.value
     if (editAct != null) throw new IllegalStateException(_rmStuckEditActMessage("modifyAction(${actionIdx})", appId, editAct))
+    def stateActions = (status?.appState ?: []).find { it?.name?.toString() == "actions" }?.value
+    def stateRow = (stateActions instanceof Map) ? (stateActions as Map).get(actionIdx.toString()) : null
+    String condText = (stateRow instanceof Map) ? stateRow.cond?.toString() : null
+    Integer cond = condText?.isInteger() ? (condText as Integer) : null
     Map target = _rmCatalogEntryForSubType(subType, committed)
     // returnValue's type, literal and variable are coupled by its own mapper (the literal slot
     // follows the type; no variable for a String), which an in-place edit cannot honour.
@@ -4168,15 +4190,20 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
     Map runCommand = null
     if (cap == "runCommand" && ["capabilityFilter", "command", "deviceIds", "useLastEventDevice"].any { mods.containsKey(it) }) {
         def committedIds = _rmStatusEntryDeviceIds(settingsByName["devices.${actionIdx}".toString()]).collect { it as Integer }
+        boolean useLast = mods.containsKey("useLastEventDevice") ? (mods.useLastEventDevice == true) : (committed("useLastDev")?.toString() == "true")
+        // RM hides the device picker while useLastDev is on, so no device list is written then.
+        if (useLast && mods.deviceIds != null) throw new IllegalArgumentException("modifyAction on runCommand: deviceIds cannot be set while useLastEventDevice is true, because Rule Machine hides the device picker then. RM is not touched.")
+        def deviceIds = useLast ? null : (mods.containsKey("deviceIds") ? mods.deviceIds : (committedIds ?: null))
+        if (!useLast && !deviceIds) throw new IllegalArgumentException("modifyAction on runCommand: 'deviceIds' is needed when useLastEventDevice is false. RM is not touched.")
         runCommand = [capabilityFilter: mods.containsKey("capabilityFilter") ? mods.capabilityFilter : committed("myCapab"),
                       command: mods.containsKey("command") ? mods.command : committed("cCmd"),
-                      deviceIds: mods.containsKey("deviceIds") ? mods.deviceIds : (committedIds ?: null),
-                      useLastEventDevice: mods.containsKey("useLastEventDevice") ? (mods.useLastEventDevice == true) : (committed("useLastDev")?.toString() == "true")]
+                      deviceIds: deviceIds, useLastEventDevice: useLast]
         if (runCommand.command == null) throw new IllegalArgumentException("modifyAction on runCommand: 'command' is needed. RM is not touched.")
-        ["myCapab", "cCmd", "devices", "useLastDev"].each { writes.remove("${it}.${actionIdx}".toString()) }
+        // useLastDev stays in writes: the editor writes it before the runCommand fields, as the add does.
+        ["myCapab", "cCmd", "devices"].each { writes.remove("${it}.${actionIdx}".toString()) }
     }
     if (writes.isEmpty() && runCommand == null) throw new IllegalArgumentException("modifyAction.mods changes nothing on action ${actionIdx}. RM is not touched.")
-    return [cap: cap, action: action, subType: subType, writes: writes, fieldDefs: fieldDefs, runCommand: runCommand]
+    return [cap: cap, action: action, subType: subType, writes: writes, fieldDefs: fieldDefs, runCommand: runCommand, cond: cond]
 }
 
 // The catalog entry (and action variant) a committed sub-type belongs to. Variants that share a
@@ -7889,8 +7916,12 @@ private boolean _rmReusableBackupFileMatches(Map entry, Integer ruleId) {
 // some apps (HPM) use to reset a wizard's pending input.
 // The toggles as the request read them (a detached write carries that view), else as stored;
 // a form save keeps a toggle as text, so the text decides.
-private boolean _rmPreEditBackupsOff() { (_requestSetting("backupBeforeRuleEdits") ?: settings?.backupBeforeRuleEdits?.toString()) == "false" }
-private boolean _rmStrictBackupsOn() { (_requestSetting("backupEveryRuleWrite") ?: settings?.backupEveryRuleWrite?.toString()) == "true" }
+private boolean _rmPreEditBackupsOff() { _rmBackupToggle("backupBeforeRuleEdits") == "false" }
+private boolean _rmStrictBackupsOn() { _rmBackupToggle("backupEveryRuleWrite") == "true" }
+// The request's view is the answer whenever it carries the key, even as null (a toggle never saved).
+private String _rmBackupToggle(String key) {
+    (REQUEST_SETTINGS instanceof Map && (REQUEST_SETTINGS as Map).containsKey(key)) ? _requestSetting(key) : settings?.get(key)?.toString()
+}
 
 Map _rmBackupBeforeEdit(Integer ruleId, String reason, String activePage = null) {
     if (_rmPreEditBackupsOff()) {
@@ -8587,7 +8618,8 @@ Map _rmStampOutcome(Object result) {
     if (skippedChecks) r.checksSkipped = skippedChecks
     boolean applied = r.rolledBack != true && (r.success == true || (r.partial == true && !unsettled))
     Boolean appliedFlag = applied ? true : (unsettled ? null : false)
-    boolean activated = applied && r.updateRuleFailed != true && r.subscriptionsNotLive != true &&
+    // A time-budget pause keeps what it committed, but the rule's update runs only when the rest is done.
+    boolean activated = applied && r.status != "in_progress" && r.updateRuleFailed != true && r.subscriptionsNotLive != true &&
         r.mainPageDoneFailed != true && r.mainPageDoneSkipped != true && r.finalisationNotAttempted != true
     boolean verified = activated && r.success == true && r.verificationFetchFailed != true && r.healthUnverified != true &&
         (r.health == null || ((r.health as Map).ok == true && (r.health as Map).unreadable != true))
@@ -12966,6 +12998,7 @@ def _applyNativeAppEdit(args) {
     // An addAction expression with a condition this tool does not model is refused before the backup,
     // from the requested name, with the not-touched envelope (null backup). Patches and createRule are
     // caught inside _rmAddAction.
+    Map modifyActionPlan = null
     try {
         if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
         addActionsList?.each { if (it instanceof Map) _rmRejectUnwalkableExpressionConditions(it as Map) }
@@ -12983,7 +13016,7 @@ def _applyNativeAppEdit(args) {
         if (modifyActionSpec) {
             if (modifyActionSpec.index == null) throw new IllegalArgumentException("modifyAction.index is required. RM is not touched.")
             if (!(modifyActionSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyAction.mods is required: the fields to change, e.g. {ruleIds: [123]}. RM is not touched.")
-            _rmPlanModifyAction(appId, _rmPatchOpIndex("modifyAction", modifyActionSpec.index), modifyActionSpec.mods as Map)
+            modifyActionPlan = _rmPlanModifyAction(appId, _rmPatchOpIndex("modifyAction", modifyActionSpec.index), modifyActionSpec.mods as Map)
         }
         // A disabled app renders no configuration page, and every edit below drives that page: removeAction
         // would burn a backup and say retry is safe; walkStep and settings would report success having changed
@@ -12992,8 +13025,9 @@ def _applyNativeAppEdit(args) {
         if (settingsMap?.values()?.any { it instanceof Map }) {
             _rmRejectNonDeviceMapSettings(appId, args?.pageName?.toString()?.trim() ?: null, settingsMap)
         }
-    } catch (IllegalArgumentException preflightExc) {
-        return _rmBuildUpdateErrorResponse(appId, preflightExc.message, null, "doActPage", preflightExc)
+    } catch (Exception preflightExc) {
+        // Nothing is written before the backup, so a failed read or a stuck editor is a refusal too.
+        return _rmBuildUpdateErrorResponse(appId, preflightExc.message ?: preflightExc.toString(), null, "doActPage", preflightExc)
     }
     // A standalone replace with nothing to replace is decidable from the committed page.
     if (replaceRequiredExpressionSpec) {
@@ -13114,7 +13148,7 @@ def _applyNativeAppEdit(args) {
     if (modifyActionSpec) {
         def maResult
         try {
-            maResult = _rmModifyAction(appId, modifyActionSpec.index as Integer, modifyActionSpec.mods as Map, args?.__reqT0 as Long)
+            maResult = _rmModifyAction(appId, modifyActionSpec.index as Integer, modifyActionSpec.mods as Map, args?.__reqT0 as Long, modifyActionPlan)
         } catch (Exception e) {
             mcpLogError("rm-native", "modifyAction failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
@@ -13126,7 +13160,9 @@ def _applyNativeAppEdit(args) {
             mcpLog("warn", "rm-native", "modifyAction: post-edit health probe failed for app ${appId}: ${healthExc.message}")
         }
         boolean maOk = (maResult?.success == true) && _rmHealthGatePass(maHealth)
-        def maOut = [success: maOk, partial: !maOk, appId: appId, backup: backup] + (maResult ?: [:]) + [
+        // The health verdict outranks the readback's own success, so success and partial go on the right.
+        def maOut = [appId: appId, backup: backup] + (maResult ?: [:]) + [
+            success: maOk, partial: !maOk,
             health: maHealth,
             error: maOk ? null : (maResult?.error ?: "modifyAction: the edit committed but the health check reports the rule broken -- inspect health.issues and ${_rmRestoreClause(backup)} if the damage is real."),
             restoreHint: maOk ? null : _rmBackupHint(backup),

@@ -584,6 +584,33 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         (plan.writes as Map) == ["uVar.3": true, "xVar.3": "tv"]
     }
 
+    def "a dimmer level edited from a literal to a variable writes RM's toggle with it, and takes only one of the two"() {
+        given:
+        committedRow(["actType.3": "dimmerActs", "actSubType.3": "getSetDimmer", "dimA.3": "8", "dimLA.3": "50"])
+
+        when:
+        def plan = script._rmPlanModifyAction(100, 3, [levelVariable: "lv"])
+
+        then: "the toggle first, so RM shows the variable picker the value goes into"
+        plan.cap == "dimmer"
+        plan.action == "setLevel"
+        (plan.writes as Map).collect { k, v -> [k, v] } == [["uVar.3", true], ["xVar.3", "lv"]]
+
+        when: "both sources at once, on an edit or an add"
+        script._rmPlanModifyAction(100, 3, [level: 40, levelVariable: "lv"])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == "modifyAction on dimmer.setLevel: takes one of level, levelVariable, not level and levelVariable. RM is not touched."
+
+        when:
+        script._rmMapActionSpec(100, [deviceIds: [8], level: 40, levelVariable: "lv"], "dimmer", "setLevel")
+
+        then:
+        def addRefusal = thrown(IllegalArgumentException)
+        addRefusal.message.contains("dimmer.setLevel takes one of level, levelVariable, not level and levelVariable.")
+    }
+
     private void committedRow(Map settings) {
         hubGet.register('/installedapp/statusJson/100') { params ->
             JsonOutput.toJson([appSettings: settings.collect { k, v -> [name: k, value: v] }, appState: []])
@@ -604,6 +631,7 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         where:
         label           | committed                                                                                                                   | mods             || expected
         "tilt"          | ["actType.3": "sceneActs", "actSubType.3": "getBlindTilt", "blindTilt.3": "8", "uVar.3": "true", "xVar.3": "tv"]             | [tilt: 40]       || ["uVar.3": false, "tiltLevel.3": 40]
+        "dimmer level"  | ["actType.3": "dimmerActs", "actSubType.3": "getSetDimmer", "dimA.3": "8", "uVar.3": "true", "xVar.3": "lv"]                  | [level: 30]      || ["uVar.3": false, "dimLA.3": 30]
         "volume"        | ["actType.3": "soundActs", "actSubType.3": "getSetMusicPlayer", "player.3": "8", "playerCommand.3": "set volume", "uVar.3": "true", "xVar.3": "vv"] | [volume: 30] || ["uVar.3": false, "playerLevel.3": 30]
         "ecoOffset"     | ["actType.3": "lockActs", "actSubType.3": "getSetThermostatScheduler", "thermSched.3": "setEcoOffset", "thisTherm.3": "8", "uVar.3": "true", "xVar.3": "off"] | [ecoOffset: 2] || ["uVar.3": false, "ecoOffset.3": 2]
         "awayHeat"      | ["actType.3": "lockActs", "actSubType.3": "getSetThermostatScheduler", "thermSched.3": "setTimeAway", "thisTherm.3": "8", "uVar2.3": "true", "xVar2.3": "hv"] | [awayHeat: 60] || ["uVar2.3": false, "timeAwayHeat.3": 60]
