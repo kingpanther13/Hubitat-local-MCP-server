@@ -121,7 +121,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     addLocalVariable: [
                         type: "object",
-                        description: "Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions."
+                        description: "Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions. An existing name is refused; change its value with a setLocalVariable action."
                     ],
                     removeLocalVariable: [
                         type: "object",
@@ -9149,19 +9149,6 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
         throw new IllegalArgumentException("addLocalVariable.value is required (RM auto-commits the variable when varValue is written)")
     }
 
-    def applied = []
-    def skipped = []
-
-    // Step 1. Click moreVar to open the wizard.
-    _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
-
-    // Step 2. Write hbVar (name).
-    _rmWriteSettingOnPage(appId, "selectActions", "hbVar", name, applied, null, skipped)
-
-    // Step 3. Write varType. Schema reveal: after this, varValue appears.
-    _rmWriteSettingOnPage(appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
-
-    // Step 4. Write varValue. RM auto-commits the variable when this lands.
     // Boolean type expects the literal strings "true"/"false" — Groovy's
     // toString() on Boolean produces those, but ensure we don't pass a
     // bare Boolean primitive that gets serialized as something else.
@@ -9178,6 +9165,31 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
             }
         }
     }
+
+    // RM's moreVar editor shows only the name field for an existing name, so varType and varValue would be
+    // skipped and the verify below would find the old variable. A failed read falls through to that verify.
+    def existing = _rmReadLocalVarsMap(appId)
+    if (existing.ok && existing.vars.containsKey(name)) {
+        def meta = existing.vars.get(name)
+        def live = existing.live?.get(name)
+        def curValue = (live instanceof Map && live.containsKey("value")) ? live.value : (meta instanceof Map ? meta.value : null)
+        def curType = meta instanceof Map ? meta.type : null
+        throw new IllegalArgumentException("addLocalVariable: local variable '${name}' already exists on rule ${appId} (type ${curType}, value ${curValue}); use an action setLocalVariable to change its value, or removeLocalVariable first. RM is not touched.")
+    }
+
+    def applied = []
+    def skipped = []
+
+    // Step 1. Click moreVar to open the wizard.
+    _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
+
+    // Step 2. Write hbVar (name).
+    _rmWriteSettingOnPage(appId, "selectActions", "hbVar", name, applied, null, skipped)
+
+    // Step 3. Write varType. Schema reveal: after this, varValue appears.
+    _rmWriteSettingOnPage(appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
+
+    // Step 4. Write varValue. RM auto-commits the variable when this lands.
     _rmWriteSettingOnPage(appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
 
     // Verify via appState.allLocalVars that the variable committed. RM

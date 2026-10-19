@@ -9480,6 +9480,18 @@ class TestRunner:
             names = [lv.get("name") for lv in (listed.get("localVariables") or [])]
             assert "fields" in names, f"hub_list_rule_local_variables missing fields: {listed}"
 
+            # Re-adding an existing name is refused before the wizard opens, and the value stays.
+            dup = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": int(app_id), "confirm": True,
+                "addLocalVariable": {"name": "fields", "type": "Number", "value": 10}}})
+            assert dup.get("success") is False and "already exists" in str(dup.get("error", "")) \
+                and "RM is not touched" in str(dup.get("error", "")), \
+                f"addLocalVariable on an existing name should be refused: {dup}"
+            after_dup = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
+            kept = next((lv for lv in (after_dup.get("localVariables") or []) if lv.get("name") == "fields"), {})
+            assert str(kept.get("value")) == "0", f"the refused re-add changed the local's value: {after_dup}"
+
             self._assert_rule_healthy(app_id)
 
             # removeLocalVariable clean path: the referencing action is removed first (using
