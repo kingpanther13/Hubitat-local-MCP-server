@@ -54,7 +54,7 @@ dependencies {
     testImplementation 'com.github.joelwetzel:hubitat_ci:a62a351eed'
     // Spock needs a class-gen backend (byte-buddy or cglib) to Mock/Spy non-interface types
     // (TestDevice, TestChildApp); neither is transitive on the groovy-2.5 variant.
-    testImplementation 'net.bytebuddy:byte-buddy:1.18.14'
+    testImplementation 'net.bytebuddy:byte-buddy:1.18.15-jdk5'
     // hubitat_ci's public bytecode carries compile- and runtime-time references to these
     // (HttpResponseDecorator in BaseExecutor via the AppExecutor @Delegate chain; quartz +
     // chromecast reached the same way). The root build mirrors the identical set for the same
