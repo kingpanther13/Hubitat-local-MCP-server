@@ -1,5 +1,7 @@
 package server
 
+import spock.lang.Shared
+import support.TestChildApp
 import support.TestDevice
 import support.ToolSpecBase
 
@@ -29,6 +31,16 @@ import support.ToolSpecBase
  * destructive backup), so no lastBackupTimestamp seeding is needed.
  */
 class ToolDeviceEditSpec extends ToolSpecBase {
+
+    @Shared private TestChildApp appStub = new TestChildApp(id: 1L, label: 'MCP')
+
+    def setupSpec() {
+        appExecutor.getApp() >> appStub
+    }
+
+    def cleanup() {
+        appStub.settingsStore.clear()
+    }
 
     private static Map decodeForm(String body) {
         body.split('&').collectEntries { pair ->
@@ -842,6 +854,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
 
     def "toolCreateDevice creates a device from a driver-type id and applies the optional label"() {
         given:
+        settingsMap.selectedDevices = [new TestDevice(id: 1)]
         def label = 'My LAN Device'
         hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
         hubGet.register('/device/fullJson/777') { params ->
@@ -859,6 +872,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.label == 'Garage Bridge'
         result.deviceTypeId == '500'
         result.warnings == null
+
+        and: 'the new device joins the selected devices'
+        appStub.settingsStore.selectedDevices == [type: 'capability.*', value: ['1', '777']]
         hubGet.calls.any { it.key == '/device/updateLabel?deviceId=777&label=Garage Bridge' }
         hubGet.calls.last().path == '/device/fullJson/777'
     }

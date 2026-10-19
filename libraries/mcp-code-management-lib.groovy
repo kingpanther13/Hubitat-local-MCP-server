@@ -67,6 +67,7 @@ def toolListHubApps(args) {
         result.note = "Hub internal API unavailable (${e.message}). Showing only MCP Rule Server apps. This may require Hub Security credentials or a firmware update."
     }
 
+    if (args?.nameFilter && result.apps instanceof List) result.apps = _nameFiltered(result.apps, args.nameFilter)
     if (cursor != null && result.apps instanceof List) {
         def paged = _paginateList(result.apps, cursor, 50, "hub_list_apps")
         result.total = result.apps.size()
@@ -147,10 +148,19 @@ def _projectAppType(Map t, boolean builtIn, Map enrich) {
     return out
 }
 
-def toolListHubDrivers(args) {
+// Rows whose name contains the filter, ignoring case and the hub's HTML (a list's own names).
+private List _nameFiltered(List rows, filter) {
+    String f = filter?.toString()?.trim()?.toLowerCase()
+    if (!f) return rows
+    return rows.findAll { it instanceof Map && (stripAppConfigHtml(it.name) ?: "").toLowerCase().contains(f) }
+}
 
+def toolListHubDrivers(args) {
+    def unknown = ((args ?: [:]).keySet() - ["include", "cursor", "nameFilter"]).sort()
+    if (unknown) throw new IllegalArgumentException("hub_list_drivers does not take ${unknown.join(', ')}. Valid arguments: include, nameFilter, cursor.")
     def cursor = args?.cursor
     def include = (args?.include ?: "user").toString().toLowerCase()
+    if (!(include in ["user", "all"])) throw new IllegalArgumentException("include must be 'user' or 'all' (got '${args.include}').")
     def result = [:]
     if (include == "all") {
         // Full instantiable driver-type catalog -- built-in "system" + "virtual" + user
@@ -218,6 +228,10 @@ def toolListHubDrivers(args) {
         result.include = "user"
     }
 
+    if (args?.nameFilter && result.drivers instanceof List) {
+        result.drivers = _nameFiltered(result.drivers, args.nameFilter)
+        result.count = result.drivers.size()
+    }
     if (cursor != null && result.drivers instanceof List) {
         def paged = _paginateList(result.drivers, cursor, 50, "hub_list_drivers")
         result.total = result.drivers.size()
@@ -297,9 +311,10 @@ def toolGetItemSource(String type, String idParam, args) {
     def itemId = args[idParam]
     if (!itemId) throw new IllegalArgumentException("${idParam} is required")
 
+    // The default chunk stays inside a client's tool-result limit (Claude Code refuses ~25k tokens).
     def maxChunkSize = 64000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : 30000
 
     def ajaxPath = (type == "app") ? "/app/ajax/code" : "/driver/ajax/code"
 
@@ -2432,9 +2447,10 @@ def toolGetLibrarySource(args) {
     if (!libraryId) throw new IllegalArgumentException("libraryId is required")
     if (!libraryId.toString().isInteger() || libraryId.toString().toInteger() <= 0) throw new IllegalArgumentException("libraryId must be a positive integer (got: '${libraryId}')")
 
+    // The default chunk stays inside a client's tool-result limit (Claude Code refuses ~25k tokens).
     def maxChunkSize = 64000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : 30000
 
     try {
         def responseText = hubInternalGet("/library/list/single/data/${libraryId}")
@@ -2977,6 +2993,7 @@ def toolListInstalledApps(args) {
             }
         }
 
+        if (args?.nameFilter) filtered = _nameFiltered(filtered, args.nameFilter)
         def paged = _paginateList(filtered, cursor, 50, "hub_list_apps")
         def result = [
             apps: paged.page,
@@ -3139,6 +3156,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 properties: [
                     scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared).", default: "instances"],
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
+                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
@@ -3151,6 +3169,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 type: "object",
                 properties: [
                     include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
+                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ]
@@ -3175,7 +3194,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to read."],
                     id: [type: "string", description: "App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."],
                     offset: [type: "integer", description: "Char offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 64000"]
+                    length: [type: "integer", description: "Max chars (default 30000, max 64000)."]
                 ],
                 required: ["type", "id"]
             ]

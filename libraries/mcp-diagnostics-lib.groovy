@@ -1427,7 +1427,7 @@ def toolGetHubPerformance(args) {
     def current = [timestamp: formatTimestamp(now()), timestampEpoch: now()]
 
     try {
-        current.freeMemoryKB = hubInternalGet("/hub/advanced/freeOSMemory")?.trim()
+        current.freeMemoryKB = _hubNumber(hubInternalGet("/hub/advanced/freeOSMemory"))
         try {
             def memKB = current.freeMemoryKB as Integer
             if (memKB < 50000) current.memoryWarning = "LOW MEMORY: ${memKB}KB free. Consider rebooting the hub."
@@ -1436,7 +1436,7 @@ def toolGetHubPerformance(args) {
     } catch (Exception e) { current.freeMemoryKB = "unavailable" }
 
     try {
-        current.internalTempC = hubInternalGet("/hub/advanced/internalTempCelsius")?.trim()
+        current.internalTempC = _hubNumber(hubInternalGet("/hub/advanced/internalTempCelsius"))
         try {
             def temp = current.internalTempC as Double
             if (temp > 70) current.temperatureWarning = "HIGH TEMPERATURE: ${temp}°C. Hub may need better ventilation."
@@ -1444,13 +1444,11 @@ def toolGetHubPerformance(args) {
         } catch (Exception nfe) { /* non-numeric */ }
     } catch (Exception e) { current.internalTempC = "unavailable" }
 
+    // The hub reports its database size in MB.
     try {
-        current.databaseSizeKB = hubInternalGet("/hub/advanced/databaseSize")?.trim()
-        try {
-            def dbKB = current.databaseSizeKB as Integer
-            if (dbKB > 500000) current.databaseWarning = "LARGE DATABASE: ${(dbKB / 1024).toInteger()}MB. Consider cleaning up old data."
-        } catch (Exception nfe) { /* non-numeric */ }
-    } catch (Exception e) { current.databaseSizeKB = "unavailable" }
+        current.databaseSizeMB = _hubNumber(hubInternalGet("/hub/advanced/databaseSize"))
+        if (current.databaseSizeMB instanceof Number && current.databaseSizeMB > 500) current.databaseWarning = "LARGE DATABASE: ${current.databaseSizeMB} MB. Consider cleaning up old data."
+    } catch (Exception e) { current.databaseSizeMB = "unavailable" }
 
     try { current.uptimeSeconds = location.hub?.uptime } catch (Exception e) { current.uptimeSeconds = "unavailable" }
     if (current.uptimeSeconds && current.uptimeSeconds instanceof Number) {
@@ -1460,7 +1458,8 @@ def toolGetHubPerformance(args) {
         current.uptimeFormatted = "${days}d ${hours}h ${mins}m"
     }
 
-    // CSV history management
+    // CSV history management. The file's database column has always held the hub's MB figure;
+    // its header keeps the old name so existing files stay readable.
     def csvFileName = "mcp-performance-history.csv"
     def csvHeader = "timestamp,freeMemoryKB,internalTempC,databaseSizeKB,uptimeSeconds"
     def history = []
@@ -1482,7 +1481,7 @@ def toolGetHubPerformance(args) {
 
     // Record current snapshot to CSV
     if (recordSnapshot) {
-        def csvRow = "${now()},${current.freeMemoryKB},${current.internalTempC},${current.databaseSizeKB},${current.uptimeSeconds}"
+        def csvRow = "${now()},${current.freeMemoryKB},${current.internalTempC},${current.databaseSizeMB},${current.uptimeSeconds}"
         history << csvRow
 
         // Trim to 500 rows (rolling window)
@@ -1508,10 +1507,11 @@ def toolGetHubPerformance(args) {
             try {
                 trends << [
                     timestamp: formatTimestamp(parts[0] as Long),
-                    freeMemoryKB: parts[1],
-                    internalTempC: parts[2],
-                    databaseSizeKB: parts[3],
-                    uptimeSeconds: parts[4]
+                    timestampEpoch: parts[0] as Long,
+                    freeMemoryKB: _hubNumber(parts[1]),
+                    internalTempC: _hubNumber(parts[2]),
+                    databaseSizeMB: _hubNumber(parts[3]),
+                    uptimeSeconds: _hubNumber(parts[4])
                 ]
             } catch (Exception e) {
                 // Skip malformed rows
@@ -1520,6 +1520,12 @@ def toolGetHubPerformance(args) {
     }
 
     mcpLog("info", "monitoring", "Hub performance snapshot recorded=${recordSnapshot}, trendPoints=${trends.size()}")
+    // Trend rows exist only where a call passed recordSnapshot=true; say so when they are missing
+    // or more than a day old, so an empty or months-old trend is not read as the hub's history.
+    String trendNote = null
+    Long newest = trends ? trends[-1].timestampEpoch as Long : null
+    if (newest == null) trendNote = "No trend points: they are recorded only by calls with recordSnapshot=true. For the hub's own memory history use hub_get_memory_history."
+    else if (now() - newest > 86400000L) trendNote = "The newest trend point is from ${formatTimestamp(newest)}: points are recorded only by calls with recordSnapshot=true. For the hub's own memory history use hub_get_memory_history.".toString()
     return [
         current: current,
         // The hub's OWN active health alerts (from /hub2/hubData) sit alongside the locally-derived
@@ -1529,6 +1535,7 @@ def toolGetHubPerformance(args) {
         healthAlerts: _healthAlertsFromHub2(_getHub2HubData()),
         trends: trends,
         trendPointsAvailable: history.size(),
+        trendNote: trendNote,
         historyFile: csvFileName
     ]
 }

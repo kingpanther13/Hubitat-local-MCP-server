@@ -255,6 +255,29 @@ class ToolDashboardSpec extends ToolSpecBase {
         call.params.pinToken == 'tok-scraped'
     }
 
+    def "list asks /dashboard/all in the session that issued the page pinToken, so theme and PINs come back"() {
+        given: 'the hub honours the page token only with the HUBSESSION cookie the page set'
+        script.metaClass.hubInternalGetRaw = { String p ->
+            p == '/dashboard/select' ? [status: 200, location: null, setCookie: 'HUBSESSION=node0abc.node0',
+                                        data: "<script>var globalDashboardPinToken = 'tok-session';</script>"] : null
+        }
+        def sent = [:]
+        script.metaClass.hubInternalGetInSession = { String path, Map q, String session, int t = 30 ->
+            sent.path = path; sent.q = q; sent.session = session
+            '[{"installedAppId":31,"name":"BAT Dash","version":"2.0","theme":"dark","dashboardPin":"1234","hsmPin":"","deviceIds":[3]}]'
+        }
+
+        when:
+        def r = script.toolListDashboards([:])
+
+        then:
+        sent.path == '/dashboard/all'
+        sent.q.pinToken == 'tok-session'
+        sent.session == 'HUBSESSION=node0abc.node0'
+        r.source == 'dashboard-all'
+        r.dashboards[0].theme == 'dark'
+    }
+
     def "list falls back to Easy Dashboard Parent child apps when /dashboard/all is empty"() {
         given: 'no pinToken-backed list, but the apps tree has an Easy Dashboard Parent with one child'
         hubGet.register('/dashboard/all') { params -> '[]' }

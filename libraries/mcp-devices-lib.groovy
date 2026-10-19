@@ -2963,7 +2963,31 @@ def _evalAttrCondition(value, comparator, matchSet, numericThreshold, betweenLow
     return [matched, true]
 }
 
+// A poll on a budgeted transport (the cloud relay; LAN only when a LAN budget is set) waits no
+// longer than the request's remaining budget, so the relay never drops the answer; the result then
+// says so. The request clock rides in as __reqT0 and never reaches the engine's arg check.
 def toolPollUntilAttribute(args) {
+    if (!(args instanceof Map) || !args.containsKey("__reqT0")) return _pollUntilAttributeCore(args)
+    Map pollArgs = [:] + (args as Map)
+    def t0 = pollArgs.remove("__reqT0")
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
+    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number)) return _pollUntilAttributeCore(pollArgs)
+    long left = budget - (now() - (t0 as long))
+    def stable = pollArgs.stableForMs
+    if (left >= (asked as long) || asked < 100 || asked > 60000 || (stable instanceof Number && stable >= left)) return _pollUntilAttributeCore(pollArgs)
+    pollArgs.timeoutMs = Math.max(100L, left) as Integer
+    def result = _pollUntilAttributeCore(pollArgs)
+    if (result instanceof Map) {
+        result.requestedTimeoutMs = asked
+        result.timeoutMs = pollArgs.timeoutMs
+        result.budgetLimited = true
+        result.budgetNote = "The poll waited ${pollArgs.timeoutMs} ms instead of ${asked} ms: ${_isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'}. Poll again to keep waiting.".toString()
+    }
+    return result
+}
+
+def _pollUntilAttributeCore(args) {
     // 0. Reject unknown args early to surface caller mistakes (e.g., timeoutSeconds vs timeoutMs).
     def validArgKeys = ["deviceId", "deviceIds", "mode", "attribute", "expectedValue", "expectedValues", "timeoutMs", "pollIntervalMs", "comparator", "stableForMs"] as Set
     if (args instanceof Map) {
@@ -3737,32 +3761,55 @@ def toolGetDeviceHistory(args) {
                     note: "Retry; if persistent, firmware may have changed the /logs/eventsJson format -- report with hub_report_issue."]
         }
 
+        // The Logs page's Hub events tab (/hub/eventsJson: reboots, lowMemory, startup) shares
+        // the row shape; those rows are merged in newest first and carry kind:'hub'. A failed
+        // read of it leaves the location events intact and says so.
+        def hubRows = []
+        String hubEventsError = null
+        try {
+            def parsedHub = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub/eventsJson")?.toString() ?: "[]")
+            if (parsedHub instanceof List) hubRows = parsedHub
+            else hubEventsError = "the hub events list was not a JSON array"
+        } catch (Exception e) {
+            hubEventsError = (e.message ?: e.toString()).take(200)
+        }
+
         def locResults = []
         def timeFilterUnparseable = 0
-        for (evt in rows) {
-            if (!(evt instanceof Map)) continue
-            if (attributeFilter && evt.name != attributeFilter) continue
-            // Strictly-after window: drop events at or before sinceDate when the
-            // ISO+offset date parses (so re-passing a returned `date` as `since` never
-            // replays that same event); keep rows whose date doesn't parse (don't
-            // silently lose history), counting them. The numeric offset (e.g. -0400)
-            // parses via the 'Z' pattern.
-            def evtDate = null
-            try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
-            catch (Exception ignored) { timeFilterUnparseable++ }
-            if (evtDate != null && !evtDate.after(sinceDate)) continue
-            if (untilDate != null && evtDate != null && evtDate.after(untilDate)) continue
-            locResults << [
-                name: evt.name,
-                value: evt.value,
-                unit: evt.unit,
-                description: evt.descriptionText,
-                date: evt.date,
-                type: evt.type,
-                isStateChange: evt.isStateChange
-            ]
-            if (locResults.size() >= limit) break
+        def addRows = { List source, String kind ->
+            for (evt in source) {
+                if (!(evt instanceof Map)) continue
+                if (attributeFilter && evt.name != attributeFilter) continue
+                // Strictly-after window: drop events at or before sinceDate when the
+                // ISO+offset date parses (so re-passing a returned `date` as `since` never
+                // replays that same event); keep rows whose date doesn't parse (don't
+                // silently lose history), counting them. The numeric offset (e.g. -0400)
+                // parses via the 'Z' pattern.
+                def evtDate = null
+                try { evtDate = Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", evt.date?.toString()) }
+                catch (Exception ignored) { timeFilterUnparseable++ }
+                if (evtDate != null && !evtDate.after(sinceDate)) continue
+                if (untilDate != null && evtDate != null && evtDate.after(untilDate)) continue
+                locResults << [
+                    name: evt.name,
+                    value: evt.value,
+                    unit: evt.unit,
+                    description: evt.descriptionText,
+                    date: evt.date,
+                    type: evt.type,
+                    isStateChange: evt.isStateChange,
+                    kind: kind,
+                    _at: evtDate?.time
+                ]
+            }
         }
+        addRows(rows, "location")
+        int hubCount = locResults.size()
+        addRows(hubRows, "hub")
+        hubCount = locResults.size() - hubCount
+        if (hubCount > 0) locResults = locResults.sort { a, b -> (b._at ?: 0L) <=> (a._at ?: 0L) }
+        locResults.each { it.remove("_at") }
+        if (locResults.size() > limit) locResults = locResults.take(limit)
 
         mcpLog("info", "monitoring", "Retrieved ${locResults.size()} location history event${locResults.size() == 1 ? '' : 's'} (${sinceMode} window since ${sinceDate.format("yyyy-MM-dd'T'HH:mm:ss.SSSZ")}) from /logs/eventsJson")
         def locResult = [
@@ -3779,6 +3826,7 @@ def toolGetDeviceHistory(args) {
         // Mirror the hub-log path: surface rows that escaped the always-active
         // time window because their date would not parse.
         if (timeFilterUnparseable > 0) locResult.timeFilterUnparseable = timeFilterUnparseable
+        if (hubEventsError != null) locResult.hubEventsError = "Hub events (reboots, low memory) could not be read: ${hubEventsError}".toString()
         return locResult
     }
 
@@ -4762,6 +4810,9 @@ def toolCreateDevice(args) {
         warnings << "This is a radio-type driver. Creating it here makes a non-functional orphan shell (no paired node). Add real Z-Wave/Zigbee/Matter devices by PAIRING (hub_call_zwave / hub_call_zigbee / hub_call_matter), then delete this shell with hub_delete_device."
     }
 
+    def selectWarning = _selectCreatedDevice(newId)
+    if (selectWarning) warnings << selectWarning
+
     mcpLog("info", "device", "hub_create_device: created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}")
     return [
         success: true,
@@ -4774,8 +4825,20 @@ def toolCreateDevice(args) {
         capabilities: info?.capabilities,
         warnings: warnings ?: null,
         message: "Created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}." + (warnings ? " WARNING: see warnings." : ""),
-        note: "Set room/preferences/showOnHome with hub_update_device once the device is selectable, or delete it with hub_delete_device."
+        note: "Set room/preferences/showOnHome with hub_update_device, or delete it with hub_delete_device."
     ]
+}
+
+// A device this app creates joins its device selection, so the device tools reach it at once.
+private String _selectCreatedDevice(String deviceId) {
+    try {
+        def ids = (settings.selectedDevices ?: []).collect { it.id.toString() }
+        if (!ids.contains(deviceId)) app.updateSetting("selectedDevices", [type: "capability.*", value: ids + [deviceId]])
+        return null
+    } catch (Exception e) {
+        mcpLog("warn", "device", "Could not add device ${deviceId} to the selected devices: ${e.message}")
+        return "Device ${deviceId} was created but could not be added to this app's selected devices (${e.message}); add it in the app's device picker.".toString()
+    }
 }
 
 // Hub Mesh: create a LOCAL linked device from a device a peer hub shares (GET
@@ -4915,6 +4978,10 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag or an ambiguous diff). Find it with hub_get_hub_mesh."
     }
 
+    if (newId != null) {
+        def selectWarning = _selectCreatedDevice(newId)
+        if (selectWarning) warnings << selectWarning
+    }
     mcpLog("info", "device", "hub_create_device: linked Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId})${newId ? " as local ${newId}" : ''}")
     return [
         success: true,
@@ -5455,8 +5522,10 @@ def toolCallDeviceReplace(args) {
             def allowedIds = _bypassEnabled() ? null : (((selectedDevices ?: []) + (getChildDevices() ?: [])).collect { it.id?.toString() } as Set)
             def candidates = allowedIds == null ? parsed : parsed.findAll { it instanceof Map && allowedIds.contains(it.id?.toString()) }
             def options = candidates.collect { [id: it?.id?.toString(), name: it?.name, deviceTypes: it?.deviceTypes] }
-            return [success: true, listOptions: true, oldDeviceId: oldId, options: options, optionCount: options.size(),
+            def out = [success: true, listOptions: true, oldDeviceId: oldId, options: options, optionCount: options.size(),
                     note: options ? "Pick an option's id as new_device_id, then call again with confirm=true to replace." : "No compatible replacement devices found within current MCP device access."]
+            if (newId) out.compatible = options.any { it.id == newId }
+            return out
         } catch (Exception e) {
             mcpLogError("device-replace", "getReplacementOptions for ${oldId} failed", e)
             return [success: false, error: "Could not read replacement options: ${e.message}",
@@ -5478,7 +5547,7 @@ def toolCallDeviceReplace(args) {
         }
         def errText = (parsed instanceof Map) ? (parsed.message ?: parsed.error) : null
         return [success: false, error: errText ?: "/device/replace did not report success", response: raw?.take(300),
-                note: "new_device_id must be capability-compatible -- list valid candidates with list_options=true. Nothing was replaced."]
+                note: "Nothing was replaced. The hub answers \"Incompatible devices\" when the two share no device type, which list_options already checks (with new_device_id it reports compatible); \"Failed to replace device\" is its answer when its own swap of the two devices failed, with no reason given. Its Replace is built for newly paired hardware taking over an existing device."]
     } catch (Exception e) {
         mcpLogError("device-replace", "replace ${oldId} -> ${newId} failed", e)
         return [success: false, error: "Device replace failed: ${e.message}",
@@ -5712,20 +5781,21 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "hub_list_device_events",
-            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location.
+            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location and hub.
 
 [[FLAT_TRIM]]
+Location mode also lists the hub's own events (reboots, low memory, startup), tagged kind:'hub'.
 Default: most-recent events for a device (deviceId + optional limit). Device events include producedBy (the app, rule, or device that caused it) and triggered (the apps it fired) when the hub records them -- use attribute 'command-on' etc. to see who sent a command.
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: ["string", "integer"], description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable)."],
-                    appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted). Mutually exclusive with deviceId."],
-                    hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events.[[FLAT_TRIM]] Ignored when since is given.[[/FLAT_TRIM]]"],
+                    deviceId: [type: ["string", "integer"], description: "Device ID. Mutually exclusive with appId; omit both for location and hub events."],
+                    appId: [type: "integer", description: "Installed-app ID: the events that app or rule emitted. Mutually exclusive with deviceId."],
+                    hoursBack: [type: "integer", description: "Hours of history (max 168).[[FLAT_TRIM]] Instead of just the most recent events; ignored when since is given.[[/FLAT_TRIM]]"],
                     until: [type: ["string", "integer"], description: "[[FLAT_TRIM]]Optional window end (inclusive), same formats as since.[[/FLAT_TRIM]]"],
-                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp; ISO-8601 with a numeric offset (-0600 or -06:00; e.g. 2026-06-23T10:00:00.000-0600) or epoch milliseconds.[[FLAT_TRIM]] This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
+                    since: [type: ["string", "integer"], description: "Window start, exclusive: ISO-8601 with a numeric offset (e.g. 2026-06-23T10:00:00.000-0600) or epoch ms.[[FLAT_TRIM]] -0600 and -06:00 both work. This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500).[[FLAT_TRIM]] Higher values may slow hub.[[/FLAT_TRIM]]", default: 10]
                 ]
@@ -5805,7 +5875,7 @@ Pre-flight (mandatory): 1) hub backup <24h (hub_create_backup); 2) hub_list_devi
             description: """⚠️ DESTRUCTIVE: Replace a device's hardware, KEEPING its id + all app/rule references.
 
 [[FLAT_TRIM]]
-Two-step: list_options=true to list candidates, then apply with confirm=true.
+Two-step: list_options=true to list candidates (with new_device_id it also reports compatible), then apply with confirm=true. Built for newly paired hardware taking over an existing device.
 [[/FLAT_TRIM]]
 Pre-flight: backup <24h (hub_create_backup) + user OK.""",
             inputSchema: [
@@ -5881,7 +5951,7 @@ def _toolDisplayMeta_partDevices() {
         hub_list_devices: [title: "List Devices", summary: "List accessible devices with filtering, pagination, and field projection."],
         hub_get_device: [title: "Get Device Details", summary: "Inspect a device summary, configuration and preferences, or detailed information by section."],
         hub_get_device_attribute: [title: "Get Device Attribute", summary: "Read one attribute value, optionally waiting until it matches an expected value."],
-        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location events when neither is given."],
+        hub_list_device_events: [title: "List Device Events", summary: "Recent events for a device or app, or location and hub events when neither is given."],
         hub_call_device_command: [title: "Send Device Command", summary: "Send a command like on, off, or setLevel to one device, or up to 20 in one call."],
         hub_call_device_swap: [title: "Swap Device", summary: "Exchange two devices' identities so the apps on one run on the other's hardware."],
         hub_call_device_replace: [title: "Replace Device Hardware", summary: "Re-point a device to replacement hardware, keeping its id and all references."],
