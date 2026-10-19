@@ -2745,6 +2745,8 @@ private Map _rmCondTables() {
      numericOps: ["=", "\u2260", "<", ">", "<=", ">=", "in"],
      changeOps: ["*changed*", "*increased*", "*decreased*"],
      overOps: ["*increased by over*", "*decreased by over*"],
+     // Comparators beside which RM's trigger editor withholds "and stays" (it offers it for the over ones).
+     noStaysOps: ["*changed*", "*increased*", "*decreased*", "*is empty*", "**Any Value**"],
      stringOps: ["=", "\u2260", "*contains*", "*changed*", "*is empty*"],
      variableOps: ["=", "\u2260", "<", ">", "<=", ">=", "in", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"],
      buttonStates: ["pushed", "held", "doubleTapped", "released"],
@@ -2825,8 +2827,10 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
         boolean change = _rmComparatorIsRhsOptional(spec.comparator)
         List allowed = null
         // The steer names a trigger row only where RM's trigger for this capability offers the comparator.
-        boolean trigOnly = (change && fam != "time") || (cmp in ((t.changeOps as List) + (t.overOps as List)) && fam in ["numeric", "variable"])
-        String condSteer = kind == "condition" && trigOnly ? " '${cmp}' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.".toString() : ""
+        boolean noTrigChange = change && cap in (t.noChangeState as List)
+        boolean trigOnly = (change && fam != "time" && !noTrigChange) || (cmp in ((t.changeOps as List) + (t.overOps as List)) && fam in ["numeric", "variable"])
+        String condSteer = kind != "condition" ? "" : trigOnly ? " '${cmp}' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.".toString() :
+            (noTrigChange ? " Rule Machine offers '${cmp}' on neither a ${cap} condition nor a ${cap} trigger.".toString() : "")
         // RM offers the numeric change comparators only on a trigger, and not on an "All of these" one.
         // A device-state trigger keeps *changed* either way.
         boolean trigChange = kind == "trigger" && spec.allOfThese != true
@@ -2847,8 +2851,8 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     if (spec.andStays != null && (kind != "trigger" || cap in (t.noDuration as List))) {
         throw new IllegalArgumentException("${where}: Rule Machine has no 'and stays' duration for a ${cap} ${kind}. ${hint}".toString())
     }
-    if (spec.andStays != null && (_rmComparatorIsRhsOptional(spec.comparator) || _rmNormalizeComparator(spec.comparator)?.toString() in (t.changeOps as List))) {
-        throw new IllegalArgumentException("${where}: Rule Machine offers 'and stays' only for a state, not with the change comparator '${spec.comparator}'; drop andStays or pass a state. ${hint}".toString())
+    if (spec.andStays != null && (_rmComparatorIsRhsOptional(spec.comparator) || _rmNormalizeComparator(spec.comparator)?.toString() in (t.noStaysOps as List))) {
+        throw new IllegalArgumentException("${where}: Rule Machine offers 'and stays' only for a state, not with the comparator '${spec.comparator}' (it offers none with ${(t.noStaysOps as List).join(', ')}); drop andStays or pass a state. ${hint}".toString())
     }
 }
 
@@ -2955,7 +2959,7 @@ private Map _rmCondEntry(String cap, String kind) {
             }
             break
     }
-    if (trig && !((t.noDuration as List).contains(cap)) && fam != "time") opt << f("andStays", "Map", [description: "{hours?, minutes?, seconds?}; with a state, never a change comparator"])
+    if (trig && !((t.noDuration as List).contains(cap)) && fam != "time") opt << f("andStays", "Map", [description: "{hours?, minutes?, seconds?}; with a state, never with ${(t.noStaysOps as List).join(', ')}".toString()])
     if (trig) opt << f("condition", "Map", [description: "a condition (discover kind:'condition') gating this trigger"])
     else opt << f("not", "Boolean")
     opt << f("rawSettings", "Map", [description: "RM settings for fields not listed; '@N' becomes the row index"])
