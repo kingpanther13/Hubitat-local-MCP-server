@@ -14263,6 +14263,7 @@ def _applyNativeAppEdit(args) {
         // auto-fired, so the subscription-settle check below runs only when
         // updateRule was actually clicked (submitOnChange apps click nothing).
         def implicitCommitButton = null
+        def settingsCommitButton = null
         boolean settingsWritten = false
 
         if (settingsMap) {
@@ -14282,7 +14283,6 @@ def _applyNativeAppEdit(args) {
             def isSubPageWrite = (pageName && pageName != "mainPage")
             def subPageApplied = []
             def subPageSkipped = []
-            settingsWritten = !knownSettings.isEmpty()
             if (knownSettings && isSubPageWrite) {
                 // Write sub-page keys one at a time with page context and verify each landed, including
                 // the sticky multiple flag; settingsApplied lists only confirmed keys.
@@ -14307,11 +14307,13 @@ def _applyNativeAppEdit(args) {
                     _rmCollectInputSchema(config?.configPage as Map).get("updateRule")?.type != "button") {
                 editCommitButton = null
             }
+            settingsCommitButton = editCommitButton
             if (!button && isMainPage && knownSettings && editCommitButton) {
                 _rmClickAppButton(appId, editCommitButton)
                 implicitCommitButton = editCommitButton
             }
             result.settingsApplied = isSubPageWrite ? subPageApplied : knownSettings.keySet().toList()
+            settingsWritten = !((result.settingsApplied ?: []) as List).isEmpty()
             if (isSubPageWrite && subPageSkipped) {
                 result.settingsNotLanded = subPageSkipped
                 result.partial = true
@@ -14332,6 +14334,16 @@ def _applyNativeAppEdit(args) {
                 result.subPageNote = "Sub-page write (pageName='${pageName}') — updateRule NOT auto-fired so the editor state survives. Finish the wizard and call hub_set_rule(button='updateRule') to commit."
             }
         }
+        // Settings were given but none landed (each was skipped or not an input on the page).
+        def notLandedFields = { Map m ->
+            ["settingsNotLanded", "settingsSkipped", "unknownSettingsWarning"].each { f -> if (result[f]) m[f] = result[f] }
+            return m
+        }
+        if (settingsMap && !settingsWritten && !button) {
+            return notLandedFields([success: false, appId: appId, backup: backup, settingsApplied: [],
+                    error: "None of the settings ${settingsMap.keySet().collect { it.toString() }} landed on page '${pageName ?: 'mainPage'}'; settingsNotLanded and settingsSkipped say why.".toString(),
+                    restoreHint: _rmPreflightRestoreHint(null, backup, "Nothing landed, so nothing needs to be restored.")])
+        }
 
         if (button) {
             // A page-context click is checked against the page as it renders after this call's
@@ -14341,12 +14353,24 @@ def _applyNativeAppEdit(args) {
                 catch (IllegalArgumentException notRendered) {
                     if (_rmOutcomeFlags(notRendered).notSent != true) throw notRendered
                     if (settingsWritten) {
-                        return result + [success: false, partial: true, mainPageDoneSkipped: true,
+                        def partialOut = result + [success: false, partial: true, mainPageDoneSkipped: true,
                                          error: "${notRendered.message} The settings in this call were written first and stay applied: ${result.settingsApplied}.".toString(),
                                          restoreHint: _rmBackupHint(backup)]
+                        try { partialOut.health = _rmCheckRuleHealth(appId) }
+                        catch (Exception healthExc) { mcpLog("warn", "rm-native", "hub_set_rule: health check after the unrendered button on app ${appId} failed: ${healthExc.message}") }
+                        // A given button suppresses the implicit commit click, so the written settings are not activated.
+                        def isMain = (!pageName || pageName == "mainPage")
+                        partialOut.repairHints = (partialOut.repairHints ?: []) + [(!isMain ?
+                            "Finish the wizard on '${pageName}', then call hub_set_rule(appId=${appId}, button='updateRule', confirm=true) to commit." :
+                            settingsCommitButton ?
+                            "The settings are written but not activated: the button replaced the implicit ${settingsCommitButton} click. Call hub_set_rule(appId=${appId}, button='${settingsCommitButton}', confirm=true)." :
+                            "The settings are written but the closing mainPage Done was not run; finish with walkStep {page:'mainPage', operation:'done'}.").toString()]
+                        return partialOut
                     }
-                    return [success: false, appId: appId, error: notRendered.message, backup: backup,
-                            restoreHint: _rmPreflightRestoreHint(null, backup, "Refused before the click was sent, so nothing needs to be restored.")]
+                    return notLandedFields([success: false, appId: appId, error: notRendered.message, backup: backup,
+                            restoreHint: _rmPreflightRestoreHint(null, backup, settingsMap ?
+                                "None of the settings landed and the click was not sent, so nothing needs to be restored." :
+                                "Refused before the click was sent, so nothing needs to be restored.")])
                 }
             } else {
                 _rmClickAppButton(appId, button, args?.stateAttribute?.toString(), pageName)

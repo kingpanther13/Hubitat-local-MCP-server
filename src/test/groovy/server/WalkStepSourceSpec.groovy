@@ -452,6 +452,8 @@ class WalkStepSourceSpec extends ToolSpecBase {
         !result.restoreHint.contains("nothing needs to be restored")
         result.applied == true
         result.activated == false
+        result.health?.ok == true
+        result.repairHints == ["Finish the wizard on 'selectTriggers', then call hub_set_rule(appId=100, button='updateRule', confirm=true) to commit."]
         posts.any { it.body?.containsKey("settings[tCapab1]") }
         !posts.any { it.path == "/installedapp/btn" }
 
@@ -459,6 +461,68 @@ class WalkStepSourceSpec extends ToolSpecBase {
         desc                                   | shownBefore
         "never rendered"                       | false
         "rendered before, hidden by the write" | true
+    }
+
+    def "raw mainPage settings with an unrendered button stay written but not activated, and the hint names the commit button"() {
+        given:
+        enableWrite()
+        def posts = []
+        def main = { -> page("mainPage", [[name: "origLabel", type: "text"], [name: "updateRule", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> main() }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> main() }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << [path: path, body: body]; [status: 200, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, settings: [origLabel: "renamed"], button: "noSuchButton", pageName: "mainPage"])
+
+        then: "the button suppressed the implicit updateRule, so the result says what to click"
+        result.success == false
+        result.partial == true
+        result.settingsApplied == ["origLabel"]
+        result.applied == true
+        result.activated == false
+        result.mainPageDoneSkipped == true
+        result.health?.ok == true
+        result.repairHints == ["The settings are written but not activated: the button replaced the implicit updateRule click. Call hub_set_rule(appId=100, button='updateRule', confirm=true)."]
+        posts.any { it.path == "/installedapp/update/json" && it.body?.get("settings[origLabel]") == "renamed" }
+        !posts.any { it.path == "/installedapp/btn" }
+    }
+
+    def "raw sub-page settings where no value lands are refused, nothing written: #desc"() {
+        given: "tCapab1 offers only Switch, and the page never keeps a write"
+        enableWrite()
+        def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            page("selectTriggers", [[name: "tCapab1", type: "enum", options: ["Switch"]], [name: "hasAll", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << [path: path, body: body]; [status: 200, data: ''] }
+        def args = [appId: 100, confirm: true, settings: [tCapab1: value], pageName: "selectTriggers"]
+        if (button) args.button = button
+
+        when:
+        def result = script.toolSetRule(args)
+
+        then:
+        result.success == false
+        !result.partial
+        result.applied == false
+        result.verified == false
+        result.settingsApplied in [null, []]
+        result.settingsNotLanded*.key == ["tCapab1"]
+        result.settingsNotLanded[0].reason == reason
+        result.restoreHint.contains("nothing needs to be restored")
+        posts.any { it.body?.containsKey("settings[tCapab1]") } == posted
+        !posts.any { it.path == "/installedapp/btn" }
+
+        where:
+        desc                                         | value    | button         | reason             | posted
+        "an unoffered value, with an unrendered button" | "Dimmer" | "actionDone"   | "not_offered"      | false
+        "an unoffered value, no button"               | "Dimmer" | null           | "not_offered"      | false
+        "a write the page does not keep, no button"   | "Switch" | null           | "silent_rejection" | true
     }
 
     def "a patches button with pageName is checked against that page: an unrendered one stops the batch unsent"() {

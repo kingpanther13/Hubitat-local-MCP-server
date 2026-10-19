@@ -8466,18 +8466,30 @@ class TestRunner:
             assert unlisted.get("success") is False and refused.get("reason") == "not_offered"                 and "on" in [str(o) for o in (refused.get("offered") or [])],                 f"an unlisted tstate1 value should be refused with the picker's options: {unlisted}"
             after_refusal = self._get_persisted_rule_config(app_id).get("settings") or {}
             assert after_refusal.get("tCapab1") == "Switch" and after_refusal.get("tstate1") in (None, ""),                 f"the refused tstate1 write changed the stored slot: {after_refusal}"
-            # Raw settings are written before a pageName button is checked against the page they render: the same
-            # tDev1 value is written again, the unrendered click is not sent, and the result is partial with a restore hint.
+            # Raw settings are written before a pageName button is checked against the page they render: tDev1 moves to a
+            # second switch, the unrendered click is not sent, and the result is partial with a restore hint.
             # Not _walk_refusal: this call writes, so a lost response must not be blindly re-sent.
+            second_label = f"{PREFIX}WalkDrive_Sw2"
+            second_switch = self._create_virtual_switch_device(second_label)
+            assert second_switch, "could not create the second switch for the raw tDev1 write"
+            second_dni = self._last_created_dni or self._find_device_dni_by_label(second_label)
+            if second_dni:
+                self.created_device_dnis.append(second_dni)
             raw_partial = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
-                "appId": app_id, "confirm": True, "settings": {"tDev1": [int(self.get_test_switch_id())]},
+                "appId": app_id, "confirm": True, "settings": {"tDev1": [int(second_switch)]},
                 "button": "noSuchButtonE2E", "pageName": "selectTriggers"}})
-            raw_keys = (raw_partial.get("settingsApplied") or []) + [k.get("key") for k in (raw_partial.get("settingsNotLanded") or [])]
             assert raw_partial.get("success") is False and raw_partial.get("partial") is True \
+                and raw_partial.get("applied") is True and raw_partial.get("activated") is False \
                 and "Button 'noSuchButtonE2E' is not rendered on page 'selectTriggers'" in str(raw_partial.get("error", "")) \
-                and "written first" in str(raw_partial.get("error", "")) and "tDev1" in raw_keys \
-                and "nothing needs to be restored" not in str(raw_partial.get("restoreHint", "")), \
+                and "written first" in str(raw_partial.get("error", "")) \
+                and "tDev1" in (raw_partial.get("settingsApplied") or []) and not raw_partial.get("settingsNotLanded") \
+                and "nothing needs to be restored" not in str(raw_partial.get("restoreHint", "")) \
+                and any("button='updateRule'" in str(h) for h in (raw_partial.get("repairHints") or [])), \
                 f"raw settings with a button the written page does not render should be partial, settings kept: {raw_partial}"
+            raw_tdev = (self._get_persisted_rule_config(app_id).get("settings") or {}).get("tDev1")
+            assert self._setting_holds_exact(raw_tdev, second_switch) \
+                and not self._setting_holds_exact(raw_tdev, self.get_test_switch_id()), \
+                f"the raw tDev1 write did not land on the second switch: {raw_tdev!r}"
 
             # (3) failure halt: an invalid step operation aborts the drive (success:false,
             #     the step throws) and must NOT corrupt the rule.
