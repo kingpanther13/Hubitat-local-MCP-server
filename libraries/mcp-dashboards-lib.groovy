@@ -2,15 +2,18 @@ library(name: "McpDashboardsLib", namespace: "mcp", author: "kingpanther13", des
 
 def toolListDashboards(args = null) {
     args = args ?: [:]
-    // /dashboard/all returns [] unless given the page-global pinToken from /dashboard/select. Use a
-    // caller token if present, else scrape it; if still empty, fall back to child-app enumeration.
-    def token = (args.pinToken != null) ? args.pinToken.toString() : _fetchDashboardPinToken()
+    // /dashboard/all returns [] unless given the page-global pinToken from /dashboard/select, and
+    // the hub honours that token only in the session (HUBSESSION cookie) that served the page. Use
+    // a caller token if present, else scrape it and list in its session; if still empty, fall back
+    // to child-app enumeration.
+    def page = (args.pinToken != null) ? [token: args.pinToken.toString()] : _fetchDashboardPinToken()
+    def token = page?.token
     def q = [:]
     if (token) q.pinToken = token
     def parsed = null
     boolean allErrored = false   // true iff /dashboard/all threw (hub error), not merely empty
     try {
-        def raw = hubInternalGet("/dashboard/all", q)
+        def raw = page?.session ? hubInternalGetInSession("/dashboard/all", q, page.session as String) : hubInternalGet("/dashboard/all", q)
         parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : []
     } catch (Exception e) {
         mcpLogError("dashboard", "list dashboards via /dashboard/all failed", e)
@@ -50,15 +53,17 @@ def toolListDashboards(args = null) {
                 : "No dashboards found: /dashboard/all returned empty (a pinToken may be required) and no dashboard-parent child apps were present. If you expected dashboards, pass pinToken and retry."]
 }
 
-// Scrape globalDashboardPinToken from the /dashboard/select page so callers needn't supply pinToken.
-// Returns null if unreadable (caller then degrades to child-app enumeration). Server-side only.
-private String _fetchDashboardPinToken() {
+// Scrape globalDashboardPinToken from the /dashboard/select page so callers needn't supply pinToken,
+// with the session cookie that page opened ([token, session]). Null if unreadable (caller then
+// degrades to child-app enumeration). Server-side only.
+private Map _fetchDashboardPinToken() {
     try {
-        // hubInternalGetRaw returns a struct [status, location, data]; the body is .data.
-        def html = hubInternalGetRaw("/dashboard/select")?.data?.toString()
+        // hubInternalGetRaw returns a struct [status, location, data, setCookie]; the body is .data.
+        def pageResp = hubInternalGetRaw("/dashboard/select")
+        def html = pageResp?.data?.toString()
         if (!html) return null
         def matcher = (html =~ /globalDashboardPinToken\s*=\s*['"]([^'"]+)['"]/)
-        return matcher.find() ? matcher.group(1) : null
+        return matcher.find() ? [token: matcher.group(1), session: pageResp?.setCookie] : null
     } catch (Exception e) {
         mcpLogError("dashboard", "fetch dashboard pinToken failed", e)
         return null

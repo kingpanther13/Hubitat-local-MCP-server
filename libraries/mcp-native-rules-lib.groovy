@@ -439,7 +439,12 @@ def toolListRmRules(args) {
     def cursor = args?.cursor
     def paged = _paginateList(rules, cursor, 50, "hub_list_rules")
     def result = [
-        rules: paged.page,
+        // Labels and names leave as the user typed them: the hub stores "Heat On <67" as "Heat On &lt;67".
+        rules: paged.page.collect { r ->
+            def clean = [:] + r
+            ["label", "name"].each { k -> if (clean[k] instanceof CharSequence) clean[k] = stripAppConfigHtml(clean[k]) }
+            clean
+        },
         count: paged.page.size()
     ]
     if (cursor != null) {

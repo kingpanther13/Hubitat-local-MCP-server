@@ -98,6 +98,24 @@ class ToolModeSpec extends ToolSpecBase {
         result.action == 'create'
     }
 
+    def "hub_manage_mode create returns the new mode's id from the location's mode list"() {
+        given:
+        enableWrite()
+        seedModes()
+        script.metaClass.hubInternalPostJson = { String path, String body, int t = 420, boolean r = false ->
+            sharedLocation.modes = sharedLocation.modes + [[id: 7, name: 'Vacation']]
+            [success: true]
+        }
+
+        when:
+        def result = script.toolManageMode([action: 'create', name: 'Vacation'])
+
+        then:
+        result.success == true
+        result.modeId == '7'
+        result.name == 'Vacation'
+    }
+
     def "hub_manage_mode rename resolves the target by name and posts /modes/jsonUpdate with its id"() {
         given:
         enableWrite()

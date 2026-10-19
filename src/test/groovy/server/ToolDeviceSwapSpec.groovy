@@ -750,6 +750,16 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         result.options[0].deviceTypes == ['Graph']
     }
 
+    def "device replace list_options with new_device_id says whether the hub lists it as compatible"() {
+        given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
+        hubGet.register('/device/getReplacementOptions/80') { params -> '[{"deviceTypes":["Switch"],"id":23,"name":"New"}]' }
+
+        expect:
+        script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', list_options: true]).compatible == true
+        script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '55', list_options: true]).compatible == false
+    }
+
     def "device replace happy path: GET /device/replace?oldId&newId, old id preserved"() {
         given:
         childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])

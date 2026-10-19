@@ -299,6 +299,46 @@ class ToolManageLogsSpec extends ToolSpecBase {
         result.events[0].description == 'Mode changed to Night'
     }
 
+    def "hub_list_device_events location mode merges the hub events newest first and tags each row's kind"() {
+        given: 'a reboot the Logs page lists under Hub events, between two location events'
+        hubGet.register('/logs/eventsJson') { params ->
+            '''[
+              {"name":"mode","value":"Night","descriptionText":"m1","isStateChange":true,"type":"API","date":"2026-06-02T20:19:00.000-0400"},
+              {"name":"mode","value":"Day","descriptionText":"m2","isStateChange":true,"type":"API","date":"2026-06-02T20:10:00.000-0400"}
+            ]'''
+        }
+        hubGet.register('/hub/eventsJson') { params ->
+            '[{"name":"lowMemory","value":"","descriptionText":"Hub memory is critically low, rebooting now","date":"2026-06-02T20:15:00.000-0400"}]'
+        }
+
+        when:
+        def all = script.toolGetDeviceHistory([hoursBack: 168])
+        def reboots = script.toolGetDeviceHistory([hoursBack: 168, attribute: 'lowMemory'])
+
+        then:
+        all.events*.name == ['mode', 'lowMemory', 'mode']
+        all.events*.kind == ['location', 'hub', 'location']
+        !all.containsKey('hubEventsError')
+        reboots.count == 1
+        reboots.events[0].description.contains('rebooting now')
+    }
+
+    def "hub_list_device_events location mode keeps the location events when the hub events read fails"() {
+        given:
+        hubGet.register('/logs/eventsJson') { params ->
+            '[{"name":"mode","value":"Night","descriptionText":"m1","isStateChange":true,"type":"API","date":"2026-06-02T20:19:00.000-0400"}]'
+        }
+        hubGet.register('/hub/eventsJson') { params -> throw new RuntimeException('hub events unavailable') }
+
+        when:
+        def result = script.toolGetDeviceHistory([hoursBack: 168])
+
+        then:
+        result.count == 1
+        result.events[0].kind == 'location'
+        result.hubEventsError.contains('hub events unavailable')
+    }
+
     def "hub_list_device_events applies attribute filter to location events"() {
         given:
         hubGet.register('/logs/eventsJson') { params ->
@@ -433,7 +473,7 @@ class ToolManageLogsSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.source == 'location'
         inner.events == []
-        hubGet.calls*.path == ['/logs/eventsJson']
+        hubGet.calls*.path == ['/logs/eventsJson', '/hub/eventsJson']
 
         where:
         useGateways | idCase    | args

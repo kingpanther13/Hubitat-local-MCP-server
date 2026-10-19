@@ -172,7 +172,7 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         sharedLocation.hub = hubOnFirmware('2.5.2.129')
         hubGet.register('/hub2/hubData') { p -> HUB_DATA_252 }
         hubGet.register('/hub/alertsJson') { p ->
-            JsonOutput.toJson([alertItems: [[key: 'SPAMMY_DEVICES', message: 'Too many events', dismissible: true, version: '3']],
+            JsonOutput.toJson([alertItems: [[key: 'SPAMMY_DEVICES', message: "Too many <a href='/device/list'>events</a>", dismissible: true, version: '3']],
                                spammyDeviceDetails: [[id: 12, name: 'Chatty', count: '900']], maxEvents: 11, maxStates: '20'])
         }
 
@@ -1532,6 +1532,22 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         r.apps.find { it.id == 6 }.deprecated == false
     }
 
+    def "hub_list_apps instances take a nameFilter that ignores case"() {
+        given:
+        settingsMap.enableRead = true
+        hubGet.register('/hub2/appsList') { p ->
+            JsonOutput.toJson([apps: [[data: [id: 5, name: 'Porch Lights', type: 'Room Lights', disabled: false, user: false, hidden: false], children: []],
+                                      [data: [id: 6, name: 'Rule Machine', type: 'RM', disabled: false, user: false, hidden: false], children: []]]])
+        }
+
+        when:
+        def r = script.toolListInstalledApps([nameFilter: 'porch'])
+
+        then:
+        r.apps*.id == [5]
+        r.totalOnHub == 2
+    }
+
     def "hub_list_device_dependents adds the apps only getAppsUsingDevice reports"() {
         given:
         childDevicesList << [id: '42', label: 'Kitchen', name: 'Switch']
@@ -1961,12 +1977,63 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         206    | ['Content-Length': '6']
     }
 
-    def "_probeUrl gives nothing when the request fails"() {
+    def "_probeUrl carries the reason when the request fails or the host answers neither 200 nor 206: #error"() {
         given:
-        httpGetHook = { Map params, Closure c -> throw new RuntimeException('connection refused') }
+        httpGetHook = hook
 
         expect:
-        script._probeUrl('https://h/x/db.lzf', 16L * 1024 * 1024) == [:]
+        script._probeUrl('https://h/x/db.lzf', 16L * 1024 * 1024) == [error: error]
+
+        where:
+        hook << [{ Map params, Closure c -> throw new RuntimeException('connection refused') },
+                 { Map params, Closure c -> c([status: 302, headers: [:]]) }]
+        error << ['connection refused', 'the host answered HTTP 302']
+    }
+
+    def "a failed size check names its reason instead of reading as an unreported size"() {
+        given:
+        enableWrite()
+        def fetched = []
+        script.metaClass._probeUrl = { String url, long cap -> [error: 'status code: 404, reason phrase: Not Found'] }
+        script.metaClass._fetchBytesFromUrl = { String url, long cap -> fetched << url; ([0x1f, 0x8b, 8, 0] as byte[]) }
+
+        when:
+        def r = script.toolRestoreItemBackup([scope: 'hub_uploaded', backupUrl: 'https://h/x/db.lzf', confirm: true])
+
+        then:
+        r.success == false
+        r.error.contains('404')
+        !r.error.contains('did not report')
+        fetched.isEmpty()
+    }
+
+    def "an over-limit size prints one decimal rounded up, never the limit itself: #bytes"() {
+        expect:
+        script._mbText(bytes) == text
+
+        where:
+        bytes                 || text
+        8L * 1024 * 1024      || '8 MB'
+        8L * 1024 * 1024 + 1  || '8.1 MB'
+        8912896L              || '8.5 MB'
+        16L * 1024 * 1024 + 2 || '16.1 MB'
+    }
+
+    def "a File Manager file on this hub is read through the File Manager, not over HTTP"() {
+        given:
+        def hub = new TestHub()
+        hub.localIP = '192.168.1.50'
+        sharedLocation.hub = hub
+        byte[] body = '-- H2 0.5/B -- \nDATA'.getBytes('UTF-8')
+        def probed = []
+        script.metaClass._probeUrl = { String url, long cap -> probed << url; [:] }
+        script.metaClass._fileManagerRootFiles = { -> [[name: 'my backup.lzf', size: (long) body.length, date: null]] }
+        script.metaClass.downloadHubFile = { String name -> name == 'my backup.lzf' ? body : null }
+
+        expect:
+        script._fetchCappedBackup('http://192.168.1.50/local/my%20backup.lzf', 8L * 1024 * 1024) == [bytes: body]
+        script._fetchCappedBackup('http://127.0.0.1:8080/local/missing.lzf', 8L * 1024 * 1024).error.contains("no file named 'missing.lzf'")
+        probed.isEmpty()
     }
 
     def "_probeUrl keeps only the size of a range-ignoring answer over the cap"() {
@@ -2036,7 +2103,8 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         noExceptionThrown()
 
         where:
-        url << ['http://192.168.1.50/local/db.lzf', 'http://127.0.0.1:8080/local/full.tar.gz', 'https://backups.example.com/b.lzf', 'http://192.168.1.60/hub/x']
+        url << ['http://192.168.1.50/local/db.lzf', 'http://127.0.0.1:8080/local/full.tar.gz', 'https://backups.example.com/b.lzf', 'http://192.168.1.60/hub/x',
+                'http://0.backups.example.com/b.lzf', 'https://127.example.com/b.lzf', 'http://127.0.0.1/local/my%20backup.lzf']
     }
 
     def "local_backup_import needs confirm before anything is fetched"() {

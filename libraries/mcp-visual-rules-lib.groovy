@@ -144,17 +144,21 @@ private Map _vrbParentNode(boolean allowMissing = false) {
 
 private List _vrbListRules() {
     def parent = _vrbParentNode()
-    // A paused VRB rule decorates its appsList name with a "(Paused)" suffix (often HTML-
-    // wrapped in a red span); strip tags/entities so the name is clean AND the suffix is
-    // detectable. Unlike hub_list_rules there is no RMUtils label to cross-check against, so
-    // this is suffix-only: a rule the user literally named "... (Paused)" reads as paused here.
-    // hub_get_visual_rule(appId) returns the authoritative rulePaused.
+    // A paused VRB rule's appsList name ends with the hub's " <span class='text-red'>(Paused)</span>"
+    // decoration. The list carries the rule's name raw (a typed "<span>" or "&amp;" arrives as
+    // typed), so only that exact decoration marks the rule paused and only it is removed; the
+    // rest is the name as the single-rule read reports it. A name that itself ends in that exact
+    // markup reads as paused here, as the hub itself treats it; hub_get_visual_rule(appId)
+    // returns the authoritative rulePaused.
     //
     // paused/disabled are OMITTED (not asserted false) when the node data can't support them:
     // a null stripped name means paused is undeterminable, and an absent data.disabled key
     // means disabled is undeterminable. Present keys behave exactly as before.
     return (parent.children ?: []).findAll { it?.data?.id != null }.collect {
-        def cleanName = stripAppConfigHtml(it.data.name)
+        def rawName = it.data.name?.toString()
+        def decoration = / <span class=['"]text-red['"]>\(Paused\)<\/span>$/
+        boolean decorated = rawName != null && (rawName =~ decoration).find()
+        def cleanName = decorated ? rawName.replaceFirst(decoration, "") : rawName
         def disabledRaw = it.data.disabled
         def entry = [appId: it.data.id, name: cleanName]
         // The hub types each child "Visual Rule Builder 1.0" / "... 2.0" -- the only place the
@@ -164,7 +168,7 @@ private List _vrbListRules() {
         if (versionMatch.find()) entry.version = versionMatch.group(1)
         if (disabledRaw != null) entry.disabled = (disabledRaw == true)
         if (cleanName != null) {
-            entry.paused = cleanName.endsWith("(Paused)")
+            entry.paused = decorated
         } else {
             mcpLog("warn", "vrb", "_vrbListRules: rule ${it.data.id} has no readable name in /hub2/appsList; name null, paused undeterminable")
         }
@@ -1175,6 +1179,12 @@ def toolGetVisualRule(args) {
             if (out.definition == null && !out.definitionParseError) {
                 out.note = "This graph rule has an empty definition (freshly created, never saved)."
             }
+            // The raw ruleJson string repeats the parsed definition; it stays only when it did not parse.
+            if (out.definition instanceof Map) out.remove("ruleJson")
+            if (out.ruleApps instanceof List && args.includeRuleApps != true) {
+                out.ruleAppCount = out.ruleApps.size()
+                out.remove("ruleApps")
+            }
         }
         return out
     } catch (Exception e) {
@@ -1821,7 +1831,7 @@ Translation is otherwise reserved for older firmware that offers only ONE builde
 
 ### List mode (`hub_get_visual_rule` with no appId)
 
-One entry per rule: `{appId, name, version, disabled, paused}`. `disabled` is the red-X flag; `paused` is detected from a "(Paused)" suffix on the rule's name (VRB has no RMUtils label to cross-check, so a rule literally named "... (Paused)" reads as paused). For the authoritative pause state read the single rule — its `rulePaused` comes straight from the builder JSON. An OMITTED `paused`, `disabled` or `version` means it was undeterminable from the node data; it is never asserted false when it cannot be read.
+One entry per rule: `{appId, name, version, disabled, paused}`. `disabled` is the red-X flag; `paused` is read from the hub's own red-span "(Paused)" decoration on the listed name, which is removed (a rule the user named "... (Paused)" keeps that text and is not read as paused). For the authoritative pause state read the single rule — its `rulePaused` comes straight from the builder JSON. An OMITTED `paused`, `disabled` or `version` means it was undeterminable from the node data; it is never asserted false when it cannot be read.
 
 ### RECOMMENDED input: the editor form
 
@@ -1981,7 +1991,7 @@ VRB2 separates STORAGE from ACTIVATION. A document that fails the hub's own vali
 - `success` / `verified` — the write landed and the read-back confirmed name, pause state and node counts.
 - `activated` — whether the rule actually RUNS. `false` with a non-empty `validationErrors` is an inactive draft; `false` with an empty list means the hub stored the document but reports no live runtime (an `activationError` is passed through when the hub gives one). The response note says which.
 - `validationErrors` — the hub's human-readable problems. `validationIssues` is the same list in editor form (`{nodeId, field, message}`) so you can highlight the offending node, and `referencedDeviceIds` lists the devices the graph touched.
-- `revision` (reads and writes) — the hub's opaque optimistic-concurrency token for the stored document. `ruleApps` (reads) lists the installed apps a `runRule` action can legally target. `runtimeGraph` (reads) summarizes the live runtime, and is absent when nothing is active.
+- `revision` (reads and writes) — the hub's opaque optimistic-concurrency token for the stored document. `ruleApps` (reads with `includeRuleApps: true`; otherwise `ruleAppCount`) lists the installed apps a `runRule` action can legally target. The raw `ruleJson` string is left out of a read whose `definition` parsed. `runtimeGraph` (reads) summarizes the live runtime, and is absent when nothing is active.
 - `createRoute` (create and restore-recreate) — `createchild` when the per-version child route made the rule, `createVisualRuleBuilderRule` when the legacy builder-page fallback did; the fallback is the only path where the firmware, not your definition, picked the builder. `createRouteNote` appears beside it when the child route answered with a redirect to the new rule's builder page instead of a configure Location (the id was adopted from that redirect).
 - Every field in the two bullets above is OPTIONAL on the wire and appears only when the firmware sends it. `hub_get_rule_health(appId)` reads the same verdict later; for a graph Visual Rule `broken: true` means non-empty `validationErrors`.
 - When the firmware sends them, the hub's own `storedSuccessfully` / `activatedSuccessfully` flags are passed through verbatim. `activatedSuccessfully` takes precedence over the inferred `activated`.
@@ -2010,11 +2020,12 @@ def _getAllToolDefinitions_partVisualRules() {
     return [
         [
             name: "hub_get_visual_rule",
-            description: "List Visual Rules Builder rules (omit appId; each entry: appId, name, version, disabled, paused) or read one rule's full definition.[[FLAT_TRIM]] List-mode `paused` is detected from the rule's name suffix (no cross-check) and `version` ('2.0' / '1.0') comes from the hub's own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: 'graph' (VRB 2.0, {version, nodes, edges}) or 'classic' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]",
+            description: "List Visual Rules Builder rules (omit appId) or read one rule's full definition.[[FLAT_TRIM]] Each list entry: appId, name, version, disabled, paused. List-mode `paused` is read from the hub's own (Paused) name decoration and `version` ('2.0' / '1.0') comes from the hub's own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: 'graph' (VRB 2.0, {version, nodes, edges}) or 'classic' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    appId: [type: "integer", description: "Visual Rule app id. Omit to list all VRB rules."]
+                    appId: [type: "integer", description: "Visual Rule app id. Omit to list all VRB rules."],
+                    includeRuleApps: [type: "boolean", description: "[[FLAT_TRIM]]2.0 rule: list ruleApps (runRule targets).[[/FLAT_TRIM]]"]
                 ]
             ]
         ],

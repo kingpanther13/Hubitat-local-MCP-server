@@ -682,6 +682,47 @@ class RelayBudgetSpec extends ToolSpecBase {
     // runs unbounded. The loop behaviour itself is pinned in the tools' own specs; these
     // pin only DELIVERY.
 
+    def "the budget clock reaches hub_get_device_attribute polls through dispatch and the gateway"() {
+        given:
+        settingsMap.useGateways = true
+        def captured = [:]
+        script.metaClass._pollUntilAttributeCore = { a -> captured.args = a; [success: true, finalValue: 'on'] }
+
+        when:
+        def response = mcpDriver.callTool('hub_read_devices', [tool: 'hub_get_device_attribute',
+            args: [deviceId: '10', attribute: 'switch', expectedValue: 'on', timeoutMs: 2000]])
+
+        then: 'the wrapper consumed the clock; the engine never sees it'
+        response.error == null
+        captured.args.timeoutMs == 2000
+        !captured.args.containsKey('__reqT0')
+    }
+
+    @Unroll
+    def "a poll on a budgeted transport waits only the budget left: #label"() {
+        given:
+        script.metaClass._isCloudRequest = { -> cloud }
+        settingsMap.lanBudgetMs = lanBudget
+        def captured = [:]
+        script.metaClass._pollUntilAttributeCore = { a -> captured.args = a; [success: false, timedOut: true] }
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'on',
+                                               timeoutMs: asked, __reqT0: FIXED_NOW - spent])
+
+        then:
+        captured.args.timeoutMs == waited
+        (r.budgetLimited == true) == limited
+        !limited || r.requestedTimeoutMs == asked
+
+        where:
+        label                       | cloud | lanBudget | asked | spent || waited | limited
+        'cloud, long poll clamped'  | true  | null      | 25000 | 500   || 5500   | true
+        'cloud, short poll as asked'| true  | null      | 4000  | 500   || 4000   | false
+        'LAN, no budget'            | false | null      | 25000 | 500   || 25000  | false
+        'LAN with a budget'         | false | 8000      | 25000 | 1000  || 7000   | true
+    }
+
     def "the budget clock reaches hub_call_rule through dispatch and the gateway"() {
         given:
         settingsMap.useGateways = true
