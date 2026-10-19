@@ -3300,12 +3300,12 @@ def _getAllToolDefinitions_partVisualRules() {
     return [
         [
             name: "hub_get_visual_rule",
-            description: "List Visual Rules Builder rules (omit appId; each entry: appId, name, version, disabled, paused) or read one rule's full definition.[[FLAT_TRIM]] List-mode `paused` is read from the hub's own (Paused) name decoration and `version` ('2.0' / '1.0') comes from the hub's own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: 'graph' (VRB 2.0, {version, nodes, edges}) or 'classic' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]",
+            description: "List Visual Rules Builder rules (omit appId) or read one rule's full definition.[[FLAT_TRIM]] Each list entry: appId, name, version, disabled, paused. List-mode `paused` is read from the hub's own (Paused) name decoration and `version` ('2.0' / '1.0') comes from the hub's own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: 'graph' (VRB 2.0, {version, nodes, edges}) or 'classic' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "Visual Rule app id. Omit to list all VRB rules."],
-                    includeRuleApps: [type: "boolean", description: "With appId on a 2.0 rule: also list ruleApps, the installed apps a runRule action can target (otherwise only ruleAppCount)."]
+                    includeRuleApps: [type: "boolean", description: "2.0 rule: list ruleApps (runRule targets)."]
                 ]
             ]
         ],
@@ -3729,7 +3729,7 @@ def _getAllToolDefinitions_partFiles() {
                 properties: [
                     fileName: [type: "string", description: "The exact file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy')"],
                     offset: [type: "integer", description: "Character offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default 30000, max 60000."]
+                    length: [type: "integer", description: "Max chars (default 30000, max 60000)."]
                 ],
                 required: ["fileName"]
             ]
@@ -14342,18 +14342,19 @@ If no exact device match: suggest similar devices and get user confirmation befo
         ],
         [
             name: "hub_list_device_events",
-            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location and hub (hub events: reboots, low memory, startup).
+            description: """Get event history for a device, an app or rule (the automation events it emitted), or the location and hub.
 
 [[FLAT_TRIM]]
+Location mode also lists the hub's own events (reboots, low memory, startup), tagged kind:'hub'.
 Default: most-recent events for a device (deviceId + optional limit). Device events include producedBy (the app, rule, or device that caused it) and triggered (the apps it fired) when the hub records them -- use attribute 'command-on' etc. to see who sent a command.
 [[/FLAT_TRIM]]
 """,
             inputSchema: [
                 type: "object",
                 properties: [
-                    deviceId: [type: ["string", "integer"], description: "Device ID. Mutually exclusive with appId; omit both for location-level events (mode/HSM/hub variable) and hub events (reboots, low memory; kind:'hub')."],
+                    deviceId: [type: ["string", "integer"], description: "Device ID. Mutually exclusive with appId; omit both for location and hub events."],
                     appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted). Mutually exclusive with deviceId."],
-                    hoursBack: [type: "integer", description: "If set, return up to this many hours of history (max 168 = 7 days) instead of just the most recent events.[[FLAT_TRIM]] Ignored when since is given.[[/FLAT_TRIM]]"],
+                    hoursBack: [type: "integer", description: "Hours of history (max 168).[[FLAT_TRIM]] Instead of just the most recent events; ignored when since is given.[[/FLAT_TRIM]]"],
                     until: [type: ["string", "integer"], description: "[[FLAT_TRIM]]Optional window end (inclusive), same formats as since.[[/FLAT_TRIM]]"],
                     since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp; ISO-8601 with a numeric offset (-0600 or -06:00; e.g. 2026-06-23T10:00:00.000-0600) or epoch milliseconds.[[FLAT_TRIM]] This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
@@ -19522,7 +19523,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 properties: [
                     scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared).", default: "instances"],
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
-                    nameFilter: [type: "string", description: "Only apps whose name contains this text (case-insensitive), e.g. 'Porch'."],
+                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
@@ -19535,7 +19536,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 type: "object",
                 properties: [
                     include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
-                    nameFilter: [type: "string", description: "Only drivers whose name contains this text (case-insensitive), e.g. 'Virtual Switch'."],
+                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ]
@@ -19559,7 +19560,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to read."],
                     id: [type: "string", description: "App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."],
                     offset: [type: "integer", description: "Char offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default 30000, max 64000."]
+                    length: [type: "integer", description: "Max chars (default 30000, max 64000)."]
                 ],
                 required: ["type", "id"]
             ]
@@ -37499,7 +37500,7 @@ def getGatewayConfig() {
                 hub_list_devices: "show all devices switches lights sensors locks state inventory enumerate context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed inclusion compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity hub reboot restart low memory lowMemory startup app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
                 hub_get_compatible_devices: "compatible devices catalog supported hardware brands models pairing join exclude factory reset instructions how to pair driver protocol zigbee zwave matter lan",
                 hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub"
             ]
@@ -37567,7 +37568,7 @@ def getGatewayConfig() {
                 hub_list_devices: "show all devices switches lights sensors locks state inventory context summary snapshot overview house whats on right now changed since room",
                 hub_get_device: "device detail capabilities attributes commands info inspect one configuration editable fields preferences driver identity saved settings",
                 hub_get_device_attribute: "read attribute value poll wait until threshold sensor verify state changed compare numeric range debounce stable multiple devices deviceIds any all converge across",
-                hub_list_device_events: "device history events timeline recent location mode hsm variable activity app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
+                hub_list_device_events: "device history events timeline recent location mode hsm variable activity hub reboot restart low memory lowMemory startup app rule automation emitted since bookmark timestamp after new events change watch why caused produced by triggered button command source provenance",
                 hub_get_hub_mesh: "hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval linked device shared variable hub to hub",
                 hub_update_hub_mesh: "enable disable hub mesh share devices between hubs link remote second hub peer hubs multi hub connect two hubs mesh token follow modes another hub sync interval full refresh linked device hub to hub"
             ]
@@ -42297,6 +42298,7 @@ Only query devices the user has mentioned or that are relevant to their request.
 
 ### hub_list_device_events
 - Higher limits (50+) may slow the hub; default limit applies otherwise.
+- With neither deviceId nor appId the call returns the location events and the hub's own events (the Logs page's Hub events: reboots, `lowMemory`, startup), newest first, each row tagged `kind: 'location'` or `kind: 'hub'`; `attribute: 'lowMemory'` finds low-memory restarts. A failed hub-events read keeps the location events and adds `hubEventsError`.
 
 - `attribute` filters by event name. For a device it is an attribute (e.g. `switch`); for location-level events it accepts one of `mode`, `hsmStatus`, `hsmAlert`, or a hub-variable name.
 - `until` (same formats as `since`) ends the window inclusively, so `since` + `until` returns one bounded slice, e.g. what happened between 02:00 and 02:15. The response echoes it as `untilTimestamp`. `hoursBack` (default 24) always counts back from now, not from `until`: `until` without `since` cuts the window that starts `hoursBack` hours ago, and an `until` before that start is refused. For a slice further back, pass `since` + `until`.
