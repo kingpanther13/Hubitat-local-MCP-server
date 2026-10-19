@@ -558,7 +558,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.checkErrors.any { it.contains("compiled-state read failed") }
     }
 
-    def "auto: a fully-read verdict carries an EMPTY checkErrors (always present)"() {
+    def "auto: a fully-read verdict carries EMPTY checkErrors and warnings (always present)"() {
         given:
         seedHealthy(100)
 
@@ -567,6 +567,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
         then:
         h.checkErrors == []
+        h.warnings == []
     }
 
     def "auto: a ruleBuilderJson with NO actionList is reported as the degraded settings-scan mode"() {
@@ -825,6 +826,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         h.source == "none"
         h.issues.any { it.contains("appId is null") }
         h.brokenMarkerCounts == [:]   // faithful subset of the normal shape (the gate reads this key)
+        h.warnings == []
         hubGet.calls.isEmpty()   // no /app/ruleBuilderJson/null or /installedapp/configure/json/null
     }
 

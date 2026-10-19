@@ -8690,12 +8690,17 @@ class TestRunner:
             on = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule",
                 "args": {"appId": int(app_id), "confirm": True, "settings": {"useST": True}}})
-            # The write reports success:false because its own health check flags the ungated rule.
+            # The ungated rule is a health warning, not an issue, so the write that asked for it succeeds.
             assert "useST" in (on.get("settingsApplied") or []), f"switching useST on did not land: {on}"
+            assert on.get("success") is True and on.get("applied") is True, \
+                f"a settings write that switched useST on must not read as failed: {on}"
             health = self.client.call_tool("hub_read_rules", {
                 "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
-            assert health.get("ok") is False and any("UNGATED" in str(i) for i in (health.get("issues") or [])), \
-                f"health did not flag useST on with no committed expression: {health}"
+            assert health.get("ok") is True, f"an ungated rule must keep ok:true: {health}"
+            assert any("UNGATED" in str(w) for w in (health.get("warnings") or [])), \
+                f"health did not warn about useST on with no committed expression: {health}"
+            assert not any("UNGATED" in str(i) for i in (health.get("issues") or [])), \
+                f"the ungated state must be a warning, not an issue: {health}"
             # An expression added after the snapshot is removed by the restore, since the snapshot had none.
             gate = self._call_slow_rule({
                 "appId": app_id,
