@@ -7934,8 +7934,8 @@ private Map _meshJson() {
     }
 }
 
-// A GET sent in an existing hub session (the name=value cookie a hubInternalGetRaw answer carried
-// as setCookie): some page tokens are only honoured in the session that issued them.
+// A GET sent in an existing hub session (a name=value session cookie): some page tokens are only
+// honoured in the session that issued them.
 def hubInternalGetInSession(String path, Map query, String sessionCookie, int timeout = 30) {
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', cookie: sessionCookie])
 }

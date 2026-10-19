@@ -144,16 +144,9 @@ private Map _vrbParentNode(boolean allowMissing = false) {
 
 private List _vrbListRules() {
     def parent = _vrbParentNode()
-    // A paused VRB rule's appsList name ends with the hub's " <span class='text-red'>(Paused)</span>"
-    // decoration. The list carries the rule's name raw (a typed "<span>" or "&amp;" arrives as
-    // typed), so only that exact decoration marks the rule paused and only it is removed; the
-    // rest is the name as the single-rule read reports it. A name that itself ends in that exact
-    // markup reads as paused here, as the hub itself treats it; hub_get_visual_rule(appId)
-    // returns the authoritative rulePaused.
-    //
-    // paused/disabled are OMITTED (not asserted false) when the node data can't support them:
-    // a null name means paused is undeterminable, and an absent data.disabled key
-    // means disabled is undeterminable. Present keys behave exactly as before.
+    // The appsList name is raw, and a paused rule's ends with the hub's exact " <span class='text-red'>(Paused)</span>":
+    // only that marks it paused and only it is removed (hub_get_visual_rule has the authoritative
+    // rulePaused). paused/disabled are omitted when a null name or an absent data.disabled leaves them unknown.
     return (parent.children ?: []).findAll { it?.data?.id != null }.collect {
         def rawName = it.data.name?.toString()
         def decoration = / <span class=['"]text-red['"]>\(Paused\)<\/span>$/

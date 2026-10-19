@@ -570,8 +570,7 @@ private Map _toolRestoreSourceBackup(args) {
 // archive the way the browser does (_postMultipartBackup).
 
 void _requireCreateBackupConfirm(args) {
-    // The confirm checks hub_create_backup makes before any hub call. The request-to-request path runs
-    // them before it reserves a write slot, so a missing confirm is a plain validation refusal there too.
+    // The confirm checks a backup call needs, made before any hub call or write reservation.
     args = args ?: [:]
     if (args.cloudDownload != null) {
         if (args.schedule != null || args.networkBackup != null || args.testNetworkBackup == true || args.full == true) {

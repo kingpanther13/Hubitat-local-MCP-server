@@ -5749,7 +5749,8 @@ class TestRunner:
     def test_set_rule_self_gateway_envelope_create(self) -> None:
         # CREATE via the flat self-gateway envelope: operation='create' lifts name + the
         # bundle from args and routes to the create arm, baking a real rule on the live hub.
-        label = f"{PREFIX}SelfGwCreate"
+        # The label carries < and &, which the hub stores HTML-escaped; hub_list_rules lists it as typed.
+        label = f"{PREFIX}SelfGwCreate <67 & go"
         env = {"operation": "create",
                "args": {"name": label,
                         "addActions": [{"capability": "log", "message": "envelope-create"}]},
@@ -5771,6 +5772,10 @@ class TestRunner:
                 assert created.get("success") is not False and not created.get("partial"), \
                     f"envelope create did not fully bake: {created}"
             self._assert_rule_healthy(app_id)
+            listed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+            row = next((x for x in (listed.get("rules") or []) if str(x.get("id")) == str(app_id)), None)
+            assert row is not None and row.get("label") == label, \
+                f"hub_list_rules must list the rule label as typed ({label!r}): {row}"
         finally:
             self._delete_native(app_id)
 
@@ -13758,6 +13763,30 @@ class TestRunner:
                     print(f"    [WARN] could not delete {nm}: {exc}")
 
     @test("system_tools")
+    def test_source_and_file_reads_default_to_30000_char_chunks(self) -> None:
+        # A read without `length` returns at most 30,000 characters and says there is more.
+        types = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": "types", "nameFilter": "MCP Rule"}})
+        child = next((a for a in types.get("apps") or [] if a.get("name") == "MCP Rule"), None)
+        assert child, f"the MCP Rule code class is not listed: {types.get('apps')}"
+        src = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_source", "args": {"type": "app", "id": str(child["id"])}})
+        assert src.get("chunkLength", 0) <= 30000 and src.get("hasMore") is True \
+            and src.get("totalLength", 0) > 30000, \
+            f"hub_get_source default chunk: {({k: src.get(k) for k in ('chunkLength', 'hasMore', 'totalLength')})}"
+        name = f"{PREFIX}chunk.txt"
+        try:
+            wr = self.client.call_tool("hub_manage_files", {"tool": "hub_write_file", "args": {
+                "fileName": name, "content": "x" * 40000, "confirm": True}})
+            assert wr.get("success") is True, f"could not write the chunk fixture: {wr}"
+            rd = self.client.call_tool("hub_manage_files", {"tool": "hub_read_file", "args": {"fileName": name}})
+            assert len(rd.get("content") or "") == 30000 and rd.get("hasMore") is True, \
+                f"hub_read_file default chunk: {({k: rd.get(k) for k in ('chunkLength', 'hasMore', 'totalLength')})}"
+        finally:
+            try:
+                self.client.call_tool("hub_manage_files", {"tool": "hub_delete_file", "args": {"fileName": name, "confirm": True}})
+            except Exception as exc:
+                print(f"    [WARN] chunk fixture cleanup failed (delete {name}): {exc}")
+
+    @test("system_tools")
     def test_mode_create_numeric_name_returns_its_own_id(self) -> None:
         # A mode named like another mode's id: create must report the NEW mode's id. The cleanup
         # deletes by that id (an id resolves before a name, so deleting by the name would hit the
@@ -16961,6 +16990,10 @@ class TestRunner:
                     args["sections"] = ["identity"]
                 detail = self.client.call_tool("hub_read_devices", {"tool": "hub_get_device", "args": args})
                 assert detail.get("mode") == mode, f"keyless {mode} read failed under the BPS gate: {detail}"
+            # A package dryRun only plans, so it passes the gate keyless too.
+            plan = self.client.call_tool("hub_update_package", {"ref": "main", "dryRun": True})
+            assert plan.get("success") is True and plan.get("dryRun") is True, \
+                f"keyless hub_update_package dryRun blocked under the BPS gate: {plan}"
         finally:
             self._set_bps(enableMandatoryBPS=False)
 
