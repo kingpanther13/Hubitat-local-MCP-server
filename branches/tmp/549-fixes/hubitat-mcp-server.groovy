@@ -29415,6 +29415,9 @@ private Map _rmPreflightAddLocalVariable(Integer appId, Map varSpec) {
             }
         }
     }
+    if (typeCanonical == "DateTime" && !(value.toString() ==~ /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}.*/)) {
+        throw new IllegalArgumentException("addLocalVariable.value for DateTime must be yyyy-MM-ddTHH:mm (seconds and zone are ignored), e.g. 2026-05-06T12:00; got '${value}'. RM is not touched.")
+    }
     def existing = _rmReadLocalVarsMap(appId)
     if (existing.ok != true) {
         throw new IllegalStateException("addLocalVariable: the local variables of rule ${appId} could not be read (${existing.error ?: 'no map'}), so an existing '${name}' cannot be ruled out; RM's editor would keep that variable's type and value. Retry the call. RM is not touched.".toString())
@@ -29439,6 +29442,16 @@ private boolean _rmLocalVarMatches(Object meta, String typeCanonical, Object ser
     }
     return stored?.toString() == serializedValue?.toString()
 }
+private boolean _rmCancelLocalVarEditor(Integer appId) {
+    try {
+        _rmClickAppButton(appId, "cancelGV", "cancelGV", "selectActions")
+        def fields = (_rmCollectInputSchema(_rmFetchConfigJson(appId, "selectActions")?.configPage as Map) ?: [:]).keySet()
+        return !fields.any { it in ["hbVar", "varType", "varValue", "varDate", "varTime"] }
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "addLocalVariable: closing the variable editor on app ${appId} failed: ${e.message ?: e.toString()}")
+        return false
+    }
+}
 private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
     Map pre = plan ?: _rmPreflightAddLocalVariable(appId, varSpec)
     def name = pre.name
@@ -29450,7 +29463,31 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
     _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
     _rmWriteSettingOnPage(appId, "selectActions", "hbVar", name, applied, null, skipped)
     _rmWriteSettingOnPage(appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
-    _rmWriteSettingOnPage(appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
+    if (typeCanonical == "DateTime") {
+        def dtCfg = _rmFetchConfigJson(appId, "selectActions")
+        def dtSchema = _rmCollectInputSchema(dtCfg?.configPage as Map)
+        def missing = ["varDate", "varTime"].findAll { !dtSchema?.containsKey(it) }
+        if (missing) {
+            boolean closed = _rmCancelLocalVarEditor(appId)
+            return [
+                success: false, partial: !closed, wizardStuck: !closed, name: name, type: typeCanonical, value: value,
+                settingsApplied: applied, settingsSkipped: skipped,
+                error: "RM's DateTime editor did not offer ${missing.join(' and ')} for '${name}', so it was not created${closed ? '; the editor was cancelled' : ' and the editor may still be open'}.".toString(),
+                repairHints: closed ? [] : ["Click cancelGV on selectActions (hub_set_rule button:'cancelGV', stateAttribute:'cancelGV', pageName:'selectActions') to close the variable editor."]
+            ]
+        }
+        String v = serializedValue.toString()
+        def dtBody = _rmBuildSettingsBody(appId, [varDate: v.substring(0, 10), varTime: v.substring(11, 16)], dtSchema)
+        dtBody.formAction = "update"
+        dtBody.currentPage = "selectActions"
+        dtBody.pageBreadcrumbs = _rmPageBreadcrumbs(appId, "selectActions", '["mainPage"]')
+        if (dtCfg?.app?.version != null) dtBody.version = dtCfg.app.version.toString()
+        _rmPostSettings(appId, dtBody)
+        applied.addAll(["varDate", "varTime"])
+        _rmClickAppButton(appId, "dateTimeDone", "dtDone", "selectActions")
+    } else {
+        _rmWriteSettingOnPage(appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
+    }
     def committed = false
     def found = null
     def attempts = 0
@@ -29494,9 +29531,11 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
         ]
     }
     if (!committed) {
+        boolean closed = _rmCancelLocalVarEditor(appId)
         return [
             success: false,
             partial: true,
+            wizardStuck: !closed,
             hubRenderError: true,
             name: name,
             type: typeCanonical,
