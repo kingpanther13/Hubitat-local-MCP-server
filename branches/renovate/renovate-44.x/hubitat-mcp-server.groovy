@@ -4,7 +4,7 @@
  * A native MCP (Model Context Protocol) server that runs directly on Hubitat
  * with a built-in custom rule engine for creating automations via Claude.
  *
- * Version: 4.7.1 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
+ * Version: 4.8.2 - Enriched list_devices summary + server-side filter (disabled, enabled, stale:N)
  *
  * Installation:
  * 1. Go to Hubitat > Apps Code > New App
@@ -28,13 +28,20 @@
 @groovy.transform.Field static volatile Map MRTR_CLEANUP_CHECK_AT = [:]
 @groovy.transform.Field Long mrtrWorkerSliceStartedAt = null
 @groovy.transform.Field Map deviceReadContext = null
+@groovy.transform.Field Map callerClient = null
 @groovy.transform.Field static final Map LOGS_JSON_SNAPSHOT = new java.util.HashMap()
 @groovy.transform.Field static final Map NATIVE_LOG_SNAPSHOTS = new java.util.HashMap()
 @groovy.transform.Field static final Map DEVICE_READ_SNAPSHOTS = new java.util.LinkedHashMap()
 @groovy.transform.Field static final Map DEBUG_LOG_BUFFERS = new java.util.HashMap()
 @groovy.transform.Field static final Map CAPTURE_STORES = new java.util.HashMap()
 @groovy.transform.Field static final Map ITEM_BACKUP_MANIFESTS = new java.util.HashMap()
-@groovy.transform.Field static final int ITEM_BACKUP_RETENTION = 20
+@groovy.transform.Field static final String ITEM_BACKUP_INDEX_FILE = "mcp-backup-index.json"
+@groovy.transform.Field static final long ITEM_BACKUP_DEFAULT_BUDGET_MB = 10L
+@groovy.transform.Field static final long ITEM_BACKUP_MAX_BUDGET_MB = 1000000L
+@groovy.transform.Field static final Set ITEM_BACKUP_BUDGET_WARNED = java.util.Collections.synchronizedSet(new java.util.HashSet())
+@groovy.transform.Field static final String ITEM_BACKUP_INDEX_UNAVAILABLE = "Backup index unavailable"
+@groovy.transform.Field static final int FILE_BACKUP_COPIES = 5
+@groovy.transform.Field static final Set ITEM_BACKUP_LEGACY_PENDING = new java.util.HashSet()
 @groovy.transform.Field static final Map ITEM_BACKUP_LOCK_STATE = new java.util.HashMap()
 @groovy.transform.Field static final Map PRED_CLEAR_STORES = new java.util.HashMap()
 @groovy.transform.Field static final Map WRITE_STATE_CACHE = new java.util.HashMap()
@@ -3325,6 +3332,56 @@ private List _filesApplyListFilters(List fileList, String filterLower) {
     }
     return out
 }
+private List _filesBackupNameParts(String fileName) {
+    int dotIndex = fileName.lastIndexOf('.')
+    return dotIndex > 0 ? [fileName.substring(0, dotIndex), fileName.substring(dotIndex)] : [fileName, ""]
+}
+private String _filesWriteBackupCopy(String fileName, byte[] bytes) {
+    List parts = _filesBackupNameParts(fileName)
+    String backupFileName = "${parts[0]}_backup_${new Date(now()).format("yyyyMMdd-HHmmss-SSS")}${parts[1]}"
+    uploadHubFile(backupFileName, bytes)
+    return backupFileName
+}
+private String _filesCopyRetentionNote(String fileName) {
+    return "The newest ${FILE_BACKUP_COPIES} backup copies of '${fileName}' are kept; older copies are deleted after its next successful write or delete.".toString()
+}
+private Map _filesPruneBackupCopies(String fileName, String keepName = null) {
+    List parts = _filesBackupNameParts(fileName)
+    def copyPattern = ~("^" + java.util.regex.Pattern.quote(parts[0]) + "_backup_(\\d{8}-\\d{6})(-\\d{3})?" + java.util.regex.Pattern.quote(parts[1]) + "\$")
+    List names
+    try { names = _fileManagerRootFiles().collect { it.name } }
+    catch (Exception e) {
+        mcpLog("warn", "file-manager", "Could not list File Manager to prune old backup copies of '${fileName}': ${e.message}")
+        return [removed: [], warning: "Old backup copies of '${fileName}' were not pruned: the File Manager listing failed (${e.message}). More than ${FILE_BACKUP_COPIES} copies may remain.".toString()]
+    }
+    Closure age = { String name ->
+        def m = name =~ copyPattern
+        m.matches() ? (m.group(1) + (m.group(2) ?: "-000")) : ""
+    }
+    boolean keepingNew = keepName != null && names.contains(keepName)
+    List copies = names.findAll { it ==~ copyPattern && it != keepName }
+    List stale = copies.sort { a, b -> age(b) <=> age(a) }.drop(FILE_BACKUP_COPIES - (keepingNew ? 1 : 0))
+    List removed = []
+    List failed = []
+    stale.each { name ->
+        try {
+            deleteHubFile(name)
+            removed << name
+        } catch (Exception e) {
+            failed << name
+            mcpLog("warn", "file-manager", "Could not delete old backup copy '${name}': ${e.message}")
+        }
+    }
+    if (removed) mcpLog("info", "file-manager", "Removed ${removed.size()} old backup copies of '${fileName}' (keeping the newest ${FILE_BACKUP_COPIES})")
+    String warning = failed ? "Could not delete old backup copies ${failed} of '${fileName}'; more than ${FILE_BACKUP_COPIES} copies remain.".toString() : null
+    return [removed: removed, warning: warning]
+}
+private void _filesReportCopyRetention(Map result, String fileName, Map prune) {
+    result.backupRetention = "copies"
+    result.backupRetentionNote = _filesCopyRetentionNote(fileName)
+    if (prune?.removed) result.removedOldBackups = prune.removed
+    if (prune?.warning) result.pruneWarning = prune.warning
+}
 def toolListFiles(args = null) {
     if (args?.filter != null && !(args.filter instanceof CharSequence)) {
         throw new IllegalArgumentException("filter must be a string (a case-insensitive substring of the file name), not ${args.filter instanceof Number ? 'a number' : args.filter instanceof Map ? 'an object' : args.filter instanceof List ? 'an array' : 'a non-string value'}")
@@ -3505,23 +3562,28 @@ def toolWriteFile(args) {
     def backedUp = false
     def backupFileName = null
     def identicalContent = false
-    try {
-        def existingBytes = downloadHubFile(args.fileName)
-        if (existingBytes != null && new String(existingBytes, "UTF-8") == args.content.toString()) {
-            identicalContent = true
-            mcpLog("info", "file-manager", "Existing '${args.fileName}' already matches the incoming content -- skipping backup")
-        } else if (existingBytes != null) {
-            def dotIndex = args.fileName.lastIndexOf('.')
-            def baseName = dotIndex > 0 ? args.fileName.substring(0, dotIndex) : args.fileName
-            def ext = dotIndex > 0 ? args.fileName.substring(dotIndex) : ""
-            def ts = new Date().format("yyyyMMdd-HHmmss")
-            backupFileName = "${baseName}_backup_${ts}${ext}"
-            uploadHubFile(backupFileName, existingBytes)
-            backedUp = true
-            mcpLog("info", "file-manager", "Backed up existing '${args.fileName}' to '${backupFileName}' before overwriting (${existingBytes.length} bytes)")
-        }
-    } catch (Exception e) {
+    byte[] existingBytes = null
+    try { existingBytes = downloadHubFile(args.fileName) }
+    catch (Exception e) {
         mcpLog("debug", "file-manager", "No existing file '${args.fileName}' to back up: ${e.message}")
+    }
+    byte[] incomingBytes = args.content.toString().getBytes("UTF-8")
+    if (existingBytes != null && existingBytes.length == incomingBytes.length && (existingBytes as List) == (incomingBytes as List)) {
+        identicalContent = true
+        mcpLog("info", "file-manager", "Existing '${args.fileName}' already matches the incoming content -- skipping backup")
+    } else if (existingBytes != null) {
+        try {
+            backupFileName = _filesWriteBackupCopy(args.fileName.toString(), existingBytes)
+        } catch (Exception e) {
+            mcpLogError("file-manager", "Could not back up existing '${args.fileName}' before overwriting", e)
+            return [
+                success: false,
+                error: "Could not back up existing '${args.fileName}' before overwriting: ${e.message}",
+                note: "Nothing was written; '${args.fileName}' still holds its previous content. Retry once File Manager accepts writes."
+            ]
+        }
+        backedUp = true
+        mcpLog("info", "file-manager", "Backed up existing '${args.fileName}' to '${backupFileName}' before overwriting (${existingBytes.length} bytes)")
     }
     try {
         uploadHubFile(args.fileName, args.content.getBytes("UTF-8"))
@@ -3540,6 +3602,7 @@ def toolWriteFile(args) {
         if (backedUp) {
             result.backupFile = backupFileName
             result.backupDownload = "http://<HUB_IP>/local/${backupFileName}"
+            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString(), backupFileName))
         }
         return result
     } catch (Exception e) {
@@ -3561,12 +3624,7 @@ def toolDeleteFile(args) {
         try {
             def bytes = downloadHubFile(args.fileName)
             if (bytes == null) throw new Exception("File not found")
-            def dotIndex = args.fileName.lastIndexOf('.')
-            def baseName = dotIndex > 0 ? args.fileName.substring(0, dotIndex) : args.fileName
-            def ext = dotIndex > 0 ? args.fileName.substring(dotIndex) : ""
-            def ts = new Date().format("yyyyMMdd-HHmmss")
-            backupFileName = "${baseName}_backup_${ts}${ext}"
-            uploadHubFile(backupFileName, bytes)
+            backupFileName = _filesWriteBackupCopy(args.fileName.toString(), bytes)
             backedUp = true
             mcpLog("info", "file-manager", "Backed up '${args.fileName}' to '${backupFileName}' before deletion (${bytes.length} bytes)")
         } catch (Exception e) {
@@ -3593,6 +3651,7 @@ def toolDeleteFile(args) {
             try { hubIp = location?.hub?.localIP?.toString() } catch (Exception ignored) {   }
             result.backupDownload = "http://${hubIp ?: '<HUB_IP>'}/local/${backupFileName}"
             result.undoHint = "To recover: use 'hub_read_file' on '${backupFileName}' to view contents, or 'hub_write_file' to recreate '${args.fileName}' from the backup."
+            _filesReportCopyRetention(result, args.fileName.toString(), _filesPruneBackupCopies(args.fileName.toString(), backupFileName))
         }
         if (!backedUp && !isBackupFile) {
             result.warning = "The file contents could not be backed up before deletion. The data may be permanently lost."
@@ -3644,7 +3703,7 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_write_file",
-            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery). Requires Write master and confirm=true — confirm the write with the user before calling.",
+            description: "⚠️ Write (create or overwrite) a text file in the hub's File Manager. If a file of the same name exists this OVERWRITES it wholesale; the prior version is auto-backed up first (see backupFile in the result for recovery; the newest ${FILE_BACKUP_COPIES} copies per file are kept). Requires Write master and confirm=true — confirm the write with the user before calling.",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -3722,14 +3781,21 @@ def toolListItemBackups(args = null) {
     return ([scope: scope] + _listSourceItemBackups(args) + hubSections)
 }
 private _listSourceItemBackups(args) {
-    def manifest = _itemBackupManifest()
+    def manifest
+    try { manifest = _itemBackupManifest() }
+    catch (Exception e) {
+        Map unavailable = _itemBackupIndexUnavailableResult(e)
+        if (unavailable == null) throw e
+        return unavailable + [backups: [], count: 0, total: 0]
+    }
     if (manifest.isEmpty()) {
         return [
             backups: [],
             count: 0,
             total: 0,
-            message: "No item backups exist yet. Backups are created automatically when you use hub_update_app, hub_update_driver, hub_update_library, or hub_delete_item.",
-            maxBackups: 20,
+            message: "No item backups exist yet. Backups are created automatically when you use hub_update_app, hub_update_driver, hub_update_library, or hub_delete_item, and before Rule Machine edits and deletes.",
+            storageBudget: _itemBackupBudgetUsage(manifest),
+            retentionPolicy: _itemBackupRetentionPolicy(),
             storage: "Backups are stored as .groovy files in the hub's File Manager. You can access them at http://<HUB_IP>/local/<filename> or via Hubitat > Settings > File Manager.",
             howToRestore: "Use 'hub_get_backup' to retrieve source code, then 'hub_restore_backup' to restore (apps/drivers). For deleted apps or drivers, use 'hub_create_app' or 'hub_create_driver' with the backup source. For deleted libraries, use 'hub_create_library' with the backup source."
         ]
@@ -3745,6 +3811,8 @@ private _listSourceItemBackups(args) {
             timestamp: formatTimestamp(entry.timestamp),
             age: formatAge(entry.timestamp),
             sourceLength: entry.sourceLength ?: 0,
+            sizeBytes: _itemBackupEntryBytes(entry),
+            retention: entry.retention ?: "pinned",
             directDownload: "http://<HUB_IP>/local/${entry.fileName}"
         ]
         if (entry.type == "rm-rule") {
@@ -3757,12 +3825,13 @@ private _listSourceItemBackups(args) {
         return base
     }.sort { a, b -> (b.timestampEpoch <=> a.timestampEpoch) }
     def cursor = args?.cursor
-    def paged = _paginateList(backupList, cursor, 50, "hub_list_backups")
+    def paged = _paginateList(backupList, cursor ?: "", 50, "hub_list_backups")
     def result = [
         backups: paged.page,
         count: paged.page.size(),
         total: backupList.size(),
-        maxBackups: 20,
+        storageBudget: _itemBackupBudgetUsage(manifest),
+        retentionPolicy: _itemBackupRetentionPolicy(),
         storage: "Backup files are stored in the hub's local File Manager (Settings > File Manager). Files persist even if MCP is uninstalled.",
         howToRestore: "Use 'hub_restore_backup' with a backupKey to restore apps/drivers via MCP. For library backups, use 'hub_update_library' with sourceFile mode instead. Or download the .groovy file from File Manager and paste it into Apps Code / Drivers Code / Libraries code manually.",
         manualRestore: "Go to Hubitat > Settings > File Manager to see backup files. Download a file, then go to Apps Code (or Drivers Code, or FOR DEVELOPERS > Libraries code) > select the item > paste the source > click Save."
@@ -3770,8 +3839,15 @@ private _listSourceItemBackups(args) {
     if (backupList.any { it.deletePending }) {
         result.deletePendingNote = "Entries with deletePending=true record an incomplete deletion. If the file is still readable, hub_get_backup or hub_restore_backup can clear the marker and recover the backup. Recover promptly: the next backup publication purges unprotected pending entries and attempts to delete their files, even if still readable. Pending entries cannot be reused as baselines."
     }
-    if (cursor != null && paged.nextCursor != null) result.nextCursor = paged.nextCursor
+    if (paged.nextCursor != null) {
+        result.hasMore = true
+        result.nextCursor = paged.nextCursor
+        result.note = "Showing ${paged.page.size()} of ${backupList.size()} backups, newest first. Repeat the call with cursor '${paged.nextCursor}' for the next page.".toString()
+    }
     return result
+}
+private String _itemBackupRetentionPolicy() {
+    return "Backups are removed only when all MCP backups together exceed the ${_itemBackupBudgetMb()} MB storage budget (the Backup storage budget setting). Another item's backup never replaces this one, but once the budget is exceeded any new backup can evict older backups of any item: rolling steps first, then pinned baselines, oldest first. Apps, drivers and libraries keep one pinned baseline, replaced by the item's next backup after the one-hour reuse window. A rule's first snapshot in an editing session is pinned, and so is every pre-delete, pre-forcedelete and replaceRequiredExpression snapshot; with backupEveryRuleWrite on, its other snapshots in the session are rolling steps. A rule's editing session ends once an hour passes with no snapshot of that rule; with backupEveryRuleWrite on, a continuous chain of writes keeps it open."
 }
 private Map _healPendingItemBackup(String backupKey, Map entry) {
     return _withBackupLock("heal ${backupKey}") {
@@ -3801,7 +3877,13 @@ private Map _healPendingItemBackup(String backupKey, Map entry) {
 }
 def toolGetItemBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', or 'library_42')")
-    def manifest = _itemBackupManifest()
+    def manifest
+    try { manifest = _itemBackupManifest() }
+    catch (Exception e) {
+        Map unavailable = _itemBackupIndexUnavailableResult(e)
+        if (unavailable == null) throw e
+        return unavailable + [backupKey: args.backupKey]
+    }
     def entry = manifest.get(args.backupKey)
     if (!entry) {
         mcpLog("debug", "hub-admin", "Backup key '${args.backupKey}' not found in manifest")
@@ -3878,7 +3960,12 @@ def toolRestoreItemBackup(args) {
         throw new IllegalArgumentException("scope must be 'source' (default), 'hub_local', 'hub_cloud', or 'hub_uploaded'.")
     }
     requireDestructiveConfirm(args.confirm)
-    return _toolRestoreSourceBackup(args)
+    try { return _toolRestoreSourceBackup(args) }
+    catch (Exception e) {
+        Map unavailable = _itemBackupIndexUnavailableResult(e)
+        if (unavailable == null) throw e
+        return unavailable + [backupKey: args.backupKey]
+    }
 }
 private Map _toolRestoreSourceBackup(args) {
     if (!args.backupKey) throw new IllegalArgumentException("backupKey is required (e.g., 'app_123', 'driver_456', 'library_42', or 'rm-rule_<id>_<ts>')")
@@ -4000,6 +4087,7 @@ private Map _toolRestoreSourceBackup(args) {
                 _publishUploadedItemBackup(preRestoreBackupKey, [
                     type: entry.type, id: entry.id, fileName: preRestoreFileName,
                     version: parsed.version, timestamp: now(), sourceLength: parsed.source.length(),
+                    sizeBytes: parsed.source.getBytes("UTF-8").length, retention: "pinned",
                     undoForBackupKey: args.backupKey.toString(), undoForSourceHash: restoreSourceHash,
                     sourceHash: undoSourceHash
                 ], args.backupKey.toString())
@@ -4089,9 +4177,12 @@ private Map _toolRestoreSourceBackup(args) {
                 undoAvailable: undoAvailable
             ]
             if (undoAvailable) {
+                String undoNote = _itemBackupRetentionNote([type: entry.type, retention: "pinned", undoForBackupKey: args.backupKey.toString()])
                 restoreResult.preRestoreBackup = preRestoreBackupKey
                 restoreResult.preRestoreFile = preRestoreFileName
-                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'"
+                restoreResult.backupRetention = "pinned"
+                restoreResult.backupRetentionNote = undoNote
+                restoreResult.undoHint = "To undo this restore, use 'hub_restore_backup' with backupKey='${preRestoreBackupKey}'. ${undoNote}"
             } else {
                 restoreResult.warning = undoWarning
             }
@@ -4868,12 +4959,12 @@ A transport drop can lose the response while the hub still commits this write; v
         ],
         [
             name: "hub_list_backups",
-            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups — a local backup's name and a cloud backup's path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule read joins hubBackupErrors (partial:true) and a failed share read stays inside networkBackup; neither fails the listing. See hub_get_tool_guide(section='backup').[[/FLAT_TRIM]]",
+            description: "List backups: scope=source (default; auto-created code backups, each with a backupKey) | hub_local | hub_cloud | hub | all. Read-only. The hub scopes also return the automatic-backup `schedule` and the `networkBackup` share settings.[[FLAT_TRIM]] Whole-hub DB backups come back under hubLocalBackups/hubCloudBackups — a local backup's name and a cloud backup's path feed hub_restore_backup/hub_delete_backup; fullBackup:true marks a full local backup (database + files + radio data). The `schedule` block carries the frequencies (days) + daily hour/minute and the full-backup / last-backup status fields; no password is ever returned. A failed schedule read joins hubBackupErrors (partial:true) and a failed share read stays inside networkBackup; neither fails the listing. Source entries carry retention (pinned or rolling) and the response reports storageBudget and the retention policy. See hub_get_tool_guide(section='backup').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     scope: [type: "string", enum: ["source", "hub_local", "hub_cloud", "hub", "all"], description: "Which backups to list; default source."],
-                    cursor: [type: "string", description: "Opt-in pagination cursor (source only); pass \"\" for the first page, iterate nextCursor."]
+                    cursor: [type: "string", description: "Source backups page 50 at a time, newest first; pass the returned nextCursor to continue."]
                 ],
                 required: []
             ]
@@ -5302,6 +5393,7 @@ private List _bugReportSettingsLines(String privacyMode) {
             "- **Cloud-relay budget (ms):** ${effNum(settings.relayBudgetMs, _relayBudgetMs())}",
             "- **LAN budget (ms):** ${effNum(settings.lanBudgetMs, _lanBudgetMs())}",
             "- **Back up before every native app edit:** ${eff(settings.backupEveryRuleWrite, false)}",
+            "- **Backup storage budget (MB):** ${effNum(settings.backupBudgetMb, _itemBackupBudgetMb())}",
             "- **Hide access tokens in responses:** ${eff(settings.redactAccessTokens, false)}",
             "- **Keep recent errors for bug reports:** ${eff(settings.retainReportErrors, false)}",
             "- **Max captured states:** ${effNum(settings.maxCapturedStates, getMaxCapturedStates())}",
@@ -5991,9 +6083,11 @@ private String _deviceReadAccessScope() {
     ])
 }
 private def _deviceReadSnapshot(String tool, Map args, Map context) {
+    Map workArgs = _mrtrCopyMap(args)
+    workArgs.remove("__reqT0")
     Map work = [id: context.id, fresh: context.fresh, tool: tool,
                 outerTool: context.outerTool ?: tool,
-                args: _mrtrCopyMap(args), scope: _deviceReadAccessScope()]
+                args: workArgs, scope: _deviceReadAccessScope()]
     Map snapshot = _hubReadSnapshot(null, args, work)
     if (work.scope != _deviceReadAccessScope()) {
         throw new IllegalArgumentException("Device access changed during this read; start a fresh call.")
@@ -6116,8 +6210,9 @@ def runNativeLogFetch(Map job = [:]) {
             def payload = _executeWithDeviceReadContext(outer, outerArgs, null)
             String text = groovy.json.JsonOutput.toJson(payload)
             int bytes = text.getBytes("UTF-8").length
-            if (bytes > 120000) text = groovy.json.JsonOutput.toJson(
-                _responseTooLargeEnvelope(work.tool.toString(), bytes, 120000))
+            int limit = _responseSizeLimitBytes()
+            if (bytes > limit) text = groovy.json.JsonOutput.toJson(
+                _responseTooLargeEnvelope(work.tool.toString(), bytes, limit))
             result = [text: text, scope: work.scope]
         } else {
             result = [text: hubInternalGet("/logs/past/json", job.query as Map, 30)]
@@ -6418,7 +6513,7 @@ def toolGetHubLogs(args) {
         if (paged.nextCursor != null) result.nextCursor = paged.nextCursor
     }
     def estimatedJsonSize = paged.page.sum(0) { (it.message?.length() ?: 0) + (it.name?.length() ?: 0) + 120 }
-    if (estimatedJsonSize > hubResponseCapBytes() - 11072) {
+    if (estimatedJsonSize > _responseSizeLimitBytes()) {
         paged.page.each { it.message = it.message?.take(200) }
         result.truncated = true
         result.note = "Log messages truncated to fit response size limit"
@@ -8578,6 +8673,8 @@ def toolGetHubInfo(args = null) {
     }
     if (args?.includeSubscriptions == true) info.subscriptions = _hubSubscriptions()
     info.recentWrites = _mrtrRecentOperations()
+    def clientAccess = _clientAccessInfo()
+    if (clientAccess != null) info.clientAccess = clientAccess
     return info
 }
 def toolSetSystemSettings(args) {
@@ -9644,7 +9741,8 @@ private List _capabilityNames(def caps) {
         (c instanceof CharSequence) ? c.toString() : (c?.name?.toString() ?: c?.toString())
     }.findAll { it != null }
 }
-def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null) {
+def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, capabilityFilter = null, format = null, fields = null, cursor = null, scope = null, roomFilter = null, onlyOn = null, changedSince = null, attributeNames = null, reqT0 = null) {
+    Long clockT0 = reqT0 instanceof Number ? reqT0 as Long : null
     if (cursor != null) {
         if (offset != null && (offset as Integer) > 0) {
             throw new IllegalArgumentException("cursor and offset are mutually exclusive (got cursor=${cursor}, offset=${offset}); pick one")
@@ -9859,7 +9957,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     }
     if (resolvedFormat == "context") {
         def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
-        _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'], true)
+        int hydrated = _hydrateNativeInventory(pagedDevices, ['currentStates', 'capabilities'], true, clockT0)
+        boolean budgetCut = hydrated < pagedDevices.size()
+        if (budgetCut) {
+            pagedDevices = pagedDevices.subList(0, hydrated)
+            endIndex = startIndex + hydrated
+        }
         def attrNames = (attributeNames && !attributeNames.isEmpty()) ? attributeNames.collect { it.toString() } : _contextAttributeNames()
         def lines = pagedDevices.collect { d -> _contextDeviceLine(d, attrNames) }
         def header = _contextHeaderLines()
@@ -9887,6 +9990,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
                 result.nextCursor = endIndex.toString()
             }
         }
+        if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit, cursor != null)
         return result
     }
     def pagedDevices = totalCount > 0 ? allDevices.subList(startIndex, endIndex) : []
@@ -9905,6 +10009,7 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
     def useDetailed = (resolvedFormat == "detailed") || detailed ||
         (fieldSet != null && fieldSet.any { detailFields.contains(it) })
     def requiredCollections = []
+    boolean budgetCut = false
     boolean labelOnlyProjection = fieldSet != null && !useDetailed && fieldSet.contains("label") &&
         fieldSet.every { it in ["id", "mcpManaged", "label"] }
     if (labelOnlyProjection) {
@@ -9920,7 +10025,12 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         } else if (fieldSet == null || fieldSet.contains('currentStates')) {
             requiredCollections << 'currentStates'
         }
-        _hydrateNativeInventory(pagedDevices, requiredCollections, true)
+        int hydrated = _hydrateNativeInventory(pagedDevices, requiredCollections, true, clockT0)
+        budgetCut = hydrated < pagedDevices.size()
+        if (budgetCut) {
+            pagedDevices = pagedDevices.subList(0, hydrated)
+            endIndex = startIndex + hydrated
+        }
     }
     def devices = pagedDevices.collect { device ->
         def deviceIdStr = device.id.toString()
@@ -9977,7 +10087,19 @@ def toolListDevices(detailed, offset, limit, filter = null, labelFilter = null, 
         }
         if (cursor != null && endIndex < totalCount) result.nextCursor = endIndex.toString()
     }
+    if (budgetCut) _applyListBudgetCut(result, startIndex, endIndex, totalCount, limit, cursor != null)
     return result
+}
+private void _applyListBudgetCut(Map result, int startIndex, int endIndex, int totalCount, limit, boolean cursorMode) {
+    result.offset = startIndex
+    result.limit = limit ?: 0
+    result.hasMore = true
+    result.nextOffset = endIndex
+    result.nextCursor = endIndex.toString()
+    result.budgetLimited = true
+    result.note = ("Partial page: devices ${startIndex + 1}-${endIndex} of ${totalCount}. It stopped early to answer within the " +
+        "request time limit and ${totalCount - endIndex} more device(s) remain. Repeat the call with " +
+        (cursorMode ? "cursor '${endIndex}'" : "offset ${endIndex}") + " (other arguments unchanged) to continue.").toString()
 }
 private Boolean isDeviceDisabled(device) {
     return device.disabled == true || device.disabled?.toString()?.toLowerCase() == "true" ||
@@ -10109,15 +10231,18 @@ private List _mcpVisibleDevices(List childDevs = null, Map meta = null) {
     }
     return byId.values() as List
 }
-private void _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false) {
-    records.each { record ->
+private int _hydrateNativeInventory(List records, List requiredCollections, boolean allowPartial = false, Long reqT0 = null) {
+    int processed = 0
+    for (record in records) {
+        if (processed > 0 && reqT0 != null && record._nativeLoaded != true && _timeBudgetExceeded(reqT0)) return processed
+        processed++
         if (record._nativeLoaded != true) {
             def fj = _fetchDeviceFullJson(record.id)
             if (!(fj?.device instanceof Map)) {
                 if (!allowPartial) throw new IllegalStateException("Native device metadata is unavailable for device ${record.id}; no SDK fallback was used.")
                 record.putAll([_nativeLoaded: true, _nativeReadError: true,
                     _nativeUnavailableCollections: ['currentStates', 'capabilities', 'commands']])
-                return
+                continue
             }
             def d = fj.device
             def states = d.currentStates instanceof Map ? [] : null
@@ -10139,6 +10264,7 @@ private void _hydrateNativeInventory(List records, List requiredCollections, boo
             throw new IllegalStateException("Native device collections are unavailable for device ${record.id}: ${unavailable.join(', ')}.")
         }
     }
+    return processed
 }
 private boolean _seedNativeInventoryFromTree(List records, Map inventory = null) {
     if (inventory == null) inventory = _fetchAllHubDeviceRecords("device", "native bulk device read")
@@ -11322,7 +11448,7 @@ private Map _deviceReadFragment(Map snapshot, String token, int start) {
             note: 'Concatenate content fragments in order, then parse the joined JSON. Repeat with nextCursor and unchanged arguments within five minutes; fields=[] discovers smaller selections.']
 }
 private String _deviceReadSelection(deviceId, String mode, sections, fields) {
-    return _mrtrSha256(groovy.json.JsonOutput.toJson([app?.id?.toString(), deviceId.toString(), mode, sections, fields]))
+    return _mrtrSha256(groovy.json.JsonOutput.toJson([app?.id?.toString(), callerClient?.id?.toString(), deviceId.toString(), mode, sections, fields]))
 }
 private Map _deviceReadContinuation(String cursor, String selection) {
     if (!(cursor ==~ /v2:[a-f0-9-]{36}:[0-9]+/)) {
@@ -14026,7 +14152,7 @@ Call `hub_get_tool_guide(section='performance_devices')` for response-shape deta
                     attributeNames: [type: "array", items: [type: "string"], description: "format='context' only (rejected on other formats): which attributes to show per device line[[FLAT_TRIM]], replacing the default set. Empty array = the default set[[/FLAT_TRIM]]."],
                     format: [type: "string", enum: ["summary", "detailed", "ids", "context"], description: "Response shape. 'summary' (default) = standard fields + currentStates. 'detailed' = capabilities/attributes/commands. 'ids' = flat array of device ID integers (cheapest, ignores fields arg). 'context' = plain-text house snapshot in `summary`[[FLAT_TRIM]] (mode + 'Label (id, room) - capabilities; attr=value' lines; page size 50 unless limit set; ignores fields arg)[[/FLAT_TRIM]]."],
                     fields: [type: "array", items: [type: "string"], description: "Field projection: only include named fields in each device object. Call `hub_get_tool_guide(section='performance_devices')` for valid field names and projection semantics."],
-                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor."],
+                    cursor: [type: "string", description: "Opt-in opaque cursor (alias to offset). Pass \"\" for the first page (page size 50 when limit is unset), then iterate nextCursor. A page can also end early with budgetLimited:true and a nextCursor when the request time limit is reached."],
                     scope: [type: "string", enum: ["authorized", "all"], description: "Which devices to list. 'authorized' (default) = selected devices plus MCP-owned children, or all devices with bypass enabled[[FLAT_TRIM]] (full detail/currentStates)[[/FLAT_TRIM]]. 'all' = EVERY device on the hub, each tagged with current effective access as mcpAuthorized true/false."]
                 ]
             ]
@@ -14848,6 +14974,21 @@ def toolGetVariable(args) {
 }
 private void _attachHubVarDependents(Map found, String name) {
     found.coverageNote = _hubVarDependentsCoverageNote()
+    try {
+        def nativeModel = _hubVarsNativeModel()
+        if (nativeModel != null) {
+            Map apps = _hubVarsNativeAppsUsing(_hubVarsNativeRow(nativeModel, name))
+            found.appsUsing = apps.all
+            found.connectorAppsUsing = apps.connector
+            found.count = apps.all.size()
+            return
+        }
+    } catch (Exception e) {
+        mcpLog("warn", "hub-vars", "hub_get_variable includeDependents: in-use registry read failed for '${name}': ${e.message}")
+        found.dependentsError = "Could not read the hub's in-use registry: ${e.message}"
+        found.dependentsNote = "Retry; if it persists, read the consumers in Settings > Hub Variables. See hub_get_tool_guide(section='variables')."
+        return
+    }
     Integer hubVarsAppId = null
     try { hubVarsAppId = _findHubVariablesAppId() }
     catch (Exception e) {
@@ -14957,6 +15098,57 @@ def _findHubVariablesAppId() {
         "OR the /hub2/appsList walk. This should not happen on a normally-functioning hub -- the app " +
         "is system-installed. Check that Hub Variables is enabled (Settings > Hub Variables).")
 }
+def _hubVarsNativeModel() {
+    def raw
+    try { raw = hubInternalGet("/hub2/variables") }
+    catch (Exception e) {
+        if (_httpStatusOf(e) == 404) return null
+        throw e
+    }
+    if (!raw?.toString()?.trim()) throw new IllegalStateException("Hub Variables returned an empty response")
+    def model
+    try { model = new groovy.json.JsonSlurper().parseText(raw.toString()) }
+    catch (Exception e) { throw new IllegalStateException("Could not read the Hub Variables JSON model", e) }
+    if (!(model instanceof Map) || !(model.variables instanceof List)) {
+        throw new IllegalStateException("Hub Variables returned an unexpected JSON model")
+    }
+    return model
+}
+private Map _hubVarsNativeRow(Map model, String name) {
+    def row = model.variables.find { it instanceof Map && it.name?.toString() == name }
+    if (row == null) throw new IllegalStateException("Hub Variables JSON model does not list '${name}'")
+    return row
+}
+private List _hubVarsNativeConsumers(Map row, String key) {
+    def consumers = row[key]
+    if (!(consumers instanceof List) || consumers.any { !(it instanceof Map) || it.id == null || it.label == null }) {
+        throw new IllegalStateException("Hub Variables could not confirm '${row.name}' consumers")
+    }
+    return consumers.collect { [id: it.id.toString(), label: it.label.toString()] }
+}
+private Map _hubVarsNativeAppsUsing(Map row) {
+    def connector = _hubVarsNativeConsumers(row, "connectorUsedBy")
+    return [all: (_hubVarsNativeConsumers(row, "usedBy") + connector).unique { it.id }, connector: connector]
+}
+private String _hubVarsConsumerText(List apps) {
+    return apps.collect { "${it.label} (id=${it.id})" }.join(", ")
+}
+private Map _hubVarsNativeFailure(String tool, String error, boolean nothingChanged = false) {
+    String text = error.startsWith(tool) ? error : "${tool}: ${error}"
+    mcpLog("warn", "hub-vars", text)
+    String note = nothingChanged ? "Nothing was changed; retry." :
+        "The hub may have applied part of the change; check the variable with hub_get_variable before retrying."
+    return [success: false, isError: true, error: text, note: note + " See hub_get_tool_guide(section='variables')."]
+}
+private String _hubVarsModelError(Exception e) {
+    return "Could not read the Hub Variables model: ${e.message ?: e.class.simpleName}"
+}
+private void _hubVarsNativePost(String action, Map body) {
+    def response = hubInternalPostJson("/hub2/variables/${action}", groovy.json.JsonOutput.toJson(body))
+    if (response instanceof Map && (response.error || response.success == false || response._unparseable)) {
+        throw new IllegalStateException("Hub Variables ${action} failed: ${response.message ?: response.error ?: 'invalid response'}")
+    }
+}
 def toolCreateVariable(args) {
     requireDestructiveConfirm(args.confirm)
     args = args ?: [:]
@@ -14999,8 +15191,13 @@ def toolCreateVariable(args) {
     catch (Exception e) {
         mcpLog("debug", "hub-vars", "hub_create_variable: getGlobalVar('${name}') threw ${e.class.simpleName}: ${e.message}")
     }
-    def appId = _findHubVariablesAppId()
-    return _createOneVariable(appId, name, type, value)
+    def nativeModel
+    try { nativeModel = _hubVarsNativeModel() }
+    catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", _hubVarsModelError(e), true) }
+    if (nativeModel == null) return _createOneVariable(_findHubVariablesAppId(), name, type, value)
+    try { return _createOneVariable(null, name, type, value) }
+    catch (IllegalArgumentException e) { throw e }
+    catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", e.message ?: e.class.simpleName) }
 }
 private Map _createLinkedMeshVariable(String meshHubId, String meshName) {
     Map beforeJson = _meshJson()
@@ -15112,7 +15309,10 @@ private Map _createVariablesBulk(variables) {
     if (!(variables instanceof List) || variables.isEmpty()) {
         throw new IllegalArgumentException("variables must be a non-empty array of {name, type, value} objects.")
     }
-    def appId = _findHubVariablesAppId()
+    def nativeModel
+    try { nativeModel = _hubVarsNativeModel() }
+    catch (Exception e) { return _hubVarsNativeFailure("hub_create_variable", _hubVarsModelError(e), true) }
+    def appId = nativeModel != null ? null : _findHubVariablesAppId()
     def results = []
     int createdCount = 0
     int failedCount = 0
@@ -15208,32 +15408,40 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
     def applied = []
     def skipped = []
     String dtValue = (type == "DateTime") ? _dateTimeVariableValue(name, value) : null
-    _primeHubVarsWizard(appId, "hub_create_variable pre-moreVar")
-    if (!_hubVarsClickAndWait(appId, "moreVar", "moreVar") { it.contains("hbVar") }) {
-        throw new IllegalStateException("hub_create_variable: the Hub Variables create form did not open, so '${name}' was not created. Retry the call.")
-    }
-    _rmWriteSettingOnPage(appId, "hubVar", "hbVar",   name, applied, "text", skipped)
-    _rmWriteSettingOnPage(appId, "hubVar", "varType", type, applied, "enum", skipped)
-    if (dtValue != null) {
-        def dtCfg = _rmFetchConfigJson(appId, "hubVar")
-        def dtSchema = _rmCollectInputSchema(dtCfg?.configPage)
-        def missing = ["varDate", "varTime"].findAll { !dtSchema?.containsKey(it) }
-        if (missing) {
-            throw new IllegalStateException("hub_create_variable: the Hub Variables form did not offer ${missing.join(' and ')} for DateTime variable '${name}', so it was not created.")
-        }
-        def dtBody = _rmBuildSettingsBody(appId, [varDate: dtValue.substring(0, 10), varTime: dtValue.substring(11, 16)], dtSchema)
-        dtBody.formAction = "update"
-        dtBody.currentPage = "hubVar"
-        dtBody.pageBreadcrumbs = _rmPageBreadcrumbs(appId, "hubVar", '["mainPage"]')
-        if (dtCfg?.app?.version != null) dtBody.version = dtCfg.app.version.toString()
-        _rmPostSettings(appId, dtBody)
-        applied.addAll(["varDate", "varTime"])
-        if (_hubVarsFormFields(appId)?.contains("dateTimeDone")) {
-            _primeHubVarsWizard(appId, "hub_create_variable DateTime pre-Done")
-            _hubVarsClickAndWait(appId, "dateTimeDone", null) { !it.contains("dateTimeDone") }
-        }
+    if (appId == null) {
+        def nativeType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][type]
+        def body = [name: name, type: nativeType, value: dtValue ?: value.toString()]
+        if (dtValue != null) { body.mode = "datetime"; body.date = dtValue.take(10); body.time = dtValue.substring(11, 16) }
+        _hubVarsNativePost("create", body)
+        applied << "native create"
     } else {
-        _rmWriteSettingOnPage(appId, "hubVar", "varValue", value, applied, "textarea", skipped)
+        _primeHubVarsWizard(appId, "hub_create_variable pre-moreVar")
+        if (!_hubVarsClickAndWait(appId, "moreVar", "moreVar") { it.contains("hbVar") }) {
+            throw new IllegalStateException("hub_create_variable: the Hub Variables create form did not open, so '${name}' was not created. Retry the call.")
+        }
+        _rmWriteSettingOnPage(appId, "hubVar", "hbVar",   name, applied, "text", skipped)
+        _rmWriteSettingOnPage(appId, "hubVar", "varType", type, applied, "enum", skipped)
+        if (dtValue != null) {
+            def dtCfg = _rmFetchConfigJson(appId, "hubVar")
+            def dtSchema = _rmCollectInputSchema(dtCfg?.configPage)
+            def missing = ["varDate", "varTime"].findAll { !dtSchema?.containsKey(it) }
+            if (missing) {
+                throw new IllegalStateException("hub_create_variable: the Hub Variables form did not offer ${missing.join(' and ')} for DateTime variable '${name}', so it was not created.")
+            }
+            def dtBody = _rmBuildSettingsBody(appId, [varDate: dtValue.substring(0, 10), varTime: dtValue.substring(11, 16)], dtSchema)
+            dtBody.formAction = "update"
+            dtBody.currentPage = "hubVar"
+            dtBody.pageBreadcrumbs = _rmPageBreadcrumbs(appId, "hubVar", '["mainPage"]')
+            if (dtCfg?.app?.version != null) dtBody.version = dtCfg.app.version.toString()
+            _rmPostSettings(appId, dtBody)
+            applied.addAll(["varDate", "varTime"])
+            if (_hubVarsFormFields(appId)?.contains("dateTimeDone")) {
+                _primeHubVarsWizard(appId, "hub_create_variable DateTime pre-Done")
+                _hubVarsClickAndWait(appId, "dateTimeDone", null) { !it.contains("dateTimeDone") }
+            }
+        } else {
+            _rmWriteSettingOnPage(appId, "hubVar", "varValue", value, applied, "textarea", skipped)
+        }
     }
     def created = null
     int verifyAttempts = (dtValue != null) ? 16 : 8
@@ -15246,8 +15454,22 @@ private Map _createOneVariable(Integer appId, String name, String type, value) {
             try { pauseExecution(300) } catch (Exception e) { mcpLog("debug", "hub-vars", "pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
         }
     }
+    if (appId == null && created != null) {
+        def expectedType = [Number: "integer", Decimal: "bigdecimal", String: "string", Boolean: "boolean", DateTime: "datetime"][type]
+        boolean matches = created.type?.toString()?.toLowerCase() == expectedType
+        if (dtValue == null) {
+            if (type in ["Number", "Decimal"]) {
+                try { matches = matches && new BigDecimal(created.value.toString()).compareTo(new BigDecimal(value.toString())) == 0 }
+                catch (Exception ignored) { matches = false }
+            } else { matches = matches && created.value?.toString() == value.toString() }
+        }
+        if (!matches) throw new IllegalStateException(
+            "hub_create_variable: '${name}' exists, but reads type=${created.type}, value=${created.value}; " +
+            "requested type=${expectedType}, value=${value}. Repair it with hub_set_variable, or delete it with hub_delete_variable before creating it again.")
+    }
     if (created == null) {
-        throw new IllegalStateException(
+        throw new IllegalStateException(appId == null ?
+            "hub_create_variable: the hub accepted the create, but '${name}' is not visible via getGlobalVar." :
             "hub_create_variable: wizard completed but '${name}' is not visible via getGlobalVar. " +
             "Settings applied: ${applied.join(', ')}. Skipped: ${skipped}")
     }
@@ -15297,14 +15519,32 @@ def toolCreateConnector(args) {
             message: "Connector for '${name}' already exists (deviceId=${existing.deviceId})."
         ]
     }
-    def appId = _findHubVariablesAppId()
-    _primeHubVarsWizard(appId, "hub_create_connector pre-click")
-    _rmClickAppButton(appId, name, "createCon", "hubVar")
+    def nativeModel
+    try { nativeModel = _hubVarsNativeModel() }
+    catch (Exception e) { return _hubVarsNativeFailure("hub_create_connector", _hubVarsModelError(e), true) }
     def chosenType = requestedType?.trim() ?: "Variable"
-    def applied = []
-    def skipped = []
-    _primeHubVarsWizard(appId, "hub_create_connector pre-capab")
-    _rmWriteSettingOnPage(appId, "hubVar", "capab", chosenType, applied, "enum", skipped)
+    if (nativeModel != null) {
+        def row
+        try { row = _hubVarsNativeRow(nativeModel, name) }
+        catch (Exception e) { return _hubVarsNativeFailure("hub_create_connector", e.message ?: e.class.simpleName, true) }
+        if (!(row.connectorOptions instanceof List) || row.connectorOptions.isEmpty()) {
+            return _hubVarsNativeFailure("hub_create_connector", "Hub Variables did not offer connector types for '${name}'", true)
+        }
+        chosenType = requestedType ?: (row.connectorOptions.contains("Variable") ? "Variable" : row.connectorOptions[0].toString())
+        if (!row.connectorOptions.contains(chosenType)) {
+            throw new IllegalArgumentException("Unsupported connector type '${chosenType}' for '${name}'. The hub offers: ${row.connectorOptions.join(', ')}. See hub_get_tool_guide(section='variables').")
+        }
+        try { _hubVarsNativePost("createConnector", [name: name, connectorType: chosenType]) }
+        catch (Exception e) { return _hubVarsNativeFailure("hub_create_connector", e.message ?: e.class.simpleName) }
+    } else {
+        def appId = _findHubVariablesAppId()
+        _primeHubVarsWizard(appId, "hub_create_connector pre-click")
+        _rmClickAppButton(appId, name, "createCon", "hubVar")
+        def applied = []
+        def skipped = []
+        _primeHubVarsWizard(appId, "hub_create_connector pre-capab")
+        _rmWriteSettingOnPage(appId, "hubVar", "capab", chosenType, applied, "enum", skipped)
+    }
     def after
     for (int v = 0; v < 8; v++) {
         try { after = getGlobalVar(name) } catch (Exception e) { after = null }
@@ -15314,6 +15554,9 @@ def toolCreateConnector(args) {
         }
     }
     if (after?.deviceId == null) {
+        if (nativeModel != null) {
+            return _hubVarsNativeFailure("hub_create_connector", "the hub accepted the '${chosenType}' connector create, but '${name}' still has no deviceId.")
+        }
         throw new IllegalStateException(
             "hub_create_connector: wizard completed but '${name}' still has no deviceId. " +
             "Tried capab='${chosenType}' (only relevant for Number/Decimal). The connector did not bake.")
@@ -15332,6 +15575,7 @@ def toolRemoveConnector(args) {
     requireDestructiveConfirm(args?.confirm as Boolean)
     def name = args?.name?.toString()?.trim()
     if (!name) throw new IllegalArgumentException("Variable name is required")
+    boolean force = args?.force == true
     def existing
     try { existing = getGlobalVar(name) }
     catch (Exception e) { existing = null }
@@ -15347,32 +15591,66 @@ def toolRemoveConnector(args) {
         ]
     }
     def deviceId = existing.deviceId
-    def res = toolDeleteDevice([deviceId: deviceId.toString(), confirm: true])
-    if (res?.success != true) {
-        throw new IllegalStateException(
-            "hub_delete_connector: toolDeleteDevice failed for deviceId=${deviceId}: ${res?.error ?: 'unknown error'}")
+    def nativeModel
+    try { nativeModel = _hubVarsNativeModel() }
+    catch (Exception e) { return _hubVarsNativeFailure("hub_delete_connector", _hubVarsModelError(e), true) }
+    List connectorApps = null
+    if (nativeModel != null) {
+        String registryError = null
+        try { connectorApps = _hubVarsNativeConsumers(_hubVarsNativeRow(nativeModel, name), "connectorUsedBy") }
+        catch (IllegalStateException e) {
+            registryError = e.message
+            mcpLog("warn", "hub-vars", "hub_delete_connector: connector in-use read failed for '${name}': ${e.message}")
+        }
+        if (!force && connectorApps == null) {
+            throw new IllegalArgumentException("Could not read which apps use the connector for '${name}' (${registryError}), so whether deleting it breaks an app is unknown. Retry, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables').")
+        }
+        if (!force && connectorApps) {
+            throw new IllegalArgumentException("The connector for '${name}' is in use by ${_hubVarsConsumerText(connectorApps)}. Deleting it breaks those apps. Update or remove them first, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables').")
+        }
+        try { _hubVarsNativePost("removeConnector", [name: name, acknowledgeUse: force]) }
+        catch (Exception e) { return _hubVarsNativeFailure("hub_delete_connector", e.message ?: e.class.simpleName) }
+    } else {
+        def res = toolDeleteDevice([deviceId: deviceId.toString(), confirm: true])
+        if (res?.success != true) {
+            throw new IllegalStateException(
+                "hub_delete_connector: toolDeleteDevice failed for deviceId=${deviceId}: ${res?.error ?: 'unknown error'}")
+        }
     }
     def after = null
     for (int v = 0; v < 8; v++) {
-        try { after = getGlobalVar(name) } catch (Exception e) { after = null }
+        try { after = getGlobalVar(name) }
+        catch (Exception e) {
+            if (nativeModel != null) return _hubVarsNativeFailure("hub_delete_connector", "could not verify '${name}' connector removal: ${e.message}")
+            after = null
+        }
+        if (nativeModel != null && after == null) return _hubVarsNativeFailure("hub_delete_connector", "'${name}' is no longer readable after connector removal")
         if (after?.deviceId == null) break
         if (v < 7) {
             try { pauseExecution(300) } catch (Exception e) { mcpLog("debug", "hub-vars", "pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
         }
     }
     if (after?.deviceId != null) {
+        if (nativeModel != null) {
+            return _hubVarsNativeFailure("hub_delete_connector", "the hub accepted the connector removal, but variable '${name}' still has deviceId=${after.deviceId}")
+        }
         throw new IllegalStateException(
             "hub_delete_connector: device ${deviceId} delete returned success but variable '${name}' still has deviceId=${after.deviceId}")
     }
-    mcpLog("info", "hub-vars", "Removed connector for '${name}' (deviceId=${deviceId})")
-    return [
+    boolean forcedPastUse = force && nativeModel != null && (connectorApps == null || connectorApps)
+    String forcedNote = forcedPastUse ? " (forced; connector in-use: ${connectorApps == null ? 'unreadable' : _hubVarsConsumerText(connectorApps)})" : ""
+    mcpLog(forcedNote ? "warn" : "info", "hub-vars", "Removed connector for '${name}' (deviceId=${deviceId})${forcedNote}")
+    def result = [
         success: true,
         name: name,
         deviceId: deviceId,
         deviceDeleted: true,
-        message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged.",
-        note: "A java.lang.StackOverflowError from Hubitat's built-in 'Variable Connectors' driver (childRemoved) may appear in the hub log during this removal. It is a known Hubitat platform bug -- the same crash occurs via the UI's Remove Device button -- and is harmless: the connector is removed regardless."
+        brokenConsumers: (force && connectorApps) ? connectorApps : null,
+        consumersUnknown: (force && nativeModel != null && connectorApps == null) ?: null,
+        message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged."
     ]
+    result.note = "A java.lang.StackOverflowError from Hubitat's built-in 'Variable Connectors' driver (childRemoved) may appear in the hub log during this removal. It is a known Hubitat platform bug -- the same crash occurs via the UI's Remove Device button -- and is harmless: the connector is removed regardless."
+    return result
 }
 private Map _incrementHubVariable(String name, increment) {
     def amount
@@ -15556,7 +15834,10 @@ def toolDeleteHubVariable(args) {
     }
     def hubVarsAppId = null
     Boolean platformInUse = null
+    List registryApps = null
+    String registryError = null
     def linkedMirrorRow = null
+    def nativeModel = null
     if (isHubVar) {
         Map meshJson = _meshJson()
         def meshRows = (meshJson?.localLinkedHubVariables instanceof List) ? meshJson.localLinkedHubVariables : null
@@ -15564,10 +15845,17 @@ def toolDeleteHubVariable(args) {
             linkedMirrorRow = meshRows.find { it instanceof Map && it.name?.toString() == varName }
         }
         try {
-            hubVarsAppId = _findHubVariablesAppId()
-            platformInUse = _hubVarPlatformInUse(hubVarsAppId, varName)
+            nativeModel = _hubVarsNativeModel()
+            if (nativeModel != null) {
+                registryApps = _hubVarsNativeAppsUsing(_hubVarsNativeRow(nativeModel, varName)).all
+                platformInUse = !registryApps.isEmpty()
+            } else {
+                hubVarsAppId = _findHubVariablesAppId()
+                platformInUse = _hubVarPlatformInUse(hubVarsAppId, varName)
+            }
         } catch (Exception e) {
-            mcpLog("debug", "hub-vars", "hub_delete_variable: platform in-use check failed: ${e.class.simpleName}: ${e.message}")
+            registryError = e.message ?: e.class.simpleName
+            mcpLog("warn", "hub-vars", "hub_delete_variable: platform in-use check failed: ${e.class.simpleName}: ${e.message}")
         }
         if (linkedMirrorRow != null) {
             def srcHub = linkedMirrorRow.sourceHubName?.toString() ?: 'the source hub'
@@ -15581,9 +15869,11 @@ def toolDeleteHubVariable(args) {
                     "${why} Update or remove the consuming apps first, or pass force=true to unlink anyway.")
             }
         } else if (platformInUse != false && !force) {
+            String usedBy = registryApps ? "is in use by ${_hubVarsConsumerText(registryApps)}" :
+                "is registered as in use by at least one app (Settings > Hub Variables shows it in orange; click its name to see which)"
             throw new IllegalArgumentException(platformInUse ?
-                "Hub Variable '${varName}' is registered as in use by at least one app (Settings > Hub Variables shows it in orange; click its name to see which). Deleting it breaks those apps, which is why the hub's own delete prompt warns. Update or remove the consuming apps first, or pass force=true to delete anyway." :
-                "Could not read the hub's in-use registry for Hub Variable '${varName}', so whether an app uses it is unknown. Check Settings > Hub Variables (an in-use variable is shown in orange), then retry, or pass force=true to delete anyway.")
+                "Hub Variable '${varName}' ${usedBy}. Deleting it breaks those apps, which is why the hub's own delete prompt warns. Update or remove the consuming apps first, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables')." :
+                "Could not read the hub's in-use registry for Hub Variable '${varName}'${registryError ? " (${registryError})" : ''}, so whether an app uses it is unknown. Check Settings > Hub Variables (an in-use variable is shown in orange), then retry, or pass force=true to delete anyway. See hub_get_tool_guide(section='variables').")
         }
     }
     if (consumers && !force) {
@@ -15601,17 +15891,32 @@ def toolDeleteHubVariable(args) {
         def previousValue = hubVar.value
         def previousType  = hubVar.type
         def hadConnector  = hubVar.deviceId != null
-        def appId = hubVarsAppId ?: _findHubVariablesAppId()
+        if (nativeModel == null) {
+            try { nativeModel = _hubVarsNativeModel() }
+            catch (Exception e) { return _hubVarsNativeFailure("hub_delete_variable", _hubVarsModelError(e), true) }
+        }
+        def appId = nativeModel != null ? null : (hubVarsAppId ?: _findHubVariablesAppId())
         def stillThere = null
         for (int attempt = 0; attempt < 2; attempt++) {
-            _primeHubVarsWizard(appId, "hub_delete_variable pre-click attempt-${attempt + 1}")
-            _rmClickAppButton(appId, varName, "deleteGV", "hubVar")
-            _rmClickAppButton(appId, "delConfirm", null, "hubVar")
-            try { hubInternalGet("/installedapp/configure/json/${appId}/hubVar") } catch (Exception renderExc) {
-                mcpLog("warn", "hub-vars", "hub_delete_variable: rendering the Hub Variables page after the confirm failed (${renderExc.message})")
+            if (nativeModel != null) {
+                if (attempt == 0) {
+                    try { _hubVarsNativePost("remove", [name: varName, acknowledgeUse: force || linkedMirrorRow != null]) }
+                    catch (Exception e) { return _hubVarsNativeFailure("hub_delete_variable", e.message ?: e.class.simpleName) }
+                }
+            } else {
+                _primeHubVarsWizard(appId, "hub_delete_variable pre-click attempt-${attempt + 1}")
+                _rmClickAppButton(appId, varName, "deleteGV", "hubVar")
+                _rmClickAppButton(appId, "delConfirm", null, "hubVar")
+                try { hubInternalGet("/installedapp/configure/json/${appId}/hubVar") } catch (Exception renderExc) {
+                    mcpLog("warn", "hub-vars", "hub_delete_variable: rendering the Hub Variables page after the confirm failed (${renderExc.message})")
+                }
             }
             for (int v = 0; v < 8; v++) {
-                try { stillThere = getGlobalVar(varName) } catch (Exception e) { stillThere = null }
+                try { stillThere = getGlobalVar(varName) }
+                catch (Exception e) {
+                    if (nativeModel != null) return _hubVarsNativeFailure("hub_delete_variable", "could not verify whether '${varName}' was deleted: ${e.message}")
+                    stillThere = null
+                }
                 if (stillThere == null) break
                 if (v < 7) {
                     try { pauseExecution(300) } catch (Exception e) { mcpLog("debug", "hub-vars", "pauseExecution interrupted: ${e.class.simpleName}: ${e.message}") }
@@ -15620,6 +15925,7 @@ def toolDeleteHubVariable(args) {
             if (stillThere == null) break
         }
         if (stillThere != null) {
+            if (nativeModel != null) return _hubVarsNativeFailure("hub_delete_variable", "the hub accepted the delete, but '${varName}' still exists in getGlobalVar.")
             throw new IllegalStateException(
                 "hub_delete_variable: wizard completed but '${varName}' still exists in getGlobalVar after 2 click-sequence attempts.")
         }
@@ -15639,7 +15945,9 @@ def toolDeleteHubVariable(args) {
             unlinkNote = "Unlinked the Hub Mesh variable '${varName}' — removed this hub's local copy; the source variable on ${srcHub} is untouched.".toString()
             meshNote = " (mesh unlink; source '${linkedMirrorRow.sourceVarName}' on ${srcHub} untouched)"
         }
-        def registryNote = (platformInUse != false && !unlinked) ? " (forced; hub in-use registry: ${platformInUse == null ? 'unreadable' : 'true'})" : ""
+        String registryState = platformInUse == null ? "unreadable${registryError ? ": ${registryError}" : ''}" :
+            (registryApps ? _hubVarsConsumerText(registryApps) : 'true')
+        def registryNote = (platformInUse != false && !unlinked) ? " (forced; hub in-use registry: ${registryState})" : ""
         mcpLog("warn", "developer-mode", "hub_delete_variable: removed hub var '${varName}' (type=${previousType}, previous value: ${auditValue})${connectorNote}${registryNote}${consumerNote}${meshNote}")
         return [
             success: true,
@@ -15652,6 +15960,7 @@ def toolDeleteHubVariable(args) {
             connectorDeleted: hadConnector,
             brokenConsumers: consumers ?: null,
             platformInUse: platformInUse,
+            platformInUseError: registryError,
             coverageNote: _hubVarDeleteCoverageNote(),
             note: unlinkNote
         ]
@@ -15788,12 +16097,12 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_get_variable",
-            description: "Get one variable's current value by name; includeDependents=true also lists the apps referencing a hub variable.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables; use hub_list_variables to enumerate. includeDependents reads the hub's in-use registry by clicking the Settings > Hub Variables wizard reveal, returning appsUsing as {id, label} plus coverageNote — apps that never register their use (e.g. webCoRE) are not covered, and a failed registry read is reported via dependentsError without failing the call. See hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
+            description: "Get one variable's current value by name; includeDependents=true also lists the apps referencing a hub variable.[[FLAT_TRIM]] Searches the hub-variable namespace first, then falls back to rule-engine variables; use hub_list_variables to enumerate. includeDependents reads the hub's in-use registry (using the Settings > Hub Variables wizard reveal on older firmware), returning appsUsing as {id, label} plus coverageNote; current firmware also counts apps that use the variable's connector device and lists those in connectorAppsUsing — apps that never register their use (e.g. webCoRE) are not covered, and a failed registry read is reported via dependentsError without failing the call. See hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Exact variable name to look up, e.g. \"vacationMode\". Case-sensitive."],
-                    includeDependents: [type: "boolean", description: "Opt-in: also list the apps that reference this hub variable.[[FLAT_TRIM]] Returns appsUsing + coverageNote; clicks the Hub Variables wizard reveal, so off by default.[[/FLAT_TRIM]]", default: false]
+                    includeDependents: [type: "boolean", description: "Opt-in: also list the apps that reference this hub variable.[[FLAT_TRIM]] Returns appsUsing + coverageNote. Off by default because it costs an extra hub read (a wizard reveal click on older firmware).[[/FLAT_TRIM]]", default: false]
                 ],
                 required: ["name"]
             ]
@@ -15857,7 +16166,7 @@ def _getAllToolDefinitions_partVariables() {
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Existing hub-variable name"],
-                    connectorType: [type: "string", description: "Optional connector type for Number/Decimal vars (e.g. 'Dimmer', 'Variable'); defaults to 'Variable'.[[FLAT_TRIM]] Other options: 'Volume', 'ColorTemp', 'Humidity', 'Illuminance'. Ignored for vars that don't show a chooser.[[/FLAT_TRIM]]"],
+                    connectorType: [type: "string", description: "Optional connector type (default 'Variable').[[FLAT_TRIM]] e.g. 'Dimmer'. It must be a type the hub offers for this variable (Number/Decimal: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance); any other is refused before anything is created. When omitted and 'Variable' is not offered, the first offered type is used. Older firmware without the native Hub Variables endpoint only asks for a type on Number/Decimal vars and ignores it otherwise.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true"]
                 ],
                 required: ["name", "confirm"]
@@ -15865,12 +16174,13 @@ def _getAllToolDefinitions_partVariables() {
         ],
         [
             name: "hub_delete_connector",
-            description: "Delete the connector device backing a hub variable. DESTRUCTIVE and not undoable. confirm=true required.[[FLAT_TRIM]] The connector device is removed, but the hub variable itself and its value are unchanged. No-op if the variable has no connector; see hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
+            description: "Delete the connector device backing a hub variable (DESTRUCTIVE, no undo; confirm=true).[[FLAT_TRIM]] The connector device is removed, but the hub variable itself and its value are unchanged. No-op if the variable has no connector. Refuses, naming the apps, when apps use the connector or that use cannot be read; force=true deletes anyway. See hub_get_tool_guide(section='variables').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     name: [type: "string", description: "Hub-variable name whose connector device to remove, e.g. \"vacationMode\""],
-                    confirm: [type: "boolean", description: "REQUIRED: must be true to perform the deletion"]
+                    confirm: [type: "boolean", description: "REQUIRED: must be true to perform the deletion"],
+                    force: [type: "boolean", description: "Delete even if apps use it.[[FLAT_TRIM]] Needed when the hub lists apps using the connector or cannot say whether any do; affected apps return in brokenConsumers.[[/FLAT_TRIM]]"]
                 ],
                 required: ["name", "confirm"]
             ]
@@ -17828,12 +18138,12 @@ def toolUpdateItemCode(String type, String idParam, args) {
 }
 private _itemRowVersion(String type, itemId) {
     try {
-        def txt = hubInternalGet("/${type}/list/single/data/${java.net.URLEncoder.encode(itemId.toString(), 'UTF-8')}", null, 30)
-        def d = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        def row = (d instanceof List && d) ? d[0] : (d instanceof Map ? d : null)
+        def txt = type == "driver" ? hubInternalGet("/driver/list/data", null, 30) : hubInternalGet("/app/list/all/data", null, 30)
+        def rows = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
+        def row = (rows instanceof List) ? rows.find { it instanceof Map && it.id?.toString() == itemId?.toString() } : null
         return (row instanceof Map) ? row.version : null
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} row version: ${e.message}")
+        mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} version: ${e.message}")
         return null
     }
 }
@@ -17965,7 +18275,15 @@ private Map toolUpdateItemCodeInner(String type, String idParam, args, Map packa
     if (sourceMode == "importUrl") noBackupReason = "the source came from a URL, so its history lives where that URL is published"
     else if (args.sourceOrigin == "published") noBackupReason = "the package deploy's source is the published build"
     else if (args.backup == false) noBackupReason = "backup=false was passed"
-    def itemBackup = noBackupReason ? null : backupItemSource(type, itemId.toString())
+    def itemBackup = null
+    if (!noBackupReason) {
+        try { itemBackup = backupItemSource(type, itemId.toString()) }
+        catch (Exception backupErr) {
+            Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+            if (unavailable == null) throw backupErr
+            return unavailable + [(idParam): itemId]
+        }
+    }
     if (noBackupReason) mcpLog("info", "hub-admin", "Pre-update source backup skipped for ${type} ID ${itemId}: ${noBackupReason}")
     def currentVersion = freshVersion
     if (currentVersion == null) currentVersion = _itemRowVersion(type, itemId)
@@ -18411,6 +18729,8 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
     try {
         backupItemSource(type, itemId.toString())
     } catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable != null) return unavailable + [(idParam): itemId]
         backupSucceeded = false
         mcpLog("warn", "hub-admin", "Pre-delete backup failed for ${type} ${itemId}: ${backupErr.message} -- proceeding with delete")
     }
@@ -18437,7 +18757,9 @@ private Map _deleteItemViaEndpoint(String type, String idParam, String deletePat
                 (idParam): itemId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName,
-                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
+                backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
+                backupRetentionNote: backupEntry ? _itemBackupRetentionNote(backupEntry as Map) : null,
+                restoreHint: backupEntry ? "To restore: use '${installTool}' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result
@@ -18478,8 +18800,9 @@ private Map _backupLibrarySourceLocked(String libraryId) {
     def libData = parsed[0]
     def backupSource = libData.source ?: ""
     def fileName = _itemBackupFileName("mcp-backup-library-${libraryId}.groovy")
+    byte[] backupBytes = backupSource.getBytes("UTF-8")
     try {
-        uploadHubFile(fileName, backupSource.getBytes("UTF-8"))
+        uploadHubFile(fileName, backupBytes)
     } catch (Exception e) {
         mcpLogError("hub-admin", "Failed to save library backup file '${fileName}'", e)
         throw new IllegalArgumentException("Cannot back up library ID ${libraryId}: file upload failed -- ${e.message}")
@@ -18490,7 +18813,9 @@ private Map _backupLibrarySourceLocked(String libraryId) {
         fileName: fileName,
         version: libData.version,
         timestamp: now(),
-        sourceLength: backupSource.length()
+        sourceLength: backupSource.length(),
+        sizeBytes: backupBytes.length,
+        retention: "pinned"
     ]
     _publishUploadedItemBackup(key, entry)
     mcpLog("info", "hub-admin", "Backed up library ID ${libraryId} source to File Manager: ${fileName} (version ${libData.version}, ${backupSource.length()} chars)")
@@ -18741,14 +19066,20 @@ def toolUpdateLibraryCode(args) {
     if (noBackupReason) {
         mcpLog("info", "hub-admin", "Pre-update source backup skipped for library ${libraryId}: ${noBackupReason}")
     } else {
-        _withBackupLock("update library ${libraryId}") {
-            existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
-            if (existingEntry != null) {
-                backupFileName = existingEntry.fileName
-            } else {
-                backupEntry = backupLibrarySource(libraryId.toString())
-                backupFileName = backupEntry.fileName
+        try {
+            _withBackupLock("update library ${libraryId}") {
+                existingEntry = _reusableItemBackup(_itemBackupManifest(), "library_${libraryId}".toString(), "Library")
+                if (existingEntry != null) {
+                    backupFileName = existingEntry.fileName
+                } else {
+                    backupEntry = backupLibrarySource(libraryId.toString())
+                    backupFileName = backupEntry.fileName
+                }
             }
+        } catch (Exception backupErr) {
+            Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+            if (unavailable == null) throw backupErr
+            return unavailable + [libraryId: libraryId]
         }
     }
     def skipBackup = backupEntry == null
@@ -18822,6 +19153,8 @@ def toolDeleteLibrary(args) {
         backupFileName = backupEntry.fileName
         backupSucceeded = true
     } catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable != null) return unavailable + [libraryId: libraryId]
         mcpLog("warn", "hub-admin", "Pre-delete backup failed for library ${libraryId}: ${backupErr.message} -- proceeding with delete")
     }
     mcpLog("warn", "hub-admin", "Deleting library ID: ${libraryId}")
@@ -18863,7 +19196,9 @@ def toolDeleteLibrary(args) {
                 libraryId: libraryId,
                 lastBackup: formatTimestamp(state.lastBackupTimestamp),
                 backupFile: backupEntry?.fileName ?: backupFileName,
-                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually." : null
+                backupRetention: backupEntry ? (backupEntry.retention ?: "pinned") : null,
+                backupRetentionNote: backupEntry ? _itemBackupRetentionNote(backupEntry as Map) : null,
+                restoreHint: backupEntry ? "To restore: use 'hub_create_library' with the backup source, or download ${backupEntry.fileName} from Hubitat > Settings > File Manager and re-install manually. ${_itemBackupRetentionNote(backupEntry as Map)}" : null
             ]
             if (!backupSucceeded) result.backupWarning = "Pre-delete backup could not be created. The source code may be permanently lost."
             return result
@@ -19950,8 +20285,12 @@ def toolUpdateMcpSettings(args) {
         throw new IllegalArgumentException("Developer Mode tools are disabled. Enable 'Developer Mode Tools' in MCP rule app settings to use hub_update_mcp_settings.")
     }
     requireDestructiveConfirm(args.confirm)
+    if (args.clientToken != null) {
+        if (args.settings) throw new IllegalArgumentException("Send clientToken on its own, without settings.")
+        return _mcpClientTokenOperation(args.clientToken)
+    }
     if (!args.settings || !(args.settings instanceof Map) || args.settings.isEmpty()) {
-        throw new IllegalArgumentException("settings must be a non-empty map of {settingName: newValue}")
+        throw new IllegalArgumentException("settings must be a non-empty map of {settingName: newValue}, or pass clientToken instead")
     }
     def allowedSettings = [
         "mcpLogLevel":            "enum",
@@ -19966,6 +20305,7 @@ def toolUpdateMcpSettings(args) {
         "bypassDeviceAllowlist":  "bool",
         "maxConcurrentWrites":    "number",
         "backupEveryRuleWrite":   "bool",
+        "backupBudgetMb":         "number",
         "enableLocalAccess":      "bool",
         "enableCloudAccess":      "bool",
         "redactAccessTokens":     "bool"
@@ -19992,6 +20332,13 @@ def toolUpdateMcpSettings(args) {
             BigDecimal numeric = coerced as BigDecimal
             if (numeric < 0 || numeric > 100 || numeric.remainder(BigDecimal.ONE) != BigDecimal.ZERO) {
                 throw new IllegalArgumentException("Setting 'maxConcurrentWrites' must be an integer between 0 and 100 (0 disables the cap), got: ${coerced}")
+            }
+            coerced = numeric.intValue()
+        }
+        if (keyStr == "backupBudgetMb") {
+            BigDecimal numeric = coerced as BigDecimal
+            if (numeric < 1 || numeric > ITEM_BACKUP_MAX_BUDGET_MB || numeric.remainder(BigDecimal.ONE) != BigDecimal.ZERO) {
+                throw new IllegalArgumentException("Setting 'backupBudgetMb' must be a whole number of MB from 1 to ${ITEM_BACKUP_MAX_BUDGET_MB}, got: ${coerced}")
             }
             coerced = numeric.intValue()
         }
@@ -20048,6 +20395,61 @@ def toolUpdateMcpSettings(args) {
         result.message = result.message + " " + deviceScopeResult.message
     }
     return result
+}
+private Map _mcpClientTokenOperation(op) {
+    Map result = _mcpClientTokenResult(op)
+    if (settings.redactAccessTokens == true) {
+        String marker = "***redacted (access token)***"
+        if (result.token) result.token = marker
+        if (result.clients instanceof List) result.clients = result.clients.collect { it + [token: marker] }
+    }
+    return result
+}
+private Map _mcpClientTokenResult(op) {
+    if (!(op instanceof Map)) throw new IllegalArgumentException("clientToken must be an object: {action: list|create|update|rotate|revoke|revokeUntracked, clientId?, label?, access?}")
+    String action = op.action?.toString()
+    String id = op.clientId?.toString()
+    if (action in ["update", "rotate", "revoke"]) {
+        if (!id) throw new IllegalArgumentException("clientToken.clientId is required for action '${action}' (see action 'list').")
+        if (!_clientTokens().containsKey(id)) throw new IllegalArgumentException("No client token with clientId ${id} (see action 'list').")
+    }
+    if (op.access != null && !(op.access instanceof Map)) throw new IllegalArgumentException("clientToken.access must be an object: {tools, read, write, local, cloud, toolNumber}.")
+    switch (action) {
+        case "revokeUntracked":
+            return _revokeUntrackedAccessTokens()
+        case "list":
+            def clients = _clientTokens().collect { cid, c ->
+                [clientId: cid.toString(), label: c?.label, token: c?.token, access: _clientAccessView(cid.toString())]
+            }
+            return [success: true, clients: clients.sort { it.clientId.isInteger() ? (it.clientId as Integer) : 0 },
+                    untrackedTokens: _untrackedAccessTokens().size()]
+        case "create":
+            if (op.access) _clientAccessWrites("0", op.access as Map)
+            def created = _createClientToken(op.label?.toString())
+            if (!created.success) return created
+            String newId = created.clientId.toString()
+            if (op.access) _clientAccessWrites(newId, op.access as Map).each { name, value -> app.updateSetting(name, value) }
+            mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: created client '${created.label}' (id ${newId})")
+            return created + [access: _clientAccessView(newId),
+                              localUrl: "${getFullLocalApiServerUrl()}/mcp?access_token=${created.token}".toString(),
+                              cloudUrl: "${getFullApiServerUrl()}/mcp?access_token=${created.token}".toString()]
+        case "update":
+            if (!op.access) throw new IllegalArgumentException("clientToken.access is required for action 'update'.")
+            def writes = _clientAccessWrites(id, op.access as Map)
+            writes.each { name, value -> app.updateSetting(name, value) }
+            mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: updated access of client id ${id}: ${writes.keySet().sort()}")
+            return [success: true, clientId: id, label: _clientTokens().get(id)?.label, access: _clientAccessView(id)]
+        case "rotate":
+            def rotated = _rotateClientToken(id)
+            if (rotated.success) mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: rotated client id ${id}")
+            return rotated
+        case "revoke":
+            def revoked = _revokeClientToken(id)
+            if (revoked.success) mcpLog("warn", "developer-mode", "hub_update_mcp_settings clientToken: revoked client id ${id}")
+            return revoked
+        default:
+            throw new IllegalArgumentException("clientToken.action must be one of list, create, update, rotate, revoke, revokeUntracked (got: ${action}).")
+    }
 }
 private Map _validateMcpDeviceScope(scopeValue) {
     def mode = "replace"
@@ -20595,14 +20997,15 @@ def _getAllToolDefinitions_partSelfAdmin() {
     return [
         [
             name: "hub_update_mcp_settings",
-            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup; every successful write is logged at WARN for audit.[[FLAT_TRIM]] Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
+            description: "Update one or more of the MCP rule app's own settings (toggles, log levels, tuning, the device-access scope) in place[[FLAT_TRIM]], or manage its per-client access tokens[[/FLAT_TRIM]] — self-administer the app without the Hubitat UI. Gated on enableDeveloperMode + the Write master + confirm=true + a recent backup.[[FLAT_TRIM]] Every successful write is logged at WARN for audit. Changing an enable* toggle or useGateways reshapes tools/list, and changing selectedDevices changes which devices are visible, so MCP clients may need to reconnect to refresh cached schemas / device visibility.[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true}). Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour. bypassDeviceAllowlist is independent of Developer Mode; see hub_get_tool_guide(section='hub_admin_write_system'). selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    clientToken: [type: "object", description: "Per-client tokens, instead of settings: see hub_get_tool_guide(section='hub_admin_write_system').[[FLAT_TRIM]] {action: list|create|update|rotate|revoke, ...}. Shape: clientId (update/rotate/revoke), label (create), access? {tools: [names]|\"all\", read, write, local, cloud, toolNumber: main|none|0-9}. create and rotate return the new token; a new client starts with every grantable tool on and access narrows it.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
-                required: ["settings", "confirm"]
+                required: ["confirm"]
             ]
         ],
         [
@@ -20629,7 +21032,6 @@ A real deploy is accepted quickly with `status: "in_progress"` and runs in the b
 }
 def _idempotentWriteToolNames_partSelfAdmin() {
     return [
-        "hub_update_mcp_settings",
         "hub_update_package"
     ]
 }
@@ -20645,7 +21047,7 @@ def _developerModeOnlyToolNames_partSelfAdmin() {
 }
 def _toolDisplayMeta_partSelfAdmin() {
     return [
-        hub_update_mcp_settings: [title: "Update MCP Settings", summary: "Update the MCP app's own settings + device-access scope (Developer Mode)."],
+        hub_update_mcp_settings: [title: "Update MCP Settings", summary: "Update the MCP app's own settings, device-access scope and per-client tokens (Developer Mode)."],
         hub_update_package: [title: "Deploy MCP Package", summary: "Full repair-install of the MCP package at a git ref (Developer Mode)."]
     ]
 }
@@ -27391,6 +27793,15 @@ private List _rmStructuralSequenceFromSpecList(List specList) {
     }
     out
 }
+private String _rmRetentionSuffix(Map backup) {
+    return backup?.retentionNote ? " ${backup.retentionNote}".toString() : ""
+}
+private String _rmRestoreBaselineHint(Map backup) {
+    return "Backup baseline available. Call hub_restore_backup with backupKey='${backup?.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.${_rmRetentionSuffix(backup)}".toString()
+}
+private String _rmRollbackIfNotCommittedHint(Map backup) {
+    return "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup?.backupKey}').${_rmRetentionSuffix(backup)}".toString()
+}
 private String _rmPreflightRestoreHint(String reason = null, Map backup = null, String lead = null) {
     def why = reason ? " Reason: ${reason}" : ""
     def snapshot = !backup?.backupKey ? " No backup was taken." :
@@ -27414,9 +27825,9 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
             msgStr.contains("is DISABLED") ? "the rule is disabled, and Hubitat does not allow editing a disabled app -- re-enable it, make the change, then disable it again" : null,
             backup)
     } else if (wizardStuck) {
-        restoreHint = "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain. Or, before your next write, close the in-flight wizard manually: hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, or hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a stuck action editor."
+        restoreHint = "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain. Or, before your next write, close the in-flight wizard manually: hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, or hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a stuck action editor.${_rmRetentionSuffix(backup)}"
     } else {
-        restoreHint = "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
+        restoreHint = _rmRestoreBaselineHint(backup)
     }
     def result = [
         success: false,
@@ -28093,11 +28504,8 @@ Map _rmBackupBeforeEdit(Integer ruleId, String reason) {
     def reused = _withBackupLock("rule ${ruleId} baseline (${reason})") { _rmBackupBeforeEditLocked(ruleId, reason) }
     return reused ?: _rmBackupRuleSnapshot(ruleId, reason)
 }
-private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
-    if (settings?.backupEveryRuleWrite == true || reason == "pre-replaceRequiredExpression") return null
-    long nowMs = now()
-    def mfst = _itemBackupManifest()
-    def recent = mfst.findAll { key, value ->
+private def _rmRecentRuleBackup(Map mfst, Integer ruleId, long nowMs) {
+    return mfst.findAll { key, value ->
         if (!(value instanceof Map) || value.deletePending || value.type?.toString() != "rm-rule") return false
         def savedRuleId = value.ruleId != null ? value.ruleId : value.id
         if (savedRuleId?.toString() != ruleId?.toString()) return false
@@ -28107,6 +28515,11 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
         long age = nowMs - savedAt
         return age >= 0L && age < 60L * 60L * 1000L
     }.max { a, b -> (a.value.timestamp as Long) <=> (b.value.timestamp as Long) }
+}
+private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
+    if (settings?.backupEveryRuleWrite == true || reason == "pre-replaceRequiredExpression") return null
+    def mfst = _itemBackupManifest()
+    def recent = _rmRecentRuleBackup(mfst, ruleId, now())
     if (recent != null && !_rmReusableBackupFileMatches(recent.value as Map, ruleId)) {
         def staleFile = recent.value?.fileName?.toString()
         mcpLog("warn", "rm-native", "Recent backup ${recent.key} for rule ${ruleId} is missing or does not match its manifest; discarding the stale handle and taking a fresh baseline")
@@ -28134,7 +28547,8 @@ private Map _rmBackupBeforeEditLocked(Integer ruleId, String reason) {
                 brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
                 baselineReused: true,
                 rollbackScope: "Restoring this baseline reverts every edit to rule ${ruleId} since ${formatTimestamp(recent.value.timestamp as Long)}."] +
-            new LinkedHashMap(recent.value as Map)
+            new LinkedHashMap(recent.value as Map) +
+            [retention: (recent.value.retention ?: "pinned"), retentionNote: _itemBackupRetentionNote(recent.value as Map)]
     }
     return null
 }
@@ -28238,6 +28652,9 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
     return [snapshot: snapshot, config: config]
 }
 private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config) {
+    boolean editStep = settings?.backupEveryRuleWrite == true &&
+        !(reason in ["pre-delete", "pre-forcedelete", "pre-replaceRequiredExpression"])
+    String retention = editStep && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
     String nameExt = ".json"
@@ -28263,14 +28680,17 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
         reason: snapshot.reason,
         appLabel: snapshot.appLabel,
         timestamp: snapshot.timestamp,
-        sourceLength: jsonBytes.length
+        sourceLength: jsonBytes.length,
+        sizeBytes: jsonBytes.length,
+        retention: retention
     ]
     _publishUploadedItemBackup(backupKey, entry)
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
     return [backupKey: backupKey,
             brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
             baselineReused: false,
-            rollbackScope: "Restoring this baseline returns rule ${ruleId} to its state at ${formatTimestamp(snapshot.timestamp as Long)}."] + entry
+            rollbackScope: "Restoring this baseline returns rule ${ruleId} to its state at ${formatTimestamp(snapshot.timestamp as Long)}."] +
+        entry + [retentionNote: _itemBackupRetentionNote(entry)]
 }
 private Map _rmSoftDeleteApp(Integer appId) {
     def responseText = hubInternalGet("/installedapp/delete/${appId}")
@@ -28527,7 +28947,13 @@ def _createButtonRuleViaController(args) {
     def origLabel = cfg?.settings?.origLabel?.toString() ?: ""
     def schema = _rmCollectInputSchema(cfg?.configPage)
     def beforeIds = (cfg?.childApps ?: []).collect { it?.id?.toString() } as Set
-    def backup = _rmBackupRuleSnapshot(controllerId, "pre-buttonRule")
+    def backup
+    try { backup = _rmBackupRuleSnapshot(controllerId, "pre-buttonRule") }
+    catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable == null) throw backupErr
+        return unavailable + [controllerId: controllerId]
+    }
     try {
         _rmClickAppButton(controllerId, "true", "addBut")
         def baseSettings = [buttonDev: buttonDevIds, origLabel: origLabel]
@@ -31600,7 +32026,13 @@ def _applyNativeAppEdit(args) {
         (modifyTriggerSpec ? "pre-modifyTrigger" :
         (modifyActionSpec ? "pre-modifyAction" :
         (walkStepSpec ? "pre-walkStep" : "pre-update"))))))))))))))))
-    def backup = _rmBackupBeforeEdit(appId, backupReason)
+    def backup
+    try { backup = _rmBackupBeforeEdit(appId, backupReason) }
+    catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable == null) throw backupErr
+        return unavailable + [appId: appId]
+    }
     if (walkStepSpec) {
         try {
             def wsSpec = walkStepSpec
@@ -31642,7 +32074,7 @@ def _applyNativeAppEdit(args) {
                 error: e.message ?: e.toString(),
                 backup: backup,
                 restoreHint: uiRefusal ? _rmPreflightRestoreHint(null, backup, "Refused before submitting: no settings were written and no Done was sent, so nothing needs to be restored. The page was still opened to read its inputs, which runs the app's page code.") :
-                    "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain."
+                    _rmRestoreBaselineHint(backup)
             ]
         }
     }
@@ -31723,7 +32155,7 @@ def _applyNativeAppEdit(args) {
             addResult: maResult?.addResult,
             moveResults: maResult?.moveResults,
             error: maError,
-            restoreHint: maOk ? null : "Backup baseline available. Call hub_restore_backup with backupKey='${backup?.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.",
+            restoreHint: maOk ? null : _rmRestoreBaselineHint(backup),
             updateRuleFailed: updateRuleFailed,
             subscriptionsNotLive: updateRuleFailed || !updateRuleAttempted,
             updateRuleError: updateRuleError,
@@ -31828,7 +32260,7 @@ def _applyNativeAppEdit(args) {
                     possibleStateEditAct: possibleStateEditAct,
                     wizardStuck: false,
                     backup: backup,
-                    restoreHint: "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}').",
+                    restoreHint: _rmRollbackIfNotCommittedHint(backup),
                     verifyHint: "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the deletion actually committed asynchronously after the response, do NOT call hub_restore_backup.",
                     safeRecovery: [
                         recommended: 'verify-then-decide',
@@ -31859,7 +32291,7 @@ def _applyNativeAppEdit(args) {
             def result = _rmBuildUpdateErrorResponse(appId, e.message, backup)
             def isRetryExhaustion = e.message?.contains("one verified re-click")
             if (isRetryExhaustion) {
-                result.restoreHint = "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')."
+                result.restoreHint = _rmRollbackIfNotCommittedHint(backup)
                 result.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the actions list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
             }
             return result
@@ -31942,8 +32374,8 @@ def _applyNativeAppEdit(args) {
                 restoreHint: isPreflightRefusal ?
                     _rmPreflightRestoreHint(null, backup) :
                     (isRetryExhaustion ?
-                        "If hub_get_app_config confirms the operation did NOT commit, roll back via hub_restore_backup(backupKey='${backup.backupKey}')." :
-                        "Backup baseline available. Call hub_restore_backup with backupKey='${backup.backupKey}' to return to that snapshot; a reused baseline undoes every later edit in its one-hour chain.")
+                        _rmRollbackIfNotCommittedHint(backup) :
+                        _rmRestoreBaselineHint(backup))
             ]
             if (isRetryExhaustion) {
                 trigResult.verifyHint = "Call hub_get_app_config(appId=${appId}) and inspect the triggers list -- if the operation actually committed despite the false-fail, do NOT call hub_restore_backup."
@@ -32632,7 +33064,7 @@ def _applyNativeAppEdit(args) {
         def err = finalConfig?.configPage?.error
         if (err) {
             result.warning = "App has a rendering error after update: ${err}"
-            result.restoreHint = "Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back."
+            result.restoreHint = "Call hub_restore_backup with backupKey='${backup.backupKey}' to roll back.${_rmRetentionSuffix(backup)}"
         }
         result.configPageError = err
         def clickedUpdateRule = (button == "updateRule") || (implicitCommitButton == "updateRule")
@@ -32687,7 +33119,13 @@ def toolDeleteNativeApp(args) {
     def appId = normalizeRuleId(args.appId)
     _requireUnprotectedAppDeletion(appId)
     def force = args?.force == true
-    def backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete")
+    def backup
+    try { backup = _rmBackupRuleSnapshot(appId, force ? "pre-forcedelete" : "pre-delete") }
+    catch (Exception backupErr) {
+        Map unavailable = _itemBackupIndexUnavailableResult(backupErr)
+        if (unavailable == null) throw backupErr
+        return unavailable + [appId: appId]
+    }
     try {
         if (force) {
             _rmForceDeleteApp(appId)
@@ -32697,7 +33135,7 @@ def toolDeleteNativeApp(args) {
                 appId: appId,
                 mode: "forcedelete",
                 backup: backup,
-                note: "App force-deleted. To restore, call hub_restore_backup with backupKey='${backup.backupKey}' (will recreate an empty app and apply saved settings)."
+                note: "App force-deleted. To restore, call hub_restore_backup with backupKey='${backup.backupKey}' (will recreate an empty app and apply saved settings).${_rmRetentionSuffix(backup)}"
             ]
         } else {
             def resp = _rmSoftDeleteApp(appId)
@@ -32815,6 +33253,8 @@ preferences {
     page(name: "mainPage")
     page(name: "confirmDeletePage")
     page(name: "confirmRegenerateTokenPage")
+    page(name: "clientTokensPage")
+    page(name: "clientAccessPage")
     page(name: "advancedOverridesPage")
 }
 def mainPage() {
@@ -32830,9 +33270,9 @@ def mainPage() {
                 paragraph "Click 'Done' to generate access token, then reopen app to see endpoint URLs."
             } else {
                 paragraph "<b>Local Endpoint:</b> ${_transportStatusLabel(settings.enableLocalAccess)}"
-                paragraph "<code>${getFullLocalApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
+                paragraph "<code>${getFullLocalApiServerUrl()}/mcp?access_token=${_primaryAccessToken()}</code>"
                 paragraph "<b>Cloud Endpoint:</b> ${_transportStatusLabel(settings.enableCloudAccess)}"
-                paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${state.accessToken}</code>"
+                paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${_primaryAccessToken()}</code>"
                 paragraph "Clients that expect header auth can instead send the token as <code>Authorization: Bearer &lt;token&gt;</code> (no <code>?access_token=</code> needed) -- the Hubitat platform accepts it on both endpoints."
                 paragraph "<b>App ID:</b> ${app.id}"
                 paragraph "<b>Version:</b> ${currentVersion()}"
@@ -32870,7 +33310,7 @@ def mainPage() {
             }
             href name: "advancedOverrides", page: "advancedOverridesPage",
                  title: "Advanced: Per-tool Overrides, Protected apps & expert settings",
-                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), choose the apps protected from generic mutations, and configure Origin validation."
+                 description: "Disable individual tools or whole gateways below the Read/Write masters (deny-only), give MCP clients their own tokens with narrower access, choose the apps protected from generic mutations, and configure Origin validation."
         }
         section("Best-Practice Guidance") {
             paragraph "Surfaces this project's best practices to the AI. Reactive hints are always on: a failed write tool's error gains a pointer to that tool's own guide section. The acknowledgment gate below is ON by default."
@@ -33022,6 +33462,374 @@ def confirmDeletePage(params) {
         }
     }
 }
+private String _primaryAccessToken() {
+    def raw = state.accessToken?.toString()
+    return raw ? raw.split(",")[0].trim() : null
+}
+private Map _clientTokens() {
+    return (state.clientTokens instanceof Map) ? state.clientTokens : [:]
+}
+private void _saveClientToken(String id, Map entry) {
+    def tokens = [:] + _clientTokens()
+    if (entry == null) tokens.remove(id) else tokens.put(id, entry)
+    state.clientTokens = tokens
+}
+private List<String> _liveAccessTokens() {
+    def raw = state.accessToken?.toString()
+    return raw ? raw.split(",").collect { it.trim() }.findAll { it } : []
+}
+private void _compactAccessTokenList() {
+    String compact = _liveAccessTokens().join(",")
+    if (state.accessToken?.toString() != compact) state.accessToken = compact
+}
+private long _retiredTokenTtlMs() { 10L * 60L * 1000L }
+private boolean _retiredWithinTtl(retiredAt, long nowMs) {
+    return retiredAt instanceof Number && nowMs - (retiredAt as Long) < _retiredTokenTtlMs()
+}
+private void _retireAccessToken(String token) {
+    if (!token) return
+    long at = now()
+    def kept = (state.retiredTokenHashes instanceof Map ? state.retiredTokenHashes : [:])
+        .findAll { h, t -> _retiredWithinTtl(t, at) }
+    kept.put(_mrtrSha256(token), at)
+    state.retiredTokenHashes = kept
+}
+private boolean _isRetiredAccessToken(String token) {
+    def retired = state.retiredTokenHashes
+    if (!(retired instanceof Map) || !token) return false
+    return _retiredWithinTtl(retired.get(_mrtrSha256(token)), now())
+}
+private void _clientTokenNotice(String message) { state.clientTokenNotice = message }
+def clientTokensPage() {
+    String notice = state.clientTokenNotice?.toString()
+    if (notice) state.remove("clientTokenNotice")
+    dynamicPage(name: "clientTokensPage", title: "Per-client access tokens") {
+        if (notice) section { paragraph "<b style='color: red;'>${notice}</b>" }
+        section {
+            paragraph "Each client token can use both endpoints (subject to its own local/cloud switches), in the URL or as an <code>Authorization: Bearer</code> header. Its access is set on its own page: which tools it can call (every tool that can be granted starts on), Read/Write, local/cloud and the tool-name number. The settings on the main page still apply to every client. Once any client token exists, every client, the main token's included, must send its token as <code>?access_token=</code> or an <code>Authorization: Bearer</code> header. Revoking or rotating one token leaves the main token and every other client untouched, and regenerating the main token keeps these. Needs firmware 2.5.2 or later."
+        }
+        def tokens = _clientTokens()
+        def live = _liveAccessTokens()
+        tokens.keySet().sort { it.toString().isInteger() ? (it as Integer) : 0 }.each { id ->
+            def client = tokens.get(id)
+            section(client.label.toString()) {
+                if (!live.contains(client.token)) paragraph "<b style='color: red;'>This token is no longer accepted by the hub.</b> Revoke it and create a new one."
+                paragraph "<code>${getFullLocalApiServerUrl()}/mcp?access_token=${client.token}</code>"
+                paragraph "<code>${getFullApiServerUrl()}/mcp?access_token=${client.token}</code>"
+                href name: "clientAccess_${id}", page: "clientAccessPage", params: [clientId: id.toString()],
+                     title: "Access for ${client.label}", description: _clientAccessSummary(id.toString())
+                input "rotateClientToken_${id}", "button", title: "Rotate token (changes this client's URL)"
+                input "revokeClientToken_${id}", "button", title: "Revoke ${client.label}"
+            }
+        }
+        def untracked = _untrackedAccessTokens()
+        if (untracked) {
+            section("Untracked tokens") {
+                paragraph "<b style='color: red;'>The hub accepts ${untracked.size()} token(s) that belong to no client.</b> They are refused, but revoke them to clean up."
+                input "revokeUntrackedTokensBtn", "button", title: "Revoke untracked tokens"
+            }
+        }
+        section("Add a client") {
+            input "newClientTokenLabel", "text", title: "Client name, 1-40 characters without commas, not already used (e.g. Claude Desktop)", required: false, submitOnChange: true
+            input "createClientTokenBtn", "button", title: "Create token for this client"
+        }
+    }
+}
+def clientAccessPage(params) {
+    if (params?.clientId) state.clientAccessEditing = params.clientId.toString()
+    String id = state.clientAccessEditing?.toString()
+    def client = id ? _clientTokens().get(id) : null
+    dynamicPage(name: "clientAccessPage", title: client ? "Access for ${client.label}" : "Client not found") {
+        if (!client) {
+            section { paragraph "This client token no longer exists." }
+            return
+        }
+        section("Tools") {
+            paragraph _wrappedEnumOptionsStyle() + "Pick every tool this client may call."
+            input "clientTools_${id}", "enum", title: "Tools this client can call", multiple: true, required: false,
+                  options: _grantableToolOptions(), submitOnChange: true
+            input "clientToolsAll_${id}", "button", title: "Select all tools"
+            input "clientToolsNone_${id}", "button", title: "Deselect all tools"
+            paragraph "Every tool that could be granted was on when this token was created; untick what this client should not have. A tool added by a later update stays off for this client until you turn it on here. ${_alwaysGrantedToolNames().sort().join(' and ')} are always included, even with Read off: they only serve documentation and search the tools this client can already see. These tools work only with the main token and cannot be granted: ${_ungrantableToolNames().sort().join(', ')}. A client token also cannot read or change this MCP Rule Server app itself."
+        }
+        section("Read / Write") {
+            input "clientRead_${id}", "bool", title: "Allow read tools", defaultValue: true, submitOnChange: true
+            input "clientWrite_${id}", "bool", title: "Allow write tools", defaultValue: true, submitOnChange: true
+            paragraph "These can only narrow access: the Read and Write switches on the main page still apply."
+        }
+        section("Connection") {
+            input "clientLocal_${id}", "bool", title: "Allow local access (LAN endpoint)", defaultValue: true, submitOnChange: true
+            input "clientCloud_${id}", "bool", title: "Allow cloud access (Hubitat cloud endpoint)", defaultValue: true, submitOnChange: true
+        }
+        section("Tool names") {
+            input "clientToolNumber_${id}", "enum", title: "Number in this client's tool names (hub3_get_info)",
+                  options: [main: "Same as the main token", none: "No number"] + (0..9).collectEntries { [(it.toString()): "hub${it}_".toString()] },
+                  defaultValue: "main", required: false, submitOnChange: true
+        }
+    }
+}
+Set _ungrantableToolNames() {
+    def names = ["hub_update_mcp_settings"] as Set
+    names.addAll(getDeveloperModeOnlyToolNames())
+    names.addAll(getGatewayConfig().hub_manage_code?.tools ?: [])
+    return names
+}
+Set _alwaysGrantedToolNames() { ["hub_get_tool_guide", "hub_search_tools"] as Set }
+private Set _installedAppTargetTools() {
+    return ["hub_get_app_config", "hub_list_app_pages", "hub_export_native_app", "hub_clone_native_app",
+            "hub_set_native_app", "hub_delete_native_app", "hub_set_app_disabled", "hub_set_rule",
+            "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule",
+            "hub_set_visual_rule", "hub_delete_visual_rule", "hub_call_rule", "hub_set_rule_paused",
+            "hub_set_rule_private_boolean"] as Set
+}
+private boolean _targetsThisApp(Map args) {
+    String self = app?.id?.toString()
+    if (!self || args == null) return false
+    return ["appId", "sourceAppId", "ruleId"].any { key ->
+        def target = args.get(key)
+        def ids = (target instanceof Collection) ? target : [target]
+        ids.any { it?.toString() == self }
+    }
+}
+Map _createClientToken(String rawLabel) {
+    String label = rawLabel?.trim()
+    if (!label || label.length() > 40 || label.contains(",") || _clientTokens().values().any { it?.label == label }) {
+        String named = label ? " ('${label}' is not)" : ""
+        return [success: false, error: "No token created: the client name must be 1-40 characters, contain no comma, and not already be used${named}."]
+    }
+    String token = null
+    try {
+        token = createAnotherAccessToken()?.toString()
+    } catch (Exception e) {
+        mcpLogError("server", "createAnotherAccessToken failed for client '${label}'", e)
+    }
+    if (!token || !_liveAccessTokens().contains(token)) {
+        return [success: false, error: "No token created for '${label}': the hub did not issue one (per-client tokens need firmware 2.5.2 or later)."]
+    }
+    int next = (state.nextClientTokenId instanceof Number) ? (state.nextClientTokenId as int) : 1
+    String id = next.toString()
+    _saveClientToken(id, [label: label, token: token])
+    state.nextClientTokenId = next + 1
+    _selectAllClientTools(id)
+    mcpLog("warn", "server", "MCP client token created for '${label}'")
+    return [success: true, clientId: id, label: label, token: token]
+}
+Map _revokeClientToken(String id) {
+    def client = _clientTokens().get(id)
+    if (!(client instanceof Map)) return [success: false, error: "No client token with id ${id}."]
+    boolean revoked = false
+    try {
+        revokeSpecificAccessToken(client.token)
+        _compactAccessTokenList()
+        revoked = !_liveAccessTokens().contains(client.token)
+    } catch (Exception e) {
+        mcpLogError("server", "revokeSpecificAccessToken failed for client '${client.label}'", e)
+    }
+    if (!revoked) return [success: false, error: "'${client.label}' was not revoked: its token is still in the hub's token list. Try Revoke again."]
+    _retireAccessToken(client.token)
+    _saveClientToken(id, null)
+    ["clientTools", "clientRead", "clientWrite", "clientLocal", "clientCloud", "clientToolNumber"].each {
+        app.removeSetting("${it}_${id}".toString())
+    }
+    mcpLog("warn", "server", "MCP client token revoked for '${client.label}'")
+    return [success: true, clientId: id, label: client.label]
+}
+Map _rotateClientToken(String id) {
+    def client = _clientTokens().get(id)
+    if (!(client instanceof Map)) return [success: false, error: "No client token with id ${id}."]
+    def before = _liveAccessTokens() as Set
+    String fresh = null
+    try {
+        resetSpecificAccessToken(client.token)
+        fresh = _liveAccessTokens().find { !before.contains(it) }
+    } catch (Exception e) {
+        mcpLogError("server", "resetSpecificAccessToken failed for client '${client.label}'", e)
+    }
+    if (!fresh) return [success: false, error: "'${client.label}' was not rotated: the hub did not issue a new token. Its current URL still works."]
+    _retireAccessToken(client.token)
+    _saveClientToken(id, [label: client.label, token: fresh])
+    mcpLog("warn", "server", "MCP client token rotated for '${client.label}'; that client must re-copy its URL")
+    return [success: true, clientId: id, label: client.label, token: fresh]
+}
+List<String> _untrackedAccessTokens() {
+    def known = ([_primaryAccessToken()] + _clientTokens().values().collect { it?.token }) as Set
+    return _liveAccessTokens().findAll { !known.contains(it) }
+}
+Map _revokeUntrackedAccessTokens() {
+    def untracked = _untrackedAccessTokens()
+    untracked.each { token ->
+        try {
+            revokeSpecificAccessToken(token)
+            _compactAccessTokenList()
+            _retireAccessToken(token)
+        } catch (Exception e) {
+            mcpLogError("server", "revokeSpecificAccessToken failed for an untracked token", e)
+        }
+    }
+    def left = _untrackedAccessTokens()
+    if (untracked) mcpLog("warn", "server", "Revoked ${untracked.size() - left.size()} untracked access token(s)")
+    return left ? [success: false, error: "${left.size()} untracked token(s) are still in the hub's token list. Try again."] : [success: true, revoked: untracked.size()]
+}
+Map _clientAccessView(String id) {
+    return [tools: (_clientAllowedTools(id) - _alwaysGrantedToolNames()).sort(),
+            read: _clientAllows(id, "clientRead"), write: _clientAllows(id, "clientWrite"),
+            local: _clientAllows(id, "clientLocal"), cloud: _clientAllows(id, "clientCloud"),
+            toolNumber: (_clientSetting(id, "clientToolNumber") ?: "main").toString()]
+}
+Map _clientAccessWrites(String id, Map access) {
+    def writes = [:]
+    def unknown = access.keySet().findAll { !(it in ["tools", "read", "write", "local", "cloud", "toolNumber"]) }
+    if (unknown) throw new IllegalArgumentException("Unknown clientToken.access keys: ${unknown.sort()}. Allowed: tools, read, write, local, cloud, toolNumber.")
+    if (access.containsKey("tools")) {
+        def grantable = _grantableToolOptions().keySet()
+        def tools = access.tools
+        if (tools == "all") {
+            writes["clientTools_${id}".toString()] = [type: "enum", value: grantable as List]
+        } else if (tools instanceof Collection) {
+            def names = tools.collect { it.toString() }.findAll { !_alwaysGrantedToolNames().contains(it) }
+            def mainOnly = names.findAll { _ungrantableToolNames().contains(it) }
+            if (mainOnly) throw new IllegalArgumentException("These tools work only with the main token and cannot be granted: ${mainOnly.sort()}.")
+            def bad = names.findAll { !grantable.contains(it) }
+            if (bad) throw new IllegalArgumentException("Unknown tool names in clientToken.access.tools: ${bad.sort()}.")
+            writes["clientTools_${id}".toString()] = [type: "enum", value: names.unique()]
+        } else {
+            throw new IllegalArgumentException("clientToken.access.tools must be a list of tool names or \"all\".")
+        }
+    }
+    ["read": "clientRead", "write": "clientWrite", "local": "clientLocal", "cloud": "clientCloud"].each { key, setting ->
+        if (!access.containsKey(key)) return
+        def value = access.get(key)
+        if (value instanceof String && value in ["true", "false"]) value = (value == "true")
+        if (!(value instanceof Boolean)) throw new IllegalArgumentException("clientToken.access.${key} must be true or false.")
+        writes["${setting}_${id}".toString()] = [type: "bool", value: value]
+    }
+    if (access.containsKey("toolNumber")) {
+        String number = access.toolNumber?.toString()
+        if (!(number in ["main", "none"] || number ==~ /^[0-9]$/)) throw new IllegalArgumentException("clientToken.access.toolNumber must be \"main\", \"none\" or a digit 0-9.")
+        writes["clientToolNumber_${id}".toString()] = [type: "enum", value: number]
+    }
+    return writes
+}
+private void _selectAllClientTools(String id) {
+    app.updateSetting("clientTools_${id}".toString(), [type: "enum", value: _grantableToolOptions().keySet() as List])
+}
+private Map _grantableToolOptions() {
+    def meta = getToolDisplayMeta()
+    def skip = _ungrantableToolNames() + _alwaysGrantedToolNames()
+    def names = getAllToolDefinitions().collect { it.name as String }.findAll { !skip.contains(it) }
+    def labelled = names.collectEntries { [(it): "${meta[it]?.title ?: it} (${it})".toString()] }
+    return labelled.sort { a, b -> a.value <=> b.value }
+}
+def _clientSetting(String id, String name) { settings.get("${name}_${id}".toString()) }
+private boolean _clientAllows(String id, String name) { _clientSetting(id, name) != false }
+Set _clientAllowedTools(String id) {
+    def picked = _clientSetting(id, "clientTools")
+    Collection pickedList
+    if (picked instanceof Collection) pickedList = picked
+    else if (picked) pickedList = [picked]
+    else pickedList = []
+    Set allowed = pickedList.collect { it.toString() } as Set
+    allowed.addAll(_alwaysGrantedToolNames())
+    allowed.removeAll(_ungrantableToolNames())
+    return allowed
+}
+private String _clientAccessSummary(String id) {
+    def parts = ["${_clientAllowedTools(id).size() - _alwaysGrantedToolNames().size()} tools"]
+    if (!_clientAllows(id, "clientRead")) parts << "no read"
+    if (!_clientAllows(id, "clientWrite")) parts << "no write"
+    if (!_clientAllows(id, "clientLocal")) parts << "no local"
+    if (!_clientAllows(id, "clientCloud")) parts << "no cloud"
+    return parts.join(", ")
+}
+String _clientToolDenial(String toolName, args = null) {
+    if (callerClient == null) return null
+    String id = callerClient.id.toString()
+    String who = "client '${callerClient.label}'"
+    String ext = _externalToolName(toolName)
+    def gateway = getGatewayConfig()[toolName]
+    if (gateway != null) {
+        def clientHidden = _clientHiddenTools()
+        if ((gateway.tools ?: []).any { !clientHidden.contains(it) }) return null
+        return "${ext} has no tools enabled for ${who}. Ask the hub owner to enable them under Per-client access tokens in the MCP Rule Server app."
+    }
+    if (_ungrantableToolNames().contains(toolName)) {
+        return "${ext} works only with the main access token and cannot be granted to ${who}."
+    }
+    if (!_clientAllowedTools(id).contains(toolName)) {
+        return "${ext} is not enabled for ${who}. Ask the hub owner to enable it under Per-client access tokens in the MCP Rule Server app."
+    }
+    Map a = (args instanceof Map) ? args as Map : [:]
+    if (_installedAppTargetTools().contains(toolName) && _targetsThisApp(a)) {
+        return "${ext} cannot target the MCP Rule Server app itself from ${who}."
+    }
+    if (_alwaysGrantedToolNames().contains(toolName)) return null
+    if ((toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(a)) || (toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(a))) return null
+    boolean isRead = getReadOnlyToolNames().contains(toolName) || _isDeviceReplaceOptionsOnlyCall(toolName, a)
+    if (isRead && !_clientAllows(id, "clientRead")) return "Read tools are disabled for ${who}, so ${ext} cannot run."
+    if (!isRead && !_clientAllows(id, "clientWrite")) return "Write tools are disabled for ${who}, so ${ext} cannot run."
+    return null
+}
+private Set _clientHiddenTools() {
+    if (callerClient == null) return [] as Set
+    String id = callerClient.id.toString()
+    def allowed = _clientAllowedTools(id)
+    def always = _alwaysGrantedToolNames()
+    def readOnly = getReadOnlyToolNames()
+    boolean noRead = !_clientAllows(id, "clientRead")
+    boolean noWrite = !_clientAllows(id, "clientWrite")
+    return _toolCatalogIndexes().names.findAll { name ->
+        !allowed.contains(name) || (!always.contains(name) && (readOnly.contains(name) ? noRead : noWrite))
+    } as Set
+}
+Map _clientAccessInfo() {
+    if (callerClient == null) return null
+    String id = callerClient.id.toString()
+    def hidden = getHiddenToolNames()
+    return [client: callerClient.label,
+            readEnabled: _clientAllows(id, "clientRead"), writeEnabled: _clientAllows(id, "clientWrite"),
+            localAccessEnabled: _clientAllows(id, "clientLocal"), cloudAccessEnabled: _clientAllows(id, "clientCloud"),
+            tools: _clientAllowedTools(id).findAll { !hidden.contains(it) }.collect { _externalToolName(it as String) }.sort()]
+}
+String _requestAccessToken() {
+    def queryToken = params?.access_token
+    if (queryToken instanceof String && queryToken) return queryToken
+    String auth = _requestHeader("Authorization")
+    if (auth != null && auth.length() > 7 && auth.substring(0, 7).equalsIgnoreCase("Bearer ")) return auth.substring(7)
+    return null
+}
+def _resolveCaller() {
+    callerClient = null
+    String token = _requestAccessToken()
+    Map clients = _clientTokens()
+    if (token == null) {
+        if (!clients) return null
+        return _callerRefusal(403, "Forbidden: this server has per-client tokens, so the token must arrive as ?access_token= or an Authorization: Bearer header.")
+    }
+    if (_isRetiredAccessToken(token)) {
+        return _callerRefusal(401, "Unauthorized: this access token was revoked or rotated. Copy the current URL from the MCP Rule Server app on the hub.")
+    }
+    def match = clients.find { cid, c -> c instanceof Map && c.token == token }
+    if (match == null) {
+        if (token != _primaryAccessToken() && _liveAccessTokens().contains(token)) {
+            return _callerRefusal(401, "Unauthorized: this access token belongs to no client. Revoke untracked tokens under Per-client access tokens in the MCP Rule Server app on the hub.")
+        }
+        return null
+    }
+    if (!_liveAccessTokens().contains(token)) {
+        return _callerRefusal(401, "Unauthorized: this access token was revoked. Copy the current URL from the MCP Rule Server app on the hub.")
+    }
+    String id = match.key.toString()
+    callerClient = [id: id, label: match.value.label?.toString()]
+    boolean cloud = _isCloudRequest()
+    if (!_clientAllows(id, cloud ? "clientCloud" : "clientLocal")) {
+        return _callerRefusal(403, "Forbidden: ${cloud ? 'cloud' : 'local'} access is disabled for client '${callerClient.label}'. Turn it on under Per-client access tokens in the MCP Rule Server app on the hub.")
+    }
+    return null
+}
+private def _callerRefusal(int status, String message) {
+    return render(status: status, contentType: "application/json",
+                  data: groovy.json.JsonOutput.toJson(jsonRpcError(null, -32600, message)))
+}
 def confirmRegenerateTokenPage() {
     dynamicPage(name: "confirmRegenerateTokenPage", title: "Regenerate access token?") {
         section {
@@ -33036,14 +33844,22 @@ def confirmRegenerateTokenPage() {
         }
     }
 }
+private String _wrappedEnumOptionsStyle() {
+    return "<style>" +
+        ".SumoSelect > .optWrapper > .options li label { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; word-break: break-word; overflow-wrap: anywhere; line-height: 1.35; padding-top: 2px; padding-bottom: 2px; } " +
+        ".SumoSelect > .optWrapper > .options li.opt { height: auto !important; }" +
+        "</style>"
+}
 def advancedOverridesPage() {
     dynamicPage(name: "advancedOverridesPage", title: "Advanced: Per-tool Overrides & Expert Settings") {
         section {
-            paragraph "<style>" +
-                ".SumoSelect > .optWrapper > .options li label { white-space: normal !important; overflow: visible !important; text-overflow: clip !important; word-break: break-word; overflow-wrap: anywhere; line-height: 1.35; padding-top: 2px; padding-bottom: 2px; } " +
-                ".SumoSelect > .optWrapper > .options li.opt { height: auto !important; }" +
-                "</style>" +
+            paragraph _wrappedEnumOptionsStyle() +
                 "Deny-only fine-grained control. These selections are applied <b>below</b> the Read/Write masters: they can only turn things OFF, never re-enable something a master already hid. A disabled tool disappears from tools/list and hub_search_tools everywhere it appears (including shared tools in multiple gateways) and returns a clear error if a cached client still calls it; it remains documented in hub_get_tool_guide."
+        }
+        section("Per-client access tokens") {
+            href name: "clientTokens", page: "clientTokensPage",
+                 title: "Per-client access tokens (${_clientTokens().size()})",
+                 description: "Give an MCP client its own token with narrower access: which tools it can call, Read/Write, local/cloud and the tool-name number. The main token above is unaffected."
         }
         section("Protected apps") {
             def choices = _protectedAppChoices()
@@ -33097,8 +33913,14 @@ def advancedOverridesPage() {
         section("Native app edit backups") {
             paragraph "By default, edits to the same native app reuse its newest File Manager baseline for one hour. Restoring that baseline returns the app to the start of the edit chain, undoing every later edit in the hour. This avoids uploading the same app before every small edit. Deletes and a standalone Required Expression replacement still take a fresh snapshot."
             input "backupEveryRuleWrite", "bool", title: "Back up before every native app edit",
-                  description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit.",
+                  description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit: the first in an editing session is kept as its pinned baseline, and the later ones are rolling steps, the first removed when the backup storage budget is exceeded. A session ends once an hour passes with no snapshot of that app.",
                   defaultValue: false
+        }
+        section("Backup storage") {
+            paragraph "Automatic code and rule backups live in File Manager. File Manager files use hub storage and count toward a full local backup's 100 MiB file limit; database backups leave them out. Backups are removed only when they exceed this budget together: rolling steps first, then pinned baselines, oldest first. The backup just taken and a restore in progress are never removed."
+            input "backupBudgetMb", "number", title: "Backup storage budget (MB)",
+                  description: "Total size of the automatic code and rule backups (default: 10; range 1 to 1000000, values outside it use the nearest end).",
+                  defaultValue: 10, required: false
         }
         section("Bug report error retention") {
             paragraph "Every MCP server error is already written to the hub's own Past Logs, which hub_report_issue reads. This option additionally keeps the ten newest errors in app state, so a bug report still includes them after they have rolled out of Past Logs. It costs an app-state write on every error, so it is off by default."
@@ -33155,9 +33977,34 @@ def appButtonHandler(btn) {
         }
         state.remove("ruleToDelete")
     } else if (btn == "regenerateTokenBtn") {
-        state.remove("accessToken")
-        createAccessToken()
+        String oldMain = _primaryAccessToken()
+        if (_clientTokens()) {
+            resetSpecificAccessToken(oldMain)
+        } else {
+            state.remove("accessToken")
+            createAccessToken()
+        }
+        _retireAccessToken(oldMain)
         mcpLog("warn", "server", "MCP access token regenerated via UI; endpoint URLs changed, clients must re-copy the new URL")
+    } else if (btn == "createClientTokenBtn") {
+        def created = _createClientToken(settings.newClientTokenLabel?.toString())
+        if (created.success) app.removeSetting("newClientTokenLabel")
+        else _clientTokenNotice(created.error.toString())
+    } else if (btn?.startsWith("revokeClientToken_")) {
+        def revoked = _revokeClientToken(btn.substring("revokeClientToken_".length()))
+        if (!revoked.success) _clientTokenNotice(revoked.error.toString())
+    } else if (btn == "revokeUntrackedTokensBtn") {
+        def cleaned = _revokeUntrackedAccessTokens()
+        if (!cleaned.success) _clientTokenNotice(cleaned.error.toString())
+    } else if (btn?.startsWith("clientToolsAll_")) {
+        String id = btn.substring("clientToolsAll_".length())
+        if (_clientTokens().containsKey(id)) _selectAllClientTools(id)
+    } else if (btn?.startsWith("clientToolsNone_")) {
+        String id = btn.substring("clientToolsNone_".length())
+        if (_clientTokens().containsKey(id)) app.removeSetting("clientTools_${id}".toString())
+    } else if (btn?.startsWith("rotateClientToken_")) {
+        def rotated = _rotateClientToken(btn.substring("rotateClientToken_".length()))
+        if (!rotated.success) _clientTokenNotice(rotated.error.toString())
     } else if (btn == "resetOverridesBtn") {
         app.removeSetting("disabled_tools")
         app.removeSetting("disabled_gateways")
@@ -33210,7 +34057,10 @@ def uninstalled() {
     log.info "MCP Rule Server uninstalled"
     _resetCaptureStore()
     String appKey = _stateOwnerKey()
-    synchronized (ITEM_BACKUP_MANIFESTS) { ITEM_BACKUP_MANIFESTS.remove(appKey) }
+    synchronized (ITEM_BACKUP_MANIFESTS) {
+        ITEM_BACKUP_MANIFESTS.remove(appKey)
+        ITEM_BACKUP_LEGACY_PENDING.remove(appKey)
+    }
     synchronized (PRED_CLEAR_STORES) { PRED_CLEAR_STORES.remove(appKey) }
     synchronized (WRITE_RESERVATION_LOCK) {
         MRTR_CLEANUP_SCHEDULES.remove(appKey)
@@ -33288,6 +34138,9 @@ private Map _protectedAppChoices() {
 }
 private void _requireUnprotectedAppMutation(Object targetId, String operation, Set<String> protectedIds = null) {
     String id = _protectedAppId(targetId)
+    if (id && callerClient != null && id == app.id?.toString()) {
+        throw new IllegalArgumentException("A per-client access token cannot ${operation} the MCP Rule Server app itself.")
+    }
     if (id && (protectedIds != null ? protectedIds : _protectedAppIds()).contains(id)) {
         throw new IllegalArgumentException("App ${id} is protected: cannot ${operation}. Manage Protected apps on the Advanced page of the MCP server's Hubitat app. Developer Mode does not bypass this protection for generic tools.")
     }
@@ -33407,6 +34260,7 @@ mappings {
     }
 }
 def hubResponseCapBytes() { 131072 }
+def _responseSizeLimitBytes() { _isCloudRequest() ? 99000 : hubResponseCapBytes() - 11072 }
 def handleHealth() {
     if (!_transportEnabled()) {
         return render(status: 403, contentType: "application/json",
@@ -33436,6 +34290,8 @@ def handleMcpRequest() {
                 jsonRpcError(null, -32600, "Forbidden: the Origin header does not name a known identity for this MCP endpoint.")))
         }
     }
+    def callerRefusal = _resolveCaller()
+    if (callerRefusal != null) return callerRefusal
     _cleanupRetiredToolState()
     _retireHubSecuritySettingsOnce()
     _refreshSetupAfterUpdate()
@@ -33499,7 +34355,7 @@ def handleMcpRequest() {
     } else {
         jsonResponse = groovy.json.JsonOutput.toJson(response)
     }
-    def maxResponseSize = hubResponseCapBytes() - 7072
+    def maxResponseSize = _isCloudRequest() ? 99500 : hubResponseCapBytes() - 7072
     def responseBytes = jsonResponse.length() > (maxResponseSize - 8000) ? jsonResponse.getBytes("UTF-8").length : jsonResponse.length()
     if (responseBytes > maxResponseSize) {
         mcpLog("error", "server", "MCP response too large: ${responseBytes} bytes (limit ${maxResponseSize}). Returning error instead.")
@@ -33507,7 +34363,7 @@ def handleMcpRequest() {
         def errResp = jsonRpcError(
             echoId,
             -32603,
-            "Response too large (${responseBytes} bytes exceeds hub's 128KB limit). Try requesting less data or use a more specific query."
+            "Response too large (${responseBytes} bytes exceeds the ${maxResponseSize}-byte limit ${_isCloudRequest() ? 'of the cloud relay' : 'under the hub\'s 128 KiB cap'}). Try requesting less data or use a more specific query."
         )
         jsonResponse = groovy.json.JsonOutput.toJson(errResp)
         httpStatus = null
@@ -33877,6 +34733,11 @@ def handleServerDiscover(msg) {
     ])
 }
 String _hubToolNumber() {
+    if (callerClient != null) {
+        String choice = _clientSetting(callerClient.id.toString(), "clientToolNumber")?.toString()
+        if (choice == "none") return null
+        if (choice ==~ /^[0-9]$/) return choice
+    }
     if (settings.enableHubToolNumber != true) return null
     String digit = settings.hubToolNumber?.toString()
     return (digit != null && digit ==~ /^[0-9]$/) ? digit : null
@@ -33927,10 +34788,12 @@ def handleToolsList(msg) {
 def _guideResourceUriPrefix() { "hubitat://guide/" }
 def _contextResourcesEnabled() { !getHiddenToolNames().contains("hub_list_devices") }
 def _guideResourcesEnabled() { !getHiddenToolNames().contains("hub_get_tool_guide") }
-def _resourceGateCause() {
-    settings.enableRead == false ?
-        "Read tools are disabled in MCP Rule Server settings (Enable Read Tools)" :
-        "the mirrored tool is disabled in Advanced settings (Per-tool Overrides)"
+def _resourceGateCause(String mirroredTool) {
+    if (settings.enableRead == false) return "Read tools are disabled in MCP Rule Server settings (Enable Read Tools)"
+    if (callerClient != null && !getEffectiveDisabledTools().contains(mirroredTool)) {
+        return "the mirrored tool is not enabled for client '${callerClient.label}'"
+    }
+    return "the mirrored tool is disabled in Advanced settings (Per-tool Overrides)"
 }
 def _resourceCatalog() {
     def entries = []
@@ -33977,7 +34840,7 @@ def handleResourcesRead(msg) {
     }
     if (uri == "hubitat://context-summary" || uri == "hubitat://context") {
         if (!_contextResourcesEnabled()) {
-            return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} reads live device state and ${_resourceGateCause()}.", [uri: uri])
+            return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} reads live device state and ${_resourceGateCause('hub_list_devices')}.", [uri: uri])
         }
         try {
             if (uri == "hubitat://context-summary") {
@@ -34002,7 +34865,7 @@ def handleResourcesRead(msg) {
         def sections = getToolGuideSections()
         if (sections.containsKey(section)) {
             if (!_guideResourcesEnabled()) {
-                return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} mirrors hub_get_tool_guide and ${_resourceGateCause()}.", [uri: uri])
+                return jsonRpcError(msg.id, -32002, "Resource not available: ${uri} mirrors hub_get_tool_guide and ${_resourceGateCause('hub_get_tool_guide')}.", [uri: uri])
             }
             return jsonRpcResult(msg.id, [
                 contents: [[uri: uri, mimeType: "text/markdown", text: _guideSectionServed(section, sections[section])]],
@@ -34609,6 +35472,8 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs, boo
     if (getEffectiveDisabledTools().contains(leaf)) {
         throw new IllegalArgumentException("${leaf} is disabled in Advanced settings (Per-tool Overrides). Re-enable it in MCP Rule Server app settings.")
     }
+    String clientDenial = _clientToolDenial(leaf, leafArgs)
+    if (clientDenial != null) throw new IllegalArgumentException(clientDenial)
     if (checkKey && !readLeaf && settings.enableMandatoryBPS != false) {
         String bpsSection = _bpsSectionForTool(leaf)
         def bpsKey = hubBpsKeyFromArgs(leafArgs)
@@ -34622,7 +35487,8 @@ private Map _mrtrBinding(outerToolName, leafToolName, Map args) {
     return [
         outerTool: outerToolName?.toString(),
         leafTool: leafToolName?.toString(),
-        argDigest: _mrtrSha256(canonical)
+        argDigest: _mrtrSha256(canonical),
+        client: callerClient?.id?.toString()
     ]
 }
 private String _mrtrSha256(String value) {
@@ -34652,7 +35518,8 @@ private def _mrtrCanonicalArgs(value) {
 private boolean _mrtrBindingMatches(Map rec, Map binding) {
     return rec.outerTool?.toString() == binding.outerTool?.toString() &&
         rec.leafTool?.toString() == binding.leafTool?.toString() &&
-        rec.argDigest?.toString() == binding.argDigest?.toString()
+        rec.argDigest?.toString() == binding.argDigest?.toString() &&
+        rec.client?.toString() == binding.client?.toString()
 }
 def _mrtrActiveTtlMs() { _writeLeaseMs() }
 def _mrtrTerminalTtlMs() { 10L * 60L * 1000L }
@@ -34993,6 +35860,7 @@ def _mrtrReserve(outerTool, leafTool, Map binding, String readSnapshotId = null)
                     outerTool: outerTool?.toString(), leafTool: leafTool?.toString(),
                     argDigest: binding.argDigest,
                     startedAt: at, updatedAt: at, expiresAt: at + _mrtrActiveTtlMs(),
+                    client: binding.client, clientLabel: callerClient?.label,
                     rounds: 0, generation: 0
                 ]
                 if (readSnapshotId) rec.readSnapshotId = readSnapshotId
@@ -35558,6 +36426,7 @@ def runMrtrSlice(Map job = [:]) {
         }
     }
     if (work == null || rec == null) return
+    if (rec.client != null) callerClient = [id: rec.client.toString(), label: rec.clientLabel?.toString()]
     Long previousWorkerStart = mrtrWorkerSliceStartedAt
     mrtrWorkerSliceStartedAt = now()
     try {
@@ -35603,6 +36472,7 @@ def _mrtrRecentOperations(int limit = 10) {
         Map rec = v as Map
         String leaf = rec.leafTool?.toString()
         if (!writes.contains(leaf)) return
+        if (callerClient != null && rec.client?.toString() != callerClient.id.toString()) return
         String status = rec.status?.toString()
         String phase
         if (status == "terminal") {
@@ -35614,6 +36484,7 @@ def _mrtrRecentOperations(int limit = 10) {
         }
         Map row = [tool: leaf, status: phase, startedAt: rec.startedAt,
                    updatedAt: rec.updatedAt ?: rec.startedAt, slices: (rec.rounds ?: 0)]
+        if (callerClient == null && rec.clientLabel) row.client = rec.clientLabel
         if (status == "terminal" && rec.terminalResult instanceof Map) {
             Map result = rec.terminalResult as Map
             ["success", "appId", "ruleId", "newAppId", "deviceId", "driverId", "error"].each {
@@ -35676,7 +36547,9 @@ def runMrtrAutoContinue(Map job = [:]) {
         mcpLog("warn", "mrtr", "Server-side continuation of ${leaf} skipped: the record expired unresumed at generation ${generation}")
         return
     }
-    Map binding = [outerTool: rec.outerTool?.toString(), leafTool: leaf, argDigest: rec.argDigest?.toString()]
+    Map binding = [outerTool: rec.outerTool?.toString(), leafTool: leaf, argDigest: rec.argDigest?.toString(),
+                   client: rec.client?.toString()]
+    if (rec.client != null) callerClient = [id: rec.client.toString(), label: rec.clientLabel?.toString()]
     Map claim
     try {
         claim = _mrtrClaim(stateId, rec.outerTool, leaf, binding) as Map
@@ -35935,7 +36808,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
             mcpLog("warn", "server", "Reactive BPS hint failed for ${reactiveToolName}: ${bpErr.message}")
         }
     }
-    if (settings.redactAccessTokens == true) rendered = _redactAccessTokens(rendered)
+    if (settings.redactAccessTokens == true || callerClient != null) rendered = _redactAccessTokens(rendered)
     String jsonText
     try {
         jsonText = groovy.json.JsonOutput.toJson(rendered)
@@ -35962,7 +36835,7 @@ private def _renderToolResult(id, toolName, reactiveToolName, args, result, bool
     def candidateResponse = jsonRpcResult(id, envelopeBody)
     String candidateJson = groovy.json.JsonOutput.toJson(candidateResponse)
     int wireBytes = candidateJson.getBytes("UTF-8").length
-    final int responseSizeLimit = hubResponseCapBytes() - 11072
+    final int responseSizeLimit = _responseSizeLimitBytes()
     if (wireBytes > responseSizeLimit) {
         mcpLog("warn", "server", "Tool ${reactiveToolName} response too large (${wireBytes} > ${responseSizeLimit} bytes) -- returning response_too_large envelope", null, [
             details: _toolLogDetails(reactiveToolName, toolName, args, [bytes: wireBytes, limit: responseSizeLimit])
@@ -35979,6 +36852,9 @@ private def _redactAccessTokens(value) {
     String marker = "***redacted (access token)***"
     if (value instanceof Map) {
         return value.collectEntries { k, v ->
+            if (k?.toString() == "clientTokens" && v instanceof Map) {
+                return [(k): v.collectEntries { id, c -> [(id): (c instanceof Map) ? c + [token: marker] : marker] }]
+            }
             boolean tokenKey = k?.toString() ==~ /(?i)access_?token/
             [(k): (tokenKey && v instanceof CharSequence) ? marker : _redactAccessTokens(v)]
         }
@@ -35986,9 +36862,11 @@ private def _redactAccessTokens(value) {
     if (value instanceof List) return value.collect { _redactAccessTokens(it) }
     if (value instanceof CharSequence) {
         String text = value.toString()
-        if (!text.toLowerCase().contains("access")) return value
-        return text.replaceAll(/(?i)(access_token=)[^&\s"'<>#]+/, '$1' + marker)
-                   .replaceAll(/(?i)("access_?token"\s*:\s*")[^"]*(")/, '$1' + marker + '$2')
+        boolean clientTokens = text.contains("clientTokens")
+        if (!clientTokens && !text.toLowerCase().contains("access")) return value
+        String masked = text.replaceAll(/(?i)(access_token=)[^&\s"'<>#]+/, '$1' + marker)
+                            .replaceAll(/(?i)("access_?token"\s*:\s*")[^"]*(")/, '$1' + marker + '$2')
+        return clientTokens ? masked.replaceAll(/("token"\s*:\s*")[^"]*(")/, '$1' + marker + '$2') : masked
     }
     return value
 }
@@ -36439,10 +37317,10 @@ def getGatewayConfig() {
             description: "Developer Mode self-administration: tools that let an LLM agent or CI/CD pipeline manage the MCP rule app's own configuration, scope, and operational state without manual UI intervention. Requires `enableDeveloperMode` toggle in the MCP rule app settings (default OFF). Each write is logged at WARN level for audit. Covers self-settings including the device-access scope (selectedDevices); additional self-admin tools (true Hub Variables namespace support, artifact cleanup) are planned as follow-ups under the same toggle.",
             tools: ["hub_update_mcp_settings"],
             summaries: [
-                hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices). Args: settings (map of key→value), confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
+                hub_update_mcp_settings: "Update one or more of the MCP rule app's own settings (toggles, log level, tuning params, and the device-access scope selectedDevices), or manage per-client access tokens. Args: settings (map of key→value) | clientToken {action, clientId?, label?, access?}, confirm=true. Allowlist-gated; selectedDevices ids validated atomically."
             ],
             searchHints: [
-                hub_update_mcp_settings: "self-admin developer mode toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access enableLocalAccess enableCloudAccess local cloud remote LAN endpoint access disable block connection"
+                hub_update_mcp_settings: "self-admin developer mode per-client access token client token create revoke rotate grant narrow tools toggle setting log level tuning loopGuard maxCapturedStates enableRead enableCustomRuleEngine useGateways gateway mode consolidate flat tools ci automation enableMandatoryBPS best practice acknowledgment gate device access scope authorize selectedDevices grant revoke replace which devices mcp server can see control authorization lockout bypassDeviceAllowlist bypass device allowlist reach every any device on hub ignore selection unlisted device full hub access enableLocalAccess enableCloudAccess local cloud remote LAN endpoint access disable block connection"
             ]
         ],
         hub_read_devices: [
@@ -36628,6 +37506,7 @@ def getHiddenToolNames() {
         hide.addAll(getDeveloperModeOnlyToolNames())
     }
     hide.addAll(getEffectiveDisabledTools())
+    hide.addAll(_clientHiddenTools())
     return hide
 }
 def getDeveloperModeOnlyToolNames() {
@@ -37050,6 +37929,8 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             throw new IllegalArgumentException("Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${toolName}.")
         }
     }
+    String clientDenial = _clientToolDenial(toolName as String, args)
+    if (clientDenial != null) throw new IllegalArgumentException(clientDenial)
     if (!isGatewayName && settings.enableMandatoryBPS != false
             && !getReadOnlyToolNames().contains(toolName)
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
@@ -37093,7 +37974,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
                 }
                 return toolListVirtualDevices(args)
             }
-            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames)
+            return toolListDevices(args.detailed, args.offset ?: 0, args.limit ?: 0, args.filter, args.labelFilter, args.capabilityFilter, args.format, args.fields, args.cursor, args.scope, args.roomFilter, args.onlyOn, args.changedSince, args.attributeNames, args.__reqT0)
         case "hub_get_device": return toolGetDevice(args.deviceId, args.mode ?: "summary", args.sections, args.fields, args.cursor)
         case "hub_call_device_command": return toolSendCommand(args.deviceId, args.command, args.parameters, args.waitFor, args.commands, args.__reqT0)
         case "hub_call_device_swap": return toolCallDeviceSwap(args)
@@ -38424,8 +39305,9 @@ private Map _backupItemSourceLocked(String type, String id) {
         throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: ${parsed.errorMessage ?: 'no source code returned'}")
     }
     def fileName = _itemBackupFileName("mcp-backup-${type}-${id}.groovy")
+    byte[] sourceBytes = parsed.source.getBytes("UTF-8")
     try {
-        uploadHubFile(fileName, parsed.source.getBytes("UTF-8"))
+        uploadHubFile(fileName, sourceBytes)
     } catch (Exception e) {
         mcpLogError("hub-admin", "Failed to save backup file '${fileName}'", e)
         throw new IllegalArgumentException("Cannot back up ${type} ID ${id}: file upload failed -- ${e.message}")
@@ -38436,7 +39318,9 @@ private Map _backupItemSourceLocked(String type, String id) {
         fileName: fileName,
         version: parsed.version,
         timestamp: now(),
-        sourceLength: parsed.source.length()
+        sourceLength: parsed.source.length(),
+        sizeBytes: sourceBytes.length,
+        retention: "pinned"
     ]
     _publishUploadedItemBackup(key.toString(), entry)
     mcpLog("info", "hub-admin", "Backed up ${type} ID ${id} source code to File Manager: ${fileName} (version ${parsed.version}, ${parsed.source.length()} chars)")
@@ -38464,16 +39348,158 @@ Map _itemBackupManifest() {
     synchronized (ITEM_BACKUP_MANIFESTS) {
         String owner = _stateOwnerKey()
         if (!ITEM_BACKUP_MANIFESTS.containsKey(owner)) {
-            ITEM_BACKUP_MANIFESTS.put(owner, new LinkedHashMap(atomicState.itemBackupManifest ?: [:]))
+            Map loaded
+            try { loaded = _loadItemBackupIndex(owner) }
+            catch (Exception e) {
+                mcpLog("error", "hub-admin", "${ITEM_BACKUP_INDEX_UNAVAILABLE}: ${e.message}")
+                throw new IllegalStateException("${ITEM_BACKUP_INDEX_UNAVAILABLE}: ${e.message}", e)
+            }
+            ITEM_BACKUP_MANIFESTS.put(owner, new LinkedHashMap(loaded))
         }
         return (ITEM_BACKUP_MANIFESTS[owner] as Map).collectEntries { key, entry ->
             [(key): entry instanceof Map ? new LinkedHashMap(entry) : entry]
         }
     }
 }
+Map _itemBackupIndexUnavailableResult(Throwable error) {
+    Throwable t = error
+    while (t != null && !(t.message?.startsWith(ITEM_BACKUP_INDEX_UNAVAILABLE))) t = t.cause
+    if (t == null) return null
+    return [success: false, error: t.message,
+            note: "Nothing was changed: the backup index file '${ITEM_BACKUP_INDEX_FILE}' could not be loaded, so no backup could be read or recorded. Check that Settings > File Manager answers, then retry; hub_list_backups reports whether the index loads."]
+}
+String _readItemBackupIndexStore() {
+    if (!_fileManagerRootFiles().any { it.name == ITEM_BACKUP_INDEX_FILE }) return null
+    String failure = null
+    for (int attempt = 1; attempt <= 3; attempt++) {
+        if (attempt > 1) pauseExecution(500)
+        try {
+            byte[] bytes = downloadHubFile(ITEM_BACKUP_INDEX_FILE)
+            if (bytes != null) return new String(bytes, "UTF-8")
+            failure = "the read returned no data"
+        } catch (Exception e) {
+            failure = e.message
+        }
+    }
+    throw new IllegalStateException("'${ITEM_BACKUP_INDEX_FILE}' is listed in File Manager but could not be read after 3 attempts (${failure})")
+}
+void _writeItemBackupIndexStore(String json) {
+    uploadHubFile(ITEM_BACKUP_INDEX_FILE, json.getBytes("UTF-8"))
+}
+private String _itemBackupIndexJson(Map manifest) {
+    return groovy.json.JsonOutput.toJson([version: 1, entries: manifest])
+}
+private Map _loadItemBackupIndex(String owner) {
+    String json = _readItemBackupIndexStore()
+    Map index = null
+    boolean rebuild = json == null
+    if (json != null) {
+        def parsed = null
+        try { parsed = new groovy.json.JsonSlurper().parseText(json) } catch (Exception ignored) { }
+        if (parsed instanceof Map && parsed.entries instanceof Map) {
+            index = new LinkedHashMap(parsed.entries as Map)
+        } else {
+            String aside = "mcp-backup-index.corrupt-${new Date(now()).format("yyyyMMdd-HHmmss")}.json"
+            try {
+                uploadHubFile(aside, json.getBytes("UTF-8"))
+                mcpLog("error", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' is not a valid index; its content was copied to '${aside}' and the index is rebuilt from the File Manager listing")
+            } catch (Exception e) {
+                mcpLog("error", "hub-admin", "Backup index file '${ITEM_BACKUP_INDEX_FILE}' is not a valid index and its content could not be preserved as '${aside}' (${e.message}); the index is rebuilt from the File Manager listing")
+            }
+            rebuild = true
+        }
+    }
+    if (atomicState.containsKey("itemBackupManifest")) {
+        Map merged = new LinkedHashMap(index ?: [:])
+        ((atomicState.itemBackupManifest ?: [:]) as Map).each { k, v -> if (!merged.containsKey(k)) merged.put(k, v) }
+        ITEM_BACKUP_LEGACY_PENDING.add(owner)
+        try {
+            _writeItemBackupIndexStore(_itemBackupIndexJson(merged))
+            _finishLegacyItemBackupMigration(owner)
+        } catch (Exception e) {
+            mcpLog("error", "hub-admin", "Could not write the backup index file '${ITEM_BACKUP_INDEX_FILE}' (${e.message}); the old index stays in app state until a backup write succeeds")
+        }
+        return merged
+    }
+    if (!rebuild) return index
+    Map rebuilt = _rebuildItemBackupIndex()
+    try { _writeItemBackupIndexStore(_itemBackupIndexJson(rebuilt)) }
+    catch (Exception e) { mcpLog("warn", "hub-admin", "Rebuilt backup index (${rebuilt.size()} entries) could not be saved (${e.message}); the next backup write saves it") }
+    return rebuilt
+}
+private void _finishLegacyItemBackupMigration(String owner) {
+    if (!ITEM_BACKUP_LEGACY_PENDING.contains(owner)) return
+    try {
+        atomicState.remove("itemBackupManifest")
+        ITEM_BACKUP_LEGACY_PENDING.remove(owner)
+        mcpLog("info", "hub-admin", "Moved the backup index from app state to File Manager file '${ITEM_BACKUP_INDEX_FILE}'")
+    } catch (Exception e) {
+        mcpLog("error", "hub-admin", "Backup index is saved to File Manager but the old app-state copy could not be removed (${e.message}); the next backup write retries")
+    }
+}
+private Map _rebuildItemBackupIndex() {
+    List files = _fileManagerRootFiles()
+    String uuid = "(?:-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})?"
+    List found = []
+    int unsized = 0
+    files.each { f ->
+        String name = f.name
+        Long listedAt = f.date as Long
+        def code = name =~ /^mcp-(backup|prerestore)-(app|driver|library)-(\d+)${uuid}\.groovy$/
+        def rule = name =~ /^mcp-rm-backup-(\d+)-((\d{8}-\d{6}-\d{3})${uuid})\.json$/
+        if (code.matches()) {
+            List g = code[0] as List
+            if (g[1] == "prerestore" && g[2] == "library") return
+            String base = (g[1] == "prerestore" ? "prerestore_" : "") + "${g[2]}_${g[3]}"
+            if (f.size == null) unsized++
+            found << [base: base, entry: [type: g[2], id: g[3].toString(), fileName: name, timestamp: listedAt ?: 0L,
+                                          sourceLength: f.size, sizeBytes: f.size, retention: "pinned"]]
+        } else if (rule.matches()) {
+            List g = rule[0] as List
+            if (!g[1].toString().isInteger()) {
+                mcpLog("warn", "hub-admin", "Backup index rebuild skipped '${name}': rule id ${g[1]} is out of range")
+                return
+            }
+            Integer ruleId = g[1].toString() as Integer
+            Long namedAt = null
+            try { namedAt = Date.parse("yyyyMMdd-HHmmss-SSS", g[3].toString()).time }
+            catch (Exception parseErr) { mcpLog("debug", "hub-admin", "Backup index rebuild: '${name}' has no parseable time in its name (${parseErr.message}); using the listed date") }
+            if (f.size == null) unsized++
+            found << [base: "rm-rule_${ruleId}_${g[2]}".toString(), entry: [type: "rm-rule", id: ruleId, ruleId: ruleId, fileName: name,
+                     timestamp: namedAt ?: listedAt ?: 0L, sourceLength: f.size, sizeBytes: f.size, retention: "pinned"]]
+        }
+    }
+    Map rebuilt = new LinkedHashMap()
+    found.sort { a, b -> (b.entry.timestamp as Long) <=> (a.entry.timestamp as Long) }.each { item ->
+        String key = item.base
+        int n = 1
+        while (rebuilt.containsKey(key)) key = "${item.base}_${n++}".toString()
+        rebuilt.put(key, item.entry)
+    }
+    if (unsized) mcpLog("warn", "hub-admin", "Backup index rebuild: ${unsized} adopted backup file(s) have no size in the File Manager listing and count 0 bytes against the backup storage budget")
+    mcpLog("info", "hub-admin", "Rebuilt the backup index from File Manager: ${rebuilt.size()} backup file(s) indexed")
+    return rebuilt
+}
+List _fileManagerRootFiles() {
+    String text = hubInternalGet("/hub/fileManager/json")?.toString()
+    if (!text) throw new IllegalStateException("/hub/fileManager/json returned no data")
+    def parsed = new groovy.json.JsonSlurper().parseText(text)
+    def files = null
+    if (parsed instanceof List) {
+        files = parsed
+    } else if (parsed instanceof Map) {
+        files = parsed.containsKey("files") ? parsed.files : parsed.values()?.flatten()
+    }
+    if (!(files instanceof List)) throw new IllegalStateException("/hub/fileManager/json returned an unrecognised shape")
+    Closure asLong = { v -> v != null && v.toString().isLong() ? v.toString().toLong() : null }
+    return (files as List).findAll { !(it instanceof Map) || it.type != "dir" }.collect { f ->
+        f instanceof Map ? [name: f.name?.toString(), size: asLong(f.size), date: asLong(f.date)] : [name: f.toString(), size: null, date: null]
+    }.findAll { it.name }
+}
 private void _commitItemBackupManifest(Map manifest) {
     String owner = _stateOwnerKey()
-    atomicState.itemBackupManifest = manifest
+    _writeItemBackupIndexStore(_itemBackupIndexJson(manifest))
+    _finishLegacyItemBackupMigration(owner)
     ITEM_BACKUP_MANIFESTS.put(owner, manifest.collectEntries { key, entry ->
         [(key): entry instanceof Map ? new LinkedHashMap(entry) : entry]
     })
@@ -38491,12 +39517,12 @@ private String _itemBackupFileName(String preferred) {
     return preferred.substring(0, dot) + "-${java.util.UUID.randomUUID()}" + preferred.substring(dot)
 }
 void _repairItemBackupRetention(Map manifest, String key, Map entry) {
-    if (manifest.size() <= ITEM_BACKUP_RETENTION) return
+    if (!_itemBackupRetentionVictims(manifest, [key])) return
     try {
         _publishItemBackup(key, entry)
-        mcpLog("info", "hub-admin", "Trimmed an over-cap backup manifest (${manifest.size()} entries) while reusing the baseline for ${key}; the oldest rollback entries were dropped and their files deleted best-effort")
+        mcpLog("info", "hub-admin", "Trimmed the backup index to its retention limits while reusing the baseline for ${key}; the evicted files were deleted best-effort")
     } catch (Exception e) {
-        mcpLog("error", "hub-admin", "Backup retention repair failed for ${key} (${e.message}); reusing the existing baseline and leaving the manifest over the ${ITEM_BACKUP_RETENTION}-entry cap until a later publication succeeds")
+        mcpLog("error", "hub-admin", "Backup retention repair failed for ${key} (${e.message}); reusing the existing baseline and leaving the index over its limits until a later publication succeeds")
     }
 }
 void _publishUploadedItemBackup(String key, Map entry, String protectedKey = null) {
@@ -38516,10 +39542,9 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
         Map manifest = new LinkedHashMap(previous)
         manifest.put(key, entry)
         manifest.keySet().findAll { it != key && it != protectedKey && manifest[it]?.deletePending }.each { manifest.remove(it) }
-        def victims = manifest.keySet().findAll { it != key && it != protectedKey }
-            .sort { a, b -> (manifest[a]?.timestamp ?: 0L) <=> (manifest[b]?.timestamp ?: 0L) }
-            .take(manifest.size() - ITEM_BACKUP_RETENTION)
+        List victims = _itemBackupRetentionVictims(manifest, [key, protectedKey])
         victims.each { manifest.remove(it) }
+        if (victims) mcpLog("info", "hub-admin", "Backup retention evicted ${victims.size()} backup(s) while publishing ${key}: ${victims.join(', ')}")
         _commitItemBackupManifest(manifest)
         Set retainedFiles = manifest.values().collect { it?.fileName?.toString() } as Set
         previous.values().collect { it?.fileName?.toString() }.findAll { it && !retainedFiles.contains(it) }.unique().each { file ->
@@ -38527,6 +39552,68 @@ void _publishItemBackup(String key, Map entry, String protectedKey = null) {
             catch (Exception e) { mcpLog("error", "hub-admin", "Backup manifest committed but old file '${file}' could not be deleted: ${e.message}; no backup references it, remove it from Settings > File Manager if it is still present") }
         }
     }
+}
+List _itemBackupRetentionVictims(Map manifest, Collection keepKeys) {
+    long budget = _itemBackupByteBudget()
+    long used = 0L
+    manifest.each { k, v -> if (!v?.deletePending) used += _itemBackupEntryBytes(v) }
+    List victims = []
+    if (used <= budget) return victims
+    Closure stamp = { k -> def t = manifest[k]?.timestamp; t instanceof Number ? (t as Long) : 0L }
+    Closure rolling = { k -> manifest[k]?.retention == "rolling" }
+    List candidates = manifest.keySet().findAll { !keepKeys.contains(it) && !manifest[it]?.deletePending }
+        .sort { a, b -> (rolling(a) ? 0 : 1) <=> (rolling(b) ? 0 : 1) ?: stamp(a) <=> stamp(b) }
+    for (k in candidates) {
+        if (used <= budget) break
+        victims << k
+        used -= _itemBackupEntryBytes(manifest[k])
+    }
+    return victims
+}
+long _itemBackupBudgetMb() {
+    def value = settings?.backupBudgetMb
+    if (value == null) return ITEM_BACKUP_DEFAULT_BUDGET_MB
+    BigDecimal mb = null
+    try { mb = new BigDecimal(value.toString()) } catch (Exception ignored) { }
+    if (mb == null) {
+        if (ITEM_BACKUP_BUDGET_WARNED.add(value.toString())) {
+            mcpLog("warn", "hub-admin", "Backup storage budget setting '${value}' is not a number; using the ${ITEM_BACKUP_DEFAULT_BUDGET_MB} MB default")
+        }
+        return ITEM_BACKUP_DEFAULT_BUDGET_MB
+    }
+    if (mb < 1) return 1L
+    if (mb > ITEM_BACKUP_MAX_BUDGET_MB) return ITEM_BACKUP_MAX_BUDGET_MB
+    return mb.longValue()
+}
+long _itemBackupByteBudget() {
+    return _itemBackupBudgetMb() * 1024L * 1024L
+}
+long _itemBackupEntryBytes(entry) {
+    if (!(entry instanceof Map)) return 0L
+    def n = entry.sizeBytes != null ? entry.sizeBytes : entry.sourceLength
+    if (n instanceof Number) return n as Long
+    if (n?.toString()?.isLong()) return n.toString().toLong()
+    return 0L
+}
+Map _itemBackupBudgetUsage(Map manifest) {
+    long used = 0L
+    manifest.values().each { if (!it?.deletePending) used += _itemBackupEntryBytes(it) }
+    return [usedBytes: used, limitBytes: _itemBackupByteBudget()]
+}
+String _itemBackupRetentionNote(Map entry) {
+    String budget = "the ${_itemBackupBudgetMb()} MB budget shared by all MCP backups"
+    if (entry?.retention == "rolling") {
+        return "Rolling step: a per-write snapshot inside this rule's editing session. It is removed only when ${budget} is exceeded, and rolling steps are the first backups removed then, oldest first."
+    }
+    String replacedBy
+    if (entry?.type?.toString() == "rm-rule") {
+        replacedBy = "Backups of this or other rules never replace it"
+    } else if (entry?.undoForBackupKey) {
+        replacedBy = "This item's next pre-restore undo replaces it"
+    } else {
+        replacedBy = "This item's next backup after the one-hour reuse window replaces it; other items' backups never do"
+    }
+    return "Pinned baseline: ${replacedBy}. It is removed only when ${budget} is exceeded, after every rolling step and every older pinned baseline."
 }
 List unlinkItemBackupManifestFile(String fileName, String exactKey = null) {
     if (!fileName) return []
@@ -38689,6 +39776,7 @@ private Map _debugLogRecord(Map raw, String id) {
     if (raw.duration) entry.duration = raw.duration
     if (raw.stackTrace) entry.stackTrace = raw.stackTrace.toString().take(1000)
     if (raw.details) entry.details = raw.details
+    if (raw.client) entry.client = raw.client.toString()
     def detached = new groovy.json.JsonSlurper().parseText(groovy.json.JsonOutput.toJson(entry))
     return [id: id, entry: detached]
 }
@@ -38879,6 +39967,7 @@ def mcpLog(String level, String component, String message, String ruleId = null,
     if (!shouldLog(level)) return
     def raw = [timestamp: now(), level: level, component: component, message: message, ruleId: ruleId]
     ["duration", "ruleName", "details", "stackTrace"].each { key -> if (extraData?.get(key)) raw[key] = extraData[key] }
+    if (callerClient != null) raw.client = callerClient.label
     def record = _debugLogRecord(raw, java.util.UUID.randomUUID().toString())
     synchronized (buffer) {
         if (level == "error" && settings?.retainReportErrors == true) _retainReportError(raw)
@@ -39841,7 +40930,7 @@ private Map _rmForceDeleteApp(Integer appId) {
     return resp
 }
 def currentVersion() {
-    return "4.7.1"
+    return "4.8.2"
 }
 def hubBpsGuideKey(String section, Long atMs = null) {
     long bucket = ((atMs != null ? atMs : now()) as long).intdiv(3600000L)
@@ -40254,6 +41343,8 @@ Read-only diagnostics tool. Beyond the default payload (model, firmware, uptime,
 - `safeMode` — whether the hub is running in Safe Mode (from /hub2/hubData; absent if /hub2/hubData was unreadable).
 - `mcpClient` — the client that sent THIS request, derived from the request itself and never stored: under `client`, the name/version/title as this request declared them (all null when it declared none), `wrapper` (computed from that name and version) true when the name is a stdio-to-HTTP bridge rather than the host app, the protocol version and, on an `initialize` call, the version the client asked for, plus the era (modern/legacy) and the source (cloud/local). `client` is null when the request carried no message that could name one, and an `error` key is present instead when the read failed.
 
+**On a per-client access token only:** `clientAccess` -- what this token may use: `client` (the name the hub owner gave it), `readEnabled`, `writeEnabled`, `localAccessEnabled`, `cloudAccessEnabled`, and `tools` (the tools it can call right now). `recentWrites` then lists only this token's writes. A call the token may not make is refused with a message that names the client and what blocks it, so an agent can ask the hub owner for that access instead of retrying. A client token cannot read or change the MCP Rule Server app itself, and access tokens are always masked in its results.
+
 **`includeHealthAlerts=true`** (default false): returns the hub's full health-alerts block under `healthAlerts`: `active` lists the firing alerts (the alert item keys on firmware 2.5.2.129 and later, the alert flags before that), `items` (2.5.2.129+) gives each alert's `key`, `message`, `version` and `dismissible` flag, and `details` carries the hub's full alert data and messages, including `spammyDeviceDetails` (the devices behind a too-many-events alert) when the hub's alert feed is available. Covers radio offline, backup failures, low memory, DB bloat, weak mesh, and power-loss recovery. Dismiss a dismissible alert with hub_set_system_settings(dismissAlert={key, version}). `platformUpdate` and `safeMode` are returned regardless of this flag.
 
 **`includeSubscriptions=true`** (default false): returns the hub's Hubitat subscriptions under `subscriptions`: `hubProtect`, `remoteAdmin`, `cloudBackup`, `fullLocalBackup`, each `{active, pendingCancellation, endsAt, trialAvailable}`, plus `fullLocalBackupSupported`, `hasAvailableTrial`, `loaded` and `updatedAt`.
@@ -40356,6 +41447,8 @@ For replace/add every id is validated against the full hub device list (discover
 If the hub's device inventory is incomplete (its device tree could not be read, or it disagrees with the picker feed), an id it lacks is reported as "could not validate" instead of unknown. Nothing is written, so retry later. An empty scope still leaves MCP-managed virtual devices reachable. On success the response carries `selectedDevices: {mode, authorizedDeviceIds, authorizedCount, added, removed}`.
 
 **`enableLocalAccess` / `enableCloudAccess`** -- allow requests over the LAN endpoint / the Hubitat cloud endpoint (both ON by default). A disabled endpoint answers HTTP 403 to every request, even with a valid token; turning it back on restores access with the same token and URL. A call cannot turn off the connection it arrived on (that would lock the caller out) -- switch it off from the other connection or the app page on the hub. `hub_get_info` reports both as `localAccessEnabled` / `cloudAccessEnabled`.
+
+**`clientToken`** (instead of `settings`) -- manage per-client access tokens, the same operations as Advanced > Per-client access tokens on the app page. `{action: "list"}` returns every client with its `clientId`, `label`, `token` and `access`. `{action: "create", label, access?}` issues a token (firmware 2.5.2+; the label is 1-40 characters, no comma, unused) that starts with every grantable tool on, applies `access` if given, and returns the token plus its `localUrl` / `cloudUrl` (those carry the token in the query string, which proxies and client logs can record; where the client supports it, send the token as an `Authorization: Bearer` header instead, which both endpoints accept). `{action: "update", clientId, access}` changes a client's access, `{action: "rotate", clientId}` issues it a new token (the old one is refused at once) and `{action: "revoke", clientId}` removes it. `list` also reports `untrackedTokens`, tokens the hub accepts that belong to no client (left by two token changes racing); they are refused, and `{action: "revokeUntracked"}` revokes them. With `redactAccessTokens` on, every token this returns is masked. `access` takes any of `tools` (a list of tool names, or `"all"`; the main-token-only tools cannot be granted, and `hub_get_tool_guide` / `hub_search_tools` are always included), `read`, `write`, `local`, `cloud` (booleans; they can only narrow the main-page settings) and `toolNumber` (`main`, `none` or a digit). A bad `access` map is refused before anything changes. Only the main token reaches this tool, so the tokens it returns give nothing the caller lacks; treat them as secrets all the same.
 
 **Deliberately NOT allowlisted:**
 - `enableWrite` -- would disable this tool's own write path mid-session.
@@ -40644,11 +41737,23 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - hub_create_backup itself is exempt from the prior-backup requirement (it IS the backup)
 
 ### Source Code Backups (Automatic)
-- Created when using hub_update_app, hub_update_driver, hub_update_library, hub_delete_item
-- Stored in File Manager as .groovy files
+- Created when using hub_update_app, hub_update_driver, hub_update_library, hub_delete_item, and before Rule Machine edits and deletes
+- Stored in File Manager (.groovy for code, .json for rule snapshots) and indexed in `mcp-backup-index.json`
 - Persist even if MCP uninstalled
-- Max 20 kept, oldest pruned
 - Rapid edits preserve original (1-hour protection)
+
+### Backup retention
+- There is no count limit: backups are removed only when all MCP backups together exceed the storage budget. Another item's backup never replaces this one, but once the shared budget is exceeded any new backup can evict older backups of any item: **rolling** steps first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
+- The budget is the Advanced setting "Backup storage budget (MB)" (`backupBudgetMb`): default 10, at least 1, at most 1000000 (1 TB). The Advanced page takes any number and the server clamps it to that range. With Developer Mode on, hub_update_mcp_settings also sets it and refuses a value that is not a whole number in that range.
+- Apps, drivers and libraries keep one **pinned** baseline, replaced by that item's next backup after the one-hour window.
+- A rule's first snapshot in an editing session is **pinned**, and so is every pre-delete, pre-forcedelete and replaceRequiredExpression snapshot. With `backupEveryRuleWrite` on, the rule's other snapshots in that session are **rolling** steps, so "before I started" outlasts the per-write steps when space runs short. An editing session ends once an hour passes with no snapshot of that rule; with `backupEveryRuleWrite` on, a continuous chain of writes keeps it open.
+- Where each response says it:
+  - Rule Machine writes and deletes: the `backup` object carries `retention` (`pinned` or `rolling`) and `retentionNote`, and the restoreHint ends with that note.
+  - hub_delete_item / library deletes: `backupRetention` and `backupRetentionNote`; the restoreHint ends with the note.
+  - hub_restore_backup (app/driver source): `backupRetention` and `backupRetentionNote` describe the `preRestoreBackup` undo entry; the `undoHint` ends with the note.
+  - hub_write_file / hub_delete_file: `backupRetention: "copies"` and `backupRetentionNote` for the `<name>_backup_<ts>` copy.
+  - hub_list_backups: `storageBudget` (`usedBytes` / `limitBytes`, pending deletions excluded), `retentionPolicy`, and each entry's `retention` and `sizeBytes`.
+- If the index file is missing, it is rebuilt from the File Manager listing, which also brings backup files left by older versions under retention. An index file that is listed but cannot be read is never rebuilt over: backup reads and backup-taking writes return `success: false` until it reads again. An index file that is not valid JSON is copied to `mcp-backup-index.corrupt-<time>.json` before the rebuild.
 
 ### Rule Backups (Automatic)
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
@@ -40700,6 +41805,8 @@ Files stored at http://<HUB_IP>/local/<filename>
 - Each chunk must be <60KB
 - Follow `nextOffset` while `hasMore` is true to read the next chunk
 
+**Backup copies:** hub_write_file (when it overwrites different content) and hub_delete_file first copy the file to `<name>_backup_<yyyyMMdd-HHmmss-SSS><ext>` (older copies use `<yyyyMMdd-HHmmss>`). If that copy cannot be written, hub_write_file writes nothing and returns `success: false`; hub_delete_file deletes anyway with a `warning`. After the write or delete succeeds, the newest 5 copies of each file name are kept; older copies of that same name are deleted and listed in `removedOldBackups`. A failed listing or delete leaves them and adds `pruneWarning`.
+
 ### hub_list_files
 
 Use to discover available files before reading one with hub_read_file, or to confirm a write/backup landed. **`filter`:** case-insensitive substring match on the file name -- pass `filter: "backup"` to find backups instead of paging the whole listing and matching client-side. **Cursor pagination:** page size 100 -- omit the cursor for an unbounded list; pass "" for the first page and iterate `nextCursor`.
@@ -40731,6 +41838,7 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 - Server-side label/capability filtering: use labelFilter (substring) and capabilityFilter (exact capability name) instead of fetching all devices and filtering client-side
 - format='ids' returns a flat integer array (cheapest for "which devices exist" queries)
 - fields=[...] projects named fields only: currentStates and attributes are the expensive ones (per-device hub reads) -- project those out to save hub CPU; capabilities and commands are in-memory and cheap. id is always included regardless of projection. Unknown field names throw.
+- A page can end early with budgetLimited:true (on a client without request-to-request continuation, when its per-device reads reach the request time budget). The result then carries hasMore:true, nextOffset and nextCursor at the first device not returned. Repeat the call from there with the other arguments unchanged: pass nextCursor as cursor if the call used a cursor, otherwise nextOffset as offset.
 
 **hub_list_device_events:**
 - Default: most-recent events for a device (deviceId + limit)
@@ -40742,9 +41850,9 @@ Use after hub_list_files to fetch a named file (config, backup, exported rule/ap
 
 - Use the attribute filter to reduce data volume
 
-**Response-size guard.** Every tool result is measured before sending. A result over 120,000 bytes (the hub caps responses at 128 KiB) has its content replaced with `{response_too_large: true, truncated: true, estimatedBytes, sizeLimitBytes, tool, suggestion}`. The call itself still succeeds. On gateway calls, `tool` names the actual sub-tool. `suggestion` names the knob to narrow with (filters, limit, fields, `saveAs`, or `cursor`). Re-issue a narrower call; do not repeat the same one.
+**Response-size guard.** Every tool result is measured before sending. A result over 120,000 bytes on the LAN (the hub caps responses at 128 KiB), or over 99,000 bytes through the cloud relay (which drops larger responses), has its content replaced with `{response_too_large: true, truncated: true, estimatedBytes, sizeLimitBytes, tool, suggestion}`. The call itself still succeeds. On gateway calls, `tool` names the actual sub-tool. `suggestion` names the knob to narrow with (filters, limit, fields, `saveAs`, or `cursor`). Re-issue a narrower call; do not repeat the same one.
 
-**Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
+**Cursor pagination.** List tools that take `cursor` return the whole list when it is omitted, subject to the guard; `hub_list_backups` (scope=source) is the exception and always returns one page, with `hasMore: true` and `nextCursor` when more backups follow. Pass `cursor: ""` for the first page, then pass each returned `nextCursor` until it is absent. A malformed or out-of-range cursor is rejected as a validation error. Page sizes:
 - 25: `hub_list_hpm_packages`.
 - 50: `hub_list_apps` (pages the filtered set), `hub_list_drivers`, `hub_list_libraries`, `hub_list_bundles`, `hub_list_rules`, `hub_get_custom_rule` (list mode), `hub_list_captured_states`, `hub_list_backups` (scope=source, newest first), and `hub_list_devices`. For `hub_list_devices`, 50 applies when `limit` is unset (virtual filter included); the cursor is an alternative to `offset`, and the two cannot be combined.
 - 100: `hub_list_variables` (hubVariables; ruleVariables stay whole), `hub_list_files`, `hub_list_rooms`, `hub_list_device_dependents` (appsUsing), `hub_get_logs`, `hub_get_memory_history`, `hub_get_device_health` (staleDevices), and `hub_get_jobs` (scheduledJobs).
@@ -41481,15 +42589,17 @@ The right move when `partial: true` is to follow the `repairHints`, NOT to delet
 
 Reference for the hub-variable tools (hub_get_variable, hub_create_variable, hub_delete_variable, hub_create_connector). Per-tool details below.
 
+When the hub cannot complete a create or delete, the result is `success:false` with `error` and `note`. The note says whether nothing changed or the hub may have applied part of it; in the second case, read the variable with hub_get_variable before retrying.
+
 ### hub_get_variable
 
 The returned `source` field says which one matched (the hub-variable namespace is searched first, then rule-engine variables). For hub variables it also returns metadata: `type`, plus `deviceId`/`attribute` when a connector is linked.
 
-**`includeDependents=true` — which apps reference a HUB variable.** Opt-in (off by default) because it CLICKS the Settings → Hub Variables wizard reveal. Run it before renaming or deleting a hub variable to see what would break — the same registry that gates `hub_delete_variable`'s reference-safety refusal (deleting anyway needs `force=true`).
+**`includeDependents=true` — which apps reference a HUB variable.** Opt-in (off by default) because it costs an extra hub read, and on older firmware a click of the Settings → Hub Variables wizard reveal. Run it before renaming or deleting a hub variable to see what would break — the same registry that gates `hub_delete_variable`'s reference-safety refusal (deleting anyway needs `force=true`).
 
-- **Source:** the hub's own in-use registry, surfaced through the Settings → Hub Variables wizard. There is no pure-GET dependents document for variables (unlike a device's `/device/fullJson` `appsUsing`), so the fold reads the Hub Variables page, clicks the per-variable "Show In Use Apps" reveal, and parses the revealed app list. The reveal is a transient wizard-UI toggle (dismissed afterward), not a data change — `hub_get_variable` stays read-only.
-- **Result:** `appsUsing` is an array of `{id, label}` (the installed-app id and its user-visible label, e.g. `{"id":"21","label":"MyRule"}`), plus `count` and `coverageNote`. The full list is returned (no separate cursor on this tool); consumer lists for one variable are small.
-- **Empty vs unknown:** `appsUsing:[]`, `count:0` means the hub variable is registered but no app currently references it. `includeDependents` applies only to hub variables; it is ignored for a rule-engine variable (no hub in-use registry), so no `appsUsing` field appears. If the reveal cannot be read, did not render, or renders in-use yet lists no consumers, the response carries a case-specific `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
+- **Source:** the hub's own in-use registry. Current firmware serves it as JSON from the Hub Variables page's data endpoint: each variable lists the apps that use it directly and the apps that use its connector device. Older firmware without that endpoint has no pure-GET dependents document, so the fold reads the Hub Variables page, clicks the per-variable "Show In Use Apps" reveal, and parses the revealed app list. The reveal is a transient wizard-UI toggle (dismissed afterward), not a data change — `hub_get_variable` stays read-only either way.
+- **Result:** `appsUsing` is an array of `{id, label}` (the installed-app id and its user-visible label, e.g. `{"id":"21","label":"MyRule"}`), plus `count` and `coverageNote`. On current firmware `appsUsing` also includes apps that use the variable's connector device (each app once), and `connectorAppsUsing` lists those connector users on their own. The full list is returned (no separate cursor on this tool); consumer lists for one variable are small.
+- **Empty vs unknown:** `appsUsing:[]`, `count:0` means the hub variable is registered but no app currently references it. `includeDependents` applies only to hub variables; it is ignored for a rule-engine variable (no hub in-use registry), so no `appsUsing` field appears. If the registry cannot be read (or, on older firmware, the reveal did not render or renders in-use yet lists no consumers), the response carries a case-specific `dependentsError`/`dependentsNote` rather than a misleading empty list — the whole call still succeeds.
 - **Coverage caveat:** only apps that register Hub Variable use with the hub appear (Rule Machine, Room Lighting, Thermostat Scheduler, and other registering apps — what the page shows in orange). Apps that never register their use, such as webCoRE pistons, are not covered; `coverageNote` says so.
 
 ### hub_set_variable: increment
@@ -41512,7 +42622,7 @@ For DateTime, pass hub-local `yyyy-MM-ddTHH:mm` or `{date,time}`. Supplied offse
 
 **Why create first (vs hub_set_variable):**
 - Use this before `hub_set_variable` for a name that doesn't exist yet — Hubitat's `setGlobalVar` cannot create, only update.
-- Drives the Settings → Hub Variables wizard, since creation isn't exposed via the public app API.
+- Creation isn't exposed via the public app API, so the tool uses the hub's own Hub Variables page: one create request on current firmware, the Settings → Hub Variables wizard on older firmware. Either way it reads the variable back and fails if it did not appear; on current firmware it also fails when the stored type or value differs from the request.
 
 **Constraints:**
 - Name must not contain any of these characters: `' " \\ ~ [ : ] < >`. (This applies to the single-form `name` and to each bulk item's `name`.)
@@ -41528,8 +42638,8 @@ Useful for sweeping orphaned `BAT_E2E_*` artifacts after CI runs, removing stale
 DESTRUCTIVE, no undo; requires `confirm=true` plus a backup <24h. Detects whether the name is a hub variable or a rule_engine variable. Deleting a hub variable also deletes its connector device when one exists (`connectorDeleted` in the response).
 
 **Why the reference-safety refusal matters:** deleting a variable something still uses silently breaks it — null lookups → false conditions, and a literal `%varname%` left in substitutions. Without `force=true` the tool refuses when:
-- the hub's own in-use registry marks a hub variable as used (what Settings → Hub Variables shows in orange; Rule Machine and other registering apps appear there);
-- that registry cannot be read, since unknown is not the same as unused;
+- the hub's own in-use registry marks a hub variable as used (what Settings → Hub Variables shows in orange; Rule Machine and other registering apps appear there). On current firmware this includes apps that use the variable's connector device, and the refusal names each app as `label (id=N)`;
+- that registry cannot be read, since unknown is not the same as unused. The refusal includes the reason, and a forced delete returns it in `platformInUseError`;
 - one of this server's child rules names the variable, quoted or as a `%name%` substitution.
 
 Apps that never register their use, such as webCoRE pistons, cannot be seen by any of these checks; the response's `coverageNote` says so and `platformInUse` reports what the registry said. Pass `force=true` to proceed anyway after acknowledging the breakage.
@@ -41542,11 +42652,13 @@ Audit/debug what changed a hub variable and when, without polling hub_get_variab
 
 ### hub_create_connector
 
-For Number/Decimal vars, Hubitat shows a connector-type chooser (Dimmer/Variable/etc.); pass `connectorType` to pick, default `Variable`. For String/Boolean/DateTime vars, the chooser is skipped. The full Number/Decimal `connectorType` set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance.
+`connectorType` picks the connector device type; the default is `Variable`. On current firmware the hub lists the types it offers for each variable, and a `connectorType` it does not offer is refused before anything is created (the error lists the offered types). When `connectorType` is omitted and `Variable` is not offered, the first offered type is used. The full Number/Decimal set is: Dimmer, Variable, Volume, ColorTemp, Humidity, Illuminance. Older firmware only shows a type chooser for Number/Decimal vars and ignores `connectorType` for String/Boolean/DateTime.
 
 ### hub_delete_connector
 
 Deletes the connector DEVICE backing a hub variable. DESTRUCTIVE and not undoable — the connector device is removed, but the hub variable itself and its value are unchanged. `confirm=true` required. No-op if the variable has no connector.
+
+On current firmware the hub reports which apps use the connector device. Without `force=true` the tool refuses when any app does, naming each as `label (id=N)`, and also when that use cannot be read (the refusal says why). Pass `force=true` to delete anyway; the result's `brokenConsumers` lists the apps that used it. When that use could not be read, the result has `consumersUnknown: true` instead. Older firmware deletes the device without this check.
 
 ### Hub Mesh: sharing and linking hub variables
 
@@ -41690,7 +42802,7 @@ If eight owner slices leave work unfinished, the terminal `continuation_limit` r
 
 ### Client retry limits and resume
 
-The official Python SDK pinned by this project (2.0.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
+The official Python SDK pinned by this project (2.2.0) defaults to ten automatic continuation retries. Contention and worker-coordination responses consume client rounds; the server's `mrtr.rounds` counts owner work slices instead. Its eight-slice cap does not bound a client's retries, and ten retries is an SDK policy, not an MCP requirement. Cloud wait budgets reduce rapid polling but cannot make an arbitrary-duration worker finish within that limit.
 
 For integrations that control the SDK, configure `Client(..., input_required_max_rounds=...)` for the expected operation size, or use `client.session.call_tool(..., allow_input_required=True)` and retain each returned `request_state` before the next request. Resume with the same outer tool, original arguments and exact state; do not send only the remaining arguments. Hubitat keeps one state string for the logical call. The SDK also accepts `client.call_tool(..., request_state=saved_state)` to resume its automatic loop. Choose state capture before starting: `InputRequiredRoundsExceededError` does not contain the last state. A worked example and offline SDK coverage are in `docs/testing.md`, "Client retry policy".
 
@@ -41707,7 +42819,7 @@ Clients negotiated below MCP 2026-07-28 do not understand requestState. They ret
 Native log reads through `hub_get_logs` and cold MCP log recovery use the same continuation. Recovery also serves logging status, `hub_get_info`, `hub_report_issue`, and detailed `hub_get_custom_rule` diagnostics. `hub_delete_debug_logs` waits for recovery before clearing and retains its small terminal result for safe replay. Reload recovery reads the existing native history; old state-backed entries are discarded once when updating to native storage. No log content is stored in the continuation record.
 A legacy client that receives `status: "in_progress"` from a log read or from `hub_delete_debug_logs` repeats the identical call.
 
-`hub_get_device` (every mode), `hub_list_devices` (including virtual devices), and `hub_get_device_health` use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot reject continuation. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous. Health retains its 30-second traceroute and 90-second speedtest timeouts, but eight observation slices or a client's retry limit can end the wait before a long probe finishes. A health `slow_read_timeout` does not cancel probes or the optional identify LED blink; do not automatically retry it as a new call.
+`hub_get_device` (every mode), `hub_list_devices` (including virtual devices), and `hub_get_device_health` use background reads on budgeted modern requests. Fast reads finish in one response. Each independent call fetches fresh data; only continuation/replay shares its snapshot, including any device-details pagination cursor. Device access changes or a lost snapshot reject continuation. Device payloads remain in bounded memory, outside persisted continuation records. Legacy device calls remain synchronous; a legacy `hub_list_devices` page that reaches the request budget ends early with `budgetLimited: true` and a cursor to continue from (see the `performance_devices` section). Health retains its 30-second traceroute and 90-second speedtest timeouts, but eight observation slices or a client's retry limit can end the wait before a long probe finishes. A health `slow_read_timeout` does not cancel probes or the optional identify LED blink; do not automatically retry it as a new call.
 
 Two reads use the same continuation: `hub_get_jobs` and `hub_get_performance_stats` both come from the hub's `/logs/json` page, one document that carries every device and app stat plus the job tables, so its fetch time grows with hub size and on a large hub can outrun the relay. When the request's transport has a time budget (`relayBudgetMs` over the cloud relay, `lanBudgetMs` on the LAN) the fetch runs in a background worker and its trimmed result is cached for 30 s; a modern client's first call already runs the read (a cached or quickly landed snapshot answers in one round trip) and only a still-pending fetch hands back `requestState` to continue, a legacy client that receives `status: "in_progress"` repeats the identical call, and a failed fetch is returned as an ordinary `isError` result with a retry already scheduled. Reads never hold a write lease or count toward `maxConcurrentWrites`, and their terminal record carries no payload (a replay re-runs the read from the cache). With no budget on the transport the fetch runs inline and the call is a single ordinary response.
 
