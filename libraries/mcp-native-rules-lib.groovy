@@ -2746,7 +2746,7 @@ private Map _rmCondTables() {
      changeOps: ["*changed*", "*increased*", "*decreased*"],
      overOps: ["*increased by over*", "*decreased by over*"],
      // Comparators beside which RM's trigger editor withholds "and stays" (it offers it for the over ones).
-     noStaysOps: ["*changed*", "*increased*", "*decreased*", "*is empty*", "**Any Value**"],
+     noStaysOps: ["*changed*", "*increased*", "*decreased*", "*is empty*"],
      stringOps: ["=", "\u2260", "*contains*", "*changed*", "*is empty*"],
      variableOps: ["=", "\u2260", "<", ">", "<=", ">=", "in", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"],
      buttonStates: ["pushed", "held", "doubleTapped", "released"],

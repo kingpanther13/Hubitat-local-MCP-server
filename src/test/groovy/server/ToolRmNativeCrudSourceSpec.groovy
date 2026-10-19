@@ -1976,8 +1976,9 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         "and stays with *changed* on HSM Status"           | "trigger"   | [capability: "HSM Status", comparator: "*changed*", andStays: [minutes: 1]]                      | "offers 'and stays' only for a state, not with the comparator '*changed*'"
         "and stays with *changed* on Private Boolean"      | "trigger"   | [capability: "Private Boolean", comparator: "*changed*", andStays: [minutes: 1]]                 | "offers 'and stays' only for a state, not with the comparator '*changed*'"
         "and stays with *increased* on a numeric trigger"  | "trigger"   | [capability: "Temperature", deviceIds: [8], comparator: "*increased*", andStays: [minutes: 1]]    | "offers 'and stays' only for a state, not with the comparator '*increased*'"
-        "and stays with *is empty* on a Variable trigger"  | "trigger"   | [capability: "Variable", variable: "x", comparator: "*is empty*", andStays: [minutes: 5]]         | "offers 'and stays' only for a state, not with the comparator '*is empty*' (it offers none with *changed*, *increased*, *decreased*, *is empty*, **Any Value**)"
+        "and stays with *is empty* on a Variable trigger"  | "trigger"   | [capability: "Variable", variable: "x", comparator: "*is empty*", andStays: [minutes: 5]]         | "offers 'and stays' only for a state, not with the comparator '*is empty*' (it offers none with *changed*, *increased*, *decreased*, *is empty*)"
         "**Any Value** on a numeric trigger, with and stays" | "trigger" | [capability: "Temperature", deviceIds: [8], comparator: "**Any Value**", andStays: [minutes: 5]] | "comparator '**Any Value**' is not one Rule Machine offers for a Temperature trigger"
+        "**Any Value** on a Variable trigger, with and stays" | "trigger" | [capability: "Variable", variable: "x", comparator: "**Any Value**", andStays: [minutes: 5]] | "comparator '**Any Value**' is not one Rule Machine offers for a Variable trigger"
         "*changed* on a Rule paused condition"             | "condition" | [capability: "Rule paused", ruleIds: [5], comparator: "*changed*"]                               | "Rule Machine offers '*changed*' on neither a Rule paused condition nor a Rule paused trigger."
     }
 
@@ -2010,7 +2011,7 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
     def "discover's andStays field names every comparator the and-stays check refuses"() {
         expect:
         def stays = (script._rmCondDiscover("trigger", "Temperature").optionalFields as List).find { it.name == "andStays" }
-        stays.description == "{hours?, minutes?, seconds?}; with a state, never with *changed*, *increased*, *decreased*, *is empty*, **Any Value**"
+        stays.description == "{hours?, minutes?, seconds?}; with a state, never with *changed*, *increased*, *decreased*, *is empty*"
     }
 
     def "_rmCheckCondSpec accepts and stays with a state, and *changed* without and stays, on a device-state trigger"() {
