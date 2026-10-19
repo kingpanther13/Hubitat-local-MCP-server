@@ -503,11 +503,11 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
         childDevicesList.each { registerNativeCommandDevice(it) }
 
         when:
-        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', stableForMs: 30000, timeoutMs: 40000], null, 1234567890000L - 500L)
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', stableForMs: 20000, timeoutMs: 30000], null, 1234567890000L - 500L)
 
         then:
         def e = thrown(IllegalArgumentException)
-        e.message.contains('waitFor.stableForMs 30000 cannot settle')
+        e.message.contains('waitFor.stableForMs 20000 cannot settle')
         nativeWrites.isEmpty()
     }
 

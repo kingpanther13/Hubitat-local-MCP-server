@@ -5064,7 +5064,7 @@ class TestRunner:
                     f"a 30 s waitFor over the relay must stop at the request deadline and say so: {long_wait}"
                 self._expect_tool_refusal("hub_call_device_command", {
                     "deviceId": sw_id, "command": target,
-                    "waitFor": {"attribute": "switch", "expectedValue": target, "stableForMs": 30000, "timeoutMs": 40000}},
+                    "waitFor": {"attribute": "switch", "expectedValue": target, "stableForMs": 20000, "timeoutMs": 30000}},
                     "cannot settle")
 
             # stableForMs >= timeoutMs is rejected before the command fires.
