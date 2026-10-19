@@ -6281,19 +6281,20 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         ]
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActsAfter) }
+        def posts = []
+        // The variable exists only once its varValue write has landed, as on the hub.
         hubGet.register('/installedapp/statusJson/100') { params ->
             JsonOutput.toJson([
                 installedApp: [id: 100],
                 appSettings: [],
                 eventSubscriptions: [],
                 scheduledJobs: [],
-                appState: [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]],
+                appState: posts.any { it.body?.containsKey("settings[varValue]") } ? [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]] : [],
                 state: [:]
             ])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
 
-        def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
             [status: 200, location: null, data: '']
@@ -6327,14 +6328,14 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         ]
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActsAfter) }
+        def posts = []
         hubGet.register('/installedapp/statusJson/100') { params ->
             JsonOutput.toJson([
                 installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
-                appState: [[name: "allLocalVars", value: [flag: [type: "boolean", value: true]]]], state: [:]
+                appState: posts.any { it.body?.containsKey("settings[varValue]") } ? [[name: "allLocalVars", value: [flag: [type: "boolean", value: true]]]] : [], state: [:]
             ])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
             [status: 200, location: null, data: '']
@@ -6371,15 +6372,15 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         ]
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActsAfter) }
+        def posts = []
         hubGet.register('/installedapp/statusJson/100') { params ->
             JsonOutput.toJson([
                 installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
-                appState: [[name: "allLocalVars", value: [(varName): [type: rmType.toLowerCase(), value: rawValue]]]],
+                appState: posts.any { it.body?.containsKey("settings[varValue]") } ? [[name: "allLocalVars", value: [(varName): [type: rmType.toLowerCase(), value: rawValue]]]] : [],
                 state: [:]
             ])
         }
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
             [status: 200, location: null, data: '']
@@ -6417,6 +6418,43 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         "String"   | "label"       | "ready"
         "Boolean"  | "flag"        | true
         "DateTime" | "lastSeenAt"  | "2026-05-17T14:30:00.000-0400"
+    }
+
+    def "addLocalVariable on a name the rule already has is refused before the wizard opens"() {
+        given: "RM's moreVar editor would show only the name field, so the new type and value would never be written"
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: [[name: "allLocalVars", value: [ctr: [type: "integer", value: 0]]]], state: [:]
+            ])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddLocalVariable(100, [name: "ctr", type: "Number", value: 10])
+
+        then: "a validation refusal naming the current variable, with nothing posted"
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("local variable 'ctr' already exists on rule 100 (type integer, value 0)")
+        ex.message.contains("setLocalVariable")
+        ex.message.contains("RM is not touched")
+        posts.isEmpty()
+
+        when: "the same spec through hub_set_rule"
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "ctr", type: "Number", value: 10], confirm: true])
+
+        then: "the envelope fails, says nothing needs restoring, and the wizard was never driven"
+        result.success == false
+        result.error?.toString()?.contains("already exists")
+        result.restoreHint?.toString()?.contains("not touched")
+        !posts.any { it.path in ["/installedapp/btn", "/installedapp/update/json"] }
     }
 
     def "removeAction throws when delAct click is silently no-oped (action still present after all retries)"() {
@@ -39738,7 +39776,9 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
             [name: "varValue", type: "text"]
         ]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
             if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
                 updateRuleAttempted = true
                 throw new RuntimeException("simulated addLocalVariable updateRule rejection")
@@ -39753,7 +39793,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                 appSettings: [],
                 eventSubscriptions: [],
                 scheduledJobs: [],
-                appState: [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]],
+                appState: posts.any { it.body?.containsKey("settings[varValue]") } ? [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]] : [],
                 state: [:]
             ])
         }
@@ -39798,7 +39838,9 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
             [name: "varValue", type: "text"]
         ]
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
             if (path == "/installedapp/btn" && body["settings[updateRule]"] == "clicked") {
                 updateRuleClicked = true
             }
@@ -39812,7 +39854,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                 appSettings: [],
                 eventSubscriptions: [],
                 scheduledJobs: [],
-                appState: [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]],
+                appState: posts.any { it.body?.containsKey("settings[varValue]") } ? [[name: "allLocalVars", value: [counter: [type: "integer", value: 42]]]] : [],
                 state: [:]
             ])
         }

@@ -8361,10 +8361,12 @@ class TestRunner:
                 and "'tCapab9' is not an input on page 'selectTriggers'" in str(off_slot.get("error", "")) \
                 and any("renders only in an open slot" in str(h) for h in (off_slot.get("repairHints") or [])), \
                 f"a write outside the open slot should be refused with the slot hint: {off_slot}"
+            # With no slot open tCapab1 is not an input, so nothing is written and the unrendered click is refused unsent.
             raw_click = _walk_refusal({"settings": {"tCapab1": "Contact"}, "button": "noSuchButtonE2E", "pageName": "selectTriggers"})
             assert raw_click.get("success") is False \
-                and "Button 'noSuchButtonE2E' is not rendered on page 'selectTriggers'" in str(raw_click.get("error", "")), \
-                f"raw settings with an unrendered pageName button should be refused before any write: {raw_click}"
+                and "Button 'noSuchButtonE2E' is not rendered on page 'selectTriggers'" in str(raw_click.get("error", "")) \
+                and "nothing needs to be restored" in str(raw_click.get("restoreHint", "")), \
+                f"raw settings the page does not show with an unrendered pageName button should be refused unsent: {raw_click}"
             settings_after = self._get_persisted_rule_config(app_id).get("settings") or {}
             assert settings_after == settings_before, \
                 f"the refused walkStep and raw calls changed the rule's settings: {settings_before} -> {settings_after}"
@@ -8396,6 +8398,18 @@ class TestRunner:
             assert unlisted.get("success") is False and refused.get("reason") == "not_offered"                 and "on" in [str(o) for o in (refused.get("offered") or [])],                 f"an unlisted tstate1 value should be refused with the picker's options: {unlisted}"
             after_refusal = self._get_persisted_rule_config(app_id).get("settings") or {}
             assert after_refusal.get("tCapab1") == "Switch" and after_refusal.get("tstate1") in (None, ""),                 f"the refused tstate1 write changed the stored slot: {after_refusal}"
+            # Raw settings are written before a pageName button is checked against the page they render: the same
+            # tDev1 value is written again, the unrendered click is not sent, and the result is partial with a restore hint.
+            # Not _walk_refusal: this call writes, so a lost response must not be blindly re-sent.
+            raw_partial = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": app_id, "confirm": True, "settings": {"tDev1": [int(self.get_test_switch_id())]},
+                "button": "noSuchButtonE2E", "pageName": "selectTriggers"}})
+            raw_keys = (raw_partial.get("settingsApplied") or []) + [k.get("key") for k in (raw_partial.get("settingsNotLanded") or [])]
+            assert raw_partial.get("success") is False and raw_partial.get("partial") is True \
+                and "Button 'noSuchButtonE2E' is not rendered on page 'selectTriggers'" in str(raw_partial.get("error", "")) \
+                and "written first" in str(raw_partial.get("error", "")) and "tDev1" in raw_keys \
+                and "nothing needs to be restored" not in str(raw_partial.get("restoreHint", "")), \
+                f"raw settings with a button the written page does not render should be partial, settings kept: {raw_partial}"
 
             # (3) failure halt: an invalid step operation aborts the drive (success:false,
             #     the step throws) and must NOT corrupt the rule.
@@ -8694,12 +8708,17 @@ class TestRunner:
             on = self.client.call_tool("hub_manage_rule_machine", {
                 "tool": "hub_set_rule",
                 "args": {"appId": int(app_id), "confirm": True, "settings": {"useST": True}}})
-            # The write reports success:false because its own health check flags the ungated rule.
+            # The ungated rule is a health warning, not an issue, so the write that asked for it succeeds.
             assert "useST" in (on.get("settingsApplied") or []), f"switching useST on did not land: {on}"
+            assert on.get("success") is True and on.get("applied") is True, \
+                f"a settings write that switched useST on must not read as failed: {on}"
             health = self.client.call_tool("hub_read_rules", {
                 "tool": "hub_get_rule_health", "args": {"appId": int(app_id)}})
-            assert health.get("ok") is False and any("UNGATED" in str(i) for i in (health.get("issues") or [])), \
-                f"health did not flag useST on with no committed expression: {health}"
+            assert health.get("ok") is True, f"an ungated rule must keep ok:true: {health}"
+            assert any("UNGATED" in str(w) for w in (health.get("warnings") or [])), \
+                f"health did not warn about useST on with no committed expression: {health}"
+            assert not any("UNGATED" in str(i) for i in (health.get("issues") or [])), \
+                f"the ungated state must be a warning, not an issue: {health}"
             # An expression added after the snapshot is removed by the restore, since the snapshot had none.
             gate = self._call_slow_rule({
                 "appId": app_id,
@@ -9489,6 +9508,18 @@ class TestRunner:
                 "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
             names = [lv.get("name") for lv in (listed.get("localVariables") or [])]
             assert "fields" in names, f"hub_list_rule_local_variables missing fields: {listed}"
+
+            # Re-adding an existing name is refused before the wizard opens, and the value stays.
+            dup = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": int(app_id), "confirm": True,
+                "addLocalVariable": {"name": "fields", "type": "Number", "value": 10}}})
+            assert dup.get("success") is False and "already exists" in str(dup.get("error", "")) \
+                and "RM is not touched" in str(dup.get("error", "")), \
+                f"addLocalVariable on an existing name should be refused: {dup}"
+            after_dup = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
+            kept = next((lv for lv in (after_dup.get("localVariables") or []) if lv.get("name") == "fields"), {})
+            assert str(kept.get("value")) == "0", f"the refused re-add changed the local's value: {after_dup}"
 
             self._assert_rule_healthy(app_id)
 

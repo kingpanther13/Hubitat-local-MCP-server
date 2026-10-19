@@ -121,7 +121,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     addLocalVariable: [
                         type: "object",
-                        description: "Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions."
+                        description: "Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions. An existing name is refused; change its value with a setLocalVariable action."
                     ],
                     removeLocalVariable: [
                         type: "object",
@@ -8573,7 +8573,7 @@ def toolSetRule(args) {
     return out
 }
 
-// Every write response says the same three things: applied (something was written and stays),
+// Every hub_set_rule response says the same three things: applied (something was written and stays),
 // activated (the rule runs with it: its re-initialization was not skipped or rejected) and
 // verified (activated, and the readback and health check confirmed it). applied is null when a
 // failure left fields written or an editor open. Schema and probe results are left alone.
@@ -9177,19 +9177,6 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
         throw new IllegalArgumentException("addLocalVariable.value is required (RM auto-commits the variable when varValue is written)")
     }
 
-    def applied = []
-    def skipped = []
-
-    // Step 1. Click moreVar to open the wizard.
-    _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
-
-    // Step 2. Write hbVar (name).
-    _rmWriteSettingOnPage(appId, "selectActions", "hbVar", name, applied, null, skipped)
-
-    // Step 3. Write varType. Schema reveal: after this, varValue appears.
-    _rmWriteSettingOnPage(appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
-
-    // Step 4. Write varValue. RM auto-commits the variable when this lands.
     // Boolean type expects the literal strings "true"/"false" — Groovy's
     // toString() on Boolean produces those, but ensure we don't pass a
     // bare Boolean primitive that gets serialized as something else.
@@ -9206,6 +9193,31 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
             }
         }
     }
+
+    // RM's moreVar editor shows only the name field for an existing name, so varType and varValue would be
+    // skipped and the verify below would find the old variable. A failed read falls through to that verify.
+    def existing = _rmReadLocalVarsMap(appId)
+    if (existing.ok && existing.vars.containsKey(name)) {
+        def meta = existing.vars.get(name)
+        def live = existing.live?.get(name)
+        def curValue = (live instanceof Map && live.containsKey("value")) ? live.value : (meta instanceof Map ? meta.value : null)
+        def curType = meta instanceof Map ? meta.type : null
+        throw new IllegalArgumentException("addLocalVariable: local variable '${name}' already exists on rule ${appId} (type ${curType}, value ${curValue}); use an action setLocalVariable to change its value, or removeLocalVariable first. RM is not touched.")
+    }
+
+    def applied = []
+    def skipped = []
+
+    // Step 1. Click moreVar to open the wizard.
+    _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
+
+    // Step 2. Write hbVar (name).
+    _rmWriteSettingOnPage(appId, "selectActions", "hbVar", name, applied, null, skipped)
+
+    // Step 3. Write varType. Schema reveal: after this, varValue appears.
+    _rmWriteSettingOnPage(appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
+
+    // Step 4. Write varValue. RM auto-commits the variable when this lands.
     _rmWriteSettingOnPage(appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
 
     // Verify via appState.allLocalVars that the variable committed. RM
@@ -11616,6 +11628,11 @@ private List _rmHealthRegressionNewIssues(Map baselineHealth, Map nowHealth) {
     def nowIssues = (nowHealth?.issues ?: []) as Set
     def nowStructural = (nowHealth?.structuralIssues ?: []) as Set
     def newIssues = ((nowIssues - baselineIssues) + (nowStructural - baselineStructural)).collect { it.toString() }
+    // A warning (an ungated rule) never lowers ok, but one the replace introduced is still its regression. Without a
+    // baseline (the add path) the gate stays health.ok.
+    if (baselineHealth != null) {
+        newIssues.addAll((((nowHealth?.warnings ?: []) as Set) - ((baselineHealth.warnings ?: []) as Set)).collect { it.toString() })
+    }
     def baselineMarkerCounts = (baselineHealth?.brokenMarkerCounts instanceof Map) ? (baselineHealth.brokenMarkerCounts as Map) : [:]
     def nowMarkerCounts = (nowHealth?.brokenMarkerCounts instanceof Map) ? (nowHealth.brokenMarkerCounts as Map) : [:]
     nowMarkerCounts.each { marker, cnt ->
@@ -14134,6 +14151,7 @@ def _applyNativeAppEdit(args) {
         // auto-fired, so the subscription-settle check below runs only when
         // updateRule was actually clicked (submitOnChange apps click nothing).
         def implicitCommitButton = null
+        boolean settingsWritten = false
 
         if (settingsMap) {
             def config = _rmFetchConfigJson(appId, pageName)
@@ -14152,9 +14170,7 @@ def _applyNativeAppEdit(args) {
             def isSubPageWrite = (pageName && pageName != "mainPage")
             def subPageApplied = []
             def subPageSkipped = []
-            // A page-context click that the page does not render refuses the whole call before any
-            // setting is written: a validation refusal comes before every side effect.
-            if (button && pageName) _rmRequireRenderedButton(config?.configPage as Map, button, pageName)
+            settingsWritten = !knownSettings.isEmpty()
             if (knownSettings && isSubPageWrite) {
                 // Write sub-page keys one at a time with page context and verify each landed, including
                 // the sticky multiple flag; settingsApplied lists only confirmed keys.
@@ -14206,12 +14222,17 @@ def _applyNativeAppEdit(args) {
         }
 
         if (button) {
-            // A page-context click was checked against the page's buttons before any setting was
-            // written (above); without pageName the click is sent as named.
+            // A page-context click is checked against the page as it renders after this call's
+            // settings, since a write can reveal the button; without pageName it is sent as named.
             if (pageName) {
                 try { _rmClickRenderedButton(appId, button, args?.stateAttribute?.toString(), pageName) }
                 catch (IllegalArgumentException notRendered) {
-                    if (settingsMap || _rmOutcomeFlags(notRendered).notSent != true) throw notRendered
+                    if (_rmOutcomeFlags(notRendered).notSent != true) throw notRendered
+                    if (settingsWritten) {
+                        return result + [success: false, partial: true, mainPageDoneSkipped: true,
+                                         error: "${notRendered.message} The settings in this call were written first and stay applied: ${result.settingsApplied}.".toString(),
+                                         restoreHint: _rmBackupHint(backup)]
+                    }
                     return [success: false, appId: appId, error: notRendered.message, backup: backup,
                             restoreHint: _rmPreflightRestoreHint(null, backup, "Refused before the click was sent, so nothing needs to be restored.")]
                 }

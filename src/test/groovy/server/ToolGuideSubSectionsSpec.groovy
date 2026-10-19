@@ -138,6 +138,25 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
             .contains("kind:'trigger'|'condition'|'action'")
     }
 
+    def "the outcome flags are documented for hub_set_rule responses, not every write"() {
+        given:
+        def content = script.toolGetToolGuide('set_rule_reference_responses').content as String
+
+        expect:
+        content.contains("Every `hub_set_rule` response answers `success`, `partial` and three outcome flags")
+        content.contains("`hub_set_native_app` responses do not carry them")
+        !content.contains("Every write answers")
+    }
+
+    def "raw mode documents that a pageName button is checked after the call's settings are written"() {
+        given:
+        def content = script.getToolGuideSections()['set_rule_reference'] as String
+
+        expect:
+        content.contains("checked against the page's buttons after the call's `settings` are written")
+        !content.contains("before any `settings` are written")
+    }
+
     def "toolGetToolGuide serves a sub-section with its parent named, and the parent still serves the whole section"() {
         when: 'a sub-key goes through the live dispatcher'
         def sub = script.toolGetToolGuide('set_rule_reference_conditions')
