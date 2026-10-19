@@ -22879,7 +22879,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     addLocalVariable: [
                         type: "object",
-                        description: "Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions. An existing name is refused; change its value with a setLocalVariable action."
+                        description: "Add a local variable: {name, type, value}, all three required. type: Number/Decimal/String/Boolean/DateTime (DateTime is ISO, e.g. 2026-05-06T12:00:00); value must match it. An existing name is refused.[[FLAT_TRIM]] RM commits the variable only when the value is written. Unlike the setLocalVariable ACTION (exactly one of value/sourceVariable/fromDevice/math), all three keys are needed. Use as %name% in actions/expressions; change an existing variable's value with a setLocalVariable action.[[/FLAT_TRIM]]"
                     ],
                     removeLocalVariable: [
                         type: "object",
@@ -24645,7 +24645,8 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
         String cmp = _rmNormalizeComparator(spec.comparator)?.toString()
         boolean change = _rmComparatorIsRhsOptional(spec.comparator)
         List allowed = null
-        String condSteer = kind == "condition" && change ? " '${cmp}' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.".toString() : ""
+        boolean trigOnly = (change && fam != "time") || (cmp in ((t.changeOps as List) + (t.overOps as List)) && fam in ["numeric", "variable"])
+        String condSteer = kind == "condition" && trigOnly ? " '${cmp}' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.".toString() : ""
         boolean trigChange = kind == "trigger" && spec.allOfThese != true
         if (fam == "numeric") allowed = (t.numericOps as List) + (trigChange ? (t.changeOps as List) + (t.overOps as List) : [])
         else if (fam == "variable") allowed = (((t.variableOps as List) - (kind == "condition" ? (t.changeOps as List) + (t.overOps as List) : [])) + (t.stringOps as List)).unique()
@@ -24662,7 +24663,7 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     if (spec.andStays != null && (kind != "trigger" || cap in (t.noDuration as List))) {
         throw new IllegalArgumentException("${where}: Rule Machine has no 'and stays' duration for a ${cap} ${kind}. ${hint}".toString())
     }
-    if (spec.andStays != null && _rmComparatorIsRhsOptional(spec.comparator)) {
+    if (spec.andStays != null && (_rmComparatorIsRhsOptional(spec.comparator) || _rmNormalizeComparator(spec.comparator)?.toString() in (t.changeOps as List))) {
         throw new IllegalArgumentException("${where}: Rule Machine offers 'and stays' only for a state, not with the change comparator '${spec.comparator}'; drop andStays or pass a state. ${hint}".toString())
     }
 }
@@ -24865,7 +24866,14 @@ private Map _rmActionCatalog() {
             setLevelPerMode: [sub: "getDimmersPerMode", custom: true, slots: [dev("dimM.@N"), [name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: level, ...}"], [name: "fadeSeconds", key: "dimMR.@N", type: "Integer"]]]
         ], common: [delay, raw]],
         color: [actType: "dimmerActs", family: "device", actions: [
-            setColor:    [sub: "getSetColor", custom: true, requires: [["colorName", "rawSettings"]], slots: [dev("bulbs.@N"), [name: "colorName", key: "color.@N", type: "String", desc: "e.g. 'Red'; or a custom HSV color via rawSettings colorH.@N"], [name: "level", key: "colorLevel.@N", type: "Integer"]]],
+            setColor:    [sub: "getSetColor", custom: true, requires: [["colorName", "hue", "rgb", "rawSettings"]],
+                          exclusive: [["colorName", "hue", "rgb"], ["colorName", "saturation", "rgb"], ["rgb", "level"]], together: [["hue", "saturation"]],
+                          notes: "a custom color is hue + saturation (RM's Custom HSB color) or rgb (its Custom RGB color, which RM gives no level)",
+                          slots: [dev("bulbs.@N"), [name: "colorName", key: "color.@N", type: "String", desc: "e.g. 'Red'"],
+                                  [name: "hue", key: "color.@N", whenSet: "Custom HSB color", type: "Number"], [name: "hue", key: "colorHex.@N", type: "Number", desc: "0-360, with saturation"],
+                                  [name: "saturation", key: "color.@N", whenSet: "Custom HSB color", type: "Number"], [name: "saturation", key: "colorSat.@N", type: "Number", desc: "0-100, with hue"],
+                                  [name: "rgb", key: "color.@N", whenSet: "Custom RGB color", type: "String"], [name: "rgb", key: "colorH.@N", type: "String", desc: "'#rrggbb'"],
+                                  [name: "level", key: "colorLevel.@N", type: "Integer", desc: "0-100; not with rgb"]]],
             toggleColor: [sub: "getToggleColor", slots: [dev("bulbsTog.@N"), [name: "colorName", key: "colorTog.@N", type: "String", required: true, desc: "e.g. 'Red'"], [name: "level", key: "colorTogLevel.@N", type: "Integer", required: true, desc: "0-100"]]],
             setColorPerMode: [sub: "getColorPerMode", custom: true, slots: [dev("bulbsM.@N"), [name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: {color: 'Red', level: 70}, ...}"]]]
         ], common: [delay, raw]],
@@ -25101,6 +25109,8 @@ private Map _rmActionSchemaForDiscover() {
         if (entry.requires) out.requires = entry.requires
         def exclusive = (((entry.exclusive ?: []) as List) + perAction.collectMany { act, Map ae -> act == null ? [] : ((ae.exclusive ?: []) as List) }).unique()
         if (exclusive) out.exclusive = exclusive
+        def together = (((entry.together ?: []) as List) + perAction.collectMany { act, Map ae -> act == null ? [] : ((ae.together ?: []) as List) }).unique()
+        if (together) out.together = together
         def notes = [entry.notes] + perAction.collect { act, Map ae -> ae.notes ? "${act}: ${ae.notes}".toString() : null }
         notes = notes.findAll { it }
         if (notes) out.notes = notes.join(". ")
@@ -25305,7 +25315,7 @@ private Map _rmMapCatalogAction(String cap, String action, Map actionSpec, Map e
             if (f.direction != null) value = (f.direction == true) ? (value == "raise") : (value != "raise")
             else if (value == null && f.containsKey("dflt")) value = f.dflt
             if (f.trueWhen != null && value != null) value = value.toString() == f.trueWhen.toString()
-            if (f.whenSet) value = (value != null) ? true : null
+            if (f.whenSet) value = (value != null) ? (f.whenSet instanceof String ? f.whenSet : true) : null
         }
         if (f.required && (value == null || (f.nonBlank && !value.toString().trim()))) {
             throw new IllegalArgumentException("${label} requires '${f.name}'${f.desc ? ' (' + f.desc + ')' : ''}.".toString())
@@ -25737,6 +25747,13 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
         def given = g.findAll { mods.containsKey(it?.toString()) && mods.get(it?.toString()) != null }
         if (given.size() > 1) throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes one of ${g.join(', ')}, not ${given.join(' and ')}. RM is not touched.".toString())
     }
+    (((entry.together ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.together ?: [])) as List)).each { List g ->
+        def given = g.findAll { mods.get(it?.toString()) != null }
+        if (!given || given.size() == g.size()) return
+        Map form = fieldDefs.find { it.name in given && it.whenSet instanceof String } as Map
+        if (form != null && committed(form.key.toString().replace(".@N", ""))?.toString() == form.whenSet) return
+        throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes ${g.join(' and ')} together unless the action already uses them, not ${given.join(' and ')} alone. RM is not touched.".toString())
+    }
     mods.each { k, v ->
         String name = k.toString()
         if (name == "action") return
@@ -25744,10 +25761,11 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
         if (!named) {
             throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: '${name}' is not a field that can be edited in place. Editable: ${editable.join(', ')}. RM is not touched.")
         }
-        named.findAll { it.whenSet && v != null }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = true }
+        named.findAll { it.whenSet && v != null }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = (t.whenSet instanceof String) ? t.whenSet : true }
         (((entry.exclusive ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.exclusive ?: [])) as List)).findAll { List g -> name in g }.each { List g ->
             g.findAll { it != name }.each { other ->
-                fieldDefs.findAll { it.name == other && it.whenSet }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = false }
+                fieldDefs.findAll { it.name == other && it.whenSet == true && committed(it.key.toString().replace(".@N", ""))?.toString() == "true" }
+                    .each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = false }
             }
         }
         Map f = named.find { !it.whenSet } as Map
@@ -26422,6 +26440,10 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         def given = g.findAll { def got = actionSpec.get(it?.toString()); got != null && !(got == false && boolField(it.toString())) }
         if (given.size() > 1) throw new IllegalArgumentException("${specLabel} takes one of ${g.join(', ')}, not ${given.join(' and ')}.".toString())
     }
+    perLevel("together").each { List g ->
+        def given = g.findAll { actionSpec.get(it?.toString()) != null }
+        if (given && given.size() < g.size()) throw new IllegalArgumentException("${specLabel} takes ${g.join(' and ')} together, not ${given.join(' and ')} alone.".toString())
+    }
     if (!(catEntry.custom == true || catAction.custom == true)) {
         return _rmMapCatalogAction(cap, action, actionSpec, catEntry, catAction)
     }
@@ -26489,10 +26511,11 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actType = "dimmerActs"
         switch (action) {
             case "setColor":
-                if (actionSpec.colorName == null && !(actionSpec.rawSettings instanceof Map)) throw new IllegalArgumentException("color.setColor requires 'colorName' (e.g. 'Red') or a custom HSV color via rawSettings (colorH.@N).")
                 actSubType = "getSetColor"
                 fields = ["bulbs.@N": deviceIds]
                 if (actionSpec.colorName != null) fields["color.@N"] = actionSpec.colorName
+                if (actionSpec.hue != null) fields += ["color.@N": "Custom HSB color", "colorHex.@N": actionSpec.hue, "colorSat.@N": actionSpec.saturation]
+                if (actionSpec.rgb != null) fields += ["color.@N": "Custom RGB color", "colorH.@N": actionSpec.rgb]
                 if (actionSpec.level != null) fields["colorLevel.@N"] = actionSpec.level
                 break
             case "setColorPerMode":
@@ -42428,6 +42451,7 @@ The report surfaces the compiled-state broken verdict, validationErrors, config-
 List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals). Requires the Read master.
 
 - Hub globals are covered by `hub_list_variables`; locals are created via `hub_set_rule` `addLocalVariable` / `removeLocalVariable`.
+- `addLocalVariable` takes `{name, type, value}`, all three required: RM commits the variable only when its value is written. `type` is Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime is an ISO timestamp, e.g. 2026-05-06T12:00:00) and the value must match it. The `setLocalVariable` action differs: it takes exactly one of value/sourceVariable/fromDevice/math. Use a local as `%name%` in actions and expressions. An existing name is refused before the wizard opens; change its value with a `setLocalVariable` action, or `removeLocalVariable` first.
 - Reads the rule's `statusJson` appState: names and types from `allLocalVars`, current values from each variable's live `lv_<name>` entry (`allLocalVars` keeps the old value after an action sets the variable until someone opens the rule's page).
 - Pure read -- no wizard, no mutation.
 - Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is the hub's internal token, not the `addLocalVariable` enum. Map it back before reuse: integer→Number, bigdecimal→Decimal, string→String, boolean→Boolean, datetime→DateTime.
@@ -42503,7 +42527,7 @@ With **Back up native apps before edits** on (the default), each edit response i
 
 ### Shapes come from discover
 
-Trigger, condition and action fields are served, not written here: `hub_set_rule(operation:'discover', args:{kind:'trigger'|'condition'|'action', capability?, action?})`. Without `capability` it lists every capability Rule Machine has for that kind; with one it returns that capability's required and optional fields, Rule Machine's attribute, default state and device picker, and an example. An action's `conditionalRequired` lists the fields each of its actions needs; an inner list means one of those fields. `requires` lists the same for the whole entry, and `exclusive` lists groups of which at most one field may be given. Capability names are Rule Machine's own (any case). Rule Machine offers a capability only when the hub has something for it (a device with that capability, Safety Monitor, rules), and a value its live picker does not list is refused with the picker's list. What the schema cannot carry:
+Trigger, condition and action fields are served, not written here: `hub_set_rule(operation:'discover', args:{kind:'trigger'|'condition'|'action', capability?, action?})`. Without `capability` it lists every capability Rule Machine has for that kind; with one it returns that capability's required and optional fields, Rule Machine's attribute, default state and device picker, and an example. An action's `conditionalRequired` lists the fields each of its actions needs; an inner list means one of those fields. `requires` lists the same for the whole entry, and `exclusive` lists groups of which at most one field may be given; `together` lists fields given all at once (an in-place edit may change one of them alone on a row that already uses them). Capability names are Rule Machine's own (any case). Rule Machine offers a capability only when the hub has something for it (a device with that capability, Safety Monitor, rules), and a value its live picker does not list is refused with the picker's list. What the schema cannot carry:
 
 - **Sub-expression** (`addRequiredExpression` only; nested subExpression is refused on action expressions): `{subExpression:{conditions:[...], operator?, operators?}}`.
 - **Device attribute vs a hub variable** has no direct shape: copy the attribute into a variable with an `addAction setVariable` using `fromDevice`, then compare with `compareToVariable`.
@@ -42535,13 +42559,13 @@ Also a valid `patches[]` op (reported as `op: 'replaceRequiredExpression'`). Ins
 
 ### `walkStep` schema-aware wizard walker
 
-For what the shortcuts cannot express (Periodic sub-pages, newer RM fields). Spec: `{page, operation, write?:{<field>:<value>}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, validateEnum?, steps?:[...]}`. Operations: `introspect`; `write` (one field); `click`; `navigate` (into a sub-page by its href); `done` (submit a sub-page to its parent; a Periodic row needs it); `drive` (run `steps=[...]` in one call; a step without `page` continues where the last ended; `stopOnError=false` runs on past a failure).
+For what the shortcuts cannot express (Periodic sub-pages, newer RM fields). Spec: `{page, operation, write?:{<field>:<value>}, click?:{name, stateAttribute?}, navigate?:{targetPage}, hrefContext?:{fromPage, hrefName, hrefParams?, hrefIndex?}, validateEnum?, steps?:[...]}`. Operations: `introspect`; `write` (one field); `click`; `navigate` (into a sub-page by its href); `done` (submit a sub-page to its parent; a Periodic row needs it); `drive` (run `steps=[...]` in one call; a step without `page` stays on the last one; `stopOnError=false` runs on past a failure).
 
-Each step returns `before`/`after` schemas, `diff`, `valueEcho`, `silentRejection`, `opResult` and `health`; a failure carries `error` and `repairHints`. Refused before anything is sent: a `write` to a field the page does not show or of a value its picker does not list (`opResult.refused`), a `click` on a button the page does not render (the error lists the rendered buttons), and `navigate`/`done` while a required input is empty or invalid, as the UI refuses them.
+Each step returns `before`/`after` schemas, `diff`, `valueEcho`, `silentRejection`, `opResult` and `health`; a failure carries `error` and `repairHints`. Refused before anything is sent: a `write` to a field the page does not show or of a value its picker does not list (`opResult.refused`), a `click` on a button the page does not render (the error lists those it renders), and `navigate`/`done` while a required input is empty or invalid.
 
-RM builds some pages only inside an open editor; the walker's prerequisite table, quoted in its refusals and `repairHints`: `doActPage` needs an action editor (`N` with stateAttribute `doActN`, or `<n>.0.false` with `doAct`, on `selectActions`); a trigger or condition slot needs `true` with `moreCond` (or `<n>` with `editCond`); a saved Required Expression opens in its editor after `editST` on `STPage`; `periodic` needs `hrefContext` with its `n`; `cancelCapab` drops the open condition on the page's next render.
+Pages RM builds only inside an open editor (quoted in refusals and `repairHints`): `doActPage` needs an action editor (`N` with stateAttribute `doActN`, or `<n>.0.false` with `doAct`, on `selectActions`); a trigger or condition slot needs `true` with `moreCond` (or `<n>` with `editCond`); a saved Required Expression opens in its editor after `editST` on `STPage`; `periodic` needs `hrefContext` with its `n`; `cancelCapab` drops the open condition on the page's next render.
 
-End a drive with `done` to run the mainPage Done (the `updateRule` equivalent); without it the change is written but not subscribed. A multi-device switch trigger in one call:
+End a drive with `done` (the mainPage Done, like `updateRule`); without it the change is written but not subscribed. A multi-device switch trigger:
 ```
 hub_set_rule(appId=N, confirm=true, walkStep={operation:'drive', steps:[
   {page:'selectTriggers', operation:'click', click:{name:'true', stateAttribute:'moreCond'}},
@@ -42552,7 +42576,7 @@ hub_set_rule(appId=N, confirm=true, walkStep={operation:'drive', steps:[
   {page:'selectTriggers', operation:'done'}]})
 ```
 
-Raw mode is the same flow one call per step: `settings` (+ `pageName`) writes inputs the page shows, `button` (+ `stateAttribute`, `pageName`) clicks one; with `pageName` it is checked against the page's buttons after the call's `settings` are written, since a write can reveal a button. A button the page still does not render is not clicked: with no settings in the call nothing was sent, otherwise the result is `partial` with the written `settingsApplied` and a restore hint. A mainPage `settings` write is followed by `updateRule`; a sub-page write is not, so close the editor with its Done (`hasAll`, `actionDone`), then `button='updateRule'`. After `hasAll` the tool clears RM's leftover `isCondTrig.<N>` prompt (`wizardDoneAutoRetry`). `settings:{useST:true}` only shows the Required Expression page (build it with `addRequiredExpression`); `settings:{isFunction:true}` makes the rule return a value.
+Raw mode is the same flow one call per step: `settings` (+ `pageName`) writes inputs the page shows, `button` (+ `stateAttribute`, `pageName`) clicks one; with `pageName` it is checked against the page as re-rendered after the call's `settings` land; an unrendered button is not clicked, and after a settings write the result is `partial` with `settingsApplied`. A mainPage `settings` write is followed by `updateRule`; after a sub-page write, close the editor with its Done (`hasAll`, `actionDone`), then `button='updateRule'`. After `hasAll` the tool clears RM's leftover `isCondTrig.<N>` prompt (`wizardDoneAutoRetry`). `settings:{useST:true}` only shows the Required Expression page (build it with `addRequiredExpression`); `settings:{isFunction:true}` makes the rule return a value.
 
 ### Responses: applied, activated, verified
 
