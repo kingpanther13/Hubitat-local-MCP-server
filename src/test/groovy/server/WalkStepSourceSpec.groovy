@@ -403,6 +403,7 @@ class WalkStepSourceSpec extends ToolSpecBase {
         enableWrite()
         def posts = []
         hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> page("mainPage", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             posts.any { it.body?.containsKey("settings[tCapab1]") } ?
                 page("selectTriggers", [[name: "tCapab1", type: "enum", options: ["Switch"], value: "Switch"], [name: "moreCond", type: "button"]]) :
@@ -428,6 +429,7 @@ class WalkStepSourceSpec extends ToolSpecBase {
         enableWrite()
         def posts = []
         hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> page("mainPage", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
             def written = posts.any { it.body?.containsKey("settings[tCapab1]") }
             def inputs = [[name: "tCapab1", type: "enum", options: ["Switch"]] + (written ? [value: "Switch"] : [:]), [name: "hasAll", type: "button"]]
