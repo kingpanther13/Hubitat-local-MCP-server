@@ -114,10 +114,10 @@ abstract class RmNativeCrudSpecBase extends ToolSpecBase {
     // Serves a committed rule and RM's action editor. The doAct click is recorded like every other
     // button; a settings POST updates committedSettings the way RM's updateSetting does, so the
     // readback sees it; ruleBuilderJson serves ctl.order. editorInputs is the doActPage schema RM
-    // renders for the row. ctl.applyWrites=false models a write RM silently drops; ctl.dupOnDone
-    // models an editor that re-registers the index on actionDone.
+    // renders for the row. ctl.applyWrites=false models a write RM silently drops (ctl.dropKeys, one
+    // key it drops); ctl.dupOnDone models an editor that re-registers the index on actionDone.
     protected Map wireModifyEditorTransport(int ruleId, List order, Map committedSettings, List editorInputs, Closure postHook = null) {
-        Map ctl = [order: new ArrayList(order), clicks: [], writes: [], fetchSeq: 0, applyWrites: true, dupOnDone: false]
+        Map ctl = [order: new ArrayList(order), clicks: [], writes: [], fetchSeq: 0, applyWrites: true, dropKeys: [], dupOnDone: false]
         hubGet.register("/installedapp/configure/json/${ruleId}".toString()) { params -> ruleConfigJson(ruleId, "r", [], null, committedSettings) }
         hubGet.register("/installedapp/configure/json/${ruleId}/selectActions".toString()) { params -> ruleConfigJson(ruleId, "r", [], null, committedSettings) }
         hubGet.register("/installedapp/configure/json/${ruleId}/mainPage".toString()) { params -> ruleConfigJson(ruleId, "r", [], null, committedSettings) }
@@ -154,7 +154,7 @@ abstract class RmNativeCrudSpecBase extends ToolSpecBase {
                         (ctl.writes as List) << [key: key, value: v]
                         // A device picker stays a list, as the hub's statusJson serves it (deviceIdsForDeviceList).
                         boolean devicePicker = editorInputs.any { it.name?.toString() == key && it.type?.toString()?.startsWith("capability.") }
-                        if (ctl.applyWrites) committedSettings[key] = (devicePicker && !(v instanceof List))
+                        if (ctl.applyWrites && !(key in (ctl.dropKeys as List))) committedSettings[key] = (devicePicker && !(v instanceof List))
                             ? v.toString().tokenize(",").collect { it.trim() }.findAll { it } : v
                     }
                 }

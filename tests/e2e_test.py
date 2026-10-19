@@ -6510,6 +6510,19 @@ class TestRunner:
                 and bad_mod.get("applied") is not True, \
                 f"a runCommand modify with an unoffered capability should be refused: {bad_mod}"
             assert "off() on" in self._rule_page_text(app_id), "the refused modify changed the committed runCommand row"
+            # useLastEventDevice is written and read back like any field: on (RM hides the device picker,
+            # so no device list is sent), then off again with the devices given back.
+            run_idx = run_ok.get("actionIndex")
+            for mods, stored in (({"useLastEventDevice": True}, "true"),
+                                 ({"useLastEventDevice": False, "deviceIds": [int(self.get_test_switch_id())]}, "false")):
+                last_mod = self._set_rule(app_id, {"modifyAction": {"index": run_idx, "mods": mods}}, strict=True)
+                assert last_mod.get("success") is True and last_mod.get("verified") is True, \
+                    f"runCommand modifyAction {mods} did not apply in place: {last_mod}"
+                last_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+                assert self._setting_text(last_settings.get(f"useLastDev.{run_idx}")) == stored, \
+                    f"modifyAction {mods} did not store useLastDev.{run_idx}={stored}: {last_settings}"
+            assert "off() on" in self._rule_page_text(app_id), \
+                f"the runCommand row edited back to its devices does not render them: {self._rule_page_text(app_id)[:400]}"
             # Mixed EDIT shortcuts used to apply only the first branch while reporting success.
             # The guard must reject the full call before the backup snapshot or any wizard write.
             try:
@@ -6589,9 +6602,10 @@ class TestRunner:
         # rules per AGENTS.md: the classic wizard re-sends the whole rule page on every
         # submitOnChange POST, so per-edit cost grows with rule size. Target A is an empty shell -- a
         # runRule target only has to EXIST, and a pause target only has to be a rule. Target B also
-        # carries the four actions the modifyAction refusals and edits below change.
+        # carries the five actions the modifyAction refusals and edits below change.
         button = self._ensure_perm_fixture("button")
         blind = self._ensure_perm_fixture("blind")
+        dimmer = self._ensure_perm_fixture("dimmer")
         var_name = self._ensure_perm_variables("sv_number")["sv_number"]
         modes = self.client.call_tool("hub_list_modes").get("modes") or []
         assert modes, "no hub mode for the modifyAction mode-id refusal"
@@ -6607,6 +6621,7 @@ class TestRunner:
                 {"capability": "button", "action": "push", "deviceIds": [int(button)], "buttonNumber": 1,
                  "operation": "HOLD"},
                 {"capability": "blind", "action": "setTilt", "deviceIds": [int(blind)], "tilt": 40},
+                {"capability": "dimmer", "action": "setLevel", "deviceIds": [int(dimmer)], "level": 50},
             ]})
             sentinel_msg = "E2E order sentinel post-action"
             caller_id, caller_create = self._create_native_rule("MaCaller", {
@@ -6720,9 +6735,9 @@ class TestRunner:
                              if str(k).startswith(prefix) and str(k)[len(prefix):].isdigit()
                              and self._setting_holds_exact(v, wanted)), None)
             mode_idx, var_idx, btn_idx = _tb_slot("mode.", mode_id), _tb_slot("xVarV.", var_name), _tb_slot("pushButton.", button)
-            tilt_idx = _tb_slot("blindTilt.", blind)
-            assert None not in (mode_idx, var_idx, btn_idx, tilt_idx), \
-                f"target B's mode, setVariable, button and blind actions did not persist: {tb_settings}"
+            tilt_idx, dim_idx = _tb_slot("blindTilt.", blind), _tb_slot("dimA.", dimmer)
+            assert None not in (mode_idx, var_idx, btn_idx, tilt_idx, dim_idx), \
+                f"target B's mode, setVariable, button, blind and dimmer actions did not persist: {tb_settings}"
             assert tb_settings.get(f"pushButOp.{btn_idx}") == "hold", \
                 f"addAction wrote the button operation as given instead of RM's spelling: {tb_settings}"
             missing_var = f"{PREFIX}NoSuchVariable"
@@ -6782,6 +6797,22 @@ class TestRunner:
             lit_row = self._action_row_texts(target_b).get(tilt_idx)
             assert lit_row == f"Tilt Blinds: {self.PERM_FIXTURES['blind'][0]} to 55", \
                 f"the tilt row edited back to a literal does not render it: {lit_row!r}"
+            # The dimmer level takes the same toggle: RM shows "To this variable level" only once uVar is on.
+            dim_var = self._set_rule(target_b, {"modifyAction": {"index": dim_idx, "mods": {"levelVariable": var_name}}},
+                                     strict=True)
+            assert dim_var.get("modifiedIndex") == dim_idx and dim_var.get("verified") is True, \
+                f"the dimmer level edit to a variable did not apply in place: {dim_var}"
+            dim_after = self._get_persisted_rule_config(target_b).get("settings") or {}
+            assert self._setting_text(dim_after.get(f"uVar.{dim_idx}")) == "true" \
+                and dim_after.get(f"xVar.{dim_idx}") == var_name, \
+                f"modifyAction did not switch the dimmer level to {var_name}: {dim_after}"
+            dim_lit = self._set_rule(target_b, {"modifyAction": {"index": dim_idx, "mods": {"level": 30}}}, strict=True)
+            assert dim_lit.get("modifiedIndex") == dim_idx and dim_lit.get("verified") is True, \
+                f"the dimmer level edit back to a literal did not apply in place: {dim_lit}"
+            dim_lit_after = self._get_persisted_rule_config(target_b).get("settings") or {}
+            assert self._setting_text(dim_lit_after.get(f"uVar.{dim_idx}")) == "false" \
+                and self._setting_text(dim_lit_after.get(f"dimLA.{dim_idx}")) == "30", \
+                f"modifyAction did not switch the dimmer back to the literal 30 (the add wrote 50): {dim_lit_after}"
 
             # Keep one live >1 ruleId request: a successful call proves the batch envelope and
             # exact echoed ids; a platform load-limiter refusal proves the parsed array reached
@@ -10793,6 +10824,19 @@ class TestRunner:
             rows = self._action_rows(app_id)
             assert rows.get(int(cond_idx), (None, ""))[0] == cond_n and rows[int(cond_idx)][1].startswith("IF ("), \
                 f"action {cond_idx} is not bound to condition {cond_n} under IF: {rows.get(int(cond_idx))}"
+            # An in-place edit opens the row through the button RM renders for it, so the row keeps its
+            # condition: still bound to it and still under IF.
+            cond_mod = self._set_rule(app_id, {"modifyAction": {"index": int(cond_idx), "mods": {"action": "off"}}},
+                                      strict=True)
+            assert cond_mod.get("success") is True and cond_mod.get("verified") is True \
+                and cond_mod.get("modifiedIndex") == int(cond_idx), \
+                f"the Simple Conditional Action edit did not apply in place: {cond_mod}"
+            cond_mod_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+            assert str(cond_mod_settings.get(f"onOff.{cond_idx}")).lower() == "false", \
+                f"modifyAction did not switch action {cond_idx} to off: {cond_mod_settings}"
+            rows = self._action_rows(app_id)
+            assert rows.get(int(cond_idx), (None, ""))[0] == cond_n and rows[int(cond_idx)][1].startswith("IF ("), \
+                f"the edit unbound action {cond_idx} from condition {cond_n}: {rows.get(int(cond_idx))}"
 
             # A condition the rule already defines ({definedIndex}): RM stores useCond/useCondNdx on the
             # row. The Required Expression's own conditions are not offered there (RM leaves out predCapabs).
@@ -18798,6 +18842,10 @@ class TestRunner:
                 assert result.get("success") is True and not result.get("partial") and remaining \
                     and len(rows) + len(slice_rows) + len(remaining) == len(specs), \
                     f"a legacy checkpoint must hand back a clean prefix and exactly the unrun items: {result}"
+                # The rule's update runs only when the rest is done, so the pause is not activated yet.
+                assert result.get("applied") is True and result.get("activated") is False \
+                    and result.get("verified") is False, \
+                    f"a legacy checkpoint must report its committed prefix as applied, not activated: {result}"
                 rows += slice_rows
                 result = _legacy_add(remaining)
             offset = len(rows)
