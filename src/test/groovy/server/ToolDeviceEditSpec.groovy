@@ -859,6 +859,8 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.label == 'Garage Bridge'
         result.deviceTypeId == '500'
         result.warnings == null
+        result.mcpAccessible == false
+        result.note.contains("selectedDevices: {mode: 'add', ids: ['777']}")
         hubGet.calls.any { it.key == '/device/updateLabel?deviceId=777&label=Garage Bridge' }
         hubGet.calls.last().path == '/device/fullJson/777'
     }

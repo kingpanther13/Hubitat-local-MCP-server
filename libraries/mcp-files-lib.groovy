@@ -234,9 +234,10 @@ def toolListFiles(args = null) {
 def toolReadFile(args) {
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
 
+    // The default chunk stays inside a client's tool-result limit (Claude Code refuses ~25k tokens).
     def maxChunkSize = 60000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : 30000
 
     mcpLog("debug", "file-manager", "Reading file: ${args.fileName} (offset: ${requestedOffset}, length: ${requestedLength})")
     def content
@@ -448,13 +449,13 @@ def _getAllToolDefinitions_partFiles() {
         ],
         [
             name: "hub_read_file",
-            description: "Read the text content of a single file from the hub's File Manager by exact file name.[[FLAT_TRIM]] Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV).[[/FLAT_TRIM]] Read-only.[[FLAT_TRIM]] Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default/max chunk 60000 chars).[[/FLAT_TRIM]]",
+            description: "Read the text content of a single file from the hub's File Manager by exact file name.[[FLAT_TRIM]] Use after hub_list_files to fetch a named file (config, backup, exported rule/app, CSV).[[/FLAT_TRIM]] Read-only.[[FLAT_TRIM]] Large files are returned in chunks: pass offset/length, then follow nextOffset while hasMore is true (default chunk 30000 chars, max 60000).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     fileName: [type: "string", description: "The exact file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy')"],
                     offset: [type: "integer", description: "Character offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default/max: 60000"]
+                    length: [type: "integer", description: "Max characters to return in this chunk. Default 30000, max 60000."]
                 ],
                 required: ["fileName"]
             ]

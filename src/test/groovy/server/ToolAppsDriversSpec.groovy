@@ -455,6 +455,35 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         !hubGet.calls.any { it.path == '/device/drivers' }
     }
 
+    def "hub_list_drivers nameFilter keeps only drivers whose name contains the text"() {
+        given:
+        enableRead()
+        hubGet.register('/device/drivers') { params ->
+            '{"drivers":[{"id":837,"name":"Virtual Switch","namespace":"hubitat","type":"sys"},{"id":812,"name":"Virtual Dimmer","namespace":"hubitat","type":"sys"},{"id":5,"name":"Generic Zigbee Switch","namespace":"hubitat","type":"sys"}]}'
+        }
+
+        when:
+        def result = script.toolListHubDrivers([include: 'all', nameFilter: 'virtual switch'])
+
+        then:
+        result.drivers*.id == ['837']
+        result.count == 1
+    }
+
+    def "hub_list_drivers refuses an argument it does not take, and an unknown include: #label"() {
+        when:
+        script.toolListHubDrivers(args)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains(expected)
+
+        where:
+        label            | args                           || expected
+        'unknown key'    | [include: 'all', limit: 10]    || 'does not take limit'
+        'unknown include'| [include: 'everything']        || "include must be 'user' or 'all'"
+    }
+
     // -------- toolListLibraries --------
 
     def "hub_list_libraries returns library summaries (source omitted) from the hub API"() {
@@ -792,10 +821,10 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         then: 'first chunk returned with pagination metadata'
         result.success == true
         result.totalLength == 70000
-        result.chunkLength == 64000
+        result.chunkLength == 30000
         result.hasMore == true
-        result.nextOffset == 64000
-        result.remainingChars == 6000
+        result.nextOffset == 30000
+        result.remainingChars == 40000
         result.sourceFile == 'mcp-source-app-456.groovy'
 
         and: 'full source was uploaded to File Manager'
@@ -828,10 +857,10 @@ class ToolAppsDriversSpec extends ToolSpecBase {
         def inner = mcpDriver.parseInner(response)
         inner.success == true
         inner.totalLength == 70000
-        inner.chunkLength == 64000
+        inner.chunkLength == 30000
         inner.hasMore == true
-        inner.nextOffset == 64000
-        inner.remainingChars == 6000
+        inner.nextOffset == 30000
+        inner.remainingChars == 40000
         inner.sourceFile == 'mcp-source-app-456.groovy'
         uploads.size() == 1
         uploads[0].name == 'mcp-source-app-456.groovy'

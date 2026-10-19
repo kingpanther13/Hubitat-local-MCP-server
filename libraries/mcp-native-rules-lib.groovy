@@ -423,9 +423,14 @@ def toolListRmRules(args) {
 
     // combined.values() returns a Collection view in some Groovy versions; materialize
     // as a concrete List via toList() so subList in _paginateList is safe.
-    def rules = combined.values().sort { it.label ?: "" }.toList()
+    // Labels and names leave as the user typed them: the hub stores "Heat On <67" as "Heat On &lt;67".
+    def rules = combined.values().collect { r ->
+        def clean = [:] + r
+        ["label", "name"].each { k -> if (clean[k] instanceof CharSequence) clean[k] = stripAppConfigHtml(clean[k]) }
+        clean
+    }.sort { it.label ?: "" }.toList()
     String labelFilter = args?.labelFilter?.toString()?.trim()?.toLowerCase()
-    if (labelFilter) rules = rules.findAll { (stripAppConfigHtml(it.label) ?: "").toLowerCase().contains(labelFilter) }
+    if (labelFilter) rules = rules.findAll { (it.label ?: "").toLowerCase().contains(labelFilter) }
 
     def cursor = args?.cursor
     def paged = _paginateList(rules, cursor, 50, "hub_list_rules")

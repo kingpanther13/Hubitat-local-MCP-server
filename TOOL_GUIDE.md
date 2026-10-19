@@ -239,7 +239,7 @@ hub_update_driver bulk mode: `updates=[{driverId, sourceFile|source|importUrl|re
 ### hub_update_app / hub_update_driver / hub_update_library — source modes and large sources
 
 - Exactly one source mode per call: `importUrl` (the hub fetches the file itself; cheapest on context), `sourceFile` (a File Manager file), inline `source` (stubs only), or `resave` (recompile the current source unchanged, entirely on-hub).
-- `hub_get_source` returns at most 64000 characters per call; follow `nextOffset` while `hasMore`. A longer source is also saved whole to File Manager as `mcp-source-<app|driver|library>-<id>.groovy` and returned as `sourceFile`, ready for the update tools' `sourceFile` mode.
+- `hub_get_source` returns 30000 characters per call by default (`length` up to 64000); follow `nextOffset` while `hasMore`. A longer source is also saved whole to File Manager as `mcp-source-<app|driver|library>-<id>.groovy` and returned as `sourceFile`, ready for the update tools' `sourceFile` mode.
 
 
 ### hub_call_device_command
@@ -870,8 +870,8 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - **Cursor pagination (staleDevices):** page size 100. Omit the cursor to get all stale devices in one response (subject to the response-size guard). unknownDevices and healthyDevices are always returned in full alongside the page.
 
 ### hub_get_metrics (hub metrics + the hub's own health alerts)
-- `current` snapshot fields: timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds, uptimeFormatted. `current` also carries locally-derived warning notes when thresholds are crossed: memoryWarning (<50 MB free), temperatureWarning (>70 °C), databaseWarning (>500 MB) — with softer memoryNote/temperatureNote variants below those thresholds.
-- `trends`: recent history points {timestamp, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds}. `trendPoints` chooses how many (default 10, max 50). `trendPointsAvailable` = total rows on file; `historyFile` = the CSV name in File Manager (mcp-performance-history.csv).
+- `current` snapshot fields: timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeMB (the hub reports its database size in MB), uptimeSeconds, uptimeFormatted; the readings are numbers. `current` also carries locally-derived warning notes when thresholds are crossed: memoryWarning (<50 MB free), temperatureWarning (>70 °C), databaseWarning (>500 MB) — with softer memoryNote/temperatureNote variants below those thresholds.
+- `trends`: recent history points {timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeMB, uptimeSeconds}. `trendPoints` chooses how many (default 10, max 50). `trendPointsAvailable` = total rows on file; `historyFile` = the CSV name in File Manager (mcp-performance-history.csv); `trendNote` says when there are no points or the newest is over a day old.
 - Trend history is sparse/stale: the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls and reset if that CSV is cleared. Call recordSnapshot=true periodically to build a trend — it appends one row to the performance-history CSV (rolling 500-row window) and is the tool's ONLY write side-effect (default false = read-only).
 - `healthAlerts`: the hub's own active health alerts (the hub's alert feed on firmware 2.5.2.129 and later, /hub2/hubData before that) — {safeMode, active (currently-firing alerts: the alert item keys on 2.5.2.129 and later, flags such as hubLowMemory / zwaveOffline / localBackupFailed / weakZigbee before that), items (2.5.2.129+: key, message, version, dismissible), details (the hub's full alert data + message strings, with spammyDeviceDetails when present)}. Covers radio offline, backup failures, low memory, DB bloat, weak mesh, and safeMode. Complements the locally-derived warnings on `current` (and may differ in threshold from them). null if /hub2/hubData was unreadable.
 
@@ -1375,7 +1375,7 @@ Translation is otherwise reserved for older firmware that offers only ONE builde
 
 ### List mode (`hub_get_visual_rule` with no appId)
 
-One entry per rule: `{appId, name, version, disabled, paused}`. `disabled` is the red-X flag; `paused` is detected from a "(Paused)" suffix on the rule's name (VRB has no RMUtils label to cross-check, so a rule literally named "... (Paused)" reads as paused). For the authoritative pause state read the single rule — its `rulePaused` comes straight from the builder JSON. An OMITTED `paused`, `disabled` or `version` means it was undeterminable from the node data; it is never asserted false when it cannot be read.
+One entry per rule: `{appId, name, version, disabled, paused}`. `disabled` is the red-X flag; `paused` is read from the hub's own red-span "(Paused)" decoration on the listed name, which is removed (a rule the user named "... (Paused)" keeps that text and is not read as paused). For the authoritative pause state read the single rule — its `rulePaused` comes straight from the builder JSON. An OMITTED `paused`, `disabled` or `version` means it was undeterminable from the node data; it is never asserted false when it cannot be read.
 
 ### RECOMMENDED input: the editor form
 
@@ -1535,7 +1535,7 @@ VRB2 separates STORAGE from ACTIVATION. A document that fails the hub's own vali
 - `success` / `verified` — the write landed and the read-back confirmed name, pause state and node counts.
 - `activated` — whether the rule actually RUNS. `false` with a non-empty `validationErrors` is an inactive draft; `false` with an empty list means the hub stored the document but reports no live runtime (an `activationError` is passed through when the hub gives one). The response note says which.
 - `validationErrors` — the hub's human-readable problems. `validationIssues` is the same list in editor form (`{nodeId, field, message}`) so you can highlight the offending node, and `referencedDeviceIds` lists the devices the graph touched.
-- `revision` (reads and writes) — the hub's opaque optimistic-concurrency token for the stored document. `ruleApps` (reads) lists the installed apps a `runRule` action can legally target. `runtimeGraph` (reads) summarizes the live runtime, and is absent when nothing is active.
+- `revision` (reads and writes) — the hub's opaque optimistic-concurrency token for the stored document. `ruleApps` (reads with `includeRuleApps: true`; otherwise `ruleAppCount`) lists the installed apps a `runRule` action can legally target. The raw `ruleJson` string is left out of a read whose `definition` parsed. `runtimeGraph` (reads) summarizes the live runtime, and is absent when nothing is active.
 - `createRoute` (create and restore-recreate) — `createchild` when the per-version child route made the rule, `createVisualRuleBuilderRule` when the legacy builder-page fallback did; the fallback is the only path where the firmware, not your definition, picked the builder. `createRouteNote` appears beside it when the child route answered with a redirect to the new rule's builder page instead of a configure Location (the id was adopted from that redirect).
 - Every field in the two bullets above is OPTIONAL on the wire and appears only when the firmware sends it. `hub_get_rule_health(appId)` reads the same verdict later; for a graph Visual Rule `broken: true` means non-empty `validationErrors`.
 - When the firmware sends them, the hub's own `storedSuccessfully` / `activatedSuccessfully` flags are passed through verbatim. `activatedSuccessfully` takes precedence over the inferred `activated`.
@@ -1765,6 +1765,10 @@ Native bulk trigger/action edits, resumable patch batches and walk-driver steps 
 Native creation, action replacement, individual driver operations, and patch batches containing `replaceRequiredExpression` remain uninterrupted. Splitting those operations would require additional phase or rollback state. The target is not a hard execution deadline or a guarantee of recovery from a platform kill.
 
 If eight owner slices leave work unfinished, the terminal `continuation_limit` result retains the completed aggregate, exact remaining-work fields and any deferred-finalization guidance. Inspect that result before making a new, smaller call containing only the remainder. Replaying the old state only returns the same terminal result. Native settings may already be written while updateRule/Done remains deferred.
+
+### The `mrtr` block
+
+A result that ran through request-to-request continuation carries `mrtr: {continued, rounds, startedAt}`: `continued` is always true there, `rounds` is how many owner work slices ran (1 when the background worker finished it in one), and `startedAt` is when the first slice started (epoch ms). A replayed or joined result also carries `rejoined: true`. A result without `mrtr` ran inside its first request.
 
 ### Client retry limits and resume
 

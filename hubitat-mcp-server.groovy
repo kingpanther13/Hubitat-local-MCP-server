@@ -2601,6 +2601,9 @@ def handleToolsCall(msg) {
             boolean validPureRoute = outerName == leafName ||
                 (settings.useGateways != false &&
                     gatewayConfig[outerName]?.tools?.contains(leafName))
+            if (validPureRoute && leafName == "hub_create_backup") {
+                _requireCreateBackupConfirm(_mrtrLeafArguments(outerName, leafName, args as Map))
+            }
             if (validPureRoute && leafName in ["hub_set_rule", "hub_set_native_app"]) {
                 Map leafArgs = _mrtrLeafArguments(outerName, leafName,
                     args as Map) as Map
@@ -2945,7 +2948,8 @@ def _budgetAwareTools() {
             "hub_import_native_app", "hub_call_device_command",
             "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
-            "hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_libraries"] as Set
+            "hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_libraries",
+            "hub_get_device_attribute"] as Set
 }
 
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
@@ -5369,8 +5373,8 @@ def getGatewayConfig() {
             description: "Read-only inspection of installed apps, drivers, libraries, code bundles, code backups, and HPM packages: list apps (by code type or running instance), list drivers, view Groovy source, list installed bundles, browse code backups, inspect an installed app's config/pages, and list HPM-tracked packages. All operations are read-only; writes live in hub_manage_code.",
             tools: ["hub_list_apps", "hub_list_drivers", "hub_get_source", "hub_list_libraries", "hub_list_bundles", "hub_list_backups", "hub_get_backup", "hub_list_device_dependents", "hub_get_app_config", "hub_list_app_pages", "hub_list_hpm_packages"],
             summaries: [
-                hub_list_apps: "List installed apps. scope='types' (all app TYPES: community + built-in, each with its menu tab) or 'instances' (running apps with parent/child tree). Args: scope, filter?, includeHidden?, cursor?",
-                hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), each id usable with hub_create_device. Args: include?, cursor?",
+                hub_list_apps: "List installed apps. scope='types' (all app TYPES: community + built-in, each with its menu tab) or 'instances' (running apps with parent/child tree). Args: scope, filter?, nameFilter?, includeHidden?, cursor?",
+                hub_list_drivers: "List device driver types. include='user' (default) = user-installed; include='all' = full catalog (system+virtual+user), each id usable with hub_create_device. Args: include?, nameFilter?, cursor?",
                 hub_get_source: "Get app/driver/library Groovy source with chunked reading. Args: type (app|driver|library), id, offset?, length?",
                 hub_list_libraries: "List installed Groovy libraries (id, name, namespace, version). Pair with hub_get_source(type='library', id) to read source. Args: cursor?",
                 hub_list_bundles: "List installed code bundles (the Bundle-Manager containers HPM delivers code in; distinct from Libraries Code). Returns id, name, namespace, private, and a contains summary. Find a bundle id for hub_delete_bundle/hub_export_bundle. Args: cursor?",
@@ -5547,7 +5551,7 @@ def getGatewayConfig() {
                 hub_get_custom_rule: "List MCP custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
                 hub_test_custom_rule: "Dry-run an MCP custom rule without executing actions. Args: ruleId",
                 hub_list_rules: "List all native Rule Machine rules (RM 4.x + 5.x) with IDs and labels",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, plus BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source",
+                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, plus BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source? (auto|ruleBuilderJson|configPage)",
                 hub_list_rule_local_variables: "List a Rule Machine rule's local variables with their current values. Distinct from hub_list_variables (hub globals). Args: appId",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?"
             ],
@@ -5561,7 +5565,7 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_native_rules_and_apps: [
-            description: "Native classic-app CRUD plus Rule Machine runtime control. Use hub_set_native_app to create/edit non-RM classic SmartApps; use hub_manage_rule_machine (hub_set_rule) to author RM triggers/actions/conditions. Also delete/clone/export/import apps and list/run/pause/resume RM rules. Not the legacy custom_* engine. Edits ensure a rollback baseline, reused for the same app for one hour by default. Writes need confirm=true plus a recent hub backup; verify async failures via hub_get_app_config(appId) before retrying.",
+            description: "Native classic-app CRUD plus Rule Machine runtime control. Use hub_set_native_app to create/edit non-RM classic SmartApps; use hub_manage_rule_machine (hub_set_rule) to author RM triggers/actions/conditions. Also delete/clone/export/import apps and list/run/pause/resume RM rules. Not the legacy custom_* engine. Edits ensure a rollback baseline, reused for the same app for one hour by default. Writes need confirm=true plus a recent hub backup; verify async failures via hub_get_app_config(appId) (in hub_read_apps_code) before retrying.",
             tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
@@ -5574,7 +5578,7 @@ def getGatewayConfig() {
                 hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner (deep: child apps and pause state copy too, so a clone of an ACTIVE app lands ACTIVE). Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), stageDisabled (opt: disable clone + every descendant immediately), confirm. Returns newAppId.",
                 hub_export_native_app: "Export a rule/app to its canonical JSON shape via Hubitat's first-party appCloner. Args: appId (alias sourceAppId), saveAs (opt File Manager filename). Returns the JSON content (and writes to File Manager if saveAs given).",
                 hub_import_native_app: "Create a new rule/app from a previously-exported JSON via Hubitat's first-party appCloner (the import lands ACTIVE). Args: jsonContent | fromFile, parentHintAppId (existing rule under the target parent — used to seed the cloner), newName (opt), stageDisabled (opt: disable import + every descendant immediately), confirm. Returns newAppId.",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption. Args: appId, source. Returns {ok, broken, source, ruleFormat, issues, ...}. Auto-attached to hub_set_rule and hub_set_visual_rule responses too."
+                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption. Args: appId, source? (auto|ruleBuilderJson|configPage). Returns {ok, broken, source, ruleFormat, issues, ...}. Auto-attached to hub_set_rule and hub_set_visual_rule responses too."
             ],
             searchHints: [
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
@@ -5607,7 +5611,7 @@ def getGatewayConfig() {
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot (mode + one line per device). Args: detailed?, filter (enabled/disabled/stale:N/virtual), labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format (summary/detailed/ids/context), fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields, saved preferences, driver identity, and read status before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date) with an optional end (until), per-app events (appId), or location events (mode/HSM/hub-variable; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
+                hub_list_device_events: "Recent device events, a time-windowed history (hoursBack, max 168), an absolute bookmark (since -- events after an exact timestamp; round-trip a returned date) with an optional end (until), per-app events (appId), or location and hub events (mode/HSM/hub-variable, reboots/low memory; omit deviceId/appId). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_compatible_devices: "Search Hubitat's compatible-device catalog (brands/models + pairing/exclude/factory-reset instructions). Args: query?, brand?, protocol?, deviceType?, includeInstructions?, cursor?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?"
             ],
@@ -5670,7 +5674,7 @@ def getGatewayConfig() {
                 hub_list_devices: "List devices with current states; format='context' = plain-text house snapshot. Args: detailed?, filter, labelFilter?, capabilityFilter?, roomFilter?, onlyOn?, changedSince?, attributeNames?, format, fields?, limit?, cursor?",
                 hub_get_device: "Inspect one device. Args: deviceId, mode? (summary/configuration/details), sections? (details mode), fields? (configuration/details field selector), cursor? (continue one oversized scalar). Configuration mode discovers editable fields and preference definitions/current values before an update.",
                 hub_get_device_attribute: "Read one attribute's value, or block-poll one OR several devices (deviceIds + mode any/all) until it reaches expectedValue/expectedValues. Args: deviceId | deviceIds (max 20), mode? (any/all), attribute, expectedValue?, expectedValues?, timeoutMs?, pollIntervalMs?, comparator?, stableForMs?",
-                hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location events. Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
+                hub_list_device_events: "Recent device events, a time-windowed history, an absolute bookmark (since) with an optional end (until), per-app events (appId), or location and hub events (reboots, low memory). Args: deviceId?, appId?, hoursBack?, since?, until?, attribute?, limit?",
                 hub_get_hub_mesh: "Read Hub Mesh (hub-to-hub device/variable sharing on the LAN): enabled state, peer hubs, shared/linked devices + hub variables, sync interval, mode-following hub. Args: include_token?",
                 hub_update_hub_mesh: "Change Hub Mesh settings (enable/disable needs a hub reboot; per-device sharing is hub_update_device meshEnabled). Args: enabled?, full_refresh_interval? (0/120/300/3600), mode_hub_id? ('none'=local modes), peer_hub_id?+peer_token?"
             ],
@@ -5697,7 +5701,7 @@ def getGatewayConfig() {
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule)",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call. Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules. Args: ruleId (id or array of ids), value (bool)",
-                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source",
+                hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, BROKEN markers, configPage errors, multiple-flag corruption. Args: appId, source? (auto|ruleBuilderJson|configPage)",
                 hub_list_rule_local_variables: "List a Rule Machine rule's local variables with their current values. Distinct from hub_list_variables (hub globals). Args: appId",
                 hub_delete_native_app: "Delete any classic native app incl. RM rules (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm.",
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?",
@@ -6582,13 +6586,14 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
     // exempt so the gate can NEVER lock the caller out: hub_get_tool_guide (read-only; it
     // publishes the keys) and hub_update_mcp_settings (the toggle-off escape hatch).
     // hub_set_rule / hub_set_native_app schema-only probes stay reachable like the
-    // Write master above.
+    // Write master above, and so does a hub_update_package dryRun, which plans with zero writes.
     if (!isGatewayName && settings.enableMandatoryBPS != false
             && !getReadOnlyToolNames().contains(toolName)
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
             && !(toolName == 'hub_set_rule' && _isSetRuleSchemaOnlyCall(args ?: [:]))
             && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args ?: [:]))
             && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])
+            && !(toolName == 'hub_update_package' && args instanceof Map && args.dryRun == true)
             && !bpsChecked) {
         String bpsSection = _bpsSectionForTool(toolName)
         def bpsKey = hubBpsKeyFromArgs(args)
@@ -7855,7 +7860,7 @@ private _hubRequest(String method, String path, Map opts = [:]) {
     if (opts.followRedirects != null) params.followRedirects = opts.followRedirects
     def headers = [:]
     if (opts.keepAlive) headers["Connection"] = "keep-alive"
-    if (cookie) headers["Cookie"] = cookie
+    if (cookie || opts.cookie) headers["Cookie"] = [cookie, opts.cookie].findAll { it }.join("; ")
     if (headers) params.headers = headers
     if (opts.body != null) params.body = opts.body
 
@@ -7874,6 +7879,11 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             // error is consumed here; text callers, whose body IS the result, still
             // re-throw it after the closure.
             result = [status: resp.status, location: resp.headers?."Location"?.toString(), data: (readError != null ? null : bodyText)]
+            // The session the hub opened for this request (name=value), for a follow-up in that session.
+            def sc = null
+            try { sc = resp.headers?."Set-Cookie" } catch (Exception ignored) { sc = null }
+            if (sc instanceof List) sc = sc ? sc[0] : null
+            if (sc != null) result.setCookie = sc.toString().replaceFirst(/^(?i)set-cookie:\s*/, "").split(';')[0]
             readError = null
         } else if (readError == null) {
             result = bodyText
@@ -7980,6 +7990,12 @@ private Map _meshJson() {
  * groovyx.net.http.HttpResponseException by name — that class isn't on the
  * Spock test classpath, and naming it would NCDFE at parse time.
  */
+// A GET sent in an existing hub session (the name=value cookie a hubInternalGetRaw answer carried
+// as setCookie): some page tokens are only honoured in the session that issued them.
+def hubInternalGetInSession(String path, Map query, String sessionCookie, int timeout = 30) {
+    _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'text', cookie: sessionCookie])
+}
+
 def hubInternalGetRaw(String path, Map query = null, int timeout = 30, boolean isRetry = false) {
     // followRedirects:false + handle3xx so the 302 Location header (new-child id) is readable.
     _hubRequest('GET', path, [query: query, timeout: timeout, returnShape: 'struct',
@@ -8358,12 +8374,41 @@ def _probeUrl(String url, long maxBytes) {
                     out.size = (long) raw.length
                     if (raw.length <= maxBytes) out.bytes = raw
                 }
+            } else {
+                out.error = "the host answered HTTP ${resp?.status}".toString()
             }
         }
     } catch (Exception e) {
-        mcpLog("warn", "hub-admin", "size check of a backup URL failed (${e.message}); it is not fetched")
+        out.error = (e.message ?: e.toString()).take(200)
+        mcpLog("warn", "hub-admin", "size check of a backup URL failed (${out.error}); it is not fetched")
     }
     return out
+}
+
+// Bytes as MB with one decimal, rounded up, so a size just over a limit never prints as the limit.
+String _mbText(long bytes) {
+    long tenths = (bytes * 10L + 1048575L).intdiv(1048576L)
+    return tenths % 10L == 0L ? "${tenths.intdiv(10L)} MB".toString() : "${tenths.intdiv(10L)}.${tenths % 10L} MB".toString()
+}
+
+// The File Manager file name a backup URL names on this hub (loopback, localhost or the hub's own
+// address, path /local/<name>, percent-decoded), else null. [self: true] alone when the URL is this
+// hub but not a single File Manager file.
+Map _backupUrlTarget(String url) {
+    def m = url =~ /(?i)^https?:\/\/([a-z0-9.-]+)(?::\d{1,5})?(\/[^?#]*)?(?:[?#].*)?$/
+    if (url.contains("\\") || !m.matches()) return null
+    String host = m.group(1).toLowerCase().replaceAll(/\.$/, "")
+    boolean numeric = host.tokenize(".").every { it ==~ /0x[0-9a-f]*|\d+/ }
+    boolean self = host == "localhost" || host.endsWith(".localhost") ||
+        (numeric && (host.startsWith("127.") || host.startsWith("0."))) || host == location?.hub?.localIP?.toString()
+    if (!self) return [self: false, host: host, numeric: numeric]
+    String path = m.group(2) ?: ""
+    String name = null
+    if (path.startsWith("/local/") && !path.substring(7).contains("/")) {
+        try { name = java.net.URLDecoder.decode(path.substring(7).replace("+", "%2B"), "UTF-8") } catch (Exception ignored) { name = null }
+    }
+    if (name == null || name.isEmpty() || name ==~ /\.+/ || name.contains("/") || name.contains("\\")) name = null
+    return [self: true, host: host, numeric: numeric, fileName: name]
 }
 
 // A backup URL may not aim the app at the hub's own admin endpoints, which its loopback requests
@@ -8371,30 +8416,33 @@ def _probeUrl(String url, long maxBytes) {
 // Only a plain host name or a dotted-quad IPv4 address is read, so no other address spelling can
 // disagree with the HTTP client; redirects and DNS are not followed here, the confirm gates cover them.
 void _requireBackupUrl(String url, String param) {
-    def m = url =~ /(?i)^https?:\/\/([a-z0-9.-]+)(?::\d{1,5})?(\/[^?#]*)?(?:[?#].*)?$/
-    if (url.contains("\\") || !m.matches()) {
+    Map target = _backupUrlTarget(url)
+    if (target == null) {
         throw new IllegalArgumentException("${param} must be an http(s) URL with a host name or IPv4 address (no user info or IPv6 literal), got: ${url}")
     }
-    String host = m.group(1).toLowerCase().replaceAll(/\.$/, "")
-    boolean numeric = host.tokenize(".").every { it ==~ /0x[0-9a-f]*|\d+/ }
-    if (numeric && !(host ==~ /(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}/)) {
+    String host = target.host
+    if (target.numeric && !(host ==~ /(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}/)) {
         throw new IllegalArgumentException("${param} must spell an IPv4 address as four decimal parts, got: ${host}")
     }
-    boolean self = host == "localhost" || host.endsWith(".localhost") || host.startsWith("127.") || host.startsWith("0.") ||
-        host == location?.hub?.localIP?.toString()
-    String path = m.group(2) ?: ""
-    if (self && !(path ==~ /\/local\/[^\/%]+/ && !(path ==~ /\/local\/\.+/))) {
-        throw new IllegalArgumentException("${param} points at this hub (${host}); only its File Manager files (/local/...) can be fetched from it.")
+    if (target.self && target.fileName == null) {
+        throw new IllegalArgumentException("${param} points at this hub (${host}); only its File Manager files (/local/<file name>) can be fetched from it.")
     }
 }
 
 // Fetch a backup of at most cap bytes from an http(s) URL: sized first, and refused when the host
-// does not say how big it is, since the whole body is held in memory. [bytes] or [error].
+// does not say how big it is, since the whole body is held in memory. A File Manager file on this
+// hub is read through the File Manager instead, since the hub serves /local/ without a length.
+// [bytes] or [error].
 Map _fetchCappedBackup(String url, long cap) {
-    String limit = "${cap / (1024 * 1024)} MB"
+    String fileName = _backupUrlTarget(url)?.fileName
+    if (fileName != null) return _fetchCappedLocalFile(fileName, cap)
+    String limit = _mbText(cap)
     def probe = _probeUrl(url, cap)
-    if (probe.size == null) return [error: "the host did not report the backup's size, so it was not fetched (the in-app limit is ${limit}); serve it from a host that answers range requests or sends Content-Length."]
-    if (probe.size > cap) return [error: "the backup is ${(probe.size / (1024 * 1024)) as long} MB, over the ${limit} in-app limit."]
+    if (probe.size == null) {
+        if (probe.error) return [error: "the size check of the URL failed (${probe.error}), so nothing was fetched."]
+        return [error: "the host did not report the backup's size, so it was not fetched (the in-app limit is ${limit}); serve it from a host that answers range requests or sends Content-Length."]
+    }
+    if (probe.size > cap) return [error: "the backup is ${_mbText(probe.size as long)} (${probe.size} bytes), over the ${limit} in-app limit."]
     byte[] bytes = probe.bytes
     if (bytes == null) {
         try { bytes = _fetchBytesFromUrl(url, cap) }
@@ -8402,6 +8450,21 @@ Map _fetchCappedBackup(String url, long cap) {
     }
     if (!bytes) return [error: "the host returned no data."]
     if (bytes.length > cap) return [error: "the backup is over the ${limit} in-app limit."]
+    return [bytes: bytes]
+}
+
+private Map _fetchCappedLocalFile(String fileName, long cap) {
+    def listed
+    try { listed = _fileManagerRootFiles().find { it.name == fileName } }
+    catch (Exception e) { return [error: "could not read the File Manager listing: ${e.message}"] }
+    if (listed == null) return [error: "this hub's File Manager has no file named '${fileName}'."]
+    if (listed.size == null) return [error: "the File Manager listing gives no size for '${fileName}', so it was not read."]
+    if ((listed.size as long) > cap) return [error: "the backup is ${_mbText(listed.size as long)} (${listed.size} bytes), over the ${_mbText(cap)} in-app limit."]
+    byte[] bytes
+    try { bytes = downloadHubFile(fileName) }
+    catch (Exception e) { return [error: "could not read '${fileName}' from the File Manager: ${e.message}"] }
+    if (!bytes) return [error: "the File Manager file '${fileName}' is empty."]
+    if (bytes.length != (listed.size as long)) return [error: "read ${bytes.length} bytes of the ${listed.size}-byte File Manager file '${fileName}', so the incomplete file was not used."]
     return [bytes: bytes]
 }
 
@@ -11710,7 +11773,7 @@ hub_update_driver bulk mode: `updates=[{driverId, sourceFile|source|importUrl|re
 ### hub_update_app / hub_update_driver / hub_update_library — source modes and large sources
 
 - Exactly one source mode per call: `importUrl` (the hub fetches the file itself; cheapest on context), `sourceFile` (a File Manager file), inline `source` (stubs only), or `resave` (recompile the current source unchanged, entirely on-hub).
-- `hub_get_source` returns at most 64000 characters per call; follow `nextOffset` while `hasMore`. A longer source is also saved whole to File Manager as `mcp-source-<app|driver|library>-<id>.groovy` and returned as `sourceFile`, ready for the update tools' `sourceFile` mode.
+- `hub_get_source` returns 30000 characters per call by default (`length` up to 64000); follow `nextOffset` while `hasMore`. A longer source is also saved whole to File Manager as `mcp-source-<app|driver|library>-<id>.groovy` and returned as `sourceFile`, ready for the update tools' `sourceFile` mode.
 
 
 ### hub_call_device_command
@@ -12346,8 +12409,8 @@ The following filter pipeline applies to hub mode. Current three-column native t
 - **Cursor pagination (staleDevices):** page size 100. Omit the cursor to get all stale devices in one response (subject to the response-size guard). unknownDevices and healthyDevices are always returned in full alongside the page.
 
 ### hub_get_metrics (hub metrics + the hub's own health alerts)
-- `current` snapshot fields: timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds, uptimeFormatted. `current` also carries locally-derived warning notes when thresholds are crossed: memoryWarning (<50 MB free), temperatureWarning (>70 °C), databaseWarning (>500 MB) — with softer memoryNote/temperatureNote variants below those thresholds.
-- `trends`: recent history points {timestamp, freeMemoryKB, internalTempC, databaseSizeKB, uptimeSeconds}. `trendPoints` chooses how many (default 10, max 50). `trendPointsAvailable` = total rows on file; `historyFile` = the CSV name in File Manager (mcp-performance-history.csv).
+- `current` snapshot fields: timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeMB (the hub reports its database size in MB), uptimeSeconds, uptimeFormatted; the readings are numbers. `current` also carries locally-derived warning notes when thresholds are crossed: memoryWarning (<50 MB free), temperatureWarning (>70 °C), databaseWarning (>500 MB) — with softer memoryNote/temperatureNote variants below those thresholds.
+- `trends`: recent history points {timestamp, timestampEpoch, freeMemoryKB, internalTempC, databaseSizeMB, uptimeSeconds}. `trendPoints` chooses how many (default 10, max 50). `trendPointsAvailable` = total rows on file; `historyFile` = the CSV name in File Manager (mcp-performance-history.csv); `trendNote` says when there are no points or the newest is over a day old.
 - Trend history is sparse/stale: the hub never auto-samples, so points exist only from earlier recordSnapshot=true calls and reset if that CSV is cleared. Call recordSnapshot=true periodically to build a trend — it appends one row to the performance-history CSV (rolling 500-row window) and is the tool's ONLY write side-effect (default false = read-only).
 - `healthAlerts`: the hub's own active health alerts (the hub's alert feed on firmware 2.5.2.129 and later, /hub2/hubData before that) — {safeMode, active (currently-firing alerts: the alert item keys on 2.5.2.129 and later, flags such as hubLowMemory / zwaveOffline / localBackupFailed / weakZigbee before that), items (2.5.2.129+: key, message, version, dismissible), details (the hub's full alert data + message strings, with spammyDeviceDetails when present)}. Covers radio offline, backup failures, low memory, DB bloat, weak mesh, and safeMode. Complements the locally-derived warnings on `current` (and may differ in threshold from them). null if /hub2/hubData was unreadable.
 
@@ -13047,6 +13110,10 @@ Native bulk trigger/action edits, resumable patch batches and walk-driver steps 
 Native creation, action replacement, individual driver operations, and patch batches containing `replaceRequiredExpression` remain uninterrupted. Splitting those operations would require additional phase or rollback state. The target is not a hard execution deadline or a guarantee of recovery from a platform kill.
 
 If eight owner slices leave work unfinished, the terminal `continuation_limit` result retains the completed aggregate, exact remaining-work fields and any deferred-finalization guidance. Inspect that result before making a new, smaller call containing only the remainder. Replaying the old state only returns the same terminal result. Native settings may already be written while updateRule/Done remains deferred.
+
+### The `mrtr` block
+
+A result that ran through request-to-request continuation carries `mrtr: {continued, rounds, startedAt}`: `continued` is always true there, `rounds` is how many owner work slices ran (1 when the background worker finished it in one), and `startedAt` is when the first slice started (epoch ms). A replayed or joined result also carries `rejoined: true`. A result without `mrtr` ran inside its first request.
 
 ### Client retry limits and resume
 

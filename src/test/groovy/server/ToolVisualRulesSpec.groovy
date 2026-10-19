@@ -196,22 +196,26 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         result.note.contains('Pass appId')
     }
 
-    def "list mode flags a paused rule from the (Paused) name suffix, HTML-wrapped or plain"() {
-        given: 'one rule paused with an HTML-span decoration, one plain-suffix paused, one active'
+    def "list mode reads paused from the hub's span decoration only, and keeps the rest of the name as typed"() {
+        given: 'paused rules carry the hub decoration (one the user also named "(Paused)"); a plain "(Paused)" or typed markup is the name'
         registerAppsList([
-            [key: 703, data: [id: 703, name: 'Porch light <span style="color:red">(Paused)</span>', type: 'Visual Rule Builder', disabled: false], children: []],
+            [key: 703, data: [id: 703, name: "Porch light <span class='text-red'>(Paused)</span>", type: 'Visual Rule Builder', disabled: false], children: []],
+            [key: 707, data: [id: 707, name: 'Hall &amp; <span>(Paused)</span>', type: 'Visual Rule Builder', disabled: false], children: []],
             [key: 704, data: [id: 704, name: 'Night mode (Paused)', type: 'Visual Rule Builder', disabled: false], children: []],
-            [key: 705, data: [id: 705, name: 'Garage watch', type: 'Visual Rule Builder', disabled: false], children: []]
+            [key: 705, data: [id: 705, name: 'Garage watch', type: 'Visual Rule Builder', disabled: false], children: []],
+            [key: 706, data: [id: 706, name: "Lamp (Paused) <span class='text-red'>(Paused)</span>", type: 'Visual Rule Builder', disabled: false], children: []]
         ])
 
         when:
         def result = script.toolGetVisualRule([:])
 
-        then: 'paused flagged, and the name is HTML-stripped so it no longer leaks the span'
+        then:
         result.success == true
-        result.rules == [[appId: 703, name: 'Porch light (Paused)', disabled: false, paused: true],
-                         [appId: 704, name: 'Night mode (Paused)', disabled: false, paused: true],
-                         [appId: 705, name: 'Garage watch', disabled: false, paused: false]]
+        result.rules == [[appId: 703, name: 'Porch light', disabled: false, paused: true],
+                         [appId: 704, name: 'Night mode (Paused)', disabled: false, paused: false],
+                         [appId: 705, name: 'Garage watch', disabled: false, paused: false],
+                         [appId: 706, name: 'Lamp (Paused)', disabled: false, paused: true],
+                         [appId: 707, name: 'Hall &amp; <span>(Paused)</span>', disabled: false, paused: false]]
     }
 
     def "list mode omits paused (null name) and disabled (absent key) when the node data can't support them"() {
