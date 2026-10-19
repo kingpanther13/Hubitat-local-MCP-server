@@ -40,6 +40,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
 
     def cleanup() {
         appStub.settingsStore.clear()
+        appStub.updateSettingFailure = null
     }
 
     private static Map decodeForm(String body) {
@@ -1325,10 +1326,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
     def "a selection write that fails still reports the created device, with a warning"() {
         given:
         settingsMap.selectedDevices = [new TestDevice(id: 1)]
-        def lockedApp = new TestChildApp() {
-            @Override void updateSetting(String settingName, Map val) { throw new IllegalStateException('settings locked') }
-        }
-        appExecutor.getApp() >> lockedApp
+        appStub.updateSettingFailure = new IllegalStateException('settings locked')
         hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
         hubGet.register('/device/fullJson/777') { params ->
             groovy.json.JsonOutput.toJson([device: [id: 777, name: 'Generic LAN Driver', deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]])
