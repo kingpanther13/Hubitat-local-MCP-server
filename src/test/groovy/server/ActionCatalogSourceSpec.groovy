@@ -750,7 +750,9 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         label            | committed                                                                                  | mods               || expected
         "mode"           | ["actType.3": "modeActs", "actSubType.3": "getSetMode", "mode.3": "1"]                     | [modeId: 2]        || ["mode.3": 2]
         "pauseRule"      | ["actType.3": "rulesActs", "actSubType.3": "getPauseResumeRules", "pauseRule.3": ["200"], "pR.3": "false"] | [action: "resume"] || ["pR.3": true]
+        // A literal-to-literal edit writes no variable toggle: the row does not have it on.
         "dimmer.setLevel" | ["actType.3": "dimmerActs", "actSubType.3": "getSetDimmer", "dimA.3": "8", "dimLA.3": "50"] | [level: 30]       || ["dimLA.3": 30]
+        "blind.setTilt"   | ["actType.3": "sceneActs", "actSubType.3": "getBlindTilt", "blindTilt.3": "8", "uVar.3": "false", "tiltLevel.3": "20"] | [tilt: 40] || ["tiltLevel.3": 40]
     }
 
     // ---- discover ----

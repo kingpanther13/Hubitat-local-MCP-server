@@ -4170,10 +4170,12 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
         named.findAll { it.whenSet && v != null }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = (t.whenSet instanceof String) ? t.whenSet : true }
         // A literal given for a field whose exclusive partner is a variable clears that partner's
         // toggle first, so RM reveals the literal's picker again (uVar false, then tiltLevel). A
-        // picker option is not cleared: the field given writes that picker itself.
+        // toggle the row does not have on is left alone, and a picker option is not cleared: the
+        // field given writes that picker itself.
         (((entry.exclusive ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.exclusive ?: [])) as List)).findAll { List g -> name in g }.each { List g ->
             g.findAll { it != name }.each { other ->
-                fieldDefs.findAll { it.name == other && it.whenSet == true }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = false }
+                fieldDefs.findAll { it.name == other && it.whenSet == true && committed(it.key.toString().replace(".@N", ""))?.toString() == "true" }
+                    .each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = false }
             }
         }
         Map f = named.find { !it.whenSet } as Map
