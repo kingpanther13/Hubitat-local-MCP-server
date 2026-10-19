@@ -2052,6 +2052,33 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         "RM lists no commands"             | [[name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]], [name: "devices.1", type: "capability.switch", multiple: true], [name: "cCmd.1", type: "enum", options: [:]]] | "found no commands"
     }
 
+    @spock.lang.Unroll
+    def "_rmWriteRunCommandFields with useLastEventDevice=#useLast names the right command source when #label"() {
+        given:
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            JsonOutput.toJson([app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                               configPage: [name: "doActPage", title: "T", install: false, error: null, sections: [[title: "", input: inputs, paragraphs: []]]],
+                               settings: [:], childApps: []])
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> [status: 200, location: null, data: ''] }
+        def spec = useLast ? [capabilityFilter: "Switch", command: "on", useLastEventDevice: true] : [capabilityFilter: "Switch", command: "on", deviceIds: [8]]
+
+        when:
+        script._rmWriteRunCommandFields(100, 1, spec, [], [])
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(text)
+        !ex.message.contains(notText)
+
+        where:
+        useLast | label                           | inputs                                                                                                                             | text                                                                                         | notText
+        true    | "the command picker is missing" | [[name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]]]                                                                 | "with Use Last Event Device on, RM lists the commands of the rule's enabled trigger devices" | "accepted into that capability's picker"
+        false   | "the command picker is missing" | [[name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]], [name: "devices.1", type: "capability.switch", multiple: true]] | "RM lists commands only for devices it accepted into that capability's picker"              | "trigger devices"
+        true    | "RM lists no commands"          | [[name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]], [name: "cCmd.1", type: "enum", options: [:]]]                   | "found no commands for the rule's trigger device(s) with capability 'Switch'"                | "selected device(s)"
+        true    | "the command is not offered"    | [[name: "myCapab.1", type: "enum", options: ["Switch": "Switch"]], [name: "cCmd.1", type: "enum", options: ["off": "off"]]]        | "'on' is not a command of the rule's trigger device(s) with capability 'Switch'"             | "selected device(s)"
+    }
+
     def "_systemAppTypeId skips a deprecated type and records why the list could not be read"() {
         given:
         boolean readable = true
@@ -2475,7 +2502,7 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
 
     def "modifyAction writes a changed useLastEventDevice and carries the committed one"() {
         given:
-        wireModifyEditorTransport(100, [1], ["actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"], "cCmd.1": "on", "useLastDev.1": "true"], runCommandEditor(1))
+        wireModifyEditorTransport(100, [1], ["tDev1": ["8"], "actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"], "cCmd.1": "on", "useLastDev.1": "true"], runCommandEditor(1))
 
         when:
         def kept = script._rmPlanModifyAction(100, 1, [command: "off"])
@@ -2494,7 +2521,7 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
 
     def "modifyAction reports a useLastEventDevice change Rule Machine did not keep"() {
         given:
-        def settings = ["actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"], "cCmd.1": "on", "useLastDev.1": "false"]
+        def settings = ["tDev1": ["8"], "actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"], "cCmd.1": "on", "useLastDev.1": "false"]
         def ma = wireModifyEditorTransport(100, [1], settings, [[name: "useLastDev.1", type: "bool"]] + runCommandEditor(1))
         ma.dropKeys = ["useLastDev.1"]
 
@@ -2529,6 +2556,93 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         then:
         def none = thrown(IllegalArgumentException)
         none.message.contains("'deviceIds' is needed when useLastEventDevice is false")
+    }
+
+    def "useLastEventDevice needs an enabled trigger device with the row's capability, checked before any write"() {
+        given: "a switch (8), a temperature sensor (26) and a dimmer (30); trigger 2 is disabled"
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([[id: 8, label: "S1", capabilities: ["Switch"]], [id: 26, label: "Temp", capabilities: ["TemperatureMeasurement"]],
+                               [id: 30, label: "D1", capabilities: ["Switch", "SwitchLevel"]]])
+        }
+        def row = ["actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"], "cCmd.1": "on", "useLastDev.1": "false"]
+        def ma = wireModifyEditorTransport(100, [1], row, runCommandEditor(1))
+        def serve = { Map triggers ->
+            hubGet.register('/installedapp/statusJson/100') { params ->
+                JsonOutput.toJson([installedApp: [id: 100],
+                                   appSettings: (row + triggers).collect { k, v -> [name: k, value: v] + (v instanceof List ? [deviceIdsForDeviceList: v] : [:]) },
+                                   eventSubscriptions: [], scheduledJobs: [],
+                                   appState: [[name: "capabstrue", value: triggers.keySet().collectEntries { [(it - "tDev"): "t"] }], [name: "disabledTriggers", value: ["2"]]]])
+            }
+        }
+
+        when: "the rule has no trigger"
+        serve([:])
+        script._rmPlanModifyAction(100, 1, [useLastEventDevice: true])
+
+        then:
+        def none = thrown(IllegalArgumentException)
+        none.message.contains("with useLastEventDevice on, Rule Machine lists the commands of the rule's enabled trigger devices that have the 'Switch' capability, and this rule has none")
+        none.message.contains("RM is not touched")
+
+        when: "its trigger devices lack the capability, or the one that has it is on a disabled trigger"
+        serve(["tDev1": ["26"], "tDev2": ["8"]])
+        script._rmPlanModifyAction(100, 1, [useLastEventDevice: true])
+
+        then:
+        def lacking = thrown(IllegalArgumentException)
+        lacking.message.contains("this rule has none")
+
+        when: "the add path refuses the same rule before mapping any field"
+        script._rmMapActionSpec(100, [command: "on", useLastEventDevice: true], "runCommand", null)
+
+        then:
+        def add = thrown(IllegalArgumentException)
+        add.message.contains("runCommand: with useLastEventDevice on")
+
+        when: "a capability given by its picker label maps to the device capability the triggers lack"
+        serve(["tDev1": ["8"]])
+        script._rmPlanModifyAction(100, 1, [useLastEventDevice: true, capabilityFilter: "Dimmer"])
+
+        then:
+        def dimmer = thrown(IllegalArgumentException)
+        dimmer.message.contains("the 'Dimmer' capability, and this rule has none")
+
+        when: "an enabled trigger is on a device with the capability"
+        serve(["tDev1": ["26"], "tDev3": ["8"]])
+        def plan = script._rmPlanModifyAction(100, 1, [useLastEventDevice: true])
+        serve(["tDev1": ["30"]])
+        def byLabel = script._rmPlanModifyAction(100, 1, [useLastEventDevice: true, capabilityFilter: "Dimmer"])
+
+        then:
+        plan.runCommand.useLastEventDevice == true
+        plan.writes["useLastDev.1"] == true
+        byLabel.runCommand.capabilityFilter == "Dimmer"
+
+        and: "nothing was clicked or written"
+        (ma.clicks as List).isEmpty()
+        (ma.writes as List).isEmpty()
+    }
+
+    def "an add with useLastEventDevice counts the triggers the same call adds first"() {
+        given:
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 8, label: "S1", capabilities: ["Switch"]]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        def spec = [capability: "runCommand", command: "on", useLastEventDevice: true]
+
+        when:
+        script._rmPrevalidateActionSpecList([spec], "addActions", null, 100)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("addActions[0]: runCommand: with useLastEventDevice on")
+        ex.message.contains("RM is not touched")
+
+        when:
+        script._rmPrevalidateActionSpecList([spec], "addActions", null, 100, [8])
+
+        then:
+        noExceptionThrown()
+        !spec.containsKey("__pendingTriggerDeviceIds")
     }
 
     def "modifyAction on runCommand needs a command when neither the mods nor the committed row carry one"() {
@@ -3001,6 +3115,7 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
     def "a false Boolean does not meet a one-of on the add path; a true one does"() {
         given:
         hubGet.register('/hub2/vrb/devices') { params -> "[]" }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tDev1", value: "[8]", deviceIdsForDeviceList: ["8"]]]) }
 
         when:
         script._rmMapActionSpec(100, [command: "on", useLastEventDevice: false], "runCommand", null)

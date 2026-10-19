@@ -3182,7 +3182,7 @@ private Map _rmActionCatalog() {
                slots: [[name: "command", key: "cCmd.@N", type: "String", required: true, desc: "checked against the commands RM lists for the devices"], [name: "deviceIds", key: "devices.@N", type: "List<Integer>", desc: "required unless useLastEventDevice"],
                         [name: "capabilityFilter", key: "myCapab.@N", type: "String", desc: "a capability RM's picker offers, by key or label (e.g. SwitchLevel or Dimmer); default Switch"],
                         [name: "parameters", type: "List", desc: "each {type, value} or {type, variable}; type number, decimal or string"],
-                        [name: "useLastEventDevice", key: "useLastDev.@N", type: "Boolean"]], common: [delay, raw]],
+                        [name: "useLastEventDevice", key: "useLastDev.@N", type: "Boolean", desc: "commands the device that fired a trigger; the rule needs an enabled trigger on a device with capabilityFilter"]], common: [delay, raw]],
         fileWrite:  [actType: "modeActs", sub: "getWriteLocalFile", family: "hub", slots: [[name: "fileName", key: "localFile.@N", type: "String", required: true, dflt: ""], [name: "content", key: "fileContents.@N", type: "String", dflt: ""]], common: [delay, raw]],
         fileAppend: [actType: "modeActs", sub: "getAppendLocalFile", family: "hub", notes: "The file must exist", slots: [[name: "fileName", key: "localFile.@N", type: "String", required: true, dflt: ""], [name: "content", key: "fileContents.@N", type: "String", dflt: ""]], common: [delay, raw]],
         fileDelete: [actType: "modeActs", sub: "getDeleteLocalFile", family: "hub", notes: "The file must exist", slots: [[name: "fileName", key: "deleteFile.@N", type: "String", required: true, dflt: ""]], common: [delay, raw]],
@@ -3521,29 +3521,63 @@ private void _rmRequireConditionDeviceCapability(String label, Map spec) {
     _rmRequireDevicesWithCapability(label, spec.deviceIds ?: (spec.deviceId != null ? [spec.deviceId] : null), hit.value?.toString())
 }
 
+// Device id -> [label, lower-cased capabilities], read once per call; empty when the list is unreadable.
+private Map _rmDeviceCapsById(String label, String cap) {
+    def byId = _memoDeviceList()
+    if (byId != null) return byId
+    byId = [:]
+    def parsed
+    try { parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/vrb/devices") ?: "[]") } catch (Exception e) {
+        mcpLog("warn", "rm-native", "${label}: device capabilities could not be read (${e.message ?: e}); the ${cap} check is skipped for this call")
+        _memoKeepDeviceList([:])
+        _memoNoteSkippedCheck("device capabilities (the device list could not be read)")
+        return [:]
+    }
+    if (!(parsed instanceof List)) {
+        mcpLog("warn", "rm-native", "${label}: the device list had an unexpected shape (${_typeName(parsed)}); the ${cap} check is skipped for this call")
+        _memoKeepDeviceList([:])
+        _memoNoteSkippedCheck("device capabilities (the device list had an unexpected shape)")
+        return [:]
+    }
+    parsed.each { d ->
+        if (d instanceof Map && d.id != null) byId.put(d.id.toString(), [label: d.label, caps: ((d.capabilities ?: []) as List).collect { it?.toString()?.toLowerCase() }])
+    }
+    _memoKeepDeviceList(byId)
+    return byId
+}
+
+// With Use Last Event Device on, RM builds runCommand's command picker from the devices of the
+// rule's enabled triggers (tDev<n> of each trigger not in state.disabledTriggers) that have the
+// row's capability, and shows "No commands found" when none does. Refused here, before any write.
+// A capability given by picker label (e.g. Dimmer) maps through the deviceCapability table.
+// pendingIds: devices of triggers the same call adds before its actions.
+private void _rmRequireLastEventDeviceTrigger(String label, Integer appId, Object capabilityFilter, Map status = null, List pendingIds = null) {
+    if (appId == null) return
+    if (status == null) status = _rmFetchStatusJson(appId)
+    String wanted = capabilityFilter?.toString()?.trim() ?: "Switch"
+    def hit = (_rmCondTables().deviceCapability as Map).find { k, v -> k.toString().equalsIgnoreCase(wanted) }
+    String cap = (hit != null ? hit.value : wanted.replaceAll(/\s+/, "")).toString()
+    def settingsByName = (status?.appSettings ?: []).collectEntries { [(it?.name?.toString()): it] }
+    // RM reads the triggers in state.capabstrue; a tDev<n> setting also counts, so a trigger whose
+    // state entry is not written yet is not refused here.
+    def trigs = _rmAppStateValue(status, "capabstrue")
+    Set indices = ((trigs instanceof Map) ? (trigs as Map).keySet().collect { it.toString() } : []) as Set
+    indices.addAll(settingsByName.keySet().findResults { String n -> def m = (n =~ /^tDev(\d+)$/); m.matches() ? m[0][1] : null })
+    def disabled = _rmAppStateValue(status, "disabledTriggers")
+    Set off = ((disabled instanceof List) ? (disabled as List) : []).collect { it?.toString() } as Set
+    List ids = indices.findAll { !(it in off) }.collectMany { _rmStatusEntryDeviceIds(settingsByName["tDev${it}".toString()]) as List }
+    ids.addAll((pendingIds ?: []).collect { it?.toString() })
+    if (ids) {
+        Map byId = _rmDeviceCapsById(label, cap)
+        // A device the feed cannot see into (absent, or listed with no capabilities) may have it.
+        if (byId.isEmpty() || ids.any { def d = byId.get(it); d == null || !d.caps || cap.toLowerCase() in d.caps }) return
+    }
+    throw new IllegalArgumentException("${label}: with useLastEventDevice on, Rule Machine lists the commands of the rule's enabled trigger devices that have the '${wanted}' capability, and this rule has none. Add a trigger on such a device, or turn useLastEventDevice off and give deviceIds. RM is not touched.".toString())
+}
+
 private void _rmRequireDevicesWithCapability(String label, Object ids, String cap) {
     if (cap == null || !(ids instanceof List) || (ids as List).isEmpty()) return
-    def byId = _memoDeviceList()
-    if (byId == null) {
-        byId = [:]
-        def parsed
-        try { parsed = new groovy.json.JsonSlurper().parseText(hubInternalGet("/hub2/vrb/devices") ?: "[]") } catch (Exception e) {
-            mcpLog("warn", "rm-native", "${label}: device capabilities could not be read (${e.message ?: e}); the ${cap} check is skipped for this call")
-            _memoKeepDeviceList([:])
-            _memoNoteSkippedCheck("device capabilities (the device list could not be read)")
-            return
-        }
-        if (!(parsed instanceof List)) {
-            mcpLog("warn", "rm-native", "${label}: the device list had an unexpected shape (${_typeName(parsed)}); the ${cap} check is skipped for this call")
-            _memoKeepDeviceList([:])
-            _memoNoteSkippedCheck("device capabilities (the device list had an unexpected shape)")
-            return
-        }
-        parsed.each { d ->
-            if (d instanceof Map && d.id != null) byId.put(d.id.toString(), [label: d.label, caps: ((d.capabilities ?: []) as List).collect { it?.toString()?.toLowerCase() }])
-        }
-        _memoKeepDeviceList(byId)
-    }
+    Map byId = _rmDeviceCapsById(label, cap)
     if (byId.isEmpty()) return
     // An empty capability list is a device the feed cannot see into (as the devices library reads it): unknown, not lacking.
     def lacking = (ids as List).findAll { id -> def d = byId.get(id?.toString()); d != null && d.caps && !(cap.toLowerCase() in d.caps) }
@@ -4222,6 +4256,7 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
                       command: mods.containsKey("command") ? mods.command : committed("cCmd"),
                       deviceIds: deviceIds, useLastEventDevice: useLast]
         if (runCommand.command == null) throw new IllegalArgumentException("modifyAction on runCommand: 'command' is needed. RM is not touched.")
+        if (useLast) _rmRequireLastEventDeviceTrigger("modifyAction on runCommand", appId, runCommand.capabilityFilter, status)
         // useLastDev stays in writes: the editor writes it before the runCommand fields, as the add does.
         ["myCapab", "cCmd", "devices"].each { writes.remove("${it}.${actionIdx}".toString()) }
     }
@@ -5572,6 +5607,9 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actSubType = "getDefinedAction"
         if (!actionSpec.command) throw new IllegalArgumentException("runCommand requires 'command' (the device driver method name)")
         fields = ["useLastDev.@N": (actionSpec.useLastEventDevice == true)]
+        if (actionSpec.useLastEventDevice == true) {
+            _rmRequireLastEventDeviceTrigger("runCommand", appId, actionSpec.capabilityFilter, null, actionSpec.__pendingTriggerDeviceIds as List)
+        }
         if (actionSpec.parameters instanceof List && !actionSpec.parameters.isEmpty()) {
             actionSpec.parameters.eachWithIndex { p, paramIdx ->
                 if (!(p instanceof Map)) return  // bare scalar entries pass through
@@ -5955,7 +5993,7 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
 // refused before any of it is written. Everything here only reads (appId null: no rule yet).
 // Structural balance is checked separately; checks that need the rule's own state (one waitEvents
 // action per rule, a fileDelete/fileAppend file list, the disabled-app gate) stay in the add.
-private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null) {
+private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null, List pendingTriggerDeviceIds = null) {
     specs.eachWithIndex { spec, i ->
         if (!(spec instanceof Map)) {
             throw new IllegalArgumentException("${label}[${i}] must be an action spec object, got '${spec}'. RM is not touched.")
@@ -5967,7 +6005,9 @@ private void _rmPrevalidateActionSpecList(List specs, String label, Set validRul
         try {
             _rmValidateRoundZeroActionSpec(sm)
             _rmPrevalidateActionSpec(sm, cap, validRuleIds)
-            _rmMapActionSpec(appId, new LinkedHashMap(sm), cap, sm.action?.toString()?.trim())
+            def copy = new LinkedHashMap(sm)
+            if (pendingTriggerDeviceIds) copy.__pendingTriggerDeviceIds = pendingTriggerDeviceIds
+            _rmMapActionSpec(appId, copy, cap, sm.action?.toString()?.trim())
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException(_rmNotTouched("${label}[${i}]: ${e.message}".toString()), e)
         }
@@ -10066,16 +10106,21 @@ private Map _rmWriteRunCommandFields(Integer appId, Integer idx, Map actionSpec,
     String cmdKey = "cCmd.${idx}".toString()
     def ids = (actionSpec.deviceIds instanceof List) ? (actionSpec.deviceIds as List).join(", ") : actionSpec.deviceIds?.toString()
     String wrote = useLast ? "useLastDev=true" : "deviceIds [${ids}]".toString()
+    // With useLastDev on, RM lists the commands of the rule's enabled trigger devices, not of a device picker.
+    String rmRule = useLast
+        ? "with Use Last Event Device on, RM lists the commands of the rule's enabled trigger devices that have that capability (check that a trigger is on a device reporting '${capFilter}')"
+        : "RM lists commands only for devices it accepted into that capability's picker (check that the devices report '${capFilter}')"
+    String source = useLast ? "the rule's trigger device(s) with capability '${capFilter}'" : "the selected device(s)"
     def cmdInput = _rmRevealedInputOrThrow(appId, cmdKey,
-        "the command picker '${cmdKey}' was not revealed after writing ${wrote} for capability '${capFilter}' on action ${idx} -- RM lists commands only for devices it accepted into that capability's picker (check that the devices report '${capFilter}').".toString(),
+        "the command picker '${cmdKey}' was not revealed after writing ${wrote} for capability '${capFilter}' on action ${idx} -- ${rmRule}.".toString(),
         "runCommand")
     List opts = _rmReadPickerOptionStrings(cmdInput)
     if (!opts) {
-        throw new IllegalArgumentException("runCommand: RM found no commands for the selected device(s) on action ${idx} (its picker shows 'No commands found').")
+        throw new IllegalArgumentException("runCommand: RM found no commands for ${source} on action ${idx} (its picker shows 'No commands found').")
     }
     String canonical = opts.find { it == cmd } ?: opts.find { it?.equalsIgnoreCase(cmd) }
     if (canonical == null) {
-        throw new IllegalArgumentException("runCommand: '${cmd}' is not a command of the selected device(s) on action ${idx}. RM offers: ${opts.sort().join(', ')}.")
+        throw new IllegalArgumentException("runCommand: '${cmd}' is not a command of ${source} on action ${idx}. RM offers: ${opts.sort().join(', ')}.")
     }
     _rmWriteSettingOnPage(appId, "doActPage", cmdKey, canonical, applied, null, skipped)
     written.put(cmdKey, canonical)
@@ -13036,9 +13081,11 @@ def _applyNativeAppEdit(args) {
         // lookups) runs before the backup, so a refused call never takes a snapshot it then tells the
         // caller not to restore; patches items are checked as each op runs.
         def preActs = (addActionSpec ? [addActionSpec] : []) + (addActionsList ?: []) + (replaceActionsList ?: [])
-        if (preActs) _rmPrevalidateActionSpecList(preActs, addActionSpec ? "addAction" : (addActionsList ? "addActions" : "replaceActions"),
-            _rmSpecListTargetsRule(preActs) ? _rmValidRuleIds() : null, appId)
         def preTrigs = (addTriggerSpec ? [addTriggerSpec] : []) + (addTriggersList ?: [])
+        // This call's triggers are added before its actions, so their devices count for useLastEventDevice.
+        def preTrigDeviceIds = preTrigs.findAll { it instanceof Map }.collectMany { Map t -> (t.deviceIds instanceof List) ? (t.deviceIds as List) : (t.deviceId != null ? [t.deviceId] : []) }
+        if (preActs) _rmPrevalidateActionSpecList(preActs, addActionSpec ? "addAction" : (addActionsList ? "addActions" : "replaceActions"),
+            _rmSpecListTargetsRule(preActs) ? _rmValidRuleIds() : null, appId, preTrigDeviceIds)
         if (preTrigs) _rmPrevalidateTriggerSpecList(preTrigs, addTriggerSpec ? "addTrigger" : "addTriggers")
         if (addRequiredExpressionSpec) _rmPrevalidateConditionList(addRequiredExpressionSpec, "addRequiredExpression")
         if (replaceRequiredExpressionSpec) _rmPrevalidateConditionList(replaceRequiredExpressionSpec, "replaceRequiredExpression")

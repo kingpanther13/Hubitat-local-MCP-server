@@ -6335,6 +6335,8 @@ class TestRunner:
             # no backup at all (with backups off, a decision taken would still leave a map).
             sw_id = int(self.get_test_switch_id())
             num_var = self.PERM_VARIABLES["sv_number"][0]  # named only: each refusal comes before any variable read
+            last_event_refusal = ("with useLastEventDevice on, Rule Machine lists the commands of the rule's enabled "
+                                  "trigger devices that have the 'Switch' capability, and this rule has none")
             for args, needles in (
                 ({"addTrigger": {"capability": "Location Event"}}, ("Location Event needs state (one of",)),
                 ({"addTrigger": {"capability": "Location Event", "state": "E2E no such event"}},
@@ -6390,6 +6392,10 @@ class TestRunner:
                     {"capability": "Switch", "deviceIds": [sw_id], "state": "on"}]},
                     "condition": {"capability": "Switch", "deviceIds": [sw_id], "state": "on"}}},
                  ("ifThen cannot carry a condition",)),
+                # With Use Last Event Device on, RM lists the commands of the rule's trigger devices;
+                # this rule has no trigger yet, so RM would show "No commands found".
+                ({"addAction": {"capability": "runCommand", "command": "off", "useLastEventDevice": True}},
+                 (last_event_refusal,)),
             ):
                 refused = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                     "args": {"appId": app_id, "confirm": True, **args}})
@@ -6515,9 +6521,25 @@ class TestRunner:
                 and bad_mod.get("applied") is not True, \
                 f"a runCommand modify with an unoffered capability should be refused: {bad_mod}"
             assert "off() on" in self._rule_page_text(app_id), "the refused modify changed the committed runCommand row"
+            # useLastEventDevice on a rule whose triggers have no Switch device (it has none) is refused
+            # before any write: RM would list no commands. The committed row keeps useLastDev off.
+            run_idx = run_ok.get("actionIndex")
+            no_trig = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": app_id, "modifyAction": {"index": run_idx, "mods": {"useLastEventDevice": True}},
+                "confirm": True}})
+            assert no_trig.get("success") is False and last_event_refusal in str(no_trig.get("error", "")) \
+                and "RM is not touched" in str(no_trig.get("error", "")) and no_trig.get("backup") is None, \
+                f"useLastEventDevice on a rule with no Switch trigger device should be refused before any write: {no_trig}"
+            kept = self._get_persisted_rule_config(app_id).get("settings") or {}
+            assert self._setting_text(kept.get(f"useLastDev.{run_idx}")) != "true", \
+                f"the refused useLastEventDevice modify changed useLastDev.{run_idx}: {kept}"
+            # A trigger on the switch the row commands gives RM a trigger device with Switch to list
+            # commands from. State "off" keeps a firing harmless: the row sends off.
+            trig = self._set_rule(app_id, {"addTrigger": {"capability": "Switch",
+                "deviceIds": [int(self.get_test_switch_id())], "state": "off"}}, strict=True)
+            assert trig.get("success") is True, f"the Switch trigger for useLastEventDevice did not commit: {trig}"
             # useLastEventDevice is written and read back like any field: on (RM hides the device picker,
             # so no device list is sent), then off again with the devices given back.
-            run_idx = run_ok.get("actionIndex")
             for mods, stored in (({"useLastEventDevice": True}, "true"),
                                  ({"useLastEventDevice": False, "deviceIds": [int(self.get_test_switch_id())]}, "false")):
                 last_mod = self._set_rule(app_id, {"modifyAction": {"index": run_idx, "mods": mods}}, strict=True)
