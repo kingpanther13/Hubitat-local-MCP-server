@@ -6417,7 +6417,95 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         "Decimal"  | "ratio"       | 0.5
         "String"   | "label"       | "ready"
         "Boolean"  | "flag"        | true
-        "DateTime" | "lastSeenAt"  | "2026-05-17T14:30:00.000-0400"
+    }
+
+    def "addLocalVariable DateTime writes RM's date and time fields and clicks its Done, never varValue"() {
+        given: "RM's DateTime editor offers varTime + varDate and a dateTimeDone button instead of varValue"
+        enableWrite()
+        def selActs = [
+            [name: "hbVar", type: "text"],
+            [name: "varType", type: "enum", options: ["Number", "Decimal", "String", "Boolean", "DateTime"]],
+            [name: "varTime", type: "time"],
+            [name: "varDate", type: "date"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        def posts = []
+        boolean done = false
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", done ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: done ? [[name: "allLocalVars", value: [seenAt: [type: "datetime", value: "2026-05-17T14:30:00.000-0400"]]]] : [],
+                state: [:]
+            ])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/btn" && body.name == "dateTimeDone") done = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: "2026-05-17T14:30:00"], confirm: true])
+
+        then: "date and time go in one POST, then Done with RM's dtDone state"
+        def dt = posts.find { it.path == "/installedapp/update/json" && it.body.containsKey("settings[varDate]") }
+        dt.body["settings[varDate]"] == "2026-05-17"
+        dt.body["settings[varTime]"] == "14:30"
+        posts.any { it.path == "/installedapp/btn" && it.body.name == "dateTimeDone" && it.body.stateAttribute == "dtDone" }
+        !posts.any { it.body?.containsKey("settings[varValue]") }
+        result.success == true
+        result.variable?.type == "DateTime"
+    }
+
+    def "addLocalVariable DateTime refuses a value that is not yyyy-MM-ddTHH:mm before anything is sent"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]])
+        }
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: "tomorrow"], confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("yyyy-MM-ddTHH:mm")
+        result.backup == null
+        posts.isEmpty()
+    }
+
+    def "addLocalVariable DateTime cancels the editor when RM offers no date or time field"() {
+        given: "a DateTime editor that never reveals varDate/varTime"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number", "DateTime"]]]
+        boolean cancelled = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", cancelled ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]])
+        }
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/btn" && body.name == "cancelGV") cancelled = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: "2026-05-17T14:30"], confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("did not offer")
+        posts.any { it.path == "/installedapp/btn" && it.body.name == "cancelGV" && it.body.stateAttribute == "cancelGV" }
+        !posts.any { it.body?.containsKey("settings[varValue]") }
     }
 
     def "addLocalVariable on a name the rule already has is refused before the wizard opens"() {

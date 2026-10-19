@@ -154,7 +154,7 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
 
         expect:
         content.contains("checked against the page as re-rendered after the call's `settings` land")
-        content.contains("after a settings write the result is `partial` with `settingsApplied`")
+        content.contains("an unrendered button is not clicked (`partial`, `settingsApplied`, `repairHints`)")
         !content.contains("before any `settings` are written")
     }
 

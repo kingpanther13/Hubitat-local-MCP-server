@@ -9646,6 +9646,22 @@ class TestRunner:
             kept = next((lv for lv in (after_dup.get("localVariables") or []) if lv.get("name") == "fields"), {})
             assert str(kept.get("value")) == "0", f"the refused re-add changed the local's value: {after_dup}"
 
+            # A DateTime local goes through RM's date and time fields and its Done, and leaves no editor open.
+            dt_add = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": int(app_id), "confirm": True,
+                "addLocalVariable": {"name": "seenAt", "type": "DateTime", "value": "2026-01-01T12:30:00"}}})
+            assert dt_add.get("success") is True, f"DateTime local add failed: {dt_add}"
+            dt_locals = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
+            seen = next((lv for lv in (dt_locals.get("localVariables") or []) if lv.get("name") == "seenAt"), {})
+            assert str(seen.get("type", "")).lower() == "datetime" and "2026-01-01" in str(seen.get("value")) \
+                and "12:30" in str(seen.get("value")), f"DateTime local did not read back: {dt_locals}"
+            bad_dt = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": int(app_id), "confirm": True,
+                "addLocalVariable": {"name": "seenBad", "type": "DateTime", "value": "tomorrow"}}})
+            assert bad_dt.get("success") is False and "yyyy-MM-ddTHH:mm" in str(bad_dt.get("error", "")) \
+                and bad_dt.get("backup") is None, f"a malformed DateTime local should be refused before any write: {bad_dt}"
+
             self._assert_rule_healthy(app_id)
 
             # removeLocalVariable clean path: the referencing action is removed first (using
