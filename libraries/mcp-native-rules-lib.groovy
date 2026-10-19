@@ -8545,7 +8545,7 @@ def toolSetRule(args) {
     return out
 }
 
-// Every write response says the same three things: applied (something was written and stays),
+// Every hub_set_rule response says the same three things: applied (something was written and stays),
 // activated (the rule runs with it: its re-initialization was not skipped or rejected) and
 // verified (activated, and the readback and health check confirmed it). applied is null when a
 // failure left fields written or an editor open. Schema and probe results are left alone.
@@ -14119,6 +14119,7 @@ def _applyNativeAppEdit(args) {
         // auto-fired, so the subscription-settle check below runs only when
         // updateRule was actually clicked (submitOnChange apps click nothing).
         def implicitCommitButton = null
+        boolean settingsWritten = false
 
         if (settingsMap) {
             def config = _rmFetchConfigJson(appId, pageName)
@@ -14137,9 +14138,7 @@ def _applyNativeAppEdit(args) {
             def isSubPageWrite = (pageName && pageName != "mainPage")
             def subPageApplied = []
             def subPageSkipped = []
-            // A page-context click that the page does not render refuses the whole call before any
-            // setting is written: a validation refusal comes before every side effect.
-            if (button && pageName) _rmRequireRenderedButton(config?.configPage as Map, button, pageName)
+            settingsWritten = !knownSettings.isEmpty()
             if (knownSettings && isSubPageWrite) {
                 // Write sub-page keys one at a time with page context and verify each landed, including
                 // the sticky multiple flag; settingsApplied lists only confirmed keys.
@@ -14191,12 +14190,17 @@ def _applyNativeAppEdit(args) {
         }
 
         if (button) {
-            // A page-context click was checked against the page's buttons before any setting was
-            // written (above); without pageName the click is sent as named.
+            // A page-context click is checked against the page as it renders after this call's
+            // settings, since a write can reveal the button; without pageName it is sent as named.
             if (pageName) {
                 try { _rmClickRenderedButton(appId, button, args?.stateAttribute?.toString(), pageName) }
                 catch (IllegalArgumentException notRendered) {
-                    if (settingsMap || _rmOutcomeFlags(notRendered).notSent != true) throw notRendered
+                    if (_rmOutcomeFlags(notRendered).notSent != true) throw notRendered
+                    if (settingsWritten) {
+                        return result + [success: false, partial: true, mainPageDoneSkipped: true,
+                                         error: "${notRendered.message} The settings in this call were written first and stay applied: ${result.settingsApplied}.".toString(),
+                                         restoreHint: _rmBackupHint(backup)]
+                    }
                     return [success: false, appId: appId, error: notRendered.message, backup: backup,
                             restoreHint: _rmPreflightRestoreHint(null, backup, "Refused before the click was sent, so nothing needs to be restored.")]
                 }

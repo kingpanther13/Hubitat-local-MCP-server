@@ -398,26 +398,65 @@ class WalkStepSourceSpec extends ToolSpecBase {
         notSent.restoreHint.contains("Refused before any write or click was sent, so nothing needs to be restored.")
     }
 
-    def "raw settings with a page-context button the page does not render are refused before any setting is written"() {
-        given:
+    def "raw settings with a page-context button are written first, so a button the write reveals is clicked"() {
+        given: "selectTriggers shows moreCond only once tCapab1 is written"
         enableWrite()
+        def posts = []
         hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", []) }
         hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            page("selectTriggers", [[name: "tCapab1", type: "enum", options: ["Switch"]], [name: "hasAll", type: "button"]])
+            posts.any { it.body?.containsKey("settings[tCapab1]") } ?
+                page("selectTriggers", [[name: "tCapab1", type: "enum", options: ["Switch"], value: "Switch"], [name: "moreCond", type: "button"]]) :
+                page("selectTriggers", [[name: "tCapab1", type: "enum", options: ["Switch"]]])
         }
         hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << [path: path, body: body]; [status: 200, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, settings: [tCapab1: "Switch"], button: "moreCond", pageName: "selectTriggers"])
+
+        then:
+        result.success == true
+        result.settingsApplied == ["tCapab1"]
+        result.buttonClicked == "moreCond"
+        def writeAt = posts.findIndexOf { it.body?.containsKey("settings[tCapab1]") }
+        def clickAt = posts.findIndexOf { it.path == "/installedapp/btn" && it.body?.name == "moreCond" }
+        writeAt >= 0 && clickAt > writeAt
+    }
+
+    def "raw settings with a page-context button the written page does not render are partial: settings kept, no click"() {
+        given:
+        enableWrite()
         def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            def written = posts.any { it.body?.containsKey("settings[tCapab1]") }
+            def inputs = [[name: "tCapab1", type: "enum", options: ["Switch"]] + (written ? [value: "Switch"] : [:]), [name: "hasAll", type: "button"]]
+            if (shownBefore && !written) inputs << [name: "actionDone", type: "button"]
+            page("selectTriggers", inputs)
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << [path: path, body: body]; [status: 200, data: ''] }
 
         when:
         def result = script.toolSetRule([appId: 100, confirm: true, settings: [tCapab1: "Switch"], button: "actionDone", pageName: "selectTriggers"])
 
-        then:
+        then: "the write stays, the click is not sent, and the hint is a restore, never 'not touched'"
         result.success == false
+        result.partial == true
+        result.settingsApplied == ["tCapab1"]
         result.error.contains("Button 'actionDone' is not rendered on page 'selectTriggers'")
-        result.applied == false
-        !posts.any { it.body?.containsKey("settings[tCapab1]") }
+        result.error.contains("written first")
+        !result.restoreHint.contains("not touched")
+        !result.restoreHint.contains("nothing needs to be restored")
+        result.applied == true
+        result.activated == false
+        posts.any { it.body?.containsKey("settings[tCapab1]") }
         !posts.any { it.path == "/installedapp/btn" }
+
+        where:
+        desc                                   | shownBefore
+        "never rendered"                       | false
+        "rendered before, hidden by the write" | true
     }
 
     def "a patches button with pageName is checked against that page: an unrendered one stops the batch unsent"() {
