@@ -1985,9 +1985,9 @@ class Issue490Firmware252Spec extends ToolSpecBase {
         script._probeUrl('https://h/x/db.lzf', 16L * 1024 * 1024) == [error: error]
 
         where:
-        hook                                                                          || error
-        { Map params, Closure c -> throw new RuntimeException('connection refused') } || 'connection refused'
-        { Map params, Closure c -> c([status: 302, headers: [:]]) }                   || 'the host answered HTTP 302'
+        hook << [{ Map params, Closure c -> throw new RuntimeException('connection refused') },
+                 { Map params, Closure c -> c([status: 302, headers: [:]]) }]
+        error << ['connection refused', 'the host answered HTTP 302']
     }
 
     def "a failed size check names its reason instead of reading as an unreported size"() {
