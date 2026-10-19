@@ -18256,12 +18256,9 @@ def toolUpdateItemCode(String type, String idParam, args) {
 }
 private _itemRowVersion(String type, itemId) {
     try {
-        def txt = (type == "app") ? hubInternalGet("/app/list/data", null, 30)
-                                  : hubInternalGet("/${type}/list/single/data/${java.net.URLEncoder.encode(itemId.toString(), 'UTF-8')}", null, 30)
+        def txt = hubInternalGet("/${type}/list/single/data/${java.net.URLEncoder.encode(itemId.toString(), 'UTF-8')}", null, 30)
         def d = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        def row = (type == "app")
-            ? ((d instanceof List) ? d.find { it instanceof Map && it.id?.toString() == itemId.toString() } : null)
-            : ((d instanceof List && d) ? d[0] : (d instanceof Map ? d : null))
+        def row = (d instanceof List && d) ? d[0] : (d instanceof Map ? d : null)
         return (row instanceof Map) ? row.version : null
     } catch (Exception e) {
         mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} row version: ${e.message}")
