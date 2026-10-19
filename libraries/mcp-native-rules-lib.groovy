@@ -4188,10 +4188,14 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
     }
     List fieldDefs = (((entry.slots ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.slots ?: [])) as List)).findAll { it.key && it.name }
     def editable = (fieldDefs*.name).unique() + (actions != null ? ["action"] : [])
-    // At most one of an exclusive group may be given, as on an add.
+    // At most one of an exclusive group may be given, as on an add. A member the row already holds
+    // through its picker option (rgb's Custom RGB color) counts too, unless mods rewrite that picker.
     (((entry.exclusive ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.exclusive ?: [])) as List)).each { List g ->
         def given = g.findAll { mods.containsKey(it?.toString()) && mods.get(it?.toString()) != null }
         if (given.size() > 1) throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes one of ${g.join(', ')}, not ${given.join(' and ')}. RM is not touched.".toString())
+        def held = g.findAll { m -> !(m in given) && fieldDefs.any { Map d -> d.name == m && d.whenSet instanceof String &&
+            committed(d.key.toString().replace(".@N", ""))?.toString() == d.whenSet && !fieldDefs.any { Map o -> o.key == d.key && mods.get(o.name?.toString()) != null } } }
+        if (given && held) throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes one of ${g.join(', ')}, and action ${actionIdx} uses ${held.join(' and ')}, so ${given.join(' and ')} cannot be added unless the same mods give a field that replaces ${held.join(' and ')}. RM is not touched.".toString())
     }
     // A field of a together group may come alone only when the row's picker already holds its option.
     (((entry.together ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.together ?: [])) as List)).each { List g ->
