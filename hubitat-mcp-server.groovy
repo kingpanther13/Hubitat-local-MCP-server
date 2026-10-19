@@ -10680,6 +10680,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
         return _rmEmptyHealthVerdict(unreadable: true, issues: ["health check failed: appId is null"])
     }
     def issues = []
+    def warnings = []              // configuration the rule runs with as asked, worth knowing, never gate-failing
     def checkErrors = []           // lone-source read failures: visible diagnostics, never gate-failing evidence
     def label = null
     Boolean appDisabled = null     // red-X state from the configure-json app block; null = not read
@@ -10781,10 +10782,11 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
                 issues << "label contains *BROKEN* marker — rule has at least one malformed trigger or action".toString()
             }
             // "Use Required Expression" switched on with no committed expression: RM runs the rule
-            // as if there were no gate at all.
+            // as if there were no gate at all. A warning, not an issue: the rule is intact and a
+            // settings write that asked for exactly this must not read as failed.
             if (cfg?.settings?.useST?.toString() == "true") {
                 if (ruleFormat == "rm" && requiredExpressionTokens == 0) {
-                    issues << "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED. Rebuild it with hub_set_rule(addRequiredExpression=...), or turn useST off if no gate is wanted.".toString()
+                    warnings << "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED. Rebuild it with hub_set_rule(addRequiredExpression=...), or turn useST off if no gate is wanted.".toString()
                 } else if (requiredExpressionTokens == null) {
                     checkErrors << "Required Expression is enabled (useST) but the committed expression was not read, so an ungated rule is not ruled out -- re-check it, or read its expression with hub_get_app_config.".toString()
                 }
@@ -10894,6 +10896,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto", String activePage 
     // extra localhost GET, not response size — the empty arrays are a few bytes.
     def result = [
         ok: issues.isEmpty() && broken != true && validationErrors.isEmpty(),
+        warnings: warnings,
         // unreadable: NEITHER source could be read -- a "couldn't check" verdict, not
         // a "checked and broken" one (ok stays false; there is no positive evidence
         // either way). Callers gating committed work on ok should treat unreadable

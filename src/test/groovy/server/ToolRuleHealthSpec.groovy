@@ -330,9 +330,10 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         when:
         def health = script._rmCheckRuleHealth(100)
 
-        then:
-        health.ok == !flagged
-        health.issues.any { it.contains("runs UNGATED") } == flagged
+        then: "an ungated rule is a warning, never an issue: ok stays true"
+        health.ok == true
+        health.warnings.any { it.contains("runs UNGATED") } == flagged
+        !health.issues.any { it.contains("runs UNGATED") }
 
         where:
         desc                                   | useST  | evalState              || flagged
@@ -367,6 +368,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         then:
         h.requiredExpressionTokens == null
         !h.issues.any { it.contains("runs UNGATED") }
+        !h.warnings.any { it.contains("runs UNGATED") }
         h.checkErrors.any { it.contains("ungated rule is not ruled out") }
     }
 
@@ -384,6 +386,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         then:
         h.checkErrors.any { it.contains("ungated rule is not ruled out") }
         !h.issues.any { it.contains("runs UNGATED") }
+        !h.warnings.any { it.contains("runs UNGATED") }
     }
 
     def "auto: empty {} (nonexistent id) is ignored as a JSON source and falls back to HTML"() {
