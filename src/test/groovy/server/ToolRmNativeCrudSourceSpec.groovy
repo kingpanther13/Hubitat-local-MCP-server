@@ -2522,6 +2522,41 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         notThrown(IllegalArgumentException)
     }
 
+    def "a compareToDevice reference device must have the capability, on the #path path"() {
+        given: "26 and 28 measure temperature; 27 is a switch"
+        enableWrite()
+        hubGet.register('/hub2/vrb/devices') { params ->
+            JsonOutput.toJson([[id: 26, label: "Temp", capabilities: ["TemperatureMeasurement"]], [id: 27, label: "S", capabilities: ["Switch"]],
+                               [id: 28, label: "Temp2", capabilities: ["TemperatureMeasurement"]]])
+        }
+        [26, 27, 28].each { id -> hubGet.register("/device/fullJson/${id}".toString()) { params -> JsonOutput.toJson([id: id]) } }
+        def numeric = { ref -> [capability: "Temperature", deviceIds: [26], comparator: ">", compareToDevice: [deviceId: ref]] }
+        def check = { ref ->
+            if (path == "trigger") script._rmPrevalidateTriggerSpecList([numeric(ref)], "addTriggers")
+            else if (path == "conditional trigger") script._rmPrevalidateTriggerSpecList([[capability: "Switch", deviceIds: [27], state: "on", condition: numeric(ref)]], "addTriggers")
+            else script._rmPrevalidateConditionList([conditions: [numeric(ref)]], "addRequiredExpression")
+        }
+
+        when: "the reference is the switch"
+        check(27)
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains("${label}: device 27 (S) does not have the temperatureMeasurement capability")
+
+        when: "the reference measures temperature"
+        check(28)
+
+        then:
+        notThrown(IllegalArgumentException)
+
+        where:
+        path                  | label
+        "trigger"             | "addTrigger.compareToDevice.deviceId"
+        "conditional trigger" | "addTrigger.condition.compareToDevice.deviceId"
+        "expression"          | "addRequiredExpression.conditions[0].compareToDevice.deviceId"
+    }
+
     def "modifyAction writes a changed useLastEventDevice and carries the committed one"() {
         given:
         wireModifyEditorTransport(100, [1], ["tDev1": ["8"], "actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"], "cCmd.1": "on", "useLastDev.1": "true"], runCommandEditor(1))

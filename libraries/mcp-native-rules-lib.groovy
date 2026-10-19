@@ -3522,6 +3522,12 @@ private void _rmRequireConditionDeviceCapability(String label, Map spec) {
     def hit = table.find { k, v -> k.toString().equalsIgnoreCase(rmCap) }
     if (hit == null) return
     _rmRequireDevicesWithCapability(label, spec.deviceIds ?: (spec.deviceId != null ? [spec.deviceId] : null), hit.value?.toString())
+    // compareToDevice's reference picker lists devices of the same capability; RM keeps any id and
+    // renders "> device(null)", which evaluates true.
+    def ref = (spec.compareToDevice instanceof Map) ? (spec.compareToDevice as Map).deviceId : null
+    if (ref != null) {
+        _rmRequireDevicesWithCapability("${label.replaceAll(/\.deviceIds$/, '')}.compareToDevice.deviceId".toString(), [ref], hit.value?.toString())
+    }
 }
 
 // Device id -> [label, lower-cased capabilities], read once per call; empty when the list is unreadable.
