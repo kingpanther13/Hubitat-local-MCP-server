@@ -121,7 +121,7 @@ On MCP 2026-07-28, eligible slow writes continue automatically across bounded St
                     ],
                     addLocalVariable: [
                         type: "object",
-                        description: "Add a local variable. Spec: {name, type, value} -- ALL THREE are REQUIRED (value is not optional: RM auto-commits the variable only when the value is written, so a missing value is rejected up front). type is one of Number/Decimal/String/Boolean/DateTime (case-insensitive; DateTime wants an ISO timestamp, e.g. 2026-05-06T12:00:00) and value must match the type. This differs from the setLocalVariable ACTION, which takes exactly one of value/sourceVariable/fromDevice/math. Use as %name% in actions/expressions. An existing name is refused; change its value with a setLocalVariable action."
+                        description: "Add a local variable: {name, type, value}, all three required. type: Number/Decimal/String/Boolean/DateTime (DateTime is ISO, e.g. 2026-05-06T12:00:00); value must match it. An existing name is refused.[[FLAT_TRIM]] RM commits the variable only when the value is written. Unlike the setLocalVariable ACTION (exactly one of value/sourceVariable/fromDevice/math), all three keys are needed. Use as %name% in actions/expressions; change an existing variable's value with a setLocalVariable action.[[/FLAT_TRIM]]"
                     ],
                     removeLocalVariable: [
                         type: "object",

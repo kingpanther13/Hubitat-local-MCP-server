@@ -153,7 +153,8 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         def content = script.getToolGuideSections()['set_rule_reference'] as String
 
         expect:
-        content.contains("checked against the page's buttons after the call's `settings` are written")
+        content.contains("checked against the page as re-rendered after the call's `settings` land")
+        content.contains("after a settings write the result is `partial` with `settingsApplied`")
         !content.contains("before any `settings` are written")
     }
 
