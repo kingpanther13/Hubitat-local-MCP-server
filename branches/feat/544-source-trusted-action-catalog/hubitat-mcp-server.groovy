@@ -24206,6 +24206,9 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             throw new IllegalStateException("addTrigger: compareToDevice: the reference-device picker reltDevice${idx} did not appear after istDev${idx}=true.".toString())
         }
         writeIfPresent("reltDevice${idx}", ctd.deviceId.toString())
+        if (!applied.contains("reltDevice${idx}".toString())) {
+            throw new IllegalStateException("addTrigger: compareToDevice: reference device ${ctd.deviceId} did not land in reltDevice${idx}, so the trigger was not committed (it would compare against no device).".toString())
+        }
         if (ctd.offset != null) rhsOverride = ctd.offset
     }
     if (triggerSpec.buttonNumber != null) {
@@ -24578,6 +24581,7 @@ private Map _rmCondTables() {
      numericOps: ["=", "\u2260", "<", ">", "<=", ">=", "in"],
      changeOps: ["*changed*", "*increased*", "*decreased*"],
      overOps: ["*increased by over*", "*decreased by over*"],
+     noStaysOps: ["*changed*", "*increased*", "*decreased*", "*is empty*"],
      stringOps: ["=", "\u2260", "*contains*", "*changed*", "*is empty*"],
      variableOps: ["=", "\u2260", "<", ">", "<=", ">=", "in", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"],
      buttonStates: ["pushed", "held", "doubleTapped", "released"],
@@ -24649,8 +24653,10 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
         String cmp = _rmNormalizeComparator(spec.comparator)?.toString()
         boolean change = _rmComparatorIsRhsOptional(spec.comparator)
         List allowed = null
-        boolean trigOnly = (change && fam != "time") || (cmp in ((t.changeOps as List) + (t.overOps as List)) && fam in ["numeric", "variable"])
-        String condSteer = kind == "condition" && trigOnly ? " '${cmp}' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.".toString() : ""
+        boolean noTrigChange = change && cap in (t.noChangeState as List)
+        boolean trigOnly = (change && fam != "time" && !noTrigChange) || (cmp in ((t.changeOps as List) + (t.overOps as List)) && fam in ["numeric", "variable"])
+        String condSteer = kind != "condition" ? "" : trigOnly ? " '${cmp}' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.".toString() :
+            (noTrigChange ? " Rule Machine offers '${cmp}' on neither a ${cap} condition nor a ${cap} trigger.".toString() : "")
         boolean trigChange = kind == "trigger" && spec.allOfThese != true
         if (fam == "numeric") allowed = (t.numericOps as List) + (trigChange ? (t.changeOps as List) + (t.overOps as List) : [])
         else if (fam == "variable") allowed = (((t.variableOps as List) - (kind == "condition" ? (t.changeOps as List) + (t.overOps as List) : [])) + (t.stringOps as List)).unique()
@@ -24667,8 +24673,8 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     if (spec.andStays != null && (kind != "trigger" || cap in (t.noDuration as List))) {
         throw new IllegalArgumentException("${where}: Rule Machine has no 'and stays' duration for a ${cap} ${kind}. ${hint}".toString())
     }
-    if (spec.andStays != null && (_rmComparatorIsRhsOptional(spec.comparator) || _rmNormalizeComparator(spec.comparator)?.toString() in (t.changeOps as List))) {
-        throw new IllegalArgumentException("${where}: Rule Machine offers 'and stays' only for a state, not with the change comparator '${spec.comparator}'; drop andStays or pass a state. ${hint}".toString())
+    if (spec.andStays != null && (_rmComparatorIsRhsOptional(spec.comparator) || _rmNormalizeComparator(spec.comparator)?.toString() in (t.noStaysOps as List))) {
+        throw new IllegalArgumentException("${where}: Rule Machine offers 'and stays' only for a state, not with the comparator '${spec.comparator}' (it offers none with ${(t.noStaysOps as List).join(', ')}); drop andStays or pass a state. ${hint}".toString())
     }
 }
 private List _rmCondNotModelled() { ["Between two dates", "Days of week", "On a Day", "Lock codes", "Last Event Device", "Time of day", "Time Since Event"] }
@@ -24769,7 +24775,7 @@ private Map _rmCondEntry(String cap, String kind) {
             }
             break
     }
-    if (trig && !((t.noDuration as List).contains(cap)) && fam != "time") opt << f("andStays", "Map", [description: "{hours?, minutes?, seconds?}; with a state, never a change comparator"])
+    if (trig && !((t.noDuration as List).contains(cap)) && fam != "time") opt << f("andStays", "Map", [description: "{hours?, minutes?, seconds?}; with a state, never with ${(t.noStaysOps as List).join(', ')}".toString()])
     if (trig) opt << f("condition", "Map", [description: "a condition (discover kind:'condition') gating this trigger"])
     else opt << f("not", "Boolean")
     opt << f("rawSettings", "Map", [description: "RM settings for fields not listed; '@N' becomes the row index"])
@@ -25262,6 +25268,10 @@ private void _rmRequireConditionDeviceCapability(String label, Map spec) {
     def hit = table.find { k, v -> k.toString().equalsIgnoreCase(rmCap) }
     if (hit == null) return
     _rmRequireDevicesWithCapability(label, spec.deviceIds ?: (spec.deviceId != null ? [spec.deviceId] : null), hit.value?.toString())
+    def ref = (spec.compareToDevice instanceof Map) ? (spec.compareToDevice as Map).deviceId : null
+    if (ref != null) {
+        _rmRequireDevicesWithCapability("${label.replaceAll(/\.deviceIds$/, '')}.compareToDevice.deviceId".toString(), [ref], hit.value?.toString())
+    }
 }
 private Map _rmDeviceCapsById(String label, String cap) {
     def byId = _memoDeviceList()
@@ -25773,6 +25783,9 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
     (((entry.exclusive ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.exclusive ?: [])) as List)).each { List g ->
         def given = g.findAll { mods.containsKey(it?.toString()) && mods.get(it?.toString()) != null }
         if (given.size() > 1) throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes one of ${g.join(', ')}, not ${given.join(' and ')}. RM is not touched.".toString())
+        def held = g.findAll { m -> !(m in given) && fieldDefs.any { Map d -> d.name == m && d.whenSet instanceof String &&
+            committed(d.key.toString().replace(".@N", ""))?.toString() == d.whenSet && !fieldDefs.any { Map o -> o.key == d.key && mods.get(o.name?.toString()) != null } } }
+        if (given && held) throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes one of ${g.join(', ')}, and action ${actionIdx} uses ${held.join(' and ')}, so ${given.join(' and ')} cannot be added unless the same mods give a field that replaces ${held.join(' and ')}. RM is not touched.".toString())
     }
     (((entry.together ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.together ?: [])) as List)).each { List g ->
         def given = g.findAll { mods.get(it?.toString()) != null }
@@ -26428,7 +26441,7 @@ private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean co
         return false
     }
 }
-private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String action) {
+private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String action, Map status = null) {
     def _impl = {
     def actType = null
     def actSubType = null
@@ -26791,7 +26804,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         if (!actionSpec.command) throw new IllegalArgumentException("runCommand requires 'command' (the device driver method name)")
         fields = ["useLastDev.@N": (actionSpec.useLastEventDevice == true)]
         if (actionSpec.useLastEventDevice == true) {
-            _rmRequireLastEventDeviceTrigger("runCommand", appId, actionSpec.capabilityFilter, null, actionSpec.__pendingTriggerDeviceIds as List)
+            _rmRequireLastEventDeviceTrigger("runCommand", appId, actionSpec.capabilityFilter, status, actionSpec.__pendingTriggerDeviceIds as List)
         }
         if (actionSpec.parameters instanceof List && !actionSpec.parameters.isEmpty()) {
             actionSpec.parameters.eachWithIndex { p, paramIdx ->
@@ -27134,7 +27147,7 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
         }
     }
 }
-private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null, List pendingTriggerDeviceIds = null) {
+private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null, List pendingTriggerDeviceIds = null, Map status = null) {
     specs.eachWithIndex { spec, i ->
         if (!(spec instanceof Map)) {
             throw new IllegalArgumentException("${label}[${i}] must be an action spec object, got '${spec}'. RM is not touched.")
@@ -27148,7 +27161,7 @@ private void _rmPrevalidateActionSpecList(List specs, String label, Set validRul
             _rmPrevalidateActionSpec(sm, cap, validRuleIds)
             def copy = new LinkedHashMap(sm)
             if (pendingTriggerDeviceIds) copy.__pendingTriggerDeviceIds = pendingTriggerDeviceIds
-            _rmMapActionSpec(appId, copy, cap, sm.action?.toString()?.trim())
+            _rmMapActionSpec(appId, copy, cap, sm.action?.toString()?.trim(), status)
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException(_rmNotTouched("${label}[${i}]: ${e.message}".toString()), e)
         }
@@ -27204,7 +27217,7 @@ private String _rmAddActionNote(Map r) {
     if (r?.partial == true) return "Action ${r.actionIndex} added and baked, but some fields did not land; see settingsSkipped / repairHints."
     return "Action ${r?.actionIndex} added and baked (no trailing updateRule needed; the action editor finalizes it)."
 }
-Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null) {
+Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null, Map status = null) {
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
     Long reqT0 = (actionSpec.__reqT0 instanceof Number && ((Number) actionSpec.__reqT0).longValue() > 0) ?
             ((Number) actionSpec.__reqT0).longValue() : null
@@ -27233,11 +27246,11 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         }
     }
     _rmPrevalidateActionSpec(actionSpec, cap, validRuleIds)
-    def existing = _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
+    def addStatus = status ?: _rmFetchStatusJson(appId)
+    def existing = _rmActionIndicesFromSettings(addStatus)
     def idx = (existing ? existing.max() + 1 : 1)
     if (cap == "waitEvents" && existing) {
-        def status = _rmFetchStatusJson(appId)
-        def existingWaitIdx = (status?.appSettings ?: []).findResult { s ->
+        def existingWaitIdx = (addStatus?.appSettings ?: []).findResult { s ->
             def n = s?.name?.toString()
             if (!n) return null
             def m = (n =~ /^actSubType\.(\d+)$/)
@@ -27254,7 +27267,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
         }
     }
     def mapped
-    try { mapped = _rmMapActionSpec(appId, actionSpec, cap, action) }
+    try { mapped = _rmMapActionSpec(appId, actionSpec, cap, action, addStatus) }
     catch (IllegalArgumentException argExc) {
         if (intraBatch) throw argExc
         throw new IllegalArgumentException(_rmNotTouched(argExc.message), argExc)
@@ -27676,6 +27689,9 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
             throw new IllegalStateException("addTrigger.condition: compareToDevice: the reference-device picker relDevice_${idx} did not appear after isDev_${idx}=true.".toString())
         }
         _rmWriteSettingOnPage(appId, "selectTriggers", "relDevice_${idx}", ctd.deviceId.toString(), applied, null, skipped)
+        if (!(applied ?: []).contains("relDevice_${idx}".toString())) {
+            throw new IllegalStateException("addTrigger.condition: compareToDevice: reference device ${ctd.deviceId} did not land in relDevice_${idx}, so the condition was not committed (it would compare against no device).".toString())
+        }
         if (ctd.offset != null) {
             _rmWriteSettingOnPage(appId, "selectTriggers", "state_${idx}", ctd.offset, applied, null, skipped)
         }
@@ -27780,6 +27796,13 @@ private String _rmPreflightRestoreHint(String reason = null, Map backup = null, 
             ? " The backupKey on this response is the baseline reused from an earlier edit; restoring it reverts every edit since it was taken, not just this one."
             : " The backupKey on this response is an unused snapshot taken before the refusal.")
     "${lead ?: 'Pre-flight refusal -- the app was not touched, so nothing needs to be restored.'}${snapshot}${why}"
+}
+private Map _rmRawNotOffered(Map field, String key, Object value) {
+    if (!(value instanceof List)) return _rmNotOfferedSkip(field, key, value)
+    if (field?.type != "enum" || field.options == null) return null
+    List offered = _rmReadPickerOptionStrings(field)
+    def bad = (value as List).findAll { !(it?.toString() in offered) }.collect { it?.toString() }
+    return (offered && bad) ? [key: key, reason: "not_offered", value: value, notOffered: bad, offered: offered] : null
 }
 private String _rmBackupHint(Map backup, String withBackup = null) {
     if (backup?.backupKey) {
@@ -29363,7 +29386,7 @@ private Map _rmReadLocalVarsMap(Integer appId) {
     }
     return [ok: true, vars: (raw instanceof Map) ? raw : [:], live: live]
 }
-private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
+private Map _rmPreflightAddLocalVariable(Integer appId, Map varSpec) {
     if (!(varSpec instanceof Map)) {
         throw new IllegalArgumentException("addLocalVariable requires a Map spec")
     }
@@ -29392,27 +29415,90 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
             }
         }
     }
+    if (typeCanonical == "DateTime" && !(value.toString() ==~ /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}.*/)) {
+        throw new IllegalArgumentException("addLocalVariable.value for DateTime must be yyyy-MM-ddTHH:mm (seconds and zone are ignored), e.g. 2026-05-06T12:00; got '${value}'. RM is not touched.")
+    }
     def existing = _rmReadLocalVarsMap(appId)
-    if (existing.ok && existing.vars.containsKey(name)) {
+    if (existing.ok != true) {
+        throw new IllegalStateException("addLocalVariable: the local variables of rule ${appId} could not be read (${existing.error ?: 'no map'}), so an existing '${name}' cannot be ruled out; RM's editor would keep that variable's type and value. Retry the call. RM is not touched.".toString())
+    }
+    if (existing.vars.containsKey(name)) {
         def meta = existing.vars.get(name)
         def live = existing.live?.get(name)
         def curValue = (live instanceof Map && live.containsKey("value")) ? live.value : (meta instanceof Map ? meta.value : null)
         def curType = meta instanceof Map ? meta.type : null
         throw new IllegalArgumentException("addLocalVariable: local variable '${name}' already exists on rule ${appId} (type ${curType}, value ${curValue}); use an action setLocalVariable to change its value, or removeLocalVariable first. RM is not touched.")
     }
+    return [name: name, type: typeCanonical, value: value, serializedValue: serializedValue]
+}
+private boolean _rmLocalVarMatches(Object meta, String typeCanonical, Object serializedValue) {
+    if (!(meta instanceof Map)) return false
+    Map tokens = [Number: ["integer", "number"], Decimal: ["bigdecimal", "decimal"], String: ["string"], Boolean: ["boolean"], DateTime: ["datetime"]]
+    if (!((tokens[typeCanonical] ?: []) as List).contains(meta.type?.toString()?.toLowerCase())) return false
+    if (typeCanonical == "DateTime") return true
+    def stored = meta.value
+    if (typeCanonical in ["Number", "Decimal"]) {
+        try { return new BigDecimal(stored.toString()).compareTo(new BigDecimal(serializedValue.toString())) == 0 } catch (Exception ignored) { return false }
+    }
+    return stored?.toString() == serializedValue?.toString()
+}
+private boolean _rmCancelLocalVarEditor(Integer appId) {
+    try {
+        _rmClickAppButton(appId, "cancelGV", "cancelGV", "selectActions")
+        def fields = (_rmCollectInputSchema(_rmFetchConfigJson(appId, "selectActions")?.configPage as Map) ?: [:]).keySet()
+        return !fields.any { it in ["hbVar", "varType", "varValue", "varDate", "varTime"] }
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "addLocalVariable: closing the variable editor on app ${appId} failed: ${e.message ?: e.toString()}")
+        return false
+    }
+}
+private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
+    Map pre = plan ?: _rmPreflightAddLocalVariable(appId, varSpec)
+    def name = pre.name
+    def typeCanonical = pre.type
+    def value = pre.value
+    def serializedValue = pre.serializedValue
     def applied = []
     def skipped = []
     _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
     _rmWriteSettingOnPage(appId, "selectActions", "hbVar", name, applied, null, skipped)
     _rmWriteSettingOnPage(appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
-    _rmWriteSettingOnPage(appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
+    if (typeCanonical == "DateTime") {
+        def dtCfg = _rmFetchConfigJson(appId, "selectActions")
+        def dtSchema = _rmCollectInputSchema(dtCfg?.configPage as Map)
+        def missing = ["varDate", "varTime"].findAll { !dtSchema?.containsKey(it) }
+        if (missing) {
+            boolean closed = _rmCancelLocalVarEditor(appId)
+            return [
+                success: false, partial: !closed, wizardStuck: !closed, name: name, type: typeCanonical, value: value,
+                settingsApplied: applied, settingsSkipped: skipped,
+                error: "RM's DateTime editor did not offer ${missing.join(' and ')} for '${name}', so it was not created${closed ? '; the editor was cancelled' : ' and the editor may still be open'}.".toString(),
+                repairHints: closed ? [] : ["Click cancelGV on selectActions (hub_set_rule button:'cancelGV', stateAttribute:'cancelGV', pageName:'selectActions') to close the variable editor."]
+            ]
+        }
+        String v = serializedValue.toString()
+        def dtBody = _rmBuildSettingsBody(appId, [varDate: v.substring(0, 10), varTime: v.substring(11, 16)], dtSchema)
+        dtBody.formAction = "update"
+        dtBody.currentPage = "selectActions"
+        dtBody.pageBreadcrumbs = _rmPageBreadcrumbs(appId, "selectActions", '["mainPage"]')
+        if (dtCfg?.app?.version != null) dtBody.version = dtCfg.app.version.toString()
+        _rmPostSettings(appId, dtBody)
+        applied.addAll(["varDate", "varTime"])
+        _rmClickAppButton(appId, "dateTimeDone", "dtDone", "selectActions")
+    } else {
+        _rmWriteSettingOnPage(appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
+    }
     def committed = false
+    def found = null
     def attempts = 0
     def lastFetchErr = null
     while (attempts < 3 && !committed) {
         def lvRead = _rmReadLocalVarsMap(appId)
         if (lvRead.ok) {
-            if (lvRead.vars.containsKey(name)) committed = true
+            if (lvRead.vars.containsKey(name)) {
+                found = lvRead.vars.get(name)
+                committed = _rmLocalVarMatches(found, typeCanonical, serializedValue)
+            }
         } else {
             lastFetchErr = lvRead.error
         }
@@ -29427,10 +29513,29 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
     if (!committed && lastFetchErr) {
         mcpLog("warn", "rm-native", "addLocalVariable: post-write verification fetch failed for app ${appId} (var '${name}'): ${lastFetchErr}. Treating as not-committed; the actual write may still have landed.")
     }
-    if (!committed) {
+    if (!committed && found != null) {
+        def foundType = (found instanceof Map) ? found.type : null
+        def foundValue = (found instanceof Map) ? found.value : found
         return [
             success: false,
             partial: true,
+            name: name,
+            type: typeCanonical,
+            value: value,
+            settingsApplied: applied,
+            settingsSkipped: skipped,
+            error: "Variable '${name}' is on the rule as type ${foundType}, value ${foundValue}, not the ${typeCanonical} ${value} this call asked for.".toString(),
+            repairHints: [
+                "Read the rule's local variables (hub_list_rule_local_variables). If '${name}' is not what you want, set it with an action setLocalVariable, or removeLocalVariable and add it again.".toString()
+            ]
+        ]
+    }
+    if (!committed) {
+        boolean closed = _rmCancelLocalVarEditor(appId)
+        return [
+            success: false,
+            partial: true,
+            wizardStuck: !closed,
             hubRenderError: true,
             name: name,
             type: typeCanonical,
@@ -31782,6 +31887,7 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Map backup
     try { baselineHealth = _rmCheckRuleHealth(appId) } catch (Exception baseExc) {
         mcpLog("warn", "rm-native", "replaceRequiredExpression: baseline health of app ${appId} could not be read (${baseExc.message})")
     }
+    if (!(baselineHealth instanceof Map)) baselineHealth = [issues: [], structuralIssues: [], warnings: [], brokenMarkerCounts: [:]]
     def rmCache = [:]
     def applied = []
     def skipped = []
@@ -32185,6 +32291,8 @@ def _applyNativeAppEdit(args) {
         throw new IllegalArgumentException("Editing an app requires one of: 'settings' (Map) or 'button' (String) for any classic app; or, for Rule Machine rules via hub_set_rule, a structured shortcut -- 'addTrigger' (Map), 'addTriggers' (List), 'addAction' (Map), 'addActions' (List), 'addRequiredExpression' (Map), 'replaceRequiredExpression' (Map), 'addLocalVariable' (Map), 'removeLocalVariable' ({name}), 'patches' (List of sub-specs), 'removeAction' ({index:N}), 'clearActions' (true), 'replaceActions' (List), 'moveAction' ({index:N, direction:up|down}), 'removeTrigger' ({index:N}), 'modifyTrigger' ({index:N, mods:{state:...}}), 'modifyAction' ({index:N, mods:{ruleIds:[...]}}), or 'walkStep' ({page, operation, write?, click?, navigate?, validateEnum?}) -- none provided.")
     }
     Map modifyActionPlan = null
+    Map addLocalVariablePlan = null
+    Map preActStatus = null
     try {
         if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
         addActionsList?.each { if (it instanceof Map) _rmRejectUnwalkableExpressionConditions(it as Map) }
@@ -32192,8 +32300,9 @@ def _applyNativeAppEdit(args) {
         def preActs = (addActionSpec ? [addActionSpec] : []) + (addActionsList ?: []) + (replaceActionsList ?: [])
         def preTrigs = (addTriggerSpec ? [addTriggerSpec] : []) + (addTriggersList ?: [])
         def preTrigDeviceIds = preTrigs.findAll { it instanceof Map }.collectMany { Map t -> (t.deviceIds instanceof List) ? (t.deviceIds as List) : (t.deviceId != null ? [t.deviceId] : []) }
+        if (appId != null && preActs.any { it instanceof Map && (it as Map).useLastEventDevice == true }) preActStatus = _rmFetchStatusJson(appId)
         if (preActs) _rmPrevalidateActionSpecList(preActs, addActionSpec ? "addAction" : (addActionsList ? "addActions" : "replaceActions"),
-            _rmSpecListTargetsRule(preActs) ? _rmValidRuleIds() : null, appId, preTrigDeviceIds)
+            _rmSpecListTargetsRule(preActs) ? _rmValidRuleIds() : null, appId, preTrigDeviceIds, preActStatus)
         if (preTrigs) _rmPrevalidateTriggerSpecList(preTrigs, addTriggerSpec ? "addTrigger" : "addTriggers")
         if (addRequiredExpressionSpec) _rmPrevalidateConditionList(addRequiredExpressionSpec, "addRequiredExpression")
         if (replaceRequiredExpressionSpec) _rmPrevalidateConditionList(replaceRequiredExpressionSpec, "replaceRequiredExpression")
@@ -32202,6 +32311,8 @@ def _applyNativeAppEdit(args) {
             if (!(modifyActionSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyAction.mods is required: the fields to change, e.g. {ruleIds: [123]}. RM is not touched.")
             modifyActionPlan = _rmPlanModifyAction(appId, _rmPatchOpIndex("modifyAction", modifyActionSpec.index), modifyActionSpec.mods as Map)
         }
+        if (modifyTriggerSpec) _rmCheckModifyTriggerShape(modifyTriggerSpec)
+        if (addLocalVariableSpec) addLocalVariablePlan = _rmPreflightAddLocalVariable(appId, addLocalVariableSpec as Map)
         _rmRejectDisabledAppEdit(appId, _rmEditOpLabel(args))
         if (settingsMap?.values()?.any { it instanceof Map }) {
             _rmRejectNonDeviceMapSettings(appId, args?.pageName?.toString()?.trim() ?: null, settingsMap)
@@ -32642,7 +32753,8 @@ def _applyNativeAppEdit(args) {
     if (addActionSpec) {
         def actResult
         try {
-            actResult = _rmAddAction(appId, _rmWithClock(addActionSpec, args?.__reqT0 as Long))
+            def clocked = _rmWithClock(addActionSpec, args?.__reqT0 as Long)
+            actResult = preActStatus != null ? _rmAddAction(appId, clocked, false, null, preActStatus) : _rmAddAction(appId, clocked)
         } catch (Exception e) {
             mcpLogError("rm-native", "addAction failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
@@ -32992,7 +33104,7 @@ def _applyNativeAppEdit(args) {
     if (addLocalVariableSpec) {
         def varResult
         try {
-            varResult = _rmAddLocalVariable(appId, addLocalVariableSpec)
+            varResult = _rmAddLocalVariable(appId, addLocalVariableSpec, addLocalVariablePlan)
         } catch (Exception e) {
             mcpLogError("rm-native", "addLocalVariable failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
@@ -33136,6 +33248,7 @@ def _applyNativeAppEdit(args) {
     try {
         def result = [success: true, appId: appId, backup: backup]
         def implicitCommitButton = null
+        def settingsCommitButton = null
         boolean settingsWritten = false
         if (settingsMap) {
             def config = _rmFetchConfigJson(appId, pageName)
@@ -33152,14 +33265,20 @@ def _applyNativeAppEdit(args) {
             def isSubPageWrite = (pageName && pageName != "mainPage")
             def subPageApplied = []
             def subPageSkipped = []
-            settingsWritten = !knownSettings.isEmpty()
-            if (knownSettings && isSubPageWrite) {
-                knownSettings.each { k, v ->
+            def notOffered = []
+            def writable = [:]
+            knownSettings.each { k, v ->
+                def refusal = _rmRawNotOffered(schema.get(k.toString()) as Map, k.toString(), v)
+                if (refusal) notOffered << refusal
+                else writable.put(k, v)
+            }
+            if (writable && isSubPageWrite) {
+                writable.each { k, v ->
                     _rmWriteSettingOnPage(appId, pageName, k.toString(), v, subPageApplied, null, subPageSkipped)
                     _rmVerifySubPageMultipleFlags(appId, pageName, [(k.toString()): v], schema)
                 }
-            } else if (knownSettings) {
-                _rmUpdateAppSettings(appId, knownSettings, schema)
+            } else if (writable) {
+                _rmUpdateAppSettings(appId, writable, schema)
             }
             def isMainPage = (!pageName || pageName == "mainPage")
             def editCommitButton = _resolveCommitButton(config?.app?.appType?.name)
@@ -33167,13 +33286,15 @@ def _applyNativeAppEdit(args) {
                     _rmCollectInputSchema(config?.configPage as Map).get("updateRule")?.type != "button") {
                 editCommitButton = null
             }
-            if (!button && isMainPage && knownSettings && editCommitButton) {
+            settingsCommitButton = editCommitButton
+            if (!button && isMainPage && writable && editCommitButton) {
                 _rmClickAppButton(appId, editCommitButton)
                 implicitCommitButton = editCommitButton
             }
-            result.settingsApplied = isSubPageWrite ? subPageApplied : knownSettings.keySet().toList()
-            if (isSubPageWrite && subPageSkipped) {
-                result.settingsNotLanded = subPageSkipped
+            result.settingsApplied = isSubPageWrite ? subPageApplied : writable.keySet().toList()
+            settingsWritten = !((result.settingsApplied ?: []) as List).isEmpty()
+            if (notOffered || subPageSkipped) {
+                result.settingsNotLanded = notOffered + subPageSkipped
                 result.partial = true
             }
             if (unknownSettings) {
@@ -33192,18 +33313,38 @@ def _applyNativeAppEdit(args) {
                 result.subPageNote = "Sub-page write (pageName='${pageName}') — updateRule NOT auto-fired so the editor state survives. Finish the wizard and call hub_set_rule(button='updateRule') to commit."
             }
         }
+        def notLandedFields = { Map m ->
+            ["settingsNotLanded", "settingsSkipped", "unknownSettingsWarning"].each { f -> if (result[f]) m[f] = result[f] }
+            return m
+        }
+        if (settingsMap && !settingsWritten && !button) {
+            return notLandedFields([success: false, appId: appId, backup: backup, settingsApplied: [],
+                    error: "None of the settings ${settingsMap.keySet().collect { it.toString() }} landed on page '${pageName ?: 'mainPage'}'; settingsNotLanded and settingsSkipped say why.".toString(),
+                    restoreHint: _rmPreflightRestoreHint(null, backup, "Nothing landed, so nothing needs to be restored.")])
+        }
         if (button) {
             if (pageName) {
                 try { _rmClickRenderedButton(appId, button, args?.stateAttribute?.toString(), pageName) }
                 catch (IllegalArgumentException notRendered) {
                     if (_rmOutcomeFlags(notRendered).notSent != true) throw notRendered
                     if (settingsWritten) {
-                        return result + [success: false, partial: true, mainPageDoneSkipped: true,
+                        def partialOut = result + [success: false, partial: true, mainPageDoneSkipped: true,
                                          error: "${notRendered.message} The settings in this call were written first and stay applied: ${result.settingsApplied}.".toString(),
                                          restoreHint: _rmBackupHint(backup)]
+                        try { partialOut.health = _rmCheckRuleHealth(appId) }
+                        catch (Exception healthExc) { mcpLog("warn", "rm-native", "hub_set_rule: health check after the unrendered button on app ${appId} failed: ${healthExc.message}") }
+                        def isMain = (!pageName || pageName == "mainPage")
+                        partialOut.repairHints = (partialOut.repairHints ?: []) + [(!isMain ?
+                            "Finish the wizard on '${pageName}', then call hub_set_rule(appId=${appId}, button='updateRule', confirm=true) to commit." :
+                            settingsCommitButton ?
+                            "The settings are written but not activated: the button replaced the implicit ${settingsCommitButton} click. Call hub_set_rule(appId=${appId}, button='${settingsCommitButton}', confirm=true)." :
+                            "The settings are written but the closing mainPage Done was not run; finish with walkStep {page:'mainPage', operation:'done'}.").toString()]
+                        return partialOut
                     }
-                    return [success: false, appId: appId, error: notRendered.message, backup: backup,
-                            restoreHint: _rmPreflightRestoreHint(null, backup, "Refused before the click was sent, so nothing needs to be restored.")]
+                    return notLandedFields([success: false, appId: appId, error: notRendered.message, backup: backup,
+                            restoreHint: _rmPreflightRestoreHint(null, backup, settingsMap ?
+                                "None of the settings landed and the click was not sent, so nothing needs to be restored." :
+                                "Refused before the click was sent, so nothing needs to be restored.")])
                 }
             } else {
                 _rmClickAppButton(appId, button, args?.stateAttribute?.toString(), pageName)
@@ -40509,7 +40650,7 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
     }
     def beforeKeys = (schema.keySet() ?: []) as Set
     def beforeValueStr = schema?."${key}"?.value?.toString()
-    def beforeRenderHash = (config?.configPage?.sections?.toString() ?: "").hashCode()
+    def beforeRenderHash = _rmSanitizeRenderForHash(config?.configPage?.sections).hashCode()
     def writeResp = null
     if (pageName && pageName != "mainPage") {
         def body = _rmBuildSettingsBody(appId, settingsMap, schemaForBuild)
@@ -40560,7 +40701,9 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
     def renderShifted = (beforeRenderHash != afterRenderHash)
     def settingsValue = afterCfg?.settings?."${key}"
     def settingsValueNorm
-    if (settingsValue instanceof List) {
+    if (settingsValue instanceof Map) {
+        settingsValueNorm = ((settingsValue as Map).keySet().collect { it?.toString() } as List).sort().join(",")
+    } else if (settingsValue instanceof List) {
         settingsValueNorm = ((settingsValue as List).collect { it?.toString() }.findAll { it != null } as List).sort().join(",")
     } else if (settingsValue != null) {
         def settingsValueStr = settingsValue.toString()
@@ -42607,14 +42750,14 @@ End a drive with `done` (the mainPage Done, like `updateRule`); without it the c
 ```
 hub_set_rule(appId=N, confirm=true, walkStep={operation:'drive', steps:[
   {page:'selectTriggers', operation:'click', click:{name:'true', stateAttribute:'moreCond'}},
-  {page:'selectTriggers', operation:'write', write:{tCapab1:'Switch'}},
-  {page:'selectTriggers', operation:'write', write:{tDev1:[<deviceId>, ...]}},
-  {page:'selectTriggers', operation:'write', write:{tstate1:'on'}},
-  {page:'selectTriggers', operation:'click', click:{name:'hasAll'}},
-  {page:'selectTriggers', operation:'done'}]})
+  {operation:'write', write:{tCapab1:'Switch'}},
+  {operation:'write', write:{tDev1:[<deviceId>, ...]}},
+  {operation:'write', write:{tstate1:'on'}},
+  {operation:'click', click:{name:'hasAll'}},
+  {operation:'done'}]})
 ```
 
-Raw mode is the same flow one call per step: `settings` (+ `pageName`) writes inputs the page shows, `button` (+ `stateAttribute`, `pageName`) clicks one; with `pageName` it is checked against the page as re-rendered after the call's `settings` land; an unrendered button is not clicked, and after a settings write the result is `partial` with `settingsApplied`. A mainPage `settings` write is followed by `updateRule`; after a sub-page write, close the editor with its Done (`hasAll`, `actionDone`), then `button='updateRule'`. After `hasAll` the tool clears RM's leftover `isCondTrig.<N>` prompt (`wizardDoneAutoRetry`). `settings:{useST:true}` only shows the Required Expression page (build it with `addRequiredExpression`); `settings:{isFunction:true}` makes the rule return a value.
+Raw mode is the same flow one call per step: `settings` (+ `pageName`) writes inputs the page shows, `button` (+ `stateAttribute`, `pageName`) clicks one; with `pageName` it is checked against the page as re-rendered after the call's `settings` land. An unoffered enum value (alone or in a list) is not sent, a call where nothing lands fails (`settingsNotLanded`), and an unrendered button is not clicked (`partial`, `settingsApplied`, `repairHints`). A mainPage `settings` write without a `button` is followed by `updateRule`; after a sub-page write, close the editor with its Done (`hasAll`, `actionDone`), then `button='updateRule'`. After `hasAll` the tool clears RM's leftover `isCondTrig.<N>` prompt (`wizardDoneAutoRetry`). `settings:{useST:true}` only shows the Required Expression page (build it with `addRequiredExpression`); `settings:{isFunction:true}` makes the rule return a value.
 
 ### Responses: applied, activated, verified
 
