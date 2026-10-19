@@ -6545,6 +6545,21 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
             }
         }
     }
+    // compareToDevice: isDev_<n>=true reveals relDevice_<n> (one device of the same capability) and
+    // turns state_<n> into an optional offset.
+    if (condSpec.compareToDevice instanceof Map) {
+        def ctd = condSpec.compareToDevice as Map
+        _rmWriteSettingOnPage(appId, "selectTriggers", "isDev_${idx}", true, applied, null, skipped)
+        def relPage = _rmFetchConfigJson(appId, "selectTriggers")
+        def relInput = (relPage?.configPage?.sections ?: []).collectMany { it?.input ?: [] }.find { it?.name?.toString() == "relDevice_${idx}".toString() }
+        if (relInput == null) {
+            throw new IllegalStateException("addTrigger.condition: compareToDevice: the reference-device picker relDevice_${idx} did not appear after isDev_${idx}=true.".toString())
+        }
+        _rmWriteSettingOnPage(appId, "selectTriggers", "relDevice_${idx}", ctd.deviceId.toString(), applied, null, skipped)
+        if (ctd.offset != null) {
+            _rmWriteSettingOnPage(appId, "selectTriggers", "state_${idx}", ctd.offset, applied, null, skipped)
+        }
+    }
     if (condSpec.buttonNumber != null) {
         _rmWriteSettingOnPage(appId, "selectTriggers", "ButtontDev_${idx}", condSpec.buttonNumber, applied, null, skipped)
     }

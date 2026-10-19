@@ -10577,6 +10577,27 @@ class TestRunner:
                 and trig_settings.get(f"ReltDev{tidx}") == ">" \
                 and str(trig_settings.get(f"tstate{tidx}")) in ("2", "2.0"), \
                 f"the device-relative trigger {tidx} did not persist its reference device and offset: {trig_settings}"
+
+            # A conditional trigger's condition on the trigger page takes the same right side:
+            # isDev_<N> and relDevice_<N>, with the offset in state_<N>.
+            ctrig = self._set_rule(ctd_app_id, {"addTrigger": {
+                "capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": ">", "value": 50,
+                "condition": {"capability": "Temperature", "deviceIds": [int(dev_a)], "comparator": "<",
+                              "compareToDevice": {"deviceId": int(dev_b), "offset": 1}}}}, strict=True)
+            ctidx = ctrig.get("triggerIndex")
+            assert ctrig.get("success") is True and not ctrig.get("partial") and ctidx is not None, \
+                f"the conditional trigger with a device-relative condition did not cleanly commit: {ctrig}"
+            ct_settings = self._get_persisted_rule_config(ctd_app_id).get("settings") or {}
+            bound = ct_settings.get(f"condTrig.{ctidx}")
+            cond_slots = [str(key).split("_", 1)[1] for key, value in ct_settings.items()
+                          if str(key).startswith("relDevice_") and self._setting_holds_exact(value, dev_b)
+                          and str(ct_settings.get(f"state_{str(key).split('_', 1)[1]}")) in ("1", "1.0")]
+            assert any(self._setting_holds_exact(bound, slot)
+                       and str(ct_settings.get(f"isDev_{slot}")).lower() == "true"
+                       and ct_settings.get(f"RelrDev_{slot}") == "<"
+                       and self._setting_holds_exact(ct_settings.get(f"rDev_{slot}"), dev_a)
+                       for slot in cond_slots), \
+                f"trigger {ctidx}'s condition did not persist its reference device and offset: {ct_settings}"
             self._assert_rule_healthy(ctd_app_id)
         finally:
             self._delete_native(ctd_app_id)
