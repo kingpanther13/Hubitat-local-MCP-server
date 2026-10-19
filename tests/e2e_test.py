@@ -4547,6 +4547,7 @@ class TestRunner:
             raise AssertionError("hub_create_device created a device without confirm")
         except (McpToolError, McpError):
             pass
+        count_before = self.client.call_tool("hub_get_info", {}).get("mcpDeviceCount")
         created = self.client.call_tool("hub_manage_devices", {
             "tool": "hub_create_device",
             "args": {"deviceTypeId": type_id, "label": f"{PREFIX}FromDriver", "confirm": True},
@@ -4554,11 +4555,11 @@ class TestRunner:
         assert created.get("success") is True, f"create from driver failed: {created}"
         new_id = str(created.get("deviceId") or "")
         assert new_id, f"create from driver returned no deviceId: {created}"
-        # A created device is outside the MCP device selection unless the allowlist is bypassed; the
-        # response says which and how to add it.
-        assert isinstance(created.get("mcpAccessible"), bool), f"create must say whether the tools reach the device: {created}"
-        if created["mcpAccessible"] is False:
-            assert f"ids: ['{new_id}']" in str(created.get("note")), f"create must say how to add the device: {created.get('note')}"
+        # A created device joins the MCP device selection.
+        count_after = self.client.call_tool("hub_get_info", {}).get("mcpDeviceCount")
+        assert count_after == count_before + 1, (
+            f"mcpDeviceCount {count_before} -> {count_after}: the created device did not join the selection "
+            f"(warnings={created.get('warnings')!r})")
 
         # The label leg is /device/updateLabel -- and this is its only UNCONDITIONAL live proof.
         # (The bypass-block leg that also exercises it is gated on the arbitrarily-picked device
