@@ -3039,12 +3039,13 @@ private Map _rmActionDiscover(Object selector) {
 // (the enum a field takes), required, desc; fixed = the value always written (no spec field); dflt = default;
 // appChoice = a picker of hub data that can be empty (app instances, their modes or periods, hub
 // variables), checked against RM's live options; whenTrue =
-// written only when true; whenSet = written as true when the field is given (the toggle RM shows
-// before the field's own picker); trueWhen = written as (value == trueWhen); direction = written
+// written only when true; whenSet = written when the field is given, before the field's own picker:
+// true (RM's toggle), or a String, the picker option that reveals the field; trueWhen = written as (value == trueWhen); direction = written
 // as (direction == 'raise') or, when false, (direction != 'raise'); nonBlank = must have text.
 // Entry keys: notes (served with discover), requires (field names, an inner list meaning one of
-// them), exclusive (lists of fields of which at most one is given), common (fields every action
-// of the entry takes); requires and exclusive apply per entry and per action.
+// them), exclusive (lists of fields of which at most one is given), together (lists of fields given
+// all at once, except on an in-place edit of a row whose picker already holds their whenSet option),
+// common (fields every action of the entry takes); requires, exclusive and together apply per entry and per action.
 // custom = handled by the dedicated code in _rmMapActionSpec (the catalog still describes it).
 private Map _rmActionCatalog() {
     def table = {
@@ -3077,7 +3078,14 @@ private Map _rmActionCatalog() {
             setLevelPerMode: [sub: "getDimmersPerMode", custom: true, slots: [dev("dimM.@N"), [name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: level, ...}"], [name: "fadeSeconds", key: "dimMR.@N", type: "Integer"]]]
         ], common: [delay, raw]],
         color: [actType: "dimmerActs", family: "device", actions: [
-            setColor:    [sub: "getSetColor", custom: true, requires: [["colorName", "rawSettings"]], slots: [dev("bulbs.@N"), [name: "colorName", key: "color.@N", type: "String", desc: "e.g. 'Red'; or a custom HSV color via rawSettings colorH.@N"], [name: "level", key: "colorLevel.@N", type: "Integer"]]],
+            setColor:    [sub: "getSetColor", custom: true, requires: [["colorName", "hue", "rgb", "rawSettings"]],
+                          exclusive: [["colorName", "hue", "rgb"], ["colorName", "saturation", "rgb"], ["rgb", "level"]], together: [["hue", "saturation"]],
+                          notes: "a custom color is hue + saturation (RM's Custom HSB color) or rgb (its Custom RGB color, which RM gives no level)",
+                          slots: [dev("bulbs.@N"), [name: "colorName", key: "color.@N", type: "String", desc: "e.g. 'Red'"],
+                                  [name: "hue", key: "color.@N", whenSet: "Custom HSB color", type: "Number"], [name: "hue", key: "colorHex.@N", type: "Number", desc: "0-360, with saturation"],
+                                  [name: "saturation", key: "color.@N", whenSet: "Custom HSB color", type: "Number"], [name: "saturation", key: "colorSat.@N", type: "Number", desc: "0-100, with hue"],
+                                  [name: "rgb", key: "color.@N", whenSet: "Custom RGB color", type: "String"], [name: "rgb", key: "colorH.@N", type: "String", desc: "'#rrggbb'"],
+                                  [name: "level", key: "colorLevel.@N", type: "Integer", desc: "0-100; not with rgb"]]],
             toggleColor: [sub: "getToggleColor", slots: [dev("bulbsTog.@N"), [name: "colorName", key: "colorTog.@N", type: "String", required: true, desc: "e.g. 'Red'"], [name: "level", key: "colorTogLevel.@N", type: "Integer", required: true, desc: "0-100"]]],
             setColorPerMode: [sub: "getColorPerMode", custom: true, slots: [dev("bulbsM.@N"), [name: "perMode", type: "Map", required: true, desc: "{modeIdOrName: {color: 'Red', level: 70}, ...}"]]]
         ], common: [delay, raw]],
@@ -3321,6 +3329,8 @@ private Map _rmActionSchemaForDiscover() {
         if (entry.requires) out.requires = entry.requires
         def exclusive = (((entry.exclusive ?: []) as List) + perAction.collectMany { act, Map ae -> act == null ? [] : ((ae.exclusive ?: []) as List) }).unique()
         if (exclusive) out.exclusive = exclusive
+        def together = (((entry.together ?: []) as List) + perAction.collectMany { act, Map ae -> act == null ? [] : ((ae.together ?: []) as List) }).unique()
+        if (together) out.together = together
         def notes = [entry.notes] + perAction.collect { act, Map ae -> ae.notes ? "${act}: ${ae.notes}".toString() : null }
         notes = notes.findAll { it }
         if (notes) out.notes = notes.join(". ")
@@ -3568,7 +3578,7 @@ private Map _rmMapCatalogAction(String cap, String action, Map actionSpec, Map e
             if (f.direction != null) value = (f.direction == true) ? (value == "raise") : (value != "raise")
             else if (value == null && f.containsKey("dflt")) value = f.dflt
             if (f.trueWhen != null && value != null) value = value.toString() == f.trueWhen.toString()
-            if (f.whenSet) value = (value != null) ? true : null
+            if (f.whenSet) value = (value != null) ? (f.whenSet instanceof String ? f.whenSet : true) : null
         }
         if (f.required && (value == null || (f.nonBlank && !value.toString().trim()))) {
             throw new IllegalArgumentException("${label} requires '${f.name}'${f.desc ? ' (' + f.desc + ')' : ''}.".toString())
@@ -4142,6 +4152,14 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
         def given = g.findAll { mods.containsKey(it?.toString()) && mods.get(it?.toString()) != null }
         if (given.size() > 1) throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes one of ${g.join(', ')}, not ${given.join(' and ')}. RM is not touched.".toString())
     }
+    // A field of a together group may come alone only when the row's picker already holds its option.
+    (((entry.together ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.together ?: [])) as List)).each { List g ->
+        def given = g.findAll { mods.get(it?.toString()) != null }
+        if (!given || given.size() == g.size()) return
+        Map form = fieldDefs.find { it.name in given && it.whenSet instanceof String } as Map
+        if (form != null && committed(form.key.toString().replace(".@N", ""))?.toString() == form.whenSet) return
+        throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes ${g.join(' and ')} together unless the action already uses them, not ${given.join(' and ')} alone. RM is not touched.".toString())
+    }
     mods.each { k, v ->
         String name = k.toString()
         if (name == "action") return
@@ -4149,12 +4167,13 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
         if (!named) {
             throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: '${name}' is not a field that can be edited in place. Editable: ${editable.join(', ')}. RM is not touched.")
         }
-        named.findAll { it.whenSet && v != null }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = true }
+        named.findAll { it.whenSet && v != null }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = (t.whenSet instanceof String) ? t.whenSet : true }
         // A literal given for a field whose exclusive partner is a variable clears that partner's
-        // toggle first, so RM reveals the literal's picker again (uVar false, then tiltLevel).
+        // toggle first, so RM reveals the literal's picker again (uVar false, then tiltLevel). A
+        // picker option is not cleared: the field given writes that picker itself.
         (((entry.exclusive ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.exclusive ?: [])) as List)).findAll { List g -> name in g }.each { List g ->
             g.findAll { it != name }.each { other ->
-                fieldDefs.findAll { it.name == other && it.whenSet }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = false }
+                fieldDefs.findAll { it.name == other && it.whenSet == true }.each { Map t -> writes[t.key.toString().replace("@N", actionIdx.toString())] = false }
             }
         }
         Map f = named.find { !it.whenSet } as Map
@@ -5189,6 +5208,10 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         def given = g.findAll { def got = actionSpec.get(it?.toString()); got != null && !(got == false && boolField(it.toString())) }
         if (given.size() > 1) throw new IllegalArgumentException("${specLabel} takes one of ${g.join(', ')}, not ${given.join(' and ')}.".toString())
     }
+    perLevel("together").each { List g ->
+        def given = g.findAll { actionSpec.get(it?.toString()) != null }
+        if (given && given.size() < g.size()) throw new IllegalArgumentException("${specLabel} takes ${g.join(' and ')} together, not ${given.join(' and ')} alone.".toString())
+    }
     if (!(catEntry.custom == true || catAction.custom == true)) {
         return _rmMapCatalogAction(cap, action, actionSpec, catEntry, catAction)
     }
@@ -5257,10 +5280,12 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         actType = "dimmerActs"
         switch (action) {
             case "setColor":
-                if (actionSpec.colorName == null && !(actionSpec.rawSettings instanceof Map)) throw new IllegalArgumentException("color.setColor requires 'colorName' (e.g. 'Red') or a custom HSV color via rawSettings (colorH.@N).")
                 actSubType = "getSetColor"
                 fields = ["bulbs.@N": deviceIds]
                 if (actionSpec.colorName != null) fields["color.@N"] = actionSpec.colorName
+                // The picker option first: it is what reveals the custom color's own fields.
+                if (actionSpec.hue != null) fields += ["color.@N": "Custom HSB color", "colorHex.@N": actionSpec.hue, "colorSat.@N": actionSpec.saturation]
+                if (actionSpec.rgb != null) fields += ["color.@N": "Custom RGB color", "colorH.@N": actionSpec.rgb]
                 if (actionSpec.level != null) fields["colorLevel.@N"] = actionSpec.level
                 break
             case "setColorPerMode":

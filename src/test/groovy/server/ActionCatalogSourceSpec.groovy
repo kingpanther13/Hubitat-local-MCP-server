@@ -611,6 +611,81 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         addRefusal.message.contains("dimmer.setLevel takes one of level, levelVariable, not level and levelVariable.")
     }
 
+    @Unroll
+    def "color.setColor adds a #form color with RM's picker option before the fields it reveals"() {
+        expect:
+        (script._rmMapActionSpec(100, [deviceIds: [8]] + spec, "color", "setColor").fields as Map).collect { k, v -> [k, v] } == expected.collect { k, v -> [k, v] }
+
+        where:
+        form     | spec                                  || expected
+        "named"  | [colorName: "Red", level: 70]         || ["bulbs.@N": [8], "color.@N": "Red", "colorLevel.@N": 70]
+        "HSB"    | [hue: 120, saturation: 80, level: 60] || ["bulbs.@N": [8], "color.@N": "Custom HSB color", "colorHex.@N": 120, "colorSat.@N": 80, "colorLevel.@N": 60]
+        "RGB"    | [rgb: "#ff8800"]                      || ["bulbs.@N": [8], "color.@N": "Custom RGB color", "colorH.@N": "#ff8800"]
+    }
+
+    @Unroll
+    def "color.setColor refuses #label before any write"() {
+        when:
+        script._rmMapActionSpec(100, [deviceIds: [8]] + spec, "color", "setColor")
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains(needle)
+
+        where:
+        label                         | spec                                   | needle
+        "a hue without saturation"    | [hue: 120]                             | "color.setColor takes hue and saturation together, not hue alone."
+        "a named and a custom color"  | [colorName: "Red", hue: 1, saturation: 2] | "color.setColor takes one of colorName, hue, rgb, not colorName and hue."
+        "a level with an RGB color"   | [rgb: "#ff8800", level: 50]            | "color.setColor takes one of rgb, level, not rgb and level."
+        "no color at all"             | [level: 50]                            | "color.setColor requires one of colorName, hue, rgb, rawSettings."
+    }
+
+    @Unroll
+    def "modifyAction on setColor (#label) writes the picker option before its fields"() {
+        given:
+        committedRow(["actType.3": "dimmerActs", "actSubType.3": "getSetColor", "bulbs.3": "8"] + committed)
+
+        when:
+        def writes = script._rmPlanModifyAction(100, 3, mods).writes as Map
+
+        then:
+        writes.collect { k, v -> [k, v] } == expected.collect { k, v -> [k, v] }
+
+        where:
+        label                     | committed                                                                  | mods                        || expected
+        "named to HSB"            | ["color.3": "Red"]                                                         | [hue: 120, saturation: 80]  || ["color.3": "Custom HSB color", "colorHex.3": 120, "colorSat.3": 80]
+        "hue alone on an HSB row" | ["color.3": "Custom HSB color", "colorHex.3": "120", "colorSat.3": "80"]  | [hue: 200]                  || ["color.3": "Custom HSB color", "colorHex.3": 200]
+        "named to RGB"            | ["color.3": "Red"]                                                         | [rgb: "#00ff00"]            || ["color.3": "Custom RGB color", "colorH.3": "#00ff00"]
+        "HSB back to named"       | ["color.3": "Custom HSB color", "colorHex.3": "120", "colorSat.3": "80"]  | [colorName: "Blue"]         || ["color.3": "Blue"]
+    }
+
+    def "modifyAction refuses a hue alone on a row that does not hold a custom HSB color"() {
+        given:
+        committedRow(["actType.3": "dimmerActs", "actSubType.3": "getSetColor", "bulbs.3": "8", "color.3": "Red"])
+
+        when:
+        script._rmPlanModifyAction(100, 3, [hue: 200])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == "modifyAction on color.setColor: takes hue and saturation together unless the action already uses them, not hue alone. RM is not touched."
+    }
+
+    def "discover serves setColor's custom color forms and how they combine"() {
+        when:
+        def entry = script._rmAddAction(100, [discover: [capability: "color"]]).capability as Map
+
+        then:
+        (entry.optionalFields as List)*.name.containsAll(["colorName", "hue", "saturation", "rgb", "level"])
+        (entry.exclusive as List).containsAll([["colorName", "hue", "rgb"], ["colorName", "saturation", "rgb"], ["rgb", "level"]])
+        entry.together == [["hue", "saturation"]]
+        (entry.conditionalRequired as Map).setColor == [["colorName", "hue", "rgb", "rawSettings"]]
+        entry.notes.contains("setColor: a custom color is hue + saturation (RM's Custom HSB color) or rgb")
+
+        and: "the custom form the notes describe maps through the action"
+        (script._rmMapActionSpec(100, [deviceIds: [8], hue: 0, saturation: 100], "color", "setColor").fields as Map)."color.@N" == "Custom HSB color"
+    }
+
     private void committedRow(Map settings) {
         hubGet.register('/installedapp/statusJson/100') { params ->
             JsonOutput.toJson([appSettings: settings.collect { k, v -> [name: k, value: v] }, appState: []])
