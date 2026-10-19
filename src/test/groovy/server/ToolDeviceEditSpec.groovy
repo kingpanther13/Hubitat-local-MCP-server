@@ -1308,6 +1308,27 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         appStub.settingsStore.selectedDevices == [type: 'capability.*', value: ['900']]
     }
 
+    def "a linked device the read-back cannot tie to the requested hub is not added to the selection"() {
+        given: 'the only new local link names a different source hub'
+        def done = false
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: done ? [[id: 901, name: 'Other Bridge', sourceHubId: 'HUB-B']] : [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Kitchen Bridge', linkedLocally: done]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == '901'
+        result.warnings.any { it.contains('could not tie it to hub HUB-A') }
+        appStub.settingsStore.selectedDevices == null
+    }
+
     def "a created device already selected is not written again, and an empty selection gets just the new id"() {
         when:
         settingsMap.selectedDevices = selected

@@ -716,6 +716,21 @@ class RelayBudgetSpec extends ToolSpecBase {
         r.budgetNote.contains('3000 ms')
     }
 
+    def "a poll that converged under the clamp is reported as converged, not as stopped"() {
+        given:
+        script.metaClass._isCloudRequest = { -> true }
+        script.metaClass._pollUntilAttributeCore = { Map a, Long d = null -> [success: true, finalValue: 'off', elapsedMs: 1] }
+
+        when:
+        def r = script.toolPollUntilAttribute([deviceId: '10', attribute: 'switch', expectedValue: 'off',
+                                               timeoutMs: 25000, __reqT0: FIXED_NOW - 500])
+
+        then:
+        r.success == true
+        !r.containsKey('budgetLimited')
+        !r.containsKey('budgetNote')
+    }
+
     def "a stableForMs that cannot settle in the budget left is refused before any read"() {
         given:
         script.metaClass._isCloudRequest = { -> true }

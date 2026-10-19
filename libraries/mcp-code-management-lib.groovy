@@ -379,7 +379,9 @@ def toolGetItemSource(String type, String idParam, args) {
     }
 }
 
-private String stripAppConfigHtml(value) {
+// NOT private: list filters and response builders call it from inside closures, and a closure
+// resolves owner calls through the metaClass, which does not expose private methods.
+String stripAppConfigHtml(value) {
     if (value == null) return null
     def s = value.toString()
     // Strip HTML tags, then any leftover CSS-rule / inline-script bodies that

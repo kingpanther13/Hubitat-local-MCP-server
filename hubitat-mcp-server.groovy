@@ -7840,8 +7840,9 @@ private _hubRequest(String method, String path, Map opts = [:]) {
             // The session the hub opened for this request (name=value), for a follow-up in that session.
             def sc = null
             try { sc = resp.headers?."Set-Cookie" } catch (Exception ignored) { sc = null }
-            if (sc instanceof List) sc = sc ? sc[0] : null
-            if (sc != null) result.setCookie = sc.toString().replaceFirst(/^(?i)set-cookie:\s*/, "").split(';')[0]
+            def cookies = (sc instanceof List ? sc : (sc != null ? [sc] : [])).collect { it.toString().replaceFirst(/^(?i)set-cookie:\s*/, "").split(';')[0] }
+            // The hub's own session cookie is HUBSESSION; another cookie may come first.
+            if (cookies) result.setCookie = cookies.find { it.startsWith("HUBSESSION=") } ?: cookies[0]
             readError = null
         } else if (readError == null) {
             result = bodyText

@@ -475,6 +475,42 @@ class ToolDeviceBasicsSpec extends ToolSpecBase {
 
     // ---- toolSendCommand waitFor (block-poll to the resulting state) --------
 
+    def "a command's waitFor poll gets the request clock and reports a deadline stop"() {
+        given:
+        def device = new TestDevice(id: 10, name: 'TestSwitch', label: 'Test Switch',
+            supportedCommands: [[name: 'on'], [name: 'off']], supportedAttributes: [[name: 'switch']])
+        childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
+        def captured = [:]
+        script.metaClass.toolPollUntilAttribute = { Map a -> captured.args = a; [success: false, timedOut: true, finalValue: 'off', elapsedMs: 5000, budgetLimited: true, budgetNote: 'stopped'] }
+
+        when:
+        def result = script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'never', timeoutMs: 30000], null, 1234567890000L - 500L)
+
+        then:
+        captured.args.__reqT0 == 1234567890000L - 500L
+        result.waitFor.converged == false
+        result.waitFor.budgetLimited == true
+        result.waitFor.budgetNote == 'stopped'
+    }
+
+    def "a command's waitFor whose stableForMs cannot settle in the time left is refused before the command fires"() {
+        given:
+        script.metaClass._isCloudRequest = { -> true }
+        def device = new TestDevice(id: 10, name: 'TestSwitch', label: 'Test Switch',
+            supportedCommands: [[name: 'on'], [name: 'off']], supportedAttributes: [[name: 'switch']])
+        childDevicesList << device
+        childDevicesList.each { registerNativeCommandDevice(it) }
+
+        when:
+        script.toolSendCommand('10', 'on', [], [attribute: 'switch', expectedValue: 'on', stableForMs: 30000, timeoutMs: 40000], null, 1234567890000L - 500L)
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('waitFor.stableForMs 30000 cannot settle')
+        nativeWrites.isEmpty()
+    }
+
     def "toolSendCommand with waitFor that converges reports converged + snapshot reflects the target (taken AFTER the poll)"() {
         given: 'a device whose switch is OFF until the poll runs, then converges to ON'
         // Stateful: currentStates reads off on the first poll read, then on. The poll engine

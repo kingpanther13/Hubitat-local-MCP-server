@@ -1458,10 +1458,10 @@ def toolGetHubPerformance(args) {
         current.uptimeFormatted = "${days}d ${hours}h ${mins}m"
     }
 
-    // CSV history management. The file's database column has always held the hub's MB figure;
-    // its header keeps the old name so existing files stay readable.
+    // CSV history management. The database column holds the hub's MB figure; the reader skips the
+    // header line, so a file written under the old databaseSizeKB header reads the same.
     def csvFileName = "mcp-performance-history.csv"
-    def csvHeader = "timestamp,freeMemoryKB,internalTempC,databaseSizeKB,uptimeSeconds"
+    def csvHeader = "timestamp,freeMemoryKB,internalTempC,databaseSizeMB,uptimeSeconds"
     def history = []
 
     // Read existing CSV from File Manager
@@ -1507,7 +1507,7 @@ def toolGetHubPerformance(args) {
         if (parts.size() < 5) skippedRows++
         else {
             try {
-                trends << [
+                def point = [
                     timestamp: formatTimestamp(parts[0] as Long),
                     timestampEpoch: parts[0] as Long,
                     freeMemoryKB: _hubNumber(parts[1]),
@@ -1515,6 +1515,9 @@ def toolGetHubPerformance(args) {
                     databaseSizeMB: _hubNumber(parts[3]),
                     uptimeSeconds: _hubNumber(parts[4])
                 ]
+                // A reading that failed when the point was recorded was stored as text ("unavailable").
+                if (!(point.freeMemoryKB instanceof Number && point.internalTempC instanceof Number && point.databaseSizeMB instanceof Number && point.uptimeSeconds instanceof Number)) point.incomplete = true
+                trends << point
             } catch (Exception e) {
                 skippedRows++
             }

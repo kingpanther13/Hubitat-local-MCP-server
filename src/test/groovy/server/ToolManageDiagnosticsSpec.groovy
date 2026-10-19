@@ -106,7 +106,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.trendPointsAvailable == 1
 
         and: 'the CSV snapshot was written to File Manager'
-        uploaded['mcp-performance-history.csv']?.contains('freeMemoryKB')
+        uploaded['mcp-performance-history.csv']?.readLines()?.first() == 'timestamp,freeMemoryKB,internalTempC,databaseSizeMB,uptimeSeconds'
         uploaded['mcp-performance-history.csv']?.contains('123456')
     }
 
@@ -257,6 +257,24 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         'a point over a day old'  | ["${1234567890000L - 90000000L},100000,50,30,600"]           || 1      | 'The newest trend point is from' | null
         'only unreadable rows'    | ['notatime,1,2,3,4', 'short,row']                           || 0      | 'could not be read'              | 2
         'a bad row among good'    | ['notatime,1,2,3,4', "${1234567890000L - 60000L},1,2,3,4"]   || 1      | ''                               | 1
+    }
+
+    def "a trend point recorded while a reading failed is marked incomplete"() {
+        given:
+        settingsMap.enableRead = true
+        sharedLocation.hub = new TestHub(uptime: 0G)
+        hubGet.register('/hub/advanced/freeOSMemory') { params -> '100000' }
+        hubGet.register('/hub/advanced/internalTempCelsius') { params -> '50' }
+        hubGet.register('/hub/advanced/databaseSize') { params -> '100' }
+        script.metaClass.downloadHubFile = { String fileName -> (['timestamp,freeMemoryKB,internalTempC,databaseSizeMB,uptimeSeconds',
+            "${1234567890000L - 60000L},unavailable,50,30,600", "${1234567890000L - 30000L},1,2,3,4"]).join('\n').getBytes('UTF-8') }
+        script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
+
+        when:
+        def result = script.toolGetHubPerformance([recordSnapshot: false])
+
+        then:
+        result.trends*.incomplete == [true, null]
     }
 
     def "a hub reading is a number when it is one, else its text"() {

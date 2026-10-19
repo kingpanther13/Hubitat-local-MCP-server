@@ -2334,6 +2334,9 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
     // would block a legitimate command. A mistyped name therefore fires the command and then
     // times out with neverReported -- do not restore a pre-fire attribute-existence check here.
     def pollArgs = (waitFor != null) ? _buildWaitForPollArgs(deviceId, deviceLabel, waitFor) : null
+    // A waitFor that cannot settle in the request time left is refused before the command fires.
+    String stableRefusal = (pollArgs != null) ? _pollStableRefusal(pollArgs, reqT0) : null
+    if (stableRefusal) throw new IllegalArgumentException("waitFor.${stableRefusal}")
     if (parameters instanceof String && !parameters.trim()) parameters = null
     if (parameters && parameters.size() > 0) {
         def declaration = fullJson.commands?.find { it?.name == command }
@@ -2358,7 +2361,8 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
             expected : (pollArgs.containsKey("expectedValues") ? pollArgs.expectedValues : pollArgs.expectedValue)
         ]
         try {
-            def poll = toolPollUntilAttribute(pollArgs)
+            // The request clock ends the confirmation poll by the request deadline.
+            def poll = toolPollUntilAttribute(reqT0 instanceof Number ? pollArgs + [__reqT0: reqT0] : pollArgs)
             waitForBlock.converged  = poll.success == true
             waitForBlock.finalValue = poll.finalValue
             // poll.polledCount is intentionally NOT surfaced into the waitFor block: elapsedMs
@@ -2378,6 +2382,10 @@ def toolSendCommand(deviceId, command, parameters, waitFor = null, commands = nu
             // transitioning is present on the timeout path as true OR false (both meaningful),
             // so copy it whenever the engine emitted the key -- not only when true.
             if (poll.containsKey("transitioning")) waitForBlock.transitioning = poll.transitioning
+            if (poll.budgetLimited == true) {
+                waitForBlock.budgetLimited = true
+                waitForBlock.budgetNote = poll.budgetNote
+            }
         } catch (Throwable e) {
             // The command already fired; a poll-loop failure (e.g. a malformed numeric
             // attribute) must not lose the response. Catch Throwable -- not just Exception --
@@ -2976,23 +2984,34 @@ def toolPollUntilAttribute(args) {
     long deadline = (t0 as long) + budget
     long left = deadline - now()
     String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
-    def stable = pollArgs.stableForMs
-    if (left < (asked as long) && stable instanceof Number && (stable as long) >= left) {
-        throw new IllegalArgumentException("stableForMs ${stable} cannot settle in the ${Math.max(0L, left)} ms this request has left (${why}); use a shorter stableForMs.")
-    }
+    String refusal = _pollStableRefusal(pollArgs, t0)
+    if (refusal) throw new IllegalArgumentException(refusal)
     if (left < 100L) {
         return [success: false, timedOut: true, budgetLimited: true, requestedTimeoutMs: asked, timeoutMs: 0,
                 budgetNote: "Not polled: the request had ${Math.max(0L, left)} ms left (${why}). Poll again in a new call.".toString()]
     }
     if (left < (asked as long)) pollArgs.timeoutMs = left as Integer
     def result = _pollUntilAttributeCore(pollArgs, deadline)
-    if (result instanceof Map && (result.remove("budgetStopped") == true || left < (asked as long))) {
+    // A poll that converged is reported as it is; only one that stopped short says so.
+    if (result instanceof Map && (result.remove("budgetStopped") == true || left < (asked as long)) && result.success != true) {
         result.requestedTimeoutMs = asked
         result.timeoutMs = Math.min(left, asked as long)
         result.budgetLimited = true
         result.budgetNote = "The poll stopped after ${result.elapsedMs ?: 0} ms instead of waiting ${asked} ms: ${why}. Poll again to keep waiting.".toString()
     }
     return result
+}
+
+// The refusal a budgeted poll gives a stableForMs that cannot settle in the request time left, else null.
+private String _pollStableRefusal(Map pollArgs, t0) {
+    long budget = _isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()
+    def asked = pollArgs.containsKey("timeoutMs") ? pollArgs.timeoutMs : 5000
+    def stable = pollArgs.stableForMs
+    if (!(t0 instanceof Number) || budget <= 0L || !(asked instanceof Number) || !(stable instanceof Number)) return null
+    long left = (t0 as long) + budget - now()
+    if (left >= (asked as long) || (stable as long) < left) return null
+    String why = _isCloudRequest() ? 'the cloud relay drops a request that runs much longer' : 'the LAN time budget is set'
+    return "stableForMs ${stable} cannot settle in the ${Math.max(0L, left)} ms this request has left (${why}); use a shorter stableForMs.".toString()
 }
 
 def _pollUntilAttributeCore(args, Long deadlineMs = null) {
@@ -4942,6 +4961,7 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     Boolean linked = null
     String newId = null
     String newName = null
+    boolean newIdFromSource = false
     for (int attempt = 0; attempt < 3; attempt++) {
         Map j = _meshJson()
         def after = (j?.localLinkedDevices instanceof List) ? j.localLinkedDevices : null
@@ -4950,7 +4970,7 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
             def added = after.findAll { !before.contains(it.id?.toString()) }
             def fromSource = added.findAll { it.sourceHubId?.toString() == meshHubId }
             def pick = (fromSource.size() == 1) ? fromSource[0] : (added.size() == 1 ? added[0] : null)
-            if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString() }
+            if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString(); newIdFromSource = fromSource.size() == 1 }
         }
         if (avail != null) {
             // The source's own row is authoritative: still present-and-unlinked means the link did
@@ -5003,9 +5023,12 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag or an ambiguous diff). Find it with hub_get_hub_mesh."
     }
 
-    if (newId != null) {
+    // Only a local link the read-back ties to the requested source joins the device selection.
+    if (newId != null && newIdFromSource) {
         def selectWarning = _selectCreatedDevice(newId)
         if (selectWarning) warnings << selectWarning
+    } else if (newId != null) {
+        warnings << "Linked as local device ${newId}, but the read-back could not tie it to hub ${meshHubId}, so it was not added to this app's selected devices; add it in the app's device picker once confirmed with hub_get_hub_mesh.".toString()
     }
     mcpLog("info", "device", "hub_create_device: linked Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId})${newId ? " as local ${newId}" : ''}")
     return [

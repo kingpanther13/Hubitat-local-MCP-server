@@ -323,6 +323,7 @@ class HubInternalRetrySpec extends ToolSpecBase {
         label                  | hdrs                                                              || expected
         'a single header'      | ['Set-Cookie': 'HUBSESSION=abc; Path=/; HttpOnly']                 || 'HUBSESSION=abc'
         'a header list'        | ['Set-Cookie': ['HUBSESSION=abc; Path=/', 'other=1']]             || 'HUBSESSION=abc'
+        'HUBSESSION not first' | ['Set-Cookie': ['other=1; Path=/', 'HUBSESSION=abc; Path=/']]     || 'HUBSESSION=abc'
         'a prefixed header'    | ['Set-Cookie': 'Set-Cookie: HUBSESSION=abc; Path=/']              || 'HUBSESSION=abc'
         'no header'            | [:]                                                               || null
     }

@@ -2111,6 +2111,18 @@ class Issue490Firmware252Spec extends ToolSpecBase {
                 'http://127.0.0.1:80/local/x.lzf', 'https://127.0.0.1:443/local/x.lzf']
     }
 
+    def "hub_create_backup takes only the boolean true as confirm: #confirm"() {
+        when:
+        script.toolCreateHubBackup([confirm: confirm])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message.contains('confirm=true')
+
+        where:
+        confirm << ['false', 'true', 1]
+    }
+
     def "the File Manager name a backup URL on this hub names: #url"() {
         expect:
         script._backupUrlTarget(url)?.fileName == name

@@ -5052,6 +5052,21 @@ class TestRunner:
             # The window must have elapsed: elapsedMs >= stableForMs on a clean convergence.
             assert int(wf.get("elapsedMs", 0)) >= 300, f"stableForMs waitFor converged before the 300ms window: {wf}"
 
+            # Over the relay a confirmation wait ends by the request deadline (it is not dropped),
+            # and a stableForMs that cannot settle in the time left is refused before firing.
+            if self._client_source() == "cloud":
+                long_wait = self.client.call_tool("hub_call_device_command", {
+                    "deviceId": sw_id, "command": target,
+                    "waitFor": {"attribute": "switch", "expectedValue": f"{PREFIX}never", "timeoutMs": 30000},
+                })
+                lw = long_wait.get("waitFor") if isinstance(long_wait, dict) else None
+                assert isinstance(lw, dict) and lw.get("converged") is False and lw.get("budgetLimited") is True, \
+                    f"a 30 s waitFor over the relay must stop at the request deadline and say so: {long_wait}"
+                self._expect_tool_refusal("hub_call_device_command", {
+                    "deviceId": sw_id, "command": target,
+                    "waitFor": {"attribute": "switch", "expectedValue": target, "stableForMs": 30000, "timeoutMs": 40000}},
+                    "cannot settle")
+
             # stableForMs >= timeoutMs is rejected before the command fires.
             try:
                 self._native_device_command({
@@ -13806,6 +13821,14 @@ class TestRunner:
             assert str(cr.get("modeId")) == new_id, \
                 f"create of mode {taken!r} returned modeId {cr.get('modeId')!r}, not the new mode's id {new_id}"
         finally:
+            if not new_id:
+                # The read-back failed: find the created mode by its exact name, never the id-taken one.
+                try:
+                    again = self.client.call_tool("hub_list_modes", {}).get("modes") or []
+                    new_id = next((str(m.get("id")) for m in again
+                                   if str(m.get("name")) == taken and str(m.get("id")) != taken), None)
+                except Exception as exc:
+                    print(f"    [WARN] numeric-name mode cleanup could not list modes: {exc}")
             if new_id:
                 try:
                     self.client.call_tool("hub_manage_mode", {"action": "delete", "mode": new_id, "confirm": True})

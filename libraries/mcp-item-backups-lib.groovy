@@ -576,10 +576,10 @@ void _requireCreateBackupConfirm(args) {
         if (args.schedule != null || args.networkBackup != null || args.testNetworkBackup == true || args.full == true) {
             throw new IllegalArgumentException("cloudDownload runs on its own; send schedule / networkBackup / full on a separate call.")
         }
-        if (!args.confirm) throw new IllegalArgumentException("cloudDownload writes the backup to File Manager: pass confirm=true.")
+        if (args.confirm != true) throw new IllegalArgumentException("cloudDownload writes the backup to File Manager: pass confirm=true.")
         return
     }
-    if (_backupCallCreates(args) && !args.confirm) {
+    if (_backupCallCreates(args) && args.confirm != true) {
         throw new IllegalArgumentException("You must set confirm=true to create a backup (or pass scheduleOnly=true WITH schedule / networkBackup / testNetworkBackup to only change settings).")
     }
 }
