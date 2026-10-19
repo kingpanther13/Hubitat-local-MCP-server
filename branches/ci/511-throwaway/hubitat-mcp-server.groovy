@@ -3305,7 +3305,7 @@ def _getAllToolDefinitions_partVisualRules() {
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "Visual Rule app id. Omit to list all VRB rules."],
-                    includeRuleApps: [type: "boolean", description: "2.0 rule: list ruleApps (runRule targets)."]
+                    includeRuleApps: [type: "boolean", description: "[[FLAT_TRIM]]2.0 rule: list ruleApps (runRule targets).[[/FLAT_TRIM]]"]
                 ]
             ]
         ],
@@ -14353,10 +14353,10 @@ Default: most-recent events for a device (deviceId + optional limit). Device eve
                 type: "object",
                 properties: [
                     deviceId: [type: ["string", "integer"], description: "Device ID. Mutually exclusive with appId; omit both for location and hub events."],
-                    appId: [type: "integer", description: "Installed-app ID for per-app events (what the app/rule emitted). Mutually exclusive with deviceId."],
+                    appId: [type: "integer", description: "Installed-app ID: the events that app or rule emitted. Mutually exclusive with deviceId."],
                     hoursBack: [type: "integer", description: "Hours of history (max 168).[[FLAT_TRIM]] Instead of just the most recent events; ignored when since is given.[[/FLAT_TRIM]]"],
                     until: [type: ["string", "integer"], description: "[[FLAT_TRIM]]Optional window end (inclusive), same formats as since.[[/FLAT_TRIM]]"],
-                    since: [type: ["string", "integer"], description: "Absolute window start -- return only events AFTER this timestamp; ISO-8601 with a numeric offset (-0600 or -06:00; e.g. 2026-06-23T10:00:00.000-0600) or epoch milliseconds.[[FLAT_TRIM]] This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
+                    since: [type: ["string", "integer"], description: "Window start, exclusive: ISO-8601 with a numeric offset (e.g. 2026-06-23T10:00:00.000-0600) or epoch ms.[[FLAT_TRIM]] -0600 and -06:00 both work. This is the format this tool emits in `date`/`sinceTimestamp`. Takes precedence over hoursBack; a future timestamp yields an empty list.[[/FLAT_TRIM]]"],
                     attribute: [type: "string", description: "Event-name filter. Device: an attribute (e.g. 'switch').[[FLAT_TRIM]] Location: 'mode', 'hsmStatus', 'hsmAlert', or a hub-variable name.[[/FLAT_TRIM]]"],
                     limit: [type: "integer", description: "Max events to return. Recent mode default 10; history mode default 100 (max 500).[[FLAT_TRIM]] Higher values may slow hub.[[/FLAT_TRIM]]", default: 10]
                 ]
