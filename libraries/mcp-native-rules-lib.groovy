@@ -2824,7 +2824,9 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
         String cmp = _rmNormalizeComparator(spec.comparator)?.toString()
         boolean change = _rmComparatorIsRhsOptional(spec.comparator)
         List allowed = null
-        String condSteer = kind == "condition" && change ? " '${cmp}' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.".toString() : ""
+        // The steer names a trigger row only where RM's trigger for this capability offers the comparator.
+        boolean trigOnly = (change && fam != "time") || (cmp in ((t.changeOps as List) + (t.overOps as List)) && fam in ["numeric", "variable"])
+        String condSteer = kind == "condition" && trigOnly ? " '${cmp}' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.".toString() : ""
         // RM offers the numeric change comparators only on a trigger, and not on an "All of these" one.
         // A device-state trigger keeps *changed* either way.
         boolean trigChange = kind == "trigger" && spec.allOfThese != true
@@ -2845,7 +2847,7 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     if (spec.andStays != null && (kind != "trigger" || cap in (t.noDuration as List))) {
         throw new IllegalArgumentException("${where}: Rule Machine has no 'and stays' duration for a ${cap} ${kind}. ${hint}".toString())
     }
-    if (spec.andStays != null && _rmComparatorIsRhsOptional(spec.comparator)) {
+    if (spec.andStays != null && (_rmComparatorIsRhsOptional(spec.comparator) || _rmNormalizeComparator(spec.comparator)?.toString() in (t.changeOps as List))) {
         throw new IllegalArgumentException("${where}: Rule Machine offers 'and stays' only for a state, not with the change comparator '${spec.comparator}'; drop andStays or pass a state. ${hint}".toString())
     }
 }
