@@ -6335,6 +6335,7 @@ class TestRunner:
             # no backup at all (with backups off, a decision taken would still leave a map).
             sw_id = int(self.get_test_switch_id())
             num_var = self.PERM_VARIABLES["sv_number"][0]  # named only: each refusal comes before any variable read
+            str_var = self.PERM_VARIABLES["sv_string"][0]
             last_event_refusal = ("with useLastEventDevice on, Rule Machine lists the commands of the rule's enabled "
                                   "trigger devices that have the 'Switch' capability, and this rule has none")
             for args, needles in (
@@ -6396,6 +6397,15 @@ class TestRunner:
                 # this rule has no trigger yet, so RM would show "No commands found".
                 ({"addAction": {"capability": "runCommand", "command": "off", "useLastEventDevice": True}},
                  (last_event_refusal,)),
+                # RM's trigger editor shows no "and stays" beside *is empty*.
+                ({"addTrigger": {"capability": "Variable", "variable": str_var, "comparator": "*is empty*",
+                                 "andStays": {"minutes": 5}}},
+                 ("Rule Machine offers 'and stays' only for a state, not with the comparator '*is empty*'",)),
+                # A Rule paused trigger has no *changed* either, so the condition refusal steers nowhere.
+                ({"addRequiredExpression": {"conditions": [{"capability": "Rule paused", "ruleIds": [app_id],
+                                                            "comparator": "*changed*"}]}},
+                 ("Rule Machine has no comparator for a Rule paused condition",
+                  "Rule Machine offers '*changed*' on neither a Rule paused condition nor a Rule paused trigger")),
             ):
                 refused = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule",
                     "args": {"appId": app_id, "confirm": True, **args}})
@@ -6403,6 +6413,9 @@ class TestRunner:
                 assert refused.get("success") is False and all(n in error for n in needles) \
                     and "RM is not touched" in error and refused.get("backup") is None, \
                     f"{args} should be refused before the backup, naming {needles}: {refused}"
+                if "addRequiredExpression" in args:
+                    assert "addTrigger" not in error and "trigger-only comparator" not in error, \
+                        f"a Rule paused *changed* condition should not steer to addTrigger: {refused}"
             # The remaining handler-level validators run as ordered patches in one logical
             # continuation-aware call. Each is pre-write, so the batch may continue after a
             # refusal without accumulating mutations; the final config read below is binding.
@@ -6550,6 +6563,20 @@ class TestRunner:
                     f"modifyAction {mods} did not store useLastDev.{run_idx}={stored}: {last_settings}"
             assert "off() on" in self._rule_page_text(app_id), \
                 f"the runCommand row edited back to its devices does not render them: {self._rule_page_text(app_id)[:400]}"
+            # RM's trigger editor does offer "and stays" beside *increased by over*: it commits and renders.
+            over = self._set_rule(app_id, {"addTrigger": {"capability": "Temperature",
+                "deviceIds": [int(self.get_test_temperature_ids()[0])], "comparator": "*increased by over*",
+                "value": 5, "andStays": {"minutes": 5}}}, strict=True)
+            over_idx = over.get("triggerIndex")
+            assert over.get("success") is True and not over.get("partial") and over_idx is not None, \
+                f"an *increased by over* trigger with andStays should commit cleanly: {over}"
+            over_settings = self._get_persisted_rule_config(app_id).get("settings") or {}
+            assert over_settings.get(f"ReltDev{over_idx}") == "*increased by over*" \
+                and self._setting_text(over_settings.get(f"stays{over_idx}")) == "true" \
+                and self._setting_text(over_settings.get(f"SMins{over_idx}")) == "5", \
+                f"trigger {over_idx} did not store its comparator and its 5-minute and-stays: {over_settings}"
+            assert "and stays that way" in self._rule_page_text(app_id), \
+                f"the *increased by over* trigger does not render its and-stays: {self._rule_page_text(app_id)[:600]}"
             # Mixed EDIT shortcuts used to apply only the first branch while reporting success.
             # The guard must reject the full call before the backup snapshot or any wizard write.
             try:
@@ -6854,6 +6881,23 @@ class TestRunner:
                 and self._setting_text(hsb_after.get(f"colorHex.{color_idx}")) in ("120", "120.0") \
                 and self._setting_text(hsb_after.get(f"colorSat.{color_idx}")) in ("80", "80.0"), \
                 f"modifyAction did not store the custom HSB color 120/80: {hsb_after}"
+            # RM gives a Custom RGB color no level, so once the row holds one a level edit is refused from
+            # the committed row before the backup decision, and the row keeps its color.
+            rgb_mod = self._set_rule(target_b, {"modifyAction": {"index": color_idx, "mods": {"rgb": "#00ff00"}}},
+                                     strict=True)
+            assert rgb_mod.get("modifiedIndex") == color_idx and rgb_mod.get("verified") is True, \
+                f"the setColor edit to an RGB color did not apply in place: {rgb_mod}"
+            rgb_level = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": target_b, "modifyAction": {"index": color_idx, "mods": {"level": 40}}, "confirm": True}})
+            rgb_error = str(rgb_level.get("error", ""))
+            assert rgb_level.get("success") is False and "takes one of rgb, level" in rgb_error \
+                and f"action {color_idx} uses rgb" in rgb_error and rgb_level.get("backup") is None \
+                and "not touched" in str(rgb_level.get("restoreHint", "")).lower(), \
+                f"a level on the RGB row should be refused before the backup: {rgb_level}"
+            rgb_after = self._get_persisted_rule_config(target_b).get("settings") or {}
+            assert rgb_after.get(f"color.{color_idx}") == "Custom RGB color" \
+                and str(rgb_after.get(f"colorH.{color_idx}")).lower() == "#00ff00", \
+                f"the refused level edit changed the RGB row: {rgb_after}"
 
             # Keep one live >1 ruleId request: a successful call proves the batch envelope and
             # exact echoed ids; a platform load-limiter refusal proves the parsed array reached
@@ -9282,8 +9326,9 @@ class TestRunner:
             assert misshaped.get("success") is False \
                 and "the key is index, not triggerIndex" in mis_error \
                 and "mods: {state: '<new-state>'}" in mis_error \
-                and "not touched" in str(misshaped.get("restoreHint", "")).lower(), \
-                f"a misshaped modifyTrigger should name the whole shape in its first refusal: {misshaped}"
+                and "not touched" in str(misshaped.get("restoreHint", "")).lower() \
+                and misshaped.get("backup") is None, \
+                f"a misshaped modifyTrigger should name the whole shape in its first refusal, before any backup: {misshaped}"
             # Retarget in ONE patches call: removeTrigger + addTrigger both run under the single
             # trailing updateRule. The replacement uses state "on" so it cannot be confused with the
             # removed trigger (modified to "off" above) if RM hands the freed index back.
@@ -9582,8 +9627,8 @@ class TestRunner:
                 "appId": int(app_id), "confirm": True,
                 "addLocalVariable": {"name": "fields", "type": "Number", "value": 10}}})
             assert dup.get("success") is False and "already exists" in str(dup.get("error", "")) \
-                and "RM is not touched" in str(dup.get("error", "")), \
-                f"addLocalVariable on an existing name should be refused: {dup}"
+                and "RM is not touched" in str(dup.get("error", "")) and dup.get("backup") is None, \
+                f"addLocalVariable on an existing name should be refused before any backup: {dup}"
             after_dup = self.client.call_tool("hub_read_rules", {
                 "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
             kept = next((lv for lv in (after_dup.get("localVariables") or []) if lv.get("name") == "fields"), {})
