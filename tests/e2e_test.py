@@ -1710,6 +1710,7 @@ class TestRunner:
         "valve":    ("E2E_PERM_Valve",    "Virtual Valve"),
         "blind":    ("E2E_PERM_Blind",    "Virtual Blind"),
         "player":   ("E2E_PERM_Player",   "Virtual Player"),
+        "color":    ("E2E_PERM_Color",    "Virtual RGBW Light"),
         "thermostat_a": ("E2E_PERM_Thermostat_A", "Virtual Thermostat"),
         "thermostat_b": ("E2E_PERM_Thermostat_B", "Virtual Thermostat"),
         "tone":     ("E2E_PERM_Tone",     "BAT_E2E_KEEP Virtual Tone"),
@@ -6606,10 +6607,11 @@ class TestRunner:
         # rules per AGENTS.md: the classic wizard re-sends the whole rule page on every
         # submitOnChange POST, so per-edit cost grows with rule size. Target A is an empty shell -- a
         # runRule target only has to EXIST, and a pause target only has to be a rule. Target B also
-        # carries the five actions the modifyAction refusals and edits below change.
+        # carries the six actions the modifyAction refusals and edits below change.
         button = self._ensure_perm_fixture("button")
         blind = self._ensure_perm_fixture("blind")
         dimmer = self._ensure_perm_fixture("dimmer")
+        bulb = self._ensure_perm_fixture("color")
         var_name = self._ensure_perm_variables("sv_number")["sv_number"]
         modes = self.client.call_tool("hub_list_modes").get("modes") or []
         assert modes, "no hub mode for the modifyAction mode-id refusal"
@@ -6626,6 +6628,7 @@ class TestRunner:
                  "operation": "HOLD"},
                 {"capability": "blind", "action": "setTilt", "deviceIds": [int(blind)], "tilt": 40},
                 {"capability": "dimmer", "action": "setLevel", "deviceIds": [int(dimmer)], "level": 50},
+                {"capability": "color", "action": "setColor", "deviceIds": [int(bulb)], "colorName": "Red"},
             ]})
             sentinel_msg = "E2E order sentinel post-action"
             caller_id, caller_create = self._create_native_rule("MaCaller", {
@@ -6739,9 +6742,11 @@ class TestRunner:
                              if str(k).startswith(prefix) and str(k)[len(prefix):].isdigit()
                              and self._setting_holds_exact(v, wanted)), None)
             mode_idx, var_idx, btn_idx = _tb_slot("mode.", mode_id), _tb_slot("xVarV.", var_name), _tb_slot("pushButton.", button)
-            tilt_idx, dim_idx = _tb_slot("blindTilt.", blind), _tb_slot("dimA.", dimmer)
-            assert None not in (mode_idx, var_idx, btn_idx, tilt_idx, dim_idx), \
-                f"target B's mode, setVariable, button, blind and dimmer actions did not persist: {tb_settings}"
+            tilt_idx, dim_idx, color_idx = _tb_slot("blindTilt.", blind), _tb_slot("dimA.", dimmer), _tb_slot("bulbs.", bulb)
+            assert None not in (mode_idx, var_idx, btn_idx, tilt_idx, dim_idx, color_idx), \
+                f"target B's mode, setVariable, button, blind, dimmer and color actions did not persist: {tb_settings}"
+            assert tb_settings.get(f"color.{color_idx}") == "Red", \
+                f"the named setColor did not store its color: {tb_settings}"
             assert tb_settings.get(f"pushButOp.{btn_idx}") == "hold", \
                 f"addAction wrote the button operation as given instead of RM's spelling: {tb_settings}"
             missing_var = f"{PREFIX}NoSuchVariable"
@@ -6817,6 +6822,16 @@ class TestRunner:
             assert self._setting_text(dim_lit_after.get(f"uVar.{dim_idx}")) == "false" \
                 and self._setting_text(dim_lit_after.get(f"dimLA.{dim_idx}")) == "30", \
                 f"modifyAction did not switch the dimmer back to the literal 30 (the add wrote 50): {dim_lit_after}"
+            # A named color edited to a custom one: RM's picker option first, then the hue and saturation it reveals.
+            hsb_mod = self._set_rule(target_b, {"modifyAction": {"index": color_idx, "mods": {"hue": 120, "saturation": 80}}},
+                                     strict=True)
+            assert hsb_mod.get("modifiedIndex") == color_idx and hsb_mod.get("verified") is True, \
+                f"the setColor edit to hue and saturation did not apply in place: {hsb_mod}"
+            hsb_after = self._get_persisted_rule_config(target_b).get("settings") or {}
+            assert hsb_after.get(f"color.{color_idx}") == "Custom HSB color" \
+                and self._setting_text(hsb_after.get(f"colorHex.{color_idx}")) in ("120", "120.0") \
+                and self._setting_text(hsb_after.get(f"colorSat.{color_idx}")) in ("80", "80.0"), \
+                f"modifyAction did not store the custom HSB color 120/80: {hsb_after}"
 
             # Keep one live >1 ruleId request: a successful call proves the batch envelope and
             # exact echoed ids; a platform load-limiter refusal proves the parsed array reached
@@ -20094,6 +20109,7 @@ def main() -> None:
                      "Virtual Button": no_prime, "Virtual Garage Door Controller": no_prime,
                      "Virtual Valve": no_prime, "Virtual Blind": no_prime, "Virtual Player": no_prime,
                      "Virtual Thermostat": no_prime, "BAT_E2E_KEEP Virtual Tone": no_prime,
+                     "Virtual RGBW Light": no_prime,
                      }.get(driver, ("off", None, "switch"))
             cmd, params, attr = prime
             if cmd:

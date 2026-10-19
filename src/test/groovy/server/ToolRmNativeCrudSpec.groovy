@@ -12888,7 +12888,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         switchCap.conditionalRequired?.choosePerMode?.toString()?.contains("perMode")
 
         def colorCap = result.capabilities.find { it.name == "color" }
-        colorCap.conditionalRequired?.setColor == [["colorName", "rawSettings"]]
+        colorCap.conditionalRequired?.setColor == [["colorName", "hue", "rgb", "rawSettings"]]
         colorCap.conditionalRequired?.toggleColor?.toString()?.contains("colorName")
         colorCap.conditionalRequired?.setColorPerMode?.toString()?.contains("perMode")
 
