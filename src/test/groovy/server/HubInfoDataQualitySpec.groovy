@@ -1,6 +1,9 @@
 package server
 
+import spock.lang.Shared
 import support.TestDevice
+import support.TestHub
+import support.TestLocation
 import support.ToolSpecBase
 
 /**
@@ -9,6 +12,11 @@ import support.ToolSpecBase
  * firmware has retired the credentials it describes.
  */
 class HubInfoDataQualitySpec extends ToolSpecBase {
+    @Shared private TestLocation infoLocation = new TestLocation(hub: new TestHub())
+
+    def setupSpec() {
+        appExecutor.getLocation() >> infoLocation
+    }
 
     def setup() {
         hubGet.register('/hub/advanced/freeOSMemory') { p -> '456232\n' }

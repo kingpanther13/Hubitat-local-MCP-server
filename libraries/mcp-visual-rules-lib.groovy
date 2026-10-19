@@ -2020,12 +2020,12 @@ def _getAllToolDefinitions_partVisualRules() {
     return [
         [
             name: "hub_get_visual_rule",
-            description: "List Visual Rules Builder rules (omit appId; each entry: appId, name, version, disabled, paused) or read one rule's full definition.[[FLAT_TRIM]] List-mode `paused` is read from the hub's own (Paused) name decoration and `version` ('2.0' / '1.0') comes from the hub's own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: 'graph' (VRB 2.0, {version, nodes, edges}) or 'classic' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]",
+            description: "List Visual Rules Builder rules (omit appId) or read one rule's full definition.[[FLAT_TRIM]] Each list entry: appId, name, version, disabled, paused. List-mode `paused` is read from the hub's own (Paused) name decoration and `version` ('2.0' / '1.0') comes from the hub's own child type; call with appId for the authoritative `rulePaused`. A single-rule read returns `format`: 'graph' (VRB 2.0, {version, nodes, edges}) or 'classic' (VRB 1.0, {whenNodes, thenNodes, elseNodes}). A graph read ALSO returns `editor` -- the same rule as {triggers, conditions, decisionType, thenActions, elseActions, commonActions}, the shape to modify and hand straight back to hub_set_visual_rule -- plus `activated` (false means the hub stored it as an inactive draft; see validationErrors).[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "Visual Rule app id. Omit to list all VRB rules."],
-                    includeRuleApps: [type: "boolean", description: "With appId on a 2.0 rule: also list ruleApps, the installed apps a runRule action can target (otherwise only ruleAppCount)."]
+                    includeRuleApps: [type: "boolean", description: "2.0 rule: list ruleApps (runRule targets)."]
                 ]
             ]
         ],

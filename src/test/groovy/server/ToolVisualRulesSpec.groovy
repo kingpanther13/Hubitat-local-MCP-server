@@ -211,11 +211,11 @@ class ToolVisualRulesSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        result.rules == [[appId: 703, name: 'Porch light', disabled: false, paused: true],
-                         [appId: 704, name: 'Night mode (Paused)', disabled: false, paused: false],
-                         [appId: 705, name: 'Garage watch', disabled: false, paused: false],
-                         [appId: 706, name: 'Lamp (Paused)', disabled: false, paused: true],
-                         [appId: 707, name: 'Hall &amp; <span>(Paused)</span>', disabled: false, paused: false]]
+        result.rules as Set == [[appId: 703, name: 'Porch light', disabled: false, paused: true],
+                                [appId: 704, name: 'Night mode (Paused)', disabled: false, paused: false],
+                                [appId: 705, name: 'Garage watch', disabled: false, paused: false],
+                                [appId: 706, name: 'Lamp (Paused)', disabled: false, paused: true],
+                                [appId: 707, name: 'Hall &amp; <span>(Paused)</span>', disabled: false, paused: false]] as Set
     }
 
     def "list mode omits paused (null name) and disabled (absent key) when the node data can't support them"() {
@@ -1480,12 +1480,12 @@ class ToolVisualRulesSpec extends ToolSpecBase {
     // ==================== dispatch-envelope (integration) ====================
 
     @Unroll
-    def "hub_get_visual_rule via dispatch returns the VRB rule list with paused + HTML-stripped name (useGateways=#useGateways)"() {
+    def "hub_get_visual_rule via dispatch returns the VRB rule list with paused + the decoration removed (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         registerAppsList([
             [key: 701, data: [id: 701, appTypeId: 100, name: 'Hall light', type: 'Visual Rule Builder', disabled: false], children: []],
-            [key: 702, data: [id: 702, appTypeId: 100, name: 'Porch light <span style="color:red">(Paused)</span>', type: 'Visual Rule Builder', disabled: false], children: []]
+            [key: 702, data: [id: 702, appTypeId: 100, name: "Porch light <span class='text-red'>(Paused)</span>", type: 'Visual Rule Builder', disabled: false], children: []]
         ])
 
         when:
@@ -1501,9 +1501,9 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         inner.rules[0].name == 'Hall light'
         inner.rules[0].paused == false
 
-        and: 'the paused rule survives JSON with its span-stripped name and paused:true'
+        and: 'the paused rule survives JSON with the decoration removed and paused:true'
         inner.rules[1].appId == 702
-        inner.rules[1].name == 'Porch light (Paused)'
+        inner.rules[1].name == 'Porch light'
         inner.rules[1].paused == true
 
         where:

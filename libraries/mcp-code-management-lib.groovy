@@ -3159,7 +3159,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 properties: [
                     scope: [type: "string", enum: ["instances", "types"], description: "What to list. 'instances' (default) = running app instances with parent/child tree; 'types' = installed app-type catalog (community + built-in), each with system/isBuiltIn and menu (Apps/Automations/Integrations tab, null if undeclared).", default: "instances"],
                     filter: [type: "string", enum: ["all", "builtin", "user", "disabled", "parents", "children"], description: "scope='instances' only: category filter."],
-                    nameFilter: [type: "string", description: "Only apps whose name contains this text (case-insensitive), e.g. 'Porch'."],
+                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
                     includeHidden: [type: "boolean", description: "scope='instances' only: include hidden apps (typically Hubitat internal). Default: false", default: false],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded (subject to 120KB guard); pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
@@ -3172,7 +3172,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                 type: "object",
                 properties: [
                     include: [type: "string", enum: ["user", "all"], description: "Scope: 'user' (default) = user-installed drivers only; 'all' = full catalog (system + virtual + user)."],
-                    nameFilter: [type: "string", description: "Only drivers whose name contains this text (case-insensitive), e.g. 'Virtual Switch'."],
+                    nameFilter: [type: "string", description: "Name contains (case-insensitive)."],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ]
@@ -3197,7 +3197,7 @@ def _getAllToolDefinitions_partCodeManagement() {
                     type: [type: "string", enum: ["app", "driver", "library"], description: "What kind of code to read."],
                     id: [type: "string", description: "App/driver/library ID (positive integer), from hub_list_apps / hub_list_drivers / hub_list_libraries respectively (library id is also in a hub_create_library response or the Hubitat Libraries code page)."],
                     offset: [type: "integer", description: "Char offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default 30000, max 64000."]
+                    length: [type: "integer", description: "Max chars (default 30000, max 64000)."]
                 ],
                 required: ["type", "id"]
             ]

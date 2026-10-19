@@ -455,7 +455,7 @@ def _getAllToolDefinitions_partFiles() {
                 properties: [
                     fileName: [type: "string", description: "The exact file name (e.g., 'dashboard-backup.json', 'mcp-backup-app-123.groovy')"],
                     offset: [type: "integer", description: "Character offset to start reading from. Default: 0"],
-                    length: [type: "integer", description: "Max characters to return in this chunk. Default 30000, max 60000."]
+                    length: [type: "integer", description: "Max chars (default 30000, max 60000)."]
                 ],
                 required: ["fileName"]
             ]
