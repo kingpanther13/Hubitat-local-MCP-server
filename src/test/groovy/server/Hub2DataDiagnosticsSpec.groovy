@@ -245,6 +245,23 @@ class Hub2DataDiagnosticsSpec extends ToolSpecBase {
         result.appUpdate.latestVersion == '9.9.9'           // the prior snapshot still surfaces
     }
 
+    def "hub_get_info appUpdate reports a check completed in the last five minutes without starting another"() {
+        given:
+        sharedLocation.hub = hubOnFirmware('2.5.0.143')
+        hubGet.register('/hub2/hubData') { params -> HUB2_UPDATE_AND_ALERT }
+        stateMap.updateCheck = [latestVersion: '9.9.9', checkedAt: script.now() - 60000L]
+        def started = []
+        script.metaClass.doUpdateCheck = { -> started << 1; true }
+
+        when:
+        def result = script.toolGetHubInfo([includeAppUpdate: true])
+
+        then:
+        started.isEmpty()
+        result.appUpdate.checkInProgress == false
+        result.appUpdate.latestVersion == '9.9.9'
+    }
+
     def "hub_get_info appUpdate leaves the stored checkedAt untouched (the read never rewrites it)"() {
         given:
         sharedLocation.hub = hubOnFirmware('2.5.0.143')

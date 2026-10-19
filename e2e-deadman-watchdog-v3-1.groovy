@@ -1085,7 +1085,7 @@ def adminGetSource(args) {
 
     def maxChunkSize = 64000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : 30000
 
     def fullSource = ""
     def version = null
@@ -1986,11 +1986,21 @@ def adminSetAppDisabled(args) {
 // server's toolGetHubPerformance current block (/hub/advanced/* reads) and _healthAlertsFromHub2
 // (/hub2/hubData), WITHOUT the CSV trend history (that stays main's). Exists so the e2e status probe
 // reads hub health through THIS always-alive endpoint instead of 504ing against a busy main app.
+// A hub status reading as a number (the /hub/advanced endpoints answer plain text), else the text.
+def hubNumber(raw) {
+    String s = raw?.toString()?.trim()
+    if (s == null || s.isEmpty()) return s
+    if (s.isLong()) return s.toLong()
+    if (s.isBigDecimal()) return s.toBigDecimal()
+    return s
+}
+
 def adminGetMetrics(args) {
     def current = [:]
-    try { current.freeMemoryKB = hubGet("/hub/advanced/freeOSMemory", [:])?.trim() } catch (Exception e) { current.freeMemoryKB = "unavailable" }
-    try { current.internalTempC = hubGet("/hub/advanced/internalTempCelsius", [:])?.trim() } catch (Exception e) { current.internalTempC = "unavailable" }
-    try { current.databaseSizeKB = hubGet("/hub/advanced/databaseSize", [:])?.trim() } catch (Exception e) { current.databaseSizeKB = "unavailable" }
+    try { current.freeMemoryKB = hubNumber(hubGet("/hub/advanced/freeOSMemory", [:])) } catch (Exception e) { current.freeMemoryKB = "unavailable" }
+    try { current.internalTempC = hubNumber(hubGet("/hub/advanced/internalTempCelsius", [:])) } catch (Exception e) { current.internalTempC = "unavailable" }
+    // The hub reports its database size in MB.
+    try { current.databaseSizeMB = hubNumber(hubGet("/hub/advanced/databaseSize", [:])) } catch (Exception e) { current.databaseSizeMB = "unavailable" }
     try { current.uptimeSeconds = location.hub?.uptime } catch (Exception e) { current.uptimeSeconds = "unavailable" }
     def healthAlerts = null
     try {
@@ -2323,7 +2333,7 @@ def adminGetInfo(args) {
     try { info.localIP = hub?.localIP } catch (Exception e) { info.localIP = "unavailable" }
     try {
         def freeMemory = hubGet("/hub/advanced/freeOSMemory", [:])
-        if (freeMemory) info.freeMemoryKB = freeMemory.trim()
+        if (freeMemory) info.freeMemoryKB = hubNumber(freeMemory)
     } catch (Exception e) { info.freeMemoryKB = "unavailable" }
     info.watchdogEndpoint = true
     info.watchdogVersion = "3.1"
@@ -2460,7 +2470,7 @@ def adminReadFile(args) {
     if (!args.fileName) throw new IllegalArgumentException("fileName is required")
     def maxChunkSize = 60000
     def requestedOffset = args.offset ? args.offset as int : 0
-    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : maxChunkSize
+    def requestedLength = args.length ? Math.min(args.length as int, maxChunkSize) : 30000
     def content
     try {
         def bytes = downloadHubFile(args.fileName)

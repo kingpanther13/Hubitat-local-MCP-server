@@ -569,29 +569,39 @@ private Map _toolRestoreSourceBackup(args) {
 // schedule = POST /hub2/updateBackupSchedule. hub_uploaded and the full-restore paths multipart-upload the
 // archive the way the browser does (_postMultipartBackup).
 
-def toolCreateHubBackup(args) {
+void _requireCreateBackupConfirm(args) {
+    // The confirm checks a backup call needs, made before any hub call or write reservation.
     args = args ?: [:]
-
-    // cloudDownload copies an existing cloud backup into File Manager: its own mode, no backup made.
     if (args.cloudDownload != null) {
         if (args.schedule != null || args.networkBackup != null || args.testNetworkBackup == true || args.full == true) {
             throw new IllegalArgumentException("cloudDownload runs on its own; send schedule / networkBackup / full on a separate call.")
         }
-        if (!args.confirm) throw new IllegalArgumentException("cloudDownload writes the backup to File Manager: pass confirm=true.")
-        return _downloadCloudBackup(args.cloudDownload)
+        if (args.confirm != true) throw new IllegalArgumentException("cloudDownload writes the backup to File Manager: pass confirm=true.")
+        return
     }
+    if (_backupCallCreates(args) && args.confirm != true) {
+        throw new IllegalArgumentException("You must set confirm=true to create a backup (or pass scheduleOnly=true WITH schedule / networkBackup / testNetworkBackup to only change settings).")
+    }
+}
+
+private boolean _backupCallCreates(Map args) {
+    // Only scheduleOnly WITH a schedule / networkBackup / testNetworkBackup skips creating a backup.
+    return !(args.scheduleOnly == true && (args.schedule != null || args.networkBackup != null || args.testNetworkBackup == true))
+}
+
+def toolCreateHubBackup(args) {
+    args = args ?: [:]
+    _requireCreateBackupConfirm(args)
+
+    // cloudDownload copies an existing cloud backup into File Manager: its own mode, no backup made.
+    if (args.cloudDownload != null) return _downloadCloudBackup(args.cloudDownload)
     def schedulePresent = args.schedule != null
     def networkPresent = args.networkBackup != null
     def testNetwork = args.testNetworkBackup == true
-    def scheduleOnly = args.scheduleOnly == true
     // Settings ride along on the same call: a `schedule` object (/hub2/updateBackupSchedule) and the
-    // network-share settings. Only scheduleOnly WITH one of them skips creating a backup (and
-    // confirm); every other shape creates one and needs confirm. Everything is validated before the
-    // first write, so a refused call changes nothing.
-    def willCreate = !(scheduleOnly && (schedulePresent || networkPresent || testNetwork))
-    if (willCreate && !args.confirm) {
-        throw new IllegalArgumentException("You must set confirm=true to create a backup (or pass scheduleOnly=true WITH schedule / networkBackup / testNetworkBackup to only change settings).")
-    }
+    // network-share settings. Everything is validated before the first write, so a refused call
+    // changes nothing.
+    def willCreate = _backupCallCreates(args)
     if (willCreate && args.full == true && args.mock != true) {
         def unavailable = _fullBackupUnavailable()
         if (unavailable) return unavailable
@@ -1026,7 +1036,7 @@ private Map _downloadCloudBackup(spec) {
     if (total.size == null || total.size > 16L * 1024 * 1024) {
         return [success: false, cloudDownload: true,
                 error: (total.size == null) ? _sizeLookupError(total.reason, spec.path.toString(), "cloud") :
-                                              "That cloud backup is ${(total.size / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
+                                              "That cloud backup is ${_mbText(total.size as long)}, over the 16 MB in-app limit.",
                 note: "Check the path with hub_list_backups(scope='hub_cloud'), or download it from Settings > Backup and Restore in the Hubitat web UI. Nothing was saved."]
     }
     try {
@@ -1163,7 +1173,7 @@ private Map _restoreFullFromBytes(String location, byte[] bytes, String fileName
     int maxBytes = 16 * 1024 * 1024
     if (bytes.length > maxBytes) {
         return [success: false, type: "hub-full", location: location,
-                error: "The full backup is ${(bytes.length / (1024 * 1024)) as int} MB, over the 16 MB in-app limit.",
+                error: "The full backup is ${_mbText(bytes.length as long)}, over the 16 MB in-app limit.",
                 note: "Restore a large full backup from Settings > Backup and Restore in the Hubitat web UI (it accepts up to 150 MB). Nothing was restored."]
     }
     def up
@@ -1233,7 +1243,7 @@ private Map _restoreLocalFullBackup(String fileName, Map opts) {
                 note: "Nothing was restored. Check the name with hub_list_backups(scope='hub_local'), or restore it from Settings > Backup and Restore in the Hubitat web UI."]
     }
     if (listed.size > 16L * 1024 * 1024) {
-        return [success: false, type: "hub-full", location: "hub_local", error: "The full backup is ${(listed.size / (1024 * 1024)) as long} MB, over the 16 MB in-app limit.",
+        return [success: false, type: "hub-full", location: "hub_local", error: "The full backup is ${_mbText(listed.size as long)}, over the 16 MB in-app limit.",
                 note: "Restore a large full backup from Settings > Backup and Restore in the Hubitat web UI (it accepts up to 150 MB). Nothing was restored."]
     }
     def got

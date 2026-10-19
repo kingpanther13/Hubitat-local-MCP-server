@@ -1673,6 +1673,7 @@ For easier bug reporting:
 
 ## Version History
 
+- **v4.8.2** - fix: read app and driver versions from the code list, not the single-item read. PRs: [#554](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/554)
 - **v4.8.1** - fix: end a legacy hub_list_devices page at the request budget. PRs: [#553](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/553)
 - **v4.8.0** - feat: per-client access tokens with their own tool, read/write and connection access. PRs: [#551](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/551)
 - **v4.7.3** - build(deps): bump mcp from 2.0.0 to 2.2.0 in /tests in the pip group across 1 directory ([#548](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/548), @app/dependabot); fix: evict code and rule backups only past a configurable storage budget, with a File Manager backup index. PRs: [#548](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/548), [#550](https://github.com/kingpanther13/Hubitat-local-MCP-server/pull/550)

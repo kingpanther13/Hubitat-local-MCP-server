@@ -20,6 +20,8 @@ class TestChildApp implements InstalledAppWrapper {
     Map<String, Object> settingsStore = [:]
     Map<String, Object> ruleData = [triggers: [], conditions: [], actions: []]
     Map<String, Object> stateStore = [:]
+    // A spec sets this to make Map-valued updateSetting calls fail (a settings write the hub refuses).
+    RuntimeException updateSettingFailure = null
 
     // --- MCP Rule child-app surface (called by the server) ---
 
@@ -55,7 +57,10 @@ class TestChildApp implements InstalledAppWrapper {
     @Override void updateSetting(String settingName, Double val) { settingsStore[settingName] = val }
     @Override void updateSetting(String settingName, List val) { settingsStore[settingName] = val }
     @Override void updateSetting(String settingName, Long val) { settingsStore[settingName] = val }
-    @Override void updateSetting(String settingName, Map val) { settingsStore[settingName] = val }
+    @Override void updateSetting(String settingName, Map val) {
+        if (updateSettingFailure != null) throw updateSettingFailure
+        settingsStore[settingName] = val
+    }
     @Override void updateSetting(String settingName, String val) { settingsStore[settingName] = val }
     @Override AppAtomicState getAtomicState() { return null }
     @Override Object getSetting(String name) { return settingsStore[name] }
