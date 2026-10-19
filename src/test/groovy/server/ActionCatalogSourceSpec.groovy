@@ -24,7 +24,7 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         sharedLocation.modes = [[id: "1", name: "Day"], [id: "2", name: "Night"]]
         // Device 8 has every capability these pickers list; device 9 is a plain switch; 7 only measures temperature.
         hubGet.register('/hub2/vrb/devices') { params ->
-            JsonOutput.toJson([[id: 8, label: "Multi", capabilities: ["GarageDoorControl", "Valve", "WindowBlind", "Tone", "MusicPlayer", "Thermostat", "TemperatureMeasurement", "Switch", "FanControl"]],
+            JsonOutput.toJson([[id: 8, label: "Multi", capabilities: ["GarageDoorControl", "Valve", "WindowBlind", "Tone", "MusicPlayer", "Thermostat", "TemperatureMeasurement", "Switch", "FanControl", "ColorControl"]],
                                [id: 9, label: "Plain", capabilities: ["Switch"]], [id: 7, label: "Temp", capabilities: ["TemperatureMeasurement"]]])
         }
         hubGet.register('/device/fullJson/8') { params -> JsonOutput.toJson([id: 8]) }
