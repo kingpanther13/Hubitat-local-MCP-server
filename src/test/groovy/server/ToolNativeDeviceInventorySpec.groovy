@@ -612,6 +612,36 @@ class ToolNativeDeviceInventorySpec extends ToolSpecBase {
         hubGet.calls.findAll { it.path.startsWith('/device/fullJson/') }*.path == ['/device/fullJson/1']
     }
 
+    def 'onlyOn reads a switch listed twice the way the page reads it: the last entry wins'() {
+        given: 'device 1 lists switch on then off, device 2 off then on; fullJson keeps the last of each'
+        settingsMap.selectedDevices = (1..2).collect { sdkIdentity(it) }
+        def listed = ['1': ['on', 'off'], '2': ['off', 'on']]
+        hubGet.register('/device/listWithCapabilities/json') { throw new IOException('removed') }
+        hubGet.register('/hub2/devicesList') {
+            JsonOutput.toJson([devices: (1..2).collect { id -> [data: [id: id, name: "Native ${id}", roomName: 'Den',
+                lastActivity: '2026-09-10T10:00:00+0000', disabled: false,
+                currentStates: listed[id.toString()].collect { [key: 'switch', value: it] }]] }])
+        }
+        hubGet.register('/hub2/vrb/devices') { JsonOutput.toJson((1..2).collect { [id: it, label: "Native ${it}", capabilities: ['Switch']] }) }
+        (1..2).each { id ->
+            hubGet.register("/device/fullJson/${id}") {
+                JsonOutput.toJson([device: [id: id, name: "Native ${id}", label: "Native ${id}", roomName: 'Den',
+                    capabilities: ['Switch'], currentStates: [switch: [value: listed[id.toString()].last(), dataType: 'ENUM']]], commands: [[name: 'on']]])
+            }
+        }
+
+        when:
+        def result = script.toolListDevices(false, 0, 0, null, null, null, 'summary', null, null, null, null, true)
+
+        then: 'the device whose last switch entry is off is excluded; the other is kept and reads on'
+        result.total == 1
+        result.devices*.id == ['2']
+        result.devices[0].currentStates.switch == 'on'
+
+        and: 'the bulk-read projection reports the same last entry'
+        script._buildContextJson().devices.collectEntries { [(it.id): it.attributes.switch] } == ['1': 'off', '2': 'on']
+    }
+
     def 'a device whose filter inputs cannot be read is excluded from the filtered list and named'() {
         given:
         nativeFixture()
