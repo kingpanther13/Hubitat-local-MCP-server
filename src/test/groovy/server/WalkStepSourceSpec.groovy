@@ -489,6 +489,41 @@ class WalkStepSourceSpec extends ToolSpecBase {
         !posts.any { it.path == "/installedapp/btn" }
     }
 
+    def "raw mainPage settings with an enum value the picker does not offer are not sent: #desc"() {
+        given: "logging offers Events, Triggers and Actions"
+        enableWrite()
+        def posts = []
+        def main = { -> page("mainPage", [[name: "logging", type: "enum", multiple: true, options: ["Events", "Triggers", "Actions"]],
+                                          [name: "origLabel", type: "text"], [name: "updateRule", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> main() }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> main() }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << [path: path, body: body]; [status: 200, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, settings: [logging: value] + extra])
+
+        then: "logging is refused unsent with what the picker offers"
+        result.settingsNotLanded*.key == ["logging"]
+        def skip = result.settingsNotLanded[0]
+        skip.reason == "not_offered" && skip.value == value && skip.offered == ["Events", "Triggers", "Actions"]
+        !(value instanceof List) || skip.notOffered == ["Nope"]
+        !posts.any { it.body?.get("settings[logging]")?.toString()?.contains("Nope") }
+        result.settingsApplied == (extra ? ["origLabel"] : [])
+        result.applied == !extra.isEmpty()
+        !extra.isEmpty() || result.success == false
+        !extra || result.partial == true
+
+        and: "updateRule runs only when something was written"
+        posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" } == !extra.isEmpty()
+
+        where:
+        desc                                | value               | extra
+        "a list member alone"               | ["Nope"]            | [:]
+        "a single value alone"              | "Nope"              | [:]
+        "a list beside a setting that lands" | ["Events", "Nope"] | [origLabel: "r2"]
+    }
+
     def "raw sub-page settings where no value lands are refused, nothing written: #desc"() {
         given: "tCapab1 offers only Switch, and the page never keeps a write"
         enableWrite()

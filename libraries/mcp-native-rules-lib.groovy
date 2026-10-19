@@ -6878,6 +6878,15 @@ private String _rmPreflightRestoreHint(String reason = null, Map backup = null, 
     "${lead ?: 'Pre-flight refusal -- the app was not touched, so nothing needs to be restored.'}${snapshot}${why}"
 }
 
+// A raw settings value an enum picker does not offer: a single value, or any member of a list.
+private Map _rmRawNotOffered(Map field, String key, Object value) {
+    if (!(value instanceof List)) return _rmNotOfferedSkip(field, key, value)
+    if (field?.type != "enum" || field.options == null) return null
+    List offered = _rmReadPickerOptionStrings(field)
+    def bad = (value as List).findAll { !(it?.toString() in offered) }.collect { it?.toString() }
+    return (offered && bad) ? [key: key, reason: "not_offered", value: value, notOffered: bad, offered: offered] : null
+}
+
 // The restore sentence after a committed edit went wrong: the baseline when one exists, else why there is none.
 private String _rmBackupHint(Map backup, String withBackup = null) {
     if (backup?.backupKey) {
@@ -14289,15 +14298,23 @@ def _applyNativeAppEdit(args) {
             def isSubPageWrite = (pageName && pageName != "mainPage")
             def subPageApplied = []
             def subPageSkipped = []
-            if (knownSettings && isSubPageWrite) {
+            // A value the enum picker does not offer is not sent, on any page: the hub would store it.
+            def notOffered = []
+            def writable = [:]
+            knownSettings.each { k, v ->
+                def refusal = _rmRawNotOffered(schema.get(k.toString()) as Map, k.toString(), v)
+                if (refusal) notOffered << refusal
+                else writable.put(k, v)
+            }
+            if (writable && isSubPageWrite) {
                 // Write sub-page keys one at a time with page context and verify each landed, including
                 // the sticky multiple flag; settingsApplied lists only confirmed keys.
-                knownSettings.each { k, v ->
+                writable.each { k, v ->
                     _rmWriteSettingOnPage(appId, pageName, k.toString(), v, subPageApplied, null, subPageSkipped)
                     _rmVerifySubPageMultipleFlags(appId, pageName, [(k.toString()): v], schema)
                 }
-            } else if (knownSettings) {
-                _rmUpdateAppSettings(appId, knownSettings, schema)
+            } else if (writable) {
+                _rmUpdateAppSettings(appId, writable, schema)
             }
             // updateRule only for mainPage writes: mid-editor it clears moreCond/editCond/editAct and resets the
             // editor. Sub-page flows commit with the page's Done (hasAll, actionDone), then button='updateRule'.
@@ -14314,14 +14331,14 @@ def _applyNativeAppEdit(args) {
                 editCommitButton = null
             }
             settingsCommitButton = editCommitButton
-            if (!button && isMainPage && knownSettings && editCommitButton) {
+            if (!button && isMainPage && writable && editCommitButton) {
                 _rmClickAppButton(appId, editCommitButton)
                 implicitCommitButton = editCommitButton
             }
-            result.settingsApplied = isSubPageWrite ? subPageApplied : knownSettings.keySet().toList()
+            result.settingsApplied = isSubPageWrite ? subPageApplied : writable.keySet().toList()
             settingsWritten = !((result.settingsApplied ?: []) as List).isEmpty()
-            if (isSubPageWrite && subPageSkipped) {
-                result.settingsNotLanded = subPageSkipped
+            if (notOffered || subPageSkipped) {
+                result.settingsNotLanded = notOffered + subPageSkipped
                 result.partial = true
             }
             if (unknownSettings) {
