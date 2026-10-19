@@ -1558,19 +1558,13 @@ def toolUpdateItemCode(String type, String idParam, args) {
     return toolUpdateItemCodeInner(type, idParam, args)
 }
 
-// Version of an app/driver from its list row (small JSON, no source). Null when the row is
-// unreadable, so the caller falls back to the full code fetch. An app's version comes from the
-// user-app list: the single-app row runs the app's source through the hub's compiler to find its
-// import URL, which keeps another copy of the whole source in the hub's memory on every read and
-// compiles the app again while a save is still compiling -- the save poll would multiply both.
+// Version of an app/driver from its list row (/<type>/list/single/data/<id>: small JSON, no
+// source). Null when the row is unreadable, so the caller falls back to the full code fetch.
 private _itemRowVersion(String type, itemId) {
     try {
-        def txt = (type == "app") ? hubInternalGet("/app/list/data", null, 30)
-                                  : hubInternalGet("/${type}/list/single/data/${java.net.URLEncoder.encode(itemId.toString(), 'UTF-8')}", null, 30)
+        def txt = hubInternalGet("/${type}/list/single/data/${java.net.URLEncoder.encode(itemId.toString(), 'UTF-8')}", null, 30)
         def d = txt ? new groovy.json.JsonSlurper().parseText(txt) : null
-        def row = (type == "app")
-            ? ((d instanceof List) ? d.find { it instanceof Map && it.id?.toString() == itemId.toString() } : null)
-            : ((d instanceof List && d) ? d[0] : (d instanceof Map ? d : null))
+        def row = (d instanceof List && d) ? d[0] : (d instanceof Map ? d : null)
         return (row instanceof Map) ? row.version : null
     } catch (Exception e) {
         mcpLog("warn", "hub-admin", "Could not read ${type} ${itemId} row version: ${e.message}")

@@ -4714,7 +4714,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.enableDeveloperMode = true
         hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "version": 5, "source": "self source"}' }
         int rowReads = 0
-        hubGet.register('/app/list/data') { params -> rowReads++; rowReads < 2 ? '[{"id": 1, "version": 5}]' : '[{"id": 1, "version": 6}]' }
+        hubGet.register('/app/list/single/data/1') { params -> rowReads++; rowReads < 2 ? '[{"id": 1, "version": 5}]' : '[{"id": 1, "version": 6}]' }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> null }
         script.metaClass._selfSaveWaitMs = { -> 60000L }

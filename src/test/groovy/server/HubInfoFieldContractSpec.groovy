@@ -124,13 +124,12 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
         given:
         atomicStateMap.lastSelfDeploy = [success: true, assumed: true, status: 'saving', startedVersion: 5,
                                          appId: '228', sourceMode: 'importUrl', at: 1234567890000L - 60000L]
-        hubGet.register('/app/list/data') { params -> '[{"id": 163, "version": 2}, {"id": 228, "version": 6}]' }
+        hubGet.register('/app/list/single/data/228') { params -> '[{"id": 228, "version": 6}]' }
 
         when:
         def result = script.toolGetHubInfo()
 
-        then: 'the version comes from the user-app list, never the single-app row the hub compiles the source for'
-        !hubGet.calls.any { it.path.startsWith('/app/list/single/data') }
+        then:
         result.lastSelfDeploy.success == true
         result.lastSelfDeploy.confirmedVersion == 6
         !result.lastSelfDeploy.containsKey('status')
@@ -140,7 +139,7 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
 
     def "getHubInfo keeps a young self-deploy record saving while the row has not advanced, and fails it after 20 minutes"() {
         given:
-        hubGet.register('/app/list/data') { params -> '[{"id": 228, "version": 5}]' }
+        hubGet.register('/app/list/single/data/228') { params -> '[{"id": 228, "version": 5}]' }
         atomicStateMap.lastSelfDeploy = [success: true, assumed: true, status: 'saving', startedVersion: 5,
                                          appId: '228', at: 1234567890000L - 60000L]
 
@@ -164,7 +163,7 @@ class HubInfoFieldContractSpec extends ToolSpecBase {
 
     def "getHubInfo never fails a saving self-deploy record while the App Code row is unreadable"() {
         given:
-        hubGet.register('/app/list/data') { params -> '<html>busy</html>' }
+        hubGet.register('/app/list/single/data/228') { params -> '<html>busy</html>' }
         atomicStateMap.lastSelfDeploy = [success: true, assumed: true, status: 'saving', startedVersion: 5,
                                          appId: '228', at: 1234567890000L - 21L * 60L * 1000L]
 
