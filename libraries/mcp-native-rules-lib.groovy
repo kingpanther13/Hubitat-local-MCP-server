@@ -11600,6 +11600,11 @@ private List _rmHealthRegressionNewIssues(Map baselineHealth, Map nowHealth) {
     def nowIssues = (nowHealth?.issues ?: []) as Set
     def nowStructural = (nowHealth?.structuralIssues ?: []) as Set
     def newIssues = ((nowIssues - baselineIssues) + (nowStructural - baselineStructural)).collect { it.toString() }
+    // A warning (an ungated rule) never lowers ok, but one the replace introduced is still its regression. Without a
+    // baseline (the add path) the gate stays health.ok.
+    if (baselineHealth != null) {
+        newIssues.addAll((((nowHealth?.warnings ?: []) as Set) - ((baselineHealth.warnings ?: []) as Set)).collect { it.toString() })
+    }
     def baselineMarkerCounts = (baselineHealth?.brokenMarkerCounts instanceof Map) ? (baselineHealth.brokenMarkerCounts as Map) : [:]
     def nowMarkerCounts = (nowHealth?.brokenMarkerCounts instanceof Map) ? (nowHealth.brokenMarkerCounts as Map) : [:]
     nowMarkerCounts.each { marker, cnt ->

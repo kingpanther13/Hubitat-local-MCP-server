@@ -379,6 +379,37 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         fake.tokens == [1]
     }
 
+    def "a replace that leaves only a new ungated warning is a regression and rolls the expression back"() {
+        given: "the baseline is clean; after the switch the health report carries the ungated warning and no issue"
+        def ungated = "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED."
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null ->
+            [ok: true, unreadable: false, broken: false, issues: [], structuralIssues: [], brokenMarkerCounts: [:],
+             checkErrors: [], warnings: fake.tokens == [2] ? [ungated] : []]
+        }
+
+        when:
+        def result = script._rmReplaceRequiredExpression(100, switchSpec())
+
+        then:
+        result.success == false
+        result.requiredExpressionReplaced == false
+        result.requiredExpressionRestored == true
+        result.error.contains("runs UNGATED")
+        fake.tokens == [1]
+    }
+
+    def "_rmHealthRegressionNewIssues counts a new warning against a baseline, never an unchanged one or one without a baseline"() {
+        given:
+        def ungated = "the rule runs UNGATED"
+        def clean = [issues: [], structuralIssues: [], brokenMarkerCounts: [:], warnings: []]
+        def warned = [ok: true, issues: [], structuralIssues: [], brokenMarkerCounts: [:], warnings: [ungated]]
+
+        expect:
+        script._rmHealthRegressionNewIssues(clean, warned) == [ungated]
+        script._rmHealthRegressionNewIssues(warned, warned).isEmpty()
+        script._rmHealthRegressionNewIssues(null, warned).isEmpty()
+    }
+
     def "_rmRequiredExpressionTokenPlan validates sub-expression operators before any click"() {
         when:
         script._rmRequiredExpressionTokenPlan([[capability: "Switch"], [subExpression: [conditions: [[capability: "Switch"], [capability: "Mode"]]]]], "AND", null)
