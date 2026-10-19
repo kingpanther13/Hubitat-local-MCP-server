@@ -2221,6 +2221,9 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             throw new IllegalStateException("addTrigger: compareToDevice: the reference-device picker reltDevice${idx} did not appear after istDev${idx}=true.".toString())
         }
         writeIfPresent("reltDevice${idx}", ctd.deviceId.toString())
+        if (!applied.contains("reltDevice${idx}".toString())) {
+            throw new IllegalStateException("addTrigger: compareToDevice: reference device ${ctd.deviceId} did not land in reltDevice${idx}, so the trigger was not committed (it would compare against no device).".toString())
+        }
         if (ctd.offset != null) rhsOverride = ctd.offset
     }
 
@@ -6665,6 +6668,9 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
             throw new IllegalStateException("addTrigger.condition: compareToDevice: the reference-device picker relDevice_${idx} did not appear after isDev_${idx}=true.".toString())
         }
         _rmWriteSettingOnPage(appId, "selectTriggers", "relDevice_${idx}", ctd.deviceId.toString(), applied, null, skipped)
+        if (!(applied ?: []).contains("relDevice_${idx}".toString())) {
+            throw new IllegalStateException("addTrigger.condition: compareToDevice: reference device ${ctd.deviceId} did not land in relDevice_${idx}, so the condition was not committed (it would compare against no device).".toString())
+        }
         if (ctd.offset != null) {
             _rmWriteSettingOnPage(appId, "selectTriggers", "state_${idx}", ctd.offset, applied, null, skipped)
         }

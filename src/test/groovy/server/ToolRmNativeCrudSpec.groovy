@@ -44031,32 +44031,33 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         posts.any { it.body["settings[RelrDev_1]"] == "*contains*" }
     }
 
+    // Temperature condition inputs; relDevice_1 renders once isDev_1=true has been written.
+    private static List temperatureConditionInputs(List posts) {
+        def inputs = [
+            [name: "isCondTrig.1", type: "bool"], [name: "condTrig.1", type: "enum"],
+            [name: "rCapab_1", type: "enum", options: ["Temperature"]],
+            [name: "rDev_1", type: "capability.temperatureMeasurement", multiple: true],
+            [name: "RelrDev_1", type: "enum", options: ["=", "<", ">"]],
+            [name: "isDev_1", type: "bool"], [name: "state_1", type: "decimal"],
+            [name: "hasAll", type: "button"]]
+        if (posts.any { it.body["settings[isDev_1]"]?.toString() == "true" }) {
+            inputs << [name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]
+        }
+        return inputs
+    }
+
     def "a conditional trigger's compareToDevice condition writes the comparator, isDev_, the reference device and the offset"() {
         // The trigger page's condition editor reveals relDevice_<N> only after isDev_<N>=true. Before
         // the fix the condition committed "A > B" with no reference device: neither field was written.
         given:
         enableWrite()
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]; [status: 200, location: null, data: '']
-        }
-        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
-            def inputs = [
-                [name: "isCondTrig.1", type: "bool"], [name: "condTrig.1", type: "enum"],
-                [name: "rCapab_1", type: "enum", options: ["Temperature"]],
-                [name: "rDev_1", type: "capability.temperatureMeasurement", multiple: true],
-                [name: "RelrDev_1", type: "enum", options: ["=", "<", ">"]],
-                [name: "isDev_1", type: "bool"], [name: "state_1", type: "decimal"],
-                [name: "hasAll", type: "button"]]
-            if (posts.any { it.body["settings[isDev_1]"]?.toString() == "true" }) {
-                inputs << [name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]
-            }
-            ruleConfigJson(100, "r", inputs)
-        }
+        def posts = wireEchoingSelectTriggers({ List p -> temperatureConditionInputs(p) }).posts
+        def applied = []
+        def skipped = []
 
         when:
         script._rmBuildCondition(100, 1, [capability: "Temperature", deviceIds: [8], comparator: ">",
-            compareToDevice: [deviceId: 9, offset: 2]], [], [])
+            compareToDevice: [deviceId: 9, offset: 2]], applied, skipped)
 
         then: "comparator, then isDev_1, then the reference device, then the offset, then Done"
         def order = posts.collect { p -> p.body.containsKey("settings[RelrDev_1]") ? "RelrDev_1" :
@@ -44069,6 +44070,30 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         posts.find { it.body.containsKey("settings[relDevice_1]") }.body["settings[relDevice_1]"] == "9"
         posts.find { it.body.containsKey("settings[relDevice_1]") }.body["relDevice_1.multiple"] == "false"
         posts.find { it.body.containsKey("settings[state_1]") }.body["settings[state_1]"] == "2"
+
+        and: "each of them landed"
+        applied.containsAll(["RelrDev_1", "isDev_1", "relDevice_1", "state_1"])
+        !skipped.any { it.key in ["RelrDev_1", "isDev_1", "relDevice_1", "state_1"] }
+    }
+
+    def "a conditional trigger's compareToDevice condition whose reference device does not land fails before Done"() {
+        given: "RM keeps every write except relDevice_1"
+        enableWrite()
+        def posts = wireEchoingSelectTriggers({ List p -> temperatureConditionInputs(p) }, ["relDevice_1"]).posts
+        def applied = []
+        def skipped = []
+
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Temperature", deviceIds: [8], comparator: ">",
+            compareToDevice: [deviceId: 9, offset: 2]], applied, skipped)
+
+        then: "the condition is not committed without its reference device"
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("reference device 9 did not land in relDevice_1")
+        posts.any { it.body.containsKey("settings[relDevice_1]") }
+        skipped.find { it.key == "relDevice_1" }?.reason == "silent_rejection"
+        !posts.any { it.body.containsKey("settings[state_1]") }
+        !posts.any { it.body?.name == "hasAll" }
     }
 
     def "a conditional trigger's compareToDevice condition fails before Done when the reference-device picker never appears"() {

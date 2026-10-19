@@ -318,6 +318,23 @@ abstract class RmNativeCrudSpecBase extends ToolSpecBase {
         return inputs
     }
 
+    // selectTriggers stores each written setting in the page's settings, as RM does, except the
+    // dropKeys (writes RM does not keep). inputsFor(posts) builds the page's inputs.
+    protected Map wireEchoingSelectTriggers(Closure inputsFor, List dropKeys = []) {
+        def posts = []
+        def landed = [:]
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            body?.each { k, v ->
+                def key = _settingKeyOf(k)
+                if (key != null && !dropKeys.contains(key)) landed[key] = v
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params -> ruleConfigJson(100, "r", inputsFor(posts) as List, null, landed) }
+        return [posts: posts, landed: landed]
+    }
+
     // An unbaked switch action (mainPage keeps "Define Actions"). rowSurvives: the row stays in the
     // settings after the editor's cancel, and its delete fails, so the rollback cannot be confirmed.
     protected List wireUnbakedSwitchAction(boolean rowSurvives) {

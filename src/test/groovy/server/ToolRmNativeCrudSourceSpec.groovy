@@ -2141,6 +2141,28 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         spec.compareToDevice == [deviceId: 9, offset: 2]
     }
 
+    def "a numeric trigger's compareToDevice whose reference device does not land is cancelled, not committed"() {
+        given: "every write lands except reltDevice1"
+        def w = wireTriggerWizard(temperatureTriggerInputs(true))
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        script.metaClass._rmWriteSettingOnPage = { Integer appId, String pageName, String key, Object value, List applied, String typeHint = null, List skipped = null, Map cache = null ->
+            w.writes << [key: key, value: value]
+            if (key == "reltDevice1") skipped << [key: key, reason: "silent_rejection", value: value]
+            else applied << key
+        }
+
+        when:
+        script._rmAddTrigger(100, [capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 9, offset: 2]])
+
+        then:
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("reference device 9 did not land in reltDevice1")
+        w.writes*.key.contains("reltDevice1")
+        !w.writes*.key.contains("tstate1")
+        !w.posts.any { it.body?.name == "hasAll" }
+        w.posts.count { it.path == "/installedapp/btn" && it.body?.name == "cancelCapab" } == 1
+    }
+
     def "a trigger failure after the editor opened cancels it once and carries no flag"() {
         given:
         def w = wireTriggerWizard(temperatureTriggerInputs(false))
