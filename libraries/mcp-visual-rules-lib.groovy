@@ -2025,7 +2025,7 @@ def _getAllToolDefinitions_partVisualRules() {
                 type: "object",
                 properties: [
                     appId: [type: "integer", description: "Visual Rule app id. Omit to list all VRB rules."],
-                    includeRuleApps: [type: "boolean", description: "2.0 rule: list ruleApps (runRule targets)."]
+                    includeRuleApps: [type: "boolean", description: "[[FLAT_TRIM]]2.0 rule: list ruleApps (runRule targets).[[/FLAT_TRIM]]"]
                 ]
             ]
         ],
