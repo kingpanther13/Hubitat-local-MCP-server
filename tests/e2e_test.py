@@ -1722,6 +1722,7 @@ class TestRunner:
         "in_use": ("E2E_PERM_Var_InUse", "Number", "0"),
         "mesh_share": ("E2E_PERM_Var_MeshShare", "String", "share-me"),
         "bps_write": ("E2E_PERM_Var_BpsWrite", "String", "v1"),
+        "conn_keep": ("E2E_PERM_Var_ConnKeep", "Number", "0"),
     }
 
     def _hub_variables_by_name(self) -> dict[str, dict]:
@@ -13158,6 +13159,17 @@ class TestRunner:
     def test_hub_variable_connector_round_trip(self) -> None:
         # The variable's deviceId linkage is the proof of each connector write; a relay 504
         # falls back to that read-back. An unknown `force` argument fails the delete.
+        # A standing connector keeps this removal from being the hub's last. Removing the last one makes
+        # the hub also delete its Variable Connectors device, which recurses in the firmware until it logs
+        # a StackOverflowError (the hub's own Remove connector does the same); on an emulated hub that
+        # once left a database transaction open for the rest of the run.
+        keep = self._ensure_perm_variables("conn_keep")["conn_keep"]
+        keep_row = self.client.call_tool("hub_read_variables", {"tool": "hub_get_variable", "args": {"name": keep}})
+        if keep_row.get("deviceId") is None:
+            print(f"    [PERM FIXTURE] creating the standing connector on {keep} -- reused by later runs")
+            self.client.call_tool("hub_manage_variables", {"tool": "hub_create_connector", "args": {
+                "name": keep, "connectorType": "Variable", "confirm": True}})
+
         var_name = f"{PREFIX}ConnVar_{_run_artifact_suffix()}"
         self._create_hub_variable_visible(var_name, "Number", "0")
 
@@ -13183,6 +13195,8 @@ class TestRunner:
                 lambda: read().get("deviceId") is None, f"hub_delete_connector({var_name})")
             if not removed["relayDropped"]:
                 assert removed["response"].get("success") is True, f"hub_delete_connector failed: {removed}"
+                assert "last variable connector" not in str(removed["response"].get("note")), \
+                    f"the standing connector should keep this removal from being the hub's last: {removed}"
             cleared = read()
             assert cleared.get("deviceId") is None, f"connector still linked to {var_name}: {cleared}"
         finally:
