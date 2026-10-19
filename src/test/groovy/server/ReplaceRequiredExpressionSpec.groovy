@@ -398,6 +398,27 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         fake.tokens == [1]
     }
 
+    def "an unreadable baseline health check still rolls back a replace that leaves a new ungated warning"() {
+        given: "the baseline probe throws; after the switch the health report carries only the ungated warning"
+        def ungated = "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED."
+        int calls = 0
+        script.metaClass._rmCheckRuleHealth = { Integer id, String src = "auto", String activePage = null ->
+            if (++calls == 1) throw new RuntimeException("timeout")
+            [ok: true, unreadable: false, broken: false, issues: [], structuralIssues: [], brokenMarkerCounts: [:],
+             checkErrors: [], warnings: fake.tokens == [2] ? [ungated] : []]
+        }
+
+        when:
+        def result = script._rmReplaceRequiredExpression(100, switchSpec())
+
+        then:
+        result.success == false
+        result.requiredExpressionReplaced == false
+        result.requiredExpressionRestored == true
+        result.error.contains("runs UNGATED")
+        fake.tokens == [1]
+    }
+
     def "_rmHealthRegressionNewIssues counts a new warning against a baseline, never an unchanged one or one without a baseline"() {
         given:
         def ungated = "the rule runs UNGATED"

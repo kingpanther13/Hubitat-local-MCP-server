@@ -2748,6 +2748,8 @@ private Map _rmCondTables() {
      numericOps: ["=", "\u2260", "<", ">", "<=", ">=", "in"],
      changeOps: ["*changed*", "*increased*", "*decreased*"],
      overOps: ["*increased by over*", "*decreased by over*"],
+     // Comparators beside which RM's trigger editor withholds "and stays" (it offers it for the over ones).
+     noStaysOps: ["*changed*", "*increased*", "*decreased*", "*is empty*"],
      stringOps: ["=", "\u2260", "*contains*", "*changed*", "*is empty*"],
      variableOps: ["=", "\u2260", "<", ">", "<=", ">=", "in", "*changed*", "*increased*", "*decreased*", "*increased by over*", "*decreased by over*"],
      buttonStates: ["pushed", "held", "doubleTapped", "released"],
@@ -2828,8 +2830,10 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
         boolean change = _rmComparatorIsRhsOptional(spec.comparator)
         List allowed = null
         // The steer names a trigger row only where RM's trigger for this capability offers the comparator.
-        boolean trigOnly = (change && fam != "time") || (cmp in ((t.changeOps as List) + (t.overOps as List)) && fam in ["numeric", "variable"])
-        String condSteer = kind == "condition" && trigOnly ? " '${cmp}' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.".toString() : ""
+        boolean noTrigChange = change && cap in (t.noChangeState as List)
+        boolean trigOnly = (change && fam != "time" && !noTrigChange) || (cmp in ((t.changeOps as List) + (t.overOps as List)) && fam in ["numeric", "variable"])
+        String condSteer = kind != "condition" ? "" : trigOnly ? " '${cmp}' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.".toString() :
+            (noTrigChange ? " Rule Machine offers '${cmp}' on neither a ${cap} condition nor a ${cap} trigger.".toString() : "")
         // RM offers the numeric change comparators only on a trigger, and not on an "All of these" one.
         // A device-state trigger keeps *changed* either way.
         boolean trigChange = kind == "trigger" && spec.allOfThese != true
@@ -2850,8 +2854,8 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     if (spec.andStays != null && (kind != "trigger" || cap in (t.noDuration as List))) {
         throw new IllegalArgumentException("${where}: Rule Machine has no 'and stays' duration for a ${cap} ${kind}. ${hint}".toString())
     }
-    if (spec.andStays != null && (_rmComparatorIsRhsOptional(spec.comparator) || _rmNormalizeComparator(spec.comparator)?.toString() in (t.changeOps as List))) {
-        throw new IllegalArgumentException("${where}: Rule Machine offers 'and stays' only for a state, not with the change comparator '${spec.comparator}'; drop andStays or pass a state. ${hint}".toString())
+    if (spec.andStays != null && (_rmComparatorIsRhsOptional(spec.comparator) || _rmNormalizeComparator(spec.comparator)?.toString() in (t.noStaysOps as List))) {
+        throw new IllegalArgumentException("${where}: Rule Machine offers 'and stays' only for a state, not with the comparator '${spec.comparator}' (it offers none with ${(t.noStaysOps as List).join(', ')}); drop andStays or pass a state. ${hint}".toString())
     }
 }
 
@@ -2958,7 +2962,7 @@ private Map _rmCondEntry(String cap, String kind) {
             }
             break
     }
-    if (trig && !((t.noDuration as List).contains(cap)) && fam != "time") opt << f("andStays", "Map", [description: "{hours?, minutes?, seconds?}; with a state, never a change comparator"])
+    if (trig && !((t.noDuration as List).contains(cap)) && fam != "time") opt << f("andStays", "Map", [description: "{hours?, minutes?, seconds?}; with a state, never with ${(t.noStaysOps as List).join(', ')}".toString()])
     if (trig) opt << f("condition", "Map", [description: "a condition (discover kind:'condition') gating this trigger"])
     else opt << f("not", "Boolean")
     opt << f("rawSettings", "Map", [description: "RM settings for fields not listed; '@N' becomes the row index"])
@@ -4197,10 +4201,14 @@ private Map _rmPlanModifyAction(Integer appId, Integer actionIdx, Map mods) {
     }
     List fieldDefs = (((entry.slots ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.slots ?: [])) as List)).findAll { it.key && it.name }
     def editable = (fieldDefs*.name).unique() + (actions != null ? ["action"] : [])
-    // At most one of an exclusive group may be given, as on an add.
+    // At most one of an exclusive group may be given, as on an add. A member the row already holds
+    // through its picker option (rgb's Custom RGB color) counts too, unless mods rewrite that picker.
     (((entry.exclusive ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.exclusive ?: [])) as List)).each { List g ->
         def given = g.findAll { mods.containsKey(it?.toString()) && mods.get(it?.toString()) != null }
         if (given.size() > 1) throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes one of ${g.join(', ')}, not ${given.join(' and ')}. RM is not touched.".toString())
+        def held = g.findAll { m -> !(m in given) && fieldDefs.any { Map d -> d.name == m && d.whenSet instanceof String &&
+            committed(d.key.toString().replace(".@N", ""))?.toString() == d.whenSet && !fieldDefs.any { Map o -> o.key == d.key && mods.get(o.name?.toString()) != null } } }
+        if (given && held) throw new IllegalArgumentException("modifyAction on ${cap}${action ? '.' + action : ''}: takes one of ${g.join(', ')}, and action ${actionIdx} uses ${held.join(' and ')}, so ${given.join(' and ')} cannot be added unless the same mods give a field that replaces ${held.join(' and ')}. RM is not touched.".toString())
     }
     // A field of a together group may come alone only when the row's picker already holds its option.
     (((entry.together ?: []) as List) + ((actionEntry.is(entry) ? [] : (actionEntry.together ?: [])) as List)).each { List g ->
@@ -5224,7 +5232,8 @@ private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean co
 // to the hub; it reads hub modes, hub variables and the rule's local variables, and stashes the
 // derived source-mode details on the spec it is given. Every argument check lives here, so running
 // it on a copy is a complete argument pre-flight.
-private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String action) {
+// status: the rule's statusJson when the caller has just read it, so the mapping's checks reuse it.
+private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String action, Map status = null) {
     // The body runs as a closure so its call sites live in the closure's own class: the app class is
     // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
     def _impl = {
@@ -5617,7 +5626,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         if (!actionSpec.command) throw new IllegalArgumentException("runCommand requires 'command' (the device driver method name)")
         fields = ["useLastDev.@N": (actionSpec.useLastEventDevice == true)]
         if (actionSpec.useLastEventDevice == true) {
-            _rmRequireLastEventDeviceTrigger("runCommand", appId, actionSpec.capabilityFilter, null, actionSpec.__pendingTriggerDeviceIds as List)
+            _rmRequireLastEventDeviceTrigger("runCommand", appId, actionSpec.capabilityFilter, status, actionSpec.__pendingTriggerDeviceIds as List)
         }
         if (actionSpec.parameters instanceof List && !actionSpec.parameters.isEmpty()) {
             actionSpec.parameters.eachWithIndex { p, paramIdx ->
@@ -6002,7 +6011,7 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
 // refused before any of it is written. Everything here only reads (appId null: no rule yet).
 // Structural balance is checked separately; checks that need the rule's own state (one waitEvents
 // action per rule, a fileDelete/fileAppend file list, the disabled-app gate) stay in the add.
-private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null, List pendingTriggerDeviceIds = null) {
+private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null, List pendingTriggerDeviceIds = null, Map status = null) {
     specs.eachWithIndex { spec, i ->
         if (!(spec instanceof Map)) {
             throw new IllegalArgumentException("${label}[${i}] must be an action spec object, got '${spec}'. RM is not touched.")
@@ -6016,7 +6025,7 @@ private void _rmPrevalidateActionSpecList(List specs, String label, Set validRul
             _rmPrevalidateActionSpec(sm, cap, validRuleIds)
             def copy = new LinkedHashMap(sm)
             if (pendingTriggerDeviceIds) copy.__pendingTriggerDeviceIds = pendingTriggerDeviceIds
-            _rmMapActionSpec(appId, copy, cap, sm.action?.toString()?.trim())
+            _rmMapActionSpec(appId, copy, cap, sm.action?.toString()?.trim(), status)
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException(_rmNotTouched("${label}[${i}]: ${e.message}".toString()), e)
         }
@@ -6089,7 +6098,8 @@ private String _rmAddActionNote(Map r) {
 }
 
 // One orchestrated add through RM's new-action editor (doActPage).
-Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null) {
+// status: the rule's statusJson read with nothing written since (a single add's pre-flight); else read here.
+Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null, Map status = null) {
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
     // __reqT0 rides a client-supplied map: only a positive Number is a clock.
     Long reqT0 = (actionSpec.__reqT0 instanceof Number && ((Number) actionSpec.__reqT0).longValue() > 0) ?
@@ -6127,15 +6137,16 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
 
     _rmPrevalidateActionSpec(actionSpec, cap, validRuleIds)
 
-    // From settings, not the compiled list: an un-baked row still occupies its index.
-    def existing = _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
+    // From settings, not the compiled list: an un-baked row still occupies its index. The one read
+    // serves the index, the wait-events check and the mapping below, which write nothing.
+    def addStatus = status ?: _rmFetchStatusJson(appId)
+    def existing = _rmActionIndicesFromSettings(addStatus)
     def idx = (existing ? existing.max() + 1 : 1)
 
     // RM keeps wait-event rows (tCapab-N, tDev-N, tstate-N) per rule, not per action, so a
     // second Wait for Events action overwrites the first one's events.
     if (cap == "waitEvents" && existing) {
-        def status = _rmFetchStatusJson(appId)
-        def existingWaitIdx = (status?.appSettings ?: []).findResult { s ->
+        def existingWaitIdx = (addStatus?.appSettings ?: []).findResult { s ->
             def n = s?.name?.toString()
             if (!n) return null
             def m = (n =~ /^actSubType\.(\d+)$/)
@@ -6155,7 +6166,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // Inside a batch an earlier item may already be written, so only a standalone add claims
     // "not touched".
     def mapped
-    try { mapped = _rmMapActionSpec(appId, actionSpec, cap, action) }
+    try { mapped = _rmMapActionSpec(appId, actionSpec, cap, action, addStatus) }
     catch (IllegalArgumentException argExc) {
         if (intraBatch) throw argExc
         throw new IllegalArgumentException(_rmNotTouched(argExc.message), argExc)
@@ -9280,8 +9291,10 @@ private Map _rmReadLocalVarsMap(Integer appId) {
 // {name: <varName>, type: 'Number'|'Decimal'|'String'|'Boolean'|'DateTime',
 // value: <initial>}
 //
-// Returns [success, name, type, value, settingsApplied, settingsSkipped].
-private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
+// The argument checks of an addLocalVariable and its one read of the rule's locals, before any backup or
+// write. RM's moreVar editor shows only the name field for an existing name, so the type and value would
+// be skipped and the old variable kept: an existing name, or locals that cannot be read, are refused.
+private Map _rmPreflightAddLocalVariable(Integer appId, Map varSpec) {
     if (!(varSpec instanceof Map)) {
         throw new IllegalArgumentException("addLocalVariable requires a Map spec")
     }
@@ -9316,16 +9329,42 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
         }
     }
 
-    // RM's moreVar editor shows only the name field for an existing name, so varType and varValue would be
-    // skipped and the verify below would find the old variable. A failed read falls through to that verify.
     def existing = _rmReadLocalVarsMap(appId)
-    if (existing.ok && existing.vars.containsKey(name)) {
+    if (existing.ok != true) {
+        throw new IllegalStateException("addLocalVariable: the local variables of rule ${appId} could not be read (${existing.error ?: 'no map'}), so an existing '${name}' cannot be ruled out; RM's editor would keep that variable's type and value. Retry the call. RM is not touched.".toString())
+    }
+    if (existing.vars.containsKey(name)) {
         def meta = existing.vars.get(name)
         def live = existing.live?.get(name)
         def curValue = (live instanceof Map && live.containsKey("value")) ? live.value : (meta instanceof Map ? meta.value : null)
         def curType = meta instanceof Map ? meta.type : null
         throw new IllegalArgumentException("addLocalVariable: local variable '${name}' already exists on rule ${appId} (type ${curType}, value ${curValue}); use an action setLocalVariable to change its value, or removeLocalVariable first. RM is not touched.")
     }
+    return [name: name, type: typeCanonical, value: value, serializedValue: serializedValue]
+}
+
+// Whether a committed allLocalVars entry holds the type and value an add asked for. A DateTime's
+// stored form is not compared (RM may reformat the timestamp); its type still is.
+private boolean _rmLocalVarMatches(Object meta, String typeCanonical, Object serializedValue) {
+    if (!(meta instanceof Map)) return false
+    // Number is "integer" and Decimal "bigdecimal" in RM's state; the label is accepted too.
+    Map tokens = [Number: ["integer", "number"], Decimal: ["bigdecimal", "decimal"], String: ["string"], Boolean: ["boolean"], DateTime: ["datetime"]]
+    if (!((tokens[typeCanonical] ?: []) as List).contains(meta.type?.toString()?.toLowerCase())) return false
+    if (typeCanonical == "DateTime") return true
+    def stored = meta.value
+    if (typeCanonical in ["Number", "Decimal"]) {
+        try { return new BigDecimal(stored.toString()).compareTo(new BigDecimal(serializedValue.toString())) == 0 } catch (Exception ignored) { return false }
+    }
+    return stored?.toString() == serializedValue?.toString()
+}
+
+// Returns [success, name, type, value, settingsApplied, settingsSkipped].
+private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
+    Map pre = plan ?: _rmPreflightAddLocalVariable(appId, varSpec)
+    def name = pre.name
+    def typeCanonical = pre.type
+    def value = pre.value
+    def serializedValue = pre.serializedValue
 
     def applied = []
     def skipped = []
@@ -9346,12 +9385,16 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
     // may take a moment to persist after varValue is written, so retry
     // the read up to 3 times with brief settling between attempts.
     def committed = false
+    def found = null
     def attempts = 0
     def lastFetchErr = null
     while (attempts < 3 && !committed) {
         def lvRead = _rmReadLocalVarsMap(appId)
         if (lvRead.ok) {
-            if (lvRead.vars.containsKey(name)) committed = true
+            if (lvRead.vars.containsKey(name)) {
+                found = lvRead.vars.get(name)
+                committed = _rmLocalVarMatches(found, typeCanonical, serializedValue)
+            }
         } else {
             lastFetchErr = lvRead.error
         }
@@ -9368,6 +9411,23 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
         // The verification channel itself failed every attempt — surface
         // that as the root cause rather than silently blaming type mismatch.
         mcpLog("warn", "rm-native", "addLocalVariable: post-write verification fetch failed for app ${appId} (var '${name}'): ${lastFetchErr}. Treating as not-committed; the actual write may still have landed.")
+    }
+    if (!committed && found != null) {
+        def foundType = (found instanceof Map) ? found.type : null
+        def foundValue = (found instanceof Map) ? found.value : found
+        return [
+            success: false,
+            partial: true,
+            name: name,
+            type: typeCanonical,
+            value: value,
+            settingsApplied: applied,
+            settingsSkipped: skipped,
+            error: "Variable '${name}' is on the rule as type ${foundType}, value ${foundValue}, not the ${typeCanonical} ${value} this call asked for.".toString(),
+            repairHints: [
+                "Read the rule's local variables (hub_list_rule_local_variables). If '${name}' is not what you want, set it with an action setLocalVariable, or removeLocalVariable and add it again.".toString()
+            ]
+        ]
     }
     if (!committed) {
         return [
@@ -12591,11 +12651,13 @@ private Map _rmReplaceRequiredExpression(Integer appId, Map exprSpec, Map backup
                 "replaceRequiredExpression: app ${appId} shows a committed Required Expression but its token list reads empty. Nothing was changed -- inspect it via hub_get_app_config(appId=${appId}).").toString()
         ]
     }
-    // An unreadable baseline counts every later issue as new, so the rollback errs toward the original.
+    // An unreadable baseline is an empty one, so every later issue and warning counts as new and the
+    // rollback errs toward the original (null would mean the add path, which skips warnings).
     def baselineHealth = null
     try { baselineHealth = _rmCheckRuleHealth(appId) } catch (Exception baseExc) {
         mcpLog("warn", "rm-native", "replaceRequiredExpression: baseline health of app ${appId} could not be read (${baseExc.message})")
     }
+    if (!(baselineHealth instanceof Map)) baselineHealth = [issues: [], structuralIssues: [], warnings: [], brokenMarkerCounts: [:]]
 
     def rmCache = [:]
     def applied = []
@@ -13094,6 +13156,8 @@ def _applyNativeAppEdit(args) {
     // from the requested name, with the not-touched envelope (null backup). Patches and createRule are
     // caught inside _rmAddAction.
     Map modifyActionPlan = null
+    Map addLocalVariablePlan = null
+    Map preActStatus = null
     try {
         if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
         addActionsList?.each { if (it instanceof Map) _rmRejectUnwalkableExpressionConditions(it as Map) }
@@ -13105,8 +13169,10 @@ def _applyNativeAppEdit(args) {
         def preTrigs = (addTriggerSpec ? [addTriggerSpec] : []) + (addTriggersList ?: [])
         // This call's triggers are added before its actions, so their devices count for useLastEventDevice.
         def preTrigDeviceIds = preTrigs.findAll { it instanceof Map }.collectMany { Map t -> (t.deviceIds instanceof List) ? (t.deviceIds as List) : (t.deviceId != null ? [t.deviceId] : []) }
+        // One statusJson read serves every useLastEventDevice check here, and a single addAction's add too.
+        if (appId != null && preActs.any { it instanceof Map && (it as Map).useLastEventDevice == true }) preActStatus = _rmFetchStatusJson(appId)
         if (preActs) _rmPrevalidateActionSpecList(preActs, addActionSpec ? "addAction" : (addActionsList ? "addActions" : "replaceActions"),
-            _rmSpecListTargetsRule(preActs) ? _rmValidRuleIds() : null, appId, preTrigDeviceIds)
+            _rmSpecListTargetsRule(preActs) ? _rmValidRuleIds() : null, appId, preTrigDeviceIds, preActStatus)
         if (preTrigs) _rmPrevalidateTriggerSpecList(preTrigs, addTriggerSpec ? "addTrigger" : "addTriggers")
         if (addRequiredExpressionSpec) _rmPrevalidateConditionList(addRequiredExpressionSpec, "addRequiredExpression")
         if (replaceRequiredExpressionSpec) _rmPrevalidateConditionList(replaceRequiredExpressionSpec, "replaceRequiredExpression")
@@ -13115,6 +13181,8 @@ def _applyNativeAppEdit(args) {
             if (!(modifyActionSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyAction.mods is required: the fields to change, e.g. {ruleIds: [123]}. RM is not touched.")
             modifyActionPlan = _rmPlanModifyAction(appId, _rmPatchOpIndex("modifyAction", modifyActionSpec.index), modifyActionSpec.mods as Map)
         }
+        if (modifyTriggerSpec) _rmCheckModifyTriggerShape(modifyTriggerSpec)
+        if (addLocalVariableSpec) addLocalVariablePlan = _rmPreflightAddLocalVariable(appId, addLocalVariableSpec as Map)
         // A disabled app renders no configuration page, and every edit below drives that page: removeAction
         // would burn a backup and say retry is safe; walkStep and settings would report success having changed
         // nothing. One read-only GET.
@@ -13665,7 +13733,8 @@ def _applyNativeAppEdit(args) {
         // One-call action creation; actions bake through doActPage -> selectActions, no updateRule needed.
         def actResult
         try {
-            actResult = _rmAddAction(appId, _rmWithClock(addActionSpec, args?.__reqT0 as Long))
+            def clocked = _rmWithClock(addActionSpec, args?.__reqT0 as Long)
+            actResult = preActStatus != null ? _rmAddAction(appId, clocked, false, null, preActStatus) : _rmAddAction(appId, clocked)
         } catch (Exception e) {
             mcpLogError("rm-native", "addAction failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)
@@ -14103,7 +14172,7 @@ def _applyNativeAppEdit(args) {
         // varValue (auto-commits). Verified live.
         def varResult
         try {
-            varResult = _rmAddLocalVariable(appId, addLocalVariableSpec)
+            varResult = _rmAddLocalVariable(appId, addLocalVariableSpec, addLocalVariablePlan)
         } catch (Exception e) {
             mcpLogError("rm-native", "addLocalVariable failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)

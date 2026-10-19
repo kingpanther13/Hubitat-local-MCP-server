@@ -671,6 +671,24 @@ class ActionCatalogSourceSpec extends ToolSpecBase {
         e.message == "modifyAction on color.setColor: takes hue and saturation together unless the action already uses them, not hue alone. RM is not touched."
     }
 
+    def "modifyAction refuses a level on a row that holds a custom RGB color, in the plan, before any backup"() {
+        given:
+        committedRow(["actType.3": "dimmerActs", "actSubType.3": "getSetColor", "bulbs.3": "8", "color.3": "Custom RGB color", "colorH.3": "#ff8800"])
+
+        when:
+        script._rmPlanModifyAction(100, 3, [level: 40])
+
+        then:
+        def e = thrown(IllegalArgumentException)
+        e.message == "modifyAction on color.setColor: takes one of rgb, level, and action 3 uses rgb, so level cannot be added unless the same mods give a field that replaces rgb. RM is not touched."
+
+        when: "a named color in the same mods replaces the RGB picker option"
+        def writes = script._rmPlanModifyAction(100, 3, [colorName: "Blue", level: 40]).writes as Map
+
+        then:
+        writes == ["color.3": "Blue", "colorLevel.3": 40]
+    }
+
     def "discover serves setColor's custom color forms and how they combine"() {
         when:
         def entry = script._rmAddAction(100, [discover: [capability: "color"]]).capability as Map
