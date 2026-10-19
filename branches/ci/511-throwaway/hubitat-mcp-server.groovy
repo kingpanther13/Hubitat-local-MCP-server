@@ -13556,6 +13556,8 @@ def toolCreateDevice(args) {
     if (ctype in ["ZWV", "ZGB"] || readable.contains("z-wave") || readable.contains("zwave") || readable.contains("zigbee") || readable.contains("matter")) {
         warnings << "This is a radio-type driver. Creating it here makes a non-functional orphan shell (no paired node). Add real Z-Wave/Zigbee/Matter devices by PAIRING (hub_call_zwave / hub_call_zigbee / hub_call_matter), then delete this shell with hub_delete_device."
     }
+    def selectWarning = _selectCreatedDevice(newId)
+    if (selectWarning) warnings << selectWarning
     mcpLog("info", "device", "hub_create_device: created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}")
     return [
         success: true,
@@ -13568,11 +13570,18 @@ def toolCreateDevice(args) {
         capabilities: info?.capabilities,
         warnings: warnings ?: null,
         message: "Created device ${newId} from driver-type ${typeId}${appliedLabel ? " labeled '${appliedLabel}'" : ''}." + (warnings ? " WARNING: see warnings." : ""),
-        mcpAccessible: _bypassEnabled(),
-        note: _bypassEnabled()
-            ? "Set room/preferences/showOnHome with hub_update_device, or delete it with hub_delete_device."
-            : "The device tools reach only the devices selected in this app, and a new device is not selected: add it with hub_update_mcp_settings(settings: {selectedDevices: {mode: 'add', ids: ['${newId}']}}) (Developer Mode) or the app's device picker before hub_get_device / hub_update_device can use it. hub_manage_virtual_device makes virtual devices the tools reach at once.".toString()
+        note: "Set room/preferences/showOnHome with hub_update_device, or delete it with hub_delete_device."
     ]
+}
+private String _selectCreatedDevice(String deviceId) {
+    try {
+        def ids = (settings.selectedDevices ?: []).collect { it.id.toString() }
+        if (!ids.contains(deviceId)) app.updateSetting("selectedDevices", [type: "capability.*", value: ids + [deviceId]])
+        return null
+    } catch (Exception e) {
+        mcpLog("warn", "device", "Could not add device ${deviceId} to the selected devices: ${e.message}")
+        return "Device ${deviceId} was created but could not be added to this app's selected devices (${e.message}); add it in the app's device picker.".toString()
+    }
 }
 private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     Map beforeJson = _meshJson()
@@ -13673,6 +13682,10 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         warnings << "Sent the link request, but could not confirm it against hub_get_hub_mesh availableLinkedDevices (read-back lag or an unreadable mesh list). Verify with hub_get_hub_mesh."
     } else if (newId == null) {
         warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag or an ambiguous diff). Find it with hub_get_hub_mesh."
+    }
+    if (newId != null) {
+        def selectWarning = _selectCreatedDevice(newId)
+        if (selectWarning) warnings << selectWarning
     }
     mcpLog("info", "device", "hub_create_device: linked Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId})${newId ? " as local ${newId}" : ''}")
     return [
