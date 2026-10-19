@@ -2010,7 +2010,7 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
 
     def "discover's andStays field names every comparator the and-stays check refuses"() {
         expect:
-        def stays = (script._rmCondDiscover("trigger", "Temperature").optionalFields as List).find { it.name == "andStays" }
+        def stays = ((script._rmCondDiscover("trigger", "Temperature").capability as Map).optionalFields as List).find { it.name == "andStays" }
         stays.description == "{hours?, minutes?, seconds?}; with a state, never with *changed*, *increased*, *decreased*, *is empty*"
     }
 
@@ -2723,22 +2723,26 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
     }
 
     def "a useLastEventDevice addAction reads the rule's statusJson once for its pre-flight, index and mapping"() {
-        given: "a switch trigger on device 8; the add is stopped at its first write"
+        given: "a switch trigger on device 8; the statusJson GETs are counted up to the add's first write"
         enableWrite()
         hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 8, label: "S1", capabilities: ["Switch"]]]) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tDev1", value: ["8"], deviceIdsForDeviceList: ["8"]]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", []) }
         script.metaClass._rmIsAppDisabled = { Integer id -> false }
         script.metaClass._rmBackupBeforeEdit = { Integer id, String reason, String page = null -> [backupKey: "k"] }
         Integer readsBeforeWrite = null
-        script.metaClass._rmRunPendingPredCapabsClear = { Integer id ->
-            readsBeforeWrite = hubGet.calls.count { it.path == '/installedapp/statusJson/100' } as Integer
-            throw new IllegalStateException("stopped at the first write")
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (readsBeforeWrite == null) readsBeforeWrite = hubGet.calls.count { it.path == '/installedapp/statusJson/100' } as Integer
+            [status: 200, location: null, data: '']
         }
 
-        when:
-        script.toolSetRule([appId: 100, addAction: [capability: "runCommand", command: "on", useLastEventDevice: true], confirm: true])
+        when: "the rest of the add runs against an editor the harness does not model; only the reads before its first write count"
+        try {
+            script.toolSetRule([appId: 100, addAction: [capability: "runCommand", command: "on", useLastEventDevice: true], confirm: true])
+        } catch (Exception ignored) { }
 
-        then:
+        then: "the pre-flight read is the only one: the add's index and its mapping reuse it"
         readsBeforeWrite == 1
     }
 
