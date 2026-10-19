@@ -5223,7 +5223,8 @@ private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean co
 // to the hub; it reads hub modes, hub variables and the rule's local variables, and stashes the
 // derived source-mode details on the spec it is given. Every argument check lives here, so running
 // it on a copy is a complete argument pre-flight.
-private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String action) {
+// status: the rule's statusJson when the caller has just read it, so the mapping's checks reuse it.
+private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String action, Map status = null) {
     // The body runs as a closure so its call sites live in the closure's own class: the app class is
     // near the JVM 65,535 constant-pool limit. Behaviour is unchanged.
     def _impl = {
@@ -5616,7 +5617,7 @@ private Map _rmMapActionSpec(Integer appId, Map actionSpec, String cap, String a
         if (!actionSpec.command) throw new IllegalArgumentException("runCommand requires 'command' (the device driver method name)")
         fields = ["useLastDev.@N": (actionSpec.useLastEventDevice == true)]
         if (actionSpec.useLastEventDevice == true) {
-            _rmRequireLastEventDeviceTrigger("runCommand", appId, actionSpec.capabilityFilter, null, actionSpec.__pendingTriggerDeviceIds as List)
+            _rmRequireLastEventDeviceTrigger("runCommand", appId, actionSpec.capabilityFilter, status, actionSpec.__pendingTriggerDeviceIds as List)
         }
         if (actionSpec.parameters instanceof List && !actionSpec.parameters.isEmpty()) {
             actionSpec.parameters.eachWithIndex { p, paramIdx ->
@@ -6001,7 +6002,7 @@ private void _rmPrevalidateTriggerSpecList(List specs, String label) {
 // refused before any of it is written. Everything here only reads (appId null: no rule yet).
 // Structural balance is checked separately; checks that need the rule's own state (one waitEvents
 // action per rule, a fileDelete/fileAppend file list, the disabled-app gate) stay in the add.
-private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null, List pendingTriggerDeviceIds = null) {
+private void _rmPrevalidateActionSpecList(List specs, String label, Set validRuleIds, Integer appId = null, List pendingTriggerDeviceIds = null, Map status = null) {
     specs.eachWithIndex { spec, i ->
         if (!(spec instanceof Map)) {
             throw new IllegalArgumentException("${label}[${i}] must be an action spec object, got '${spec}'. RM is not touched.")
@@ -6015,7 +6016,7 @@ private void _rmPrevalidateActionSpecList(List specs, String label, Set validRul
             _rmPrevalidateActionSpec(sm, cap, validRuleIds)
             def copy = new LinkedHashMap(sm)
             if (pendingTriggerDeviceIds) copy.__pendingTriggerDeviceIds = pendingTriggerDeviceIds
-            _rmMapActionSpec(appId, copy, cap, sm.action?.toString()?.trim())
+            _rmMapActionSpec(appId, copy, cap, sm.action?.toString()?.trim(), status)
         } catch (IllegalArgumentException e) {
             throw new IllegalArgumentException(_rmNotTouched("${label}[${i}]: ${e.message}".toString()), e)
         }
@@ -6088,7 +6089,8 @@ private String _rmAddActionNote(Map r) {
 }
 
 // One orchestrated add through RM's new-action editor (doActPage).
-Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null) {
+// status: the rule's statusJson read with nothing written since (a single add's pre-flight); else read here.
+Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set validRuleIds = null, Map status = null) {
     if (!(actionSpec instanceof Map)) throw new IllegalArgumentException("addAction requires a Map spec")
     // __reqT0 rides a client-supplied map: only a positive Number is a clock.
     Long reqT0 = (actionSpec.__reqT0 instanceof Number && ((Number) actionSpec.__reqT0).longValue() > 0) ?
@@ -6126,15 +6128,16 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
 
     _rmPrevalidateActionSpec(actionSpec, cap, validRuleIds)
 
-    // From settings, not the compiled list: an un-baked row still occupies its index.
-    def existing = _rmActionIndicesFromSettings(_rmFetchStatusJson(appId))
+    // From settings, not the compiled list: an un-baked row still occupies its index. The one read
+    // serves the index, the wait-events check and the mapping below, which write nothing.
+    def addStatus = status ?: _rmFetchStatusJson(appId)
+    def existing = _rmActionIndicesFromSettings(addStatus)
     def idx = (existing ? existing.max() + 1 : 1)
 
     // RM keeps wait-event rows (tCapab-N, tDev-N, tstate-N) per rule, not per action, so a
     // second Wait for Events action overwrites the first one's events.
     if (cap == "waitEvents" && existing) {
-        def status = _rmFetchStatusJson(appId)
-        def existingWaitIdx = (status?.appSettings ?: []).findResult { s ->
+        def existingWaitIdx = (addStatus?.appSettings ?: []).findResult { s ->
             def n = s?.name?.toString()
             if (!n) return null
             def m = (n =~ /^actSubType\.(\d+)$/)
@@ -6154,7 +6157,7 @@ Map _rmAddAction(Integer appId, Map actionSpec, boolean intraBatch = false, Set 
     // Inside a batch an earlier item may already be written, so only a standalone add claims
     // "not touched".
     def mapped
-    try { mapped = _rmMapActionSpec(appId, actionSpec, cap, action) }
+    try { mapped = _rmMapActionSpec(appId, actionSpec, cap, action, addStatus) }
     catch (IllegalArgumentException argExc) {
         if (intraBatch) throw argExc
         throw new IllegalArgumentException(_rmNotTouched(argExc.message), argExc)
@@ -13133,6 +13136,7 @@ def _applyNativeAppEdit(args) {
     // caught inside _rmAddAction.
     Map modifyActionPlan = null
     Map addLocalVariablePlan = null
+    Map preActStatus = null
     try {
         if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
         addActionsList?.each { if (it instanceof Map) _rmRejectUnwalkableExpressionConditions(it as Map) }
@@ -13144,8 +13148,10 @@ def _applyNativeAppEdit(args) {
         def preTrigs = (addTriggerSpec ? [addTriggerSpec] : []) + (addTriggersList ?: [])
         // This call's triggers are added before its actions, so their devices count for useLastEventDevice.
         def preTrigDeviceIds = preTrigs.findAll { it instanceof Map }.collectMany { Map t -> (t.deviceIds instanceof List) ? (t.deviceIds as List) : (t.deviceId != null ? [t.deviceId] : []) }
+        // One statusJson read serves every useLastEventDevice check here, and a single addAction's add too.
+        if (appId != null && preActs.any { it instanceof Map && (it as Map).useLastEventDevice == true }) preActStatus = _rmFetchStatusJson(appId)
         if (preActs) _rmPrevalidateActionSpecList(preActs, addActionSpec ? "addAction" : (addActionsList ? "addActions" : "replaceActions"),
-            _rmSpecListTargetsRule(preActs) ? _rmValidRuleIds() : null, appId, preTrigDeviceIds)
+            _rmSpecListTargetsRule(preActs) ? _rmValidRuleIds() : null, appId, preTrigDeviceIds, preActStatus)
         if (preTrigs) _rmPrevalidateTriggerSpecList(preTrigs, addTriggerSpec ? "addTrigger" : "addTriggers")
         if (addRequiredExpressionSpec) _rmPrevalidateConditionList(addRequiredExpressionSpec, "addRequiredExpression")
         if (replaceRequiredExpressionSpec) _rmPrevalidateConditionList(replaceRequiredExpressionSpec, "replaceRequiredExpression")
@@ -13706,7 +13712,8 @@ def _applyNativeAppEdit(args) {
         // One-call action creation; actions bake through doActPage -> selectActions, no updateRule needed.
         def actResult
         try {
-            actResult = _rmAddAction(appId, _rmWithClock(addActionSpec, args?.__reqT0 as Long))
+            def clocked = _rmWithClock(addActionSpec, args?.__reqT0 as Long)
+            actResult = preActStatus != null ? _rmAddAction(appId, clocked, false, null, preActStatus) : _rmAddAction(appId, clocked)
         } catch (Exception e) {
             mcpLogError("rm-native", "addAction failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)

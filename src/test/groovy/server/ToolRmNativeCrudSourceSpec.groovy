@@ -2664,6 +2664,26 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         !spec.containsKey("__pendingTriggerDeviceIds")
     }
 
+    def "a useLastEventDevice addAction reads the rule's statusJson once for its pre-flight, index and mapping"() {
+        given: "a switch trigger on device 8; the add is stopped at its first write"
+        enableWrite()
+        hubGet.register('/hub2/vrb/devices') { params -> JsonOutput.toJson([[id: 8, label: "S1", capabilities: ["Switch"]]]) }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tDev1", value: ["8"], deviceIdsForDeviceList: ["8"]]]) }
+        script.metaClass._rmIsAppDisabled = { Integer id -> false }
+        script.metaClass._rmBackupBeforeEdit = { Integer id, String reason, String page = null -> [backupKey: "k"] }
+        Integer readsBeforeWrite = null
+        script.metaClass._rmRunPendingPredCapabsClear = { Integer id ->
+            readsBeforeWrite = hubGet.calls.count { it.path == '/installedapp/statusJson/100' } as Integer
+            throw new IllegalStateException("stopped at the first write")
+        }
+
+        when:
+        script.toolSetRule([appId: 100, addAction: [capability: "runCommand", command: "on", useLastEventDevice: true], confirm: true])
+
+        then:
+        readsBeforeWrite == 1
+    }
+
     def "modifyAction on runCommand needs a command when neither the mods nor the committed row carry one"() {
         given:
         wireModifyEditorTransport(100, [1], ["actType.1": "modeActs", "actSubType.1": "getDefinedAction", "myCapab.1": "Switch", "devices.1": ["8"]], runCommandEditor(1))
