@@ -5058,30 +5058,19 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         cap << ["Between two dates", "Days of week", "On a Day"]
     }
 
-    def "_rmBuildCondition rejects Last Event Device (non-condition) fails loud steering to actions"() {
-        // Last Event Device is listed in the STPage condition picker but is an action-side reference to
-        // the device that fired the rule's trigger -- it has no point-in-time-condition meaning and is
-        // NOT a trigger capability either. On the static conditional-trigger path it would write
-        // rCapab_<N> and commit a broken condition. Reject up front, steering to ACTIONS (where the
-        // triggering-device reference is usable). Both-ways: reverting the guard proceeds to the
-        // isCondTrig_ write and the run hits the hub layer instead of this message.
+    def "_rmBuildCondition rejects Last Event Device as a condition the tool does not model"() {
+        // On the static conditional-trigger path it would write rCapab_<N> and commit a broken condition.
         when:
         script._rmBuildCondition(100, 1, [capability: "Last Event Device"], [])
 
         then:
         def ex = thrown(IllegalArgumentException)
-        ex.message.contains("this tool does not model")
+        ex.message.contains("this tool does not model; set it with rawSettings or walkStep")
         ex.message.contains("Last Event Device")
-        // Steers to actions (the triggering-device reference), not a condition.
     }
 
-    def "addRequiredExpression Last Event Device (non-condition) fails loud on the reveal-walker too"() {
-        // Fail-loud parity across surfaces: Last Event Device is a valid STPage picker option but an
-        // action-side reference to the device that fired the trigger -- not usable as a condition, and
-        // NOT a trigger capability either. Without a pre-walker guard the walk would write rCapab_<N>
-        // and commit a broken condition. The guard rejects it up front, uniform with the static path,
-        // steering to ACTIONS. Both-ways: removing the pre-walker guard lets the walk proceed and the
-        // message is NOT the non-condition steer.
+    def "addRequiredExpression Last Event Device fails loud on the reveal-walker too"() {
+        // Without a pre-walker guard the walk would write rCapab_<N> and commit a broken condition.
         given:
         enableWrite()
         script.metaClass.uploadHubFile = { String fn, byte[] b -> }
@@ -5110,27 +5099,22 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
             confirm: true
         ])
 
-        then: "the walker rejects it with the non-condition reject, uniform with the static path"
+        then: "the walker rejects it as not modelled, uniform with the static path"
         result.success == false
-        result.error?.contains("this tool does not model")
+        result.error?.contains("this tool does not model; set it with rawSettings or walkStep")
         result.error?.contains("Last Event Device")
     }
 
-    def "_rmBuildCondition rejects Lock codes (unconfigurable condition) fails loud steering to the RM UI"() {
-        // Lock codes IS a valid condition type, but authoring one needs a lock device plus a specific
-        // code name and the static condition path has no field for either -- it would write rCapab_<N>
-        // and commit an incomplete condition (renders "on null: null") the health guard does not catch.
-        // Reject up front, before any condition write, steering to the Rule Machine UI. Distinct from the
-        // non-condition caps: Lock codes IS a real condition, just not fully authorable here. Both-ways:
-        // reverting the guard proceeds to the isCondTrig_ write and the run hits the hub layer instead.
+    def "_rmBuildCondition rejects Lock codes as a condition the tool does not model"() {
+        // The condition path has no field for the code name; it would commit an incomplete condition
+        // (renders "on null: null") that the health guard does not catch.
         when:
         script._rmBuildCondition(100, 1, [capability: "Lock codes"], [])
 
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("Lock codes")
-        ex.message.contains("this tool does not model")
-        ex.message.contains("does not model")
+        ex.message.contains("this tool does not model; set it with rawSettings or walkStep")
     }
 
     def "addRequiredExpression Lock codes (unconfigurable condition) fails loud on the reveal-walker too"() {
@@ -5923,6 +5907,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("has no comparator for a")
+        ex.message.contains("'*changed*' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.")
     }
 
     def "addRequiredExpression rejects a state-change comparator on a device-state condition (reveal-walker parity)"() {
@@ -5960,6 +5945,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         then: "the walker rejects it, steering to a trigger row"
         result.success == false
         result.error?.contains("has no comparator for a")
+        result.error?.contains("'*changed*' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.")
     }
 
     @spock.lang.Unroll
@@ -5977,6 +5963,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         then:
         def ex = thrown(IllegalArgumentException)
         ex.message.contains("has no comparator for a")
+        ex.message.contains("'*changed*' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.")
 
         where:
         cap << ["Water sensor", "Thermostat mode"]
@@ -6017,7 +6004,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         then: "the walker rejects it with the uniform trigger-row steer"
         result.success == false
         result.error?.contains("has no comparator for a")
-
+        result.error?.contains("'*changed*' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.")
 
         where:
         cap << ["Water sensor", "Thermostat mode"]

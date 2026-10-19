@@ -2824,7 +2824,9 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
         String cmp = _rmNormalizeComparator(spec.comparator)?.toString()
         boolean change = _rmComparatorIsRhsOptional(spec.comparator)
         List allowed = null
-        // RM offers the change comparators only on a trigger, and not on an "All of these" one.
+        String condSteer = kind == "condition" && change ? " '${cmp}' is a trigger-only comparator; add it as a trigger row (addTrigger) instead.".toString() : ""
+        // RM offers the numeric change comparators only on a trigger, and not on an "All of these" one.
+        // A device-state trigger keeps *changed* either way.
         boolean trigChange = kind == "trigger" && spec.allOfThese != true
         if (fam == "numeric") allowed = (t.numericOps as List) + (trigChange ? (t.changeOps as List) + (t.overOps as List) : [])
         // A variable condition drops the change comparators except *changed*, which a String variable
@@ -2832,9 +2834,9 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
         else if (fam == "variable") allowed = (((t.variableOps as List) - (kind == "condition" ? (t.changeOps as List) + (t.overOps as List) : [])) + (t.stringOps as List)).unique()
         else if (fam == "custom-attribute") allowed = ((t.numericOps as List) + (t.stringOps as List)).unique() - (kind == "condition" ? ["*changed*"] : [])
         else if ((fam in ["device-state", "button-led"] || cap == "Mode") && kind == "trigger" && change && !(cap in (t.noChangeState as List))) allowed = null
-        else throw new IllegalArgumentException("${where}: Rule Machine has no comparator for a ${cap} ${kind}${kind == 'trigger' && (fam in ['device-state', 'button-led'] || cap == 'Mode') && !(cap in (t.noChangeState as List)) ? " other than '*changed*'" : ''}; pass state. ${hint}".toString())
+        else throw new IllegalArgumentException("${where}: Rule Machine has no comparator for a ${cap} ${kind}${kind == 'trigger' && (fam in ['device-state', 'button-led'] || cap == 'Mode') && !(cap in (t.noChangeState as List)) ? " other than '*changed*'" : ''}; pass state.${condSteer} ${hint}".toString())
         if (allowed != null && !(cmp in allowed) && !(fam == "numeric" && trigChange && change)) {
-            throw new IllegalArgumentException("${where}: comparator '${spec.comparator}' is not one Rule Machine offers for a ${cap} ${kind}: ${allowed.join(' ')}. ${hint}".toString())
+            throw new IllegalArgumentException("${where}: comparator '${spec.comparator}' is not one Rule Machine offers for a ${cap} ${kind}: ${allowed.join(' ')}.${condSteer} ${hint}".toString())
         }
     }
     if (cap == "Mode" && spec.state == null && spec.modeIds == null && !(kind == "trigger" && spec.comparator != null)) {
@@ -2842,6 +2844,9 @@ private void _rmCheckCondSpec(Map spec, String kind, String where) {
     }
     if (spec.andStays != null && (kind != "trigger" || cap in (t.noDuration as List))) {
         throw new IllegalArgumentException("${where}: Rule Machine has no 'and stays' duration for a ${cap} ${kind}. ${hint}".toString())
+    }
+    if (spec.andStays != null && _rmComparatorIsRhsOptional(spec.comparator)) {
+        throw new IllegalArgumentException("${where}: Rule Machine offers 'and stays' only for a state, not with the change comparator '${spec.comparator}'; drop andStays or pass a state. ${hint}".toString())
     }
 }
 
@@ -2948,7 +2953,7 @@ private Map _rmCondEntry(String cap, String kind) {
             }
             break
     }
-    if (trig && !((t.noDuration as List).contains(cap)) && fam != "time") opt << f("andStays", "Map", [description: "{hours?, minutes?, seconds?}"])
+    if (trig && !((t.noDuration as List).contains(cap)) && fam != "time") opt << f("andStays", "Map", [description: "{hours?, minutes?, seconds?}; with a state, never a change comparator"])
     if (trig) opt << f("condition", "Map", [description: "a condition (discover kind:'condition') gating this trigger"])
     else opt << f("not", "Boolean")
     opt << f("rawSettings", "Map", [description: "RM settings for fields not listed; '@N' becomes the row index"])

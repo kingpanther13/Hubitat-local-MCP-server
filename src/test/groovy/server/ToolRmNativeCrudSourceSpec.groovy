@@ -1873,6 +1873,39 @@ class ToolRmNativeCrudSourceSpec extends RmNativeCrudSpecBase {
         "a condition capability no writer models"          | "condition" | [capability: "Time of day"]                                                                       | "condition this tool does not model"
         "and stays on a capability without a duration"     | "trigger"   | [capability: "Button", deviceIds: [8], buttonNumber: 1, state: "pushed", andStays: [minutes: 1]]  | "no 'and stays' duration for a Button trigger"
         "an over comparator on a variable condition"       | "condition" | [capability: "Variable", variable: "x", comparator: "*increased*"]                                 | "not one Rule Machine offers for a Variable condition"
+        "an over comparator on a variable condition (steer)" | "condition" | [capability: "Variable", variable: "x", comparator: "*increased*"]                               | "'*increased*' is a trigger-only comparator; add it as a trigger row (addTrigger) instead."
+        "a change comparator on a numeric condition"       | "condition" | [capability: "Temperature", deviceIds: [8], comparator: "*changed*"]                              | "'*changed*' is a trigger-only comparator; add it as a trigger row (addTrigger) instead."
+        "a change comparator on a Mode condition"          | "condition" | [capability: "Mode", comparator: "*changed*"]                                                     | "'*changed*' is a trigger-only comparator; add it as a trigger row (addTrigger) instead."
+        "and stays with *changed* on a device-state trigger" | "trigger" | [capability: "Motion", deviceIds: [8], comparator: "*changed*", andStays: [minutes: 1]]           | "offers 'and stays' only for a state, not with the change comparator '*changed*'"
+        "and stays with *changed* on HSM Status"           | "trigger"   | [capability: "HSM Status", comparator: "*changed*", andStays: [minutes: 1]]                      | "offers 'and stays' only for a state, not with the change comparator '*changed*'"
+        "and stays with *changed* on Private Boolean"      | "trigger"   | [capability: "Private Boolean", comparator: "*changed*", andStays: [minutes: 1]]                 | "offers 'and stays' only for a state, not with the change comparator '*changed*'"
+        "and stays with *increased* on a numeric trigger"  | "trigger"   | [capability: "Temperature", deviceIds: [8], comparator: "*increased*", andStays: [minutes: 1]]    | "offers 'and stays' only for a state, not with the change comparator '*increased*'"
+    }
+
+    def "_rmCheckCondSpec keeps the generic wording, without the trigger-row steer, where no change comparator was rejected"() {
+        when:
+        script._rmCheckCondSpec(spec, "condition", "addRequiredExpression")
+
+        then:
+        def ex = thrown(IllegalArgumentException)
+        ex.message.contains(text)
+        !ex.message.contains("trigger-only comparator")
+
+        where:
+        spec                                                         | text
+        [capability: "Lock codes", comparator: "*changed*"]           | "is a Rule Machine condition this tool does not model; set it with rawSettings or walkStep"
+        [capability: "Last Event Device"]                             | "is a Rule Machine condition this tool does not model; set it with rawSettings or walkStep"
+        [capability: "Switch", deviceIds: [8], comparator: "="]       | "Rule Machine has no comparator for a Switch condition; pass state."
+    }
+
+    def "_rmCheckCondSpec accepts and stays with a state, and *changed* without and stays, on a device-state trigger"() {
+        when:
+        script._rmCheckCondSpec([capability: "Motion", deviceIds: [8], state: "active", andStays: [minutes: 1]], "trigger", "addTrigger")
+        script._rmCheckCondSpec([capability: "Motion", deviceIds: [8], comparator: "*changed*"], "trigger", "addTrigger")
+        script._rmCheckCondSpec([capability: "Motion", deviceIds: [8], comparator: "*changed*", allOfThese: true], "trigger", "addTrigger")
+
+        then:
+        noExceptionThrown()
     }
 
     def "_rmCheckCondSpec accepts compareToDevice with a comparator on a numeric trigger and *changed* on a variable condition"() {
