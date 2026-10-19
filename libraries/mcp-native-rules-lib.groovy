@@ -9263,8 +9263,10 @@ private Map _rmReadLocalVarsMap(Integer appId) {
 // {name: <varName>, type: 'Number'|'Decimal'|'String'|'Boolean'|'DateTime',
 // value: <initial>}
 //
-// Returns [success, name, type, value, settingsApplied, settingsSkipped].
-private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
+// The argument checks of an addLocalVariable and its one read of the rule's locals, before any backup or
+// write. RM's moreVar editor shows only the name field for an existing name, so the type and value would
+// be skipped and the old variable kept: an existing name, or locals that cannot be read, are refused.
+private Map _rmPreflightAddLocalVariable(Integer appId, Map varSpec) {
     if (!(varSpec instanceof Map)) {
         throw new IllegalArgumentException("addLocalVariable requires a Map spec")
     }
@@ -9299,16 +9301,42 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
         }
     }
 
-    // RM's moreVar editor shows only the name field for an existing name, so varType and varValue would be
-    // skipped and the verify below would find the old variable. A failed read falls through to that verify.
     def existing = _rmReadLocalVarsMap(appId)
-    if (existing.ok && existing.vars.containsKey(name)) {
+    if (existing.ok != true) {
+        throw new IllegalStateException("addLocalVariable: the local variables of rule ${appId} could not be read (${existing.error ?: 'no map'}), so an existing '${name}' cannot be ruled out; RM's editor would keep that variable's type and value. Retry the call. RM is not touched.".toString())
+    }
+    if (existing.vars.containsKey(name)) {
         def meta = existing.vars.get(name)
         def live = existing.live?.get(name)
         def curValue = (live instanceof Map && live.containsKey("value")) ? live.value : (meta instanceof Map ? meta.value : null)
         def curType = meta instanceof Map ? meta.type : null
         throw new IllegalArgumentException("addLocalVariable: local variable '${name}' already exists on rule ${appId} (type ${curType}, value ${curValue}); use an action setLocalVariable to change its value, or removeLocalVariable first. RM is not touched.")
     }
+    return [name: name, type: typeCanonical, value: value, serializedValue: serializedValue]
+}
+
+// Whether a committed allLocalVars entry holds the type and value an add asked for. A DateTime's
+// stored form is not compared (RM may reformat the timestamp); its type still is.
+private boolean _rmLocalVarMatches(Object meta, String typeCanonical, Object serializedValue) {
+    if (!(meta instanceof Map)) return false
+    // Number is "integer" and Decimal "bigdecimal" in RM's state; the label is accepted too.
+    Map tokens = [Number: ["integer", "number"], Decimal: ["bigdecimal", "decimal"], String: ["string"], Boolean: ["boolean"], DateTime: ["datetime"]]
+    if (!((tokens[typeCanonical] ?: []) as List).contains(meta.type?.toString()?.toLowerCase())) return false
+    if (typeCanonical == "DateTime") return true
+    def stored = meta.value
+    if (typeCanonical in ["Number", "Decimal"]) {
+        try { return new BigDecimal(stored.toString()).compareTo(new BigDecimal(serializedValue.toString())) == 0 } catch (Exception ignored) { return false }
+    }
+    return stored?.toString() == serializedValue?.toString()
+}
+
+// Returns [success, name, type, value, settingsApplied, settingsSkipped].
+private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
+    Map pre = plan ?: _rmPreflightAddLocalVariable(appId, varSpec)
+    def name = pre.name
+    def typeCanonical = pre.type
+    def value = pre.value
+    def serializedValue = pre.serializedValue
 
     def applied = []
     def skipped = []
@@ -9329,12 +9357,16 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
     // may take a moment to persist after varValue is written, so retry
     // the read up to 3 times with brief settling between attempts.
     def committed = false
+    def found = null
     def attempts = 0
     def lastFetchErr = null
     while (attempts < 3 && !committed) {
         def lvRead = _rmReadLocalVarsMap(appId)
         if (lvRead.ok) {
-            if (lvRead.vars.containsKey(name)) committed = true
+            if (lvRead.vars.containsKey(name)) {
+                found = lvRead.vars.get(name)
+                committed = _rmLocalVarMatches(found, typeCanonical, serializedValue)
+            }
         } else {
             lastFetchErr = lvRead.error
         }
@@ -9351,6 +9383,23 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec) {
         // The verification channel itself failed every attempt — surface
         // that as the root cause rather than silently blaming type mismatch.
         mcpLog("warn", "rm-native", "addLocalVariable: post-write verification fetch failed for app ${appId} (var '${name}'): ${lastFetchErr}. Treating as not-committed; the actual write may still have landed.")
+    }
+    if (!committed && found != null) {
+        def foundType = (found instanceof Map) ? found.type : null
+        def foundValue = (found instanceof Map) ? found.value : found
+        return [
+            success: false,
+            partial: true,
+            name: name,
+            type: typeCanonical,
+            value: value,
+            settingsApplied: applied,
+            settingsSkipped: skipped,
+            error: "Variable '${name}' is on the rule as type ${foundType}, value ${foundValue}, not the ${typeCanonical} ${value} this call asked for.".toString(),
+            repairHints: [
+                "Read the rule's local variables (hub_list_rule_local_variables). If '${name}' is not what you want, set it with an action setLocalVariable, or removeLocalVariable and add it again.".toString()
+            ]
+        ]
     }
     if (!committed) {
         return [
@@ -13079,6 +13128,7 @@ def _applyNativeAppEdit(args) {
     // from the requested name, with the not-touched envelope (null backup). Patches and createRule are
     // caught inside _rmAddAction.
     Map modifyActionPlan = null
+    Map addLocalVariablePlan = null
     try {
         if (addActionSpec) _rmRejectUnwalkableExpressionConditions(addActionSpec)
         addActionsList?.each { if (it instanceof Map) _rmRejectUnwalkableExpressionConditions(it as Map) }
@@ -13100,6 +13150,8 @@ def _applyNativeAppEdit(args) {
             if (!(modifyActionSpec.mods instanceof Map)) throw new IllegalArgumentException("modifyAction.mods is required: the fields to change, e.g. {ruleIds: [123]}. RM is not touched.")
             modifyActionPlan = _rmPlanModifyAction(appId, _rmPatchOpIndex("modifyAction", modifyActionSpec.index), modifyActionSpec.mods as Map)
         }
+        if (modifyTriggerSpec) _rmCheckModifyTriggerShape(modifyTriggerSpec)
+        if (addLocalVariableSpec) addLocalVariablePlan = _rmPreflightAddLocalVariable(appId, addLocalVariableSpec as Map)
         // A disabled app renders no configuration page, and every edit below drives that page: removeAction
         // would burn a backup and say retry is safe; walkStep and settings would report success having changed
         // nothing. One read-only GET.
@@ -14088,7 +14140,7 @@ def _applyNativeAppEdit(args) {
         // varValue (auto-commits). Verified live.
         def varResult
         try {
-            varResult = _rmAddLocalVariable(appId, addLocalVariableSpec)
+            varResult = _rmAddLocalVariable(appId, addLocalVariableSpec, addLocalVariablePlan)
         } catch (Exception e) {
             mcpLogError("rm-native", "addLocalVariable failed for app ${appId}", e)
             return _rmBuildUpdateErrorResponse(appId, e.message, backup, "doActPage", e)

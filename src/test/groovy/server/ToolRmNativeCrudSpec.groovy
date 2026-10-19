@@ -6376,7 +6376,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         hubGet.register('/installedapp/statusJson/100') { params ->
             JsonOutput.toJson([
                 installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
-                appState: posts.any { it.body?.containsKey("settings[varValue]") } ? [[name: "allLocalVars", value: [(varName): [type: rmType.toLowerCase(), value: rawValue]]]] : [],
+                appState: posts.any { it.body?.containsKey("settings[varValue]") } ? [[name: "allLocalVars", value: [(varName): [type: ([Number: "integer", Decimal: "bigdecimal"][rmType] ?: rmType.toLowerCase()), value: rawValue]]]] : [],
                 state: [:]
             ])
         }
@@ -6430,7 +6430,8 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                 appState: [[name: "allLocalVars", value: [ctr: [type: "integer", value: 0]]]], state: [:]
             ])
         }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
         def posts = []
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]
@@ -6450,11 +6451,106 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         when: "the same spec through hub_set_rule"
         def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "ctr", type: "Number", value: 10], confirm: true])
 
-        then: "the envelope fails, says nothing needs restoring, and the wizard was never driven"
+        then: "the envelope fails before the baseline, says nothing needs restoring, and the wizard was never driven"
         result.success == false
         result.error?.toString()?.contains("already exists")
         result.restoreHint?.toString()?.contains("not touched")
+        result.backup == null
+        uploads.isEmpty()
         !posts.any { it.path in ["/installedapp/btn", "/installedapp/update/json"] }
+    }
+
+    @spock.lang.Unroll
+    def "addLocalVariable is refused when the rule's local variables cannot be read (#label)"() {
+        given: "the pre-read fails, so an existing name could not be ruled out"
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        int reads = 0
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (++reads <= failedReads) throw new RuntimeException("statusJson timeout")
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: [[name: "allLocalVars", value: [ctr: [type: "integer", value: 0]]]], state: [:]
+            ])
+        }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        script._rmAddLocalVariable(100, [name: "ctr", type: "Number", value: 10])
+
+        then: "a refusal naming the failed read, with no wizard post"
+        def ex = thrown(IllegalStateException)
+        ex.message.contains("the local variables of rule 100 could not be read")
+        ex.message.contains("statusJson timeout")
+        ex.message.contains("RM is not touched")
+        posts.isEmpty()
+
+        where:
+        label                                           | failedReads
+        "every read fails"                              | 99
+        "the name exists, and only the pre-read failed" | 1
+    }
+
+    def "addLocalVariable through hub_set_rule refuses a failed locals read before the baseline"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> throw new RuntimeException("statusJson timeout") }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "ctr", type: "Number", value: 10], confirm: true])
+
+        then:
+        result.success == false
+        result.error?.toString()?.contains("could not be read")
+        result.restoreHint?.toString()?.contains("not touched")
+        result.backup == null
+        uploads.isEmpty()
+        !posts.any { it.path in ["/installedapp/btn", "/installedapp/update/json"] }
+    }
+
+    def "addLocalVariable whose verify finds the name with another value is not a success"() {
+        given: "the pre-read sees no locals; after the wizard the rule holds the name with the old value"
+        enableWrite()
+        def selActsAfter = [
+            [name: "hbVar", type: "text"],
+            [name: "varType", type: "enum", options: ["Number", "Decimal", "String", "Boolean", "DateTime"]],
+            [name: "varValue", type: "text"]
+        ]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActsAfter) }
+        def posts = []
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([
+                installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: posts.any { it.path == "/installedapp/btn" } ? [[name: "allLocalVars", value: [ctr: [type: "integer", value: 0]]]] : [],
+                state: [:]
+            ])
+        }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script._rmAddLocalVariable(100, [name: "ctr", type: "Number", value: 10])
+
+        then:
+        result.success == false
+        result.partial == true
+        result.error == "Variable 'ctr' is on the rule as type integer, value 0, not the Number 10 this call asked for."
+        (result.repairHints as List).any { it.contains("hub_list_rule_local_variables") && it.contains("setLocalVariable") }
     }
 
     def "removeAction throws when delAct click is silently no-oped (action still present after all retries)"() {
@@ -22999,7 +23095,8 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         def posts = []
         hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100, [[name: "tCapab1", value: "Switch"]]) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        def uploads = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> uploads << fn }
         script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
             posts << [path: path, body: body]; [status: 200, location: null, data: '']
         }
@@ -23007,7 +23104,9 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         when:
         def result = script.toolSetRule([appId: 100, modifyTrigger: spec, confirm: true])
 
-        then:
+        then: "refused before the baseline: no snapshot is taken for a call that touches nothing"
+        result.backup == null
+        uploads.isEmpty()
         result.success == false
         result.error?.contains(lead)
         result.error?.contains("modifyTrigger takes {index: <the triggerIndex addTrigger returned>, mods: {state: '<new-state>'}}; only the state field can change in place (capability/devices: removeTrigger + addTrigger). RM is not touched.")
