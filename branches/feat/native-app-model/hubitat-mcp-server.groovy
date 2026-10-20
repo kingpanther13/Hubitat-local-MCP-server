@@ -34042,7 +34042,14 @@ private Map _ndApply(Long id, List changes, boolean created) {
             if (!(finalHealth instanceof Map) || finalHealth.broken != false || (beforeHealth.stopped == true) != (finalHealth.stopped == true) || (beforeHealth.paused == true) != (finalHealth.paused == true)) throw new IllegalStateException('Native stopped or paused state was not preserved')
         }
         def status = _ndJson(hubInternalGet("/installedapp/statusJson/${id}"))
-        if (!(status instanceof Map) || !(status.eventSubscriptions instanceof List)) throw new IllegalStateException('Native activation status is unavailable')
+        if (!(status instanceof Map) || !status.containsKey('eventSubscriptions') || !status.containsKey('scheduledJobs')) throw new IllegalStateException('Native activation status is unavailable')
+        if (status.eventSubscriptions == null || status.scheduledJobs == null) {
+            def installed = status.installedApp
+            if (!(installed instanceof Map) || installed.id?.toString() != id.toString() || installed.installed != true) throw new IllegalStateException('Native activation status cannot verify an installed rule')
+            status = [:] + status
+            ['eventSubscriptions', 'scheduledJobs'].each { key -> if (status.get(key) == null) status.put(key, []) }
+        }
+        if (!(status.eventSubscriptions instanceof List) || !(status.scheduledJobs instanceof List)) throw new IllegalStateException('Native activation status is malformed')
         if (finalHealth.stopped == true && (!(status.scheduledJobs instanceof List) || status.scheduledJobs || status.eventSubscriptions)) throw new IllegalStateException('Stopped native rule retained jobs or subscriptions')
         def persistedState = _nrState(id)
         def actualTriggers = persistedState.capabstrue instanceof Map ? persistedState.capabstrue.findAll { key, value -> key.toString().isInteger() && key.toString().toInteger() > 0 && value?.toString()?.trim() } : [:]
@@ -34071,6 +34078,7 @@ Map toolCreateRuleDocument(Map args) {
     def parent = getAppByAppId(parentId)
     if (parent?.appType?.namespace != 'hubitat' || parent?.appType?.name != 'Rule Machine') throw new IllegalArgumentException('parent_id must identify native Rule Machine')
     Long id = null
+    boolean verifiedChild = false
     try {
         def response = hubInternalGetRaw("/installedapp/createchild/hubitat/Rule-5.1/parent/${parentId}")
         String location = response?.location?.toString()?.trim()?.replaceFirst(/(?i)^Location:\s*/, '')
@@ -34080,13 +34088,14 @@ Map toolCreateRuleDocument(Map args) {
         id = _ndId(match.group(1))
         def child = getAppByAppId(id)
         if (child?.parentAppId?.toString() != parentId.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != 'Rule-5.1') throw new IllegalStateException('Created child did not match the requested native parent and rule type')
+        verifiedChild = true
         _nrHandle(id).initState()
         _nrHandle(id).updateSetting('origLabel', [type: 'text', value: args.name.trim()])
         _nrHandle(id).updateLabel(args.name.trim())
         _ndPreflight(id, changes)
         _ndApply(id, changes, true)
     } catch (Exception failure) {
-        [success: false, partial: true, rule_id: id, created: id != null, error: failure.message?.toString()]
+        [success: false, partial: true, rule_id: verifiedChild ? id : null, created: verifiedChild, error: failure.message?.toString()]
     }
 }
 def _getAllToolDefinitions_partNativeDocuments() {
