@@ -1460,22 +1460,7 @@ class ToolVisualRulesSpec extends ToolSpecBase {
         ex.message.contains('Write tools are disabled')
     }
 
-    def "hub_set_native_app appType=visual_rule is rejected with a pointer at hub_set_visual_rule"() {
-        given:
-        enableWrite()
 
-        when:
-        script.executeTool('hub_set_native_app', [appType: 'visual_rule', name: 'X', confirm: true])
-
-        then:
-        def ex = thrown(IllegalArgumentException)
-        ex.message.contains('hub_set_visual_rule')
-        ex.message.contains('Vue-JSON')
-    }
-
-    // ==================== dispatch-envelope (integration) ====================
-
-    @Unroll
     def "hub_get_visual_rule via dispatch returns the VRB rule list with paused + HTML-stripped name (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways

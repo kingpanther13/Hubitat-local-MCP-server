@@ -6,7 +6,6 @@ import support.ToolSpecBase
  * Guards for the RM gateway-description trim + the Boy Scout fixes:
  *  - the two RM gateway descriptions stay lean but keep the cross-gateway routing
  *    pointer (the selection-critical signal) and drop the verbose deep-reference prose;
- *  - hub_set_native_app's appType param documents the create-vs-edit limitation;
  *  - hub_set_app_disabled's param is appId (the app_id -> appId rename).
  */
 class RmGatewayDescTrimSpec extends ToolSpecBase {
@@ -46,19 +45,6 @@ class RmGatewayDescTrimSpec extends ToolSpecBase {
         desc.contains('hub_manage_native_rules_and_apps')
         desc.contains('hub_create_rule_document')
         desc.toLowerCase().contains('visual rules builder')
-    }
-
-    def "hub_set_native_app appType lists the create-capable types and points other apps at their parent page"() {
-        when:
-        def appType = toolDef('hub_set_native_app').inputSchema.properties.appType
-
-        then: 'apps without an appType are created through their parent app page (Room Lighting newScene)'
-        (appType.description as String).contains("parent app's own page")
-        (appType.description as String).contains('newScene')
-        !(appType.description as String).contains('EDIT/DELETE-only')
-
-        and: 'enum is exactly the create-capable classic types, room_lighting included (issue #461)'
-        appType.enum == ['rule_machine', 'button_controller', 'groups_scenes', 'notifier', 'basic_rule', 'room_lighting']
     }
 
     def "hub_set_app_disabled uses appId (app_id -> appId rename)"() {

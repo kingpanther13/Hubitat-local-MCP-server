@@ -167,14 +167,14 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         given:
         settingsMap.enableMandatoryBPS = true
         settingsMap.enableWrite = true
-        script.metaClass.toolSetNativeApp = { m -> [success: true, stubbed: true] }
+        script.metaClass.toolCloneNativeApp = { m -> [success: true, stubbed: true] }
         def label = 'Acknowledgment key (builtin_app_tools_crud): '
         def served = (script.toolGetToolGuide('builtin_app_tools').content as String).readLines()
             .find { it.startsWith(label) } - label
 
         expect:
         served == script.hubBpsGuideKey('builtin_app_tools_crud')
-        script.executeTool('hub_set_native_app', [appType: 'rule_machine', name: 'X',
+        script.executeTool('hub_clone_native_app', [appId: 42, name: 'Copy', confirm: true,
                                                   bestPracticeKey: served]).stubbed == true
     }
 

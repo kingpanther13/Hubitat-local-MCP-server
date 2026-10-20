@@ -369,7 +369,7 @@ def toolCloneNativeApp(args) {
         Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, sourceLabel, newName)
 
         String note = newAppId
-            ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_set_native_app (or hub_set_rule for RM rules) to further customize."
+            ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_update_rule_document for RM structures or hub_call_app_form for native editor fields and controls."
             : "Clone fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
         def result = [
             success: newAppId != null,
@@ -497,7 +497,7 @@ Map _appClonerExportJson(Integer sourceAppId) {
                     "Known cause: if the source rule has a Required Expression, appCloner export currently fails for it -- " +
                     "delete the Required Expression in the Rule Machine UI, export, then re-add it (no MCP tool removes a " +
                     "Required Expression: replaceRequiredExpression only swaps one for another); or edit the rule in place " +
-                    "via hub_set_rule instead of export/import. " +
+                    "via hub_call_app_form instead of export/import. " +
                     "If the rule has NO Required Expression, the cloner wire format may have changed"
             }
             throw new IllegalStateException("appCloner export fired but ${reason} for cloner ${clonerAppId}")
@@ -640,7 +640,7 @@ def toolImportNativeApp(args) {
         Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, originalLabel, newName)
 
         String note = newAppId
-            ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_set_native_app (or hub_set_rule for RM rules) to further customize."
+            ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_update_rule_document for RM structures or hub_call_app_form for native editor fields and controls."
             : "Import fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
         def result = [
             success: newAppId != null,
@@ -1212,8 +1212,8 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
                 : (commitButton == "updateRule"
-                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or call hub_set_rule(appId=${ruleId}, button='updateRule')."
-                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or call hub_set_native_app(appId=${ruleId}${commitButton ? ", button='" + commitButton + "'" : ''}).")).toString()
+                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or open hub_call_app_form(app_id=${ruleId}, steps=[{kind:'open'}], confirm=true), then activate the returned Update Rule control_id."
+                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or open hub_call_app_form(app_id=${ruleId}, steps=[{kind:'open'}], confirm=true), then activate the returned native control_id.")).toString()
         ]
     }
 
@@ -1254,7 +1254,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     }
     if (skippedDevices) {
         out.partial = true
-        out.note = "${out.note} Device(s) deleted since the backup were left out: ${skippedDevices.collect { "${it.key} (${it.ids.join(', ')})" }.join(', ')}. Pick replacements with hub_set_rule if the rule needs them.".toString()
+        out.note = "${out.note} Device(s) deleted since the backup were left out: ${skippedDevices.collect { "${it.key} (${it.ids.join(', ')})" }.join(', ')}. Pick replacements using the native device choices returned by hub_call_app_form if the rule needs them.".toString()
     }
     if (skippedMaps) {
         out.partial = true
@@ -1288,7 +1288,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         out.success = false
         out.partial = true
         out.error = "Settings were restored, but the rule's triggers/actions do not match the backup: ${structure.structureError}".toString()
-        out.note = "${out.note} Triggers and actions live in Rule Machine state, which a settings replay cannot rebuild -- add the missing ones with hub_set_rule(addTriggers / addActions), checking hub_get_app_config(appId=${ruleId}) against hub_get_backup.".toString()
+        out.note = "${out.note} Triggers and actions live in Rule Machine state, which a settings replay cannot rebuild -- rebuild the missing structures with hub_update_rule_document trigger/action changes, checking hub_get_app_config(appId=${ruleId}) against hub_get_backup.".toString()
     } else if (structure?.removedTriggers || structure?.removedActions || structure?.removedConditionIds) {
         out.note = "${out.note} Removed what the backup did not have (triggers ${structure.removedTriggers ?: []}, actions ${structure.removedActions ?: []}, conditions ${structure.removedConditionIds ?: []}).".toString()
     }
@@ -1296,7 +1296,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         out.success = false
         out.partial = true
         out.error = [out.error, "Settings were restored, but the rule's Required Expression does not match the backup: ${reOutcome.requiredExpressionError}"].findAll { it }.join(" ").toString()
-        out.note = "${out.note} The Required Expression was NOT restored -- inspect it with hub_get_app_config(appId=${ruleId}) and rebuild it with hub_set_rule(addRequiredExpression or replaceRequiredExpression).".toString()
+        out.note = "${out.note} The Required Expression was NOT restored -- inspect it with hub_get_app_config(appId=${ruleId}) and rebuild it with hub_update_rule_document required tokens.".toString()
     } else if (reOutcome?.requiredExpressionRemoved == true) {
         out.note = "${out.note} The backup had no Required Expression, so the rule's expression was removed.".toString()
     } else if (reOutcome?.requiredExpressionRestored == true) {
@@ -1357,7 +1357,7 @@ def _getAllToolDefinitions_partAppCloner() {
     return [
         [
             name: "hub_clone_native_app",
-            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner, then surgically edit fields via hub_set_rule (RM rules) or hub_set_native_app (other classic apps).[[FLAT_TRIM]] A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that has the shape you want. Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure). The clone completes in tens of seconds for typical rules.[[/FLAT_TRIM]] Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
+            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner, then edit RM structures via hub_update_rule_document or native fields and controls via hub_call_app_form.[[FLAT_TRIM]] A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that has the shape you want. Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure). The clone completes in tens of seconds for typical rules.[[/FLAT_TRIM]] Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -1487,7 +1487,7 @@ private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
             Integer newAppId = _appClonerDiscoverNewChild(cp.parentAppId as Integer,
                 (cp.preIds ?: []) as Set, cp.sourceLabel?.toString(), cp.newName?.toString())
             String note = newAppId
-                ? "Cloned source ${cp.sourceAppId} -> new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_set_native_app (or hub_set_rule for RM rules) to further customize."
+                ? "Cloned source ${cp.sourceAppId} -> new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_update_rule_document for RM structures or hub_call_app_form for native editor fields and controls."
                 : "Clone fired but no new child appeared under parent ${cp.parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
             def baseResult = [success: newAppId != null, sourceAppId: cp.sourceAppId,
                               clonerAppId: clonerAppId, newAppId: newAppId, note: note]
@@ -1597,7 +1597,7 @@ private Map _mrtrImportNativeAppSlice(Map rec, Map outerArgs) {
             Integer newAppId = _appClonerDiscoverNewChild(cp.parentAppId as Integer,
                 (cp.preIds ?: []) as Set, cp.originalLabel?.toString(), cp.newName?.toString())
             String note = newAppId
-                ? "Imported '${cp.originalLabel ?: 'app'}' as new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_set_native_app (or hub_set_rule for RM rules) to further customize."
+                ? "Imported '${cp.originalLabel ?: 'app'}' as new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_update_rule_document for RM structures or hub_call_app_form for native editor fields and controls."
                 : "Import fired but no new child appeared under parent ${cp.parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
             def baseResult = [success: newAppId != null, clonerAppId: clonerAppId,
                               newAppId: newAppId, originalSourceId: cp.originalSourceId,

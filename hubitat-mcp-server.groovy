@@ -645,7 +645,7 @@ Set _alwaysGrantedToolNames() { ["hub_get_tool_guide", "hub_search_tools"] as Se
 // pages and state carry every access token, and its settings are every client's access.
 private Set _installedAppTargetTools() {
     return ["hub_get_app_config", "hub_list_app_pages", "hub_export_native_app", "hub_clone_native_app",
-            "hub_set_native_app", "hub_delete_native_app", "hub_set_app_disabled",
+            "hub_delete_native_app", "hub_set_app_disabled",
             "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule",
             "hub_set_visual_rule", "hub_delete_visual_rule", "hub_call_rule", "hub_set_rule_paused",
             "hub_set_rule_private_boolean", "hub_call_app_form", "hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document"] as Set
@@ -866,8 +866,6 @@ String _clientToolDenial(String toolName, args = null) {
         return "${ext} cannot target the MCP Rule Server app itself from ${who}."
     }
     if (_alwaysGrantedToolNames().contains(toolName)) return null
-    // The read-shaped write probes pass both switches, as they pass both main-page masters.
-    if (toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(a)) return null
     boolean isRead = getReadOnlyToolNames().contains(toolName) || _isDeviceReplaceOptionsOnlyCall(toolName, a)
     if (isRead && !_clientAllows(id, "clientRead")) return "Read tools are disabled for ${who}, so ${ext} cannot run."
     if (!isRead && !_clientAllows(id, "clientWrite")) return "Write tools are disabled for ${who}, so ${ext} cannot run."
@@ -2563,23 +2561,7 @@ def handleToolsCall(msg) {
         def binding = _mrtrBinding(toolName, reactiveToolName, args)
         if (stateId == null) {
             _mrtrValidateAccess(toolName, reactiveToolName, args)
-            String outerName = toolName?.toString()
             String leafName = reactiveToolName?.toString()
-            boolean validPureRoute = outerName == leafName ||
-                (settings.useGateways != false &&
-                    gatewayConfig[outerName]?.tools?.contains(leafName))
-            if (validPureRoute && leafName in ["hub_set_native_app"]) {
-                Map leafArgs = _mrtrLeafArguments(outerName, leafName,
-                    args as Map) as Map
-                Map refusal = _rmRoundZeroNativeEditRefusal(leafArgs)
-                if (refusal != null) {
-                    // Validation is pure, but confirmation/backup freshness must
-                    // retain precedence over exposing its argument-specific detail.
-                    requireDestructiveConfirm(leafArgs?.confirm as Boolean)
-                    return _renderToolResult(msg.id, toolName, reactiveToolName,
-                        args, refusal, false)
-                }
-            }
             boolean readLeaf = _mrtrReadTools().contains(leafName)
             if (readLeaf) {
                 // Reads run before reserving: a cached or quickly landed snapshot answers in
@@ -2908,7 +2890,7 @@ def _maxConcurrentWrites() {
 // fetch under it, and the legacy hub_list_devices page that ends early under it. Only these
 // ever see the key; strict-arg leaves must not.
 def _budgetAwareTools() {
-    return ["hub_set_native_app", "hub_call_rule", "hub_clone_native_app",
+    return ["hub_call_rule", "hub_clone_native_app",
             "hub_import_native_app", "hub_call_device_command",
             "hub_get_jobs", "hub_get_performance_stats", "hub_get_logs", "hub_get_info",
             "hub_report_issue", "hub_get_custom_rule", "hub_delete_debug_logs",
@@ -2918,7 +2900,7 @@ def _budgetAwareTools() {
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
 
 def _mrtrWriteTools() {
-    return ["hub_call_app_form", "hub_create_rule_document", "hub_update_rule_document", "hub_set_native_app", "hub_call_rule",
+    return ["hub_call_app_form", "hub_create_rule_document", "hub_update_rule_document", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
             "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device",
@@ -2953,7 +2935,7 @@ def _mrtrReadContinuationActive() {
 }
 
 private Set _mrtrDetachedWorkerTools() {
-    return ["hub_call_app_form", "hub_create_rule_document", "hub_update_rule_document", "hub_set_native_app",
+    return ["hub_call_app_form", "hub_create_rule_document", "hub_update_rule_document",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
             "hub_manage_virtual_device", "hub_update_device", "hub_restore_backup", "hub_create_backup"] as Set
 }
@@ -2972,7 +2954,6 @@ def _mrtrEligibleCall(outerToolName, leafToolName, args) {
             !(getGatewayConfig()[outer]?.tools?.contains(leaf)))) return false
     def leafArgs = _mrtrLeafArguments(outerToolName?.toString(), leaf, args as Map)
     if (!(leafArgs instanceof Map)) return false
-    if (leaf == "hub_set_native_app" && _isNativeAppSchemaOnlyCall(leafArgs)) return false
     // hub_delete_item also deletes app/library code. Only the driver branch has
     // live relay-failure evidence and detached-worker coverage; app deletion can
     // target this server and library deletion has different verification semantics.
@@ -3007,7 +2988,6 @@ private boolean _isActualWriteCall(outerToolName, leafToolName, args) {
     if (getReadOnlyToolNames().contains(leaf)) return false
     if (_isDeviceReplaceOptionsOnlyCall(leaf, safeArgs)) return false
     if (leaf == "hub_update_package" && safeArgs.dryRun == true) return false
-    if (leaf == "hub_set_native_app" && _isNativeAppSchemaOnlyCall(safeArgs)) return false
     return true
 }
 
@@ -3952,35 +3932,6 @@ private Map _mrtrContinuation(String leafTool, Map executionArgs, result, Map re
         retryIds.addAll(result.remainingRuleIds)
         nextLeaf.ruleId = retryIds.unique()
         kind = "call_rule"
-    } else if (leafTool in ["hub_set_native_app"] && result.status == "in_progress") {
-        if (result.stepsRemaining instanceof List && !result.stepsRemaining.isEmpty()) {
-            if (nextLeaf.operation?.toString() == "walkStep") {
-                def spec = (nextLeaf.args instanceof Map) ? _mrtrCopyMap(nextLeaf.args as Map) : [:]
-                spec.steps = result.stepsRemaining
-                if (result.page != null) spec.page = result.page
-                nextLeaf.args = spec
-            } else {
-                def spec = (nextLeaf.walkStep instanceof Map) ? _mrtrCopyMap(nextLeaf.walkStep as Map) : [:]
-                spec.steps = result.stepsRemaining
-                if (result.page != null) spec.page = result.page
-                nextLeaf.walkStep = spec
-            }
-            kind = "walk_steps"
-        } else if ((result.addTriggersRemaining instanceof List && !result.addTriggersRemaining.isEmpty())
-                || (result.addActionsRemaining instanceof List && !result.addActionsRemaining.isEmpty())) {
-            if (nextLeaf.operation?.toString() in ["addTriggers", "addActions"]) {
-                nextLeaf.args = nextLeaf.operation == "addTriggers"
-                    ? (result.addTriggersRemaining ?: []) : (result.addActionsRemaining ?: [])
-            } else {
-                nextLeaf.addTriggers = result.addTriggersRemaining ?: []
-                nextLeaf.addActions = result.addActionsRemaining ?: []
-            }
-            kind = "bulk_edit"
-        } else if (result.patchesRemaining instanceof List && !result.patchesRemaining.isEmpty()) {
-            if (nextLeaf.operation?.toString() == "patches") nextLeaf.args = result.patchesRemaining
-            else nextLeaf.patches = result.patchesRemaining
-            kind = "patches"
-        }
     } else if (leafTool == "hub_create_driver" && result.status == "in_progress" &&
             result.installsRemaining instanceof List && !result.installsRemaining.isEmpty()) {
         nextLeaf.installs = result.installsRemaining
@@ -4134,9 +4085,8 @@ private Map _mrtrCommitSlice(String stateId, Map rec, Map claim, Map executionAr
                     ", so a follow-up can resume from there rather than re-running the whole " +
                     "operation."
             }
-            if (continuation.kind in ["bulk_edit", "patches", "walk_steps", "driver_installs", "driver_updates"]) {
-                ["appId", "page", "operation", "stepsRemaining", "addTriggersRemaining",
-                 "addActionsRemaining", "patchesRemaining", "installsRemaining", "updatesRemaining",
+            if (continuation.kind in ["driver_installs", "driver_updates"]) {
+                ["operation", "installsRemaining", "updatesRemaining",
                  "backup", "repairHints", "resume"].each { key ->
                     if (result.containsKey(key)) capped.put(key, result.get(key))
                 }
@@ -4217,71 +4167,6 @@ private def _mrtrAggregateTerminal(Map rec, result) {
             }
             out.remove("remainingRuleIds")
             break
-        case "walk_steps":
-            out.steps = _mrtrWalkSteps(aggregate, out)
-            out.stepsRun = out.steps.size()
-            out.stepsRequested = Math.max(out.stepsRun as Integer,
-                Math.max((aggregate.stepsRequested ?: 0) as Integer, (out.stepsRequested ?: 0) as Integer))
-            def failedStep = out.steps.find { it?.success == false }
-            if (failedStep != null) {
-                out.error = "drive halted at step ${failedStep.step} (${failedStep.operation}): " +
-                    (failedStep.error ?: "step reported success:false -- inspect its valueEcho/silentRejection/health")
-                boolean recoveryExhausted = failedStep.error?.toString()?.contains("Automatic recovery was already attempted") == true
-                out.repairHints = ((out.repairHints ?: []) as List).findAll {
-                    !it?.toString()?.startsWith("Drive stopped at step ")
-                } + [(recoveryExhausted ?
-                    "Drive stopped at step ${failedStep.step} after its automatic recovery was already attempted. Do not re-run that step: its write may already be committed. Inspect steps[${failedStep.step - 1}] and hub_get_rule_health(appId=${out.appId}), and restore the pre-write backup if the rule is damaged." :
-                    "Drive stopped at step ${failedStep.step}. Inspect steps[${failedStep.step - 1}] for the failure detail, correct it, and re-run the drive from that step.").toString()]
-            }
-            out.partial = aggregate.anyPartial == true || out.partial == true
-            break
-        case "bulk_edit":
-            if (out.bulkStoppedAfter != null) {
-                // A stopped slice numbers items within its own remaining lists; restate them in the original request's.
-                int trigOffset = (aggregate.triggers instanceof List) ? (aggregate.triggers as List).size() : 0
-                int actOffset = (aggregate.actions instanceof List) ? (aggregate.actions as List).size() : 0
-                _mrtrRewriteStopRefs(out, { String text ->
-                    _mrtrShiftIndex(_mrtrShiftIndex(text, "addTriggers[", trigOffset), "addActions[", actOffset)
-                })
-            }
-            out.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
-                ((out.triggers instanceof List) ? out.triggers : [])
-            out.actions = ((aggregate.actions instanceof List) ? aggregate.actions : []) +
-                ((out.actions instanceof List) ? out.actions : [])
-            boolean itemsOk = out.triggers.every { it?.success != false } && out.actions.every { it?.success != false }
-            out.success = out.success == true && itemsOk
-            out.partial = aggregate.anyPartial == true || out.partial == true || !itemsOk
-            out.note = "Results include all ${out.triggers.size()} triggers and ${out.actions.size()} actions across owner slices; inspect per-item outcomes and finalization fields."
-            break
-        case "patches":
-            def priorPatchRows = (aggregate.patchResults instanceof List) ? (aggregate.patchResults as List) : []
-            if (out.bulkStoppedAfter != null) {
-                // Each mid-op pause split one original op into two rows, and the first op of this slice
-                // continues the last paused one, so its inner indices start after the rows already run.
-                int opOffset = priorPatchRows.size() - priorPatchRows.count { it instanceof Map && it.pausedMidOp == true }
-                int innerOffset = 0
-                String innerOp = null
-                for (int r = priorPatchRows.size() - 1; r >= 0; r--) {
-                    def row = priorPatchRows[r]
-                    if (!(row instanceof Map) || row.pausedMidOp != true) break
-                    if (innerOp != null && innerOp != row.op?.toString()) break
-                    innerOp = row.op?.toString()
-                    innerOffset += (row.results instanceof List) ? (row.results as List).size() : 0
-                }
-                _mrtrRewriteStopRefs(out, { String text ->
-                    String shifted = innerOp ? _mrtrShiftIndex(text, "patches[0].${innerOp}[".toString(), innerOffset) : text
-                    _mrtrShiftIndex(shifted, "patches[", opOffset)
-                })
-            }
-            out.patchResults = (priorPatchRows + _mrtrPatchResults(out)).collect { row ->
-                (row instanceof Map && row.containsKey("pausedMidOp")) ? (row as Map).findAll { k, v -> k != "pausedMidOp" } : row
-            }
-            if (out.patches instanceof List) out.patches = out.patchResults
-            boolean patchesOk = out.patchResults.every { it?.success != false }
-            out.success = out.success == true && patchesOk
-            out.partial = aggregate.anyPartial == true || out.partial == true || !patchesOk
-            out.note = "Patch results include every owner slice; inspect per-item outcomes and finalization fields."
-            break
         case "driver_installs":
         case "driver_updates":
             String driverField = aggregate.kind == "driver_installs" ? "installs" : "updates"
@@ -4302,40 +4187,6 @@ private def _mrtrAggregateTerminal(Map rec, result) {
     return out
 }
 
-// Adds offset to every index written as token + digits + "]" in text.
-private String _mrtrShiftIndex(String text, String token, int offset) {
-    if (text == null || offset == 0 || !text.contains(token)) return text
-    StringBuilder out = new StringBuilder()
-    int from = 0
-    while (true) {
-        int at = text.indexOf(token, from)
-        if (at < 0) break
-        int digitsStart = at + token.length()
-        int digitsEnd = digitsStart
-        while (digitsEnd < text.length() && "0123456789".indexOf(text.substring(digitsEnd, digitsEnd + 1)) >= 0) digitsEnd++
-        out.append(text.substring(from, digitsStart))
-        if (digitsEnd > digitsStart && digitsEnd < text.length() && text.substring(digitsEnd, digitsEnd + 1) == "]") {
-            out.append(((text.substring(digitsStart, digitsEnd) as Integer) + offset).toString())
-        } else {
-            out.append(text.substring(digitsStart, digitsEnd))
-        }
-        from = digitsEnd
-    }
-    out.append(text.substring(from))
-    return out.toString()
-}
-
-// Applies fix to the item references a stopped slice writes: its stop location, error, hints, and item errors.
-private void _mrtrRewriteStopRefs(node, Closure fix) {
-    if (node instanceof Map) {
-        Map m = node as Map
-        ["bulkStoppedAfter", "error", "note"].each { k -> if (m[k] instanceof CharSequence) m[k] = fix(m[k].toString()) }
-        if (m.repairHints instanceof List) m.repairHints = (m.repairHints as List).collect { it instanceof CharSequence ? fix(it.toString()) : it }
-        ["triggers", "actions", "patches", "patchResults", "results", "addedResults"].each { k ->
-            if (m[k] instanceof List) (m[k] as List).each { _mrtrRewriteStopRefs(it, fix) }
-        }
-    }
-}
 
 private boolean _mrtrStoreTerminal(String stateId, Map originalRec, Map claim, result, boolean isError) {
     synchronized (WRITE_RESERVATION_LOCK) {
@@ -4757,33 +4608,6 @@ private List _mrtrRuleResultRows(result) {
 // the round that triggered it has already run against the hub -- merging it there by a
 // separate path is how the two drift, which is exactly how the cap came to return an
 // aggregate one round stale.
-private List _mrtrWalkSteps(Map aggregate, Map result) {
-    def rows = ((aggregate.steps instanceof List) ? aggregate.steps : []) +
-        ((result.steps instanceof List) ? result.steps : [])
-    def numbered = []
-    rows.eachWithIndex { row, index ->
-        numbered << (row instanceof Map ? (row + [step: index + 1]) : row)
-    }
-    return numbered
-}
-
-private List _mrtrPatchResults(Map result) {
-    def rows = result.patchResults instanceof List ? result.patchResults :
-        (result.patches instanceof List ? result.patches : [])
-    return rows.collect { row ->
-        // A paused inner list marks its row partial even when every completed item succeeded.
-        // That checkpoint marker must not survive successful completion as an item defect.
-        if (result.status == "in_progress" && row instanceof Map &&
-                row.op in ["addActions", "addTriggers"] && row.success == true &&
-                row.results instanceof List && row.results.every {
-                    it instanceof Map && it.success != false && it.partial != true
-                }) {
-            return row.findAll { key, value -> key != "partial" }
-        }
-        return row
-    }
-}
-
 private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
     if (!(result instanceof Map)) return
     aggregate.kind = kind
@@ -4795,24 +4619,6 @@ private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
             aggregate.results = banked.results
             aggregate.ruleIds = banked.ruleIds
             break
-        case "walk_steps":
-            aggregate.steps = _mrtrWalkSteps(aggregate, result as Map)
-            aggregate.stepsRequested = Math.max((aggregate.stepsRequested ?: 0) as Integer,
-                (result.stepsRequested ?: 0) as Integer)
-            break
-        case "bulk_edit":
-            aggregate.triggers = ((aggregate.triggers instanceof List) ? aggregate.triggers : []) +
-                ((result.triggers instanceof List) ? result.triggers : [])
-            aggregate.actions = ((aggregate.actions instanceof List) ? aggregate.actions : []) +
-                ((result.actions instanceof List) ? result.actions : [])
-            break
-        case "patches":
-            aggregate.patchResults = ((aggregate.patchResults instanceof List) ? aggregate.patchResults : []) +
-                _mrtrPatchResults(result as Map)
-            // The rollback handle is the single most useful thing to hand back on a batch big
-            // enough to reach the cap, and it lives only on the round that produced it.
-            if (result.backup != null) aggregate.backup = result.backup
-            break
         case "driver_installs":
         case "driver_updates":
             String driverField = kind == "driver_installs" ? "installs" : "updates"
@@ -4820,8 +4626,7 @@ private void _mrtrMergeAggregate(Map aggregate, String kind, result) {
                 ((result.get(driverField) instanceof List) ? result.get(driverField) : []))
             break
     }
-    aggregate.anyPartial = aggregate.anyPartial == true || (kind == "patches" ?
-        aggregate.patchResults.any { it?.success == false || it?.partial == true } : result.partial == true)
+    aggregate.anyPartial = aggregate.anyPartial == true || result.partial == true
 }
 
 private Map _mrtrBankRuleResults(Map aggregate, resultLike) {
@@ -5527,8 +5332,8 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_native_rules_and_apps: [
-            description: "Native classic-app forms, CRUD and Rule Machine runtime control. Use hub_call_app_form for ordered native open/submit steps; opening can mutate state. Native RM authoring uses hub_manage_rule_machine: hub_create_rule_document / hub_update_rule_document. hub_set_native_app creates/edits other classic apps. Also delete/clone/export/import apps and list/run/pause/resume RM rules; not the custom_* engine. Mutating form/document calls need confirm=true plus a recent hub backup. Existing legacy CRUD edits retain their rollback baselines. Inspect partial outcomes and native health; use hub_get_app_config for configuration diagnostics before retrying.",
-            tools: ["hub_call_app_form", "hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
+            description: "Native classic-app forms, CRUD and Rule Machine runtime control. Use hub_call_app_form for ordered native open/submit steps; opening can mutate state. Native RM authoring uses hub_manage_rule_machine: hub_create_rule_document / hub_update_rule_document. Also delete/clone/export/import apps and list/run/pause/resume RM rules; not the custom_* engine. Mutating form/document calls need confirm=true plus a recent hub backup. Inspect partial outcomes and native health; use hub_get_app_config for configuration diagnostics before retrying.",
+            tools: ["hub_call_app_form", "hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
                 hub_call_app_form: "Operate native app forms with ordered open/submit steps. Rendering can mutate app state. Args: app_id, steps, options_for?, confirm.",
                 hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
@@ -5539,7 +5344,6 @@ def getGatewayConfig() {
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start resets private boolean).",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call (RMUtils). Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
                 hub_set_rule_private_boolean: "Set the private boolean of one or more RM rules (RMUtils). Args: ruleId (id or array of ids), value (bool)",
-                hub_set_native_app: "Create or edit any classic native app (Room Lighting, Button Controller, Basic Rule, Notifier, Groups+Scenes, etc.) — generic upsert. Omit appId to create (appType, name); provide appId to edit via settings/button/walkStep. buttonRule={controllerId, buttonNumber, event} creates a Button Rule through its parent controller. Edits ensure a rollback baseline; same-app edits reuse it for one hour by default. For Rule Machine rules use hub_create_rule_document / hub_update_rule_document. Args: appId (omit=create), appType, name, settings|button|walkStep|buttonRule, pageName (opt), stateAttribute (opt), confirm.",
                 hub_delete_native_app: "Delete any classic native app (soft by default, force=true for hard). Auto-backs-up first. Args: appId, force (opt), confirm",
                 hub_set_app_disabled: "Enable or disable any installed app without deleting it (reversible red-X). Args: appId, disabled (bool). Read-back verified. For RM rules prefer hub_set_rule_paused.",
                 hub_clone_native_app: "Clone an existing rule/app via Hubitat's first-party appCloner (deep: child apps and pause state copy too, so a clone of an ACTIVE app lands ACTIVE). Cheaper than rebuilding from scratch via the wizard. Args: appId (alias sourceAppId), newName (opt), stageDisabled (opt: disable clone + every descendant immediately), confirm. Returns newAppId.",
@@ -5557,7 +5361,6 @@ def getGatewayConfig() {
                 hub_call_rule: "trigger fire execute native rule machine rule",
                 hub_set_rule_paused: "pause resume disable enable stop unpause temporarily rule machine rule",
                 hub_set_rule_private_boolean: "private boolean flag rule machine rule condition",
-                hub_set_native_app: "create edit modify change native room lighting button controller notifier groups scenes basic rule visual rule classic smartapp settings button upsert app",
                 hub_delete_native_app: "remove delete destroy native rule machine room lighting button controller basic rule notifier app",
                 hub_set_app_disabled: "disable enable pause stop park red-x toggle installed app room lighting notifier groups scenes without deleting reversible",
                 hub_clone_native_app: "copy duplicate clone existing rule app appCloner template surgical edit",
@@ -5882,8 +5685,6 @@ def getReadOnlyToolNames() {
 //     is NOT; hub_export_native_app / hub_export_bundle are timestamp-free.
 //   * invoke-style writes (device commands, rule runs, GC, repair, reboot)
 //     are NOT -- a retry re-fires the action.
-//   * hub_set_native_app are upserts whose no-appId mode
-//     CREATES -- classified non-idempotent for that mode.
 def getIdempotentWriteToolNames() {
     def cached = _toolMetadataGet("getIdempotentWriteToolNames")
     if (cached != null) return cached
@@ -6157,13 +5958,7 @@ def handleGateway(gatewayName, toolName, toolArgs, reqT0 = null, boolean bpsChec
     // An absent entry means no required params. Missing-param hints below still
     // build fresh definitions for their descriptions.
     def required = requiredParamsByTool()[toolName]
-    // Gate-bypassing meta-calls return pure static content with NO hub mutation and
-    // short-circuit at the very top of their handler (before any gate / appId check),
-    // so they must also bypass this required-param pre-validation -- otherwise the
-    // gateway rejects them for missing appId/confirm before the handler ever runs.
-    // Native-app metadata probes return schema without mutation.
-    def isGatedMetaCall = toolName == "hub_set_native_app" && _isNativeAppSchemaOnlyCall(safeArgs)
-    if (required && !isGatedMetaCall) {
+    if (required) {
         def missing = required.findAll { !safeArgs.containsKey(it) }
         // A sub-tool hidden by the masters / custom-engine mode / dev-mode / #114
         // overrides must fall through to executeTool's canonical refusal -- returning
@@ -6511,12 +6306,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             if (settings.enableRead == false) {
                 throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName}.")
             }
-        } else if (settings.enableWrite == false
-                && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args))) {
-            // hub_set_native_app schema-only calls (guide/discover/
-            // args-omitted probe) return reference content and mutate nothing, so they
-            // stay reachable when writes are disabled; every actual write still hits
-            // this gate.
+        } else if (settings.enableWrite == false) {
             throw new IllegalArgumentException("Write tools are disabled. Enable 'Write Tools' in MCP Rule Server app settings to use ${toolName}.")
         }
     }
@@ -6536,12 +6326,9 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
     // computed above -- gateway names short-circuit (sub-tools gate on re-entry). Two tools are
     // exempt so the gate can NEVER lock the caller out: hub_get_tool_guide (read-only; it
     // publishes the keys) and hub_update_mcp_settings (the toggle-off escape hatch).
-    // hub_set_native_app schema-only probes stay reachable like the
-    // Write master above.
     if (!isGatewayName && settings.enableMandatoryBPS != false
             && !getReadOnlyToolNames().contains(toolName)
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
-            && !(toolName == 'hub_set_native_app' && _isNativeAppSchemaOnlyCall(args ?: [:]))
             && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])
             && !bpsChecked) {
         String bpsSection = _bpsSectionForTool(toolName)
@@ -6794,7 +6581,6 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
 
         // Native Rule Machine CRUD (hub admin-layer; backups flow through
         // hub_list_backups (hub_read_apps_code) + hub_restore_backup (hub_manage_backup))
-        case "hub_set_native_app": return toolSetNativeApp(args)
         case "hub_set_app_disabled": return toolSetAppDisabled(args)
         case "hub_delete_native_app": return toolDeleteNativeApp(args)
         case "hub_clone_native_app": return toolCloneNativeApp(args)
@@ -9503,8 +9289,8 @@ private Integer normalizeRuleId(def ruleId) {
  *   - notifier (Notifier), parentType="Notifications"
  *   - visual_rule (Visual Rule Builder), parentType="Visual Rules Builder"
  *
- * Edit + delete already work on these today — call hub_set_native_app /
- * hub_delete_native_app with the appId of any existing classic-app instance
+ * Edit through hub_call_app_form; delete with hub_delete_native_app
+ * using the appId of an existing classic-app instance
  * (read appId via hub_list_apps (scope='instances') + hub_get_app_config).
  */
 private Map _appTypeRegistry() {
@@ -9556,8 +9342,8 @@ private Map _appTypeRegistry() {
 
 /**
  * Discover and cache the parent app id for the given native-app type.
- * Required by _createNativeAppShell (the create path of both hub_set_rule and
- * hub_set_native_app): createchild is addressed
+ * Native Rule Machine creation uses the createchild route
+ * addressed
  * `/installedapp/createchild/<ns>/<appName>/parent/<parentId>`, and the
  * parent id is per-hub.
  *
@@ -10048,7 +9834,7 @@ def _rmWriteSettingOnPage(Integer appId, String pageName, String key, Object val
 /**
  * Fetch /installedapp/configure/json/<appId>[/<pageName>] and parse.
  * Returns the raw map (app, configPage, settings, childApps, ...).
- * Callers (hub_get_app_config, hub_set_rule) use this to discover the input
+ * Configuration readers use this to discover the input
  * schema (names + types + multiple flags) before issuing a write.
  */
 private Map _rmFetchConfigJson(Integer appId, String pageName = null, Map cache = null) {
@@ -11263,7 +11049,7 @@ def _guideSectionForTool(toolName) {
     if (t in ['hub_get_rule_document', 'hub_create_rule_document', 'hub_update_rule_document']) return 'native_rule_documents'
     if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
     if (t.endsWith('_custom_rule')) return 'rules'
-    if (t in ['hub_set_native_app', 'hub_delete_native_app', 'hub_clone_native_app',
+    if (t in ['hub_delete_native_app', 'hub_clone_native_app',
               'hub_export_native_app', 'hub_import_native_app']) return 'builtin_app_tools_crud'
     if (t in ['hub_set_app_disabled', 'hub_call_rule', 'hub_set_rule_paused',
               'hub_set_rule_private_boolean']) return 'builtin_app_tools_rules'
@@ -11358,7 +11144,6 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_delete_native_app -> builtin_app_tools_crud
 - hub_export_native_app -> builtin_app_tools_crud
 - hub_import_native_app -> builtin_app_tools_crud
-- hub_set_native_app -> builtin_app_tools_crud
 - hub_call_rule -> builtin_app_tools_rules
 - hub_set_app_disabled -> builtin_app_tools_rules
 - hub_set_rule_paused -> builtin_app_tools_rules
@@ -12396,7 +12181,6 @@ RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/priva
 - **hub_set_rule_private_boolean** — set the private boolean of one or more rules (ruleId takes an id or an array; Boolean or lowercase "true"/"false" only)
 
 Native CRUD (hub admin-layer, additionally requires the Write master):
-- **hub_set_native_app** — create or edit other classic apps using the existing generic CRUD interface. Native RM creation and structure changes use hub_create_rule_document / hub_update_rule_document; native editor controls use hub_call_app_form.
 - **hub_set_app_disabled** — enable or disable any installed app (red-X) via POST /installedapp/disable; reversible. Args: appId, disabled (bool). Read-back verified.
 - **hub_delete_native_app** — soft delete (default; refuses if children exist) or force=true. Args: appId, force, confirm. Auto-backs-up before deleting.
 - **hub_clone_native_app** — clone any classic SmartApp via Hubitat's first-party appCloner (deep: child apps and pause state copy, so a clone of an ACTIVE app lands ACTIVE). Args: sourceAppId, newName (opt), stageDisabled (opt: disable the clone + every descendant immediately; a staging failure returns success:false with per-app stageFailures -- do NOT re-clone, the app exists), confirm. Returns newAppId. Drives the appCloner's 4-step wizard (cloneRuleButton -> confirmation -> importRule sub-page -> importNow); typical clones complete in tens of seconds.
@@ -12465,25 +12249,6 @@ Sub-pages are read from the live primary page: every page it links to is listed 
 - **`start`**: re-enable a stopped rule (also resets its private boolean).
 
 `actions`, `stop` and `start` drive RM's own page buttons (`runAction`, `stopRule`), not RMUtils: that is the route the hub UI takes, so the platform's per-app load limiter, which refuses RMUtils dispatches on a busy hub, does not apply to them. Only `rule` still goes through RMUtils (RMUtils has no startRule verb and there is no page button for a full re-evaluation).
-
-### hub_set_native_app
-
-This is the generic CRUD interface for other classic native apps. Native RM structures use the native document tools; native editor forms use hub_call_app_form.
-
-**Create path (admin-layer shell).** A new app's shell is created via the hub's admin-layer `createchild` endpoint, which bypasses the SmartApp parent-type check that blocks third-party `addChildApp('hubitat', ...)` calls. The new app then appears under Apps / Automations exactly as if created via the native UI. The creatable `appType` enum is driven by `_appTypeRegistry()` — add new creatable types there.
-
-**`name`** — the label for the new app; it is shown in the hub's app list.
-
-**Button Rules.** Existing Button Rule children are supported by native document reads/updates. Create them through their native controller editor; a Button Rule cannot be created standalone.
-
-
-For native editor navigation use hub_call_app_form. Native document tools compile supported RM structures without a public legacy writer.
-
-**Edit backups.** Existing-app edits ensure a File Manager baseline exists. By default the newest baseline for the same app is reused for one hour; restoring it undoes every later edit in that chain. Enable **Back up before every native app edit** under Advanced settings for a fresh snapshot on every edit. Deletes and a standalone Required Expression replacement always take a fresh snapshot.
-
-**CREATE by `appType`** covers the enum types (`rule_machine` / `button_controller` / `groups_scenes` / `notifier` / `basic_rule` / `room_lighting`). Other classic apps can usually still be created through their PARENT app's own page, driven like any other app: e.g. the Room Lighting parent's "Create Room Lights from Group, Scene or Scene Transition" input (`newScene`) creates a Room Lights instance from an existing group or scene when written with `hub_set_native_app(appId=<parent id>, settings={newScene:[<group/scene app id>]})`. Inspect the parent with `hub_get_app_config` or `walkStep` introspect first.
-
-If a registered type's built-in parent app is not installed yet (for example, no Button Controllers on a fresh hub), create installs it through the hub's "Add Built-In App" route and retries. No manual install is needed. The call fails only if that bootstrap fails.
 
 ### hub_get_rule_health
 
@@ -12776,7 +12541,7 @@ Hubitat's cloud relay can end one HTTP request while hub-side work continues. MC
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_create_rule_document`, `hub_update_rule_document`, `hub_call_app_form`, `hub_set_native_app`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, `hub_update_device`, and `hub_restore_backup` for a rule backup (`scope=source` with an `rm-rule_` key). When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
+The modern path applies to `hub_create_rule_document`, `hub_update_rule_document`, `hub_call_app_form`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, `hub_update_device`, and `hub_restore_backup` for a rule backup (`scope=source` with an `rm-rule_` key). When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
 
 The first write request reserves the operation and starts its first slice at once; a write that finishes within that request's wait budget returns an ordinary `resultType: "complete"` result in one round trip, so a client that never echoes `requestState` still completes fast writes. Only work still running at the budget returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
 
@@ -12873,7 +12638,7 @@ def getToolGuideSubSections() {
             builtin_app_tools_rules: ["hub_manage_native_rules_and_apps", "hub_call_rule",
                                       "hub_get_rule_health", "hub_list_rule_local_variables"],
             builtin_app_tools_crud: ["Safety model for native CRUD", "CRUD workflow example",
-                                     "hub_set_native_app", "hub_delete_native_app",
+                                     "hub_delete_native_app",
                                      "hub_clone_native_app", "hub_export_native_app",
                                      "hub_import_native_app"]
         ],

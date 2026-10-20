@@ -162,83 +162,6 @@ class MrtrContinuationSpec extends ToolSpecBase {
         return decoded
     }
 
-    def "retained internal preflight refuses #caseName without writes"() {
-        given:
-        settingsMap.enableWrite = true
-        settingsMap.useGateways = true
-        stateMap.lastBackupTimestamp = 1234567890000L
-        def backupCalls = []
-        def posts = []
-        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason ->
-            backupCalls << [id: id, reason: reason]
-            [backupKey: 'must-not-exist']
-        }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 ->
-            posts << [path: path, body: new LinkedHashMap(body)]
-            [status: 200, location: null, data: '{}']
-        }
-        script.metaClass.hubInternalPostFormRaw = { String path, String body, Integer timeout = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '{}']
-        }
-
-        when:
-        // Internal regression seam; this helper is not a public document preflight.
-        def inner = script._rmRoundZeroNativeEditRefusal(leafArgs)
-
-        then: 'the retained validation helper preserves its structured refusal'
-        inner.success == false
-        inner.appId == 777
-        inner.error.toLowerCase().contains(errorNeedle)
-        inner.wizardStuck == false
-        !inner.containsKey('backup')
-        inner.restoreHint == script._rmPreflightRestoreHint()
-
-        and: 'validation created no durable work and touched no backup or wizard surface'
-        !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
-        backupCalls.isEmpty()
-        posts.isEmpty()
-        hubGet.calls.isEmpty()
-        runInMillisCalls.isEmpty()
-
-        where:
-        caseName | leafArgs | errorNeedle
-        'periodic map missing'      | [appId: 777, addTrigger: [capability: 'Periodic Schedule', minutes: 1], confirm: true]                       | 'periodic'
-        'state token in state'      | [appId: 777, addTrigger: [capability: 'Temperature', state: 'changed'], confirm: true]                      | 'comparator'
-        'periodic field missing'    | [appId: 777, addTrigger: [capability: 'Periodic Schedule', periodic: [frequency: 'Hourly']], confirm: true] | 'everyn'
-        'action verb in state'      | [appId: 777, addAction: [capability: 'switch', state: 'on'], confirm: true]                                 | 'action:'
-        'numeric-string appId'      | [appId: '777', addAction: [capability: 'switch', state: 'on'], confirm: true]                               | 'action:'
-    }
-
-    def "the pre-flight restore hint names a reused baseline for what it is (#label)"() {
-        expect:
-        script._rmPreflightRestoreHint("x", backup).contains(expected)
-
-        where:
-        label            | backup                                              | expected
-        'no backup'      | null                                                | 'No backup was taken'
-        'fresh snapshot' | [backupKey: 'rm-rule_1_a', baselineReused: false]   | 'unused snapshot taken before the refusal'
-        'reused'         | [backupKey: 'rm-rule_1_a', baselineReused: true]    | 'baseline reused from an earlier edit'
-    }
-
-    def "retained internal native preflight returns a structured refusal"() {
-        given:
-        settingsMap.enableWrite = true
-        settingsMap.useGateways = false
-        stateMap.lastBackupTimestamp = 1234567890000L
-        def args = [appId: 781,
-            addAction: [capability: 'switch', state: 'on'], confirm: true]
-
-        when:
-        def inner = script._rmRoundZeroNativeEditRefusal(args)
-
-        then:
-        inner.success == false
-        inner.error.toLowerCase().contains('action:')
-        !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
-        runInMillisCalls.isEmpty()
-    }
-
     def "round zero dispatches #caseName to the canonical worker"() {
         given:
         settingsMap.enableWrite = true
@@ -674,38 +597,6 @@ class MrtrContinuationSpec extends ToolSpecBase {
     }
 
     // Synthetic native-app walk checkpoints exercise transport generation ownership.
-    def "the scheduling request observes generation advancement without claiming the next generation"() {
-        given:
-        settingsMap.enableWrite = true
-        def args = [appId: 323, confirm: true, operation: 'walkStep', args: [operation: 'drive', page: 'mainPage', steps: [[operation: 'introspect', page: 'mainPage'], [operation: 'introspect', page: 'mainPage']]]]
-        def leafCalls = new AtomicInteger(0)
-        script.metaClass.toolSetNativeApp = { Map actual ->
-            leafCalls.incrementAndGet()
-            [success: false, partial: true, status: 'in_progress',
-             stepsRemaining: [[operation: 'introspect', page: 'mainPage']], appId: actual.appId]
-        }
-        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
-            runInMillisCalls << call
-            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
-        })
-
-        when:
-        def advanced = modernCall('hub_set_native_app', args)
-        String stateId = advanced.result.requestState
-        Map stored = atomicStateMap.mrtrRequests[stateId] as Map
-
-        then:
-        advanced.result.resultType == 'input_required'
-        advanced.result.requestState == stateId
-        leafCalls.get() == 1
-        runInMillisCalls.size() == 1
-        stored.status == 'active'
-        stored.generation == 1
-        stored.rounds == 1
-        !stored.containsKey('claimId')
-        !stored.containsKey('claimedGeneration')
-    }
-
     def "the scheduling request observes and replays a fast detached worker error"() {
         given:
         settingsMap.enableWrite = true
@@ -1161,11 +1052,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
         expect: 'detached writes wait in-leg but preserve measured cloud-relay jitter headroom'
         // budget - 2000ms headroom = 4000, now under the 4500 detached cap
         script._mrtrContentionWaitMs('hub_update_rule_document') == 4000L
-        script._mrtrContentionWaitMs('hub_set_native_app') == 4000L
+        script._mrtrContentionWaitMs('hub_call_app_form') == 4000L
 
         and: 'the scheduling observer uses a lower cloud wait cap'
         script._mrtrScheduleObserveWaitMs('hub_update_rule_document') == 3500L
-        script._mrtrScheduleObserveWaitMs('hub_set_native_app') == 3500L
+        script._mrtrScheduleObserveWaitMs('hub_call_app_form') == 3500L
 
         and: 'synchronous slices retain half their request budget for actual leaf work'
         script._mrtrContentionWaitMs('hub_call_rule') == 3000L
@@ -1174,16 +1065,16 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.relayBudgetMs = 12000
 
         then: 'the detached 4500 and synchronous 4000 caps are the ceiling -- nothing at the default reaches them'
-        script._mrtrContentionWaitMs('hub_set_native_app') == 4500L
+        script._mrtrContentionWaitMs('hub_update_rule_document') == 4500L
         script._mrtrContentionWaitMs('hub_call_rule') == 4000L
-        script._mrtrScheduleObserveWaitMs('hub_set_native_app') == 3500L
+        script._mrtrScheduleObserveWaitMs('hub_update_rule_document') == 3500L
 
         when: 'an operator configures a cloud budget below the supported minimum'
         settingsMap.relayBudgetMs = 5000
 
         then: 'the effective minimum preserves 2000ms for parsing, scheduling, and rendering'
-        script._mrtrContentionWaitMs('hub_set_native_app') == 4000L
-        script._mrtrScheduleObserveWaitMs('hub_set_native_app') == 3500L
+        script._mrtrContentionWaitMs('hub_update_rule_document') == 4000L
+        script._mrtrScheduleObserveWaitMs('hub_update_rule_document') == 3500L
         script._mrtrContentionWaitMs('hub_call_rule') == 3000L
 
         when: 'the same explicit budget is applied to a LAN request'
@@ -1191,8 +1082,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.lanBudgetMs = 5000
 
         then: 'LAN retains its prior 1500ms reserve because the measured defect is cloud-only'
-        script._mrtrContentionWaitMs('hub_set_native_app') == 4500L
-        script._mrtrScheduleObserveWaitMs('hub_set_native_app') == 4500L
+        script._mrtrContentionWaitMs('hub_update_rule_document') == 4500L
+        script._mrtrScheduleObserveWaitMs('hub_update_rule_document') == 4500L
     }
 
     def "a gateway first request observes the resolved leaf terminal result"() {
@@ -2118,7 +2009,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         ran == 1
 
         when: 'the client changes the leaf tool'
-        def mismatchedTool = modernCall('hub_set_native_app', [appId: 31, confirm: true, settings: [x: 1]], requestState)
+        def mismatchedTool = modernCall('hub_update_rule_document', documentArgs(31), requestState)
 
         then:
         mismatchedTool.error.code == -32602
@@ -2591,12 +2482,12 @@ class MrtrContinuationSpec extends ToolSpecBase {
         Map workItems = scriptStaticField('MRTR_WORK_ITEMS') as Map
         Map claim = [claimId: 'c1', generation: 1]
         Map rec = [status: 'active', claimId: 'c1', claimedGeneration: 1, generation: 1,
-                   outerTool: 'hub_set_native_app', leafTool: 'hub_set_native_app',
+                   outerTool: 'hub_update_rule_document', leafTool: 'hub_update_rule_document',
                    startedAt: script.now(), expiresAt: script.now() + 60000L]
         atomicStateMap.mrtrRequests = ['s1': rec]
         script._writeStateCacheInvalidate()
         workItems['c1'] = [stateId: 's1', claimId: 'c1', started: false,
-                           arguments: [patches: [1, 2, 3]]]
+                           arguments: documentArgs(31)]
 
         when: 'the request is abandoned and any later write sweeps'
         script._mrtrAbandon('s1', rec, claim, 'test-abandon')
@@ -2726,7 +2617,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def virtualNow = new AtomicLong(1234567890000L)
         NOW_OVERRIDE.set({ -> virtualNow.get() })
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
-        assert script._writeReserveRequest('hub_set_native_app', 'legacy').accepted == true
+        assert script._writeReserveRequest('hub_update_rule_document', 'legacy').accepted == true
         def args = [tool: 'hub_get_jobs', args: [cursor: '']]
 
         when: 'round zero runs the read: the fetch is scheduled and observed, and is still pending'
@@ -2740,7 +2631,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         fetches.get() == 0
         runInMillisCalls.size() == 1
         runInMillisCalls[0][0..1] == [50, 'runLogsJsonFetch']
-        script._activeWrites()*.tool == ['hub_set_native_app']
+        script._activeWrites()*.tool == ['hub_update_rule_document']
 
         when: 'the client continues while the worker is still queued'
         def leg1 = modernCall('hub_read_diagnostics', args, stateId)
@@ -2751,7 +2642,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         leg1.result.requestState == stateId
         fetches.get() == 0
         runInMillisCalls.size() == 1
-        script._activeWrites()*.tool == ['hub_set_native_app']
+        script._activeWrites()*.tool == ['hub_update_rule_document']
 
         when: 'the worker lands the snapshot; five seconds later the client continues'
         script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
@@ -2809,7 +2700,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         int writeCap = script._mrtrMaxRecords() as Integer
         int readCap = script._mrtrMaxReadRecords() as Integer
         (1..writeCap).each {
-            pool["mrtr-wterm-${it}".toString()] = fakeRecord('hub_set_native_app', 1234567890000L - 100000L - it) +
+            pool["mrtr-wterm-${it}".toString()] = fakeRecord('hub_update_rule_document', 1234567890000L - 100000L - it) +
                 [status: 'terminal', terminalResult: [success: true], terminalIsError: false]
         }
         (1..readCap).each { pool["mrtr-read-${it}".toString()] = fakeRecord('hub_get_jobs', 1234567890000L - it) }
@@ -2896,7 +2787,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def pool = [:]
         int writeCap = script._mrtrMaxRecords() as Integer
         int readCap = script._mrtrMaxReadRecords() as Integer
-        (1..writeCap).each { pool["mrtr-write-${it}".toString()] = fakeRecord('hub_set_native_app', 1234567890000L - it) }
+        (1..writeCap).each { pool["mrtr-write-${it}".toString()] = fakeRecord('hub_update_rule_document', 1234567890000L - it) }
         (1..readCap).each { pool["mrtr-read-${it}".toString()] = fakeRecord('hub_get_performance_stats', 1234567890000L - it) }
         atomicStateMap.mrtrRequests = pool
         script._writeStateCacheInvalidate()
@@ -3241,76 +3132,6 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
     private List autoContinueJobs() { runInCalls.findAll { it[1] == 'runMrtrAutoContinue' } }
 
-    def "the server resumes a checkpointed detached write when no client request does"() {
-        given:
-        settingsMap.enableWrite = true
-        def leafCalls = new AtomicInteger(0)
-        script.metaClass.toolSetNativeApp = { Map actual ->
-            leafCalls.incrementAndGet() == 1
-                ? [success: false, partial: true, status: 'in_progress', stepsRemaining: [[operation: 'introspect', page: 'mainPage']], appId: actual.appId]
-                : [success: true, appId: actual.appId, settingsApplied: true]
-        }
-        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
-            runInMillisCalls << call
-            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
-        })
-        def args = [appId: 331, confirm: true, operation: 'walkStep', args: [operation: 'drive', page: 'mainPage', steps: [[operation: 'introspect', page: 'mainPage'], [operation: 'introspect', page: 'mainPage']]]]
-
-        when: 'the first request runs slice one and pauses at the checkpoint'
-        def first = modernCall('hub_set_native_app', args)
-        String stateId = first.result.requestState
-        def jobs = autoContinueJobs()
-
-        then: 'a server-side continuation is scheduled for exactly that generation'
-        first.result.resultType == 'input_required'
-        leafCalls.get() == 1
-        jobs.size() == 1
-        jobs[0][0] == script._mrtrAutoContinueDelaySeconds()
-        jobs[0][2].overwrite == false
-        jobs[0][2].data == [stateId: stateId, generation: 1]
-
-        when: 'no client request arrives and the job fires'
-        script.runMrtrAutoContinue(new LinkedHashMap(jobs[0][2].data as Map))
-        def replay = modernCall('hub_set_native_app', args, stateId)
-        def inner = mcpDriver.parseInner(replay)
-
-        then: 'the remainder ran once and a late client request gets the finished result'
-        leafCalls.get() == 2
-        runInMillisCalls.size() == 2
-        replay.result.resultType == 'complete'
-        inner.success == true
-        inner.mrtr.rounds == 2
-        autoContinueJobs().size() == 1
-    }
-
-    def "the server-side continuation does nothing once a client request has resumed"() {
-        given:
-        settingsMap.enableWrite = true
-        def leafCalls = new AtomicInteger(0)
-        script.metaClass.toolSetNativeApp = { Map actual ->
-            leafCalls.incrementAndGet() == 1
-                ? [success: false, partial: true, status: 'in_progress', stepsRemaining: [[operation: 'introspect', page: 'mainPage']], appId: actual.appId]
-                : [success: true, appId: actual.appId]
-        }
-        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
-            runInMillisCalls << call
-            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
-        })
-        def args = [appId: 332, confirm: true, operation: 'walkStep', args: [operation: 'drive', page: 'mainPage', steps: [[operation: 'introspect', page: 'mainPage'], [operation: 'introspect', page: 'mainPage']]]]
-        String stateId = modernCall('hub_set_native_app', args).result.requestState
-        Map job = new LinkedHashMap(autoContinueJobs()[0][2].data as Map)
-
-        when: 'the client continues first, then the stale job fires'
-        def complete = modernCall('hub_set_native_app', args, stateId)
-        script.runMrtrAutoContinue(job)
-
-        then:
-        complete.result.resultType == 'complete'
-        leafCalls.get() == 2
-        runInMillisCalls.size() == 2
-        (atomicStateMap.mrtrRequests as Map)[stateId].status == 'terminal'
-    }
-
     def "the server resumes a paused synchronous multi-rule write inline"() {
         given:
         settingsMap.enableWrite = true
@@ -3431,7 +3252,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when:
         script._mrtrScheduleAutoContinue('mrtr-sched-retry-0001',
-            [leafTool: 'hub_set_native_app', generation: 2, nextArguments: [appId: 1, confirm: true]])
+            [leafTool: 'hub_update_rule_document', generation: 2, nextArguments: documentArgs(1)])
 
         then: 'two bounded attempts at increasing delays, then it stops'
         attempts.size() == 2
@@ -3922,136 +3743,5 @@ class MrtrContinuationSpec extends ToolSpecBase {
         seenByLeaf == ['1']
     }
 
-    def "a bulk trigger stop in a later slice is restated in the original request's trigger indices"() {
-        given: 'two triggers ran in earlier slices; this slice fails its second trigger'
-        String stopText = 'not attempted: bulk stopped after addTriggers[1] failed or was partial'
-        Map rec = [aggregate: [kind: 'bulk_edit', triggers: [[success: true], [success: true]], actions: []]]
-        Map lastSlice = [success: false, partial: true, bulkStoppedAfter: 'addTriggers[1]', finalisationNotAttempted: true,
-                         error: 'Stopped after addTriggers[1] failed: boom. Later items were not attempted and finalisation was not fired.',
-                         repairHints: ['Stopped fail-closed after addTriggers[1]: later items were not attempted.'],
-                         triggers: [[success: true], [success: false, error: 'boom'],
-                                    [success: false, notAttempted: true, error: stopText]],
-                         actions: [[success: false, notAttempted: true, error: stopText]]]
 
-        when:
-        def out = script._mrtrAggregateTerminal(rec, lastSlice)
-
-        then: 'every reference names trigger 3 of the original request'
-        out.bulkStoppedAfter == 'addTriggers[3]'
-        out.error == 'Stopped after addTriggers[3] failed: boom. Later items were not attempted and finalisation was not fired.'
-        out.repairHints == ['Stopped fail-closed after addTriggers[3]: later items were not attempted.']
-        out.triggers.size() == 5
-        out.triggers[4].error == 'not attempted: bulk stopped after addTriggers[3] failed or was partial'
-        out.actions[0].error == 'not attempted: bulk stopped after addTriggers[3] failed or was partial'
-        out.success == false
-        out.finalisationNotAttempted == true
-    }
-
-    def "a bulk action stop in a later slice is restated in the original request's action indices"() {
-        given: 'two triggers and three actions ran in earlier slices; this slice fails its first action'
-        Map rec = [aggregate: [kind: 'bulk_edit', triggers: [[success: true], [success: true]],
-                               actions: [[success: true], [success: true], [success: true]]]]
-        Map lastSlice = [success: false, partial: true, bulkStoppedAfter: 'addActions[0]', finalisationNotAttempted: true,
-                         error: 'Stopped after addActions[0] failed: bad cap. Later items were not attempted and finalisation was not fired.',
-                         triggers: [],
-                         actions: [[success: false, error: 'bad cap'],
-                                   [success: false, notAttempted: true, error: 'not attempted: bulk stopped after addActions[0] failed or was partial']]]
-
-        when:
-        def out = script._mrtrAggregateTerminal(rec, lastSlice)
-
-        then: 'the action offset applies, and the trigger offset does not leak into action references'
-        out.bulkStoppedAfter == 'addActions[3]'
-        out.error.startsWith('Stopped after addActions[3] failed: bad cap.')
-        out.actions.size() == 5
-        out.actions[4].error == 'not attempted: bulk stopped after addActions[3] failed or was partial'
-    }
-
-    def "a patches stop after a mid-op pause is restated in the original op and inner indices"() {
-        given: 'slice one ran op 0 and two inner triggers of op 1, then paused mid-op'
-        Map rec = [aggregate: [kind: 'patches', patchResults: [
-            [success: true, op: 'addLocalVariable'],
-            [success: true, op: 'addTriggers', pausedMidOp: true, results: [[success: true], [success: true]]]
-        ]]]
-        Map innerStop = [success: false, partial: true, bulkStoppedAfter: 'patches[0].addTriggers[1]', finalisationNotAttempted: true,
-                         error: 'Stopped after patches[0].addTriggers[1] failed: boom. Later items were not attempted and finalisation was not fired.',
-                         patches: [
-                             [success: false, op: 'addTriggers', results: [[success: true], [success: false, error: 'boom'],
-                                 [success: false, notAttempted: true, error: 'not attempted: bulk stopped after patches[0].addTriggers[1] failed or was partial']]],
-                             [op: 'addAction', success: false, notAttempted: true,
-                              error: 'not attempted: bulk stopped after patches[0].addTriggers[1] failed or was partial']
-                         ]]
-
-        when: 'the continuation slice fails the second trigger it ran'
-        def out = script._mrtrAggregateTerminal(rec, innerStop)
-
-        then: 'the stop names op 1 and its fourth inner trigger'
-        out.bulkStoppedAfter == 'patches[1].addTriggers[3]'
-        out.error.startsWith('Stopped after patches[1].addTriggers[3] failed: boom.')
-        out.patchResults.size() == 4
-        out.patchResults[3].error == 'not attempted: bulk stopped after patches[1].addTriggers[3] failed or was partial'
-        out.patchResults[2].results[2].error == 'not attempted: bulk stopped after patches[1].addTriggers[3] failed or was partial'
-
-        and: 'the internal pause marker never reaches the caller'
-        !out.patchResults.any { it instanceof Map && it.containsKey('pausedMidOp') }
-
-        when: 'the continuation slice instead stops on the op after the resumed one'
-        Map opStop = [success: false, partial: true, bulkStoppedAfter: 'patches[1]', finalisationNotAttempted: true,
-                      error: 'Stopped after patches[1] failed: nope. Later items were not attempted and finalisation was not fired.',
-                      patches: [[success: true, op: 'addTriggers', results: [[success: true]]],
-                                [success: false, op: 'addAction', error: 'nope']]]
-        def opOut = script._mrtrAggregateTerminal(rec, opStop)
-
-        then: 'only the op offset applies'
-        opOut.bulkStoppedAfter == 'patches[2]'
-        opOut.error.startsWith('Stopped after patches[2] failed: nope.')
-    }
-
-    def "a stopped continuation slice ends the request with no further server continuation and recentWrites names the stop"() {
-        given:
-        settingsMap.enableWrite = true
-        List leafArgs = []
-        script.metaClass.toolSetNativeApp = { Map actual ->
-            leafArgs << actual
-            leafArgs.size() == 1
-                ? [success: true, partial: false, status: 'in_progress', appId: actual.appId, triggers: [],
-                   actions: [[success: true]], addTriggersRemaining: [], addActionsRemaining: [[a: 2], [a: 3]]]
-                : [success: false, partial: true, appId: actual.appId, bulkStoppedAfter: 'addActions[0]',
-                   finalisationNotAttempted: true,
-                   error: 'Stopped after addActions[0] failed: bad cap. Later items were not attempted and finalisation was not fired.',
-                   triggers: [],
-                   actions: [[success: false, error: 'bad cap'],
-                             [success: false, notAttempted: true, error: 'not attempted: bulk stopped after addActions[0] failed or was partial']]]
-        }
-        RUN_IN_MILLIS_OVERRIDE.set({ List call ->
-            runInMillisCalls << call
-            script.runMrtrSlice(new LinkedHashMap(call[2].data as Map))
-        })
-        // Test-local internal bulk result fixture: no public bulk document slicing is implied.
-        def args = [appId: 341, confirm: true, addActions: [[a: 1], [a: 2], [a: 3]]]
-
-        when: 'slice one pauses and no client request follows'
-        def first = modernCall('hub_set_native_app', args)
-        String stateId = first.result.requestState
-        script.runMrtrAutoContinue(new LinkedHashMap(autoContinueJobs()[0][2].data as Map))
-        Map record = (atomicStateMap.mrtrRequests as Map)[stateId] as Map
-        List recent = script._mrtrRecentOperations() as List
-
-        then: 'the server ran only the remainder, and the stop ended the request'
-        first.result.resultType == 'input_required'
-        leafArgs.size() == 2
-        leafArgs[1].addActions == [[a: 2], [a: 3]]
-        autoContinueJobs().size() == 1
-        record.status == 'terminal'
-
-        and: 'the terminal result names the stop in the original request'
-        record.terminalResult.bulkStoppedAfter == 'addActions[1]'
-        record.terminalResult.finalisationNotAttempted == true
-        record.terminalResult.actions.size() == 3
-
-        and: 'recentWrites carries the failure and its reason'
-        recent.size() == 1
-        recent[0].success == false
-        recent[0].error == 'Stopped after addActions[1] failed: bad cap. Later items were not attempted and finalisation was not fired.'
-    }
 }

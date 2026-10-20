@@ -92,14 +92,14 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         where:
         tool                 | args                                     || section
         'hub_update_rule_document'       | SET_RULE_ARGS                            || 'native_rule_documents'
-        'hub_set_native_app' | [appType: 'rule_machine', name: 'X']     || 'builtin_app_tools_crud'
+        'hub_call_app_form' | [app_id: 42, steps: [[kind: 'open']], confirm: true]     || 'native_app_forms'
         'hub_set_hsm'        | [armCommand: 'armHome']                  || 'best_practice_reference'
     }
 
     def "the calling tool's section key passes; another section's key is refused -- #tool"() {
         given:
         settingsMap.enableMandatoryBPS = true
-        script.metaClass.toolSetNativeApp = { m -> [success: true, stubbed: true] }
+        script.metaClass.toolCallAppForm = { m -> [success: true, stubbed: true] }
 
         when: 'the right section key'
         def ok = script.executeTool(tool, args + [bestPracticeKey: key(own)])
@@ -118,7 +118,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         tool                 | args                                 | own                       | other
         'hub_update_rule_document'       | SET_RULE_ARGS                        | 'native_rule_documents'      | 'best_practice_reference'
         'hub_set_hsm'        | [armCommand: 'armHome']              | 'best_practice_reference' | 'native_rule_documents'
-        'hub_set_native_app' | [appType: 'rule_machine', name: 'X'] | 'builtin_app_tools_crud'  | 'builtin_app_tools_rules'
+        'hub_call_app_form' | [app_id: 42, steps: [[kind: 'open']], confirm: true] | 'native_app_forms' | 'builtin_app_tools_rules'
     }
 
     /** The value a caller offers for each refusal variant; the clock is the harness default T0. */
@@ -319,28 +319,6 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         then:
         def failure = thrown(IllegalArgumentException)
         failure.message.contains('native_rule_documents')
-    }
-
-    def "retired native app catalog probes do not bypass write acknowledgment"() {
-        given:
-        settingsMap.enableMandatoryBPS = true
-        when:
-        script.executeTool('hub_set_native_app', [appId:123, addTrigger:[discover:true]])
-        then:
-        def refusal = thrown(IllegalArgumentException)
-        refusal.message.contains('builtin_app_tools_crud')
-    }
-
-    def "hub_set_native_app CREATE-shaped call with a stray guide flag is still gated (no key -> blocked)"() {
-        given:
-        settingsMap.enableMandatoryBPS = true
-
-        when: "no appId -> the create arm would really execute; the schema-only exemption must not apply"
-        script.executeTool("hub_set_native_app", [guide: true, appType: "rule_machine", name: "X"])
-
-        then:
-        def e = thrown(IllegalArgumentException)
-        e.message.startsWith("Mandatory best-practice")
     }
 
     def "gateway name is not gated -- sub-tools gate on re-entry"() {

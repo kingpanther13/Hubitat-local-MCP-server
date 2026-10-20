@@ -163,12 +163,12 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         JsonOutput.toJson(gateway).getBytes('UTF-8').length < 4000
     }
 
-    def "retired authoring tool has no catalog alias in flat or gateway mode"() {
+    def "retired authoring tools have no catalog aliases in flat or gateway mode"() {
         given:
         enableEveryToggle()
         expect:
-        !script.getAllToolDefinitions().any { it.name == 'hub_set_rule' }
-        !script.getGatewayConfig().values().any { it.tools.contains('hub_set_rule') }
+        !script.getAllToolDefinitions().any { it.name in ['hub_set_rule', 'hub_set_native_app'] }
+        !script.getGatewayConfig().values().any { it.tools.any { name -> name in ['hub_set_rule', 'hub_set_native_app'] } }
     }
 
     def "native guides describe supported contracts without claiming full capability parity"() {

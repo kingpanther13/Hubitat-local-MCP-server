@@ -809,7 +809,7 @@ def toolGetAppConfig(args) {
         result.modeInputsNote = "Framework-standard mode input(s) (type='mode') on this page. Semantics are app-specific -- a 'only run during these modes' restriction OR per-mode overrides -- read the input titles/settings to interpret; `modes` is the configured list. Per-page only; absence does NOT mean the app ignores mode: some built-ins gate via mode-ID settings, not a type='mode' input (e.g. Room Lights). See hub_get_tool_guide(section='builtin_app_tools_apps') for the per-built-in key reference."
     }
     // Sub-pages this page links to. Their inputs are not in `sections`; read one with
-    // pageName=<page>, or drive it with hub_set_native_app walkStep (navigate, write, done).
+    // pageName=<page>, or drive it with hub_call_app_form open/submit steps and returned control IDs.
     def pageHrefs = _rmPageHrefs(parsed.configPage as Map)
     if (pageHrefs) result.page.hrefs = pageHrefs
     if (disabledActions) {
@@ -1033,7 +1033,7 @@ private Map _createUserAppInstance(Integer codeAppId) {
         // Deleting and retrying would meet the same refusal: keep the shell and fill it in.
         return [
             success: false,
-            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- write the listed settings with hub_set_native_app(appId:${newId}, settings:{...}); that call's closing Done installs the app.".toString(),
+            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- open hub_call_app_form(app_id:${newId}, steps:[{kind:'open'}], confirm:true), submit the listed fields using the returned expect_page, then activate the returned Done control_id to install the app.".toString(),
             codeAppId: codeAppId,
             instanceAppId: newId,
             committed: false
@@ -1219,7 +1219,7 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
             success: false,
             uiBlocked: true,
             error: submit.uiReason,
-            note: "No Done was submitted, so the instance is not installed yet. Write the listed settings with hub_set_native_app(appId:${instanceId}, settings:{...}); that call's closing Done installs it.".toString(),
+            note: "No Done was submitted, so the instance is not installed yet. Open hub_call_app_form(app_id:${instanceId}, steps:[{kind:'open'}], confirm:true), submit the listed fields using the returned expect_page, then activate the returned Done control_id to install it.".toString(),
             scheduledJobCount: 0,
             eventSubscriptionCount: 0
         ]

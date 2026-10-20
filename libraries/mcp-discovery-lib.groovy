@@ -203,7 +203,7 @@ private buildToolSearchCorpus(List defs = null) {
     def allDefs = applyDescriptionTransform(defs ?: getAllToolDefinitions(), false, false)
     def allDefsMap = allDefs.collectEntries { [(it.name): it] }
     // Friendly names join the searchable text: titles add tokens the bare
-    // name/description lack (hub_set_rule gains 'author' from "Author Rule
+    // name/description lack (native rule documents gain 'author' from "Author Rule
     // Machine Rule" -- its corpus text otherwise only has 'authoring', and
     // the tokenizer does not stem).
     def displayMeta = getToolDisplayMeta()

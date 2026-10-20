@@ -111,7 +111,7 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         'performance_devices'           | '### hub_list_devices'                                        | '### hub_get_metrics'
         'performance_diagnostics'       | '### hub_get_logs'                                            | '### hub_list_devices'
         'builtin_app_tools_overview'    | '## Installed-App & Native-Rule Tools'                        | '### hub_call_rule'
-        'builtin_app_tools_apps'        | '### hub_list_hpm_packages'                                   | '### hub_set_native_app'
+        'builtin_app_tools_apps'        | '### hub_list_hpm_packages'                                   | '### hub_create_rule_document'
         'builtin_app_tools_rules'       | '### hub_get_rule_health'                                     | '### hub_list_drivers'
         'builtin_app_tools_crud'        | '### Safety model for native CRUD'                            | '### hub_get_rule_health'
     }
