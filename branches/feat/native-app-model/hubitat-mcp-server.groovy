@@ -33413,6 +33413,55 @@ private List _nmFields(List fields, String id) {
         [name: row.name.replace('#', id), type: row.type, value: row.value]
     }
 }
+private void _nmCollectInputs(Object node, Map inputs) {
+    if (node instanceof Map) {
+        if (node.element == 'input' && node.name instanceof String && node.type instanceof String && !inputs.containsKey(node.name)) inputs.put(node.name, node)
+        ['sections', 'input', 'body', 'children'].each { key ->
+            def child = node.get(key)
+            if (child instanceof Map || child instanceof List) _nmCollectInputs(child, inputs)
+        }
+    } else if (node instanceof List) node.each { child -> if (child instanceof Map || child instanceof List) _nmCollectInputs(child, inputs) }
+}
+private List _nmOptionKeys(Object options) {
+    if (options instanceof Map) return options.keySet().collect { it.toString() }.unique().sort()
+    if (!(options instanceof List)) return null
+    List keys = []
+    for (Object option in options) {
+        if (option instanceof Map) keys.addAll(option.keySet().collect { it.toString() })
+        else if (option instanceof String || option instanceof Number || option instanceof Boolean) keys << option.toString()
+        else return null
+    }
+    keys.unique().sort()
+}
+Map _nmValidateInputs(Object page, List fields) {
+    Map inputs = [:]
+    if (page instanceof Map) _nmCollectInputs(page, inputs)
+    List errors = []
+    fields.each { row ->
+        def descriptor = inputs.get(row.name)
+        String reason = null
+        if (!(page instanceof Map)) reason = 'native page did not return input descriptors'
+        else if (!(descriptor instanceof Map)) reason = 'input is not exposed by the native page; dependent-field authoring requires an intermediate native render'
+        else {
+            if (descriptor.type != row.type) reason = "expected native type '${descriptor.type}', received '${row.type}'".toString()
+            else if (descriptor.containsKey('multiple') && !(descriptor.multiple instanceof Boolean)) reason = 'native input cardinality metadata is unsupported'
+            else if (!descriptor.containsKey('multiple') && row.value instanceof List) reason = 'native list cardinality is not exposed'
+            else if (descriptor.containsKey('multiple') && descriptor.multiple != (row.value instanceof List)) reason = descriptor.multiple ? 'native input requires a list' : 'native input requires a scalar'
+            else if (descriptor.required == true && (row.value == null || (row.value instanceof List && row.value.isEmpty()) || (row.value instanceof String && !row.value.trim()))) reason = 'required native input is empty'
+            else if (descriptor.type == 'bool' && !(row.value instanceof Boolean)) reason = 'native Boolean input requires a Boolean value'
+            else if (descriptor.type in ['number', 'decimal'] && (!(row.value instanceof Number || row.value instanceof String) || !row.value.toString().isBigDecimal())) reason = 'native numeric input requires a finite numeric value'
+            else if (descriptor.type in ['text', 'textarea', 'password', 'time'] && !(row.value instanceof String)) reason = 'native text input requires a string value'
+            else if (descriptor.type in ['enum', 'mode']) {
+                List allowed = _nmOptionKeys(descriptor.options)
+                List values = row.value instanceof List ? row.value : [row.value]
+                if (allowed == null) reason = 'native enum options are unavailable or unsupported'
+                else if (values.any { !(it.toString() in allowed) }) reason = 'value is not one of the native enum options'
+            }
+        }
+        if (reason != null) errors << [field: row.name, error: "Native field '${row.name}': ${reason}".toString()]
+    }
+    [success: errors.isEmpty(), error: errors ? errors.get(0).error : null, fieldErrors: errors, verifiedFields: fields.findAll { row -> !errors.any { it.field == row.name } }.collect { it.name }]
+}
 private void _nmTokens(List tokens, Map conditions) {
     if (!tokens) throw new IllegalArgumentException('An expression must contain an operand')
     boolean operand = true
@@ -33545,8 +33594,9 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
     if (editing) context.editCond = id
     else { context.moreCond = true; context.ndx = id.toInteger() }
     _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
-    if (trigger) _nrHandle(ruleId).selectTriggers()
-    else _nrHandle(ruleId).selectConditions([pred: false])
+    def page = trigger ? _nrHandle(ruleId).selectTriggers() : _nrHandle(ruleId).selectConditions([pred: false])
+    Map inputValidation = _nmValidateInputs(page, fields)
+    if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
     _nrStatePatch(ruleId, [hasAll: true])
     if (trigger) _nrHandle(ruleId).selectTriggers()
     else _nrHandle(ruleId).selectConditions([pred: false])
@@ -33593,11 +33643,13 @@ Map _nmUpsertAction(Long ruleId, Map row) {
         editToken = "${id}.${prior.cond ?: 0}.${expressionAction}".toString()
     }
     _nrStatePatch(ruleId, [doActN: editToken])
-    _nrHandle(ruleId).doActPage()
+    def page = _nrHandle(ruleId).doActPage()
+    Map inputValidation = _nmValidateInputs(page, fields)
+    if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
     List waitIds = null
     if (waitEvents) {
         Map waits = _nmCompileWait(ruleId, id, row.events as List, editing)
-        if (waits.success != true) return [success: false, id: id, partial: true, waitEvents: waits]
+        if (waits.success != true) return [success: false, id: id, partial: true, error: waits.error, fieldErrors: waits.fieldErrors ?: [], waitEvents: waits]
         waitIds = waits.eventIds
         settings.addAll(waits.settings)
     }
@@ -33640,7 +33692,9 @@ private Map _nmCompileWait(Long ruleId, String actionId, List events, boolean ed
         Map written = _nrWriteSettings(ruleId, fields)
         if (written.success != true) return [success: false, error: 'Wait event inputs did not persist', settings: written]
         settings.addAll(fields)
-        _nrHandle(ruleId).doActPage()
+        def page = _nrHandle(ruleId).doActPage()
+        Map inputValidation = _nmValidateInputs(page, fields.findAll { it.name != "tCapab-${eventId}".toString() })
+        if (inputValidation.success != true) return [success: false, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
         if (!_nmWaitDuration(ruleId, eventId)) return [success: false, error: 'Native wait duration did not compile', eventId: eventId]
         if (!editing) {
             _nrHandle(ruleId).appButtonHandler('hasAll')
@@ -33807,7 +33861,9 @@ private List _ndSettings(Long id) {
     if (!(response instanceof Map) || !(response.settings instanceof List)) throw new IllegalStateException('Native settings are unavailable')
     response.settings.collect { row ->
         if (!(row instanceof Map) || !(row.name instanceof String)) throw new IllegalStateException('Unexpected native setting row')
-        [name: row.name, type: row.type, multiple: row.multiple, value: row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
+        def setting = [name: row.name, type: row.type, multiple: row.multiple, value: row.type == 'password' ? null : row.value, device_ids: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() }.sort() : null]
+        if (row.type == 'password') setting.redacted = true
+        setting
     }
 }
 private List _ndStructuralIssues(Map nativeState) {
@@ -34012,6 +34068,8 @@ private Map _ndApply(Long id, List changes, boolean created) {
     try {
         def beforeHealth = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
         if (!(beforeHealth instanceof Map) || !(beforeHealth.broken instanceof Boolean)) throw new IllegalStateException('Native rule health is unavailable before changes')
+        boolean wasStopped = beforeHealth.stopped == true
+        boolean wasPaused = beforeHealth.paused == true
         for (change in changes) {
             def value = change.value
             started = true
@@ -34040,30 +34098,37 @@ private Map _ndApply(Long id, List changes, boolean created) {
         if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
         if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified']
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
-        if (done instanceof Map && done.status != null && done.status.toString().isInteger() && done.status.toInteger() >= 400) throw new IllegalStateException('Native Done was rejected')
+        def doneStatus = done instanceof Map ? done.get('status') : null
+        if (doneStatus != null && doneStatus.toString().isInteger() && doneStatus.toInteger() >= 400) throw new IllegalStateException('Native Done was rejected')
         def finalHealth = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
         if (!(finalHealth instanceof Map) || finalHealth.broken != false) throw new IllegalStateException('Native rule health failed after Done')
+        boolean stopped = finalHealth.stopped == true
+        boolean paused = finalHealth.paused == true
         if (!created) {
-            if ((beforeHealth.stopped == true) != (finalHealth.stopped == true)) _nrHandle(id).appButtonHandler('stopRule')
-            if ((beforeHealth.paused == true) != (finalHealth.paused == true)) _nrHandle(id).appButtonHandler('pausRule')
+            if (wasStopped != stopped) _nrHandle(id).appButtonHandler('stopRule')
+            if (wasPaused != paused) _nrHandle(id).appButtonHandler('pausRule')
             finalHealth = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
-            if (!(finalHealth instanceof Map) || finalHealth.broken != false || (beforeHealth.stopped == true) != (finalHealth.stopped == true) || (beforeHealth.paused == true) != (finalHealth.paused == true)) throw new IllegalStateException('Native stopped or paused state was not preserved')
+            stopped = finalHealth instanceof Map && finalHealth.stopped == true
+            paused = finalHealth instanceof Map && finalHealth.paused == true
+            if (!(finalHealth instanceof Map) || finalHealth.broken != false || wasStopped != stopped || wasPaused != paused) throw new IllegalStateException('Native stopped or paused state was not preserved')
         }
         def status = _ndJson(hubInternalGet("/installedapp/statusJson/${id}"))
         if (!(status instanceof Map) || !status.containsKey('eventSubscriptions') || !status.containsKey('scheduledJobs')) throw new IllegalStateException('Native activation status is unavailable')
-        if (status.eventSubscriptions == null || status.scheduledJobs == null) {
+        def subscriptions = status.get('eventSubscriptions')
+        def jobs = status.get('scheduledJobs')
+        if (subscriptions == null || jobs == null) {
             def installed = status.installedApp
             if (!(installed instanceof Map) || installed.id?.toString() != id.toString() || installed.installed != true) throw new IllegalStateException('Native activation status cannot verify an installed rule')
-            status = [:] + status
-            ['eventSubscriptions', 'scheduledJobs'].each { key -> if (status.get(key) == null) status.put(key, []) }
+            if (subscriptions == null) subscriptions = []
+            if (jobs == null) jobs = []
         }
-        if (!(status.eventSubscriptions instanceof List) || !(status.scheduledJobs instanceof List)) throw new IllegalStateException('Native activation status is malformed')
-        if (finalHealth.stopped == true && (!(status.scheduledJobs instanceof List) || status.scheduledJobs || status.eventSubscriptions)) throw new IllegalStateException('Stopped native rule retained jobs or subscriptions')
+        if (!(subscriptions instanceof List) || !(jobs instanceof List)) throw new IllegalStateException('Native activation status is malformed')
+        if (stopped && (jobs || subscriptions)) throw new IllegalStateException('Stopped native rule retained jobs or subscriptions')
         def persistedState = _nrState(id)
         def actualTriggers = persistedState.capabstrue instanceof Map ? persistedState.capabstrue.findAll { key, value -> key.toString().isInteger() && key.toString().toInteger() > 0 && value?.toString()?.trim() } : [:]
-        if (actualTriggers && finalHealth.stopped != true && finalHealth.paused != true && status.eventSubscriptions.empty) throw new IllegalStateException('Native triggers have no active subscriptions')
+        if (actualTriggers && !stopped && !paused && subscriptions.empty) throw new IllegalStateException('Native triggers have no active subscriptions')
         if (created && getAppByAppId(id)?.installed != true) throw new IllegalStateException('Native rule is not installed after Done')
-        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: finalHealth.stopped == true, paused: finalHealth.paused == true, eventSubscriptions: status.eventSubscriptions, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])]
+        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])]
     } catch (Exception failure) {
         [success: false, partial: started, rule_id: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()), error: failure.message?.toString()]
     }
@@ -34080,7 +34145,9 @@ Map toolUpdateRuleDocument(Map args) {
 }
 Map toolCreateRuleDocument(Map args) {
     Long parentId = _ndId(args.parent_id)
-    if (!(args.name instanceof String) || !args.name.trim() || args.name.size() > 200) throw new IllegalArgumentException('A rule name is required (maximum 200 characters)')
+    def requestedName = args.get('name')
+    if (!(requestedName instanceof String) || !requestedName.trim() || requestedName.size() > 200) throw new IllegalArgumentException('A rule name is required (maximum 200 characters)')
+    String name = requestedName.trim()
     List changes = _ndChanges(args.changes)
     requireDestructiveConfirm(args.confirm)
     def parent = getAppByAppId(parentId)
@@ -34098,8 +34165,8 @@ Map toolCreateRuleDocument(Map args) {
         if (child?.parentAppId?.toString() != parentId.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != 'Rule-5.1') throw new IllegalStateException('Created child did not match the requested native parent and rule type')
         verifiedChild = true
         _nrHandle(id).initState()
-        _nrHandle(id).updateSetting('origLabel', [type: 'text', value: args.name.trim()])
-        _nrHandle(id).updateLabel(args.name.trim())
+        _nrHandle(id).updateSetting('origLabel', [type: 'text', value: name])
+        _nrHandle(id).updateLabel(name)
         _ndPreflight(id, changes)
         _ndApply(id, changes, true)
     } catch (Exception failure) {
