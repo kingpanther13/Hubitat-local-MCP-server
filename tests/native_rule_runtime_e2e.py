@@ -266,6 +266,39 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
             field("onOff.#", "bool", on),
         ], **extra)
 
+    def test_device_choices_reject_wrong_capability_before_persistence(self):
+        choices = self.client.native("/device/listJson?capability=capability.switch")
+        allowed = {str(row["id"]) for row in choices}
+        self.assertIn(str(self.fixtures["switch"]), allowed)
+        self.assertNotIn(str(self.fixtures["temperature"]), allowed)
+        rule_id = self.create_rule([self.switch_action(["switch"], True)])
+        before = self.document(rule_id)
+        action_id = before["actions"][0]["id"]
+        picker = f"onOffSwitch.{action_id}"
+        saved_picker = self.settings(rule_id)[picker]
+        result = self.client.tool(
+            "hub_update_rule_document", rule_id=rule_id, confirm=True, changes=[
+                change("action", id=action_id, type="switchActs",
+                       subtype="getOnOffSwitch", fields=[
+                           field("onOffSwitch.#", "capability.switch",
+                                 [str(self.fixtures["temperature"])]),
+                           field("onOff.#", "bool", True),
+                       ]),
+            ],
+        )
+        self.assertIs(result.get("success"), False, result)
+        self.assertEqual(self.settings(rule_id)[picker], saved_picker)
+        self.assertEqual(self.document(rule_id)["actions"], before["actions"])
+
+        self.update(rule_id, [self.switch_action(["switch2"], False, id=action_id)])
+        self.command("switch2", "on")
+        self.run_actions(rule_id)
+        self.wait_for(lambda: self.attribute("switch2", "switch") == "off")
+        self.assertEqual(
+            set(self.settings(rule_id)[picker]["deviceList"]),
+            {str(self.fixtures["switch2"])},
+        )
+
     def test_numeric_local_copy_then_add_constant_runs_to_ten(self):
         rule_id = self.create_rule([
             change("variable", operation="create", name="Source", type="integer", value=7),
