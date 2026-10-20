@@ -196,12 +196,12 @@ class MrtrCleanupSpec extends ToolSpecBase {
     def 'detached worker finally rearms parked cleanup after an uncaught Error'() {
         given:
         long at = script.now()
-        atomicStateMap.mrtrRequests = [active: [status: 'active', leafTool: 'hub_set_rule',
-            outerTool: 'hub_set_rule', expiresAt: at + 1000L, claimId: 'worker', generation: 1, claimedGeneration: 1,
+        atomicStateMap.mrtrRequests = [active: [status: 'active', leafTool: 'hub_update_rule_document',
+            outerTool: 'hub_update_rule_document', expiresAt: at + 1000L, claimId: 'worker', generation: 1, claimedGeneration: 1,
             checkpoint: [clonerAppId: 77]]]
         script._writeStateCacheInvalidate()
         (scriptStaticField('MRTR_WORK_ITEMS') as Map).put('worker',
-            [stateId: 'active', generation: 1, started: false, arguments: [:]])
+            [stateId: 'active', generation: 1, started: false, arguments: [rule_id: 77, confirm: true, changes: [[part: 'order', value: [ids: []]]]]])
         List paths = []
         script.metaClass.hubInternalGetRaw = { String path, Map params = null, Integer timeout = 30 ->
             paths << path

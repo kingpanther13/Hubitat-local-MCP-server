@@ -164,7 +164,7 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
     }
 
     def "continuation cap keeps its merged outcome inside terminalResult without a second record copy"() {
-        given: 'a bulk edit at the final owner slice with prior actions already banked'
+        given: 'a retained internal bulk ledger fixture at the final owner slice'
         String stateId = 'mrtr-terminal-capped-0001'
         Map originalArgs = [appId: 77, addActions: [[deviceId: 1], [deviceId: 2], [deviceId: 3]], confirm: true]
         Map prior = [
@@ -173,7 +173,7 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
             actions: [[deviceId: 1, success: true]],
             anyPartial: true
         ]
-        Map rec = claimedRecord('hub_set_rule', 'hub_set_rule', originalArgs,
+        Map rec = claimedRecord('hub_set_native_app', 'hub_set_native_app', originalArgs,
             'claim-terminal-capped', 4, [
                 rounds: (script._mrtrMaxContinuationSlices() as Integer) - 1,
                 aggregate: prior,
@@ -208,9 +208,9 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
         !terminal.containsKey('nextArguments')
         !terminal.containsKey('checkpoint')
         terminal.terminalResult == outcome.result
-        terminal.outerTool == 'hub_set_rule'
-        terminal.leafTool == 'hub_set_rule'
-        terminal.argDigest == script._mrtrBinding('hub_set_rule', 'hub_set_rule', originalArgs).argDigest
+        terminal.outerTool == 'hub_set_native_app'
+        terminal.leafTool == 'hub_set_native_app'
+        terminal.argDigest == script._mrtrBinding('hub_set_native_app', 'hub_set_native_app', originalArgs).argDigest
     }
 
     def "loading a legacy terminal compacts only that record and saves the representative bytes"() {
@@ -242,7 +242,7 @@ class MrtrTerminalStorageSpec extends ToolSpecBase {
         ]
         Map active = [
             schemaVersion: 1, status: 'active',
-            outerTool: 'hub_set_rule', leafTool: 'hub_set_rule', argDigest: 'active-binding',
+            outerTool: 'hub_set_native_app', leafTool: 'hub_set_native_app', argDigest: 'active-binding',
             startedAt: at - 2000L, updatedAt: at, expiresAt: at + 60000L,
             rounds: 2, generation: 2, claimId: 'active-claim', claimedGeneration: 2,
             aggregate: [kind: 'bulk_edit', actions: [[deviceId: 9, success: true]]],

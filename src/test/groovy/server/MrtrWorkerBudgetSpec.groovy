@@ -5,6 +5,8 @@ import java.util.concurrent.atomic.AtomicLong
 import spock.lang.Unroll
 import support.ToolSpecBase
 
+// Retained internal engine regression: the fixture dispatches toolSetRule directly through
+// a test-local native-app leaf. Its bulk/patch checkpoints are not document-tool slicing.
 class MrtrWorkerBudgetSpec extends ToolSpecBase {
     private final AtomicLong clock = new AtomicLong(1234567890000L)
     private final List<Map> actions = []
@@ -19,6 +21,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         settingsMap.relayBudgetMs = 0
         settingsMap.lanBudgetMs = 0
         stateMap.lastBackupTimestamp = clock.get()
+        script.metaClass.toolSetNativeApp = { Map internalArgs -> script.toolSetRule(internalArgs) }
         script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'baseline'] }
         script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
         script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validIds = null ->
@@ -67,6 +70,45 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         assert !clicks.contains('updateRule')
     }
 
+    def "a document change batch dispatches once as a whole and replays its completed result"() {
+        given:
+        def changes = [
+            [part: 'variable', value: [operation: 'create', name: 'Counter', type: 'integer', value: 0]],
+            [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg',
+                fields: [[name: 'logmsg.#', type: 'textarea', value: 'batch complete']]]]
+        ]
+        def args = [rule_id: 77, confirm: true, changes: changes]
+        List dispatched = []
+        script.metaClass.toolUpdateRuleDocument = { Map actual ->
+            dispatched << new LinkedHashMap(actual)
+            // A document batch completes in one worker; no legacy remainder protocol.
+            clock.addAndGet(120001L)
+            [success: true, rule_id: actual.rule_id,
+                results: actual.changes.collect { [part: it.part, result: [success: true]] }]
+        }
+
+        when:
+        def completed = modernCall('hub_update_rule_document', args)
+        String stateId = atomicStateMap.mrtrRequests.keySet().first()
+        def terminal = mcpDriver.parseInner(completed)
+        def replay = modernCall('hub_update_rule_document', args, stateId)
+
+        then:
+        completed.result.resultType == 'complete'
+        stateId instanceof String
+        dispatched == [args]
+        terminal.success == true
+        terminal.rule_id == 77
+        terminal.results*.part == ['variable', 'action']
+        mcpDriver.parseInner(replay) == terminal
+        runInMillisCalls.size() == 1
+        atomicStateMap.mrtrRequests[stateId].status == 'terminal'
+        !atomicStateMap.mrtrRequests[stateId].containsKey('nextArguments')
+        actions.isEmpty()
+        clicks.isEmpty()
+        script._activeWrites().isEmpty()
+    }
+
     @Unroll
     def "#leaf bulk checkpoints through #route with #transport request budget #requestBudget"() {
         given:
@@ -74,8 +116,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         settingsMap.relayBudgetMs = requestBudget
         settingsMap.lanBudgetMs = requestBudget
         script.metaClass._isCloudRequest = { -> cloud }
-        String outer = gateway ? (leaf == 'hub_set_rule' ? 'hub_manage_rule_machine' :
-            'hub_manage_native_rules_and_apps') : leaf
+        String outer = gateway ? 'hub_manage_native_rules_and_apps' : leaf
         def specs = actionSpecs()
         def edit = [appId: 1, confirm: true, addActions: specs]
         def args = gateway ? [tool: leaf, args: edit] : edit
@@ -120,8 +161,8 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
 
         where:
         leaf                 | gateway | cloud | requestBudget | route     | transport
-        'hub_set_rule'       | false   | false | 0             | 'flat'    | 'LAN'
-        'hub_set_rule'       | true    | true  | 1             | 'gateway' | 'cloud'
+        'hub_set_native_app'       | false   | false | 0             | 'flat'    | 'LAN'
+        'hub_set_native_app'       | true    | true  | 1             | 'gateway' | 'cloud'
         'hub_set_native_app' | false   | true  | 0             | 'flat'    | 'cloud'
         'hub_set_native_app' | true    | false | 1             | 'gateway' | 'LAN'
     }
@@ -136,16 +177,16 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
             (1..3).collect { [capability: 'Switch', state: it == 2 ? 'off' : 'on'] }
         def tail = [addAction: [capability: 'switch', action: 'off', deviceIds: [99]]]
         def patches = [[(operation): specs], tail]
-        def args = [tool: 'hub_set_rule', args: [appId: 1, confirm: true, patches: patches]]
+        def args = [tool: 'hub_set_native_app', args: [appId: 1, confirm: true, patches: patches]]
 
         when:
-        def paused = modernCall('hub_manage_rule_machine', args)
+        def paused = modernCall('hub_manage_native_rules_and_apps', args)
         String stateId = paused.result.requestState
         Map record = atomicStateMap.mrtrRequests[stateId] as Map
 
         then:
         (operation == 'addActions' ? actions.size() : triggers.size()) == 1
-        assertPause(paused, stateId, 'hub_set_rule')
+        assertPause(paused, stateId, 'hub_set_native_app')
         record.nextArguments.args.patches == [[(operation): specs.drop(1)], tail]
         record.aggregate.patchResults.size() == 1
         record.aggregate.patchResults[0].results.size() == 1
@@ -154,9 +195,9 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
 
         when:
         clock.addAndGet(60000L)
-        def complete = modernCall('hub_manage_rule_machine', args, stateId)
+        def complete = modernCall('hub_manage_native_rules_and_apps', args, stateId)
         def terminal = mcpDriver.parseInner(complete)
-        def replay = modernCall('hub_manage_rule_machine', args, stateId)
+        def replay = modernCall('hub_manage_native_rules_and_apps', args, stateId)
 
         then:
         complete.result.resultType == 'complete'
@@ -191,7 +232,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         def args = [appId: 1, confirm: true, patches: [[addActions: specs]]]
 
         when:
-        def complete = modernCall('hub_set_rule', args)
+        def complete = modernCall('hub_set_native_app', args)
         def terminal = mcpDriver.parseInner(complete)
         Map records = atomicStateMap.mrtrRequests as Map
         assert records.size() == 1
@@ -211,7 +252,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         actions == specs.take(1)
         !clicks.contains('updateRule')
         runInMillisCalls.size() == 1
-        mcpDriver.parseInner(modernCall('hub_set_rule', args, stateId)) == terminal
+        mcpDriver.parseInner(modernCall('hub_set_native_app', args, stateId)) == terminal
 
         where:
         outcome   | firstResult
@@ -230,7 +271,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         def args = [appId: 1, confirm: true, addActions: actionSpecs()]
 
         when:
-        def failed = modernCall('hub_set_rule', args)
+        def failed = modernCall('hub_set_native_app', args)
 
         then:
         failed.result.resultType == 'complete'
@@ -256,18 +297,18 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         def args = [appId: 1, confirm: true, addActions: specs]
 
         when:
-        def paused = modernCall('hub_set_rule', args)
+        def paused = modernCall('hub_set_native_app', args)
         String stateId = paused.result.requestState
 
         then:
-        assertPause(paused, stateId, 'hub_set_rule')
+        assertPause(paused, stateId, 'hub_set_native_app')
         actions == specs.take(1)
         backups == 1
 
         when: 'the next worker fails before it can run another item'
-        def failed = modernCall('hub_set_rule', args, stateId)
+        def failed = modernCall('hub_set_native_app', args, stateId)
         def terminal = mcpDriver.parseInner(failed)
-        def replay = modernCall('hub_set_rule', args, stateId)
+        def replay = modernCall('hub_set_native_app', args, stateId)
 
         then:
         failed.result.resultType == 'complete'
@@ -350,12 +391,12 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         def args = [appId: 1, confirm: true, patches: [leading, replacement, replacement]]
 
         when:
-        def complete = modernCall('hub_set_rule', args)
+        def complete = modernCall('hub_set_native_app', args)
         def terminal = mcpDriver.parseInner(complete)
         Map records = atomicStateMap.mrtrRequests as Map
         assert records.size() == 1
         String stateId = records.keySet().first()
-        def replay = modernCall('hub_set_rule', args, stateId)
+        def replay = modernCall('hub_set_native_app', args, stateId)
 
         then: 'the failed first replacement stops the batch and the duplicate is not attempted'
         complete.result.resultType == 'complete'
@@ -459,14 +500,14 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         def args = [appId: 1, confirm: true] + edit
 
         when: 'the first request is slice one; seven continuations reach the cap'
-        Map response = modernCall('hub_set_rule', args)
+        Map response = modernCall('hub_set_native_app', args)
         String stateId = response.result.requestState
         for (int slice = 2; slice <= 8; slice++) {
             assert response.result.resultType == 'input_required'
-            response = modernCall('hub_set_rule', args, stateId)
+            response = modernCall('hub_set_native_app', args, stateId)
         }
         def terminal = mcpDriver.parseInner(response)
-        def replay = modernCall('hub_set_rule', args, stateId)
+        def replay = modernCall('hub_set_native_app', args, stateId)
 
         then:
         response.result.resultType == 'complete'
@@ -486,8 +527,8 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         when: 'an explicit follow-up submits only the exact unprocessed work'
         def remainingEdit = [(shape == 'bulk' ? 'addActions' : 'patches'): terminal[remainingField]]
         def followup = [appId: 1, confirm: true] + remainingEdit
-        String nextId = modernCall('hub_set_rule', followup).result.requestState
-        def finished = modernCall('hub_set_rule', followup, nextId)
+        String nextId = modernCall('hub_set_native_app', followup).result.requestState
+        def finished = modernCall('hub_set_native_app', followup, nextId)
 
         then:
         finished.result.resultType == 'complete'
