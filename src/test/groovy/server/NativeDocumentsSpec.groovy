@@ -113,6 +113,26 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events[0..1] == ['delete:action:2', 'order']
     }
 
+    def 'unknown expression operands are refused before any change or render'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'required', value: [tokens: ['999999']]]], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.error.contains('unknown condition')
+        events.empty
+    }
+
+    def 'referenced condition deletion is refused before any change or render'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'delete', value: [part: 'condition', id: '4']]]], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        events.empty
+        nativeState.capabsfalse.'4' == 'Switch is on'
+    }
+
     def 'native expression with missing condition cannot pass a false broken flag'() {
         given:
         nativeState.actions.'3' = [method: 'getIfThen', rule: '1']

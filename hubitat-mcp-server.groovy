@@ -11380,8 +11380,6 @@ hub_get_tool_guide, and hub_update_mcp_settings are never gated, so you can alwa
 and (if needed) toggle the gate off.
 
 If you are calling one of these tools, you must read its section for that section's key:
-- hub_create_rule_document -> native_rule_documents
-- hub_update_rule_document -> native_rule_documents
 - hub_create_backup -> backup
 - hub_restore_backup -> backup
 - hub_clone_native_app -> builtin_app_tools_crud
@@ -11415,6 +11413,8 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_call_zwave -> hub_admin_write_radios
 - hub_set_zigbee -> hub_admin_write_radios
 - hub_set_zwave -> hub_admin_write_radios
+- hub_create_rule_document -> native_rule_documents
+- hub_update_rule_document -> native_rule_documents
 - hub_clone_custom_rule -> rules
 - hub_create_custom_rule -> rules
 - hub_delete_custom_rule -> rules

@@ -161,6 +161,36 @@ private List _ndChanges(Object changes) {
     changes
 }
 
+private void _ndPreflight(Long id, List changes) {
+    Map before = _nrState(id)
+    Map conditions = before.capabsfalse instanceof Map ? [:] + before.capabsfalse : [:]
+    Map expressions = before.eval instanceof Map ? [:] + before.eval : [:]
+    boolean allocatedConditions = false
+    def pendingExpressions = []
+    changes.each { change ->
+        Map value = change.value
+        if (change.part == 'condition' && !value.containsKey('id')) allocatedConditions = true
+        if (change.part in ['expression', 'required'] || (change.part == 'action' && value.expression instanceof List)) {
+            List tokens = change.part == 'action' ? value.expression : value.tokens
+            if (!allocatedConditions) _nmTokens(tokens, conditions)
+            if (change.part == 'action') pendingExpressions << tokens
+            else {
+                String expressionId = change.part == 'required' ? '0' : value.id.toString()
+                expressions.keySet().findAll { it.toString() == expressionId }.each { expressions.remove(it) }
+                expressions.put(expressionId, tokens)
+            }
+        }
+        if (change.part == 'delete' && value.part == 'condition') {
+            String target = value.id.toString()
+            boolean referenced = (expressions.values().toList() + pendingExpressions).any { tokens -> tokens instanceof List && tokens.any { it?.toString() == target } }
+            referenced = referenced || (before.predCapabs instanceof List && before.predCapabs.any { it?.toString() == target })
+            referenced = referenced || (before.actions instanceof Map && before.actions.values().any { it instanceof Map && it.cond?.toString() == target })
+            if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
+            conditions.keySet().findAll { it.toString() == target }.each { conditions.remove(it) }
+        }
+    }
+}
+
 private Map _ndApply(Long id, List changes, boolean created) {
     def outcomes = []
     boolean started = created
@@ -223,6 +253,8 @@ Map toolUpdateRuleDocument(Map args) {
     requireDestructiveConfirm(args.confirm)
     _nrHandle(id)
     if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
+    try { _ndPreflight(id, changes) }
+    catch (IllegalArgumentException failure) { return [success: false, partial: false, rule_id: id, error: failure.message?.toString()] }
     _ndApply(id, changes, false)
 }
 
@@ -242,6 +274,7 @@ Map toolCreateRuleDocument(Map args) {
         _nrHandle(id).initState()
         _nrHandle(id).updateSetting('origLabel', [type: 'text', value: args.name.trim()])
         _nrHandle(id).updateLabel(args.name.trim())
+        _ndPreflight(id, changes)
         _ndApply(id, changes, true)
     } catch (Exception failure) {
         [success: false, partial: true, rule_id: id, created: id != null, error: failure.message?.toString()]
@@ -249,14 +282,21 @@ Map toolCreateRuleDocument(Map args) {
 }
 
 def _getAllToolDefinitions_partNativeDocuments() {
-    def changes = [type: 'array', minItems: 1, maxItems: 100, description: 'Ordered changes. Each has part and value: condition/trigger {id?,capability,fields}; action {id?,type,subtype,fields,expression?,events?}; expression {id,tokens}; required {tokens}; variable {operation:create|set|delete,name,type?,value?}; terminator {subtype:endIf|else|endRep}; delete {part:action|condition|trigger,id}; order {ids:complete native action ID permutation}. Typed fields use {name:native name containing # for allocated ID,type,value}. Wait events support up to 16 verified native event rows; wait expressions remain unsupported.', items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator', 'delete', 'order']], value: [type: 'object']], required: ['part', 'value']]]
-    def warning = ' Requires confirm=true and a hub backup within 24 hours. Before writing: read the native document, verify target IDs and fields, and preserve a recovery backup. Stops at first failure; partial changes can remain. Native UI retains the same rule ID. Verify resulting settings and runtime behavior before relying on the rule. Wait expressions and all capability-specific variants are not yet supported.'
-    return [[name: 'hub_get_rule_document', description: 'Read native Rule Machine state, ordered actions, conditions, triggers, expressions, local variables and typed settings without rendering editor pages.', inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], sections: [type: 'array', items: [type: 'string', enum: ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']]]], required: ['rule_id']]],
-     [name: 'hub_update_rule_document', description: 'Apply ordered semantic changes to an existing native Rule Machine rule and finalize through its native compiler.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], changes: changes, confirm: [type: 'boolean']], required: ['rule_id', 'changes', 'confirm']]],
-     [name: 'hub_create_rule_document', description: 'Create and install a native Rule Machine child with ordered semantic changes.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes, confirm: [type: 'boolean']], required: ['parent_id', 'name', 'changes', 'confirm']]]]
+    def changes = [type: 'array', minItems: 1, maxItems: 100, items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator', 'delete', 'order']], value: [type: 'object']], required: ['part', 'value']]]
+    def warning = ' confirm=true and recent hub backup required. Preflight: read native_rule_documents guide/document; verify IDs and fields. Partial changes can remain.'
+    return [
+        [
+            name: 'hub_get_rule_document', description: 'Read native rule structure, typed settings and current local variables; no editor renders.', inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], sections: [type: 'array', items: [type: 'string', enum: ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']]]], required: ['rule_id']]],
+        [
+            name: 'hub_update_rule_document', description: 'Update a native rule with ordered {part,value} changes.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], changes: changes, confirm: [type: 'boolean']], required: ['rule_id', 'changes', 'confirm']]],
+        [
+            name: 'hub_create_rule_document', description: 'Create/install a native rule with ordered {part,value} changes.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes, confirm: [type: 'boolean']], required: ['parent_id', 'name', 'changes', 'confirm']]]
+    ]
 }
 
-def _readOnlyToolNames_partNativeDocuments() { return ['hub_get_rule_document'] }
+def _readOnlyToolNames_partNativeDocuments() {
+    return ["hub_get_rule_document"]
+}
 def _toolDisplayMeta_partNativeDocuments() {
     return [hub_get_rule_document: [title: 'Get Native Rule Document', summary: 'Read native rule actions, expressions, conditions, triggers, variables and typed settings.'],
      hub_update_rule_document: [title: 'Update Native Rule Document', summary: 'Compile ordered changes into an existing native Rule Machine rule.'],
