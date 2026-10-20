@@ -2,15 +2,18 @@ library(name: "McpDashboardsLib", namespace: "mcp", author: "kingpanther13", des
 
 def toolListDashboards(args = null) {
     args = args ?: [:]
-    // /dashboard/all returns [] unless given the page-global pinToken from /dashboard/select. Use a
-    // caller token if present, else scrape it; if still empty, fall back to child-app enumeration.
-    def token = (args.pinToken != null) ? args.pinToken.toString() : _fetchDashboardPinToken()
+    // /dashboard/all returns [] unless given the page-global pinToken from /dashboard/select, and
+    // the hub honours that token only in the session (HUBSESSION cookie) that served the page, so
+    // a token from anywhere else never works. Scrape it and list in its session; if still empty,
+    // fall back to child-app enumeration.
+    def page = _fetchDashboardPinToken()
+    def token = page?.token
     def q = [:]
     if (token) q.pinToken = token
     def parsed = null
     boolean allErrored = false   // true iff /dashboard/all threw (hub error), not merely empty
     try {
-        def raw = hubInternalGet("/dashboard/all", q)
+        def raw = page?.session ? hubInternalGetInSession("/dashboard/all", q, page.session as String) : hubInternalGet("/dashboard/all", q)
         parsed = raw ? new groovy.json.JsonSlurper().parseText(raw) : []
     } catch (Exception e) {
         mcpLogError("dashboard", "list dashboards via /dashboard/all failed", e)
@@ -26,10 +29,10 @@ def toolListDashboards(args = null) {
     }
     def viaApps = _listDashboardsViaChildApps()
     if (viaApps != null && !viaApps.isEmpty()) {
-        // Don't blame a missing pinToken for a hub ERROR: only mention pinToken when /dashboard/all was empty.
+        // A hub ERROR is reported as such; only an empty /dashboard/all mentions the page token.
         def note = allErrored
             ? "/dashboard/all errored (logged); listed via the dashboard parents' child apps instead. Each entry carries id + name + type only; call hub_get_dashboard for full config."
-            : "Listed from the dashboard parents' child apps (/dashboard/all returned nothing -- a pinToken may be required). Each entry carries id + name + type only; call hub_get_dashboard for full config."
+            : "Listed from the dashboard parents' child apps (/dashboard/all returned nothing${page?.session ? '' : ': the dashboard page token or its session could not be read'}). Each entry carries id + name + type only; call hub_get_dashboard for full config."
         return [dashboards: viaApps, count: viaApps.size(), source: "child-apps", note: note]
     }
     // The child-app fallback READ FAILED (null), vs read-OK-but-empty ([]). Combined with /dashboard/all
@@ -43,22 +46,28 @@ def toolListDashboards(args = null) {
                 note: "Transient hub error (details logged). Retry; if it persists, check hub connectivity."]
     }
     // viaApps == [] : the child-app read SUCCEEDED and found none. Branch the note on whether
-    // /dashboard/all errored vs returned empty -- don't blame a missing pinToken for a hub error.
+    // /dashboard/all errored vs returned empty.
     return [dashboards: [], count: 0,
             note: allErrored
                 ? "No dashboards found: /dashboard/all errored (logged) and the dashboard parents have no child apps. Retry; if it persists, check hub connectivity."
-                : "No dashboards found: /dashboard/all returned empty (a pinToken may be required) and no dashboard-parent child apps were present. If you expected dashboards, pass pinToken and retry."]
+                : "No dashboards found: /dashboard/all returned empty and no dashboard-parent child apps were present."]
 }
 
-// Scrape globalDashboardPinToken from the /dashboard/select page so callers needn't supply pinToken.
-// Returns null if unreadable (caller then degrades to child-app enumeration). Server-side only.
-private String _fetchDashboardPinToken() {
+// Scrape globalDashboardPinToken from the /dashboard/select page,
+// with the session cookie that page opened ([token, session]). Null if unreadable (caller then
+// degrades to child-app enumeration). Server-side only.
+private Map _fetchDashboardPinToken() {
     try {
-        // hubInternalGetRaw returns a struct [status, location, data]; the body is .data.
-        def html = hubInternalGetRaw("/dashboard/select")?.data?.toString()
-        if (!html) return null
-        def matcher = (html =~ /globalDashboardPinToken\s*=\s*['"]([^'"]+)['"]/)
-        return matcher.find() ? matcher.group(1) : null
+        // hubInternalGetRaw returns a struct [status, location, data, setCookie]; the body is .data.
+        def pageResp = hubInternalGetRaw("/dashboard/select")
+        def html = pageResp?.data?.toString()
+        def matcher = html ? (html =~ /globalDashboardPinToken\s*=\s*['"]([^'"]+)['"]/) : null
+        if (!matcher?.find()) {
+            mcpLog("warn", "dashboard", "No dashboard pin token on /dashboard/select (HTTP ${pageResp?.status}); listing without it.")
+            return null
+        }
+        if (!pageResp?.setCookie) mcpLog("warn", "dashboard", "/dashboard/select set no session cookie; its pin token cannot be used.")
+        return [token: matcher.group(1), session: pageResp?.setCookie]
     } catch (Exception e) {
         mcpLogError("dashboard", "fetch dashboard pinToken failed", e)
         return null
@@ -133,7 +142,7 @@ def toolGetDashboard(args) {
         return [success: false, error: "No dashboard found with id '${wantId}'.",
                 availableIds: available,
                 note: available.isEmpty()
-                    ? "The list returned no dashboards -- a pinToken may be required (pass pinToken and retry)."
+                    ? "The list returned no dashboards; check the hub's Dashboards page."
                     : "Use hub_list_dashboards to see valid ids."]
     }
     if (match.type == "legacy") {
@@ -1070,12 +1079,10 @@ def _getAllToolDefinitions_partDashboards() {
     return [
         [
             name: "hub_list_dashboards",
-            description: "List the hub's dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards.[[FLAT_TRIM]] Read-only; each entry carries id, name, and a type ('easy' or 'legacy'). Easy entries also include tile/theme config. Resolves the dashboard token automatically, so no pinToken is normally needed. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
+            description: "List the hub's dashboards -- both Easy Dashboards and legacy Hubitat® Dashboards.[[FLAT_TRIM]] Read-only; each entry carries id, name, and a type ('easy' or 'legacy'). Easy entries also include tile/theme config. See hub_get_tool_guide(section='dashboards').[[/FLAT_TRIM]]",
             inputSchema: [
                 type: "object",
-                properties: [
-                    pinToken: [type: "string", description: "Optional pin token. Auto-resolved when omitted."]
-                ]
+                properties: [:]
             ]
         ],
         [
@@ -1084,8 +1091,7 @@ def _getAllToolDefinitions_partDashboards() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    dashboardId: [type: "string", description: "installedAppId."],
-                    pinToken: [type: "string", description: "Optional pin token. Auto-resolved when omitted."]
+                    dashboardId: [type: "string", description: "installedAppId."]
                 ],
                 required: ["dashboardId"]
             ]

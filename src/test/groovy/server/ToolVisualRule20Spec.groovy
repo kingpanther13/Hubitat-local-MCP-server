@@ -1782,7 +1782,8 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         }
 
         when:
-        def result = script.toolGetVisualRule([appId: 840])
+        def result = script.toolGetVisualRule([appId: 840, includeRuleApps: true])
+        def lean = script.toolGetVisualRule([appId: 840])
 
         then:
         result.success == true
@@ -1803,6 +1804,13 @@ class ToolVisualRule20Spec extends ToolSpecBase {
         result.ruleApps[0].label == 'Other rule'
         result.ruleApps[1].label == 'Broken rule *BROKEN*'
         result.runtimeGraph.triggerCount == 2
+
+        and: 'by default the read lists only how many apps a runRule action can target, and the parsed definition stands alone'
+        !lean.containsKey('ruleApps')
+        lean.ruleAppCount == 2
+        !lean.containsKey('ruleJson')
+        !result.containsKey('ruleJson')
+        lean.definition.nodes.size() == 8
     }
 
     def "a stored graph the builder cannot open reports editorError instead of failing the read"() {

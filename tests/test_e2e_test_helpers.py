@@ -104,6 +104,9 @@ def test_event_bookmark_reaches_history_after_expected_zero_refusals(refusal):
         assert params["name"] == "hub_read_devices"
         args = params["arguments"]["args"]
         calls.append(args)
+        if "deviceId" not in args:
+            return _raw_tool_body({"source": "location", "count": 1,
+                                   "events": [{"name": "systemStart", "kind": "hub", "date": dates[0]}]})
         if args["deviceId"] in (0, "0"):
             return _raw_tool_body({"success": False, "isError": True, "error": refusal}, is_error=True)
         assert str(args["deviceId"]) == "42"
@@ -3222,6 +3225,8 @@ def test_poll_wall_clock_scenarios_use_observed_state_without_device_commands(mo
     calls = []
 
     def call_tool(name, arguments):
+        if name == "hub_get_info":
+            return {"mcpClient": {"client": {"source": "local"}}}
         assert name == "hub_get_device_attribute", "poll scenarios must not depend on command delivery"
         calls.append(arguments.copy())
         if "expectedValue" not in arguments:

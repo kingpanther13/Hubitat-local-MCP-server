@@ -1143,12 +1143,20 @@ def toolRemoveConnector(args) {
         consumersUnknown: (force && nativeModel != null && connectorApps == null) ?: null,
         message: "Connector for '${name}' (deviceId=${deviceId}) removed. Variable itself is unchanged."
     ]
-    // Known Hubitat platform bug (confirmed 2026-06-02 on 2.5.0.143 via the UI's "Remove Device", and again
-    // 2026-10-15 on 2.5.2.135 via the Hub Variables removal): removing the connector makes the built-in
-    // "Variable Connectors" driver log a StackOverflowError in childRemoved(); the connector is removed
-    // either way, so say so rather than let it read as our failure.
-    result.note = "A java.lang.StackOverflowError from Hubitat's built-in 'Variable Connectors' driver (childRemoved) may appear in the hub log during this removal. It is a known Hubitat platform bug -- the same crash occurs via the UI's Remove Device button -- and is harmless: the connector is removed regardless."
+    if (_hubVarsNoConnectorLeft()) result.note = _hubVarsLastConnectorNote()
     return result
+}
+
+// True when no hub variable has a connector any more. Removing the last connector makes the hub
+// also delete its "Variable Connectors" device, and that deletion recurses through the driver's
+// childRemoved() until it logs a StackOverflowError; the hub's own Remove connector does the same.
+private boolean _hubVarsNoConnectorLeft() {
+    try { return !(getAllGlobalVars()?.values()?.any { it?.deviceId != null }) }
+    catch (Exception e) { return false }
+}
+
+private String _hubVarsLastConnectorNote() {
+    return "This was the hub's last variable connector, so the hub also removed its 'Variable Connectors' device, and Hubitat logs a java.lang.StackOverflowError (childRemoved) while doing that, as its own Remove connector button does. The connector is removed."
 }
 
 // Atomic numeric add on a Number/Decimal hub variable via the platform's addValueToGlobalVar(), so
@@ -1549,7 +1557,7 @@ def toolDeleteHubVariable(args) {
             platformInUse: platformInUse,
             platformInUseError: registryError,
             coverageNote: _hubVarDeleteCoverageNote(),
-            note: unlinkNote
+            note: unlinkNote ?: ((hadConnector && _hubVarsNoConnectorLeft()) ? _hubVarsLastConnectorNote() : null)
         ]
     }
 

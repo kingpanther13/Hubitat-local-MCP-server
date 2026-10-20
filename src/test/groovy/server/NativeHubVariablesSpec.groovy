@@ -192,6 +192,20 @@ class NativeHubVariablesSpec extends ToolSpecBase {
         posts()[1] == [method: 'POST', path: '/hub2/variables/removeConnector', body: [name: 'Counter', acknowledgeUse: false]]
     }
 
+    def 'removing a connector while another variable keeps one carries no last-connector note'() {
+        given:
+        seed('Counter')
+        seed('Keeper')
+        seedConnector('Counter')
+        variables.Keeper.sdk.deviceId = 906
+        variables.Keeper.nativeRow.connectorId = 906
+        when:
+        def removed = script.toolRemoveConnector([confirm: true, name: 'Counter'])
+        then:
+        removed.success
+        removed.note == null
+    }
+
     def 'connector creation must persist linkage even when POST succeeds'() {
         given:
         seed('Counter')

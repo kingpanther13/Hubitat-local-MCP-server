@@ -4714,7 +4714,7 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         settingsMap.enableDeveloperMode = true
         hubGet.register('/app/ajax/code') { params -> '{"status": "ok", "version": 5, "source": "self source"}' }
         int rowReads = 0
-        hubGet.register('/app/list/single/data/1') { params -> rowReads++; rowReads < 2 ? '[{"id": 1, "version": 5}]' : '[{"id": 1, "version": 6}]' }
+        hubGet.register('/app/list/all/data') { params -> rowReads++; rowReads < 2 ? '[{"id": 1, "version": 5}]' : '[{"id": 1, "version": 6}]' }
         script.metaClass.uploadHubFile = { String name, byte[] content -> }
         script.metaClass.hubInternalPostJson = { String path, String body, int timeout = 420 -> null }
         script.metaClass._selfSaveWaitMs = { -> 60000L }
@@ -4732,6 +4732,18 @@ class ToolAppDriverCodeSpec extends ToolSpecBase {
         atomicStateMap.lastSelfDeploy.confirmedVersion == 6
         !atomicStateMap.lastSelfDeploy.containsKey('status')
         !atomicStateMap.lastSelfDeploy.containsKey('assumed')
+    }
+
+    def "the version check reads the code list, never the single-item read the hub compiles to answer"() {
+        given: 'list rows for an app and a driver; the single-item reads are left unstubbed'
+        hubGet.register('/app/list/all/data') { params -> '[{"id": 7, "version": 3}, {"id": 12, "version": 9}]' }
+        hubGet.register('/driver/list/data') { params -> '[{"id": 40, "version": 4}]' }
+
+        expect:
+        script._itemRowVersion('app', '12') == 9
+        script._itemRowVersion('driver', 40) == 4
+        script._itemRowVersion('app', '99') == null
+        !hubGet.calls.any { it.path.contains('/list/single/data/') }
     }
 
     def "hub_update_app self-update still fails on a non-timeout POST exception"() {

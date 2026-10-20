@@ -82,7 +82,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub(uptime: 172800G)  // 2 days
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '123456' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '45.5' }
-        hubGet.register('/hub/advanced/databaseSize') { params -> '200000' }
+        hubGet.register('/hub/advanced/databaseSize') { params -> '20' }
 
         and: 'no existing CSV history on disk'
         script.metaClass.downloadHubFile = { String fileName -> null }
@@ -97,16 +97,16 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         def result = script.toolGetHubPerformance([recordSnapshot: true])
 
         then:
-        result.current.freeMemoryKB == '123456'
-        result.current.internalTempC == '45.5'
-        result.current.databaseSizeKB == '200000'
+        result.current.freeMemoryKB == 123456L
+        result.current.internalTempC == 45.5
+        result.current.databaseSizeMB == 20L
         result.current.uptimeSeconds == 172800G
         result.current.uptimeFormatted == '2d 0h 0m'
         result.historyFile == 'mcp-performance-history.csv'
         result.trendPointsAvailable == 1
 
         and: 'the CSV snapshot was written to File Manager'
-        uploaded['mcp-performance-history.csv']?.contains('freeMemoryKB')
+        uploaded['mcp-performance-history.csv']?.readLines()?.first() == 'timestamp,freeMemoryKB,internalTempC,databaseSizeMB,uptimeSeconds'
         uploaded['mcp-performance-history.csv']?.contains('123456')
     }
 
@@ -118,7 +118,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub(uptime: 172800G)
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '123456' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '45.5' }
-        hubGet.register('/hub/advanced/databaseSize') { params -> '200000' }
+        hubGet.register('/hub/advanced/databaseSize') { params -> '20' }
         script.metaClass.downloadHubFile = { String fileName -> null }
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
 
@@ -129,8 +129,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         response.error == null
         !response.result.isError
         def inner = mcpDriver.parseInner(response)
-        inner.current.freeMemoryKB == '123456'
-        inner.current.internalTempC == '45.5'
+        inner.current.freeMemoryKB == 123456L
+        inner.current.internalTempC == 45.5
         inner.current.uptimeFormatted == '2d 0h 0m'
         inner.trendPointsAvailable == 1
 
@@ -163,7 +163,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub(uptime: 3600G)
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '200000' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '75' }  // >70 triggers warning
-        hubGet.register('/hub/advanced/databaseSize') { params -> '100000' }
+        hubGet.register('/hub/advanced/databaseSize') { params -> '100' }
         script.metaClass.downloadHubFile = { String fileName -> null }
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
 
@@ -181,7 +181,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub(uptime: 3600G)
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '200000' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '40' }
-        hubGet.register('/hub/advanced/databaseSize') { params -> '600000' }  // >500000 triggers warning
+        hubGet.register('/hub/advanced/databaseSize') { params -> '600' }  // MB; >500 triggers warning
         script.metaClass.downloadHubFile = { String fileName -> null }
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
 
@@ -198,7 +198,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub(uptime: 3600G)
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '40000' }  // <50000 triggers warning
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '40' }
-        hubGet.register('/hub/advanced/databaseSize') { params -> '100000' }
+        hubGet.register('/hub/advanced/databaseSize') { params -> '100' }
         script.metaClass.downloadHubFile = { String fileName -> null }
         script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
 
@@ -216,7 +216,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         sharedLocation.hub = new TestHub(uptime: 0G)
         hubGet.register('/hub/advanced/freeOSMemory') { params -> '100000' }
         hubGet.register('/hub/advanced/internalTempCelsius') { params -> '50' }
-        hubGet.register('/hub/advanced/databaseSize') { params -> '100000' }
+        hubGet.register('/hub/advanced/databaseSize') { params -> '100' }
         def downloadCalled = false
         script.metaClass.downloadHubFile = { String fileName -> downloadCalled = true; null }
         def uploadCalled = false
@@ -229,6 +229,65 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         downloadCalled
         !uploadCalled
         result.trendPointsAvailable == 0
+        result.trendNote.contains('recordSnapshot=true')
+    }
+
+    @spock.lang.Unroll
+    def "the trend note reads the history file: #label"() {
+        given:
+        settingsMap.enableRead = true
+        sharedLocation.hub = new TestHub(uptime: 0G)
+        hubGet.register('/hub/advanced/freeOSMemory') { params -> '100000' }
+        hubGet.register('/hub/advanced/internalTempCelsius') { params -> '50' }
+        hubGet.register('/hub/advanced/databaseSize') { params -> '100' }
+        script.metaClass.downloadHubFile = { String fileName -> (['timestamp,freeMemoryKB,internalTempC,databaseSizeKB,uptimeSeconds'] + rows).join('\n').getBytes('UTF-8') }
+        script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
+
+        when:
+        def result = script.toolGetHubPerformance([recordSnapshot: false])
+
+        then:
+        result.trends.size() == points
+        (result.trendNote ?: '').contains(note)
+        result.trendRowsSkipped == skipped
+
+        where:
+        label                     | rows                                                        || points | note                             | skipped
+        'a fresh point'           | ["${1234567890000L - 60000L},100000,50.0,30,600"]            || 1      | ''                               | null
+        'a point over a day old'  | ["${1234567890000L - 90000000L},100000,50,30,600"]           || 1      | 'The newest trend point is from' | null
+        'only unreadable rows'    | ['notatime,1,2,3,4', 'short,row']                           || 0      | 'could not be read'              | 2
+        'a bad row among good'    | ['notatime,1,2,3,4', "${1234567890000L - 60000L},1,2,3,4"]   || 1      | ''                               | 1
+    }
+
+    def "a trend point recorded while a reading failed is marked incomplete"() {
+        given:
+        settingsMap.enableRead = true
+        sharedLocation.hub = new TestHub(uptime: 0G)
+        hubGet.register('/hub/advanced/freeOSMemory') { params -> '100000' }
+        hubGet.register('/hub/advanced/internalTempCelsius') { params -> '50' }
+        hubGet.register('/hub/advanced/databaseSize') { params -> '100' }
+        script.metaClass.downloadHubFile = { String fileName -> (['timestamp,freeMemoryKB,internalTempC,databaseSizeMB,uptimeSeconds',
+            "${1234567890000L - 60000L},unavailable,50,30,600", "${1234567890000L - 30000L},1,2,3,4"]).join('\n').getBytes('UTF-8') }
+        script.metaClass.uploadHubFile = { String fileName, byte[] content -> }
+
+        when:
+        def result = script.toolGetHubPerformance([recordSnapshot: false])
+
+        then:
+        result.trends*.incomplete == [true, null]
+    }
+
+    def "a hub reading is a number when it is one, else its text"() {
+        expect:
+        script._hubNumber(raw) == value
+
+        where:
+        raw       || value
+        '42'      || 42L
+        ' 42.5 '  || 42.5G
+        ''        || ''
+        null      || null
+        'abc'     || 'abc'
     }
 
     // -------- toolGetMemoryHistory --------

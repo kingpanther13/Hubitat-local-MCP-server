@@ -325,6 +325,30 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         result.schemaOnly == true
     }
 
+    def "hub_update_package dryRun is exempt; a real deploy is still gated: dryRun=#dryRun"() {
+        given:
+        settingsMap.enableMandatoryBPS = true
+        settingsMap.enableDeveloperMode = true
+        script.metaClass.toolUpdatePackage = { a -> [success: true, planned: true] }
+
+        when:
+        def result = null
+        Exception refused = null
+        try { result = script.executeTool("hub_update_package", [ref: 'main', dryRun: dryRun, confirm: true]) }
+        catch (IllegalArgumentException e) { refused = e }
+
+        then:
+        (refused == null) == passes
+        !passes || result.planned == true
+        passes || refused.message.startsWith("Mandatory best-practice")
+
+        where:
+        dryRun || passes
+        true   || true
+        false  || false
+        'true' || false
+    }
+
     def "hub_set_native_app schema-only discover probe is exempt (mirrors the hub_set_rule exemption)"() {
         given:
         settingsMap.enableMandatoryBPS = true
