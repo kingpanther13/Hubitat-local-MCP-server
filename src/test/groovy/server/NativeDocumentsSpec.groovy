@@ -173,6 +173,31 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !events.any { it instanceof Map }
     }
 
+    def 'native time triggers use scheduled jobs as activation evidence'() {
+        given:
+        nativeState.capabstrue = ['5': 'When time is 11:59 PM']
+        List jobs = scheduled ? [[handler: 'allHandlerT', status: 'PENDING',
+                                 nextRunTime: '2026-10-21T03:59:00+0000']] : []
+        hubGet.register('/installedapp/statusJson/42') { q ->
+            JsonOutput.toJson([installedApp: [id: 42, installed: true],
+                              eventSubscriptions: null, scheduledJobs: jobs])
+        }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true,
+            changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]]])
+        then:
+        result.success == scheduled
+        if (scheduled) {
+            assert result.eventSubscriptions == []
+            assert result.scheduledJobs == jobs
+        } else {
+            assert result.partial
+            assert result.error.contains('subscriptions or scheduled jobs')
+        }
+        where:
+        scheduled << [true, false]
+    }
+
     def 'delete and order parts dispatch only fixed model operations'() {
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'delete', value: [part: 'action', id: '1']], [part: 'order', value: [ids: ['3']]]], confirm: true])

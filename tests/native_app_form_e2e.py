@@ -155,6 +155,36 @@ class NativeAppFormE2E(unittest.TestCase):
         self.assertIs(result.get("success"), True, result)
         self.wait_for(lambda: self.state(rule_id)["lv_Counter"]["value"] == 1)
 
+    def test_time_rule_schedules_stop_edit_and_restart_in_place(self):
+        rule_id = self.create_rule([
+            documents.change("trigger", capability="Certain Time", fields=[
+                documents.field("time#", "enum", "A specific time"),
+                documents.field("atTime#", "time", "2026-01-01T23:59:00.000+0000"),
+            ]),
+            documents.log_action("Scheduled fixture"),
+        ])
+        jobs = self.status(rule_id)["scheduledJobs"]
+        self.assertTrue(jobs)
+        self.assertTrue(any(job.get("status") == "PENDING" and job.get("nextRunTime")
+                            for job in jobs))
+        form = self.open_form(rule_id)
+        stopped = self.submit(rule_id, form["page"]["name"],
+                              control=self.control(form, name="stopRule"))
+        self.assertIs(stopped.get("success"), True, stopped)
+        self.assertIs(self.document(rule_id)["nativeHealth"]["stopped"], True)
+        self.assertFalse(self.status(rule_id)["scheduledJobs"])
+        self.assertFalse(self.status(rule_id)["eventSubscriptions"])
+        edited = self.update(rule_id, [documents.log_action("Added while stopped")])
+        self.assertIs(edited["stopped"], True)
+        self.assertEqual(str(edited["rule_id"]), rule_id)
+        self.assertFalse(self.status(rule_id)["scheduledJobs"])
+        form = self.open_form(rule_id)
+        started = self.submit(rule_id, form["page"]["name"],
+                              control=self.control(form, name="stopRule"))
+        self.assertIs(started.get("success"), True, started)
+        self.assertIs(self.document(rule_id)["nativeHealth"]["stopped"], False)
+        self.assertTrue(self.status(rule_id)["scheduledJobs"])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
