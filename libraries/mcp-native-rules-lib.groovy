@@ -2348,8 +2348,14 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
     try {
         uploadHubFile(fileName, jsonBytes)
         if (snapshot.captureFormat == 'native-rule-edit-v1') {
-            def savedBytes = downloadHubFile(fileName)
-            if (savedBytes == null || new String(savedBytes as byte[], 'UTF-8') != new String(jsonBytes, 'UTF-8')) throw new IllegalStateException('Uploaded recovery snapshot did not match its readback')
+            byte[] savedBytes = downloadHubFile(fileName) as byte[]
+            boolean matching = savedBytes != null && savedBytes.length == jsonBytes.length
+            if (matching) {
+                for (int index = 0; index < jsonBytes.length; index++) {
+                    if (savedBytes[index] != jsonBytes[index]) { matching = false; break }
+                }
+            }
+            if (!matching) throw new IllegalStateException('Uploaded recovery snapshot did not match its readback')
         }
     } catch (Exception e) {
         if (snapshot.captureFormat == 'native-rule-edit-v1') {

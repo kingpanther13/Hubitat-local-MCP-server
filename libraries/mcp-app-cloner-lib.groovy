@@ -1065,6 +1065,7 @@ private List _rmNativeSettingPlan(List rows) {
             } else if (row.multiple == true && value instanceof String) value = new groovy.json.JsonSlurper().parseText(value)
             if (value != null) {
                 if (row.multiple == true && !(value instanceof List)) throw new IllegalArgumentException('Recovery setting requires a list')
+                if (row.multiple != true && value instanceof List) throw new IllegalArgumentException('Recovery setting requires a scalar')
                 List values = value instanceof List ? value : [value]
                 if (values.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Recovery settings require scalar values')
                 _nrComparableSetting(row.type, value)

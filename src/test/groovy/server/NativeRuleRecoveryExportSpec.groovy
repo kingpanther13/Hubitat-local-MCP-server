@@ -88,7 +88,12 @@ class NativeRuleRecoveryExportSpec extends ToolSpecBase {
         def built = script._rmBuildNativeEditSnapshot(42, 'pre-document-update', JsonOutput.toJson(payload()))
         script.metaClass._itemBackupFileName = { String name -> name }
         script.metaClass.uploadHubFile = { String name, byte[] bytes -> stored = bytes; events << 'upload' }
-        script.metaClass.downloadHubFile = { String name -> events << 'read'; corrupt ? 'wrong bytes'.getBytes('UTF-8') : stored }
+        script.metaClass.downloadHubFile = { String name ->
+            events << 'read'
+            byte[] readback = stored.clone()
+            if (corrupt) readback[0] = (byte) (readback[0] + 1)
+            readback
+        }
         script.metaClass.deleteHubFile = { String name -> events << 'delete' }
         script.metaClass._publishUploadedItemBackup = { String key, Map entry, String protectedKey -> events << ['publish', protectedKey] }
         when:
@@ -102,5 +107,14 @@ class NativeRuleRecoveryExportSpec extends ToolSpecBase {
         then:
         thrown(IllegalArgumentException)
         events[-3..-1] == ['upload', 'read', 'delete']
+    }
+
+    def 'recovery keeps false and zero while rejecting mismatched list cardinality before edits'() {
+        expect:
+        script._rmNativeSettingPlan([[name: 'flag', type: 'bool', value: false], [name: 'count', type: 'number', value: 0]])*.value == [false, 0]
+        when:
+        script._rmNativeSettingPlan([[name: 'choice', type: 'enum', multiple: false, value: ['a']]])
+        then:
+        thrown(IllegalArgumentException)
     }
 }
