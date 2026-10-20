@@ -81,14 +81,13 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         writes == ['/installedapp/disable']
     }
 
-    def 'read-only authoring discovery remains available for a protected target'() {
+    def 'retired authoring catalog refuses before touching a protected target'() {
         when:
-        def result = script.toolSetRule([appId: 42, addTrigger: [discover: true]])
-
+        script.toolSetRule([appId:42, addTrigger:[discover:true]])
         then:
-        result.discriminator == 'capability'
-        result.capabilities.find { it.name == 'Switch' }?.requiredFields*.name == ['deviceIds', 'state']
-        writes.empty
+        def refusal = thrown(IllegalArgumentException)
+        refusal.message.contains('hub_call_app_form')
+        writes.isEmpty()
     }
 
     @Unroll

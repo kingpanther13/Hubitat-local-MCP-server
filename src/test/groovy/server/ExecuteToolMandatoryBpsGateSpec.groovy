@@ -321,17 +321,14 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         failure.message.contains('native_rule_documents')
     }
 
-    def "hub_set_native_app schema-only discover probe is exempt (mirrors the hub_set_rule exemption)"() {
+    def "retired native app catalog probes do not bypass write acknowledgment"() {
         given:
         settingsMap.enableMandatoryBPS = true
-
-        when: "edit-shaped discover meta-call, no key -- static schema return, no mutation"
-        def result = script.executeTool("hub_set_native_app", [appId: 123, addTrigger: [discover: true]])
-
-        then: "the gate does not fire; the real static discovery schema comes back"
-        noExceptionThrown()
-        result.discriminator == 'capability'
-        result.capabilities instanceof List
+        when:
+        script.executeTool('hub_set_native_app', [appId:123, addTrigger:[discover:true]])
+        then:
+        def refusal = thrown(IllegalArgumentException)
+        refusal.message.contains('builtin_app_tools_crud')
     }
 
     def "hub_set_native_app CREATE-shaped call with a stray guide flag is still gated (no key -> blocked)"() {

@@ -872,6 +872,21 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("SAFETY CHECK FAILED")
     }
 
+    def "retired action catalog probe is rejected before mutation and keeps deferred state intact"() {
+        given:
+        enableWrite()
+        def posts = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer timeout = 420 -> posts << path; [status:200] }
+        atomicStateMap.predClearPending = ['100': true]
+        when:
+        script._rmAddAction(100, [discover:true])
+        then:
+        def refusal = thrown(IllegalArgumentException)
+        refusal.message.contains('hub_call_app_form')
+        posts.isEmpty()
+        atomicStateMap.predClearPending.'100' == true
+    }
+
     def "native document reference is available through the read guide without write gates"() {
         when:
         def result = script.toolGetToolGuide('native_rule_documents')
@@ -2802,31 +2817,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
         and: "(b) the predClearPending flag was consumed -- the deferred clear fires at most once"
         !atomicStateMap.predClearPending?.get("100")
-    }
-
-    def "seam: _rmAddAction discover mode never touches the hub and leaves the deferred flag intact"() {
-        // TEST A, second case. The discover early-return (lib ~4288) sits ABOVE the
-        // _rmRunPendingPredCapabsClear call (~4295): a {discover:true} probe returns the static
-        // schema with ZERO hub POSTs and MUST NOT consume the pending flag -- a schema probe is
-        // not an action, so it can't be allowed to fire (or eat) the just-in-time clear.
-        given:
-        enableWrite()
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '']
-        }
-        atomicStateMap.predClearPending = ["100": true]
-
-        when: "a discover-mode probe runs while the rule is flagged"
-        def schema = script._rmAddAction(100, [discover: true])
-
-        then: "discover returned a schema without issuing any hub POST"
-        schema != null
-        posts.isEmpty()
-
-        and: "the pending flag is untouched -- discover neither fires nor consumes the deferred clear"
-        atomicStateMap.predClearPending?.get("100") == true
     }
 
     def "seam: bulk addActions fires the deferred ghost clear exactly once (first add drops the flag, the rest short-circuit)"() {
@@ -6537,19 +6527,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.error?.contains("Lock codes")
         result.error?.contains("lock device")
         result.error?.contains("RM is not touched")
-    }
-
-    def "both discover payloads expose the 'not' condition field so an agent can find the negation flag"() {
-        // The addTrigger and addAction discover schemas each carry a top-level conditionFields list that must
-        // include the `not` negation flag -- the only machine-readable place an agent learns a condition can be
-        // negated. Both-ways: deleting the `not` entry from either payload's conditionFields reds this guard.
-        expect: "the trigger discover payload lists a 'not' condition field"
-        def trigFields = script._rmTriggerSchemaForDiscover().conditionFields
-        trigFields.any { it.name == "not" }
-
-        and: "the action discover payload lists a 'not' condition field"
-        def actFields = script._rmActionSchemaForDiscover().conditionFields
-        actFields.any { it.name == "not" }
     }
 
     def "_rmSendActionErrorNote steers a load-failed pause AND resume to the single pausRule toggle button"() {
@@ -13779,30 +13756,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- addTrigger/addAction discover mode ----------
 
-    def "addTrigger discover=true returns schema with discriminator and capabilities list"() {
-        given: "only Built-in App tools enabled -- Hub Admin Write NOT required"
-        enableReadOnly()
-
-        when:
-        def result = script.toolSetRule([addTrigger: [discover: true]])
-
-        then: "discriminator field is 'capability'"
-        result.discriminator == "capability"
-
-        and: "capabilities is a non-empty List"
-        result.capabilities instanceof List
-        !result.capabilities.isEmpty()
-
-        and: "each capability entry has a name field"
-        result.capabilities.every { it.name != null }
-
-        and: "known capabilities are present"
-        result.capabilities.any { it.name == "Switch" }
-        result.capabilities.any { it.name == "Motion" }
-        result.capabilities.any { it.name == "Periodic Schedule" }
-        result.capabilities.any { it.name == "Mode" }
-    }
-
     def "backup-before-write is a hard gate: a backup failure aborts the call BEFORE any write/click POST is issued"() {
         // Every non-discover hub_set_rule path runs _rmBackupRuleSnapshot
         // before dispatching to a write helper (settings/button/addTrigger/
@@ -13844,175 +13797,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         // hit one of these.
         !posts.any { it.path == "/installedapp/update/json" }
         !posts.any { it.path == "/installedapp/btn" }
-    }
-
-    def "addAction discover=true returns schema with discriminator and capabilities list"() {
-        given: "only Built-in App tools enabled -- Hub Admin Write NOT required"
-        enableReadOnly()
-
-        when:
-        def result = script.toolSetRule([addAction: [discover: true]])
-
-        then: "discriminator field is 'capability'"
-        result.discriminator == "capability"
-
-        and: "capabilities is a non-empty List"
-        result.capabilities instanceof List
-        !result.capabilities.isEmpty()
-
-        and: "each capability entry has a name field"
-        result.capabilities.every { it.name != null }
-
-        and: "known capabilities are present"
-        result.capabilities.any { it.name == "switch" }
-        result.capabilities.any { it.name == "dimmer" }
-        result.capabilities.any { it.name == "ifThen" }
-        result.capabilities.any { it.name == "log" }
-        result.capabilities.any { it.name == "setLocalVariable" }
-
-        and: "dimmer declares per-action required fields (toggle/setLevel need level) -- not buried in optionalFields"
-        def dimmer = result.capabilities.find { it.name == "dimmer" }
-        dimmer.conditionalRequired != null
-        dimmer.conditionalRequired.toggle?.toString()?.contains("level")
-        dimmer.conditionalRequired.setLevel?.toString()?.contains("level")
-        dimmer.conditionalRequired.adjust?.toString()?.contains("adjustBy")
-        dimmer.conditionalRequired.fade?.toString()?.contains("targetLevel")
-        // direction is intentionally NOT in conditionalRequired for fade/startRaiseLower:
-        // verified live it defaults to lower and the action bakes without it.
-        dimmer.conditionalRequired.startRaiseLower == null
-        dimmer.conditionalRequired.setLevelPerMode?.toString()?.contains("perMode")
-
-        and: "the other multi-variant device capabilities also declare their live-verified per-action required fields"
-        def switchCap = result.capabilities.find { it.name == "switch" }
-        switchCap.conditionalRequired?.setPerMode?.toString()?.contains("perMode")
-        switchCap.conditionalRequired?.choosePerMode?.toString()?.contains("perMode")
-
-        def colorCap = result.capabilities.find { it.name == "color" }
-        colorCap.conditionalRequired?.setColor?.toString()?.contains("colorName")
-        colorCap.conditionalRequired?.toggleColor?.toString()?.contains("colorName")
-        colorCap.conditionalRequired?.setColorPerMode?.toString()?.contains("perMode")
-
-        def colorTempCap = result.capabilities.find { it.name == "colorTemp" }
-        colorTempCap.conditionalRequired?.setColorTemp?.toString()?.contains("kelvin")
-        colorTempCap.conditionalRequired?.toggleColorTemp?.toString()?.contains("kelvin")
-        colorTempCap.conditionalRequired?.fadeColorTemp?.toString()?.contains("targetKelvin")
-        colorTempCap.conditionalRequired?.setColorTempPerMode?.toString()?.contains("perMode")
-
-        def shadeCap = result.capabilities.find { it.name == "shade" }
-        shadeCap.conditionalRequired?.setPosition?.toString()?.contains("position")
-
-        def fanCap = result.capabilities.find { it.name == "fan" }
-        fanCap.conditionalRequired?.setSpeed?.toString()?.contains("speed")
-
-        def buttonCap = result.capabilities.find { it.name == "button" }
-        buttonCap.conditionalRequired?.push?.toString()?.contains("buttonNumber")
-        buttonCap.conditionalRequired?.pushPerMode?.toString()?.contains("perMode")
-        buttonCap.conditionalRequired?.choosePerMode?.toString()?.contains("buttonNumber")
-    }
-
-    def "addTrigger discover=true does not require Hub Admin Write"() {
-        given: "enableWrite is NOT set -- only Built-in App enabled"
-        enableReadOnly()
-        // Confirm that enableWrite is absent/false
-        settingsMap.remove("enableWrite")
-
-        when:
-        def result = script.toolSetRule([addTrigger: [discover: true]])
-
-        then: "no exception -- discover bypasses the Hub Admin Write gate"
-        notThrown(IllegalArgumentException)
-        result.discriminator == "capability"
-    }
-
-    def "addAction discover=true does not require Hub Admin Write"() {
-        given: "enableWrite is NOT set -- only Built-in App enabled"
-        enableReadOnly()
-        settingsMap.remove("enableWrite")
-
-        when:
-        def result = script.toolSetRule([addAction: [discover: true]])
-
-        then: "no exception -- discover bypasses the Hub Admin Write gate"
-        notThrown(IllegalArgumentException)
-        result.discriminator == "capability"
-    }
-
-    def "addTrigger discover=true does not call _rmBackupRuleSnapshot"() {
-        given: "discover bypasses backup -- no master/confirm gate needed either"
-        def backupCalls = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> backupCalls << fn }
-
-        when:
-        script.toolSetRule([addTrigger: [discover: true]])
-
-        then: "no file upload -- no backup taken"
-        backupCalls.isEmpty()
-    }
-
-    def "addAction discover=true does not call _rmBackupRuleSnapshot"() {
-        given: "discover bypasses backup -- no master/confirm gate needed either"
-        def backupCalls = []
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> backupCalls << fn }
-
-        when:
-        script.toolSetRule([addAction: [discover: true]])
-
-        then: "no file upload -- no backup taken"
-        backupCalls.isEmpty()
-    }
-
-    def "addTrigger discover=true works with the masters unset"() {
-        given: "no master seeds -- discover is gate-free (called directly, not via executeTool)"
-        settingsMap.remove("enableWrite")
-        settingsMap.remove("enableRead")
-
-        when:
-        def result = script.toolSetRule([addTrigger: [discover: true]])
-
-        then: "returns schema regardless of feature-flag state"
-        result.discriminator == "capability"
-        result.capabilities instanceof List
-    }
-
-    // ---------- addTrigger success/partial semantic matrix ----------
-
-    /**
-     * Helper: builds a selectTriggers schema JSON with an incrementing paragraph
-     * so every _rmWriteSettingOnPage call sees a render-hash shift and routes the
-     * key to `applied` rather than `skipped`.
-     */
-    private String selectTriggersSchemaJson(int ruleId, int seqNum) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "selectTriggers", title: "T", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "tCapab1", type: "enum", options: ["Switch"]],
-                             [name: "tDev1", type: "capability.switch", multiple: true],
-                             [name: "tstate1", type: "enum", options: ["on", "off"]],
-                             [name: "isCondTrig.1", type: "bool"],
-                             [name: "hasAll", type: "button"]
-                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
-    }
-
-    /**
-     * Helper: builds a mainPage JSON whose paragraph content controls whether
-     * _rmAddTrigger detects the trigger as baked (no "Define Triggers" placeholder)
-     * or not-baked (placeholder still present).
-     */
-    private String mainPageJson(int ruleId, String label = "r", boolean triggerBaked = true) {
-        def paragraph = triggerBaked ? "Switch1 is on" : "Define Triggers"
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: label, trueLabel: label, installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null,
-                         sections: [[title: "", input: [], paragraphs: [paragraph]]]],
-            settings: [:],
-            childApps: []
-        ])
     }
 
     def "addTrigger returns success=true partial=false on full success"() {
@@ -17758,57 +17542,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         "<="   || "<="
         "*changed*" || "*changed*"
         null   || null
-    }
-
-    def "addTrigger discover schema includes the Variable capability entry"() {
-        // The Variable conditional pattern is non-obvious; the discover
-        // schema is the surface the LLM caller reads to learn how to drive
-        // the wizard. Pin its presence so future refactors of the schema
-        // don't silently drop the entry.
-        given: 'discover-mode short-circuits before any hub mutation'
-        enableWrite()
-
-        when:
-        def result = script.toolSetRule([
-            appId: 100,
-            addTrigger: [discover: true],
-            confirm: true
-        ])
-
-        then: 'Variable is in the capability list with the typed condition fields documented'
-        def caps = result?.capabilities as List
-        caps != null
-        def varEntry = caps.find { (it as Map)?.name == "Variable" }
-        varEntry != null
-        // Required field must be `variable` (matches the typed-helper contract)
-        ((varEntry.requiredFields as List).collect { (it as Map).name } as List).contains("variable")
-        // Caller needs to learn about compareToVariable from the discover output
-        (varEntry as Map).toString().contains("compareToVariable")
-    }
-
-    // ---------- addAction success/partial semantic matrix ----------
-
-    /**
-     * Helper: builds a doActPage schema JSON with an incrementing paragraph
-     * so every _rmWriteSettingOnPage call routes to `applied` rather than `skipped`.
-     */
-    private String doActPageSchemaJson(int ruleId, int seqNum) {
-        JsonOutput.toJson([
-            app: [id: ruleId, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true,
-                  appType: [name: "Rule-5.1", namespace: "hubitat"]],
-            configPage: [name: "doActPage", title: "T", install: false, error: null,
-                         sections: [[title: "", input: [
-                             [name: "actType.1", type: "enum",
-                              options: ["switchActs": "Turn on/off/toggle a switch or switches"]],
-                             [name: "actSubType.1", type: "enum",
-                              options: ["getOnOffSwitch": "Turn on, off, or toggle a switch"]],
-                             [name: "onOffSwitch.1", type: "capability.switch", multiple: true],
-                             [name: "onOff.1", type: "bool"],
-                             [name: "actionDone", type: "button"]
-                         ], paragraphs: ["seq ${seqNum}".toString()]]]],
-            settings: [:],
-            childApps: []
-        ])
     }
 
     def "addAction returns success=true partial=false on full success"() {
@@ -46929,20 +46662,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- HSM as an action ----------
 
-    def "addAction hsm discover lists getSetHSM commands"() {
-        when:
-        def result = script.toolSetRule([addAction: [discover: true]])
-
-        then:
-        def caps = result?.capabilities as List
-        def hsm = caps.find { (it as Map)?.name == "hsm" }
-        hsm != null
-        def cmdField = (hsm.requiredFields as List).find { (it as Map).name == "command" }
-        def vals = (cmdField as Map).values as List
-        (vals as Set) == (script._rmHsmCommands() as Set)
-        !vals.contains("armAll")
-    }
-
     def "_rmHsmCommands is the single source of truth for the eight HSM tokens"() {
         expect:
         script._rmHsmCommands() == ["armAway", "armHome", "armNight", "disarm", "rearm", "disarmAll", "armRules", "cancelAlerts"]
@@ -47392,34 +47111,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !script._rmComparatorIsRhsOptional("*contains*")
     }
 
-    def "Custom Attribute discover lists *contains* and documents the not-toggle negation"() {
-        when:
-        def result = script.toolSetRule([addTrigger: [discover: true]])
-
-        then:
-        def caps = result?.capabilities as List
-        def ca = caps.find { (it as Map)?.name == "Custom Attribute" }
-        def cmp = (ca.requiredFields as List).find { (it as Map).name == "comparator" }
-        ((cmp as Map).values as List).contains("*contains*")
-        (cmp as Map).description?.contains("not:true")
-    }
-
-    def "Variable discover lists *contains* for a free-valued String variable (not *is empty*)"() {
-        // The Variable capability's comparator surface must also advertise *contains* -- it is
-        // the LHS of a String-variable Required Expression condition (the addRequiredExpression
-        // path has no discover mode; addTrigger discover is the shared Variable-schema surface).
-        // *is empty* is intentionally NOT offered (it is unwired: no omit-value support).
-        when:
-        def result = script.toolSetRule([addTrigger: [discover: true]])
-
-        then:
-        def caps = result?.capabilities as List
-        def variable = caps.find { (it as Map)?.name == "Variable" }
-        def cmp = (variable.optionalFields as List).find { (it as Map).name == "comparator" }
-        ((cmp as Map).values as List).contains("*contains*")
-        !((cmp as Map).values as List).contains("*is empty*")
-    }
-
     def "condition Variable *contains* with not:true co-writes the comparator AND the not toggle"() {
         // not:true + *contains* is the documented ONLY way to express "does not contain".
         // If the not toggle ever failed to co-write, the rule would silently invert to a
@@ -47478,21 +47169,6 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then: "RelrDev_1 carries the *contains* comparator verbatim"
         posts.any { it.body["settings[RelrDev_1]"] == "*contains*" }
     }
-
-    def "addAction switch discover lists onlyOn in optionalFields"() {
-        // Mirrors the hsm/*contains* discover-surface assertions: the machine-readable
-        // schema an agent probes must advertise the onlyOn toggle.
-        when:
-        def result = script.toolSetRule([addAction: [discover: true]])
-
-        then:
-        def caps = result?.capabilities as List
-        def sw = caps.find { (it as Map)?.name == "switch" }
-        sw != null
-        ((sw.optionalFields as List)*.name).contains("onlyOn")
-    }
-
-    // ---------- cosmetic device-list partial re-tag (class-fix) ----------
 
     def "_rmReclassifyDeviceListSkips re-tags an echoed device-list write (not partial) but not a failed one (#scenario)"() {
         given:
