@@ -33300,6 +33300,10 @@ private Object _nrSettingValue(Object value) {
     throw new IllegalStateException('Unsupported native setting value')
 }
 private Object _nrComparable(String type, Object value) {
+    if (type == 'capability' || type.startsWith('capability.')) {
+        def ids = value instanceof List ? value : (value == null ? [] : [value])
+        return ids.collect { id -> id.toString().isLong() ? id.toString().toLong().toString() : id.toString() }.sort()
+    }
     if (value instanceof List) return value.collect { item -> _nrComparable(type, item) }.sort()
     if (value == null) return null
     if (type == 'number' || type == 'decimal') return value.toString().isBigDecimal() ? new BigDecimal(value.toString()).stripTrailingZeros().toPlainString() : value.toString()
