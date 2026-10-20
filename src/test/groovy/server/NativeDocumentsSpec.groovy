@@ -20,7 +20,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
                        allLocalVars: [counter: [type: 'integer', value: 0]]]
         settingsMap.enableMandatoryBPS = false
         stateMap.lastBackupTimestamp = 1234567890000L
-        script.metaClass.getAppByAppId = { Long id -> id == 28L ? [id: 28L, appType: [namespace: 'hubitat', name: 'Rule Machine']] : [id: 42L, installed: true] }
+        script.metaClass.getAppByAppId = { Long id -> id == 28L ? [id: 28L, appType: [namespace: 'hubitat', name: 'Rule Machine']] : [id: 42L, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Rule-5.1'], installed: true] }
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean retry = false -> events << 'create'; [status: 302, location: '/installedapp/configure/42'] }
         script.metaClass._nrHandle = { Long id ->
             if (id != 42L) throw new IllegalArgumentException('missing rule')
@@ -220,6 +220,30 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.rule_id == 42L
         events[0..3] == ['create', 'initState', 'origLabel:New document', 'label:New document']
         events.find { it instanceof Map }.body.contains('_action_update=Done')
+    }
+
+    def 'create accepts the native Location header prefix and absolute loopback origin'() {
+        given:
+        script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean retry = false ->
+            events << 'create'
+            [status: 302, location: 'Location: http://127.0.0.1:8080/installedapp/configure/42']
+        }
+        when:
+        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Header child', changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        then:
+        result.success
+        result.rule_id == 42L
+    }
+
+    def 'create refuses an unexpected child parent before changing its state or label'() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> id == 28L ? [id: 28L, appType: [namespace: 'hubitat', name: 'Rule Machine']] : [id: 42L, parentAppId: 99L, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
+        when:
+        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Wrong child', changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        then:
+        !result.success
+        result.partial
+        events == ['create']
     }
 
     def 'invalid parent prevents native child creation'() {
