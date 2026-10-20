@@ -8,8 +8,10 @@ class NativeModelSpec extends ToolSpecBase {
     Map settings
     List writes
     Expando nativeRule
+    String nativeType
 
     void setup() {
+        nativeType = 'Rule-5.1'
         nativeState = [keep: [unknown: true], ndx: 4, actNdx: 1,
                        capabsfalse: ['1': 'Switch A on', '2': 'Switch B off'], eval: ['0': ['1']]]
         locals = [:]
@@ -32,6 +34,7 @@ class NativeModelSpec extends ToolSpecBase {
             authorForm([[name: 'tstate4', type: 'enum', multiple: false, options: ['on', 'off']]])
         }
         script.metaClass._nrHandle = { Long id -> nativeRule }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: nativeType]] }
         script.metaClass._nrState = { Long id -> [:] + nativeState }
         script.metaClass._nrStatePatch = { Long id, Map values, List remove = [] -> remove.each { nativeState.remove(it) }; nativeState.putAll(values); writes << values; [:] }
         script.metaClass._nrWriteSettings = { Long id, List rows ->
@@ -153,6 +156,22 @@ class NativeModelSpec extends ToolSpecBase {
         !result.success
         result.partial
         !result.predicateVerified
+    }
+
+    def 'Button Rule required expression returns through its primary and action editor pages'() {
+        given:
+        nativeType = 'Button Rule-5.1'
+        List pages = []
+        nativeRule.STPage = { Map params -> if (nativeState.doneST == true) nativeState.hasPredicate = true }
+        nativeRule.mainPage = { -> throw new AssertionError('Button Rule has no mainPage') }
+        nativeRule.selectActions = { -> pages << 'selectActions' }
+        nativeRule.selectActionsX = { -> pages << 'selectActionsX' }
+        when:
+        def result = script._nmSetRequired(42L, ['1'])
+        then:
+        result.success
+        pages == ['selectActions', 'selectActionsX']
+        nativeState.keep == [unknown: true]
     }
 
     def 'invalid required expression refuses before enabling predicate settings'() {
@@ -573,6 +592,24 @@ class NativeModelSpec extends ToolSpecBase {
         result.success && result.orderVerified && result.actionsPreserved
         nativeState.actionList == ['2', '1']
         nativeState.actions.keySet() == ['1', '2'] as Set
+        nativeState.keep == [unknown: true]
+    }
+
+    def 'Button Rule action order refreshes its action editor without calling its primary page'() {
+        given:
+        nativeType = 'Button Rule-5.1'
+        nativeState.actions = ['1': [method: 'getLogMsg', indent: ''], '2': [method: 'getLogMsg', indent: '']]
+        nativeState.actionList = ['1', '2']
+        List pages = []
+        nativeRule.selectActions = { -> throw new AssertionError('Action edit must use selectActionsX') }
+        nativeRule.selectActionsX = { -> pages << 'selectActionsX' }
+        nativeRule.markIfs = { -> }
+        when:
+        def result = script._nmOrderActions(42L, ['2', '1'])
+        then:
+        result.success && result.orderVerified && result.actionsPreserved
+        pages == ['selectActionsX']
+        nativeState.actionList == ['2', '1']
         nativeState.keep == [unknown: true]
     }
 

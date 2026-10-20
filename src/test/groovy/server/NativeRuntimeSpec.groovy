@@ -77,6 +77,39 @@ class NativeRuntimeSpec extends ToolSpecBase {
         handle.id == 42L
     }
 
+    def 'native page roles retain Rule signatures and use Button Rule no-argument pages'() {
+        expect:
+        script._nrRulePages(42L) == [primary: 'mainPage', actions: 'selectActions']
+
+        when:
+        script._nrPage(42L, 'selectActions', [edit: true])
+        then:
+        calls == [[name: 'selectActions', params: [edit: true]]]
+
+        when:
+        calls.clear()
+        domain.appType.name = 'Button Rule-5.1'
+        script._nrPage(42L, 'selectActions')
+        script._nrPage(42L, 'selectActionsX')
+        then:
+        script._nrRulePages(42L) == [primary: 'selectActions', actions: 'selectActionsX']
+        calls == [[name: 'selectActions'], [name: 'selectActionsX']]
+
+        when:
+        calls.clear()
+        script._nrPage(42L, 'selectActions', [edit: true])
+        then:
+        thrown(IllegalArgumentException)
+        calls.empty
+
+        when:
+        domain.appType.name = 'Rule-5.1'
+        script._nrPage(42L, 'selectActionsX')
+        then:
+        thrown(IllegalArgumentException)
+        calls.empty
+    }
+
     def 'state reload observes a native page change'() {
         when:
         def before = script._nrState(42L)
@@ -264,6 +297,9 @@ class NativeRuntimeChild {
         if (!ignoreWrites) typedSettings[name] = [type: row.type, value: row.value]
     }
     Object doActPage() { backing.cursor = 2; 'page-result' }
+    Object selectActions(Map params) { calls << [name: 'selectActions', params: params]; [name: 'selectActions'] }
+    Object selectActions() { calls << [name: 'selectActions']; [name: 'selectActions'] }
+    Object selectActionsX() { calls << [name: 'selectActionsX']; [name: 'selectActionsX'] }
     Object appButtonHandler(String name) { calls << [name: name]; null }
 }
 

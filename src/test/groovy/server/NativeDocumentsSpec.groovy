@@ -161,6 +161,65 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events[4].body.contains('_action_update=Done')
     }
 
+    def 'fresh Button Rule opens its native action editor before allocating and preserves its button binding'() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> [id: 42L, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Button Rule-5.1'], installed: true] }
+        nativeState = [buttonRule: true, isButtonRule: true, trigDevs: ['7'], capabstrue: ['1': 'Button 1 pushed'], keep: [unknown: true]]
+        typedSettings.putAll([tDev1: ['7'], tCapab1: 'Button', tstate1: 'pushed', ButtontDev1: 1])
+        Map bindingBefore = [:] + typedSettings
+        script.metaClass._nrHandle = { Long id -> new NativeDocumentButtonChild(events, lifecycle, nativeState, typedSettings) }
+        script.metaClass._nmUpsertAction = { Long id, Map value ->
+            assert nativeState.actNdx == 1
+            events << 'action'
+            nativeState.actions = ['1': [method: 'getLogMsg']]
+            nativeState.actionList = ['1']
+            [success: true, id: '1']
+        }
+
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]]], confirm: true])
+
+        then:
+        result.success
+        result.rule_id == 42L
+        events[0..4] == ['selectActionsX', 'action', 'selectTriggers', 'selectActionsX', 'selectActions']
+        events[5].path == '/installedapp/update/json'
+        !events.contains('mainPage')
+        !events.contains('initState')
+        !events.contains('selectActionsWithParams')
+        typedSettings == bindingBefore
+        nativeState.buttonRule && nativeState.isButtonRule
+        nativeState.trigDevs == ['7']
+        nativeState.capabstrue == ['1': 'Button 1 pushed']
+        nativeState.keep == [unknown: true]
+        result.document.actions*.id == ['1']
+    }
+
+    def 'existing Button Rule validates its action editor and primary page without resetting native state'() {
+        given:
+        script.metaClass.getAppByAppId = { Long id -> [id: 42L, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Button Rule-5.1'], installed: true] }
+        nativeState.actNdx = 8
+        Map before = [:] + nativeState
+        script.metaClass._nrHandle = { Long id -> new NativeDocumentButtonChild(events, lifecycle, nativeState, typedSettings, brokenEditor) }
+
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [id: '3', type: 'messageActs', subtype: 'getLogMsg', fields: []]]], confirm: true])
+
+        then:
+        result.success == !brokenEditor
+        result.rule_id == 42L
+        events.take(3) == ['action', 'selectTriggers', 'selectActionsX']
+        events.contains('selectActions') == !brokenEditor
+        events.any { it instanceof Map && it.path == '/installedapp/update/json' } == !brokenEditor
+        !events.contains('mainPage')
+        !events.contains('initState')
+        !events.contains('selectActionsWithParams')
+        nativeState == before
+
+        where:
+        brokenEditor << [false, true]
+    }
+
     def 'broken native health prevents finalization'() {
         given:
         broken = true
@@ -419,5 +478,23 @@ class NativeDocumentDiagnosticChild extends NativeDocumentChild {
     Object selectActions(Map params) {
         events << 'selectActions'
         [name: 'selectActions', sections: [[input: [[name: 'logmsg.1', value: '**Broken Condition**']], body: [[type: 'paragraph', description: diagnostic ? '<span style=color:red>**Broken Condition**</span>' : 'Log: **Broken Condition**']]]]]
+    }
+}
+
+class NativeDocumentButtonChild extends NativeDocumentChild {
+    Map nativeState
+    boolean brokenEditor
+    NativeDocumentButtonChild(List events, Map lifecycle, Map nativeState, Map typedSettings, boolean brokenEditor = false) {
+        super(events, lifecycle, nativeState.allLocalVars ?: [:], typedSettings)
+        this.nativeState = nativeState
+        this.brokenEditor = brokenEditor
+    }
+    Object mainPage() { events << 'mainPage'; null }
+    Object selectActions(Map params) { events << 'selectActionsWithParams'; null }
+    Object selectActions() { events << 'selectActions'; [name: 'selectActions', sections: [[body: []]]] }
+    Object selectActionsX() {
+        events << 'selectActionsX'
+        if (nativeState.actNdx == null && !nativeState.actions && !nativeState.actionList) nativeState.actNdx = 1
+        [name: 'selectActionsX', sections: [[body: brokenEditor ? [[type: 'paragraph', description: '<span style="color:red">**Broken Action**</span>']] : []]]]
     }
 }

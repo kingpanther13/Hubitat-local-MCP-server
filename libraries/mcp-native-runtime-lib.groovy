@@ -132,14 +132,32 @@ Map _nrWriteSettings(Long ruleId, List rows) {
     }
 }
 
+private Map _nrRulePages(Long ruleId) {
+    def target = getAppByAppId(ruleId)
+    def type = target?.appType
+    if (target?.id?.toString() != ruleId.toString() || type?.namespace != 'hubitat' || !(type?.name in ['Rule-5.1', 'Button Rule-5.1'])) {
+        throw new IllegalArgumentException('Target must be a native Rule-5.1 or Button Rule-5.1')
+    }
+    type.name == 'Button Rule-5.1' ? [primary: 'selectActions', actions: 'selectActionsX'] : [primary: 'mainPage', actions: 'selectActions']
+}
+
 Map _nrPage(Long ruleId, String page, Map params = [:]) {
-    if (!(page in ['mainPage', 'selectActions', 'doActPage', 'STPage', 'selectTriggers', 'selectConditions', 'localVar'])) throw new IllegalArgumentException('Unsupported native page')
+    if (!(page in ['mainPage', 'selectActions', 'selectActionsX', 'doActPage', 'STPage', 'selectTriggers', 'selectConditions', 'localVar'])) throw new IllegalArgumentException('Unsupported native page')
     if (params == null || (params && !(page in ['selectActions', 'STPage', 'selectConditions']))) throw new IllegalArgumentException('This page does not accept parameters')
     def handle = _nrHandle(ruleId)
     def result
     switch (page) {
         case 'mainPage': result = handle.mainPage(); break
-        case 'selectActions': result = handle.selectActions(params); break
+        case 'selectActions':
+            if (_nrRulePages(ruleId).primary == 'selectActions') {
+                if (params) throw new IllegalArgumentException('Button Rule primary page does not accept parameters')
+                result = handle.selectActions()
+            } else result = handle.selectActions(params)
+            break
+        case 'selectActionsX':
+            if (_nrRulePages(ruleId).actions != 'selectActionsX') throw new IllegalArgumentException('This native rule has no selectActionsX page')
+            result = handle.selectActionsX()
+            break
         case 'doActPage': result = handle.doActPage(); break
         case 'STPage': result = handle.STPage(params); break
         case 'selectTriggers': result = handle.selectTriggers(); break

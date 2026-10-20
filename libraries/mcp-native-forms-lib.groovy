@@ -43,6 +43,48 @@ private Map _nfAttrs(String html) {
     attrs
 }
 
+private Map _nfLocalPath(String path) {
+    def match = path =~ /^\/installedapp\/configure\/([1-9][0-9]*)\/([A-Za-z_][A-Za-z0-9_.-]*)\?resetScroll=true$/
+    match.matches() && match.group(1).isLong() ? [app_id: match.group(1).toLong(), page: match.group(2)] : null
+}
+
+private Map _nfLocalNavigation(String html) {
+    def match = html =~ /(?s)^\s*<script>\s*\{\s*window\.open\('\/installedapp\/configure\/([1-9][0-9]*)\/([A-Za-z_][A-Za-z0-9_.-]*)\?resetScroll=true',\s*'_self'\)\s*;?\s*\}\s*<\/script>\s*$/
+    match.matches() && match.group(1).isLong() ? [app_id: match.group(1).toLong(), page: match.group(2)] : null
+}
+
+private void _nfNavigationTargets(Object node, List targets) {
+    if (node instanceof List) { node.each { _nfNavigationTargets(it, targets) }; return }
+    if (!(node instanceof Map)) return
+    if (node.element == 'paragraph') ['title', 'description', 'text'].each { key ->
+        def value = node[key]
+        Map target = value instanceof String ? _nfLocalNavigation(value) : null
+        if (target) targets << target
+    }
+    ['sections', 'input', 'body', 'children'].each { key ->
+        if (node[key] instanceof Map || node[key] instanceof List) _nfNavigationTargets(node[key], targets)
+    }
+}
+
+private Map _nfNavigation(Long sourceId, Map model) {
+    List targets = []
+    _nfNavigationTargets(model.configPage, targets)
+    if (!targets) return null
+    if (model.app?.id?.toString() != sourceId.toString()) throw new IllegalStateException('Native navigation response does not identify the requested app')
+    if (targets.unique().size() != 1) throw new IllegalStateException('Native form returned ambiguous app navigation')
+    _nfVerifyNavigation(sourceId, targets[0])
+}
+
+private Map _nfVerifyNavigation(Long sourceId, Map target) {
+    def nativeApp = getAppByAppId(target.app_id as Long)
+    if (nativeApp?.id?.toString() != target.app_id.toString() || nativeApp?.appType?.namespace != 'hubitat' || nativeApp.disabled == true ||
+        (target.app_id != sourceId && nativeApp.parentAppId?.toString() != sourceId.toString())) {
+        throw new IllegalStateException('Native navigation target must be the enabled native app or its direct child')
+    }
+    _requireUnprotectedAppMutation(target.app_id, 'open native form navigation')
+    target
+}
+
 private void _nfHtml(String html, Map controls, List unsupported) {
     // These hidden inputs and callback are the native buttonLink contract; other scripts are never evaluated.
     def inputs = html =~ /(?is)<input\b[^>]*>/
@@ -77,7 +119,14 @@ private void _nfHtml(String html, Map controls, List unsupported) {
         if (!found) unsupported << "Unrecognized HTML button: ${button.name}"
     }
     if (html =~ /(?is)<script\b|\bonclick\s*=\s*["'](?!buttonClick\(this\))/) unsupported << 'Custom browser script'
-    if (html =~ /(?is)<a\b[^>]*href\s*=\s*["'](?!#["'])/) unsupported << 'HTML navigation link'
+    def links = html =~ /(?is)<a\b([^>]*)>(.*?)<\/a>/
+    while (links.find()) {
+        Map attrs = _nfAttrs(links.group(1))
+        Map target = attrs.href instanceof String ? _nfLocalPath(attrs.href) : null
+        if (target && !attrs.onclick) _nfControl(controls, [name: '_native_app', value: target.app_id.toString(),
+            stateAttribute: target.page, page: target.page, kind: 'local_app', title: _nfText(links.group(2))])
+        else if (attrs.href && attrs.href != '#') unsupported << 'HTML navigation link'
+    }
 }
 
 private void _nfControl(Map controls, Map control) {
@@ -257,6 +306,7 @@ Map toolCallAppForm(Map args) {
     List completed = []
     boolean attempted = false
     Long createdId = null
+    Map navigation = null
     Map context = NATIVE_FORM_CONTEXTS[key]
     try {
         if (context && context.expires < now()) { NATIVE_FORM_CONTEXTS.remove(key); context = null }
@@ -282,6 +332,7 @@ Map toolCallAppForm(Map args) {
                     control = context.controls[step.activate]
                     if (!control) throw new IllegalArgumentException('Choose one exact returned native control_id')
                     if (control.disabled) throw new IllegalArgumentException('The native control is disabled')
+                    if (control.kind == 'local_app' && step.get('fields')) throw new IllegalArgumentException('Submit fields separately before opening another native app form')
                     if (control.kind == 'create_child' && step.get('fields')) throw new IllegalArgumentException('Submit parent fields separately before creating a child')
                     if (control.kind == 'button' && !control.submit_on_change && step.get('fields')) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
                     if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
@@ -292,7 +343,10 @@ Map toolCallAppForm(Map args) {
                     }
                 }
                 attempted = true
-                if (control?.kind == 'create_child') {
+                if (control?.kind == 'local_app') {
+                    navigation = _nfVerifyNavigation(id, [app_id: control.value.toString().toLong(), page: control.page])
+                    model = [location: 'local_app']
+                } else if (control?.kind == 'create_child') {
                     // The native HTTP client encodes the path; pre-encoding names escapes percent signs twice.
                     String childName = control.value.toString()
                     createdId = _nrCreatedAppId(hubInternalGetRaw("/installedapp/createchild/hubitat/${childName}/parent/${id}"))
@@ -313,7 +367,8 @@ Map toolCallAppForm(Map args) {
                 }
                 if (model == null) model = _nfPost('/installedapp/update/json', body)
             }
-            if (model.location) {
+            if (!navigation) navigation = _nfNavigation(id, model)
+            if (model.location || navigation) {
                 NATIVE_FORM_CONTEXTS.remove(key); context = null
                 completed << [kind: step.kind, navigation_ended: true]
                 if (index + 1 < args.steps.size()) throw new IllegalStateException('Native navigation ended the form; remaining steps were not executed')
@@ -323,12 +378,12 @@ Map toolCallAppForm(Map args) {
                 completed << [kind: step.kind, page: context.page.name]
             }
         }
-        [success: true, app_id: id, completed: completed] + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true])
+        [success: true, app_id: id, completed: completed] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true])
     } catch (Exception failure) {
         // A lost response can follow a successful write; stale controls must never be replayed automatically.
         if (attempted) NATIVE_FORM_CONTEXTS.remove(key)
         [success: false, app_id: id, partial: attempted, completed: completed, error: failure.message?.toString(),
-         reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + (createdId == null ? [:] : [created_app_id: createdId])
+         reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
     } finally { NATIVE_FORM_BUSY.remove(key) }
 }
 
@@ -358,5 +413,5 @@ Submit with {kind:"submit",expect_page:"last returned page",fields:{"native fiel
 
 Batches contain 1 through 16 ordered steps. Each step uses the form returned by the preceding step, so dependent fields require another submit after they appear. A button handler runs before that step's fields are saved, as in the native browser; submit fields in a preceding step when the handler needs them. A button without submitOnChange reloads and requires a separate field submission.
 
-The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight apps. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. App-authored JavaScript, custom HTML inputs, uploads, external links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
+The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight apps. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. A verified local native link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true; open that target separately. No script is evaluated. App-authored JavaScript, custom HTML inputs, uploads, external links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
 }

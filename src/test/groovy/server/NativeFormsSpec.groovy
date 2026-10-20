@@ -268,6 +268,136 @@ class NativeFormsSpec extends ToolSpecBase {
         calls*.path == ['/installedapp/configure/json/42', '/installedapp/update/json']
     }
 
+    def 'existing native child link exposes a guarded handoff without target rendering'() {
+        given:
+        model.configPage.sections[0].input << [element: 'paragraph', description:
+            "<table><tr><td><a href='/installedapp/configure/43/selectActions?resetScroll=true'><span style='color:purple'>On: Switch</span></a></td></tr></table>"]
+        def opened = open()
+        def link = opened.controls.find { it.kind == 'local_app' }
+        calls.clear()
+        script.metaClass.getAppByAppId = { Long id ->
+            [id: id, parentAppId: id == 43L ? 42 : null, appType: [namespace: 'hubitat'], disabled: false]
+        }
+        when:
+        def result = submit([:], link.control_id)
+        then:
+        link.title == 'On: Switch'
+        !opened.unsupported.contains('HTML navigation link')
+        result.success
+        result.closed
+        result.navigated_app_id == 43L
+        result.navigated_page == 'selectActions'
+        calls.isEmpty()
+    }
+
+    def 'local app handoff refuses accompanying fields without discarding them'() {
+        given:
+        model.configPage.sections[0].input << [element: 'paragraph', description:
+            "<a href='/installedapp/configure/43/selectActions?resetScroll=true'>Child</a>"]
+        def opened = open()
+        calls.clear()
+        when:
+        def result = submit([count: 3], opened.controls.find { it.kind == 'local_app' }.control_id)
+        then:
+        !result.success
+        !result.partial
+        calls.isEmpty()
+    }
+
+    def 'native script handoff stops remaining source steps and retains verified target'() {
+        given:
+        model.configPage.sections[0].input << [element: 'paragraph', description:
+            "<script>{window.open('/installedapp/configure/42/selectActions?resetScroll=true', '_self')}</script>"]
+        when:
+        def result = script.toolCallAppForm([app_id: 42, confirm: true,
+            steps: [[kind: 'open'], [kind: 'submit', expect_page: 'edit', fields: [count: 3]]]])
+        then:
+        !result.success
+        result.partial
+        result.closed
+        result.navigated_app_id == 42L
+        result.completed.size() == 1
+        result.remaining_steps == 1
+        calls*.path == ['/installedapp/configure/json/42']
+    }
+
+    @Unroll
+    def 'native local navigation hands off only a verified same app or child: #target'() {
+        given:
+        assert open().success
+        calls.clear()
+        model.configPage.sections[0].input << [element: 'paragraph', description:
+            "<script>{window.open('/installedapp/configure/${target}/selectActions?resetScroll=true', '_self')}</script>"]
+        script.metaClass.getAppByAppId = { Long id ->
+            [id: id, parentAppId: id == 43L ? 42 : null, appType: [namespace: 'hubitat'], disabled: false]
+        }
+        when:
+        def result = submit([:], 'apply||clicked')
+        def retry = submit([:], 'apply||clicked')
+        then:
+        result.success
+        result.closed
+        result.app_id == 42L
+        result.navigated_app_id == target
+        result.navigated_page == 'selectActions'
+        !result.containsKey('created_app_id')
+        !retry.success
+        calls*.path == ['/installedapp/btn', '/installedapp/update/json']
+        where:
+        target << [42L, 43L]
+    }
+
+    @Unroll
+    def 'native navigation refuses invalid or protected target before reading it: #reason'() {
+        given:
+        assert open().success
+        calls.clear()
+        model.configPage.sections[0].input << [element: 'paragraph', description:
+            "<script>{window.open('/installedapp/configure/43/selectActions?resetScroll=true', '_self')}</script>"]
+        script.metaClass.getAppByAppId = { Long id ->
+            id == 42L ? [id: id, appType: [namespace: 'hubitat'], disabled: false] : target
+        }
+        if (reason == 'protected') script.metaClass._requireUnprotectedAppMutation = { Object id, String operation ->
+            if (id == 43L) throw new IllegalArgumentException('Protected target')
+        }
+        when:
+        def result = submit([:], 'apply||clicked')
+        then:
+        !result.success
+        result.partial
+        result.reopen_required
+        !result.containsKey('navigated_app_id')
+        calls*.path == ['/installedapp/btn', '/installedapp/update/json']
+        where:
+        reason      | target
+        'unrelated' | [id: 43, parentAppId: 99, appType: [namespace: 'hubitat']]
+        'disabled'  | [id: 43, parentAppId: 42, appType: [namespace: 'hubitat'], disabled: true]
+        'custom'    | [id: 43, parentAppId: 42, appType: [namespace: 'custom']]
+        'missing'   | null
+        'protected' | [id: 43, parentAppId: 42, appType: [namespace: 'hubitat']]
+    }
+
+    @Unroll
+    def 'arbitrary browser script remains unsupported: #html'() {
+        given:
+        model.configPage.sections[0].input << [element: 'paragraph', description: html]
+        when:
+        def result = open()
+        then:
+        result.success
+        !result.closed
+        !result.containsKey('navigated_app_id')
+        result.unsupported.contains('Custom browser script')
+        calls*.path == ['/installedapp/configure/json/42']
+        where:
+        html << [
+            "<script>{window.open('https://example.invalid/installedapp/configure/43/selectActions?resetScroll=true', '_self')}</script>",
+            "<script>{window.open('/installedapp/configure/43/selectActions?resetScroll=true', '_blank')}</script>",
+            "<script>{window.open('/installedapp/configure/43/selectActions?resetScroll=true', '_self');custom()}</script>",
+            "<script>{window.open('/installedapp/configure/43/selectActions?other=true', '_self')}</script>"
+        ]
+    }
+
     def 'native terminal response closes context and never follows its redirect'() {
         given:
         assert open().success

@@ -174,8 +174,8 @@ Map _nmSetRequired(Long ruleId, List tokens) {
     _nrHandle(ruleId).STPage([:])
     _nrStatePatch(ruleId, [doneST: true])
     _nrHandle(ruleId).STPage([:])
-    _nrHandle(ruleId).mainPage()
-    _nrHandle(ruleId).selectActions([:])
+    Map pages = _nrRulePages(ruleId)
+    [pages.primary, pages.actions].unique().each { page -> _nrPage(ruleId, page) }
     Map after = _nrState(ruleId)
     Map settings = _nrSettings(ruleId, ['useST'])
     boolean predicate = after.hasPredicate == true && _nmEntry(after.eval instanceof Map ? after.eval : [:], '0') == tokens
@@ -393,7 +393,7 @@ Map _nmAddTerminator(Long ruleId, String subtype) {
 }
 
 Map _nmValidateStructure(Long ruleId, Map renderedState = null) {
-    if (renderedState == null) _nrHandle(ruleId).selectActions([:])
+    if (renderedState == null) _nrPage(ruleId, _nrRulePages(ruleId).actions)
     Map fresh = renderedState == null ? _nrState(ruleId) : renderedState
     List issues = []
     if (fresh.inIf == true) issues << 'An IF block remains open'
@@ -448,7 +448,7 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     }
     if (part == 'action') {
         _nrStatePatch(ruleId, [delAct: id])
-        _nrHandle(ruleId).selectActions([:])
+        _nrPage(ruleId, _nrRulePages(ruleId).actions)
     } else {
         _nrStatePatch(ruleId, [deleteCon: id.toInteger()])
         if (part == 'trigger') _nrHandle(ruleId).selectTriggers()
@@ -487,7 +487,7 @@ Map _nmOrderActions(Long ruleId, List ids) {
     }
     List ordered = requested.collect { id -> before.actionList.find { it.toString() == id } }
     _nrStatePatch(ruleId, [actionList: ordered])
-    _nrHandle(ruleId).selectActions([:])
+    _nrPage(ruleId, _nrRulePages(ruleId).actions)
     _nrHandle(ruleId).markIfs()
     Map after = _nrState(ruleId)
     boolean verified = after.actionList instanceof List && after.actionList.collect { it.toString() } == requested

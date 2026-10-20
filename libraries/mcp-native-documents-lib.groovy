@@ -69,12 +69,7 @@ private List _ndPageIssues(Object node) {
 }
 
 private Map _ndRender(Long id, String page) {
-    def rendered
-    switch (page) {
-        case 'selectTriggers': rendered = _nrHandle(id).selectTriggers(); break
-        case 'selectActions': rendered = _nrHandle(id).selectActions([:]); break
-        case 'mainPage': rendered = _nrHandle(id).mainPage(); break
-    }
+    def rendered = _nrPage(id, page).result
     if (!(rendered instanceof Map) || rendered.name != page || !(rendered.sections instanceof List) || rendered.sections.isEmpty()) throw new IllegalStateException('Native editor page is unavailable or unexpected')
     def issues = _ndPageIssues(rendered)
     if (issues) throw new IllegalStateException(issues.join('; '))
@@ -231,6 +226,12 @@ private Map _ndApply(Long id, List changes, boolean created) {
         if (!(beforeHealth instanceof Map) || !(beforeHealth.broken instanceof Boolean)) throw new IllegalStateException('Native rule health is unavailable before changes')
         boolean wasStopped = beforeHealth.stopped == true
         boolean wasPaused = beforeHealth.paused == true
+        Map pages = _nrRulePages(id)
+        Map beforeState = _nrState(id)
+        if (pages.actions == 'selectActionsX' && beforeState.actNdx == null && !beforeState.actions && !beforeState.actionList) {
+            started = true
+            _ndRender(id, pages.actions)
+        }
         for (change in changes) {
             def value = change.value
             started = true
@@ -249,9 +250,7 @@ private Map _ndApply(Long id, List changes, boolean created) {
             outcomes << [part: change.part, result: outcome]
             if (outcome?.success != true) return [success: false, partial: created || outcomes.size() > 1 || outcome?.partial == true, rule_id: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size())]
         }
-        _ndRender(id, 'selectTriggers')
-        _ndRender(id, 'selectActions')
-        _ndRender(id, 'mainPage')
+        ['selectTriggers', pages.actions, pages.primary].unique().each { page -> _ndRender(id, page) }
         def health = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
         Map renderedState = _nrState(id) + (health instanceof Map ? health : [:])
         def structuralIssues = _ndStructuralIssues(renderedState, _nrHandle(id).getSetting('useST') == true)

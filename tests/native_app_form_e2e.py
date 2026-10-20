@@ -17,7 +17,7 @@ import native_rule_runtime_e2e as runtime
 class NativeAppFormE2E(unittest.TestCase):
     setUpClass = classmethod(runtime.NativeRuleRuntimeE2E.setUpClass.__func__)
     fixture_metadata = classmethod(runtime.NativeRuleRuntimeE2E.fixture_metadata.__func__)
-    setUp = documents.NativeRuleDocumentE2E.setUp
+    setUp = runtime.NativeRuleRuntimeE2E.setUp
     report_timing = documents.NativeRuleDocumentE2E.report_timing
     status = documents.NativeRuleDocumentE2E.status
     settings = documents.NativeRuleDocumentE2E.settings
@@ -28,12 +28,16 @@ class NativeAppFormE2E(unittest.TestCase):
     update = documents.NativeRuleDocumentE2E.update
     config_snapshot = documents.NativeRuleDocumentE2E.config_snapshot
     wait_for = runtime.NativeRuleRuntimeE2E.wait_for
+    attribute = runtime.NativeRuleRuntimeE2E.attribute
+    command = runtime.NativeRuleRuntimeE2E.command
+    remember_fixture = runtime.NativeRuleRuntimeE2E.remember_fixture
+    restore_fixtures = runtime.NativeRuleRuntimeE2E.restore_fixtures
 
     @classmethod
     def tearDownClass(cls):
         print(f"\nTOTAL {time.monotonic() - cls.started:.2f}s "
               f"calls={dict(cls.client.calls)}", flush=True)
-        print("COVERAGE GAPS: other native app families, child creation, "
+        print("COVERAGE GAPS: other native app families, deeper child configuration, "
               "and remaining native editor controls", flush=True)
 
     def form(self, rule_id, steps, **options):
@@ -147,6 +151,85 @@ class NativeAppFormE2E(unittest.TestCase):
         self.assertEqual(str(document["rule_id"]), rule_id)
         for name, row in pickers.items():
             self.assertEqual(self.settings(rule_id)[name], row)
+
+    def test_button_child_creation_edit_and_actual_button_delivery(self):
+        button_id = str(self.fixtures.get("button", ""))
+        self.assertTrue(button_id.isdigit(), "Supply the labeled virtual button fixture")
+        self.assertNotIn(button_id, [str(self.fixtures[key])
+                                    for key in ("switch", "switch2", "temperature")])
+        self.fixture_metadata("button")
+        parents = json.loads(os.environ.get("NATIVE_APP_FORM_PARENT_IDS", "{}"))
+        parent_id = parents["button_controller"]
+        parent = self.open_form(parent_id)
+        create = self.control(parent, kind="create_child")
+        created = self.submit(parent_id, parent["page"]["name"], control=create)
+        controller_id = str(created.get("created_app_id", ""))
+        if controller_id.isdigit():
+            self.addCleanup(self.remove_native_child, controller_id, parent_id, create["value"])
+        self.assertIs(created.get("success"), True, created)
+        self.assertTrue(controller_id.isdigit(), created)
+
+        form = self.open_form(controller_id)
+        form = self.submit(controller_id, form["page"]["name"], {"buttonDev": [button_id]})
+        self.assertIs(form.get("success"), True, form)
+        add_button = self.control(form, title="Add Button")
+        form = self.submit(controller_id, form["page"]["name"], control=add_button)
+        self.assertIs(form.get("success"), True, form)
+        form = self.submit(controller_id, form["page"]["name"], {"newBut": ["1"]})
+        self.assertIs(form.get("success"), True, form)
+        # The native page's changeSubmit script reloads after committing the selection.
+        form = self.open_form(controller_id)
+        create_rule = self.control(form, name="1 pushed")
+        handoff = self.submit(controller_id, form["page"]["name"], control=create_rule)
+        rule_id = str(handoff.get("navigated_app_id", ""))
+        if rule_id.isdigit():
+            self.addCleanup(self.remove_native_child, rule_id, controller_id, "Button Rule-5.1")
+        self.assertIs(handoff.get("success"), True, handoff)
+        self.assertTrue(rule_id.isdigit(), handoff)
+        self.assertIs(handoff.get("closed"), True)
+        self.assertEqual(handoff.get("navigated_page"), "selectActions")
+        initial = self.settings(rule_id)
+        binding = {key: initial[key] for key in ("tDev1", "tCapab1", "tstate1", "ButtontDev1")}
+        self.assertEqual(set(binding["tDev1"]["deviceList"]), {button_id})
+        self.assertEqual(binding["tstate1"]["value"], "pushed")
+        self.assertEqual(str(binding["ButtontDev1"]["value"]), "1")
+
+        action = documents.change("action", type="switchActs", subtype="getOnOffSwitch", fields=[
+            documents.field("onOffSwitch.#", "capability.switch", [str(self.fixtures["switch"])]),
+            documents.field("onOff.#", "bool", True),
+        ])
+        self.update(rule_id, [action])
+        self.assertEqual({key: self.settings(rule_id)[key] for key in binding}, binding)
+        document = self.document(rule_id)
+        self.assertFalse(document["nativeHealth"]["broken"])
+        self.assertEqual(len(document["actions"]), 1)
+        action_id = document["actions"][0]["id"]
+        subscriptions = self.status(rule_id)["eventSubscriptions"]
+        self.assertTrue(any(str(item.get("typeId")) == button_id
+                            and item.get("name", "").startswith("pushed")
+                            for item in subscriptions), subscriptions)
+        self.command("switch", "off")
+        self.command("button", "push", [1], remember=False)
+        self.wait_for(lambda: self.attribute("switch", "switch") == "on")
+
+        # Retarget the existing native row; preserve the parent event binding and rule ID.
+        action["value"]["id"] = action_id
+        action["value"]["fields"][0]["value"] = [str(self.fixtures["switch2"])]
+        self.update(rule_id, [action])
+        self.assertEqual({key: self.settings(rule_id)[key] for key in binding}, binding)
+        self.assertEqual(self.document(rule_id)["actions"][0]["id"], action_id)
+        self.command("switch", "off")
+        self.command("switch2", "off")
+        self.command("button", "push", [1], remember=False)
+        self.wait_for(lambda: self.attribute("switch2", "switch") == "on")
+        self.assertEqual(self.attribute("switch", "switch"), "off")
+        controller = self.open_form(controller_id)
+        link = self.control(controller, kind="local_app", value=rule_id)
+        handoff = self.submit(controller_id, controller["page"]["name"], control=link)
+        self.assertIs(handoff.get("success"), True, handoff)
+        self.assertEqual(str(handoff["navigated_app_id"]), rule_id)
+        opened = self.open_form(rule_id, handoff["navigated_page"])
+        self.assertEqual(opened["page"]["name"], "selectActions")
 
     def test_native_choices_and_required_inputs_refuse_without_setting_changes(self):
         rule_id = self.create_multidevice_rule()

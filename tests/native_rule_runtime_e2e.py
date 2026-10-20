@@ -123,11 +123,13 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
             self.original_values[key] = self.attribute(key, attribute)
 
     def command(self, key, method, values=(), remember=True):
-        if key not in ("switch", "switch2", "temperature"):
+        if key not in ("switch", "switch2", "temperature", "button"):
             raise AssertionError("Command target is not a declared runtime fixture")
-        allowed = ("setTemperature",) if key == "temperature" else ("on", "off")
+        allowed = {"temperature": ("setTemperature",), "button": ("push",)}.get(key, ("on", "off"))
         if method not in allowed:
             raise AssertionError("Command is outside the runtime fixture allowlist")
+        if key == "button" and remember:
+            raise AssertionError("Momentary button events cannot be restored")
         metadata = self.fixture_metadata(key)
         commands = metadata.get("commands", metadata["device"].get("commands"))
         self.assertIsInstance(commands, list, "Native device command schema is missing")
