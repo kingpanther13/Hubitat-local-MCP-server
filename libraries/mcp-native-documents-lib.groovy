@@ -115,8 +115,8 @@ private List _ndChanges(Object changes) {
         if (!keys.containsKey(change.part) || value.keySet().any { !(it in keys.get(change.part)) }) throw new IllegalArgumentException('Unknown change part or field')
         if (value.containsKey('id') && (value.id == null || !value.id.toString().isInteger() || value.id.toString().toInteger() < (change.part == 'expression' ? 0 : 1))) throw new IllegalArgumentException('Invalid native row ID')
         if (change.part in ['condition', 'trigger', 'action']) {
-            if (!(value.fields instanceof List)) throw new IllegalArgumentException('Native typed fields are required')
-            value.fields.each { row ->
+            if (!(value.get('fields') instanceof List)) throw new IllegalArgumentException('Native typed fields are required')
+            value.get('fields').each { row ->
                 if (!(row instanceof Map) || row.keySet().any { !(it in ['name', 'type', 'value']) } || !(row.name instanceof String) || !row.name.contains('#') || !(row.type instanceof String) || !row.containsKey('value') || row.value == null) throw new IllegalArgumentException('Invalid native typed field')
                 boolean device = row.type == 'capability' || row.type.startsWith('capability.')
                 if (!(row.type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time']) && !device) throw new IllegalArgumentException('Unsupported typed field')
