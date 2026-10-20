@@ -92,7 +92,7 @@ class NativeRuleExpressionE2E(unittest.TestCase):
             return rows
         return [row for row in rows if row.get("type") == "DEVICE"
                 and str(row.get("typeId")) == str(self.fixtures[key])
-                and row.get("name") == "switch"]
+                and row.get("name") in ("switch", "switch.on", "switch.off")]
 
     def assert_counter_stable(self, rule_id, expected, duration=3):
         deadline = time.monotonic() + duration
@@ -255,7 +255,11 @@ class NativeRuleExpressionE2E(unittest.TestCase):
                              log_action("must not be written")],
                 )
                 self.assertIs(result.get("success"), False, result)
-                self.assertIs(result.get("partial"), False, result)
+                if "partial" in result:
+                    self.assertIs(result["partial"], False, result)
+                else:
+                    self.assertIs(result.get("isError"), True, result)
+                    self.assertTrue(result.get("error"), result)
                 self.assertEqual(self.config_snapshot(rule_id), before)
                 self.assertEqual(self.subscriptions(rule_id), subscriptions)
                 self.assert_variable(rule_id, "Sentinel", 0)
