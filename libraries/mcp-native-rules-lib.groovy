@@ -9406,7 +9406,7 @@ private boolean _rmSkipUnconfirmed(List skipped, String key) {
 }
 
 // Cancels the local-variable editor a failed add can leave open on selectActions; true when it is closed.
-// RM handles cancelGV only while the editor is open (it then deletes the variable named in hbVar), so a
+// A cancelGV sent while the editor is closed is held and closes the next add's editor (seen live), so a
 // closed editor is not clicked.
 private boolean _rmCancelLocalVarEditor(Integer appId) {
     if (_rmLocalVarEditorOpen(appId) == false) return true
