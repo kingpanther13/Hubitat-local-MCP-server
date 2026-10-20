@@ -26307,7 +26307,9 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     def renderShifted = (beforeRenderHash != afterRenderHash)
     def settingsValue = afterCfg?.settings?."${key}"
     def settingsValueNorm
-    if (settingsValue instanceof List) {
+    if (settingsValue instanceof Map) {
+        settingsValueNorm = ((settingsValue as Map).keySet().collect { it?.toString() } as List).sort().join(",")
+    } else if (settingsValue instanceof List) {
         settingsValueNorm = ((settingsValue as List).collect { it?.toString() }.findAll { it != null } as List).sort().join(",")
     } else if (settingsValue != null) {
         def settingsValueStr = settingsValue.toString()
