@@ -26103,7 +26103,8 @@ Map toolSetRule(Map request) {
     toolCallAppForm(arguments + [app_id: request.rule_id, confirm: true])
 }
 def _getAllToolDefinitions_partNativeDocuments() {
-    [[name: 'hub_set_rule', description: 'Read, create or update native Rule Machine rules, or use their native forms. Omit operation for help; select a write operation without confirm for its schema. Writes require confirm=true and a recent backup; partial changes can remain. Guide: set_rule_reference.',
+    return [[
+      name: 'hub_set_rule', description: 'Read, create or update native Rule Machine rules, or use their native forms. Omit operation for help; select a write operation without confirm for its schema. Writes require confirm=true and a recent backup; partial changes can remain. Guide: set_rule_reference.',
       inputSchema: [type: 'object', additionalProperties: false, properties: [operation: [type: 'string', enum: ['read', 'create', 'update', 'form']], rule_id: [type: 'integer', minimum: 1], args: [type: 'object'], confirm: [type: 'boolean']]]]]
 }
 def _readOnlyToolNames_partNativeDocuments() { [] }
