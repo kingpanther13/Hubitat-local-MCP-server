@@ -352,6 +352,153 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.actNdx == 1
     }
 
+    def 'wait expression supplies timing before expression Done automatically commits and advances'() {
+        given:
+        nativeState.ruleNdx = 5
+        boolean expressionDone = false
+        int completionRenders = 0
+        nativeRule.doActPage = { ->
+            if (expressionDone && ++completionRenders == 2) {
+                nativeState.actions = ['1': [method: 'getWaitRule', rule: 5, delay: "0:00:0${seconds}".toString()]]
+                nativeState.actionList = ['1']
+                nativeState.actNdx = 2
+            }
+            nativeForm([
+                [name: 'actType.1', type: 'enum', options: ['delayActs'], submitOnChange: true],
+                [name: 'actSubType.1', type: 'enum', options: ['getWaitRule'], submitOnChange: true]
+            ] + (nativeState.eval.'5' && !expressionDone ? [
+                [name: 'durChoice.1', type: 'bool', submitOnChange: true],
+                [name: 'delayAct.1', type: 'enum', options: ['none', 'hrs:min:sec'], submitOnChange: true],
+                [name: 'delaySec.1', type: 'decimal']
+            ] : []))
+        }
+        nativeRule.appButtonHandler = { String name ->
+            if (name == 'hasRule') {
+                assert nativeState.eval.'5' == ['1']
+                assert settings.'delaySec.1'.value == seconds
+                expressionDone = true
+                nativeState.actionDone = true
+            }
+            assert name != 'actionDone'
+        }
+        when:
+        def result = script._nmUpsertAction(42L, [type: 'delayActs', subtype: 'getWaitRule', expression: ['1'], fields: [
+            [name: 'durChoice.#', type: 'bool', value: duration],
+            [name: 'delayAct.#', type: 'enum', value: 'hrs:min:sec'],
+            [name: 'delaySec.#', type: 'decimal', value: seconds]
+        ]])
+        then:
+        result.success
+        result.expressionVerified
+        nativeState.actions.'1'.rule == 5
+        settings.'durChoice.1'.value == duration
+        completionRenders == 2
+        nativeState.actionDone == true
+        where:
+        duration | seconds
+        false    | 4
+        true     | 2
+    }
+
+    def 'wait expression edit retains its expression identity and native expression edit token'() {
+        given:
+        nativeState.ruleNdx = 99
+        nativeState.actions = ['1': [method: 'getWaitRule', rule: 5]]
+        nativeState.actionList = ['1']
+        nativeState.eval.'5' = ['1']
+        nativeRule.doActPage = { ->
+            assert nativeState.doActN == '1.0.true'
+            nativeForm([[name: 'actType.1', type: 'enum', options: ['delayActs']],
+                        [name: 'actSubType.1', type: 'enum', options: ['getWaitRule']]])
+        }
+        nativeRule.appButtonHandler = { String name -> }
+        when:
+        def result = script._nmUpsertAction(42L, [id: '1', type: 'delayActs', subtype: 'getWaitRule', expression: ['2'], fields: []])
+        then:
+        result.success
+        nativeState.eval.'5' == ['2']
+        !nativeState.eval.containsKey('99')
+        nativeState.actionList == ['1']
+    }
+
+    def 'wait completion rendering is bounded and a missing compiled row cannot pass'() {
+        given:
+        nativeState.ruleNdx = 5
+        nativeState.actions = [:]
+        nativeState.actionList = []
+        int completionRenders = 0
+        nativeRule.doActPage = { ->
+            if (nativeState.actionDone) completionRenders++
+            nativeForm([[name: 'actType.1', type: 'enum', options: ['delayActs']],
+                        [name: 'actSubType.1', type: 'enum', options: ['getWaitRule']]])
+        }
+        nativeRule.appButtonHandler = { String name ->
+            assert name == 'hasRule'
+            nativeState.actionDone = true
+        }
+        when:
+        def result = script._nmUpsertAction(42L, [type: 'delayActs', subtype: 'getWaitRule', expression: ['2'], fields: []])
+        then:
+        !result.success
+        result.partial
+        completionRenders == 2
+        nativeState.actionList == []
+    }
+
+    def 'simple conditional action uses native condition selection and verifies compiled binding'() {
+        given:
+        if (editing) {
+            nativeState.actions = ['1': [method: 'getLogMsg', cond: '1']]
+            nativeState.actionList = ['1']
+        }
+        List buttons = []
+        nativeRule.doActPage = { ->
+            if (editing) nativeState.hasCondition = true
+            List inputs = [
+                [name: 'actType.1', type: 'enum', options: ['condActs', 'messageActs'], submitOnChange: true],
+                [name: 'actSubType.1', type: 'enum', options: ['getCondAct', 'getLogMsg'], submitOnChange: true]
+            ]
+            if (settings.'actSubType.1'?.value == 'getCondAct') {
+                inputs << [name: 'useCond.1', type: 'bool', submitOnChange: true]
+                if (settings.'useCond.1'?.value == true) inputs << [name: 'useCondNdx.1', type: 'enum', options: ['1', '2'], submitOnChange: true]
+            } else if (nativeState.hasCondition) inputs << [name: 'logmsg.1', type: 'text']
+            nativeForm(inputs)
+        }
+        nativeRule.appButtonHandler = { String name ->
+            buttons << name
+            if (name == 'hasAll') nativeState.hasCondition = true
+            if (name == 'actionDone') {
+                nativeState.actions = ['1': [method: 'getLogMsg', cond: persist ? (editing ? nativeState.doActN.tokenize('.')[1] : settings.'useCondNdx.1'.value) : '1']]
+                nativeState.actionList = ['1']
+            }
+        }
+        when:
+        def row = [type: 'messageActs', subtype: 'getLogMsg', condition: '2', fields: [[name: 'logmsg.#', type: 'text', value: 'conditional']]]
+        if (editing) row.id = '1'
+        def result = script._nmUpsertAction(42L, row)
+        then:
+        result.success == persist
+        result.conditionVerified == persist
+        buttons == (editing ? ['actionDone'] : ['hasAll', 'actionDone'])
+        nativeState.actionList == ['1']
+        editing || settings.'useCondNdx.1'.value == '2'
+        !editing || nativeState.doActN == '1.2.false'
+        nativeState.keep == [unknown: true]
+        where:
+        editing | persist
+        false   | true
+        true    | true
+        true    | false
+    }
+
+    def 'unknown simple action condition refuses before native editor or settings mutation'() {
+        when:
+        script._nmUpsertAction(42L, [type: 'messageActs', subtype: 'getLogMsg', condition: '999', fields: []])
+        then:
+        thrown(IllegalArgumentException)
+        writes.empty
+    }
+
     private void configureWaitNative(boolean derive) {
         nativeRule.doActPage = { ->
             if (!(nativeState.waitNdx instanceof Map)) nativeState.waitNdx = ['.1': [7]]

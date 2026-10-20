@@ -107,7 +107,7 @@ private List _ndChanges(Object changes) {
         if (!(change instanceof Map) || change.keySet().any { !(it in ['part', 'value']) } || !(change.value instanceof Map)) throw new IllegalArgumentException('Each change requires part and value')
         def value = change.value
         def keys = [condition: ['id', 'capability', 'fields'], trigger: ['id', 'capability', 'fields'],
-                    action: ['id', 'type', 'subtype', 'fields', 'expression', 'events'], expression: ['id', 'tokens'],
+                    action: ['id', 'type', 'subtype', 'fields', 'expression', 'events', 'condition'], expression: ['id', 'tokens'],
                     variable: ['operation', 'name', 'type', 'value'], required: ['tokens'], delete: ['part', 'id'], order: ['ids'], terminator: ['subtype']]
         if (!keys.containsKey(change.part) || value.keySet().any { !(it in keys.get(change.part)) }) throw new IllegalArgumentException('Unknown change part or field')
         if (value.containsKey('id') && (value.id == null || !value.id.toString().isInteger() || value.id.toString().toInteger() < (change.part == 'expression' ? 0 : 1))) throw new IllegalArgumentException('Invalid native row ID')
@@ -128,8 +128,13 @@ private List _ndChanges(Object changes) {
             if (!(value.capability instanceof String) || !value.capability.trim()) throw new IllegalArgumentException('Native capability is required')
         }
         if (change.part == 'action') {
-            if (!(value.type instanceof String) || !value.type.trim() || !(value.subtype instanceof String) || !value.subtype.trim() || (value.subtype.toLowerCase().contains('wait') && value.subtype != 'getWaitEvents')) throw new IllegalArgumentException('A supported native action type and subtype are required')
-            if (value.containsKey('expression') && (!(value.expression instanceof List) || !value.expression || !(value.subtype in ['getIfThen', 'getElseIf']))) throw new IllegalArgumentException('Invalid action expression')
+            if (!(value.type instanceof String) || !value.type.trim() || !(value.subtype instanceof String) || !value.subtype.trim() || (value.subtype.toLowerCase().contains('wait') && !(value.subtype in ['getWaitEvents', 'getWaitRule']))) throw new IllegalArgumentException('A supported native action type and subtype are required')
+            if (value.containsKey('expression') && (!(value.expression instanceof List) || !value.expression || !(value.subtype in ['getIfThen', 'getElseIf', 'getWaitRule']))) throw new IllegalArgumentException('Invalid action expression')
+            if (!value.containsKey('id') && value.subtype in ['getIfThen', 'getElseIf', 'getWaitRule'] && !value.containsKey('expression')) throw new IllegalArgumentException('New expression actions require expression tokens')
+            if (value.containsKey('condition')) {
+                _nmId(value.condition)
+                if (value.containsKey('expression') || value.type in ['condActs', 'repeatActs', 'delayActs']) throw new IllegalArgumentException('A simple condition requires an ordinary native action')
+            }
         }
         if (change.part == 'action' && value.subtype == 'getWaitEvents') {
             if (!(value.events instanceof List) || !value.events || value.events.size() > 16) throw new IllegalArgumentException('Wait events require between 1 and 16 events')
@@ -197,6 +202,11 @@ private void _ndPreflight(Long id, List changes) {
             actionOrder = actionOrder.findAll { it != value.id.toString() }
         }
         if (change.part == 'condition' && !value.containsKey('id')) allocatedConditions = true
+        if (change.part == 'action' && value.containsKey('condition')) {
+            List tokens = [value.condition.toString()]
+            if (!allocatedConditions) _nmTokens(tokens, conditions)
+            pendingExpressions << tokens
+        }
         if (change.part in ['expression', 'required'] || (change.part == 'action' && value.expression instanceof List)) {
             List tokens = change.part == 'action' ? value.expression : value.tokens
             if (!allocatedConditions) _nmTokens(tokens, conditions)
@@ -366,9 +376,10 @@ Writes require confirm=true and a recent hub backup. hub_update_rule_document(ru
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.
-- action: {id?,type,subtype,fields:[{name,type,value}],expression?,events?}.
+- action: {id?,type,subtype,fields:[{name,type,value}],expression?,events?,condition?}. condition is an existing native condition ID for a Simple Conditional Action.
 - expression: {id,tokens}; required: {tokens}.
 - getWaitEvents actions accept events:[{capability,fields}] (1 through 16 native event rows); an edit preserves the event count. Duration fields remain native typed fields.
+- getWaitRule actions accept expression tokens, with optional native timeout/duration fields. New IF, ELSE-IF and Wait for Expression actions require expression tokens.
 - variable: {operation:create|set|delete,name,type?,value?}. Create types: integer,bigdecimal,boolean,string,datetime.
 - terminator: {subtype:endIf|else|endRep}.
 - delete: {part:action|condition|trigger,id}; referenced conditions must be detached first.

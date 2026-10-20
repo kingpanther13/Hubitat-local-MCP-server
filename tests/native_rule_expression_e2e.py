@@ -48,8 +48,8 @@ class NativeRuleExpressionE2E(unittest.TestCase):
     def tearDownClass(cls):
         print(f"\nTOTAL {time.monotonic() - cls.started:.2f}s "
               f"calls={dict(cls.client.calls)}", flush=True)
-        print("COVERAGE GAPS: scheduling, wait delivery, other event capabilities, "
-              "generic native apps, and backup/restore", flush=True)
+        print("COVERAGE GAPS: scheduled execution, changing wait event count, "
+              "remaining event capabilities, and backup/restore", flush=True)
 
     def condition(self, key, state="on", **extra):
         return change("condition", capability="Switch", fields=[
@@ -101,6 +101,63 @@ class NativeRuleExpressionE2E(unittest.TestCase):
             if time.monotonic() >= deadline:
                 return
             time.sleep(0.25)
+
+    def test_wait_event_resumes_then_retargets_in_place_with_stays_duration(self):
+        self.set_switch("switch", "off")
+        self.set_switch("switch2", "off")
+        wait = change("action", type="delayActs", subtype="getWaitEvents", fields=[], events=[
+            {"capability": "Switch", "fields": [
+                field("tDev#", "capability.switch", [str(self.fixtures["switch"])]),
+                field("tstate#", "enum", "on"),
+            ]},
+        ])
+        rule_id = self.create_rule([
+            change("variable", operation="create", name="Events", type="integer", value=0),
+            self.add_counter(), wait, self.add_counter(10),
+        ])
+        document = self.document(rule_id)
+        wait_id = next(row["id"] for row in document["actions"]
+                       if row["value"].get("method") == "getWaitEvents")
+        allocated = self.state(rule_id)["waitNdx"]["." + wait_id]
+        self.assertEqual(len(allocated), 1)
+        self.run_actions(rule_id)
+        self.assert_variable(rule_id, "Events", 1)
+        self.wait_for(lambda: bool(self.subscriptions(rule_id, "switch")))
+        self.set_switch("switch2", "on")
+        self.assert_counter_stable(rule_id, 1, duration=0.5)
+        self.set_switch("switch", "on")
+        self.assert_variable(rule_id, "Events", 11)
+
+        self.set_switch("switch", "off")
+        self.set_switch("switch2", "off")
+        wait["value"]["id"] = wait_id
+        wait["value"]["events"][0]["fields"] = [
+            field("tDev#", "capability.switch", [str(self.fixtures["switch2"])]),
+            field("tstate#", "enum", "on"), field("stays#", "bool", True),
+            field("SHours#", "number", 0), field("SMins#", "number", 0),
+            field("SSecs#", "number", 1),
+        ]
+        self.update(rule_id, [
+            change("variable", operation="set", name="Events", value=0), wait,
+        ])
+        state = self.state(rule_id)
+        self.assertEqual(state["waitNdx"]["." + wait_id], allocated)
+        suffix = "-" + str(allocated[0])
+        self.assertEqual([int(state[name + suffix]) for name in ("SHours", "SMins", "SSecs")],
+                         [0, 0, 1])
+        self.assertEqual([int(part) for part in state["hhmmss" + suffix].split(":")],
+                         [0, 0, 1])
+        self.assertEqual(set(self.settings(rule_id)["tDev" + suffix]["deviceList"]),
+                         {str(self.fixtures["switch2"])})
+        self.run_actions(rule_id)
+        self.assert_variable(rule_id, "Events", 1)
+        self.wait_for(lambda: bool(self.subscriptions(rule_id, "switch2")))
+        self.set_switch("switch", "on")
+        self.assert_counter_stable(rule_id, 1, duration=0.5)
+        self.set_switch("switch2", "on")
+        self.assert_counter_stable(rule_id, 1, duration=0.25)
+        self.assert_variable(rule_id, "Events", 11)
+        self.healthy(self.document(rule_id))
 
     def test_grouped_and_or_not_expression_runs_its_full_truth_table(self):
         rule_id = self.create_rule([

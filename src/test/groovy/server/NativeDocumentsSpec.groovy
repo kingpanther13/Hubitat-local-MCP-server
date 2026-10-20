@@ -285,6 +285,56 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
+    def 'unknown simple action condition refuses the complete batch before rendering'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [
+            [part: 'variable', value: [operation: 'set', name: 'counter', value: 7]],
+            [part: 'action', value: [type: 'switchActs', subtype: 'getOnOffSwitch', condition: '999999', fields: []]]
+        ], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.error.contains('unknown condition')
+        events.empty
+    }
+
+    def 'new simple conditional action prevents deleting its condition later in the same batch'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [
+            [part: 'action', value: [type: 'switchActs', subtype: 'getOnOffSwitch', condition: '4', fields: []]],
+            [part: 'delete', value: [part: 'condition', id: '4']]
+        ], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.error.contains('Referenced')
+        events.empty
+    }
+
+    def 'wait expression and simple condition changes retain their native semantic fields'() {
+        given:
+        List received = []
+        script.metaClass._nmUpsertAction = { Long id, Map value -> received << value; [success: true] }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [
+            [part: 'action', value: [type: 'delayActs', subtype: 'getWaitRule', expression: ['4'], fields: []]],
+            [part: 'action', value: [type: 'switchActs', subtype: 'getOnOffSwitch', condition: '4', fields: []]]
+        ], confirm: true])
+        then:
+        result.success
+        received*.subtype == ['getWaitRule', 'getOnOffSwitch']
+        received[0].expression == ['4']
+        received[1].condition == '4'
+    }
+
+    def 'new wait expression without tokens refuses before any mutation'() {
+        when:
+        script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [type: 'delayActs', subtype: 'getWaitRule', fields: []]]], confirm: true])
+        then:
+        thrown(IllegalArgumentException)
+        events.empty
+    }
+
     def 'referenced condition deletion is refused before any change or render'() {
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'delete', value: [part: 'condition', id: '4']]], confirm: true])

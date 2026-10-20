@@ -422,6 +422,10 @@ class NativeRuleDocumentE2E(unittest.TestCase):
         native = self.state(rule_id)
         self.assertIn(str(wait["id"]), native["actions"])
         self.assertEqual(native["actions"][str(wait["id"])]["method"], "getWaitEvents")
+        self.assertEqual([int(native[name + event_id]) for name in ("SHours", "SMins", "SSecs")],
+                         [0, 0, 5])
+        self.assertEqual([int(part) for part in native["hhmmss" + event_id].split(":")],
+                         [0, 0, 5])
         event_ids = {
             str(-int(event_id)),
             str(-int(modes[0]["name"].removeprefix("modesX"))),

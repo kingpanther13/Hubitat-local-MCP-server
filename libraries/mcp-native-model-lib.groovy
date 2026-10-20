@@ -254,9 +254,10 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
 }
 
 Map _nmUpsertAction(Long ruleId, Map row) {
-    if (row == null || row.keySet().any { !(it in ['id', 'type', 'subtype', 'fields', 'expression', 'events']) } || !(row.type instanceof String) || !row.type.trim() || !(row.subtype instanceof String) || !row.subtype.trim()) throw new IllegalArgumentException('Action type, subtype and typed fields are required')
+    if (row == null || row.keySet().any { !(it in ['id', 'type', 'subtype', 'fields', 'expression', 'events', 'condition']) } || !(row.type instanceof String) || !row.type.trim() || !(row.subtype instanceof String) || !row.subtype.trim()) throw new IllegalArgumentException('Action type, subtype and typed fields are required')
     boolean waitEvents = row.subtype == 'getWaitEvents'
-    if (row.subtype.toString().toLowerCase().contains('wait') && !waitEvents) throw new IllegalArgumentException('Wait expressions require a verified native sequence')
+    boolean waitRule = row.subtype == 'getWaitRule'
+    if (row.subtype.toString().toLowerCase().contains('wait') && !waitEvents && !waitRule) throw new IllegalArgumentException('Unsupported native wait action')
     if (waitEvents) {
         if (!(row.events instanceof List) || row.events.empty || row.events.size() > 16) throw new IllegalArgumentException('Wait actions require between one and sixteen events')
         row.events.each { event ->
@@ -272,23 +273,40 @@ Map _nmUpsertAction(Long ruleId, Map row) {
     def prior = _nmEntry(before.actions instanceof Map ? before.actions : [:], id)
     if (editing && !(prior instanceof Map)) throw new IllegalArgumentException('Native action does not exist')
     if (waitEvents && editing && (!(prior.wait instanceof List) || prior.wait.size() != row.events.size())) throw new IllegalArgumentException('Editing waits currently requires the existing event count')
-    if (!editing && row.subtype in ['getIfThen', 'getElseIf'] && !row.containsKey('expression')) throw new IllegalArgumentException('New conditional actions require expression tokens')
+    if (!editing && row.subtype in ['getIfThen', 'getElseIf', 'getWaitRule'] && !row.containsKey('expression')) throw new IllegalArgumentException('New expression actions require expression tokens')
     String expectedExpressionId = null
     if (row.containsKey('expression')) {
-        if (!(row.subtype in ['getIfThen', 'getElseIf'])) throw new IllegalArgumentException('Expression actions currently support IF and ELSE-IF only')
+        if (!(row.subtype in ['getIfThen', 'getElseIf', 'getWaitRule'])) throw new IllegalArgumentException('Unsupported native expression action')
         _nmTokens(row.expression as List, before.capabsfalse instanceof Map ? before.capabsfalse : [:])
+    }
+    String conditionId = row.containsKey('condition') ? _nmId(row.condition) : (editing && prior.cond ? prior.cond.toString() : null)
+    if (row.containsKey('condition')) {
+        _nmTokens([conditionId], before.capabsfalse instanceof Map ? before.capabsfalse : [:])
+        if (row.containsKey('expression') || row.type in ['condActs', 'repeatActs', 'delayActs']) throw new IllegalArgumentException('A simple condition requires an ordinary native action')
     }
     List fields = _nmFields(row.get('fields') as List, id)
     if (fields.any { it.name in ["actType.${id}".toString(), "actSubType.${id}".toString()] }) throw new IllegalArgumentException('Action selectors must not be repeated')
     List settings = [[name: "actType.${id}".toString(), type: 'enum', value: row.type], [name: "actSubType.${id}".toString(), type: 'enum', value: row.subtype]] + fields
     String editToken = 'N'
     if (editing) {
-        boolean expressionAction = prior.method in ['getIfThen', 'getElseIfThen', 'getWhile', 'getUntil']
-        editToken = "${id}.${prior.cond ?: 0}.${expressionAction}".toString()
+        boolean expressionAction = prior.method in ['getIfThen', 'getElseIfThen', 'getWhile', 'getUntil', 'getWaitRule']
+        editToken = "${id}.${conditionId ?: 0}.${expressionAction}".toString()
     }
     _nrStatePatch(ruleId, [doActN: editToken])
     Closure render = { unused -> _nrHandle(ruleId).doActPage() }
-    Map inputValidation = _nmWriteExposed(ruleId, settings, settings.take(2).collect { it.name }, render.call(), render)
+    if (row.containsKey('condition') && !editing) {
+        List conditional = [
+            [name: "actType.${id}".toString(), type: 'enum', value: 'condActs'],
+            [name: "actSubType.${id}".toString(), type: 'enum', value: 'getCondAct'],
+            [name: "useCond.${id}".toString(), type: 'bool', value: true],
+            [name: "useCondNdx.${id}".toString(), type: 'enum', value: conditionId]
+        ]
+        Map selected = _nmWriteExposed(ruleId, conditional, conditional.take(2).collect { it.name }, render.call(), render)
+        if (selected.success != true) return [success: false, partial: true, id: id, error: selected.error, fieldErrors: selected.fieldErrors]
+        _nrHandle(ruleId).appButtonHandler('hasAll')
+        render.call()
+    }
+    Map inputValidation = _nmWriteExposed(ruleId, waitRule ? settings.take(2) : settings, settings.take(2).collect { it.name }, render.call(), render)
     if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
     List waitIds = null
     if (waitEvents) {
@@ -302,11 +320,23 @@ Map _nmUpsertAction(Long ruleId, Map row) {
         expectedExpressionId = expressionId
         Map expression = _nmSetExpression(ruleId, expressionId, row.expression as List)
         if (expression.success != true) return [success: false, id: id, partial: true, expression: expression]
+        if (waitRule && fields) {
+            Map durationInputs = _nmWriteExposed(ruleId, fields, [], render.call(), render)
+            if (durationInputs.success != true) return [success: false, id: id, partial: true, error: durationInputs.error, fieldErrors: durationInputs.fieldErrors]
+        }
         _nrHandle(ruleId).appButtonHandler('hasRule')
         _nrHandle(ruleId).doActPage()
+        if (waitRule) _nrHandle(ruleId).doActPage()
     }
-    _nrHandle(ruleId).appButtonHandler('actionDone')
-    _nrHandle(ruleId).doActPage()
+    if (waitRule && fields && !row.containsKey('expression')) {
+        Map durationInputs = _nmWriteExposed(ruleId, fields, [], render.call(), render)
+        if (durationInputs.success != true) return [success: false, id: id, partial: true, error: durationInputs.error, fieldErrors: durationInputs.fieldErrors]
+    }
+    // Wait for Expression commits when its expression Done is consumed.
+    if (!(waitRule && row.containsKey('expression'))) {
+        _nrHandle(ruleId).appButtonHandler('actionDone')
+        _nrHandle(ruleId).doActPage()
+    }
     if (waitEvents) _nrHandle(ruleId).selectTriggers()
     Map after = _nrState(ruleId)
     def action = _nmEntry(after.actions instanceof Map ? after.actions : [:], id)
@@ -316,9 +346,10 @@ Map _nmUpsertAction(Long ruleId, Map row) {
     boolean compiled = action instanceof Map && action.method == row.subtype
     boolean expressionVerified = expectedExpressionId == null || (action instanceof Map && action.rule?.toString() == expectedExpressionId && _nmEntry(after.eval instanceof Map ? after.eval : [:], expectedExpressionId) == row.expression)
     boolean waitsVerified = waitIds == null || (action instanceof Map && action.wait instanceof List && action.wait.collect { it.toString() } == waitIds)
+    boolean conditionVerified = conditionId == null || (action instanceof Map && action.cond?.toString() == conditionId)
     Map echoed = _nrSettings(ruleId, settings.collect { it.name })
     boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
-    [success: listed && ordered && compiled && persisted && expressionVerified && waitsVerified, id: id, action: action, partial: !(listed && ordered && compiled && persisted && expressionVerified && waitsVerified), settingsVerified: persisted, expressionVerified: expressionVerified, waitsVerified: waitsVerified, verificationNeeded: true]
+    [success: listed && ordered && compiled && persisted && expressionVerified && waitsVerified && conditionVerified, id: id, action: action, partial: !(listed && ordered && compiled && persisted && expressionVerified && waitsVerified && conditionVerified), settingsVerified: persisted, expressionVerified: expressionVerified, waitsVerified: waitsVerified, conditionVerified: conditionVerified, verificationNeeded: true]
 }
 
 private Map _nmCompileWait(Long ruleId, String actionId, List events, boolean editing) {

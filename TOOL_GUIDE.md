@@ -22,9 +22,10 @@ Writes require confirm=true and a recent hub backup. hub_update_rule_document(ru
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.
-- action: {id?,type,subtype,fields:[{name,type,value}],expression?,events?}.
+- action: {id?,type,subtype,fields:[{name,type,value}],expression?,events?,condition?}. condition is an existing native condition ID for a Simple Conditional Action.
 - expression: {id,tokens}; required: {tokens}.
 - getWaitEvents actions accept events:[{capability,fields}] (1 through 16 native event rows); an edit preserves the event count. Duration fields remain native typed fields.
+- getWaitRule actions accept expression tokens, with optional native timeout/duration fields. New IF, ELSE-IF and Wait for Expression actions require expression tokens.
 - variable: {operation:create|set|delete,name,type?,value?}. Create types: integer,bigdecimal,boolean,string,datetime.
 - terminator: {subtype:endIf|else|endRep}.
 - delete: {part:action|condition|trigger,id}; referenced conditions must be detached first.
