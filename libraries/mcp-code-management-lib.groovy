@@ -930,7 +930,7 @@ def toolListAppPages(args) {
     def linked = _rmPageHrefs(parsed.configPage as Map).findAll { !(it.page in knownNames) }.unique { it.page }
     linked.each { pages << [name: it.page, title: it.title, role: "sub-page"] }
     if (linked) {
-        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Drive them with hub_set_native_app walkStep (navigate, write, done); for Rule Machine rules use hub_set_rule's structured shortcuts."
+        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Drive native page controls with hub_call_app_form; use native document tools for supported Rule Machine structure changes."
     } else if (!curatedHpm) {
         note = "The primary page links no sub-pages."
     }
@@ -3391,7 +3391,7 @@ A transport drop can lose the response while the hub still commits this write; v
             name: "hub_get_app_config",
             description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page.[[FLAT_TRIM]] Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.).[[/FLAT_TRIM]] Read-only.
 
-Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable RM wizard buttons hub_set_rule can drive. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
+Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable native editor buttons; hub_call_app_form returns supported controls. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
 
 Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
             inputSchema: [

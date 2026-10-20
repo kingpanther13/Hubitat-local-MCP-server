@@ -306,7 +306,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         result.pages*.role == ['primary', 'sub-page', 'sub-page']
         // Link titles arrive as HTML; the listing carries plain text.
         result.pages[2].title == 'Select Actions to Run'
-        result.note.contains('hub_set_rule')
+        result.note.contains('hub_call_app_form')
     }
 
     @spock.lang.Unroll
@@ -328,7 +328,7 @@ class ToolListAppPagesSpec extends ToolSpecBase {
         inner.success == true
         inner.pages*.name == ['mainPage', 'selectTriggers', 'selectActions']
         inner.pages*.role == ['primary', 'sub-page', 'sub-page']
-        inner.note.contains('hub_set_rule')
+        inner.note.contains('hub_call_app_form')
 
         where:
         useGateways << [true, false]

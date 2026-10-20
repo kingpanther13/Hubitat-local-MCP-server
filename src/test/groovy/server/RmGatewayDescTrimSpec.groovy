@@ -23,7 +23,7 @@ class RmGatewayDescTrimSpec extends ToolSpecBase {
 
         and: 'keeps the selection-critical routing pointer to the RM rule-authoring gateway'
         desc.contains('hub_manage_rule_machine')
-        desc.contains('hub_set_rule')
+        desc.contains('hub_create_rule_document')
 
         and: 'still names what it does + the not-custom disambiguation + the snapshot/confirm + async-verify nugget'
         desc.toLowerCase().contains('classic')
@@ -44,7 +44,7 @@ class RmGatewayDescTrimSpec extends ToolSpecBase {
         then:
         desc.length() < 900
         desc.contains('hub_manage_native_rules_and_apps')
-        desc.contains('hub_set_rule')
+        desc.contains('hub_create_rule_document')
         desc.toLowerCase().contains('visual rules builder')
     }
 

@@ -872,19 +872,14 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         ex.message.contains("SAFETY CHECK FAILED")
     }
 
-    def "guide:true returns the set_rule capability reference inline and bypasses all gates"() {
-        when: "guide:true with NO confirm, NO appId, and Hub Admin Write NOT enabled"
-        def result = script.toolSetRule([guide: true])
-
-        then: "returns the guide section content without throwing (early-return before any gate/mutation, like discover mode)"
-        result.success == true
-        result.section == "set_rule_reference"
-        result.content instanceof String
-        // proves the real reference came back inline (these live only in the guide now)
-        result.content.contains("addTrigger")
-        result.content.contains("walkStep")
-        result.content.contains("Raw `settings`/`button` mode")
-        // no appId / confirm / backup snapshot was required -> no hub endpoints registered, no mutation occurred
+    def "native document reference is available through the read guide without write gates"() {
+        when:
+        def result = script.toolGetToolGuide('native_rule_documents')
+        then:
+        result.success
+        result.section == 'native_rule_documents'
+        result.content.contains('changes')
+        result.content.contains('native names')
     }
 
     def "update_rm_rule requires settings, button, or addTrigger"() {
@@ -17872,76 +17867,13 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         !result.note?.contains("updateRule fired")
     }
 
-    def "tools/list addAction description aligns with the doActPage-self-bakes truth-up"() {
-        // W2: pin the addAction inline-schema description against the truth-up
-        // landed in this branch. The pre-truth-up text claimed the wizard "still
-        // issues" updateRule, which contradicted the production path (doActPage->
-        // selectActions navigation self-bakes the action via the action editor's
-        // own commit, no trailing updateRule click is needed). Agents copying the
-        // pre-truth-up example would either issue an unnecessary updateRule call
-        // OR question the response when no updateRule fired -- the description
-        // misled both ways.
-        // Pairs with the happy-path note pin above (W2 outer pair).
-        // Both-ways pending (orchestrator).
+    def "public native writer documents verification instead of old wizard self-bake promises"() {
         when:
-        def tools = script.getAllToolDefinitions()
-        def updateNativeApp = tools.find { it.name == "hub_set_rule" }
-        def schemaText = updateNativeApp?.inputSchema?.toString() ?: ""
-
-        then: "the addAction property description carries the self-bakes truth-up"
-        // Load-bearing discriminators: the truth-up phrasing names the navigation
-        // and the self-bake semantic. Either phrase missing means a regression
-        // reverted the description. We scope to the inputSchema text so this
-        // doesn't false-positive on unrelated tool descriptions that mention
-        // updateRule-button mechanics.
-        schemaText.contains("self-bakes") || schemaText.contains("doActPage->selectActions navigation")
-
-        and: "the pre-truth-up wrong-phrasings are absent from the addAction property"
-        // Scope the negation to the addAction property's text so a legitimate
-        // "button='updateRule'" reference inside a different property (e.g. the
-        // `button` enum description) doesn't false-fail this assertion.
-        //
-        // Extraction strategy: prefer the structured map walk over a regex over
-        // the rendered GString. The toString() form of nested Maps varies with
-        // Groovy version, key insertion order, and embedded special characters
-        // -- a regex over it is brittle. The structured walk pulls the
-        // addAction property's `description` value directly from the
-        // inputSchema map (W12: more robust than the prior regex fallback).
-        def addActionDesc = ""
-        try {
-            def schemaMap = updateNativeApp?.inputSchema
-            if (schemaMap instanceof Map) {
-                def props = schemaMap?.properties
-                if (props instanceof Map) {
-                    def addAction = props?.addAction
-                    if (addAction instanceof Map && addAction?.description != null) {
-                        addActionDesc = addAction.description.toString()
-                    }
-                }
-            }
-        } catch (Exception ignored) {
-            // Fall through to the regex fallback below.
-        }
-        if (!addActionDesc) {
-            // Fallback: regex extraction with a tightened 1500-char window
-            // (W12 fix). The prior 4000-char fallback was wide enough to mask a
-            // negation hit if `inputSchema.toString()` rendering changed.
-            def addActionMatch = (schemaText =~ /addAction:\[[^\]]*?description:([^,]+(?:,[^=]+=[^,]+)*?)(?=,\s*\w+:\[)/)
-            addActionDesc = addActionMatch.find()
-                ? addActionMatch.group(1)
-                : (schemaText.indexOf("addAction:") >= 0
-                    ? schemaText.substring(schemaText.indexOf("addAction:"), Math.min(schemaText.length(), schemaText.indexOf("addAction:") + 1500))
-                    : "")
-        }
-        // Precondition: confirm extraction actually captured the addAction property
-        // text before asserting on negations. Without this, an extraction miss (regex
-        // shape drift OR addAction property renamed/moved) would fall through to a
-        // bounded fallback that could be "" -- the two negation assertions below would
-        // then pass vacuously. Pinning the canonical preamble phrase makes the
-        // precondition red whenever the extraction failed to reach the addAction text.
-        addActionDesc.contains("Add an RM ACTION")
-        !addActionDesc.contains("still issue")
-        !addActionDesc.contains("button='updateRule'")
+        def guide = script.toolGetToolGuide('native_rule_documents').content
+        then:
+        guide.contains('typed readback')
+        guide.contains('independently verify device behavior')
+        !script.getAllToolDefinitions().any { it.name == 'hub_set_rule' }
     }
 
     def "addAction returns success=true partial=true when action does not bake (actionNotBaked)"() {
@@ -25952,95 +25884,64 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     // ---------- hub_set_rule dispatch ----------
 
     @spock.lang.Unroll
-    def "hub_set_rule create via dispatch returns isError validation result envelope when confirm is missing (useGateways=#useGateways)"() {
+    def "native create requires confirmation through public dispatch (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [name: "BAT-RM-demo"])
-
+        def response = mcpDriver.callTool('hub_create_rule_document', [parent_id: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]])
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains("SAFETY CHECK FAILED")
-
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
         where:
         useGateways << [true, false]
     }
 
-    @spock.lang.Unroll
-    def "hub_set_rule via dispatch returns isError validation result envelope when name is missing (useGateways=#useGateways)"() {
+    def "native create requires a name through public dispatch (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [confirm: true])
-
+        def response = mcpDriver.callTool('hub_create_rule_document', [parent_id: 21, changes: [[part:'required', value:[tokens:['1']]]], confirm:true])
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains("name is required")
-
+        mcpDriver.parseInner(response).error.contains('rule name')
         where:
         useGateways << [true, false]
     }
 
-    @spock.lang.Unroll
-    def "hub_set_rule via dispatch discovers RM parent, creates child, returns new appId (useGateways=#useGateways)"() {
+    def "native create dispatcher preserves verified native rule identity (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
-        hubGet.register('/installedapp/configure/json/974') { params -> ruleConfigJson(974, "", [[name: "origLabel", type: "text"]]) }
-        hubGet.register('/installedapp/statusJson/974') { params -> statusJson(974) }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            [status: 302, location: "/installedapp/configure/974", data: ""]
-        }
-        def posts = []
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            posts << [path: path, body: body]
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-
+        Map received
+        script.metaClass.toolCreateRuleDocument = { Map args -> received = args; [success: true, created: true, rule_id: 974] }
+        def args = [parent_id: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]], confirm:true]
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [name: "BAT-RM-demo", confirm: true])
-
+        def response = mcpDriver.callTool('hub_create_rule_document', args)
         then:
         response.error == null
         !response.result.isError
-        def inner = mcpDriver.parseInner(response)
-        inner.success == true
-        inner.appId == 974
-        inner.appType == "rule_machine"
-        inner.name == "BAT-RM-demo"
-        inner.parentAppId == 21
-        posts.any { it.path == "/installedapp/btn" && it.body?.name == "updateRule" }
-
+        mcpDriver.parseInner(response).rule_id == 974
+        received == args
         where:
         useGateways << [true, false]
     }
 
-    // ---------- hub_set_rule dispatch ----------
-
-    @spock.lang.Unroll
-    def "hub_set_rule update via dispatch returns isError validation result envelope when confirm is missing (useGateways=#useGateways)"() {
+    def "hub_update_rule_document public validation returns an error envelope (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [appId: 100, settings: [a: 1]])
-
+        def response = mcpDriver.callTool('hub_update_rule_document', [rule_id: 100, changes: [[part:'required', value:[tokens:['1']]]]])
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains("SAFETY CHECK FAILED")
-
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
         where:
         useGateways << [true, false]
     }
 
-    @spock.lang.Unroll
-    def "hub_set_rule via dispatch emits 3-field capability contract for multi-device inputs (useGateways=#useGateways)"() {
+    def "retained internal writer emits its legacy capability serialization for multi-device inputs (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
@@ -26058,12 +25959,9 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         }
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [appId: 100, settings: [tDev0: [8, 9]], confirm: true])
+        def inner = script.toolSetRule([appId: 100, settings: [tDev0: [8, 9]], confirm: true])
 
         then:
-        response.error == null
-        !response.result.isError
-        def inner = mcpDriver.parseInner(response)
         inner.success == true
         def updatePost = posts.find { it.path == "/installedapp/update/json" }
         updatePost.body["settings[tDev0]"] == "8,9"
@@ -26076,34 +25974,24 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "hub_set_rule via dispatch surfaces success:false when the hub rejects the write (useGateways=#useGateways)"() {
+    def "native write partial rejection remains failure through the public envelope (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
-        hubGet.register('/installedapp/configure/json/100') { params ->
-            ruleConfigJson(100, "r", [[name: "origLabel", type: "text"]])
-        }
-        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
-        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 409, location: null, data: 'stale version token']
-        }
-
+        script.metaClass.toolUpdateRuleDocument = { Map args -> [success: false, partial: true, rule_id: args.rule_id, error: 'Native typed readback rejected'] }
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [appId: 100, settings: [origLabel: "x"], confirm: true])
-
-        then: 'the rejected write surfaces as failure through the full dispatch envelope, not as success'
+        def response = mcpDriver.callTool('hub_update_rule_document', [rule_id:100, changes:[[part:'required', value:[tokens:['1']]]], confirm:true])
+        then:
         response.error == null
         def inner = mcpDriver.parseInner(response)
-        inner.success == false
-
+        !inner.success
+        inner.partial
+        inner.rule_id == 100
+        inner.error.contains('readback rejected')
         where:
         useGateways << [true, false]
     }
 
-    // ---------- hub_delete_native_app dispatch ----------
-
-    @spock.lang.Unroll
     def "hub_delete_native_app via dispatch force-deletes with snapshot when force=true (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
@@ -41671,33 +41559,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     // ---------- discrete-event vocabulary -- Tamper detected/clear (now in the guide) ----------
 
-    def "hub_set_rule reference aligns Tamper with detected/clear vocabulary (in the guide)"() {
-        // Tamper actually emits 'detected'/'clear'; the wrong forms 'tampered' / 'not detected'
-        // would fail the live walker's option validation and mislead agents. The exhaustive
-        // discrete-event vocabulary now lives in the set_rule_reference guide (moved
-        // there to keep the inline description lean -- issue #181; reachable inline via guide:true).
-        // So: the inline description must never surface the WRONG forms, and the guide must carry
-        // the RIGHT ones. CO2 vocabulary is intentionally NOT pinned -- CarbonDioxideMeasurement
-        // is numeric ppm (comparator + value), not a discrete enum.
-        when:
-        def tools = script.getAllToolDefinitions()
-        def updateNativeApp = tools.find { it.name == "hub_set_rule" }
-        def schemaText = updateNativeApp?.inputSchema?.toString() ?: ""
-        def fullText = (updateNativeApp?.description ?: "") + " " + schemaText
-        def guide = (script.toolGetToolGuide("set_rule_reference")?.content ?: "").toString()
-
-        then: "neither the inline description nor the guide surfaces the wrong vocabulary"
-        !fullText.contains("'tampered'")
-        !fullText.contains("'not detected'")
-        !guide.contains("'tampered'")
-        !guide.contains("'not detected'")
-
-        and: "the correct Tamper / Smoke / CO discrete-event values are documented in the guide"
-        guide.contains("'detected'")
-        guide.contains("'clear'")
+    def "native authoring reference requires native field contracts without inventing enum values"() {
+        expect:
+        script.toolGetToolGuide('native_rule_documents').content.contains('exact native names')
+        script.toolGetToolGuide('native_app_forms').content.contains('Native enum keys')
     }
-
-    // ---------- Variable picker validation -- non-empty varOpts containing varName: no sentinel ----------
 
     def "addRequiredExpression Variable: non-empty option list containing varName does NOT push variable-validation sentinel"() {
         // Negative pin paired with the existing empty-varOpts spec. When the picker
@@ -46345,13 +46211,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.controllerId == 610
     }
 
-    def "hub_set_rule schema advertises the buttonRule create helper"() {
-        when:
-        def def_ = script.getAllToolDefinitions().find { it.name == 'hub_set_rule' }
-        def props = def_.inputSchema.properties.keySet()
-
-        then: "buttonRule is a first-class create param on hub_set_rule (parity with hub_set_native_app)"
-        props.contains("buttonRule")
+    def "retired writer has no public buttonRule creation alias"() {
+        expect:
+        !script.getAllToolDefinitions().any { it.name == 'hub_set_rule' }
+        script.getAllToolDefinitions().find { it.name == 'hub_set_native_app' }.inputSchema.properties.containsKey('buttonRule')
     }
 
     def "buttonRule returns success:false with a backup and a 'did not produce' error when no new child spawns"() {
@@ -46489,28 +46352,17 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         result.requiredExpression?.success == false
     }
 
-    def "hub_set_rule create dispatch-envelope through the rule_machine gateway returns the new appId"() {
+    def "native create gateway preserves explicit parent and ordered changes"() {
         given:
-        settingsMap.useGateways = true
         enableWrite()
-        hubGet.register('/hub2/appsList') { params -> appsListJson(21) }
-        hubGet.register('/installedapp/configure/json/991') { params -> ruleConfigJson(991, "", [[name: "origLabel", type: "text"]]) }
-        hubGet.register('/installedapp/statusJson/991') { params -> statusJson(991) }
-        script.metaClass.hubInternalGetRaw = { String path, Map q = null, Integer t = 30 ->
-            [status: 302, location: "/installedapp/configure/991", data: ""]
-        }
-        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
-            [status: 200, location: null, data: '{"status":"success"}']
-        }
-
-        when: "create an RM rule through the full gateway dispatch (no appId)"
-        def result = script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', [name: "BAT-gw-rule", confirm: true])
-
+        Map received
+        script.metaClass.toolCreateRuleDocument = { Map args -> received = args; [success:true, rule_id: 974] }
+        def args = [parent_id:21, name:'BAT-gw-rule', changes:[[part:'required', value:[tokens:['1']]]], confirm:true]
+        when:
+        def result = script.handleGateway('hub_manage_rule_machine', 'hub_create_rule_document', args)
         then:
-        result instanceof Map
-        result.isError != true
-        result.appId == 991
-        result.appType == "rule_machine"
+        result.rule_id == 974
+        received == args
     }
 
     def "hub_set_native_app schema stays lean -- generic upsert params + the generic walkStep walker + buttonRule, but no FAT RM trigger/action sugar"() {

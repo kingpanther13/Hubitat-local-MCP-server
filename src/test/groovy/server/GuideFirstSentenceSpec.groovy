@@ -56,16 +56,15 @@ class GuideFirstSentenceSpec extends ToolSpecBase {
         gateways << [false, true]
     }
 
-    def "flat hub_set_rule selector is classified as the write tool it fronts"() {
+    def "flat native writer advertises the guide first without a legacy selector"() {
         given:
         widestCatalog(false)
-
         when:
-        def setRule = script.getToolDefinitions().find { it.name == 'hub_set_rule' }
-
+        def writer = script.getToolDefinitions().find { it.name == 'hub_update_rule_document' }
         then:
-        setRule.inputSchema.properties.keySet() == ['operation', 'appId', 'args', 'confirm'] as Set
-        (setRule.description as String).startsWith(SENTENCE + ' Create or edit a Hubitat Rule Machine rule')
+        writer.inputSchema.properties.keySet() == ['rule_id', 'changes', 'confirm'] as Set
+        (writer.description as String).startsWith(SENTENCE + ' ')
+        !script.getToolDefinitions().any { it.name == 'hub_set_rule' }
     }
 
     def "a gateway whose write sub-tools are all hidden drops the sentence"() {

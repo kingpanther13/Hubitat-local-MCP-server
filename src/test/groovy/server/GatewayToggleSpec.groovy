@@ -157,7 +157,7 @@ class GatewayToggleSpec extends ToolSpecBase {
             'hub_list_files', 'hub_read_file', 'hub_write_file', 'hub_delete_file',
             'hub_list_device_dependents', 'hub_get_app_config', 'hub_list_app_pages',
             'hub_list_rules', 'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
-            'hub_set_rule', 'hub_set_native_app', 'hub_delete_native_app', 'hub_get_rule_health',
+            'hub_call_app_form', 'hub_set_native_app', 'hub_delete_native_app', 'hub_get_rule_health',
             'hub_get_visual_rule', 'hub_set_visual_rule', 'hub_delete_visual_rule',
             'hub_list_dashboards', 'hub_get_dashboard', 'hub_create_dashboard',
             'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard',
@@ -351,7 +351,7 @@ class GatewayToggleSpec extends ToolSpecBase {
         def names = script.getToolDefinitions()*.name as Set
 
         then: 'write native tools are removed from the flat catalog, not just from gateway entries'
-        !names.contains('hub_set_rule')
+        !names.contains('hub_call_app_form')
         !names.contains('hub_set_native_app')
         !names.contains('hub_delete_native_app')
         !names.contains('hub_call_rule')

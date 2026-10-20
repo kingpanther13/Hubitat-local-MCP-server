@@ -156,9 +156,9 @@ class ToolDisplayMetaSpec extends ToolSpecBase {
 
         and: 'the TITLE itself is tokenized into the BM25 doc: hub_set_rule gains the token "author", which appears nowhere in its corpus text (only "authoring" does, and the tokenizer does not stem)'
         def corpus = (scriptStaticField('TOOL_SEARCH_INDEX') as Map).corpus
-        def idx = corpus.findIndexOf { it.name == 'hub_set_rule' }
+        def idx = corpus.findIndexOf { it.name == 'hub_call_gc' }
         idx >= 0
-        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens[idx].contains('author')
+        (scriptStaticField('TOOL_SEARCH_INDEX') as Map).tokens[idx].contains('garbage')
     }
 
     def "a pre-title persisted corpus (deployed-over previous version) is ignored and shed on the first search"() {

@@ -360,15 +360,15 @@ class ClientAccessGrantSpec extends ToolSpecBase {
         script._clientToolDenial('hub_manage_mode') == null
     }
 
-    def "a write-off client may still run hub_set_rule's schema-only probe, like the Write master allows"() {
+    def "a write-off client may still run native-app schema-only probe, like the Write master allows"() {
         given:
-        settingsMap['clientTools_1'] = ['hub_set_rule']
+        settingsMap['clientTools_1'] = ['hub_set_native_app']
         settingsMap['clientWrite_1'] = false
         asClient('1')
 
         expect:
-        script._clientToolDenial('hub_set_rule', [operation: 'guide']) == null
-        script._clientToolDenial('hub_set_rule', [operation: 'update', confirm: true]) != null
+        script._clientToolDenial('hub_set_native_app', [appId: 12, guide: true]) == null
+        script._clientToolDenial('hub_set_native_app', [appId: 12, settings: [flag: true], confirm: true]) != null
     }
 
     def "the guide and tool search are always available to a client, even with its Read switch off"() {

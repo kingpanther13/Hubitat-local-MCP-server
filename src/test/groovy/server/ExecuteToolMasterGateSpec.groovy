@@ -114,7 +114,7 @@ class ExecuteToolMasterGateSpec extends ToolSpecBase {
         e.message.contains("Write tools are disabled")
     }
 
-    def "hub_set_rule guide flag alongside buttonRule stays Write-master blocked"() {
+    def "native document guide flag alongside buttonRule stays Write-master blocked"() {
         // toolSetRule dispatches buttonRule to _createButtonRuleViaController (a real
         // write) BEFORE the meta-call shortcuts, and that flow's exclusivity gate does
         // not reject a stray guide flag -- so _isSetRuleSchemaOnlyCall must refuse the
@@ -124,7 +124,7 @@ class ExecuteToolMasterGateSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when:
-        script.executeTool("hub_set_rule",
+        script.executeTool("hub_update_rule_document",
             [guide: true, buttonRule: [controllerId: 1, buttonNumber: 1, event: "pushed"], confirm: true])
 
         then:

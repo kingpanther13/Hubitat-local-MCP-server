@@ -139,7 +139,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_restore_backup', 'hub_delete_backup',
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
-            'hub_create_rule_document', 'hub_update_rule_document', 'hub_set_rule', 'hub_set_native_app', 'hub_clone_native_app',
+            'hub_create_rule_document', 'hub_update_rule_document', 'hub_call_app_form', 'hub_set_native_app', 'hub_clone_native_app',
             'hub_import_native_app', 'hub_delete_native_app', 'hub_export_native_app'
         ]
     }
@@ -356,7 +356,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_device',
             'hub_create_room',
             'hub_create_app', 'hub_create_driver', 'hub_create_library',
-            'hub_call_rule', 'hub_create_rule_document', 'hub_update_rule_document', 'hub_set_rule', 'hub_set_native_app',
+            'hub_call_rule', 'hub_create_rule_document', 'hub_update_rule_document', 'hub_call_app_form', 'hub_set_native_app',
             'hub_clone_native_app', 'hub_import_native_app', 'hub_delete_native_app',
             'hub_set_visual_rule',
             'hub_create_dashboard', 'hub_clone_dashboard'
@@ -540,7 +540,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_restore_backup', 'hub_delete_backup',
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
-            'hub_create_rule_document', 'hub_update_rule_document', 'hub_set_rule', 'hub_set_native_app', 'hub_set_app_disabled', 'hub_clone_native_app',
+            'hub_create_rule_document', 'hub_update_rule_document', 'hub_call_app_form', 'hub_set_native_app', 'hub_set_app_disabled', 'hub_clone_native_app',
             'hub_import_native_app', 'hub_delete_native_app', 'hub_export_native_app',
             'hub_set_visual_rule', 'hub_delete_visual_rule',
             'hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard'

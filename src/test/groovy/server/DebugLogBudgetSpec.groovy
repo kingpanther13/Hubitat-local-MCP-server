@@ -20,7 +20,7 @@ class DebugLogBudgetSpec extends ToolSpecBase {
     }
 
     private List coldHistory() {
-        script.mcpLog('error', 'server', 'retained error', '42', [details: [tool: 'hub_set_rule', nested: [id: 7]]])
+        script.mcpLog('error', 'server', 'retained error', '42', [details: [tool: 'hub_update_rule_document', nested: [id: 7]]])
         def line = script.log.messages.last()
         def rows = ["2026-09-06 12:00:00.000\tERROR\tapp|402|MCP|${line.substring(line.indexOf(':') + 1)}".toString()]
         (scriptStaticField('DEBUG_LOG_BUFFERS') as Map).clear()
@@ -59,7 +59,7 @@ class DebugLogBudgetSpec extends ToolSpecBase {
         then:
         recovered*.message == ['retained error']
         recovered[0].ruleId == '42'
-        recovered[0].details == [tool: 'hub_set_rule', nested: [id: 7]]
+        recovered[0].details == [tool: 'hub_update_rule_document', nested: [id: 7]]
         runInMillisCalls.size() == 1
     }
 

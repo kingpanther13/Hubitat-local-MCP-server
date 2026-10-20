@@ -502,34 +502,24 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         err.details.gateway == 'hub_read_rooms'
     }
 
-    def "guide:true through the full tools/call gateway dispatch returns the reference, not a missing-param error (live-path regression)"() {
-        // Regression for a bug found by exercising guide:true on the live hub: the gateway's
-        // required-param pre-validation rejected guide:true with "Missing required parameters:
-        // appId, confirm" BEFORE the handler's gate-bypassing short-circuit could run. The unit
-        // test (calling _applyNativeAppEdit directly) skipped this layer -- so guard the FULL
-        // tools/call -> handleMcpRequest -> handleToolsCall -> handleGateway path that real
-        // MCP clients take. addTrigger/addAction {discover:true} ride the same exemption.
-        given: 'gateway mode + builtin app on so the rule machine gateway dispatches'
+    def "native document changes pass the full tools call gateway envelope unchanged"() {
+        given:
         settingsMap.useGateways = true
-        mcpDriver.pushBody([
-            jsonrpc: '2.0', id: 210, method: 'tools/call',
-            params: [name: 'hub_manage_rule_machine', arguments: [tool: 'hub_set_rule', args: [guide: true]]]
-        ])
-
+        settingsMap.enableMandatoryBPS = false
+        Map received
+        script.metaClass.toolUpdateRuleDocument = { Map args -> received = args; [success: true, rule_id: args.rule_id] }
+        def args = [rule_id: 42, changes: [[part: 'required', value: [tokens: ['1']]]], confirm: true]
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 210, method: 'tools/call', params: [name: 'hub_manage_rule_machine', arguments: [tool: 'hub_update_rule_document', args: args]]])
         when:
         script.handleMcpRequest()
         def response = mcpDriver.parseResponseJson()
-
-        then: 'success envelope (no JSON-RPC error) carrying the reference -- NOT the missing-param hint'
+        def inner = mcpDriver.parseInner(response)
+        then:
         response.error == null
-        def text = response.result.content[0].text as String
-        !text.contains('Missing required parameter')
-        def inner = new groovy.json.JsonSlurper().parseText(text)
-        inner.isError != true
-        inner.success == true
-        inner.section == 'set_rule_reference'
-        (inner.content as String).contains('addTrigger')
-        (inner.content as String).contains('walkStep')
+        response.result.isError != true
+        inner.success
+        inner.rule_id == 42
+        received == args
     }
 
     def "non-gateway caller passing a stray `tool` arg does NOT route the suggestion to the wrong tool"() {

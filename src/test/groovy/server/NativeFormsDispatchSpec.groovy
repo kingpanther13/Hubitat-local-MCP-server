@@ -20,6 +20,7 @@ class NativeFormsDispatchSpec extends ToolSpecBase {
     def 'native form is a mutating nonidempotent centrally registered continuation tool'() {
         expect:
         script.getAllToolDefinitions().find { it.name == 'hub_call_app_form' }.inputSchema.required == ['app_id', 'steps', 'confirm']
+        script.getAllToolDefinitions().find { it.name == 'hub_call_app_form' }.inputSchema.properties.steps.items.properties.activate.type == 'string'
         !script.getReadOnlyToolNames().contains('hub_call_app_form')
         !script.getIdempotentWriteToolNames().contains('hub_call_app_form')
         script._mrtrWriteTools().contains('hub_call_app_form')

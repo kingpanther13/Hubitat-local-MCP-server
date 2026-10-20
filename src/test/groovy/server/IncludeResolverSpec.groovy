@@ -238,7 +238,7 @@ class IncludeResolverSpec extends Specification {
         'McpDiscoveryLib'       | 'toolSearchTools'         | 'Discovery'
         'McpNativeFormsLib'     | 'toolCallAppForm'         | 'NativeForms'
         'McpNativeDocumentsLib' | 'toolGetRuleDocument'     | 'NativeDocuments'
-        'McpNativeRulesLib'     | 'toolSetRule'             | 'NativeRM'
+        'McpNativeRulesLib'     | 'toolListRmRules'             | 'NativeRM'
         'McpDashboardsLib'      | 'toolListDashboards'      | 'Dashboards'
     }
 

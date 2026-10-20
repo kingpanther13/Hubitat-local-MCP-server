@@ -97,7 +97,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         content.endsWith(rawBody(section))
 
         where:
-        section << ['best_practice_reference', 'set_rule_reference', 'hub_admin_write_devices',
+        section << ['best_practice_reference', 'native_rule_documents', 'hub_admin_write_devices',
                     'builtin_app_tools_crud', 'hub_admin_write_radios']
     }
 
@@ -127,19 +127,19 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
                     'device_authorization']
     }
 
-    def "a sub-section of a gated parent serves the parent's key -- #section"() {
+    def "a gated admin sub-section serves its own key -- #section"() {
         when:
         def content = script.toolGetToolGuide(section).content as String
         def lines = content.readLines()
 
         then:
-        lines[0] == keyLine('set_rule_reference', true)
+        lines[0] == keyLine(section, false)
         lines[1].startsWith(NOTE_PREFIX)
         lines[2] == ''
         content.endsWith(rawBody(section))
 
         where:
-        section << ['set_rule_reference_conditions', 'set_rule_reference_triggers', 'set_rule_reference_guards']
+        section << ['hub_admin_write_devices', 'hub_admin_write_radios', 'hub_admin_write_destructive']
     }
 
     def "the full guide publishes no key and says where keys are"() {
@@ -155,11 +155,11 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         given:
         settingsMap.enableMandatoryBPS = true
         settingsMap.enableWrite = true
-        script.metaClass.toolSetRule = { m -> [success: true, stubbed: true] }
-        def served = (script.toolGetToolGuide('set_rule_reference').content as String).readLines()[0] - 'Acknowledgment key: '
+        script.metaClass.toolUpdateRuleDocument = { m -> [success: true, stubbed: true] }
+        def served = (script.toolGetToolGuide('native_rule_documents').content as String).readLines()[0] - 'Acknowledgment key: '
 
         expect:
-        script.executeTool('hub_set_rule', [appId: 5, addTrigger: [capability: 'Switch'], confirm: true,
+        script.executeTool('hub_update_rule_document', [rule_id: 5, changes: [[part: 'required', value: [tokens: ['1']]]], confirm: true,
                                             bestPracticeKey: served]).stubbed == true
     }
 

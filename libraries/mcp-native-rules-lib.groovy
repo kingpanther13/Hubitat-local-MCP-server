@@ -14753,7 +14753,7 @@ def _applyNativeAppEdit(args) {
     // hub_set_rule exposes no cursor, so a paged guide response would hand back a nextCursor
     // this caller can never redeem: take the whole section however large it grows.
     if (args?.guide == true) {
-        return _rmWholeGuideSection('set_rule_reference')
+        return _rmWholeGuideSection('builtin_app_tools')
     }
     requireDestructiveConfirm(args?.confirm as Boolean)
     if (args?.appId == null) throw new IllegalArgumentException("appId is required")

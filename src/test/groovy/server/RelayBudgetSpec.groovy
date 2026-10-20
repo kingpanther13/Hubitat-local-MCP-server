@@ -646,7 +646,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         script.metaClass._applyNativeAppEdit = { Map a -> captured.edit = a; [success: true, appId: 1] }
 
         when: 'a patches edit arrives through hub_manage_rule_machine'
-        def response = mcpDriver.callTool('hub_manage_rule_machine', [tool: 'hub_set_rule', args: [
+        def response = mcpDriver.callTool('hub_manage_native_rules_and_apps', [tool: 'hub_set_native_app', args: [
             appId: 1, confirm: true,
             patches: [[addAction: [a: 1]], [addAction: [a: 2]]]]])
 
@@ -656,22 +656,19 @@ class RelayBudgetSpec extends ToolSpecBase {
         captured.edit.patches.size() == 2
     }
 
-    def "the budget clock survives the operation-envelope rebuild (envelope form)"() {
-        given: 'gateway mode pinned -- the envelope rides the same gateway hop'
+    def "new document envelope preserves ordered changes without leaking a legacy budget argument"() {
+        given:
         settingsMap.useGateways = true
         settingsMap.enableWrite = true
-        def captured = [:]
-        script.metaClass._applyNativeAppEdit = { Map a -> captured.edit = a; [success: true, appId: 1] }
-
-        when: 'the same edit in envelope form -- _setRuleFromEnvelope rebuilds args from scratch'
-        def response = mcpDriver.callTool('hub_manage_rule_machine', [tool: 'hub_set_rule', args: [
-            operation: 'patches', appId: 1, confirm: true,
-            args: [[addAction: [a: 1]], [addAction: [a: 2]]]]])
-
-        then: 'the re-carry preserved the clock across the rebuild'
+        Map received
+        script.metaClass.toolUpdateRuleDocument = { Map args -> received = args; [success: true] }
+        def changes = [[part: 'required', value: [tokens: ['1']]], [part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]]
+        when:
+        def response = mcpDriver.callTool('hub_manage_rule_machine', [tool: 'hub_update_rule_document', args: [rule_id: 1, confirm: true, changes: changes]])
+        then:
         response.error == null
-        captured.edit.__reqT0 instanceof Long
-        captured.edit.patches.size() == 2
+        received.changes == changes
+        !received.containsKey('__reqT0')
     }
 
     // The other leaves in _budgetAwareTools alongside hub_set_rule. Each owns a
@@ -978,7 +975,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         script.metaClass._applyNativeAppEdit = { Map a -> captured.edit = a; [success: true, appId: 1] }
 
         when:
-        def response = mcpDriver.callTool('hub_set_rule', [
+        def response = mcpDriver.callTool('hub_set_native_app', [
             appId: 1, confirm: true,
             patches: [[addAction: [a: 1]], [addAction: [a: 2]]]])
 
