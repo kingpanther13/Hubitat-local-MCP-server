@@ -14,6 +14,10 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
     static final String NOTE_PREFIX = 'Pass this exact value as the bestPracticeKey argument'
     static final String PLURAL_NOTE_PREFIX = 'Each labelled key unlocks the write tools of the section it names'
 
+    def setup() {
+        stateMap.lastBackupTimestamp = script.now()
+    }
+
     private Set servedKeys() {
         (script.getToolGuideSections().keySet() as Set) +
             (script.getToolGuideSubSections().values().collectMany { it.keySet().toList() } as Set)
@@ -155,7 +159,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         given:
         settingsMap.enableMandatoryBPS = true
         settingsMap.enableWrite = true
-        script.metaClass.toolUpdateRuleDocument = { m -> [success: true, stubbed: true] }
+        script.metaClass.toolUpdateRuleDocument = { Map m -> [success: true, stubbed: true] }
         def served = (script.toolGetToolGuide('native_rule_documents').content as String).readLines()[0] - 'Acknowledgment key: '
 
         expect:

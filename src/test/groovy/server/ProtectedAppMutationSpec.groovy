@@ -48,6 +48,9 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
         where:
         [developerMode, row] << [[false, true], [
+            ['toolCallAppForm', [app_id: 42, steps: [[kind: 'open']]]],
+            ['toolUpdateRuleDocument', [rule_id: 42, changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
+            ['toolCreateRuleDocument', [parent_id: 42, name: 'Fixture', changes: [[part: 'variable', value: [operation: 'create', name: 'Fixture', type: 'integer', value: 1]]]]],
             ['toolSetAppDisabled', [appId: '00042', disabled: true]],
             ['toolSetAppDisabled', [appId: 42, disabled: false]],
             ['toolDeleteNativeApp', [appId: 42]],
@@ -169,11 +172,11 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         settingsMap.enableDeveloperMode = developerMode
         settingsMap.enableMandatoryBPS = false
         settingsMap.useGateways = gateway
-        def args = [appId: 42, settings: [protectedAppIds: []], confirm: true]
+        def args = [appId: 42, disabled: true, confirm: true]
 
         when:
-        script.executeTool(gateway ? 'hub_manage_native_rules_and_apps' : 'hub_set_native_app',
-            gateway ? [tool: 'hub_set_native_app', args: args] : args)
+        script.executeTool(gateway ? 'hub_manage_native_rules_and_apps' : 'hub_set_app_disabled',
+            gateway ? [tool: 'hub_set_app_disabled', args: args] : args)
 
         then:
         def e = thrown(IllegalArgumentException)

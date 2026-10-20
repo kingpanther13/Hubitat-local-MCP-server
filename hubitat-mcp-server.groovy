@@ -3297,6 +3297,9 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs, boo
             throw new IllegalArgumentException(_bpsBlockMessage(bpsSection, bpsKey))
         }
     }
+    if (checkKey && leaf in ["hub_create_rule_document", "hub_update_rule_document", "hub_call_app_form"]) {
+        requireDestructiveConfirm(leafArgs?.confirm)
+    }
 }
 
 // Hubitat allowlists java.security.MessageDigest. Hash the complete canonical

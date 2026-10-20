@@ -24,9 +24,10 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         // Representative writes; stubbed so a past-the-gate dispatch returns a sentinel instead
         // of touching the hub. The base setup() wiped the metaClass first, so stubs are fresh.
         script.metaClass.toolSetHsm = { m -> [success: true, stubbed: true] }
-        script.metaClass.toolUpdateRuleDocument = { m -> [success: true, stubbed: true] }
+        script.metaClass.toolUpdateRuleDocument = { Map m -> [success: true, stubbed: true] }
         settingsMap.enableWrite = true
         settingsMap.enableRead = true
+        stateMap.lastBackupTimestamp = script.now()
     }
 
     private String key(String section) { script.hubBpsGuideKey(section) as String }
@@ -99,7 +100,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
     def "the calling tool's section key passes; another section's key is refused -- #tool"() {
         given:
         settingsMap.enableMandatoryBPS = true
-        script.metaClass.toolCallAppForm = { m -> [success: true, stubbed: true] }
+        script.metaClass.toolCallAppForm = { Map m -> [success: true, stubbed: true] }
 
         when: 'the right section key'
         def ok = script.executeTool(tool, args + [bestPracticeKey: key(own)])

@@ -30,6 +30,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
     def setup() {
         lifecycleApp.settingsStore.clear()
+        stateMap.lastBackupTimestamp = script.now()
     }
 
     // The compiled script is shared across specs, and a server-side resume sets the field.
@@ -224,6 +225,23 @@ class MrtrContinuationSpec extends ToolSpecBase {
         'mandatory BPS' | true        | true         | 1234567890000L | true    | 'wrong'         || 'Mandatory best-practice acknowledgment'
         'confirmation'  | true        | false        | 1234567890000L | false   | null            || 'SAFETY CHECK FAILED'
         'backup freshness' | true     | false        | null           | true    | null            || 'BACKUP REQUIRED'
+    }
+
+    def "#leaf rejects missing confirmation before reserving a detached worker"() {
+        given:
+        settingsMap.enableWrite = true
+        settingsMap.enableMandatoryBPS = false
+        when:
+        def response = modernCall(leaf, args)
+        then:
+        response.result.isError == true
+        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
+        !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
+        runInMillisCalls.empty
+        where:
+        leaf                       | args
+        'hub_create_rule_document' | [parent_id: 28, name: 'Unconfirmed', changes: [[part: 'variable', value: [operation: 'create', name: 'Counter', type: 'integer', value: 0]]], confirm: false]
+        'hub_call_app_form'         | [app_id: 42, steps: [[kind: 'open']], confirm: false]
     }
 
     def "valid #leaf document write schedules its worker"() {
@@ -1321,6 +1339,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def oldTerminal = modernCall('hub_update_rule_document', args, completedId)
         def oldQueued = modernCall('hub_update_rule_document', args, queuedId)
         script.runMrtrSlice(lateCallback)
+        stateMap.lastBackupTimestamp = script.now()
         def fresh = modernCall('hub_update_rule_document', args)
 
         then: 'neither stale evidence nor queued arguments resurrects a removed request'
