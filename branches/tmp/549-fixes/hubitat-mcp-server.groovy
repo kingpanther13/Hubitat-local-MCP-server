@@ -29415,8 +29415,11 @@ private Map _rmPreflightAddLocalVariable(Integer appId, Map varSpec) {
             }
         }
     }
-    if (typeCanonical == "DateTime" && !(value.toString() ==~ /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}.*/)) {
-        throw new IllegalArgumentException("addLocalVariable.value for DateTime must be yyyy-MM-ddTHH:mm (seconds and zone are ignored), e.g. 2026-05-06T12:00; got '${value}'. RM is not touched.")
+    if (typeCanonical == "DateTime") {
+        if (!_rmLocalDateTimeWallClock(value.toString())) {
+            throw new IllegalArgumentException("addLocalVariable.value for DateTime must be yyyy-MM-ddTHH:mm (seconds and zone are ignored), e.g. 2026-05-06T12:00; got '${value}'. RM is not touched.")
+        }
+        serializedValue = _rmLocalDateTimeWallClock(value.toString())
     }
     def existing = _rmReadLocalVarsMap(appId)
     if (existing.ok != true) {
@@ -29431,12 +29434,20 @@ private Map _rmPreflightAddLocalVariable(Integer appId, Map varSpec) {
     }
     return [name: name, type: typeCanonical, value: value, serializedValue: serializedValue]
 }
+private String _rmLocalDateTimeWallClock(String raw) {
+    def m = raw?.trim() =~ /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(:\d{2}(\.\d{1,3})?)?([+-]\d{2}:?\d{2}|Z)?$/
+    if (!m.matches()) return null
+    String wall = m.group(1)
+    def fmt = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm")
+    fmt.setLenient(false)
+    try { return fmt.format(fmt.parse(wall)) == wall ? wall : null } catch (Exception ignored) { return null }
+}
 private boolean _rmLocalVarMatches(Object meta, String typeCanonical, Object serializedValue) {
     if (!(meta instanceof Map)) return false
     Map tokens = [Number: ["integer", "number"], Decimal: ["bigdecimal", "decimal"], String: ["string"], Boolean: ["boolean"], DateTime: ["datetime"]]
     if (!((tokens[typeCanonical] ?: []) as List).contains(meta.type?.toString()?.toLowerCase())) return false
-    if (typeCanonical == "DateTime") return true
     def stored = meta.value
+    if (typeCanonical == "DateTime") return stored?.toString()?.take(16) == serializedValue?.toString()?.take(16)
     if (typeCanonical in ["Number", "Decimal"]) {
         try { return new BigDecimal(stored.toString()).compareTo(new BigDecimal(serializedValue.toString())) == 0 } catch (Exception ignored) { return false }
     }
@@ -29461,6 +29472,7 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
     def applied = []
     def skipped = []
     _rmClickAppButton(appId, "moreVar", "moreVar", "selectActions")
+    try {
     _rmWriteSettingOnPage(appId, "selectActions", "hbVar", name, applied, null, skipped)
     _rmWriteSettingOnPage(appId, "selectActions", "varType", typeCanonical, applied, null, skipped)
     if (typeCanonical == "DateTime") {
@@ -29487,6 +29499,11 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
         _rmClickAppButton(appId, "dateTimeDone", "dtDone", "selectActions")
     } else {
         _rmWriteSettingOnPage(appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
+    }
+    } catch (Exception writeExc) {
+        boolean closed = _rmCancelLocalVarEditor(appId)
+        mcpLog("warn", "rm-native", "addLocalVariable: a write for '${name}' on app ${appId} failed (${writeExc.message}); the variable editor ${closed ? 'was cancelled' : 'may still be open'}")
+        throw writeExc
     }
     def committed = false
     def found = null
@@ -29546,7 +29563,7 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
             repairHints: [
                 "Check the value's type against varType — Number/Decimal want numeric, String wants text, Boolean wants true/false, DateTime wants an ISO-style timestamp.",
                 "Inspect via /installedapp/statusJson/<appId> appState.allLocalVars to see what's currently there."
-            ]
+            ] + (closed ? [] : ["The variable editor is still open: click cancelGV on selectActions (hub_set_rule button:'cancelGV', stateAttribute:'cancelGV', pageName:'selectActions')."])
         ]
     }
     return [
@@ -29736,6 +29753,7 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
         envelope.settingsApplied = varResult?.settingsApplied
         envelope.settingsSkipped = varResult?.settingsSkipped
         envelope.hubRenderError = varResult?.hubRenderError
+        if (varResult?.wizardStuck == true) envelope.wizardStuck = true
     }
     return envelope
 }
@@ -30711,6 +30729,10 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
             throw new IllegalArgumentException("conditions[${condIdx}]: compareToDevice: device '${refDevId}' is not in the reference picker, which lists only '${capCanonical}' devices. ${availLabel}: ${relOpts.sort().join(', ')}")
         }
         writeST(hrefParams, relDeviceField, refDevId)
+        if (skippedAccum.any { it instanceof Map && it.key?.toString() == relDeviceField }) {
+            cancelInFlightCond()
+            throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: reference device ${refDevId} did not land in ${relDeviceField}, so the condition was not committed (it would compare against no device).".toString())
+        }
         if (ctd.offset != null) {
             def stateKey = "state_${cIdx}".toString()
             def offsetReveal = discoverField(appId, page, stateKey)
@@ -32832,6 +32854,14 @@ def _applyNativeAppEdit(args) {
                         }
                         def cfg = _rmFetchConfigJson(appId, pm.pageName?.toString())
                         def schema = _rmCollectInputSchema(cfg?.configPage)
+                        def opRefused = (pm.settings as Map).collect { k, v -> _rmRawNotOffered(schema?.get(k.toString()) as Map, k.toString(), v) }.findAll { it }
+                        if (opRefused) {
+                            patchResults << [success: false, op: "settings", settingsNotLanded: opRefused,
+                                error: "patches[${pi}].settings: ${opRefused.collect { it.key }} ${opRefused.size() == 1 ? 'is' : 'are'} not a value the picker offers; nothing in this op was sent.".toString()]
+                            patchStopAfter = "patches[${pi}]".toString()
+                            patchStopItem = patchResults.last()
+                            continue
+                        }
                         _rmUpdateAppSettings(appId, pm.settings as Map, schema)
                         patchResults << [success: true, op: "settings", keys: (pm.settings as Map).keySet().toList()]
                     } else if (pm.containsKey("button")) {
@@ -33268,12 +33298,17 @@ def _applyNativeAppEdit(args) {
             def notOffered = []
             def writable = [:]
             knownSettings.each { k, v ->
-                def refusal = _rmRawNotOffered(schema.get(k.toString()) as Map, k.toString(), v)
+                def refusal = isSubPageWrite ? null : _rmRawNotOffered(schema.get(k.toString()) as Map, k.toString(), v)
                 if (refusal) notOffered << refusal
                 else writable.put(k, v)
             }
             if (writable && isSubPageWrite) {
                 writable.each { k, v ->
+                    if (v instanceof List) {
+                        def fresh = _rmCollectInputSchema(_rmFetchConfigJson(appId, pageName)?.configPage)
+                        def listRefusal = _rmRawNotOffered(fresh?.get(k.toString()) as Map, k.toString(), v)
+                        if (listRefusal) { notOffered << listRefusal; return }
+                    }
                     _rmWriteSettingOnPage(appId, pageName, k.toString(), v, subPageApplied, null, subPageSkipped)
                     _rmVerifySubPageMultipleFlags(appId, pageName, [(k.toString()): v], schema)
                 }
@@ -33317,10 +33352,17 @@ def _applyNativeAppEdit(args) {
             ["settingsNotLanded", "settingsSkipped", "unknownSettingsWarning"].each { f -> if (result[f]) m[f] = result[f] }
             return m
         }
-        if (settingsMap && !settingsWritten && !button) {
+        def unconfirmed = ((result.settingsNotLanded ?: []) as List).findAll { it instanceof Map && it.reason == "verification_fetch_failed" }.collect { it.key }
+        if (settingsMap && !settingsWritten && unconfirmed) {
+            return notLandedFields([success: false, partial: true, fieldsWritten: true, appId: appId, backup: backup, settingsApplied: [],
+                    settingsUnconfirmed: unconfirmed,
+                    error: "The settings ${unconfirmed} were sent to page '${pageName ?: 'mainPage'}' but could not be read back, so whether they landed is unknown${button ? "; the button '${button}' was not clicked" : ''}. Read the page with hub_get_app_config before retrying.".toString(),
+                    restoreHint: _rmBackupHint(backup)])
+        }
+        if (settingsMap && !settingsWritten) {
             return notLandedFields([success: false, appId: appId, backup: backup, settingsApplied: [],
-                    error: "None of the settings ${settingsMap.keySet().collect { it.toString() }} landed on page '${pageName ?: 'mainPage'}'; settingsNotLanded and settingsSkipped say why.".toString(),
-                    restoreHint: _rmPreflightRestoreHint(null, backup, "Nothing landed, so nothing needs to be restored.")])
+                    error: "None of the settings ${settingsMap.keySet().collect { it.toString() }} landed on page '${pageName ?: 'mainPage'}'; settingsNotLanded and settingsSkipped say why.${button ? " The button '${button}' was not clicked." : ''}".toString(),
+                    restoreHint: _rmPreflightRestoreHint(null, backup, button ? "None of the settings landed and the click was not sent, so nothing needs to be restored." : "Nothing landed, so nothing needs to be restored.")])
         }
         if (button) {
             if (pageName) {
@@ -40615,7 +40657,7 @@ def _rmClickRenderedButton(Integer appId, String buttonName, String stateAttribu
     return _rmClickAppButton(appId, buttonName, stateAttribute, pageName, c)
 }
 Map _rmNotOfferedSkip(Map field, String key, Object value) {
-    if (field?.type != "enum" || field.options == null || value instanceof List) return null
+    if (field?.type != "enum" || field.options == null || value instanceof List || value == null || value.toString() == "") return null
     List offered = _rmReadPickerOptionStrings(field)
     return (offered && !(value?.toString() in offered)) ? [key: key, reason: "not_offered", value: value, offered: offered] : null
 }
