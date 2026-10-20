@@ -17785,8 +17785,15 @@ class TestRunner:
         smoke group is deliberately kept under.
         """
         legacy = LegacyEraClient(self.client, verbose=self.verbose)
-        legacy.initialize(LEGACY_PROTOCOL_VERSION)
-        var_name = f"{PREFIX}LegacyVar_{_run_artifact_suffix()}"
+        init = legacy.initialize(LEGACY_PROTOCOL_VERSION)
+        # A legacy client never makes continuation writes, so its lost-response guidance must
+        # point at the write records, never at recentWrites.
+        instructions = str(init.get("instructions") or "")
+        assert "hub_get_logs" in instructions and "component='write'" in instructions \
+            and "recentWrites" not in instructions, \
+            f"legacy initialize instructions must point at the write log, not recentWrites: {instructions}"
+        # Per-attempt nonce: a 504 re-run of this test must not match the earlier attempt's write records.
+        var_name = f"{PREFIX}LegacyVar_{_run_artifact_suffix()}_{time.time_ns()}"
 
         def _legacy_value() -> str | None:
             """The variable's value over the legacy wire, or None when it is gone.
@@ -17832,6 +17839,24 @@ class TestRunner:
                 f"legacy read-back value mismatch: {got}"
             assert got.get("source") == "hub", \
                 f"the legacy create landed outside the hub namespace: {got}"
+
+            # The legacy write left its audit pair in the MCP log at the default log level.
+            logs = self.client.call_tool("hub_get_logs", {
+                "mode": "mcp", "component": "write", "limit": 100})
+            records = [e for e in logs.get("entries", [])
+                       if (e.get("details") or {}).get("tool") == "hub_create_variable"
+                       and ((e.get("details") or {}).get("target") or {}).get("name") == var_name]
+            finished = [e for e in records if e["details"].get("phase") == "finished"]
+            assert len(finished) == 1, \
+                f"expected exactly one finished write record for {var_name}: {records}"
+            assert finished[0]["details"].get("outcome") == "completed", \
+                f"the legacy create's write record is not completed: {records}"
+            write_id = finished[0]["details"].get("writeId")
+            assert any(e["details"].get("phase") == "started" and e["details"].get("writeId") == write_id
+                       for e in records), \
+                f"the finished write record has no started record with the same writeId: {records}"
+            assert "legacy-era-v1" not in str(records), \
+                f"a write record leaked the written value: {records}"
 
             # The delete is the second write, and the second lease: a lease that was taken
             # but never released would refuse it once the cap is on.
