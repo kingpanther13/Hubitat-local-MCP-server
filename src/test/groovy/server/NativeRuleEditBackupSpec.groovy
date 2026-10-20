@@ -51,7 +51,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
             JsonOutput.toJson(form())
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 420, boolean retry = false ->
-            if (path == '/installedapp/update/json') return [status: 200]
+            if (path == '/installedapp/update/json' && body.contains('_action_update=Done')) return [status: 200]
             events << 'submit'
             [status: 200, data: JsonOutput.toJson(form())]
         }
