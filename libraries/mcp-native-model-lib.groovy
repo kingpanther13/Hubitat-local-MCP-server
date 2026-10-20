@@ -365,8 +365,12 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
         }
     } else {
         List prefixes = part == 'trigger' ? ['tCapab', 'tDev', 'ReltDev', 'reltDevice', 'xVarT', 'tstate', 'istVar', 'istDev', 'AlltDev', 'SHours', 'SMins', 'SSecs', 'stays', 'ButtontDev', 'tCustomAttr', 'tCustomAttrType'] : ['rCapab_', 'rDev_', 'RelrDev_', 'relDevice_', 'xVarR_', 'state_', 'isVar_', 'isDev_', 'AllrDev_', 'SHours_', 'SMins_', 'SSecs_', 'stays_', 'rCustomAttr_', 'rCustomAttrType_']
-        prefixes.addAll(['not', 'hhmmss', 'atTime', 'atSunriseOffset', 'atSunsetOffset', 'time', 'date', 'atVarTime', 'atDate', 'modesX', 'elapseHor', 'elapseMin', 'elapseSec', 'elapseTime'])
+        prefixes.addAll(['not', 'hhmmss', 'atTime', 'atSunriseOffset', 'atSunsetOffset', 'time', 'date', 'atVarTime', 'atDate', 'modesX', 'elapseHor', 'elapseMin', 'elapseSec', 'elapseTime',
+                         'startDateType', 'endDateType', 'monthStart', 'dayStart', 'timeStart', 'useVarStart', 'varStart', 'monthEnd', 'dayEnd', 'timeEnd', 'useVarEnd', 'varEnd',
+                         'atOrBetween', 'starting', 'startingA', 'startSunriseOffset', 'startSunsetOffset', 'startConTime', 'startVarTime', 'ending', 'endingA', 'endSunriseOffset', 'endSunsetOffset', 'endConTime', 'endVarTime', 'whichPeriod', 'xVar_', 'stateSince_'])
         removedNames = settingsBefore.keySet().findAll { name -> prefixes.any { name == "${it}${id}".toString() } || (part == 'trigger' && name in ["isCondTrig.${id}".toString(), "condTrig.${id}".toString()]) }
+        String selector = part == 'trigger' ? "tCapab${id}".toString() : "rCapab_${id}".toString()
+        if (settingsBefore.get(selector)?.value == 'Days of Week Schedule') removedNames.addAll(settingsBefore.keySet().findAll { it.endsWith("-${id}".toString()) })
     }
     if (part == 'action') _nrHandle(ruleId).deleteAction(id)
     else _nrHandle(ruleId).deleteCapab(id.toInteger(), part == 'trigger', false)
