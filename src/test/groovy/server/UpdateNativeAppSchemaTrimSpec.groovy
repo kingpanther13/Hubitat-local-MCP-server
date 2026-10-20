@@ -4,13 +4,8 @@ import groovy.json.JsonOutput
 import support.ToolSpecBase
 
 /**
- * Issue #181: the flat tools/list catalog (useGateways=false) sits ~360 bytes
- * under the hub's 124,000-byte response cap. hub_set_rule alone is ~33 KB
- * (27% of the catalog), most of which is static capability enumeration that's
- * either (a) covered by the tool's {discover: true} mode or (b) documented in
- * TOOL_GUIDE.md / docs/rm_action_subtype_schemas.md.
- *
- * The fix is a flat-mode-only transform: `[[FLAT_TRIM]] ... [[/FLAT_TRIM]]`
+ * The flat tools/list catalog must fit the hub's 124,000-byte response cap.
+ * The flat-mode transform uses `[[FLAT_TRIM]] ... [[/FLAT_TRIM]]`
  * markers in the schema descriptions are STRIPPED WITH CONTENT in flat mode
  * (recover the bytes) and STRIPPED WITHOUT CONTENT (just the tokens) in every
  * other client-visible surface (gateway-catalog mode, hub_search_tools corpus,
@@ -159,7 +154,12 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         def gateway = script.handleGateway('hub_manage_rule_machine', null, [:]).tools.find { it.name == 'hub_update_rule_document' }
         then:
         flat && gateway
-        JsonOutput.toJson(flat).getBytes('UTF-8').length <= JsonOutput.toJson(gateway).getBytes('UTF-8').length
+        flat.inputSchema == gateway.inputSchema
+        flat.description.length() <= gateway.description.length()
+        flat.annotations.title == gateway.title
+        flat.description.contains('hub_get_tool_guide')
+        gateway.description.contains('hub_get_tool_guide')
+        JsonOutput.toJson(flat).getBytes('UTF-8').length < 4000
         JsonOutput.toJson(gateway).getBytes('UTF-8').length < 4000
     }
 
@@ -467,7 +467,7 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
     }
 
     def "#tool intentionally carries NO hub_get_tool_guide pointer in flat mode (kept lean; pin the intent)"() {
-        // These four tools deliberately fold their entire guide pointer INSIDE [[FLAT_TRIM]], so the
+        // These tools deliberately fold their entire guide pointer INSIDE [[FLAT_TRIM]], so the
         // flat catalog stays lean and the pointer only shows in gateway mode. That is a choice, not an
         // accident -- pin it so a future edit that either (a) surfaces a flat pointer or (b) drops the
         // gateway pointer trips CI and gets a deliberate re-decision.
@@ -496,6 +496,6 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         rawDesc.contains('[[FLAT_TRIM]]')
 
         where:
-        tool << ['hub_list_rules', 'hub_set_native_app', 'hub_get_hub_mesh', 'hub_update_hub_mesh']
+        tool << ['hub_list_rules', 'hub_get_hub_mesh', 'hub_update_hub_mesh']
     }
 }
