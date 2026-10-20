@@ -167,8 +167,38 @@ private void _ndPreflight(Long id, List changes) {
     Map expressions = before.eval instanceof Map ? [:] + before.eval : [:]
     boolean allocatedConditions = false
     def pendingExpressions = []
+    List actionOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
+    boolean allocatedActions = false
+    Map locals = null
     changes.each { change ->
         Map value = change.value
+        if (change.part == 'variable') {
+            if (locals == null) {
+                def fresh = _nrHandle(id).getAllLocalVars()
+                if (!(fresh instanceof Map)) throw new IllegalStateException('Native local variables are unavailable')
+                locals = [:] + fresh
+            }
+            if (value.operation == 'create') {
+                if (locals.containsKey(value.name)) throw new IllegalArgumentException('Local variable already exists')
+                locals.put(value.name, [type: value.type, value: value.value])
+            } else {
+                if (!(locals.get(value.name) instanceof Map)) throw new IllegalArgumentException('Local variable does not exist')
+                if (value.operation == 'set') {
+                    _nmLocalValue(locals.get(value.name).type?.toString(), value.value)
+                    locals.put(value.name, locals.get(value.name) + [value: value.value])
+                } else locals.remove(value.name)
+            }
+        }
+        if ((change.part == 'action' && !value.containsKey('id')) || change.part == 'terminator') allocatedActions = true
+        if (change.part == 'order' && !allocatedActions) {
+            List requested = value.ids.collect { it.toString() }
+            if (requested.sort(false) != actionOrder.sort(false)) throw new IllegalArgumentException('Action order must be an exact permutation of existing action IDs')
+            actionOrder = requested
+        }
+        if (change.part == 'delete' && value.part == 'action' && !allocatedActions) {
+            if (!actionOrder.contains(value.id.toString())) throw new IllegalArgumentException('Native action does not exist')
+            actionOrder = actionOrder.findAll { it != value.id.toString() }
+        }
         if (change.part == 'condition' && !value.containsKey('id')) allocatedConditions = true
         if (change.part in ['expression', 'required'] || (change.part == 'action' && value.expression instanceof List)) {
             List tokens = change.part == 'action' ? value.expression : value.tokens

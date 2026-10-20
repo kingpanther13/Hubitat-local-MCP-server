@@ -107,10 +107,20 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'delete and order parts dispatch only fixed model operations'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'delete', value: [part: 'action', id: '2']], [part: 'order', value: [ids: ['3', '1']]]], confirm: true])
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'delete', value: [part: 'action', id: '1']], [part: 'order', value: [ids: ['3']]]], confirm: true])
         then:
         result.success
-        events[0..1] == ['delete:action:2', 'order']
+        events[0..1] == ['delete:action:1', 'order']
+    }
+
+    def 'invalid action order is refused before any change or render'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'order', value: [ids: ['3']]]], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        events.empty
+        nativeState.actionList == ['3', '1']
     }
 
     def 'unknown expression operands are refused before any change or render'() {
