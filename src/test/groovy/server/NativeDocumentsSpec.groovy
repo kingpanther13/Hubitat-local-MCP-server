@@ -135,7 +135,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'referenced condition deletion is refused before any change or render'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'delete', value: [part: 'condition', id: '4']]]], confirm: true])
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'delete', value: [part: 'condition', id: '4']]], confirm: true])
         then:
         !result.success
         !result.partial
