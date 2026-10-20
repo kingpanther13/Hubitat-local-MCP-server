@@ -129,7 +129,7 @@ class NativeModelSpec extends ToolSpecBase {
         script._nmSetRequired(42L, ['1', 'AND'])
         then:
         thrown(IllegalArgumentException)
-        settings.empty
+        settings.isEmpty()
         writes.empty
     }
 
@@ -138,7 +138,7 @@ class NativeModelSpec extends ToolSpecBase {
         script._nmLocal(42L, 'create', name, value, type)
         then:
         thrown(IllegalArgumentException)
-        locals.empty
+        locals.isEmpty()
         where:
         name    | value | type
         'value' | null  | 'string'
@@ -157,7 +157,7 @@ class NativeModelSpec extends ToolSpecBase {
         then:
         thrown(IllegalArgumentException)
         writes.empty
-        settings.empty
+        settings.isEmpty()
         where:
         row << [[capability: 'Switch', fields: [[name: 'state_#', type: 'enum']]],
                 [capability: 'Switch', fields: [[name: 'state_#', value: 'on']]],
@@ -175,7 +175,7 @@ class NativeModelSpec extends ToolSpecBase {
         read.variable.value == value
         listed.localVariables.value.type == type
         removed.deleted
-        locals.empty
+        locals.isEmpty()
         where:
         value | type
         false | 'boolean'
@@ -212,7 +212,7 @@ class NativeModelSpec extends ToolSpecBase {
         script._nmLocal(42L, 'create', 'value', 1, 'integer')
         then:
         thrown(IllegalStateException)
-        locals.empty
+        locals.isEmpty()
     }
 
     def 'condition compile uses native selector and placeholder fields preserves unrelated state'() {
@@ -380,7 +380,7 @@ class NativeModelSpec extends ToolSpecBase {
         then:
         thrown(IllegalArgumentException)
         writes.empty
-        settings.empty
+        settings.isEmpty()
     }
 
     def 'changing wait event count is refused before writing existing action'() {
@@ -391,6 +391,6 @@ class NativeModelSpec extends ToolSpecBase {
         then:
         thrown(IllegalArgumentException)
         writes.empty
-        settings.empty
+        settings.isEmpty()
     }
 }
