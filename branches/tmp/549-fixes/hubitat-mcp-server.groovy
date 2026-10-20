@@ -28274,7 +28274,7 @@ Map _rmWalkStep(Integer appId, Map spec) {
             def invalid = values.findAll { v -> v != null && v != "" && !validValues.contains(v) }
             if (invalid) {
                 def valueWord = (invalid.size() == 1) ? "value" : "values"
-                throw new IllegalArgumentException("walkStep.write enum validation failed: ${valueWord} ${invalid} not in options ${validValues} for field '${writtenKey}'. Pick values from the options list (a single value the picker does not list is always refused; validateEnum=false lets a list through unchecked). RM is not touched.")
+                throw _rmFail(new IllegalArgumentException("walkStep.write enum validation failed: ${valueWord} ${invalid} not in options ${validValues} for field '${writtenKey}'. Pick values from the options list (a single value the picker does not list is always refused; validateEnum=false lets a list through unchecked).".toString()), [notSent: true])
             }
         }
         def fullSchemaMap = _rmCollectInputSchema(beforeCfg?.configPage)
