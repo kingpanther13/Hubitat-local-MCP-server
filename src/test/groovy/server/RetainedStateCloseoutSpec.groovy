@@ -166,7 +166,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         given:
         atomicStateMap.predClearPending = ['10': true, '11': true, '12': true]
         hubGet.register('/hub2/appsList') { params ->
-            script._rmMarkPredClearPending(12)
+            script._rmCommitPredClearPending(script._rmPendingPredClearSnapshot() + ['12': 'created-after-inventory-snapshot'])
             '{"apps":[{"data":{"id":10,"hidden":true},"children":[]}]}'
         }
 
@@ -495,8 +495,8 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
         when:
         index.fail = false
         peer._publishItemBackup('app_3', entry('3'))
-        peer._rmMarkPredClearPending(10)
-        peer._rmMarkPredClearPending(11)
+        peer._rmCommitPredClearPending(['10': 'generation-10'])
+        peer._rmCommitPredClearPending(['10': 'generation-10', '11': 'generation-11'])
         backing.put('predClearPending', [:])
         backing.@fail = true
         peer.metaClass.hubInternalGet = { String path, Map params = null ->
@@ -511,7 +511,7 @@ class RetainedStateCloseoutSpec extends ToolSpecBase {
 
         when:
         backing.@fail = false
-        peer._rmMarkPredClearPending(11)
+        peer._rmCommitPredClearPending(peer._rmPendingPredClearSnapshot() + ['11': 'newer-generation-11'])
 
         then:
         backing.predClearPending.keySet() == ['10', '11'] as Set

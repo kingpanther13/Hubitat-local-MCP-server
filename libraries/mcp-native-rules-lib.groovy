@@ -1072,14 +1072,34 @@ private List _rmLiveActionIndicesFromSettings(Map status) {
     return live.keySet().sort()
 }
 
-// Action indices in RM's DISPLAY ORDER, read positionally by _rmMoveAction (to verify a position
-// shift) and _rmModifyAction (to walk a rebuilt action back to its original slot). Primary source
-// is /app/ruleBuilderJson's `actionList`, the only display-ordered source the hub exposes, read
-// via _ruleCompiledState so this shares the health check's fetch. When that is absent or
-// unreadable (a non-RM classic app, older firmware, a failed read) the appSettings scan answers
-// WHICH rows exist but NOT the order they display in.
-//
-// Note action keys use a dot-N suffix (actType.1) vs trigger keys without dot (tCapab1).
+// Tri-state disabled status for restore and the disabled-app guard: null means unverified.
+Boolean _rmIsAppDisabled(Integer appId) {
+    String why
+    // Two attempts. A caller that gets null PROCEEDS (a blip must not block edits on a healthy
+    // hub), so an unreadable first attempt is the one case where the gate silently stops
+    // protecting: on a rule that really is disabled, RM then no-ops the write and the caller
+    // reports success having changed nothing. One cheap retry closes the transient-blip window
+    // without turning a hiccup into a refusal.
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) { try { pauseExecution(250) } catch (Exception ignore) { } }
+        why = null
+        try {
+            def txt = hubInternalGet("/installedapp/json/${appId}")
+            if (!txt) {
+                why = "empty /installedapp/json body"
+            } else {
+                def parsed = new groovy.json.JsonSlurper().parseText(txt)
+                if (parsed instanceof Map && parsed.containsKey("disabled")) return parsed.disabled == true
+                why = "/installedapp/json carried no 'disabled' key"
+            }
+        } catch (Exception e) {
+            why = "read failed (${e.message})"
+        }
+    }
+    mcpLog("warn", "rm-native", "_rmIsAppDisabled(${appId}): ${why} on two attempts -- disabled state UNKNOWN, proceeding")
+    return null
+}
+
 void _rmRejectDisabledAppEdit(Integer appId, String opName) {
     if (_rmIsAppDisabled(appId) != true) return
     throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
