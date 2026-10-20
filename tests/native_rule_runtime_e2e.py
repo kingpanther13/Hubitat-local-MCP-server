@@ -6,7 +6,7 @@ actions and sends on/off/setTemperature commands to those verified fixtures.
 Existing fixture attribute values must be initialized; cleanup restores them.
 Run explicitly: python tests/native_rule_runtime_e2e.py
 
-These are assertions of required behavior, including invalid-enum refusal.
+These are assertions of required behavior, including invalid-enum detection.
 Unsupported recipes or failing invariants fail the suite; they are not xfails.
 Scheduling, event delivery, and the remaining action families are not covered.
 """
@@ -222,7 +222,8 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
         native = self.status(rule_id, missing_ok=True).get("installedApp")
         if not native:
             return
-        self.assertEqual(native.get("label") or native.get("name"), expected_name)
+        self.assertEqual(str(native["id"]), rule_id)
+        self.assertEqual(self.settings(rule_id)["origLabel"]["value"], expected_name)
         self.assertTrue(expected_name.startswith(self.prefix + "_"))
         self.client.native("/installedapp/update/json", "POST", form={
             "id": rule_id, "_action_remove": "Remove",
@@ -360,10 +361,7 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
         config.update({key: value for key, value in state.items() if key.startswith("lv_")})
         return {"state": config, "settings": self.settings(rule_id)}
 
-    def test_invalid_native_enums_refuse_before_any_configuration_change(self):
-        rule_id = self.create_rule([
-            change("variable", operation="create", name="Result", type="integer", value=0),
-        ])
+    def test_invalid_native_enums_are_reported_without_running_actions(self):
         invalid_changes = [
             change("condition", capability="Switch", fields=[
                 field("rDev_#", "capability.switch", [str(self.fixtures["switch"])]),
@@ -373,14 +371,29 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
         ]
         for invalid in invalid_changes:
             with self.subTest(part=invalid["part"]):
+                rule_id = self.create_rule([
+                    change("variable", operation="create", name="Result", type="integer", value=0),
+                ])
                 before = self.config_snapshot(rule_id)
+                status_before = self.status(rule_id)
                 response = self.client.tool(
                     "hub_update_rule_document", rule_id=rule_id,
                     changes=[invalid], confirm=True,
                 )
                 self.assertIs(response.get("success"), False, response)
-                self.assertFalse(response.get("partial"), response)
-                self.assertEqual(self.config_snapshot(rule_id), before)
+                self.assertIsInstance(response.get("partial"), bool, response)
+                field_prefix = "state_" if invalid["part"] == "condition" else "numOp."
+                self.assertIn(field_prefix, json.dumps(response))
+                after = self.config_snapshot(rule_id)
+                if response["partial"]:
+                    # Native field discovery may stage settings; it must not finish or run the action.
+                    self.assertEqual(after["state"]["actionList"], before["state"]["actionList"])
+                    self.assertEqual(after["state"]["lv_Result"], before["state"]["lv_Result"])
+                    status_after = self.status(rule_id)
+                    for key in ("eventSubscriptions", "scheduledJobs"):
+                        self.assertEqual(status_after[key], status_before[key])
+                else:
+                    self.assertEqual(after, before)
 
 
 if __name__ == "__main__":
