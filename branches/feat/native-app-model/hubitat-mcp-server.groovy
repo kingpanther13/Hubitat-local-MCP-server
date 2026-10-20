@@ -26174,7 +26174,7 @@ Map toolCallAppForm(Map args) {
                 }
                 attempted = true
                 if (control?.kind == 'local_app') {
-                    navigation = _nfVerifyNavigation(id, [app_id: control.value.toString().toLong(), page: control.page])
+                    navigation = _nfVerifyNavigation(id, [app_id: control.value.toString().toLong(), page: control.stateAttribute])
                     model = [location: 'local_app']
                 } else if (control?.kind == 'create_child') {
                     String childName = control.value.toString()
