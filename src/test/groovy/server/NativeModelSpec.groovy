@@ -40,7 +40,7 @@ class NativeModelSpec extends ToolSpecBase {
             [success: true]
         }
         script.metaClass._nrSettings = { Long id, List names -> settings.subMap(names) }
-        script.metaClass.hubInternalGet = { String path -> [settings: settings.collect { name, row ->
+        script.metaClass.hubInternalGet = { String path, Map query = null -> path == '/device/listJson' ? [[id: 9]] : [settings: settings.collect { name, row ->
             [name: name, type: row.type, value: row.value, multiple: row.multiple, deviceList: row.deviceList]
         }] }
     }
@@ -779,6 +779,46 @@ class NativeModelSpec extends ToolSpecBase {
         !writes.any { it instanceof List }
         renders == [false]
         nativeState.capabsfalse.keySet() == ['1', '2'] as Set
+    }
+
+    def 'model numeric inputs use shared integer and native range checks'() {
+        when:
+        def result = script._nmValidateInputs(nativeForm([[name: 'amount', type: type, multiple: false] + bounds]),
+            [[name: 'amount', type: type, value: value]])
+        then:
+        result.success == accepted
+        if (!accepted) assert result.error.contains('amount')
+        where:
+        type      | bounds                       | value | accepted
+        'number'  | [:]                          | 1.5   | false
+        'number'  | [range: '0..10']             | -1    | false
+        'number'  | [range: '0..10']             | 11    | false
+        'number'  | [range: '0..10']             | 10    | true
+        'decimal' | [min: 1, max: 2]             | 1.5   | true
+        'decimal' | [range: '*..2']              | 2.1   | false
+        'number'  | [range: '0..10', min: -2]    | -1    | true
+        'number'  | [:]                          | ''    | false
+    }
+
+    def 'model device values must belong to native capability choices and respect excluded devices'() {
+        given:
+        List queries = []
+        script.metaClass.hubInternalGet = { String path, Map query ->
+            queries << [path: path, query: query]
+            [[id: 7, label: 'Allowed'], [id: 8, label: 'Excluded']]
+        }
+        when:
+        def result = script._nmValidateInputs(nativeForm([[name: 'device', type: 'capability.switch', multiple: false, ignoreDevices: ['8']]]),
+            [[name: 'device', type: 'capability.switch', value: deviceId]])
+        then:
+        result.success == accepted
+        queries == [[path: '/device/listJson', query: [capability: 'capability.switch']]]
+        if (!accepted) assert result.error.contains('device')
+        where:
+        deviceId | accepted
+        7        | true
+        8        | false
+        999      | false
     }
 
 }

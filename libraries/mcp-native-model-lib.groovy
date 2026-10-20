@@ -42,18 +42,6 @@ private void _nmCollectInputs(Object node, Map inputs) {
     } else if (node instanceof List) node.each { child -> if (child instanceof Map || child instanceof List) _nmCollectInputs(child, inputs) }
 }
 
-private List _nmOptionKeys(Object options) {
-    if (options instanceof Map) return options.keySet().collect { it.toString() }.unique().sort()
-    if (!(options instanceof List)) return null
-    List keys = []
-    for (Object option in options) {
-        if (option instanceof Map) keys.addAll(option.keySet().collect { it.toString() })
-        else if (option instanceof String || option instanceof Number || option instanceof Boolean) keys << option.toString()
-        else return null
-    }
-    keys.unique().sort()
-}
-
 Map _nmValidateInputs(Object page, List fields) {
     Map inputs = [:]
     if (page instanceof Map) _nmCollectInputs(page, inputs)
@@ -69,14 +57,10 @@ Map _nmValidateInputs(Object page, List fields) {
             else if (!descriptor.containsKey('multiple') && row.value instanceof List) reason = 'native list cardinality is not exposed'
             else if (descriptor.containsKey('multiple') && descriptor.multiple != (row.value instanceof List)) reason = descriptor.multiple ? 'native input requires a list' : 'native input requires a scalar'
             else if (descriptor.required == true && (row.value == null || (row.value instanceof List && row.value.isEmpty()) || (row.value instanceof String && !row.value.trim()))) reason = 'required native input is empty'
-            else if (descriptor.type == 'bool' && !(row.value instanceof Boolean)) reason = 'native Boolean input requires a Boolean value'
-            else if (descriptor.type in ['number', 'decimal'] && (!(row.value instanceof Number || row.value instanceof String) || !row.value.toString().isBigDecimal())) reason = 'native numeric input requires a finite numeric value'
             else if (descriptor.type in ['text', 'textarea', 'password', 'time'] && !(row.value instanceof String)) reason = 'native text input requires a string value'
-            else if (descriptor.type in ['enum', 'mode']) {
-                List allowed = _nmOptionKeys(descriptor.options)
-                List values = row.value instanceof List ? row.value : [row.value]
-                if (allowed == null) reason = 'native enum options are unavailable or unsupported'
-                else if (values.any { !(it.toString() in allowed) }) reason = 'value is not one of the native enum options'
+            else {
+                try { _nrValidateInput([:] + descriptor + [multiple: descriptor.multiple == true], row.value) }
+                catch (Exception failure) { reason = failure.message ?: 'native descriptor validation failed' }
             }
         }
         if (reason != null) errors << [field: row.name, error: "Native field '${row.name}': ${reason}".toString()]

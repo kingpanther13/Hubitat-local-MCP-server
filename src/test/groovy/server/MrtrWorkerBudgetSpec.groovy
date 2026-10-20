@@ -5,7 +5,7 @@ import java.util.concurrent.atomic.AtomicLong
 import spock.lang.Unroll
 import support.ToolSpecBase
 
-// Retained internal engine regression: the fixture dispatches toolSetRule directly through
+// Retained internal engine regression: the fixture dispatches the retained edit helper directly through
 // a test-local native-app leaf. Its bulk/patch checkpoints are not document-tool slicing.
 class MrtrWorkerBudgetSpec extends ToolSpecBase {
     private final AtomicLong clock = new AtomicLong(1234567890000L)
@@ -21,7 +21,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         settingsMap.relayBudgetMs = 0
         settingsMap.lanBudgetMs = 0
         stateMap.lastBackupTimestamp = clock.get()
-        script.metaClass.toolSetNativeApp = { Map internalArgs -> script.toolSetRule(internalArgs) }
+        script.metaClass.toolSetNativeApp = { Map internalArgs -> script._applyNativeAppEdit(internalArgs) }
         script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason -> [key: 'baseline'] }
         script.metaClass._rmCheckRuleHealth = { Integer id -> [ok: true] }
         script.metaClass._rmAddAction = { Integer id, Map spec, boolean batch = false, Set validIds = null ->

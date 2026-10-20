@@ -146,3 +146,48 @@ Map _nrButton(Long ruleId, String name) {
     // Native handlers may consume errors internally; recipes must verify resulting structure.
     [verificationNeeded: true, result: result]
 }
+
+// Shared native descriptor checks. Callers retain their own admission and wire encoding.
+private List _nrChoiceKeys(Object options) {
+    if (options instanceof Map) return options.keySet().collect { it.toString() }.unique()
+    if (!(options instanceof List)) return null
+    List keys = []
+    for (Object option in options) {
+        if (option instanceof Map) keys.addAll(option.keySet().collect { it.toString() })
+        else if (option instanceof String || option instanceof Number || option instanceof Boolean) keys << option.toString()
+        else return null
+    }
+    keys.unique()
+}
+
+private List _nrDeviceChoices(Map field) {
+    def raw = hubInternalGet('/device/listJson', [capability: field.capability ?: field.type])
+    def devices = raw instanceof List ? raw : new groovy.json.JsonSlurper().parseText(raw?.toString() ?: '')
+    if (!(devices instanceof List)) throw new IllegalStateException('Native device choices could not be read')
+    def ignored = field.containsKey('ignore') ? field.ignore : field.ignoreDevices
+    List excluded = (ignored instanceof List ? ignored : (ignored?.toString()?.tokenize(',') ?: [])).collect { it.toString() }
+    devices.findAll { device -> device instanceof Map && device.id && !(device.id.toString() in excluded) }
+}
+
+private void _nrValidateInput(Map field, Object value, boolean allowClear = false) {
+    if (value == null) throw new IllegalArgumentException("Use an empty string or list to clear ${field.name}")
+    if (field.multiple != (value instanceof List)) throw new IllegalArgumentException("Incorrect cardinality for ${field.name}")
+    List values = value instanceof List ? value : [value]
+    if (values.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException("Scalar values are required for ${field.name}")
+    if (field.required && (!values || values.any { it.toString() == '' })) throw new IllegalArgumentException("Required field: ${field.name}")
+    boolean device = field.type == 'capability' || field.type.startsWith('capability.') || field.type.startsWith('device.')
+    List options = device ? _nrDeviceChoices(field).collect { it.id.toString() } : (field.containsKey('option_keys') ? field.option_keys : _nrChoiceKeys(field.options))
+    if ((device || field.type in ['enum', 'mode']) && options == null) throw new IllegalArgumentException("Native choices are unavailable for ${field.name}")
+    if (options != null && values.any { !(allowClear && it.toString() == '') && !(it.toString() in options) }) throw new IllegalArgumentException("Invalid native choice for ${field.name}")
+    if (field.type == 'bool' && !(value instanceof Boolean)) throw new IllegalArgumentException("Boolean required for ${field.name}")
+    if (field.type in ['number', 'decimal'] && !(allowClear && value.toString() == '')) {
+        if (!value.toString().isBigDecimal()) throw new IllegalArgumentException("Numeric value required for ${field.name}")
+        BigDecimal number = value.toString().toBigDecimal()
+        if (field.type == 'number' && number.stripTrailingZeros().scale() > 0) throw new IllegalArgumentException("Integer required for ${field.name}")
+        List range = field.range?.toString()?.split(/\.\./)?.toList() ?: []
+        def minimum = field.min != null ? field.min : (range.size() == 2 ? range.get(0) : null)
+        def maximum = field.max != null ? field.max : (range.size() == 2 ? range.get(1) : null)
+        if (minimum?.toString()?.isBigDecimal() && number < minimum.toString().toBigDecimal()) throw new IllegalArgumentException("Below minimum for ${field.name}")
+        if (maximum?.toString()?.isBigDecimal() && number > maximum.toString().toBigDecimal()) throw new IllegalArgumentException("Above maximum for ${field.name}")
+    }
+}

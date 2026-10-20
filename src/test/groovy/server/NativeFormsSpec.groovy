@@ -408,4 +408,17 @@ class NativeFormsSpec extends ToolSpecBase {
         definitions[0].inputSchema.required.contains('confirm')
         definitions[0].description.contains('Rendering executes app code')
     }
+    def 'shared validation preserves optional form clearing and native wire encodings'() {
+        given:
+        assert open().success
+        calls.clear()
+        when:
+        def result = submit([count: '', selection: [], devices: [], text: ''])
+        then:
+        result.success
+        calls.find { it.path == '/installedapp/update/json' }.body.subMap([
+            'settings[count]', 'settings[selection]', 'settings[devices]', 'settings[text]']) == [
+            'settings[count]': '', 'settings[selection]': '[]', 'settings[devices]': '', 'settings[text]': '']
+    }
+
 }

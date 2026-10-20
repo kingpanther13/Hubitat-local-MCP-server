@@ -195,35 +195,17 @@ private void _nfCache(String key, Map context) {
 }
 
 private List _nfDevices(Map field) {
-    def raw = hubInternalGet('/device/listJson', [capability: field.capability])
-    def devices = raw instanceof List ? raw : new groovy.json.JsonSlurper().parseText(raw.toString())
-    if (!(devices instanceof List)) throw new IllegalStateException('Native device choices could not be read')
-    devices.findAll { device -> device instanceof Map && device.id && !(device.id.toString() in field.ignore) }.collect { device ->
+    _nrDeviceChoices(field).collect { device ->
         [value: device.id.toString(), label: _nfText(device.label ?: device.name)]
     }
 }
 
 private String _nfValue(Map field, Object value) {
     if (!field.supported || field.disabled || field.name =~ /[\[\]\r\n]/) throw new IllegalArgumentException("Unsupported or disabled native field: ${field.name}")
-    if (value == null) throw new IllegalArgumentException("Use an empty string or list to clear ${field.name}")
-    if (field.multiple != (value instanceof List)) throw new IllegalArgumentException("Incorrect cardinality for ${field.name}")
+    Map descriptor = [:] + field
+    descriptor.option_keys = field.containsKey('option_keys') ? field.option_keys : (field.options == null ? null : field.options*.value)
+    _nrValidateInput(descriptor, value, true)
     List values = value instanceof List ? value : [value]
-    if (values.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException("Scalar values are required for ${field.name}")
-    if (field.required && (!values || values.any { it.toString() == '' })) throw new IllegalArgumentException("Required field: ${field.name}")
-    List options = field.device ? _nfDevices(field)*.value : (field.containsKey('option_keys') ? field.option_keys : field.options == null ? null : field.options*.value)
-    if ((field.device || field.type in ['enum', 'mode']) && options == null) throw new IllegalArgumentException("Native choices are unavailable for ${field.name}")
-    if (options != null && values.any { it.toString() != '' && !(it.toString() in options) }) throw new IllegalArgumentException("Invalid native choice for ${field.name}")
-    if (field.type == 'bool' && !(value instanceof Boolean)) throw new IllegalArgumentException("Boolean required for ${field.name}")
-    if (field.type in ['number', 'decimal'] && value.toString() != '') {
-        if (!value.toString().isBigDecimal()) throw new IllegalArgumentException("Numeric value required for ${field.name}")
-        BigDecimal number = value.toString().toBigDecimal()
-        if (field.type == 'number' && number.stripTrailingZeros().scale() > 0) throw new IllegalArgumentException("Integer required for ${field.name}")
-        List range = field.range?.toString()?.split(/\.\./)?.toList() ?: []
-        def minimum = field.min != null ? field.min : (range.size() == 2 ? range[0] : null)
-        def maximum = field.max != null ? field.max : (range.size() == 2 ? range[1] : null)
-        if (minimum?.toString()?.isBigDecimal() && number < minimum.toString().toBigDecimal()) throw new IllegalArgumentException("Below minimum for ${field.name}")
-        if (maximum?.toString()?.isBigDecimal() && number > maximum.toString().toBigDecimal()) throw new IllegalArgumentException("Above maximum for ${field.name}")
-    }
     if (field.device) return values.collect { it.toString() }.join(',')
     if (field.multiple) return groovy.json.JsonOutput.toJson(values.collect { it.toString() })
     // The classic browser removes markup from visible scalar inputs.
