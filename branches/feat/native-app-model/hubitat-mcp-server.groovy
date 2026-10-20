@@ -17638,7 +17638,7 @@ def toolListAppPages(args) {
     def linked = _rmPageHrefs(parsed.configPage as Map).findAll { !(it.page in knownNames) }.unique { it.page }
     linked.each { pages << [name: it.page, title: it.title, role: "sub-page"] }
     if (linked) {
-        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Drive native page controls with hub_call_app_form; use native document tools for supported Rule Machine structure changes."
+        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Use hub_set_rule for Rule Machine changes and native form controls; use the native editor for other apps."
     } else if (!curatedHpm) {
         note = "The primary page links no sub-pages."
     }
@@ -17731,7 +17731,7 @@ private Map _createUserAppInstance(Integer codeAppId) {
     if (commit?.uiBlocked) {
         return [
             success: false,
-            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- open hub_call_app_form(app_id:${newId}, steps:[{kind:'open'}], confirm:true), submit the listed fields using the returned expect_page, then activate the returned Done control_id to install the app.".toString(),
+            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- open the native app editor, submit the listed fields, then click Done to install the app.".toString(),
             codeAppId: codeAppId,
             instanceAppId: newId,
             committed: false
@@ -17861,7 +17861,7 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
             success: false,
             uiBlocked: true,
             error: submit.uiReason,
-            note: "No Done was submitted, so the instance is not installed yet. Open hub_call_app_form(app_id:${instanceId}, steps:[{kind:'open'}], confirm:true), submit the listed fields using the returned expect_page, then activate the returned Done control_id to install it.".toString(),
+            note: "No Done was submitted, so the instance is not installed yet. Open the native app editor, submit the listed fields, then click Done to install it.".toString(),
             scheduledJobCount: 0,
             eventSubscriptionCount: 0
         ]
@@ -19649,7 +19649,7 @@ A transport drop can lose the response while the hub still commits this write; v
             name: "hub_get_app_config",
             description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page.[[FLAT_TRIM]] Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.).[[/FLAT_TRIM]] Read-only.
 
-Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable native editor buttons; hub_call_app_form returns supported controls. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
+Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable native editor buttons; hub_set_rule form operations return supported Rule Machine controls. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
 
 Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
             inputSchema: [
@@ -23977,7 +23977,7 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
         try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
         if (vrbFallback == null) {
             if (e.message?.contains("404")) {
-                throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='native_rule_documents').")
+                throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='set_rule_reference').")
             }
             throw new IllegalArgumentException("Cannot back up rule ${ruleId}: configure/json failed -- ${e.message}")
         }
@@ -26087,7 +26087,7 @@ Map toolSetRule(Map request) {
     _ndValidateSchema(arguments, schema, 'args', execute)
     if (operation == 'create' && request.containsKey('rule_id')) throw new IllegalArgumentException('create uses args.parent_id, not rule_id')
     if (!execute) {
-        Map properties = [operation: [type: 'string', enum: [operation]], args: schema, confirm: [type: 'boolean']]
+        Map properties = [operation: [type: 'string', enum: [operation]], args: schema, confirm: [type: 'boolean'], bestPracticeKey: [type: 'string']]
         List required = ['operation', 'args', 'confirm']
         if (operation != 'create') { properties.rule_id = [type: 'integer', minimum: 1]; required << 'rule_id' }
         return [operation: operation, confirm_required: true, inputSchema: [type: 'object', additionalProperties: false, properties: properties, required: required],
@@ -26105,7 +26105,7 @@ Map toolSetRule(Map request) {
 def _getAllToolDefinitions_partNativeDocuments() {
     return [[
       name: 'hub_set_rule', description: 'Read, create or update native Rule Machine rules, or use their native forms. Omit operation for help; select a write operation without confirm for its schema. Writes require confirm=true and a recent backup; partial changes can remain. Guide: set_rule_reference.',
-      inputSchema: [type: 'object', additionalProperties: false, properties: [operation: [type: 'string', enum: ['read', 'create', 'update', 'form']], rule_id: [type: 'integer', minimum: 1], args: [type: 'object'], confirm: [type: 'boolean']]]]]
+      inputSchema: [type: 'object', additionalProperties: false, properties: [operation: [type: 'string', enum: ['read', 'create', 'update', 'form']], rule_id: [type: 'integer', minimum: 1], args: [type: 'object'], confirm: [type: 'boolean'], bestPracticeKey: [type: 'string']]]]]
 }
 def _readOnlyToolNames_partNativeDocuments() { [] }
 def _toolDisplayMeta_partNativeDocuments() {
@@ -26114,7 +26114,7 @@ def _toolDisplayMeta_partNativeDocuments() {
 String _ndGuide() {
     return '''## Set Rule Reference
 
-Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level rule_id identifies the target; args cannot override it or confirm.
+Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level rule_id identifies the target; args cannot override it or confirm. When mandatory guide acknowledgment is enabled, pass its key as top-level bestPracticeKey alongside operation, rule_id, args and confirm.
 
 Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 
@@ -34196,13 +34196,13 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_call_zwave -> hub_admin_write_radios
 - hub_set_zigbee -> hub_admin_write_radios
 - hub_set_zwave -> hub_admin_write_radios
-- hub_set_rule -> set_rule_reference
 - hub_clone_custom_rule -> rules
 - hub_create_custom_rule -> rules
 - hub_delete_custom_rule -> rules
 - hub_export_custom_rule -> rules
 - hub_import_custom_rule -> rules
 - hub_update_custom_rule -> rules
+- hub_set_rule -> set_rule_reference
 - hub_update_device -> update_device
 - hub_manage_virtual_device -> virtual_devices
 - hub_delete_visual_rule -> visual_rule_reference
