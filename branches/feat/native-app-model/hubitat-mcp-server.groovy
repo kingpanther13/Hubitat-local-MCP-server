@@ -33728,7 +33728,7 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     if (part == 'condition' && settingsBefore.any { name, setting -> name.startsWith('condTrig.') && setting.value?.toString() == id }) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
     List removedNames = []
     if (part == 'action') {
-        removedNames = settingsBefore.keySet().findAll { it.endsWith(".${id}".toString()) }
+        removedNames = settingsBefore.keySet().findAll { it.endsWith(".${id}".toString()) }.toList()
         def deletedAction = _nmEntry(rows, id)
         if (deletedAction instanceof Map && deletedAction.wait instanceof List) {
             List prefixes = ['tCapab', 'tDev', 'ReltDev', 'reltDevice', 'xVarT', 'tstate', 'istVar', 'istDev', 'AlltDev', 'SHours', 'SMins', 'SSecs', 'stays', 'ButtontDev', 'tCustomAttr', 'tCustomAttrType', 'not', 'hhmmss', 'modesX', 'elapseHor', 'elapseMin', 'elapseSec', 'elapseTime']
@@ -33739,7 +33739,7 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
         prefixes.addAll(['not', 'hhmmss', 'atTime', 'atSunriseOffset', 'atSunsetOffset', 'time', 'date', 'atVarTime', 'atDate', 'modesX', 'elapseHor', 'elapseMin', 'elapseSec', 'elapseTime',
                          'startDateType', 'endDateType', 'monthStart', 'dayStart', 'timeStart', 'useVarStart', 'varStart', 'monthEnd', 'dayEnd', 'timeEnd', 'useVarEnd', 'varEnd',
                          'atOrBetween', 'starting', 'startingA', 'startSunriseOffset', 'startSunsetOffset', 'startConTime', 'startVarTime', 'ending', 'endingA', 'endSunriseOffset', 'endSunsetOffset', 'endConTime', 'endVarTime', 'whichPeriod', 'xVar_', 'stateSince_'])
-        removedNames = settingsBefore.keySet().findAll { name -> prefixes.any { name == "${it}${id}".toString() } || (part == 'trigger' && name in ["isCondTrig.${id}".toString(), "condTrig.${id}".toString()]) }
+        removedNames = settingsBefore.keySet().findAll { name -> prefixes.any { name == "${it}${id}".toString() } || (part == 'trigger' && name in ["isCondTrig.${id}".toString(), "condTrig.${id}".toString()]) }.toList()
         String selector = part == 'trigger' ? "tCapab${id}".toString() : "rCapab_${id}".toString()
         if (settingsBefore.get(selector)?.value == 'Days of Week Schedule') removedNames.addAll(settingsBefore.keySet().findAll { it.endsWith("-${id}".toString()) })
     }
