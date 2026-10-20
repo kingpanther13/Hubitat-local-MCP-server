@@ -67,7 +67,7 @@ private void _nfHtml(String html, Map controls, List unsupported) {
                 if (input.type == 'hidden' && input.name == "settings[${button.name}]") paired = true
             }
             if (known && paired) {
-                Map control = [name: button.name, kind: 'button', title: attrs['aria-label'] ?: _nfText(click.group(3)), disabled: attrs.containsKey('disabled') || (click.group(2) =~ /(?i)(?:^|\s)disabled(?:\s|$)/).find(),
+                Map control = [name: button.name, kind: 'button', title: attrs['aria-label'] ?: attrs.title ?: _nfText(click.group(3)), disabled: attrs.containsKey('disabled') || (click.group(2) =~ /(?i)(?:^|\s)disabled(?:\s|$)/).find(),
                                stateAttribute: attrs['data-stateattribute'], submit_on_change: (attrs['class'] ?: '').tokenize().contains('submitOnChange')]
                 if (attrs['data-confirm']) control.confirmation = attrs['data-confirm']
                 _nfControl(controls, control)
@@ -81,7 +81,8 @@ private void _nfHtml(String html, Map controls, List unsupported) {
 }
 
 private void _nfControl(Map controls, Map control) {
-    String key = "${control.name}\n${control.value ?: ''}"
+    String key = [control.name, control.value ?: '', control.stateAttribute ?: ''].collect { _nfEncode(it) }.join('|')
+    control.control_id = key
     if (controls.containsKey(key) && controls[key] != control) throw new IllegalStateException('Native form contains ambiguous controls')
     controls[key] = control
 }
@@ -259,7 +260,7 @@ Map toolCallAppForm(Map args) {
         if (step.keySet().any { !(it in keys) }) throw new IllegalArgumentException('Unknown form step property')
         if (step.kind == 'open' && step.page != null && (!(step.page instanceof String) || !(step.page ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('A registered native page name is required')
         if (step.kind == 'submit' && (!(step.expect_page instanceof String) || (step.fields != null && !(step.fields instanceof Map)))) throw new IllegalArgumentException('Submit requires expect_page and an optional fields object')
-        if (step.activate != null && (!(step.activate instanceof Map) || !(step.activate.name instanceof String) || step.activate.keySet().any { !(it in ['name', 'value']) })) throw new IllegalArgumentException('activate requires a returned control name and optional value')
+        if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned control_id string')
     }
     requireDestructiveConfirm(args.confirm)
     Long id = args.app_id.toString().toLong()
@@ -292,9 +293,8 @@ Map toolCallAppForm(Map args) {
                 Map control = null
                 String reloadPath = null
                 if (step.activate) {
-                    List matches = context.controls.values().findAll { it.name == step.activate.name && (!step.activate.containsKey('value') || it.value == step.activate.value) }
-                    if (matches.size() != 1) throw new IllegalArgumentException('Choose one exact returned native control name/value')
-                    control = matches[0]
+                    control = context.controls[step.activate]
+                    if (!control) throw new IllegalArgumentException('Choose one exact returned native control_id')
                     if (control.disabled) throw new IllegalArgumentException('The native control is disabled')
                     if (control.kind == 'button' && !control.submit_on_change && step.fields) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
                     if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
@@ -340,7 +340,7 @@ Map toolCallAppForm(Map args) {
 def _getAllToolDefinitions_partNativeForms() {
     def step = [type: 'object', additionalProperties: false, properties: [
         kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], expect_page: [type: 'string'],
-        fields: [type: 'object'], activate: [type: 'object', additionalProperties: false, properties: [name: [type: 'string'], value: [type: 'string']], required: ['name']]
+        fields: [type: 'object'], activate: [type: 'string', description: 'Exact control_id returned by the current form.']
     ], required: ['kind']]
     [[name: 'hub_call_app_form',
       description: 'Open or submit built-in native app forms using returned field/control names. Rendering executes app code and can change state. Requires confirm=true and a recent backup. Ordered batches may partially apply; never automatically retry buttons. Browser extensions are reported unsupported.',
@@ -358,7 +358,7 @@ String _nfGuide() {
 
 Use hub_call_app_form(app_id,steps,confirm:true) to operate an enabled built-in native app's classic editor. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. App removal uses the dedicated deletion tool.
 
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:{name:"returned control name",value:"optional exact control value"}}. Omit activate to save the supplied fields and refresh the current page. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. Defaults are shown but are not automatically submitted; supply a required default explicitly before navigating. Use options_for:["device field name"] to expand device choices on the final returned page.
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}. Omit activate to save the supplied fields and refresh the current page. Control IDs distinguish native buttons sharing a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. Defaults are shown but are not automatically submitted; supply a required default explicitly before navigating. Use options_for:["device field name"] to expand device choices on the final returned page.
 
 Batches contain 1 through 16 ordered steps. Each step uses the form returned by the preceding step, so dependent fields require another submit after they appear. A button handler runs before that step's fields are saved, as in the native browser; submit fields in a preceding step when the handler needs them. A button without submitOnChange reloads and requires a separate field submission.
 

@@ -67,7 +67,7 @@ class NativeFormsSpec extends ToolSpecBase {
         script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
     }
 
-    private Map submit(Map fields = [:], Map activate = null, String page = 'edit') {
+    private Map submit(Map fields = [:], String activate = null, String page = 'edit') {
         Map step = [kind: 'submit', expect_page: page, fields: fields]
         if (activate != null) step.activate = activate
         script.toolCallAppForm([app_id: 42, steps: [step], confirm: true])
@@ -127,13 +127,13 @@ class NativeFormsSpec extends ToolSpecBase {
         fields << [[selection: ['invalid']], [selection: 'a'], [sensor: ['7']], [enabled: 'true'], [count: 11], [count: 1.5], [unknown: 'value'], [devices: ['8']]]
     }
 
-    def 'page guard and exact ambiguous control choice fail before callbacks'() {
+    def 'page guard and incomplete control ID fail before callbacks'() {
         given:
         assert open().success
         calls.clear()
         when:
         def mismatch = submit([count: 1], null, 'other')
-        def ambiguous = submit([:], [name: '_action_update'])
+        def ambiguous = submit([:], '_action_update')
         then:
         !mismatch.success
         !mismatch.partial
@@ -147,7 +147,7 @@ class NativeFormsSpec extends ToolSpecBase {
         assert open().success
         calls.clear()
         when:
-        def result = submit([count: 3], [name: 'apply'])
+        def result = submit([count: 3], 'apply||clicked')
         then:
         result.success
         calls*.path == ['/installedapp/btn', '/installedapp/update/json']
@@ -161,7 +161,7 @@ class NativeFormsSpec extends ToolSpecBase {
         model.configPage.sections[0].input << [element: 'paragraph', title: """<div class='form-group'><input type='hidden' name='choose42.type' value='button'></div><div><a href='#' class='submitOnChange' onclick='buttonClick(this); return false;' data-stateAttribute='choice' aria-label='Choose &amp; continue'>Choose</a><input type='hidden' name='settings[choose42]' value=''></div>"""]
         when:
         def opened = open()
-        def result = submit([:], [name: 'choose42'])
+        def result = submit([:], 'choose42||choice')
         then:
         opened.success
         opened.controls.find { it.name == 'choose42' }.title == 'Choose & continue'
@@ -178,13 +178,31 @@ class NativeFormsSpec extends ToolSpecBase {
         def href = opened.controls.find { it.kind == 'href' }
         calls.clear()
         when:
-        def result = submit([count: 2], [name: href.name])
+        def result = submit([count: 2], href.control_id)
         then:
         result.success
         calls.size() == 1
         calls[0].body.containsKey('_action_href_advance|next|9')
         calls[0].body['params_for_action_href_advance|next|9'] == URLEncoder.encode(JsonOutput.toJson([row: 5, operation: 'edit']), 'UTF-8')
         calls[0].body.pageBreadcrumbs == '%5B%22main%22%5D'
+    }
+
+    def 'same native button name with different state attributes has distinct executable control IDs'() {
+        given:
+        model.configPage.sections[0].input << [element: 'paragraph', title:
+            "<div><input type='hidden' name='Counter.type' value='button'></div><div><a href='#' class='submitOnChange' onclick='buttonClick(this); return false;' data-stateAttribute='editGV' title='Edit Counter'><i>edit</i></a><input type='hidden' name='settings[Counter]' value=''></div>" +
+            "<div><input type='hidden' name='Counter.type' value='button'></div><div><a href='#' class='submitOnChange' onclick='buttonClick(this); return false;' data-stateAttribute='deleteGV' title='Delete Counter'><i>delete</i></a><input type='hidden' name='settings[Counter]' value=''></div>"]
+        when:
+        def opened = open()
+        def controls = opened.controls.findAll { it.name == 'Counter' }
+        def result = submit([:], controls.find { it.title == 'Edit Counter' }.control_id)
+        then:
+        opened.success
+        controls.size() == 2
+        controls*.control_id.unique().size() == 2
+        result.success
+        calls[-2].body.name == 'Counter'
+        calls[-2].body.stateAttribute == 'editGV'
     }
 
     def 'device options expand only on request with native capability and ignored IDs'() {
@@ -207,7 +225,7 @@ class NativeFormsSpec extends ToolSpecBase {
         when:
         def opened = open()
         calls.clear()
-        def result = submit([:], [name: 'custom'])
+        def result = submit([:], 'custom')
         then:
         opened.success
         opened.unsupported.any { it.contains('browser') }
@@ -224,8 +242,8 @@ class NativeFormsSpec extends ToolSpecBase {
         calls.clear()
         replies << [status: 200, data: null]
         when:
-        def result = submit([:], [name: 'apply'])
-        def retry = submit([:], [name: 'apply'])
+        def result = submit([:], 'apply||clicked')
+        def retry = submit([:], 'apply||clicked')
         then:
         !result.success
         result.partial
@@ -240,7 +258,7 @@ class NativeFormsSpec extends ToolSpecBase {
         def result = script.toolCallAppForm([app_id: 42, confirm: true, steps: [
             [kind: 'open'], [kind: 'submit', expect_page: 'edit', fields: [count: 2]],
             [kind: 'submit', expect_page: 'edit', fields: [future: 'unknown']],
-            [kind: 'submit', expect_page: 'edit', activate: [name: 'apply']]
+            [kind: 'submit', expect_page: 'edit', activate: 'apply||clicked']
         ]])
         then:
         !result.success
@@ -256,7 +274,7 @@ class NativeFormsSpec extends ToolSpecBase {
         calls.clear()
         replies << [status: 200, data: JsonOutput.toJson([status: 'success', location: '/installedapp/list'])]
         when:
-        def result = submit([:], [name: '_action_update', value: 'Done'])
+        def result = submit([:], '_action_update|Done|')
         then:
         result.success
         result.closed
@@ -270,8 +288,8 @@ class NativeFormsSpec extends ToolSpecBase {
         assert open().success
         calls.clear()
         when:
-        def missing = submit([:], [name: '_action_update', value: 'Done'])
-        def supplied = submit([requiredDevice: '7'], [name: '_action_update', value: 'Done'])
+        def missing = submit([:], '_action_update|Done|')
+        def supplied = submit([requiredDevice: '7'], '_action_update|Done|')
         then:
         !missing.success
         !missing.partial
@@ -286,7 +304,7 @@ class NativeFormsSpec extends ToolSpecBase {
         def opened = open()
         calls.clear()
         when:
-        def result = submit([:], [name: '_action_update', value: 'Done'])
+        def result = submit([:], '_action_update|Done|')
         then:
         opened.fields.find { it.name == 'defaultChoice' }.value == 'a'
         opened.fields.find { it.name == 'defaultChoice' }.value_source == 'default'
@@ -301,10 +319,10 @@ class NativeFormsSpec extends ToolSpecBase {
         def href = opened.controls.find { it.kind == 'href' }
         model.configPage = [name: 'next', sections: [[input: [[element: 'input', name: 'reload', type: 'button', submitOnChange: false]]]]]
         model.pageBreadcrumbs = '%5B%22main%22%2C%22edit%22%5D'
-        assert submit([:], [name: href.name]).success
+        assert submit([:], href.control_id).success
         calls.clear()
         when:
-        def result = submit([:], [name: 'reload'], 'next')
+        def result = submit([:], 'reload||', 'next')
         then:
         result.success
         calls*.path == ['/installedapp/btn', '/installedapp/configure/json/42/main/edit/next']
@@ -361,7 +379,7 @@ class NativeFormsSpec extends ToolSpecBase {
         when:
         def opened = open()
         calls.clear()
-        def result = submit([:], [name: '_action_remove', value: 'Remove'])
+        def result = submit([:], '_action_remove|Remove|')
         then:
         opened.unsupported.any { it.contains('dedicated native-app deletion tool') }
         !opened.controls.any { it.name == '_action_remove' }
