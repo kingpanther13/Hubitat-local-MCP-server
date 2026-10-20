@@ -688,42 +688,66 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.eval == ['0': ['1']]
     }
 
-    def 'condition edit after native deletion keeps its selector context through dependent renders'() {
+    def 'predicate editing and rejection retain the correct native group after the last ordinary condition is deleted'() {
         given:
+        nativeState.capabsfalse = ['1': 'Switch A on', '2': 'Switch B off', '3': 'Unused switch']
+        nativeState.predCapabs = [1, 2]
+        nativeState.isPredicate = false
         settings.put('rCapab_1', [type: 'enum', value: 'Switch'])
         settings.put('state_1', [type: 'enum', value: 'on'])
+        nativeRule.removeSetting = { String name -> settings.remove(name) }
+        nativeRule.appButtonHandler = { String name -> assert name == 'cancelCapab'; nativeState.cancelCapab = true }
         nativeRule.selectConditions = { Map params ->
-            assert params == [pred: false]
+            nativeState.isPredicate = params.pred
             if (nativeState.deleteCon != null) {
+                assert params.pred == false
                 nativeState.capabsfalse.remove(nativeState.deleteCon.toString())
                 nativeState.remove('deleteCon')
                 nativeState.capabDone = true
                 return nativeForm([])
             }
-            Map rendered = nativeForm([])
-            if (nativeState.editCond == '1') {
-                rendered = nativeForm([[name: 'rCapab_1', type: 'enum', options: ['Switch'], submitOnChange: true],
-                    [name: 'rDev_1', type: 'capability.switch', multiple: true],
-                    [name: 'state_1', type: 'enum', options: ['on', 'off']]])
-                if (nativeState.hasAll == true) {
-                    nativeState.capabsfalse['1'] = 'Switch A off'
-                    nativeState.capabDone = true
-                }
-                if (nativeState.capabDone == true) nativeState.remove('editCond')
+            boolean hasConditions = nativeState.capabsfalse.keySet().any { key ->
+                nativeState.predCapabs.contains(key.toInteger()) == params.pred
             }
-            rendered
+            if (!hasConditions || nativeState.editCond != '1') return nativeForm([])
+            assert params.pred == true
+            if (nativeState.cancelCapab == true) {
+                nativeState.remove('cancelCapab')
+                nativeState.remove('editCond')
+                nativeState.capabDone = true
+                return nativeForm([])
+            }
+            // The native input renderer consumes the prior operation's Done flag.
+            nativeState.remove('capabDone')
+            if (nativeState.hasAll == true) {
+                nativeState.capabsfalse['1'] = 'Switch A off'
+                nativeState.capabDone = true
+                nativeState.remove('editCond')
+            }
+            nativeForm([[name: 'rCapab_1', type: 'enum', options: ['Switch'], submitOnChange: true],
+                [name: 'rDev_1', type: 'capability.switch', multiple: true],
+                [name: 'state_1', type: 'enum', options: ['on', 'off']]])
         }
+        List fields = [[name: 'rDev_#', type: 'capability.switch', value: ['7']],
+            [name: 'state_#', type: 'enum', value: 'off']]
+        if (reject) fields << [name: 'notExposed_#', type: 'text', value: 'refuse']
         when:
-        def deleted = script._nmDeleteRow(42L, 'condition', '2')
-        def edited = script._nmUpsertCondition(42L, false, [id: '1', capability: 'Switch', fields: [
-            [name: 'rDev_#', type: 'capability.switch', value: ['7']],
-            [name: 'state_#', type: 'enum', value: 'off']]])
+        def deleted = script._nmDeleteRow(42L, 'condition', '3')
+        def edited = script._nmUpsertCondition(42L, false, [id: '1', capability: 'Switch', fields: fields])
         then:
         deleted.success
-        edited.success && !edited.partial
-        nativeState.capabsfalse == ['1': 'Switch A off']
-        settings.state_1.value == 'off'
-        settings.rDev_1.value == ['7']
+        edited.success == !reject
+        !edited.partial
+        nativeState.capabsfalse == ['1': reject ? 'Switch A on' : 'Switch A off', '2': 'Switch B off']
+        nativeState.predCapabs == [1, 2]
+        settings.state_1.value == (reject ? 'on' : 'off')
+        if (reject) {
+            assert edited.rolledBack
+            assert nativeState.isPredicate == false
+            assert !settings.containsKey('rDev_1')
+        } else assert settings.rDev_1.value == ['7']
+        where:
+        reject << [false, true]
     }
 
     def 'trigger deletion uses native delete callback and verifies setting cleanup'() {
