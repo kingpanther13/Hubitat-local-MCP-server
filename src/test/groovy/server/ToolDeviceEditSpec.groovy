@@ -1676,7 +1676,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         given:
         settingsMap.useGateways = useGateways
         def linked = []
-        hubGet.register('/device/createLinked/HUB-A/42') { params -> linked = [[id: 900, name: 'Kitchen Bridge']]; '' }
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> linked = [[id: 900, name: 'Kitchen Bridge', sourceHubId: 'HUB-A']]; '' }
         hubGet.register('/hub2/hubMeshJson') { params -> groovy.json.JsonOutput.toJson([localLinkedDevices: linked]) }
 
         when:
