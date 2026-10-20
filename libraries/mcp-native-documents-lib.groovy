@@ -227,6 +227,8 @@ private Map _ndApply(Long id, List changes, boolean created) {
     try {
         def beforeHealth = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
         if (!(beforeHealth instanceof Map) || !(beforeHealth.broken instanceof Boolean)) throw new IllegalStateException('Native rule health is unavailable before changes')
+        boolean wasStopped = beforeHealth.stopped == true
+        boolean wasPaused = beforeHealth.paused == true
         for (change in changes) {
             def value = change.value
             started = true
@@ -255,30 +257,37 @@ private Map _ndApply(Long id, List changes, boolean created) {
         if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
         if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified']
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
-        if (done instanceof Map && done.status != null && done.status.toString().isInteger() && done.status.toInteger() >= 400) throw new IllegalStateException('Native Done was rejected')
+        def doneStatus = done instanceof Map ? done.get('status') : null
+        if (doneStatus != null && doneStatus.toString().isInteger() && doneStatus.toInteger() >= 400) throw new IllegalStateException('Native Done was rejected')
         def finalHealth = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
         if (!(finalHealth instanceof Map) || finalHealth.broken != false) throw new IllegalStateException('Native rule health failed after Done')
+        boolean stopped = finalHealth.stopped == true
+        boolean paused = finalHealth.paused == true
         if (!created) {
-            if ((beforeHealth.stopped == true) != (finalHealth.stopped == true)) _nrHandle(id).appButtonHandler('stopRule')
-            if ((beforeHealth.paused == true) != (finalHealth.paused == true)) _nrHandle(id).appButtonHandler('pausRule')
+            if (wasStopped != stopped) _nrHandle(id).appButtonHandler('stopRule')
+            if (wasPaused != paused) _nrHandle(id).appButtonHandler('pausRule')
             finalHealth = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
-            if (!(finalHealth instanceof Map) || finalHealth.broken != false || (beforeHealth.stopped == true) != (finalHealth.stopped == true) || (beforeHealth.paused == true) != (finalHealth.paused == true)) throw new IllegalStateException('Native stopped or paused state was not preserved')
+            stopped = finalHealth instanceof Map && finalHealth.stopped == true
+            paused = finalHealth instanceof Map && finalHealth.paused == true
+            if (!(finalHealth instanceof Map) || finalHealth.broken != false || wasStopped != stopped || wasPaused != paused) throw new IllegalStateException('Native stopped or paused state was not preserved')
         }
         def status = _ndJson(hubInternalGet("/installedapp/statusJson/${id}"))
         if (!(status instanceof Map) || !status.containsKey('eventSubscriptions') || !status.containsKey('scheduledJobs')) throw new IllegalStateException('Native activation status is unavailable')
-        if (status.eventSubscriptions == null || status.scheduledJobs == null) {
+        def subscriptions = status.get('eventSubscriptions')
+        def jobs = status.get('scheduledJobs')
+        if (subscriptions == null || jobs == null) {
             def installed = status.installedApp
             if (!(installed instanceof Map) || installed.id?.toString() != id.toString() || installed.installed != true) throw new IllegalStateException('Native activation status cannot verify an installed rule')
-            status = [:] + status
-            ['eventSubscriptions', 'scheduledJobs'].each { key -> if (status.get(key) == null) status.put(key, []) }
+            if (subscriptions == null) subscriptions = []
+            if (jobs == null) jobs = []
         }
-        if (!(status.eventSubscriptions instanceof List) || !(status.scheduledJobs instanceof List)) throw new IllegalStateException('Native activation status is malformed')
-        if (finalHealth.stopped == true && (!(status.scheduledJobs instanceof List) || status.scheduledJobs || status.eventSubscriptions)) throw new IllegalStateException('Stopped native rule retained jobs or subscriptions')
+        if (!(subscriptions instanceof List) || !(jobs instanceof List)) throw new IllegalStateException('Native activation status is malformed')
+        if (stopped && (jobs || subscriptions)) throw new IllegalStateException('Stopped native rule retained jobs or subscriptions')
         def persistedState = _nrState(id)
         def actualTriggers = persistedState.capabstrue instanceof Map ? persistedState.capabstrue.findAll { key, value -> key.toString().isInteger() && key.toString().toInteger() > 0 && value?.toString()?.trim() } : [:]
-        if (actualTriggers && finalHealth.stopped != true && finalHealth.paused != true && status.eventSubscriptions.empty) throw new IllegalStateException('Native triggers have no active subscriptions')
+        if (actualTriggers && !stopped && !paused && subscriptions.empty) throw new IllegalStateException('Native triggers have no active subscriptions')
         if (created && getAppByAppId(id)?.installed != true) throw new IllegalStateException('Native rule is not installed after Done')
-        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: finalHealth.stopped == true, paused: finalHealth.paused == true, eventSubscriptions: status.eventSubscriptions, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])]
+        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])]
     } catch (Exception failure) {
         [success: false, partial: started, rule_id: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()), error: failure.message?.toString()]
     }
@@ -297,7 +306,9 @@ Map toolUpdateRuleDocument(Map args) {
 
 Map toolCreateRuleDocument(Map args) {
     Long parentId = _ndId(args.parent_id)
-    if (!(args.name instanceof String) || !args.name.trim() || args.name.size() > 200) throw new IllegalArgumentException('A rule name is required (maximum 200 characters)')
+    def requestedName = args.get('name')
+    if (!(requestedName instanceof String) || !requestedName.trim() || requestedName.size() > 200) throw new IllegalArgumentException('A rule name is required (maximum 200 characters)')
+    String name = requestedName.trim()
     List changes = _ndChanges(args.changes)
     requireDestructiveConfirm(args.confirm)
     def parent = getAppByAppId(parentId)
@@ -315,8 +326,8 @@ Map toolCreateRuleDocument(Map args) {
         if (child?.parentAppId?.toString() != parentId.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != 'Rule-5.1') throw new IllegalStateException('Created child did not match the requested native parent and rule type')
         verifiedChild = true
         _nrHandle(id).initState()
-        _nrHandle(id).updateSetting('origLabel', [type: 'text', value: args.name.trim()])
-        _nrHandle(id).updateLabel(args.name.trim())
+        _nrHandle(id).updateSetting('origLabel', [type: 'text', value: name])
+        _nrHandle(id).updateLabel(name)
         _ndPreflight(id, changes)
         _ndApply(id, changes, true)
     } catch (Exception failure) {
