@@ -228,6 +228,7 @@ class NativeAppFormE2E(unittest.TestCase):
         handoff = self.submit(controller_id, controller["page"]["name"], control=link)
         self.assertIs(handoff.get("success"), True, handoff)
         self.assertEqual(str(handoff["navigated_app_id"]), rule_id)
+        self.assertEqual(handoff["navigated_page"], "selectActions")
         opened = self.open_form(rule_id, handoff["navigated_page"])
         self.assertEqual(opened["page"]["name"], "selectActions")
 
@@ -247,6 +248,78 @@ class NativeAppFormE2E(unittest.TestCase):
         self.assertIs(result.get("success"), False, result)
         self.assertIs(result.get("partial"), False, result)
         self.assertEqual(self.config_snapshot(rule_id), before)
+
+    def test_room_lighting_native_configuration_and_event_binding_edit(self):
+        button_id = str(self.fixtures.get("button", ""))
+        self.assertTrue(button_id.isdigit(), "Supply the labeled virtual button fixture")
+        self.fixture_metadata("button")
+        parent_id = json.loads(os.environ["NATIVE_APP_FORM_PARENT_IDS"])["room_lighting"]
+        parent = self.open_form(parent_id)
+        create = self.control(parent, kind="create_child")
+        created = self.submit(parent_id, parent["page"]["name"], control=create)
+        child_id = str(created.get("created_app_id", ""))
+        if child_id.isdigit():
+            self.addCleanup(self.remove_native_child, child_id, parent_id, create["value"])
+        self.assertIs(created.get("success"), True, created)
+        self.assertTrue(child_id.isdigit(), created)
+        form = self.open_form(child_id)
+        form = self.submit(child_id, form["page"]["name"], {
+            "roomDevsL": [str(self.fixtures["switch"])],
+            "origLabel": self.prefix + "_room_lighting",
+        })
+        self.assertIs(form.get("success"), True, form)
+        form = self.submit(child_id, form["page"]["name"],
+                           control=self.control(form, page="onMeansPage"))
+        form = self.submit(child_id, form["page"]["name"],
+                           {"onMeans": ["button is pressed"]})
+        self.assertIs(form.get("success"), True, form)
+        form = self.submit(child_id, form["page"]["name"], {"buttons": [button_id]})
+        self.assertIs(form.get("success"), True, form)
+        button_number = next(item["name"] for item in form["fields"]
+                             if item["name"].startswith("butNo."))
+        button_action = next(item["name"] for item in form["fields"]
+                             if item["name"].startswith("butAct."))
+        form = self.submit(child_id, form["page"]["name"],
+                           {button_number: ["1"], button_action: "pushed"})
+        self.assertIs(form.get("success"), True, form)
+        form = self.submit(child_id, form["page"]["name"],
+                           control=self.control(form, name="_action_previous"))
+        installed = self.submit(child_id, form["page"]["name"],
+                                control=self.control(form, name="_action_update"))
+        self.assertIs(installed.get("success"), True, installed)
+        self.assertIs(installed.get("closed"), True)
+        settings = self.settings(child_id)
+        self.assertEqual(set(settings["roomDevsL"]["deviceList"]),
+                         {str(self.fixtures["switch"])})
+        self.assertEqual(set(settings["buttons"]["deviceList"]), {button_id})
+        subscriptions = self.status(child_id)["eventSubscriptions"]
+        self.assertTrue(any(str(item.get("typeId")) == button_id
+                            and item.get("name", "").startswith("pushed")
+                            for item in subscriptions), subscriptions)
+        self.command("switch", "off")
+        self.command("button", "push", [1], remember=False)
+        self.wait_for(lambda: self.attribute("switch", "switch") == "on")
+        form = self.open_form(child_id)
+        form = self.submit(child_id, form["page"]["name"],
+                           control=self.control(form, name="turnOff"))
+        self.assertIs(form.get("success"), True, form)
+        self.wait_for(lambda: self.attribute("switch", "switch") == "off")
+
+        form = self.submit(child_id, form["page"]["name"],
+                           control=self.control(form, page="onMeansPage"))
+        form = self.submit(child_id, form["page"]["name"], {button_number: ["2"]})
+        self.assertIs(form.get("success"), True, form)
+        form = self.submit(child_id, form["page"]["name"],
+                           control=self.control(form, name="_action_previous"))
+        installed = self.submit(child_id, form["page"]["name"],
+                                control=self.control(form, name="_action_update"))
+        self.assertIs(installed.get("success"), True, installed)
+        self.assertEqual(self.settings(child_id)["roomDevsL"], settings["roomDevsL"])
+        self.command("button", "push", [2], remember=False)
+        self.wait_for(lambda: self.attribute("switch", "switch") == "on")
+        self.assertEqual(str(self.status(child_id)["installedApp"]["id"]), child_id)
+        form = self.open_form(child_id)
+        self.assertEqual(form["page"]["name"], "mainPage")
 
     def test_native_buttons_keep_same_name_controls_distinct_and_execute(self):
         rule_id = self.create_rule([

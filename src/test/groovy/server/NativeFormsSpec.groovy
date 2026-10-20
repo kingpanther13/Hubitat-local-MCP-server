@@ -357,9 +357,7 @@ class NativeFormsSpec extends ToolSpecBase {
         script.metaClass.getAppByAppId = { Long id ->
             id == 42L ? [id: id, appType: [namespace: 'hubitat'], disabled: false] : target
         }
-        if (reason == 'protected') script.metaClass._requireUnprotectedAppMutation = { Object id, String operation ->
-            if (id == 43L) throw new IllegalArgumentException('Protected target')
-        }
+        if (reason == 'protected') atomicStateMap.protectedAppsPolicy = [ids: ['43']]
         when:
         def result = submit([:], 'apply||clicked')
         then:
