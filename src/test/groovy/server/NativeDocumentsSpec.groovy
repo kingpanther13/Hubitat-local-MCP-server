@@ -31,6 +31,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script.metaClass._nmUpsertCondition = { Long id, boolean trigger, Map value -> events << (trigger ? 'trigger' : 'condition'); [success: true, id: '7'] }
         script.metaClass._nmSetExpression = { Long id, Object expressionId, List tokens -> events << 'expression'; [success: true] }
         script.metaClass._nmLocal = { Long id, String op, String name = null, Object value = null, String type = null -> events << 'variable'; [success: true] }
+        script.metaClass._nmDeleteRow = { Long id, String part, Object row -> events << ('delete:' + part + ':' + row); [success: true] }
+        script.metaClass._nmOrderActions = { Long id, List ids -> events << 'order'; [success: true] }
         script.metaClass._nmAddTerminator = { Long id, String subtype -> events << 'terminator'; [success: true] }
         hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [[name: 'flag', type: 'bool', multiple: false, value: false], [name: 'count', type: 'number', value: 0]]]) }
         hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson([broken: broken] + lifecycle) }
@@ -101,6 +103,14 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.partial
         result.broken
         !events.any { it instanceof Map }
+    }
+
+    def 'delete and order parts dispatch only fixed model operations'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'delete', value: [part: 'action', id: '2']], [part: 'order', value: [ids: ['3', '1']]]], confirm: true])
+        then:
+        result.success
+        events[0..1] == ['delete:action:2', 'order']
     }
 
     def 'native expression with missing condition cannot pass a false broken flag'() {

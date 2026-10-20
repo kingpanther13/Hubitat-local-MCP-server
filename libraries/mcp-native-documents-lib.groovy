@@ -90,6 +90,7 @@ Map toolGetRuleDocument(Map args) {
     def document = [rule_id: id, validation: [structuralIssues: structuralIssues, uiChecked: false]]
     try {
         def health = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
+        if (health instanceof Map) document.validation.structuralIssues = _ndStructuralIssues(nativeState + health)
         document.nativeHealth = health instanceof Map && health.broken instanceof Boolean ? [available: true, broken: health.broken, stopped: health.stopped == true, paused: health.paused == true] : [available: false]
     } catch (Exception failure) { document.nativeHealth = [available: false, error: failure.message?.toString()] }
     if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
@@ -110,7 +111,7 @@ private List _ndChanges(Object changes) {
         def value = change.value
         def keys = [condition: ['id', 'capability', 'fields'], trigger: ['id', 'capability', 'fields'],
                     action: ['id', 'type', 'subtype', 'fields', 'expression', 'events'], expression: ['id', 'tokens'],
-                    variable: ['operation', 'name', 'type', 'value'], required: ['tokens'], terminator: ['subtype']]
+                    variable: ['operation', 'name', 'type', 'value'], required: ['tokens'], delete: ['part', 'id'], order: ['ids'], terminator: ['subtype']]
         if (!keys.containsKey(change.part) || value.keySet().any { !(it in keys.get(change.part)) }) throw new IllegalArgumentException('Unknown change part or field')
         if (value.containsKey('id') && (value.id == null || !value.id.toString().isInteger() || value.id.toString().toInteger() < (change.part == 'expression' ? 0 : 1))) throw new IllegalArgumentException('Invalid native row ID')
         if (change.part in ['condition', 'trigger', 'action']) {
@@ -139,6 +140,10 @@ private List _ndChanges(Object changes) {
             _ndChanges(value.events.collect { event -> [part: 'condition', value: event] })
         } else if (value.containsKey('events')) throw new IllegalArgumentException('Only wait-event actions accept events')
         if (change.part == 'expression' && (!value.containsKey('id') || !(value.tokens instanceof List) || !value.tokens)) throw new IllegalArgumentException('Expression ID and tokens are required')
+        if (change.part == 'delete' && (!(value.part in ['action', 'condition', 'trigger']) || !value.containsKey('id'))) throw new IllegalArgumentException('Deletion requires a native collection and ID')
+        if (change.part == 'order') {
+            if (!(value.ids instanceof List) || value.ids.any { it == null || !it.toString().isInteger() || it.toString().toInteger() <= 0 } || value.ids.collect { it.toString() }.unique(false).size() != value.ids.size()) throw new IllegalArgumentException('Ordering requires unique positive native action IDs')
+        }
         if (change.part == 'required' && (!(value.tokens instanceof List) || !value.tokens)) throw new IllegalArgumentException('Required expression tokens are required')
         if (change.part == 'terminator' && !(value.subtype in ['endIf', 'else', 'endRep'])) throw new IllegalArgumentException('Unsupported terminator')
         def tokens = change.part in ['expression', 'required'] ? value.tokens : (change.part == 'action' ? value.expression : null)
@@ -171,6 +176,8 @@ private Map _ndApply(Long id, List changes, boolean created) {
                 case 'trigger': outcome = _nmUpsertCondition(id, true, value); break
                 case 'action': outcome = _nmUpsertAction(id, value); break
                 case 'expression': outcome = _nmSetExpression(id, value.id, value.tokens); break
+                case 'delete': outcome = _nmDeleteRow(id, value.part, value.id); break
+                case 'order': outcome = _nmOrderActions(id, value.ids); break
                 case 'required': outcome = _nmSetRequired(id, value.tokens); break
                 case 'variable': outcome = _nmLocal(id, value.operation, value.name, value.value, value.type); break
                 case 'terminator': outcome = _nmAddTerminator(id, value.subtype); break
@@ -181,9 +188,11 @@ private Map _ndApply(Long id, List changes, boolean created) {
         _ndRender(id, 'selectTriggers')
         _ndRender(id, 'selectActions')
         _ndRender(id, 'mainPage')
-        def structuralIssues = _ndStructuralIssues(_nrState(id))
-        if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
         def health = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
+        Map renderedState = _nrState(id) + (health instanceof Map ? health : [:])
+        def structuralIssues = _ndStructuralIssues(renderedState)
+        structuralIssues.addAll(_nmValidateStructure(id, renderedState).structuralIssues ?: [])
+        if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
         if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified']
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
         if (done instanceof Map && done.status != null && done.status.toString().isInteger() && done.status.toInteger() >= 400) throw new IllegalStateException('Native Done was rejected')
@@ -240,7 +249,7 @@ Map toolCreateRuleDocument(Map args) {
 }
 
 def _getAllToolDefinitions_partNativeDocuments() {
-    def changes = [type: 'array', minItems: 1, maxItems: 100, description: 'Ordered changes. Each has part and value: condition/trigger {id?,capability,fields}; action {id?,type,subtype,fields,expression?,events?}; expression {id,tokens}; required {tokens}; variable {operation:create|set|delete,name,type?,value?}; terminator {subtype:endIf|else|endRep}. Typed fields use {name:native name containing # for allocated ID,type,value}. Wait events support up to 16 verified native event rows; wait expressions remain unsupported.', items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator']], value: [type: 'object']], required: ['part', 'value']]]
+    def changes = [type: 'array', minItems: 1, maxItems: 100, description: 'Ordered changes. Each has part and value: condition/trigger {id?,capability,fields}; action {id?,type,subtype,fields,expression?,events?}; expression {id,tokens}; required {tokens}; variable {operation:create|set|delete,name,type?,value?}; terminator {subtype:endIf|else|endRep}; delete {part:action|condition|trigger,id}; order {ids:complete native action ID permutation}. Typed fields use {name:native name containing # for allocated ID,type,value}. Wait events support up to 16 verified native event rows; wait expressions remain unsupported.', items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator', 'delete', 'order']], value: [type: 'object']], required: ['part', 'value']]]
     def warning = ' Requires confirm=true and a hub backup within 24 hours. Before writing: read the native document, verify target IDs and fields, and preserve a recovery backup. Stops at first failure; partial changes can remain. Native UI retains the same rule ID. Verify resulting settings and runtime behavior before relying on the rule. Wait expressions and all capability-specific variants are not yet supported.'
     return [[name: 'hub_get_rule_document', description: 'Read native Rule Machine state, ordered actions, conditions, triggers, expressions, local variables and typed settings without rendering editor pages.', inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], sections: [type: 'array', items: [type: 'string', enum: ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']]]], required: ['rule_id']]],
      [name: 'hub_update_rule_document', description: 'Apply ordered semantic changes to an existing native Rule Machine rule and finalize through its native compiler.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], changes: changes, confirm: [type: 'boolean']], required: ['rule_id', 'changes', 'confirm']]],
@@ -268,6 +277,8 @@ Each change is {part,value}. Supported parts:
 - getWaitEvents actions accept events:[{capability,fields}] (1 through 16 native event rows); an edit preserves the event count. Duration fields remain native typed fields.
 - variable: {operation:create|set|delete,name,type?,value?}. Create types: integer,bigdecimal,boolean,string,datetime.
 - terminator: {subtype:endIf|else|endRep}.
+- delete: {part:action|condition|trigger,id}; referenced conditions must be detached first.
+- order: {ids:[native action IDs]}; a complete exact permutation is required.
 
 Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; wait expressions and every capability-specific variant are not yet supported. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback, native editor diagnostics, expression-reference checks and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
 
