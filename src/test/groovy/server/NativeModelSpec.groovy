@@ -158,6 +158,20 @@ class NativeModelSpec extends ToolSpecBase {
         locals.value.value == 7
     }
 
+    def 'unavailable local inventory cannot report success or permit mutation'() {
+        given:
+        nativeRule.getAllLocalVars = { -> null }
+        when:
+        def listed = script._nmLocal(42L, 'list')
+        then:
+        !listed.success
+        when:
+        script._nmLocal(42L, 'create', 'value', 1, 'integer')
+        then:
+        thrown(IllegalStateException)
+        locals.empty
+    }
+
     def 'condition compile uses native selector and placeholder fields preserves unrelated state'() {
         when:
         def result = script._nmUpsertCondition(42L, false, [capability: 'Switch', fields: [[name: 'state_#', type: 'enum', value: 'on']]])

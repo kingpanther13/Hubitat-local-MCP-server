@@ -90,8 +90,11 @@ Map _nmLocal(Long ruleId, String operation, String name = null, Object value = n
     if (!(operation in ['list', 'get', 'create', 'set', 'delete'])) throw new IllegalArgumentException('Unsupported local operation')
     if (operation != 'list' && (!(name instanceof String) || !(name ==~ /[A-Za-z_][A-Za-z0-9_ ]{0,79}/) || name != name.trim())) throw new IllegalArgumentException('A valid local variable name is required')
     def handle = _nrHandle(ruleId)
-    if (operation == 'list') return [success: true, localVariables: handle.getAllLocalVars()]
+    def allBefore = handle.getAllLocalVars()
+    if (operation == 'list') return [success: allBefore instanceof Map, localVariables: allBefore]
+    if (!(allBefore instanceof Map)) throw new IllegalStateException('Native local variables are unavailable')
     def before = handle.getLocalVar(name)
+    if (allBefore.containsKey(name) != (before instanceof Map)) throw new IllegalStateException('Native local variable reads disagree')
     if (operation == 'get') return [success: before instanceof Map, variable: before]
     if (operation == 'create') {
         if (before != null) throw new IllegalArgumentException('Local variable already exists')
@@ -103,8 +106,9 @@ Map _nmLocal(Long ruleId, String operation, String name = null, Object value = n
         else handle.deleteLocalVar(name)
     }
     def after = _nrHandle(ruleId).getLocalVar(name)
-    boolean verified = operation == 'delete' ? after == null : after instanceof Map && after.name == name && after.value == value && after.type == (operation == 'create' ? type : before.type)
-    [success: verified, deleted: operation == 'delete' && after == null, variable: after, verificationNeeded: true]
+    def allAfter = _nrHandle(ruleId).getAllLocalVars()
+    boolean verified = allAfter instanceof Map && (operation == 'delete' ? after == null && !allAfter.containsKey(name) : after instanceof Map && allAfter.get(name) == after && after.name == name && after.value == value && after.type == (operation == 'create' ? type : before.type))
+    [success: verified, deleted: operation == 'delete' && verified, variable: after, verificationNeeded: true]
 }
 
 Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
@@ -147,6 +151,7 @@ Map _nmUpsertAction(Long ruleId, Map row) {
     String id = _nmId(editing ? row.id : before.actNdx)
     def prior = _nmEntry(before.actions instanceof Map ? before.actions : [:], id)
     if (editing && !(prior instanceof Map)) throw new IllegalArgumentException('Native action does not exist')
+    if (!editing && row.subtype in ['getIfThen', 'getElseIf'] && !row.containsKey('expression')) throw new IllegalArgumentException('New conditional actions require expression tokens')
     String expectedExpressionId = null
     if (row.containsKey('expression')) {
         if (!(row.subtype in ['getIfThen', 'getElseIf'])) throw new IllegalArgumentException('Expression actions currently support IF and ELSE-IF only')
@@ -188,11 +193,13 @@ Map _nmUpsertAction(Long ruleId, Map row) {
 
 Map _nmAddTerminator(Long ruleId, String subtype) {
     if (!(subtype in ['endIf', 'else', 'endRep'])) throw new IllegalArgumentException('Unsupported structural action')
-    String id = _nmId(_nrState(ruleId).actNdx)
+    Map before = _nrState(ruleId)
+    String id = _nmId(before.actNdx)
+    List priorOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
     _nrHandle(ruleId).addAction(subtype)
     Map after = _nrState(ruleId)
     def action = _nmEntry(after.actions instanceof Map ? after.actions : [:], id)
     Map expected = [endIf: 'getEndIf', 'else': 'getElse', endRep: 'getEndRepeat']
-    boolean verified = action instanceof Map && action.method == expected.get(subtype) && after.actionList instanceof List && after.actionList.any { it.toString() == id }
+    boolean verified = action instanceof Map && action.method == expected.get(subtype) && after.actionList instanceof List && after.actionList.collect { it.toString() } == priorOrder + [id]
     [success: verified, id: id, action: action, partial: !verified, verificationNeeded: true]
 }
