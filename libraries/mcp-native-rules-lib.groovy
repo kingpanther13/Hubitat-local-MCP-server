@@ -1,7 +1,9 @@
 library(name: "McpNativeRulesLib", namespace: "mcp", author: "kingpanther13", description: "Native Rule Machine + classic-app tool implementations (hub_list_rules/hub_call_rule/hub_set_rule_paused/hub_set_rule_private_boolean/hub_set_rule/hub_set_native_app/hub_delete_native_app/hub_get_rule_health) -- the full RM 5.1 wizard authoring surface plus native-app CRUD -- for the MCP Rule Server; included by the main app. Gateway entries, dispatch cases, and the shared classic-dynamicPage wizard primitives (used by other libraries) stay in the app; the RM-exclusive tool definitions, implementations, domain helpers, and per-tool metadata live here.")
 
 def _getAllToolDefinitions_partNativeRM() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         // Rule Machine Integration (read + trigger + pause/resume only — platform blocks CRUD)
         [
             name: "hub_list_rules",
@@ -228,7 +230,8 @@ Requires Write master + confirm=true + recent hub backup.""",
                 required: ["appId", "disabled"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 // Enable/disable any installed app via POST /installedapp/disable {id, disable} -- the documented

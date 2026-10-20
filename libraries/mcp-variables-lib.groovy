@@ -1732,7 +1732,9 @@ private String _hubVarRevealHtml(String raw) {
 }
 
 def _getAllToolDefinitions_partVariables() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         [
             name: "hub_list_variables",
             description: "List all hub variables and rule-engine variables.[[FLAT_TRIM]] Includes every type, even ones without connectors.[[/FLAT_TRIM]]",
@@ -1846,7 +1848,8 @@ def _getAllToolDefinitions_partVariables() {
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 def _readOnlyToolNames_partVariables() {

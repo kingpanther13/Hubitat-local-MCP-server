@@ -5713,7 +5713,9 @@ private boolean _deviceSwapCleanup(Integer appId) {
 }
 
 def _getAllToolDefinitions_partDevices() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         // Device Tools
         [
             name: "hub_list_devices",
@@ -5975,7 +5977,8 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 def _readOnlyToolNames_partDevices() {

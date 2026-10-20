@@ -3148,7 +3148,9 @@ def toolGetDeviceInUseBy(args) {
 }
 
 def _getAllToolDefinitions_partCodeManagement() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         // ==================== HUB ADMIN READ TOOLS ====================
         // get_hub_details merged into hub_get_info (core tool)
         [
@@ -3454,7 +3456,8 @@ Use before hub_get_app_config on multi-page apps to avoid guessing page names.[[
                 required: ["deviceId"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 def _readOnlyToolNames_partCodeManagement() {

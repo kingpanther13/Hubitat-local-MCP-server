@@ -463,7 +463,9 @@ private Map _withGuidePage(Map result, content, cursor, int pageChars = guidePag
 }
 
 def _getAllToolDefinitions_partDiscovery() {
-    return [
+    // The list builds in a closure so its strings live in the closure's own class: the app class is
+    // near the JVM 65,535 constant-pool limit.
+    def defs = { [
         // Tool Guide
         [
             name: "hub_get_tool_guide",
@@ -491,7 +493,8 @@ def _getAllToolDefinitions_partDiscovery() {
                 required: ["query"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 
 def _readOnlyToolNames_partDiscovery() {

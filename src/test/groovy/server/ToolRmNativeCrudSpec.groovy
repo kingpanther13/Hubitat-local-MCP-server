@@ -41,6 +41,10 @@ import spock.lang.Unroll
  * regression on that code path.
  */
 class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
+    // Changes on every fixture render. Not System.nanoTime(): the render hash masks any 13+ digit
+    // number, which nanoTime reaches once the runner has been up about 17 minutes.
+    private int renderSeq = 0
+
     private void enableReadOnly() {
         settingsMap.enableRead = true
     }
@@ -41692,7 +41696,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                                  [name: "actSubType.1", type: "enum", options: ["getOnOffSwitch": "Turn switches on/off"]],
                                  [name: "switch.1", type: "capability.switch", multiple: true],
                                  [name: "actionDone", type: "button"]
-                             ], paragraphs: ["seq ${System.nanoTime()}".toString()]]]],
+                             ], paragraphs: ["seq ${++renderSeq}".toString()]]]],
                 settings: [actType: [1: "switchActs"], actSubType: [1: "on"], switch: [1: ["8"]]],
                 childApps: []
             ])
@@ -41799,7 +41803,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                                  [name: "actSubType.1", type: "enum", options: ["getOnOffSwitch": "Turn switches on/off"]],
                                  [name: "switch.1", type: "capability.switch", multiple: true],
                                  [name: "actionDone", type: "button"]
-                             ], paragraphs: ["seq ${System.nanoTime()}".toString()]]]],
+                             ], paragraphs: ["seq ${++renderSeq}".toString()]]]],
                 settings: [actType: [1: "switchActs"], actSubType: [1: "on"], switch: [1: ["8"]]],
                 childApps: []
             ])
@@ -42697,7 +42701,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                                  [name: "actSubType.1", type: "enum", options: ["getOnOffSwitch": "Turn switches on/off"]],
                                  [name: "switch.1", type: "capability.switch", multiple: true],
                                  [name: "actionDone", type: "button"]
-                             ], paragraphs: ["seq ${System.nanoTime()}".toString()]]]],
+                             ], paragraphs: ["seq ${++renderSeq}".toString()]]]],
                 settings: [actType: [1: "switchActs"], actSubType: [1: "on"], switch: [1: ["8"]]],
                 childApps: []
             ])
