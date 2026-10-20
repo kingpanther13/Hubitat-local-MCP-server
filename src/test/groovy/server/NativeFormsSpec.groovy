@@ -304,7 +304,7 @@ class NativeFormsSpec extends ToolSpecBase {
         result.closed
         result.app_id == 42L
         result.created_app_id == 43L
-        calls*.path == ['/installedapp/createchild/hubitat/Example%20Child/parent/42']
+        calls*.path == ['/installedapp/createchild/hubitat/Example Child/parent/42']
     }
 
     def 'child creation refuses accompanying fields before the native request'() {

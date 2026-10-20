@@ -293,7 +293,8 @@ Map toolCallAppForm(Map args) {
                 }
                 attempted = true
                 if (control?.kind == 'create_child') {
-                    String childName = _nfEncode(control.value).replace('+', '%20')
+                    // The native HTTP client encodes the path; pre-encoding names escapes percent signs twice.
+                    String childName = control.value.toString()
                     createdId = _nrCreatedAppId(hubInternalGetRaw("/installedapp/createchild/hubitat/${childName}/parent/${id}"))
                     if (createdId == null) throw new IllegalStateException('Native child creation did not return an app ID; inspect the parent before retrying')
                     def child = getAppByAppId(createdId)

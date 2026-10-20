@@ -71,6 +71,8 @@ private Object _nrComparableSetting(String type, Object value) {
     if (value == null) return null
     if (type == 'number' || type == 'decimal') return value.toString().isBigDecimal() ? new BigDecimal(value.toString()).stripTrailingZeros().toPlainString() : value.toString()
     if (type == 'bool') return value.toString().toLowerCase()
+    // Native time settings keep the local clock while normalizing the stored date and timezone offset.
+    if (type == 'time') return toDateTime(value.toString()).format('HH:mm:ss.SSS', location.timeZone)
     value.toString()
 }
 
@@ -187,6 +189,11 @@ private void _nrValidateInput(Map field, Object value, boolean allowClear = fals
     if ((device || field.type in ['enum', 'mode']) && options == null) throw new IllegalArgumentException("Native choices are unavailable for ${field.name}")
     if (options != null && values.any { !(allowClear && it.toString() == '') && !(it.toString() in options) }) throw new IllegalArgumentException("Invalid native choice for ${field.name}")
     if (field.type == 'bool' && !(value instanceof Boolean)) throw new IllegalArgumentException("Boolean required for ${field.name}")
+    if (field.type == 'time' && !(allowClear && value == '')) {
+        if (!(value instanceof String)) throw new IllegalArgumentException("Native time string required for ${field.name}")
+        try { if (toDateTime(value) == null) throw new IllegalArgumentException('Unparseable time') }
+        catch (Exception ignored) { throw new IllegalArgumentException("Invalid native time for ${field.name}") }
+    }
     if (field.type in ['number', 'decimal'] && !(allowClear && value.toString() == '')) {
         if (!value.toString().isBigDecimal()) throw new IllegalArgumentException("Numeric value required for ${field.name}")
         BigDecimal number = value.toString().toBigDecimal()

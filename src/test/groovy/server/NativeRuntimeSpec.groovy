@@ -1,8 +1,11 @@
 package server
 
 import support.ToolSpecBase
+import support.TestLocation
+import spock.lang.Shared
 
 class NativeRuntimeSpec extends ToolSpecBase {
+    @Shared TestLocation sharedLocation = new TestLocation()
     Map domain
     List children
     Map nativeState
@@ -11,7 +14,12 @@ class NativeRuntimeSpec extends ToolSpecBase {
     Map typedSettings
     boolean ignoreWrites
 
+    void setupSpec() {
+        appExecutor.getLocation() >> sharedLocation
+    }
+
     void setup() {
+        sharedLocation.timeZone = TimeZone.getTimeZone('UTC')
         nativeState = [keep: 'unchanged', cursor: 1]
         calls = []
         typedSettings = [:]
@@ -100,6 +108,32 @@ class NativeRuntimeSpec extends ToolSpecBase {
         result.settings.flag.value == false
         result.settings.count.value == 0
         result.settings.empty.value == ''
+    }
+
+    def 'time verification preserves the native local clock across date and DST normalization'() {
+        given:
+        sharedLocation.timeZone = TimeZone.getTimeZone('America/New_York')
+        script.metaClass.toDateTime = { String value ->
+            Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", value)
+        }
+        expect:
+        script._nrComparableSetting('time', '2026-01-01T23:59:00.000+0000') ==
+                script._nrComparableSetting('time', '2026-10-20T18:59:00.000-0400')
+        script._nrComparableSetting('time', '2026-01-01T23:59:00.000+0000') !=
+                script._nrComparableSetting('time', '2026-10-20T19:59:00.000-0400')
+    }
+
+    def 'malformed native times refuse during descriptor validation'() {
+        given:
+        script.metaClass.toDateTime = { String value ->
+            Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", value)
+        }
+        when:
+        script._nrValidateInput([name: 'atTime1', type: 'time', multiple: false], '__invalid_time__')
+        then:
+        def error = thrown(IllegalArgumentException)
+        error.message == 'Invalid native time for atTime1'
+        calls.empty
     }
 
     def 'all settings validate before the first update'() {
