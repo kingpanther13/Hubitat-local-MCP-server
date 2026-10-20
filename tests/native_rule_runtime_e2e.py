@@ -385,6 +385,9 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
                 field_prefix = "state_" if invalid["part"] == "condition" else "numOp."
                 self.assertIn(field_prefix, json.dumps(response))
                 after = self.config_snapshot(rule_id)
+                for name, setting in after["settings"].items():
+                    if name.startswith(field_prefix):
+                        self.assertNotIn("__invalid_", str(setting.get("value")))
                 if response["partial"]:
                     # Native field discovery may stage settings; it must not finish or run the action.
                     self.assertEqual(after["state"]["actionList"], before["state"]["actionList"])
