@@ -22740,6 +22740,7 @@ def _getAllToolDefinitions_partNativeRM() {
             inputSchema: [
                 type: "object",
                 properties: [
+                    labelFilter: [type: "string", description: "Case-insensitive label substring; applied before pagination."],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ]
@@ -22941,6 +22942,8 @@ def toolListRmRules(args) {
     def liveApps = collected.liveApps
     combined.values().each { entry -> _rmAnnotateRuleStatus(entry, treeReadable, liveApps) }
     def rules = combined.values().sort { it.label ?: "" }.toList()
+    def labelFilter = args?.labelFilter?.toString()?.toLowerCase()
+    if (labelFilter) rules = rules.findAll { (it.label ?: "").toString().toLowerCase().contains(labelFilter) }
     def cursor = args?.cursor
     def paged = _paginateList(rules, cursor, 50, "hub_list_rules")
     def result = [
@@ -23031,6 +23034,11 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
     if (node == null) {
         entry.status = "unknown"
         return
+    }
+    if (node.type instanceof String && node.type) {
+        entry.type = node.type
+        if (node.type.startsWith("Rule-5.")) entry.rmVersion = "5.x"
+        else if (node.type.startsWith("Rule-4.")) entry.rmVersion = "4.x"
     }
     def disabledRaw = node.disabled
     def cleanApps = stripAppConfigHtml(node.name)
@@ -23334,7 +23342,7 @@ private Map _collectLiveApps() {
         if (idVal != null) {
             try {
                 if (!(idVal.toString() ==~ /[1-9][0-9]*/)) throw new IllegalArgumentException("Invalid app ID")
-                apps.put(idVal as Integer, [name: node.data?.name, disabled: node.data?.disabled])
+                apps.put(idVal as Integer, [name: node.data?.name, disabled: node.data?.disabled, type: node.data?.type])
             } catch (Exception ignored) { complete = false }
         } else if (node.data) {
             complete = false
@@ -25309,7 +25317,7 @@ private Map _nmRejectAction(Long ruleId, String id, Map baseline, Map savedSetti
     if (prior instanceof Map && prior.rule != null) expressionIds << prior.rule.toString()
     if (current.ruleNdx != null) expressionIds << current.ruleNdx.toString()
     if (current.eval instanceof Map) expressionIds.addAll(current.eval.keySet().findAll { key -> !(baseline.eval instanceof Map) || !baseline.eval.containsKey(key) }.collect { it.toString() })
-    List keys = (['actions', 'actionList', 'capabsfalse', 'capabstrue', 'eval', 'predCapabs', 'isPredicate', 'ndx', 'actNdx', 'ruleNdx', 'waitCondNdx',
+    List keys = (['actions', 'actionList', 'capabsfalse', 'capabstrue', 'eval', 'predCapabs', 'isPredicate', 'hasPredicate', 'ndx', 'actNdx', 'ruleNdx', 'waitCondNdx',
                  'doActN', 'editAct', 'editIf', 'editToken', 'action', 'actionDone', 'actionCancel', 'hasDevice', 'hasCondition', 'hasCompleteRule',
                  'hasAll', 'hasRule', 'capabDone', 'capabActDone', 'inSimpleCond', 'simpleCond', 'inIf', 'inRepeat', 'hasWhileRule', 'needRuleButtons',
                  'needWaitButtons', 'needWaitDone', 'needWaitCancel', 'anotherWait', 'doneWaitEvents', 'moreCond', 'editCond'] + fields.collect { it.name }).unique()
@@ -26053,6 +26061,7 @@ private String _nfEntities(String value) {
     value.replace('&quot;', '"').replace('&#39;', "'").replace('&apos;', "'").replace('&lt;', '<').replace('&gt;', '>').replace('&nbsp;', ' ').replace('&amp;', '&')
 }
 private String _nfKey(Long id) { "${app.id}:${id}".toString() }
+private String _nfCallerKey() { "${app.id}:caller:${callerClient == null ? 'main' : 'client:' + callerClient.id}".toString() }
 private Map _nfJson(Object value) {
     def parsed
     try { parsed = value instanceof Map ? value : new groovy.json.JsonSlurper().parseText(value?.toString() ?: '') }
@@ -26236,7 +26245,7 @@ private Map _nfContext(Long id, Map model) {
     if (model.app.containsKey('version')) envelope.version = model.app.version
     if (model.cancelButton != null) envelope._cancellable = model.cancelButton
     if (model.paramsForPage instanceof Map) envelope.paramsForPage = _nfEncode(groovy.json.JsonOutput.toJson(model.paramsForPage))
-    Map context = [page: [name: page.name ?: '', title: _nfText(page.title)], fields: fields, controls: controls, messages: messages.unique(),
+    Map context = [app_id: id, page: [name: page.name ?: '', title: _nfText(page.title)], fields: fields, controls: controls, messages: messages.unique(),
                    unsupported: unsupported.unique(), envelope: envelope, expires: now() + 300000L]
     if (fields.size() > 256 || controls.size() > 256) throw new IllegalStateException('Native form exceeds 256 fields or controls')
     context
@@ -26249,7 +26258,7 @@ private String _nfReloadPath(Long id, Map context) {
     "/installedapp/configure/json/${id}" + (pages ? '/' + pages.collect { _nfEncode(it) }.join('/') : '')
 }
 private void _nfCache(String key, Map context) {
-    Map cached = [page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
+    Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:]]
     context.get('fields').each { name, field ->
         Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step'] }
@@ -26257,15 +26266,15 @@ private void _nfCache(String key, Map context) {
         cached.get('fields').put(name, descriptor)
     }
     context.controls.each { name, control ->
-        cached.controls.put(name, control.findAll { k, v -> k in ['name', 'value', 'kind', 'stateAttribute', 'submit_on_change', 'params', 'disabled'] })
+        cached.controls.put(name, control.findAll { k, v -> k in ['name', 'value', 'kind', 'stateAttribute', 'submit_on_change', 'params', 'disabled', 'page'] })
     }
     int size = groovy.json.JsonOutput.toJson(cached).getBytes('UTF-8').length
     if (size > 24576) throw new IllegalStateException('Native execution descriptors exceed the 24 KiB per-app context bound')
     cached.bytes = size
     synchronized (NATIVE_FORM_CONTEXTS) {
-        NATIVE_FORM_CONTEXTS.entrySet().findAll { entry -> entry.value.expires < now() }.each { entry -> NATIVE_FORM_CONTEXTS.remove(entry.key) }
+        NATIVE_FORM_CONTEXTS.entrySet().findAll { entry -> entry.value.expires < now() && !NATIVE_FORM_BUSY.containsKey(entry.key) }.each { entry -> NATIVE_FORM_CONTEXTS.remove(entry.key) }
         int total = NATIVE_FORM_CONTEXTS.findAll { k, v -> k != key }.values().sum { it.bytes } ?: 0
-        if (total + size > 98304 || (!NATIVE_FORM_CONTEXTS.containsKey(key) && NATIVE_FORM_CONTEXTS.size() >= 8)) throw new IllegalStateException('Native form context capacity reached; inactive contexts expire after five minutes')
+        if (total + size > 98304 || (!NATIVE_FORM_CONTEXTS.containsKey(key) && NATIVE_FORM_CONTEXTS.size() >= 8)) throw new IllegalStateException('Native form context capacity reached; inactive caller workflows expire after five minutes')
         NATIVE_FORM_CONTEXTS.put(key, cached)
     }
 }
@@ -26321,8 +26330,13 @@ Map toolCallAppForm(Map args) {
     def nativeApp = getAppByAppId(id)
     if (nativeApp?.appType?.namespace != 'hubitat') throw new IllegalArgumentException('app_id must identify a built-in native app')
     if (nativeApp.disabled == true) throw new IllegalArgumentException('Enable the native app before editing its form')
-    String key = _nfKey(id)
-    if (NATIVE_FORM_BUSY.putIfAbsent(key, true) != null) throw new IllegalStateException('This app already has an active form operation')
+    String key = _nfCallerKey()
+    String appKey = _nfKey(id)
+    if (NATIVE_FORM_BUSY.putIfAbsent(key, true) != null) throw new IllegalStateException('This caller already has an active form operation')
+    if (NATIVE_FORM_BUSY.putIfAbsent(appKey, true) != null) {
+        NATIVE_FORM_BUSY.remove(key)
+        throw new IllegalStateException('This app already has an active form operation')
+    }
     List completed = []
     boolean attempted = false
     Long createdId = null
@@ -26330,9 +26344,12 @@ Map toolCallAppForm(Map args) {
     Map context = NATIVE_FORM_CONTEXTS[key]
     try {
         if (context && context.expires < now()) { NATIVE_FORM_CONTEXTS.remove(key); context = null }
+        if (context && context.app_id != id) context = null
         args.steps.eachWithIndex { step, index ->
             Map model
             if (step.kind == 'open') {
+                NATIVE_FORM_CONTEXTS.remove(key)
+                context = null
                 attempted = true
                 model = _nfJson(hubInternalGet("/installedapp/configure/json/${id}" + (step.page ? "/${_nfEncode(step.page)}" : '')))
             } else {
@@ -26402,7 +26419,7 @@ Map toolCallAppForm(Map args) {
         if (attempted) NATIVE_FORM_CONTEXTS.remove(key)
         [success: false, app_id: id, partial: attempted, completed: completed, error: failure.message?.toString(),
          reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
-    } finally { NATIVE_FORM_BUSY.remove(key) }
+    } finally { NATIVE_FORM_BUSY.remove(appKey); NATIVE_FORM_BUSY.remove(key) }
 }
 def _getAllToolDefinitions_partNativeForms() {
     def step = [type: 'object', additionalProperties: false, properties: [
@@ -26428,7 +26445,7 @@ Submit with {kind:"submit",expect_page:"last returned page",fields:{"native fiel
 
 Batches contain 1 through 16 ordered steps. Each step uses the form returned by the preceding step, so dependent fields require another submit after they appear. A button handler runs before that step's fields are saved, as in the native browser; submit fields in a preceding step when the handler needs them. A button without submitOnChange reloads and requires a separate field submission.
 
-The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight apps. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. A verified local native link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true; open that target separately. No script is evaluated. App-authored JavaScript, custom HTML inputs, uploads, external links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
+The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight caller workflows. Opening another app replaces only that caller's previous context; reopen the previous app before submitting it again. Other callers' contexts are retained. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. A verified local native link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true; open that target separately. No script is evaluated. App-authored JavaScript, custom HTML inputs, uploads, external links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
 }
 preferences {
     page(name: "mainPage")
