@@ -16,6 +16,9 @@ class NativeRuntimeSpec extends ToolSpecBase {
 
     void setupSpec() {
         appExecutor.getLocation() >> sharedLocation
+        appExecutor.toDateTime(_ as String) >> { String value ->
+            Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", value)
+        }
     }
 
     void setup() {
@@ -113,9 +116,6 @@ class NativeRuntimeSpec extends ToolSpecBase {
     def 'time verification preserves the native local clock across date and DST normalization'() {
         given:
         sharedLocation.timeZone = TimeZone.getTimeZone('America/New_York')
-        script.metaClass.toDateTime = { String value ->
-            Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", value)
-        }
         expect:
         script._nrComparableSetting('time', '2026-01-01T23:59:00.000+0000') ==
                 script._nrComparableSetting('time', '2026-10-20T18:59:00.000-0400')
@@ -124,10 +124,10 @@ class NativeRuntimeSpec extends ToolSpecBase {
     }
 
     def 'malformed native times refuse during descriptor validation'() {
-        given:
-        script.metaClass.toDateTime = { String value ->
-            Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", value)
-        }
+        expect:
+        script._nrValidateInput([name: 'atTime1', type: 'time', multiple: false],
+                '2026-01-01T23:59:00.000+0000') == null
+
         when:
         script._nrValidateInput([name: 'atTime1', type: 'time', multiple: false], '__invalid_time__')
         then:
