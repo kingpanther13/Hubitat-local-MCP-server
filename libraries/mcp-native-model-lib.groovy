@@ -30,6 +30,58 @@ private List _nmFields(List fields, String id) {
     }
 }
 
+private void _nmCollectInputs(Object node, Map inputs) {
+    if (node instanceof Map) {
+        if (node.element == 'input' && node.name instanceof String && node.type instanceof String && !inputs.containsKey(node.name)) inputs.put(node.name, node)
+        ['sections', 'input', 'body', 'children'].each { key ->
+            def child = node.get(key)
+            if (child instanceof Map || child instanceof List) _nmCollectInputs(child, inputs)
+        }
+    } else if (node instanceof List) node.each { child -> if (child instanceof Map || child instanceof List) _nmCollectInputs(child, inputs) }
+}
+
+private List _nmOptionKeys(Object options) {
+    if (options instanceof Map) return options.keySet().collect { it.toString() }.unique().sort()
+    if (!(options instanceof List)) return null
+    List keys = []
+    for (Object option in options) {
+        if (option instanceof Map) keys.addAll(option.keySet().collect { it.toString() })
+        else if (option instanceof String || option instanceof Number || option instanceof Boolean) keys << option.toString()
+        else return null
+    }
+    keys.unique().sort()
+}
+
+Map _nmValidateInputs(Object page, List fields) {
+    Map inputs = [:]
+    if (page instanceof Map) _nmCollectInputs(page, inputs)
+    List errors = []
+    fields.each { row ->
+        def descriptor = inputs.get(row.name)
+        String reason = null
+        if (!(page instanceof Map)) reason = 'native page did not return input descriptors'
+        else if (!(descriptor instanceof Map)) reason = 'input is not exposed by the native page; dependent-field authoring requires an intermediate native render'
+        else {
+            if (descriptor.type != row.type) reason = "expected native type '${descriptor.type}', received '${row.type}'".toString()
+            else if (descriptor.containsKey('multiple') && !(descriptor.multiple instanceof Boolean)) reason = 'native input cardinality metadata is unsupported'
+            else if (!descriptor.containsKey('multiple') && row.value instanceof List) reason = 'native list cardinality is not exposed'
+            else if (descriptor.containsKey('multiple') && descriptor.multiple != (row.value instanceof List)) reason = descriptor.multiple ? 'native input requires a list' : 'native input requires a scalar'
+            else if (descriptor.required == true && (row.value == null || (row.value instanceof List && row.value.isEmpty()) || (row.value instanceof String && !row.value.trim()))) reason = 'required native input is empty'
+            else if (descriptor.type == 'bool' && !(row.value instanceof Boolean)) reason = 'native Boolean input requires a Boolean value'
+            else if (descriptor.type in ['number', 'decimal'] && (!(row.value instanceof Number || row.value instanceof String) || !row.value.toString().isBigDecimal())) reason = 'native numeric input requires a finite numeric value'
+            else if (descriptor.type in ['text', 'textarea', 'password', 'time'] && !(row.value instanceof String)) reason = 'native text input requires a string value'
+            else if (descriptor.type in ['enum', 'mode']) {
+                List allowed = _nmOptionKeys(descriptor.options)
+                List values = row.value instanceof List ? row.value : [row.value]
+                if (allowed == null) reason = 'native enum options are unavailable or unsupported'
+                else if (values.any { !(it.toString() in allowed) }) reason = 'value is not one of the native enum options'
+            }
+        }
+        if (reason != null) errors << [field: row.name, error: "Native field '${row.name}': ${reason}".toString()]
+    }
+    [success: errors.isEmpty(), error: errors ? errors.get(0).error : null, fieldErrors: errors, verifiedFields: fields.findAll { row -> !errors.any { it.field == row.name } }.collect { it.name }]
+}
+
 private void _nmTokens(List tokens, Map conditions) {
     if (!tokens) throw new IllegalArgumentException('An expression must contain an operand')
     boolean operand = true
@@ -167,8 +219,9 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
     if (editing) context.editCond = id
     else { context.moreCond = true; context.ndx = id.toInteger() }
     _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
-    if (trigger) _nrHandle(ruleId).selectTriggers()
-    else _nrHandle(ruleId).selectConditions([pred: false])
+    def page = trigger ? _nrHandle(ruleId).selectTriggers() : _nrHandle(ruleId).selectConditions([pred: false])
+    Map inputValidation = _nmValidateInputs(page, fields)
+    if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
     _nrStatePatch(ruleId, [hasAll: true])
     if (trigger) _nrHandle(ruleId).selectTriggers()
     else _nrHandle(ruleId).selectConditions([pred: false])
@@ -216,11 +269,13 @@ Map _nmUpsertAction(Long ruleId, Map row) {
         editToken = "${id}.${prior.cond ?: 0}.${expressionAction}".toString()
     }
     _nrStatePatch(ruleId, [doActN: editToken])
-    _nrHandle(ruleId).doActPage()
+    def page = _nrHandle(ruleId).doActPage()
+    Map inputValidation = _nmValidateInputs(page, fields)
+    if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
     List waitIds = null
     if (waitEvents) {
         Map waits = _nmCompileWait(ruleId, id, row.events as List, editing)
-        if (waits.success != true) return [success: false, id: id, partial: true, waitEvents: waits]
+        if (waits.success != true) return [success: false, id: id, partial: true, error: waits.error, fieldErrors: waits.fieldErrors ?: [], waitEvents: waits]
         waitIds = waits.eventIds
         settings.addAll(waits.settings)
     }
@@ -264,7 +319,9 @@ private Map _nmCompileWait(Long ruleId, String actionId, List events, boolean ed
         Map written = _nrWriteSettings(ruleId, fields)
         if (written.success != true) return [success: false, error: 'Wait event inputs did not persist', settings: written]
         settings.addAll(fields)
-        _nrHandle(ruleId).doActPage()
+        def page = _nrHandle(ruleId).doActPage()
+        Map inputValidation = _nmValidateInputs(page, fields.findAll { it.name != "tCapab-${eventId}".toString() })
+        if (inputValidation.success != true) return [success: false, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
         if (!_nmWaitDuration(ruleId, eventId)) return [success: false, error: 'Native wait duration did not compile', eventId: eventId]
         if (!editing) {
             _nrHandle(ruleId).appButtonHandler('hasAll')

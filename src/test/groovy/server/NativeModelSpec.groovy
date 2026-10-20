@@ -22,8 +22,15 @@ class NativeModelSpec extends ToolSpecBase {
         nativeRule.createLocalVar = { String name, Object value, String type -> locals.put(name, [name: name, value: value, type: type]) }
         nativeRule.setLocalVar = { String name, Object value -> locals.get(name).value = value }
         nativeRule.deleteLocalVar = { String name -> locals.remove(name) }
-        nativeRule.selectConditions = { Map params -> assert params == [pred: false]; nativeState.capabsfalse['4'] = 'Switch A on' }
-        nativeRule.selectTriggers = { -> nativeState.capabstrue = ['4': 'Switch A on'] }
+        nativeRule.selectConditions = { Map params ->
+            assert params == [pred: false]
+            if (nativeState.hasAll == true) nativeState.capabsfalse.put('4', 'Switch A on')
+            nativeForm([[name: 'state_4', type: 'enum', multiple: false, options: ['on', 'off']], [name: 'rCapab_5', type: 'enum', options: ['Switch']]])
+        }
+        nativeRule.selectTriggers = { ->
+            if (nativeState.hasAll == true) nativeState.capabstrue = ['4': 'Switch A on']
+            nativeForm([[name: 'tstate4', type: 'enum', multiple: false, options: ['on', 'off']]])
+        }
         script.metaClass._nrHandle = { Long id -> nativeRule }
         script.metaClass._nrState = { Long id -> [:] + nativeState }
         script.metaClass._nrStatePatch = { Long id, Map values, List remove = [] -> remove.each { nativeState.remove(it) }; nativeState.putAll(values); writes << values; [:] }
@@ -36,6 +43,11 @@ class NativeModelSpec extends ToolSpecBase {
         script.metaClass.hubInternalGet = { String path -> [settings: settings.collect { name, row ->
             [name: name, type: row.type, value: row.value, multiple: row.multiple, deviceList: row.deviceList]
         }] }
+    }
+
+    private Map nativeForm(List descriptors) {
+        List inputs = descriptors.collect { [element: 'input'] + it }
+        [sections: [[input: inputs]], body: [[element: 'section', children: inputs]]]
     }
 
     def 'malformed expressions refuse before state write even when native validation would accept'() {
@@ -243,7 +255,7 @@ class NativeModelSpec extends ToolSpecBase {
 
     def 'blank native compiled label is failure despite persisted settings'() {
         given:
-        nativeRule.selectTriggers = { -> nativeState.capabstrue = ['4': ''] }
+        nativeRule.selectTriggers = { -> nativeState.capabstrue = ['4': '']; nativeForm([[name: 'tstate4', type: 'enum', multiple: false, options: ['on', 'off']]]) }
         when:
         def result = script._nmUpsertCondition(42L, true, [capability: 'Switch', fields: [[name: 'tstate#', type: 'enum', value: 'on']]])
         then:
@@ -273,7 +285,7 @@ class NativeModelSpec extends ToolSpecBase {
     def 'new action commits through native context and verifies persisted inputs and compiled method'() {
         given:
         List contexts = []
-        nativeRule.doActPage = { -> contexts << nativeState.doActN }
+        nativeRule.doActPage = { -> contexts << nativeState.doActN; nativeForm([[name: 'logmsg.1', type: 'text', multiple: false]]) }
         nativeRule.appButtonHandler = { String name ->
             if (name == 'actionDone') {
                 nativeState.actions = ['1': [method: 'getLogMsg', indent: '']]
@@ -294,7 +306,7 @@ class NativeModelSpec extends ToolSpecBase {
         given:
         nativeState.actions = ['1': [method: 'getLogMsg', label: 'old', cond: null]]
         nativeState.actionList = ['1']
-        nativeRule.doActPage = { -> }
+        nativeRule.doActPage = { -> nativeForm([[name: 'logmsg.1', type: 'text', multiple: false]]) }
         nativeRule.appButtonHandler = { String name -> nativeState.actions = [:] }
         when:
         def result = script._nmUpsertAction(42L, [id: '1', type: 'messageActs', subtype: 'getLogMsg', fields: [[name: 'logmsg.#', type: 'text', value: 'new']]])
@@ -325,6 +337,13 @@ class NativeModelSpec extends ToolSpecBase {
                     nativeState.put("hhmmss-${eventId}".toString(), "${hours}:${minutes}:${seconds}".toString())
                 }
             }
+            List descriptors = []
+            nativeState.waitNdx.get('.1').each { eventId ->
+                descriptors << [name: "tstate-${eventId}".toString(), type: 'enum', multiple: false, options: ['on', 'off']]
+                descriptors << [name: "stays-${eventId}".toString(), type: 'bool', multiple: false]
+                ['SHours', 'SMins', 'SSecs'].each { component -> descriptors << [name: "${component}-${eventId}".toString(), type: 'number', multiple: false] }
+            }
+            nativeForm(descriptors)
         }
         nativeRule.appButtonHandler = { String name ->
             if (name == 'hasAll') nativeState.waitDone.get('.1').put(nativeState.waitNdx.get('.1').last().toString(), true)
@@ -555,5 +574,107 @@ class NativeModelSpec extends ToolSpecBase {
         false| true     | false   | 1
         true | true     | false   | 2
         false| false    | true    | 0
+    }
+
+    def 'native input validation uses enum option keys and deduplicates section and body descriptors'() {
+        given:
+        def page = nativeForm([[name: 'state_4', type: 'enum', multiple: false, options: options]])
+        when:
+        def valid = script._nmValidateInputs(page, [[name: 'state_4', type: 'enum', value: 'on']])
+        def invalid = script._nmValidateInputs(page, [[name: 'state_4', type: 'enum', value: 'INVALID']])
+        then:
+        valid.success
+        valid.verifiedFields == ['state_4']
+        !invalid.success
+        invalid.fieldErrors.size() == 1
+        invalid.error.contains('state_4')
+        where:
+        options << [['on', 'off'], [on: 'On', off: 'Off'], [[on: 'On'], [off: 'Off']]]
+    }
+
+    def 'native input validation rejects type value cardinality and unsupported enum descriptors'() {
+        when:
+        def result = script._nmValidateInputs(nativeForm([descriptor]), [field])
+        then:
+        !result.success
+        result.error.contains(field.name)
+        result.fieldErrors.size() == 1
+        where:
+        descriptor                                                                 | field
+        [name: 'device', type: 'capability.switch', multiple: false]                 | [name: 'device', type: 'capability.switch', value: [1]]
+        [name: 'device', type: 'capability.switch', multiple: true]                  | [name: 'device', type: 'capability.switch', value: 1]
+        [name: 'amount', type: 'decimal', multiple: false]                          | [name: 'amount', type: 'number', value: 1]
+        [name: 'amount', type: 'decimal', multiple: false]                          | [name: 'amount', type: 'decimal', value: 'not a number']
+        [name: 'enabled', type: 'bool', multiple: false]                            | [name: 'enabled', type: 'bool', value: 'true']
+        [name: 'choice', type: 'enum', multiple: false]                             | [name: 'choice', type: 'enum', value: 'on']
+        [name: 'choice', type: 'enum', multiple: true, required: true, options: []]  | [name: 'choice', type: 'enum', value: []]
+        [name: 'choice', type: 'enum', options: ['on']]                             | [name: 'choice', type: 'enum', value: ['on']]
+    }
+
+    def 'native input validation ignores option metadata and unmarked name type maps'() {
+        given:
+        def page = [sections: [[input: [[name: 'unmarked', type: 'text']]]], options: [[element: 'input', name: 'hidden', type: 'text']]]
+        when:
+        def result = script._nmValidateInputs(page, [[name: 'unmarked', type: 'text', value: 'x'], [name: 'hidden', type: 'text', value: 'x']])
+        then:
+        !result.success
+        result.fieldErrors*.field == ['unmarked', 'hidden']
+        result.error.contains('not exposed')
+    }
+
+    def 'single device scalar matches native cardinality without category mappings'() {
+        expect:
+        script._nmValidateInputs(nativeForm([[name: 'valDev.3', type: 'capability.temperatureMeasurement', multiple: false]]),
+                [[name: 'valDev.3', type: 'capability.temperatureMeasurement', value: 9]]).success
+    }
+
+    def 'invalid condition enum reports written partial and stops before native hasAll commit'() {
+        given:
+        List renders = []
+        nativeRule.selectConditions = { Map params ->
+            renders << nativeState.hasAll
+            if (nativeState.hasAll == true) nativeState.capabsfalse.put('4', 'must not commit')
+            nativeForm([[name: 'state_4', type: 'enum', multiple: false, options: ['on', 'off']]])
+        }
+        when:
+        def result = script._nmUpsertCondition(42L, false, [capability: 'Switch', fields: [[name: 'state_#', type: 'enum', value: 'INVALID']]])
+        then:
+        !result.success && result.partial
+        result.error.contains('state_4')
+        result.fieldErrors*.field == ['state_4']
+        renders == [false]
+        nativeState.capabsfalse.keySet() == ['1', '2'] as Set
+        settings.state_4.value == 'INVALID'
+    }
+
+    def 'invalid or unrevealed action input stops before actionDone with explicit native field error'() {
+        given:
+        List buttons = []
+        nativeRule.doActPage = { -> nativeForm([[name: 'numOp.1', type: 'enum', multiple: false, options: ['number', 'add number', 'variable']]]) }
+        nativeRule.appButtonHandler = { String button -> buttons << button }
+        when:
+        def result = script._nmUpsertAction(42L, [type: 'modeActs', subtype: 'getSetVariable', fields: [[name: fieldTemplate, type: 'enum', value: 'INVALID']]])
+        then:
+        !result.success && result.partial
+        result.error.contains(fieldTemplate.replace('#', '1'))
+        buttons.empty
+        !nativeState.actions
+        !nativeState.actionList
+        where:
+        fieldTemplate << ['numOp.#', 'unrevealed.#']
+    }
+
+    def 'invalid wait enum stops before native waitDone and action commit'() {
+        given:
+        configureWaitNative(true)
+        when:
+        def result = script._nmUpsertAction(42L, [type: 'delayActs', subtype: 'getWaitEvents', fields: [], events: [
+                [capability: 'Switch', fields: [[name: 'tstate#', type: 'enum', value: 'INVALID']]]]])
+        then:
+        !result.success && result.partial
+        result.error.contains('tstate-7')
+        result.fieldErrors*.field == ['tstate-7']
+        nativeState.waitDone.get('.1').isEmpty()
+        !nativeState.actions
     }
 }
