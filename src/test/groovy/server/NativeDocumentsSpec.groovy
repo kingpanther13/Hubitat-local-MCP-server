@@ -257,6 +257,53 @@ class NativeDocumentsSpec extends ToolSpecBase {
         scheduled << [true, false]
     }
 
+    def 'false required expression reports native suppression with or without tracking subscriptions'() {
+        given:
+        typedSettings.useST = true
+        nativeState.hasPredicate = true
+        nativeState.stPrimed = false
+        hubGet.register('/installedapp/statusJson/42') { q ->
+            JsonOutput.toJson([installedApp: [id: 42, installed: true],
+                              eventSubscriptions: subscriptions, scheduledJobs: []])
+        }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true,
+            changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]]])
+        then:
+        result.success
+        result.subscriptionSettle == 'SUPPRESSED: Required Expression is false'
+        result.eventSubscriptions == subscriptions
+        events.any { it instanceof Map && it.path == '/installedapp/update/json' }
+        where:
+        subscriptions << [[], [[name: 'required-expression-tracking']]]
+    }
+
+    def 'missing activation cannot be explained by disabled stale or unknown predicate state'() {
+        given:
+        typedSettings.useST = enabled
+        nativeState.hasPredicate = predicate
+        nativeState.stPrimed = primed
+        hubGet.register('/installedapp/statusJson/42') { q ->
+            JsonOutput.toJson([installedApp: [id: 42, installed: true],
+                              eventSubscriptions: [], scheduledJobs: []])
+        }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true,
+            changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]]])
+        then:
+        !result.success
+        result.partial
+        result.error.contains('subscriptions or scheduled jobs')
+        !result.containsKey('subscriptionSettle')
+        where:
+        enabled | predicate | primed
+        false   | true      | false
+        true    | false     | false
+        true    | true      | true
+        true    | true      | null
+        true    | true      | 'false'
+    }
+
     def 'delete and order parts dispatch only fixed model operations'() {
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'delete', value: [part: 'action', id: '1']], [part: 'order', value: [ids: ['3']]]], confirm: true])
@@ -444,6 +491,40 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.rule_id == 42L
         events[0..3] == ['create', 'initState', 'origLabel:New document', 'label:New document']
         events.find { it instanceof Map }.body.contains('_action_update=Done')
+    }
+
+    def 'empty create installs a native rule while empty update remains a prewrite refusal'() {
+        given:
+        nativeState = [actionList: [], actions: [:], capabsfalse: [:], capabstrue: [:],
+                       eval: [:], allLocalVars: [:]]
+        hubGet.register('/installedapp/statusJson/42') { q ->
+            JsonOutput.toJson([installedApp: [id: 42, installed: true],
+                              eventSubscriptions: [], scheduledJobs: []])
+        }
+        when:
+        def result = script.executeTool('hub_create_rule_document',
+            [parent_id: 28, name: 'Empty document', changes: [], confirm: true])
+        then:
+        result.success
+        result.created
+        result.rule_id == 42L
+        result.results == []
+        result.document.actions == []
+        result.document.conditions == [:]
+        result.document.triggers == [:]
+        events[0..3] == ['create', 'initState', 'origLabel:Empty document', 'label:Empty document']
+        events.any { it instanceof Map && it.path == '/installedapp/update/json' }
+        when:
+        events.clear()
+        script.toolUpdateRuleDocument([rule_id: 42, changes: [], confirm: true])
+        then:
+        thrown(IllegalArgumentException)
+        events.empty
+        when:
+        def definitions = script._getAllToolDefinitions_partNativeDocuments()
+        then:
+        definitions.find { it.name == 'hub_create_rule_document' }.inputSchema.properties.changes.minItems == 0
+        definitions.find { it.name == 'hub_update_rule_document' }.inputSchema.properties.changes.minItems == 1
     }
 
     def 'create accepts the native Location header prefix and absolute loopback origin'() {

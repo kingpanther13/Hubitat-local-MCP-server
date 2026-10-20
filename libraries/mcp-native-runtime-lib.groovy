@@ -215,7 +215,6 @@ private void _nrValidateInput(Map field, Object value, boolean allowClear = fals
     if (field.type in ['number', 'decimal'] && !(allowClear && value.toString() == '')) {
         if (!value.toString().isBigDecimal()) throw new IllegalArgumentException("Numeric value required for ${field.name}")
         BigDecimal number = value.toString().toBigDecimal()
-        if (field.type == 'number' && number.stripTrailingZeros().scale() > 0) throw new IllegalArgumentException("Integer required for ${field.name}")
         List range = field.range?.toString()?.split(/\.\./)?.toList() ?: []
         def minimum = field.min != null ? field.min : (range.size() == 2 ? range.get(0) : null)
         def maximum = field.max != null ? field.max : (range.size() == 2 ? range.get(1) : null)

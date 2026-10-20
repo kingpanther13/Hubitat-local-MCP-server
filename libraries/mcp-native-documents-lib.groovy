@@ -101,8 +101,8 @@ Map toolGetRuleDocument(Map args) {
     document
 }
 
-private List _ndChanges(Object changes) {
-    if (!(changes instanceof List) || !changes || changes.size() > 100) throw new IllegalArgumentException('changes must contain between 1 and 100 changes')
+private List _ndChanges(Object changes, boolean allowEmpty = false) {
+    if (!(changes instanceof List) || (!allowEmpty && changes.isEmpty()) || changes.size() > 100) throw new IllegalArgumentException(allowEmpty ? 'changes must contain between 0 and 100 changes' : 'changes must contain between 1 and 100 changes')
     changes.each { change ->
         if (!(change instanceof Map) || change.keySet().any { !(it in ['part', 'value']) } || !(change.value instanceof Map)) throw new IllegalArgumentException('Each change requires part and value')
         def value = change.value
@@ -296,9 +296,15 @@ private Map _ndApply(Long id, List changes, boolean created) {
         if (stopped && (jobs || subscriptions)) throw new IllegalStateException('Stopped native rule retained jobs or subscriptions')
         def persistedState = _nrState(id)
         def actualTriggers = persistedState.capabstrue instanceof Map ? persistedState.capabstrue.findAll { key, value -> key.toString().isInteger() && key.toString().toInteger() > 0 && value?.toString()?.trim() } : [:]
-        if (actualTriggers && !stopped && !paused && subscriptions.empty && jobs.empty) throw new IllegalStateException('Native triggers have no active subscriptions or scheduled jobs')
+        def requiredTokens = persistedState.eval instanceof Map ? _nmEntry(persistedState.eval, '0') : null
+        // Native Done evaluates expression 0 into stPrimed before removing trigger subscriptions.
+        boolean suppressed = !stopped && !paused && _nrHandle(id).getSetting('useST') == true &&
+            persistedState.hasPredicate == true && requiredTokens instanceof List && !requiredTokens.isEmpty() &&
+            persistedState.stPrimed == false
+        if (actualTriggers && !stopped && !paused && !suppressed && subscriptions.empty && jobs.empty) throw new IllegalStateException('Native triggers have no active subscriptions or scheduled jobs')
         if (created && getAppByAppId(id)?.installed != true) throw new IllegalStateException('Native rule is not installed after Done')
-        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])]
+        [success: true, rule_id: id, created: created, results: outcomes, broken: false, stopped: stopped, paused: paused, eventSubscriptions: subscriptions, scheduledJobs: jobs, verification: 'Native persistence, compilation and activation checks passed; verify intended device behavior independently.', document: toolGetRuleDocument([rule_id: id, sections: ['actions', 'conditions', 'triggers', 'expressions', 'variables']])] +
+            (suppressed ? [subscriptionSettle: 'SUPPRESSED: Required Expression is false'] : [:])
     } catch (Exception failure) {
         [success: false, partial: started, rule_id: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size()), error: failure.message?.toString()]
     }
@@ -321,7 +327,7 @@ Map toolCreateRuleDocument(Map args) {
     def requestedName = args.get('name')
     if (!(requestedName instanceof String) || !requestedName.trim() || requestedName.size() > 200) throw new IllegalArgumentException('A rule name is required (maximum 200 characters)')
     String name = requestedName.trim()
-    List changes = _ndChanges(args.changes)
+    List changes = _ndChanges(args.changes, true)
     requireDestructiveConfirm(args.confirm)
     _requireUnprotectedAppMutation(parentId, 'create native rule child')
     def parent = getAppByAppId(parentId)
@@ -354,7 +360,7 @@ def _getAllToolDefinitions_partNativeDocuments() {
         [
             name: 'hub_update_rule_document', description: 'Update a native rule with ordered {part,value} changes.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], changes: changes, confirm: [type: 'boolean']], required: ['rule_id', 'changes', 'confirm']]],
         [
-            name: 'hub_create_rule_document', description: 'Create/install a native rule with ordered {part,value} changes.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes, confirm: [type: 'boolean']], required: ['parent_id', 'name', 'changes', 'confirm']]]
+            name: 'hub_create_rule_document', description: 'Create/install a native rule with ordered {part,value} changes; [] creates an empty rule.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes + [minItems: 0], confirm: [type: 'boolean']], required: ['parent_id', 'name', 'changes', 'confirm']]]
     ]
 }
 

@@ -124,7 +124,7 @@ class NativeFormsSpec extends ToolSpecBase {
         !result.partial
         !calls.any { it.path == '/installedapp/update/json' || it.path == '/installedapp/btn' }
         where:
-        fields << [[selection: ['invalid']], [selection: 'a'], [sensor: ['7']], [enabled: 'true'], [count: 11], [count: 1.5], [unknown: 'value'], [devices: ['8']]]
+        fields << [[selection: ['invalid']], [selection: 'a'], [sensor: ['7']], [enabled: 'true'], [count: 11], [count: 'not numeric'], [unknown: 'value'], [devices: ['8']]]
     }
 
     def 'page guard and incomplete control ID fail before callbacks'() {

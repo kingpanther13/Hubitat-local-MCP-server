@@ -223,34 +223,82 @@ Map _nmLocal(Long ruleId, String operation, String name = null, Object value = n
     [success: verified, deleted: operation == 'delete' && verified, variable: after, verificationNeeded: true]
 }
 
+private Map _nmRejectCondition(Long ruleId, boolean trigger, boolean editing, String id, Map baseline, Map savedSettings, List fields, Closure render, Map failure) {
+    String collection = trigger ? 'capabstrue' : 'capabsfalse'
+    List keys = ([collection, 'ndx', 'hasAll', 'moreCond', 'editCond', 'capabDone', 'cancelCapab', 'updatingTrig', 'hasConditions', "hhmmss${id}".toString()] + fields.collect { it.name }).unique()
+    String cleanupError = null
+    boolean verified = false
+    try {
+        Map context = [hasAll: false]
+        if (editing) context.editCond = id
+        else { context.moreCond = true; context.ndx = id.toInteger() }
+        _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
+        _nrHandle(ruleId).appButtonHandler('cancelCapab')
+        render.call()
+        boolean consumed = _nrState(ruleId).cancelCapab != true
+        Map current = _nmSettingsInventory(ruleId)
+        current.keySet().findAll { !savedSettings.containsKey(it) }.each { name -> _nrHandle(ruleId).removeSetting(name) }
+        List restore = []
+        savedSettings.each { name, original ->
+            if (current.get(name) != original) {
+                if (current.get(name)?.type != original.type) _nrHandle(ruleId).removeSetting(name)
+                def value = original.value
+                if (original.type == 'capability' || original.type?.startsWith('capability.')) {
+                    List devices = original.deviceList instanceof Map ? original.deviceList.keySet().collect { it.toString() } : []
+                    value = original.multiple == true ? devices : (devices ? devices.get(0) : null)
+                } else if (original.multiple == true && value instanceof String) value = new groovy.json.JsonSlurper().parseText(value)
+                if (value == null) throw new IllegalStateException("Cannot restore empty native setting '${name}'")
+                restore << [name: name, type: original.type, value: value]
+            }
+        }
+        if (restore && _nrWriteSettings(ruleId, restore).success != true) throw new IllegalStateException('Native setting restoration failed')
+        Map values = baseline.findAll { key, value -> key in keys }
+        _nrStatePatch(ruleId, values, keys.findAll { !baseline.containsKey(it) })
+        Map fresh = _nrState(ruleId)
+        verified = consumed && _nmSettingsInventory(ruleId) == savedSettings && keys.every { key -> fresh.containsKey(key) == baseline.containsKey(key) && fresh.get(key) == baseline.get(key) }
+        if (!verified) cleanupError = 'Native row cancellation or restoration could not be verified'
+    } catch (Exception cleanupFailure) { cleanupError = cleanupFailure.message ?: 'Native row cleanup failed' }
+    [success: false, id: id, error: failure.error, fieldErrors: failure.fieldErrors ?: [], partial: !verified, rolledBack: verified,
+     cleanupError: cleanupError, verificationNeeded: !verified]
+}
+
 Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
     if (row == null || row.keySet().any { !(it in ['id', 'capability', 'fields']) } || !(row.capability instanceof String) || !row.capability.trim()) throw new IllegalArgumentException('A capability and typed fields are required')
     Map before = _nrState(ruleId)
     String collection = trigger ? 'capabstrue' : 'capabsfalse'
-    Map prior = before.get(collection) instanceof Map ? before.get(collection) : [:]
+    Map prior = before.get(collection) instanceof Map ? [:] + before.get(collection) : [:]
     boolean editing = row.containsKey('id')
     String id = _nmId(editing ? row.id : before.ndx)
     if (editing && !_nmEntry(prior, id)?.toString()?.trim()) throw new IllegalArgumentException('Native row does not exist')
+    if (!editing && prior.keySet().any { it.toString() == id }) throw new IllegalArgumentException('Native allocation slot is already occupied')
     List fields = _nmFields(row.get('fields') as List, id)
     String selector = trigger ? "tCapab${id}".toString() : "rCapab_${id}".toString()
     if (fields.any { it.name == selector }) throw new IllegalArgumentException('Capability selector must not be repeated in fields')
     List settings = [[name: selector, type: 'enum', value: row.capability]] + fields
-    Map context = [hasAll: false]
-    if (editing) context.editCond = id
-    else { context.moreCond = true; context.ndx = id.toInteger() }
-    _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
+    Map savedSettings = _nmSettingsInventory(ruleId)
+    Map baseline = [:] + before
+    if (before.containsKey(collection)) baseline.put(collection, prior)
     Closure render = { unused -> trigger ? _nrHandle(ruleId).selectTriggers() : _nrHandle(ruleId).selectConditions([pred: false]) }
-    Map inputValidation = _nmWriteExposed(ruleId, settings, [selector], render.call(), render)
-    if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
-    _nrStatePatch(ruleId, [hasAll: true])
-    if (trigger) _nrHandle(ruleId).selectTriggers()
-    else _nrHandle(ruleId).selectConditions([pred: false])
-    Map after = _nrState(ruleId)
-    def label = _nmEntry(after.get(collection) instanceof Map ? after.get(collection) : [:], id)
-    Map echoed = _nrSettings(ruleId, settings.collect { it.name })
-    boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
-    boolean compiled = label instanceof String && label.trim() && !label.contains('null') && !label.contains('BROKEN')
-    [success: compiled && persisted, id: id, label: label, partial: !(compiled && persisted), settingsVerified: persisted, error: compiled ? (persisted ? null : 'Native input persistence failed') : 'Native row did not compile a valid label']
+    try {
+        Map context = [hasAll: false]
+        if (editing) context.editCond = id
+        else { context.moreCond = true; context.ndx = id.toInteger() }
+        _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
+        Map inputValidation = _nmWriteExposed(ruleId, settings, [selector], render.call(), render)
+        if (inputValidation.success != true) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render, inputValidation)
+        _nrStatePatch(ruleId, [hasAll: true])
+        render.call()
+        Map after = _nrState(ruleId)
+        def label = _nmEntry(after.get(collection) instanceof Map ? after.get(collection) : [:], id)
+        Map echoed = _nrSettings(ruleId, settings.collect { it.name })
+        boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
+        boolean compiled = label instanceof String && label.trim() && !label.contains('null') && !label.contains('BROKEN')
+        if (!(compiled && persisted)) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render,
+            [error: compiled ? 'Native input persistence failed' : 'Native row did not compile a valid label'])
+        [success: true, id: id, label: label, partial: false, settingsVerified: true]
+    } catch (Exception failure) {
+        _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render, [error: failure.message ?: 'Native row authoring failed'])
+    }
 }
 
 Map _nmUpsertAction(Long ruleId, Map row) {

@@ -296,7 +296,8 @@ class NativeModelSpec extends ToolSpecBase {
         then:
         !result.success
         result.partial
-        result.settingsVerified
+        !result.rolledBack
+        result.cleanupError
         settings.tCapab4.value == 'Switch'
         !settings.containsKey('tCapab_4')
     }
@@ -968,7 +969,7 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.capabsfalse.keySet() == ['1', '2'] as Set
     }
 
-    def 'model numeric inputs use shared integer and native range checks'() {
+    def 'model numeric inputs use shared numeric and native range checks'() {
         when:
         def result = script._nmValidateInputs(nativeForm([[name: 'amount', type: type, multiple: false] + bounds]),
             [[name: 'amount', type: type, value: value]])
@@ -977,7 +978,7 @@ class NativeModelSpec extends ToolSpecBase {
         if (!accepted) assert result.error.contains('amount')
         where:
         type      | bounds                       | value | accepted
-        'number'  | [:]                          | 1.5   | false
+        'number'  | [:]                          | 1.5   | true
         'number'  | [range: '0..10']             | -1    | false
         'number'  | [range: '0..10']             | 11    | false
         'number'  | [range: '0..10']             | 10    | true
@@ -1007,5 +1008,123 @@ class NativeModelSpec extends ToolSpecBase {
         8        | false
         999      | false
     }
+
+    def 'rejected new trigger cancels its draft without removing the successful batch prefix'() {
+        given:
+        nativeState.capabstrue = ['1': 'Successful prefix']
+        settings.tCapab1 = [type: 'enum', value: 'Switch']
+        Map originalSettings = [:] + settings
+        List removed = []
+        nativeRule.removeSetting = { String name -> removed << name; settings.remove(name) }
+        nativeRule.appButtonHandler = { String button ->
+            assert button == 'cancelCapab'
+            nativeState.cancelCapab = true
+        }
+        nativeRule.selectTriggers = { ->
+            nativeState.runtimeEvents = (nativeState.runtimeEvents ?: 0) + 1
+            if (nativeState.cancelCapab) {
+                nativeState.remove('cancelCapab')
+                nativeState.remove('moreCond')
+                nativeState.capabsTrueUnused = 'native-owned'
+                nativeState.capabstrue.remove('4')
+                settings.remove('tCapab4')
+                nativeState.ndx = 5
+                nativeState.capabDone = true
+                return nativeForm([])
+            }
+            nativeState.capabstrue.put('4', [:])
+            if (settings.containsKey('tCapab4')) {
+                settings.generated4 = [type: 'number', value: '1']
+                if (renderThrows) throw new IllegalStateException('native render refused')
+                return nativeForm([[name: 'time4', type: 'time', multiple: false]])
+            }
+            nativeForm([[name: 'tCapab4', type: 'enum', multiple: false,
+                         options: ['Certain Time (and optional date)'], submitOnChange: true]])
+        }
+        when:
+        def result = script._nmUpsertCondition(42L, true, [capability: 'Certain Time (and optional date)',
+            fields: [[name: 'time#', type: 'enum', value: '17:30']]])
+        then:
+        !result.success && !result.partial && result.rolledBack
+        result.error.contains(renderThrows ? 'native render refused' : 'time4')
+        settings == originalSettings
+        nativeState.capabstrue == ['1': 'Successful prefix']
+        nativeState.ndx == 4
+        !nativeState.containsKey('hasAll')
+        !nativeState.containsKey('moreCond')
+        !nativeState.containsKey('capabDone')
+        nativeState.runtimeEvents == 3
+        nativeState.capabsTrueUnused == 'native-owned'
+        nativeState.keep == [unknown: true]
+        removed.contains('generated4')
+        where:
+        renderThrows << [false, true]
+    }
+
+    def 'rejected existing trigger restores an earlier staged typed value and closes the editor'() {
+        given:
+        nativeState.capabstrue = ['2': 'Timer original', '3': 'Unrelated trigger']
+        nativeState.time2 = 'old native derived time'
+        settings.tCapab2 = [type: 'enum', value: 'Certain Time (and optional date)']
+        settings.time2 = [type: 'time', value: '2026-10-20T17:30:00.000-0400']
+        settings.unknown = [type: 'text', value: 'keep']
+        Map originalSettings = [:] + settings
+        nativeRule.removeSetting = { String name -> settings.remove(name) }
+        nativeRule.appButtonHandler = { String button -> nativeState.cancelCapab = true }
+        nativeRule.selectTriggers = { ->
+            if (nativeState.cancelCapab) {
+                nativeState.remove('cancelCapab')
+                nativeState.remove('editCond')
+                nativeState.capabDone = true
+                return nativeForm([])
+            }
+            nativeState.capabstrue.put('2', [:])
+            nativeState.time2 = settings.time2.value
+            nativeState.runtimeCounter = (nativeState.runtimeCounter ?: 0) + 1
+            nativeForm([[name: 'time2', type: 'time', multiple: false, submitOnChange: true]])
+        }
+        when:
+        def result = script._nmUpsertCondition(42L, true, [id: '2', capability: 'Certain Time (and optional date)', fields: [
+            [name: 'time#', type: 'time', value: '2026-10-20T18:30:00.000-0400'],
+            [name: 'tstate#', type: 'enum', value: 'on']]])
+        then:
+        !result.success && !result.partial && result.rolledBack
+        result.error.contains('tstate2')
+        settings == originalSettings
+        nativeState.capabstrue == ['2': 'Timer original', '3': 'Unrelated trigger']
+        nativeState.time2 == 'old native derived time'
+        nativeState.runtimeCounter == 2
+        !nativeState.containsKey('editCond')
+        !nativeState.containsKey('moreCond')
+        !nativeState.containsKey('hasAll')
+        !nativeState.containsKey('capabDone')
+    }
+
+    def 'native cancellation that fails setting cleanup remains an explicit partial refusal'() {
+        given:
+        nativeState.capabstrue = [:]
+        nativeRule.removeSetting = { String name -> null }
+        nativeRule.appButtonHandler = { String button -> nativeState.cancelCapab = true }
+        nativeRule.selectTriggers = { ->
+            if (nativeState.cancelCapab) {
+                nativeState.remove('cancelCapab')
+                nativeState.capabstrue.remove('4')
+                return nativeForm([])
+            }
+            nativeState.capabstrue.put('4', [:])
+            nativeForm(settings.containsKey('tCapab4') ? [[name: 'time4', type: 'time', multiple: false]] :
+                [[name: 'tCapab4', type: 'enum', multiple: false, options: ['Certain Time'], submitOnChange: true]])
+        }
+        when:
+        def result = script._nmUpsertCondition(42L, true, [capability: 'Certain Time', fields: [[name: 'time#', type: 'enum', value: '17:30']]])
+        then:
+        !result.success && result.partial && !result.rolledBack
+        result.error.contains('time4')
+        result.cleanupError.contains('could not be verified')
+        result.verificationNeeded
+        settings.containsKey('tCapab4')
+        nativeState.capabstrue == [:]
+    }
+
 
 }

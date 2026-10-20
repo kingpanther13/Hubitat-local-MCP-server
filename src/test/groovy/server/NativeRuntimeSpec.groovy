@@ -169,6 +169,19 @@ class NativeRuntimeSpec extends ToolSpecBase {
         calls.empty
     }
 
+    def 'native number inputs accept fractions while enforcing their range'() {
+        expect:
+        script._nrValidateInput([name: 'valConst2.1', type: 'number', multiple: false,
+                                 min: 0, max: 10], 5.5G) == null
+
+        when:
+        script._nrValidateInput([name: 'valConst2.1', type: 'number', multiple: false,
+                                 min: 0, max: 10], 10.5G)
+        then:
+        thrown(IllegalArgumentException)
+        calls.empty
+    }
+
     def 'all settings validate before the first update'() {
         when:
         script._nrWriteSettings(42L, [[name: 'good', type: 'text', value: 'x'],
