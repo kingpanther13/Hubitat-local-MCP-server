@@ -156,7 +156,7 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
     boolean editing = row.containsKey('id')
     String id = _nmId(editing ? row.id : before.ndx)
     if (editing && !_nmEntry(prior, id)?.toString()?.trim()) throw new IllegalArgumentException('Native row does not exist')
-    List fields = _nmFields(row.fields as List, id)
+    List fields = _nmFields(row.get('fields') as List, id)
     String selector = trigger ? "tCapab${id}".toString() : "rCapab_${id}".toString()
     if (fields.any { it.name == selector }) throw new IllegalArgumentException('Capability selector must not be repeated in fields')
     List settings = [[name: selector, type: 'enum', value: row.capability]] + fields
@@ -187,7 +187,7 @@ Map _nmUpsertAction(Long ruleId, Map row) {
         if (!(row.events instanceof List) || row.events.empty || row.events.size() > 16) throw new IllegalArgumentException('Wait actions require between one and sixteen events')
         row.events.each { event ->
             if (!(event instanceof Map) || event.keySet().any { !(it in ['capability', 'fields']) } || !(event.capability instanceof String) || !event.capability.trim()) throw new IllegalArgumentException('Wait events require a capability and typed fields')
-            List preview = _nmFields(event.fields as List, '-1')
+            List preview = _nmFields(event.get('fields') as List, '-1')
             if (preview.any { it.name == 'tCapab-1' } || preview.collect { it.name }.unique().size() != preview.size()) throw new IllegalArgumentException('Wait fields must not repeat selectors or native inputs')
         }
     } else if (row.containsKey('events')) throw new IllegalArgumentException('Only Wait for Events accepts event rows')
@@ -204,7 +204,7 @@ Map _nmUpsertAction(Long ruleId, Map row) {
         if (!(row.subtype in ['getIfThen', 'getElseIf'])) throw new IllegalArgumentException('Expression actions currently support IF and ELSE-IF only')
         _nmTokens(row.expression as List, before.capabsfalse instanceof Map ? before.capabsfalse : [:])
     }
-    List fields = _nmFields(row.fields as List, id)
+    List fields = _nmFields(row.get('fields') as List, id)
     if (fields.any { it.name in ["actType.${id}".toString(), "actSubType.${id}".toString()] }) throw new IllegalArgumentException('Action selectors must not be repeated')
     List settings = [[name: "actType.${id}".toString(), type: 'enum', value: row.type], [name: "actSubType.${id}".toString(), type: 'enum', value: row.subtype]] + fields
     Map written = _nrWriteSettings(ruleId, settings)
@@ -259,7 +259,7 @@ private Map _nmCompileWait(Long ruleId, String actionId, List events, boolean ed
         if (eventIds.contains(eventId)) return [success: false, error: 'Native wait event identity was repeated']
         eventIds << eventId
         Map event = events.get(position)
-        List fields = [[name: "tCapab-${eventId}".toString(), type: 'enum', value: event.capability]] + _nmFields(event.fields as List, "-${eventId}".toString())
+        List fields = [[name: "tCapab-${eventId}".toString(), type: 'enum', value: event.capability]] + _nmFields(event.get('fields') as List, "-${eventId}".toString())
         Map written = _nrWriteSettings(ruleId, fields)
         if (written.success != true) return [success: false, error: 'Wait event inputs did not persist', settings: written]
         settings.addAll(fields)
