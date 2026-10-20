@@ -34073,9 +34073,13 @@ Map toolCreateRuleDocument(Map args) {
     Long id = null
     try {
         def response = hubInternalGetRaw("/installedapp/createchild/hubitat/Rule-5.1/parent/${parentId}")
-        def match = response?.location?.toString() =~ /^\/installedapp\/configure\/(\d+)(?:\?.*)?$/
+        String location = response?.location?.toString()?.trim()?.replaceFirst(/(?i)^Location:\s*/, '')
+        location = location?.replaceFirst(/(?i)^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]+)?(?=\/)/, '')
+        def match = location =~ /^\/installedapp\/configure\/(\d+)(?:\?.*)?$/
         if (!match.find()) return [success: false, partial: true, error: 'Native child creation did not return its rule ID; inspect the parent before retrying']
         id = _ndId(match.group(1))
+        def child = getAppByAppId(id)
+        if (child?.parentAppId?.toString() != parentId.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != 'Rule-5.1') throw new IllegalStateException('Created child did not match the requested native parent and rule type')
         _nrHandle(id).initState()
         _nrHandle(id).updateSetting('origLabel', [type: 'text', value: args.name.trim()])
         _nrHandle(id).updateLabel(args.name.trim())
