@@ -33289,7 +33289,7 @@ Map _nrSettings(Long ruleId, List names) {
     if (names == null || names.any { !(it instanceof String) || !it }) throw new IllegalArgumentException('Setting names are required')
     def handle = _nrHandle(ruleId)
     def rows = [:]
-    names.each { name -> rows[name] = [type: handle.getSettingType(name), value: _nrSettingValue(handle.getSetting(name))] }
+    names.each { name -> rows.put(name, [type: handle.getSettingType(name), value: _nrSettingValue(handle.getSetting(name))]) }
     rows
 }
 private Object _nrSettingValue(Object value) {
@@ -33350,8 +33350,8 @@ Map _nrWriteSettings(Long ruleId, List rows) {
     try {
         def actual = _nrSettings(ruleId, names)
         def rejected = rows.findAll { row ->
-            actual[row.name].type?.toString() != row.type ||
-                _nrComparable(row.type, actual[row.name].value) != _nrComparable(row.type, row.value)
+            actual.get(row.name).type?.toString() != row.type ||
+                _nrComparable(row.type, actual.get(row.name).value) != _nrComparable(row.type, row.value)
         }.collect { row -> row.name }
         return [success: rejected.empty, verificationNeeded: true, settingsVerified: rejected.empty,
                 partial: !rejected.empty && !attempted.empty, attempted: attempted, results: results,
