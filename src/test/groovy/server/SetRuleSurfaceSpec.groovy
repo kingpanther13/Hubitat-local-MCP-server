@@ -8,7 +8,7 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         script._getAllToolDefinitions_partNativeDocuments()*.name == ['hub_set_rule']
         script._getAllToolDefinitions_partNativeDocuments()[0].inputSchema.properties.bestPracticeKey.type == 'string'
         script._getAllToolDefinitions_partNativeForms().empty
-        script._toolDisplayMeta_partNativeForms().empty
+        script._toolDisplayMeta_partNativeForms().isEmpty()
     }
 
     def 'help and unconfirmed writes return compact schemas without accessing native apps'() {

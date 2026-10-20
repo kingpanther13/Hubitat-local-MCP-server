@@ -1475,7 +1475,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         def resumeNote = script._rmSendActionErrorNote("resumeRule", [100], "App 100 generates excessive hub load")
         resumeNote.contains("pausRule")
         resumeNote.contains("hub_set_rule")
-        resumeNote.contains("rule_id=100")
+        resumeNote.contains("rule_id:100")
         resumeNote.contains("returned pause control")
         !resumeNote.contains("resRule")
         resumeNote.contains("sticky")
