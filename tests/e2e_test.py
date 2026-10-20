@@ -2867,34 +2867,28 @@ class TestRunner:
 
     @test("infrastructure")
     def test_set_rule_guide_param(self) -> None:
-        # guide:true returns the hub_set_rule capability reference inline (no
-        # separate hub_get_tool_guide call) and makes NO rule change -- a pure static
-        # early-return alongside the discover-mode short-circuit. Pins the new param.
-        result = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"guide": True},
+        help_result = self.client.call_tool("hub_manage_rule_machine", {
+            "tool": "hub_set_rule", "args": {},
         })
-        blob = str(result)
-        assert "addTrigger" in blob and "walkStep" in blob, \
-            f"guide:true response missing the capability reference content: {blob[:200]}"
+        assert help_result.get("operations") == ["read", "create", "update", "form"], help_result
 
     @test("infrastructure")
     def test_set_rule_self_gateway_meta(self) -> None:
-        # The flat self-gateway {operation, ...} envelope is re-keyed by toolSetRule
-        # regardless of mode, so its no-mutation paths are exercisable through the
-        # gateway here. guide / discover / probe must return schema and change NOTHING.
-        guide = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"operation": "guide"}})
-        assert "addTrigger" in str(guide) and "walkStep" in str(guide), \
-            f"operation=guide did not return the capability reference: {str(guide)[:200]}"
-        disc = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"operation": "discover", "args": {"kind": "action"}}})
-        assert "capability" in str(disc).lower(), \
-            f"operation=discover did not return a live schema: {str(disc)[:200]}"
-        # PROBE: operation set, NO confirm -> returns the arg schema, mutates nothing.
-        probe = self.client.call_tool("hub_manage_rule_machine", {
-            "tool": "hub_set_rule", "args": {"operation": "addAction"}})
-        assert "no rule was changed" in str(probe), \
-            f"operation probe (no confirm) should return schema, not execute: {str(probe)[:200]}"
+        catalog = self.client.call_tool("hub_manage_rule_machine", {})
+        tools = catalog.get("tools", [])
+        names = [row["name"] for row in tools]
+        assert names.count("hub_set_rule") == 1, catalog
+        retired = {"hub_get_rule_document", "hub_create_rule_document",
+                   "hub_update_rule_document", "hub_call_app_form"}
+        assert retired.isdisjoint(names), names
+        for operation in ("create", "update", "form"):
+            probe = self.client.call_tool("hub_manage_rule_machine", {
+                "tool": "hub_set_rule", "args": {"operation": operation, "confirm": False}})
+            assert probe.get("operation") == operation, probe
+            assert probe.get("confirm_required") is True, probe
+            schema = probe.get("inputSchema", {})
+            assert schema.get("properties", {}).get("args", {}).get("type") == "object", probe
+            assert ("rule_id" in schema.get("required", [])) == (operation != "create"), probe
 
     # -----------------------------------------------------------------------
     # GROUP 2: devices (4 tests)

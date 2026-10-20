@@ -360,10 +360,10 @@ class NativeRmParityActions(ParityCase):
         self.healthy(rule_id)
         current = self._form(rule_id, {"kind": "open"})
         before = self.snapshot(rule_id)
-        refused = self.call("hub_call_app_form", app_id=rule_id, confirm=True, steps=[{
+        refused = self.call("hub_set_rule", operation="form", rule_id=int(rule_id), confirm=True, args={"steps": [{
             "kind": "submit", "expect_page": current["page"]["name"],
             "fields": {"origLabel": {"a": "b"}},
-        }])
+        }]})
         self._error(refused)
         self.assertEqual(self.snapshot(rule_id), before)
         self._stop(rule_id, [log_action("patch-kept"), change(
@@ -396,18 +396,18 @@ class NativeRmParityActions(ParityCase):
 
     def test_set_rule_walkstep_drive(self):
         rule_id = self.create([])
-        result = self.call("hub_call_app_form", app_id=rule_id, confirm=True, steps=[
+        result = self.call("hub_set_rule", operation="form", rule_id=int(rule_id), confirm=True, args={"steps": [
             {"kind": "open", "page": "selectTriggers"},
             {"kind": "open", "page": "mainPage"},
-        ])
+        ]})
         self.assertTrue(result.get("success"), result)
         self.assertEqual([row["page"] for row in result["completed"]],
                          ["selectTriggers", "mainPage"])
         before = self.snapshot(rule_id)
-        bad = self.call("hub_call_app_form", app_id=rule_id, confirm=True, steps=[
+        bad = self.call("hub_set_rule", operation="form", rule_id=int(rule_id), confirm=True, args={"steps": [
             {"kind": "open", "page": "mainPage"}, {"kind": "bogus_op"},
             {"kind": "submit", "fields": {"comments": "must-not-land"}},
-        ])
+        ]})
         self._error(bad)
         self.assertEqual(self.snapshot(rule_id), before)
         current = self._form(rule_id, {"kind": "open", "page": "selectTriggers"})
@@ -417,20 +417,20 @@ class NativeRmParityActions(ParityCase):
             step = {"kind": "submit", "expect_page": current["page"]["name"], "fields": fields}
             if control is not None:
                 step["activate"] = control
-            bad = self.call("hub_call_app_form", app_id=rule_id, confirm=True, steps=[step])
+            bad = self.call("hub_set_rule", operation="form", rule_id=int(rule_id), confirm=True, args={"steps": [step]})
             self._error(bad)
             self.assertEqual(self.snapshot(rule_id), before)
 
         form, index = self._new_editor(rule_id)
         page = form["page"]["name"]
-        result = self.call("hub_call_app_form", app_id=rule_id, confirm=True, steps=[
+        result = self.call("hub_set_rule", operation="form", rule_id=int(rule_id), confirm=True, args={"steps": [
             {"kind": "submit", "expect_page": page,
              "fields": {"actType." + index: "messageActs"}},
             {"kind": "submit", "expect_page": page,
              "fields": {"actSubType." + index: "getLogMsg"}},
             {"kind": "submit", "expect_page": page,
              "fields": {"logmsg." + index: "drive-complete"}},
-        ])
+        ]})
         self.assertTrue(result.get("success"), result)
         self.assertEqual(len(result["completed"]), 3)
         self._submit(rule_id, result, control=self._control(result, name="actionDone"))
@@ -451,9 +451,9 @@ class NativeRmParityActions(ParityCase):
         current = self._submit(trigger_rule, current,
                                fields={"tDev" + slot: [str(self.fixtures["switch"])]})
         before = self.snapshot(trigger_rule)
-        rejected = self.call("hub_call_app_form", app_id=trigger_rule, confirm=True, steps=[{
+        rejected = self.call("hub_set_rule", operation="form", rule_id=trigger_rule, confirm=True, args={"steps": [{
             "kind": "submit", "expect_page": current["page"]["name"],
-            "fields": {"tstate" + slot: "E2E Not A State"}}])
+            "fields": {"tstate" + slot: "E2E Not A State"}}]})
         self.assertIn("tstate", self._error(rejected))
         self.assertEqual(self.snapshot(trigger_rule), before)
         current = self._form(trigger_rule, {"kind": "open", "page": "selectTriggers"})
@@ -467,14 +467,14 @@ class NativeRmParityActions(ParityCase):
 
         form, repeat_id = self._new_editor(rule_id)
         repeat_page = form["page"]["name"]
-        repeated = self.call("hub_call_app_form", app_id=rule_id, confirm=True, steps=[
+        repeated = self.call("hub_set_rule", operation="form", rule_id=int(rule_id), confirm=True, args={"steps": [
             {"kind": "submit", "expect_page": repeat_page,
              "fields": {"actType." + repeat_id: "repeatActs"}},
             {"kind": "submit", "expect_page": repeat_page,
              "fields": {"actSubType." + repeat_id: "getRepeat"}},
             {"kind": "submit", "expect_page": repeat_page,
              "fields": {"repeatMinute." + repeat_id: 5}},
-        ])
+        ]})
         self.assertTrue(repeated.get("success"), repeated)
         committed = self._submit(rule_id, repeated,
                                  control=self._control(repeated, name="actionDone"))

@@ -101,7 +101,7 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         content.endsWith(rawBody(section))
 
         where:
-        section << ['best_practice_reference', 'native_rule_documents', 'hub_admin_write_devices',
+        section << ['best_practice_reference', 'set_rule_reference', 'hub_admin_write_devices',
                     'builtin_app_tools_crud', 'hub_admin_write_radios']
     }
 
@@ -160,11 +160,10 @@ class GuideAcknowledgmentKeySpec extends ToolSpecBase {
         settingsMap.enableMandatoryBPS = true
         settingsMap.enableWrite = true
         script.metaClass.toolUpdateRuleDocument = { Map m -> [success: true, stubbed: true] }
-        def served = (script.toolGetToolGuide('native_rule_documents').content as String).readLines()[0] - 'Acknowledgment key: '
+        def served = (script.toolGetToolGuide('set_rule_reference').content as String).readLines()[0] - 'Acknowledgment key: '
 
         expect:
-        script.executeTool('hub_update_rule_document', [rule_id: 5, changes: [[part: 'required', value: [tokens: ['1']]]], confirm: true,
-                                            bestPracticeKey: served]).stubbed == true
+        script.executeTool('hub_set_rule', [operation: 'update', rule_id: 5, confirm: true, bestPracticeKey: served, args: [changes: [[part: 'required', value: [tokens: ['1']]]]]]).stubbed == true
     }
 
     def "a labelled sub-section key read from its parent passes that sub-section's write tool"() {

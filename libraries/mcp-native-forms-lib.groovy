@@ -397,31 +397,8 @@ Map toolCallAppForm(Map args) {
     } finally { NATIVE_FORM_BUSY.remove(appKey); NATIVE_FORM_BUSY.remove(key) }
 }
 
-def _getAllToolDefinitions_partNativeForms() {
-    def step = [type: 'object', additionalProperties: false, properties: [
-        kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], expect_page: [type: 'string'],
-        fields: [type: 'object'], activate: [type: 'string', description: 'Exact control_id returned by the current form.']
-    ], required: ['kind']]
-    return [[
-      name: 'hub_call_app_form',
-      description: 'Open or submit built-in native app forms using returned field/control names. Rendering executes app code and can change state. Requires confirm=true and a recent backup. Ordered batches may partially apply; never automatically retry buttons. Browser extensions are reported unsupported.',
-      inputSchema: [type: 'object', additionalProperties: false, properties: [app_id: [type: 'integer', minimum: 1],
-        steps: [type: 'array', minItems: 1, maxItems: 16, items: step], options_for: [type: 'array', maxItems: 32, items: [type: 'string']], confirm: [type: 'boolean']],
-        required: ['app_id', 'steps', 'confirm']]]]
-}
+def _getAllToolDefinitions_partNativeForms() { [] }
 
-def _toolDisplayMeta_partNativeForms() {
-    [hub_call_app_form: [title: 'Call Native App Form', summary: 'Inspect and submit native classic forms, including page links and buttons.']]
-}
+def _toolDisplayMeta_partNativeForms() { [:] }
 
-String _nfGuide() {
-    return '''## Native App Forms
-
-Use hub_call_app_form(app_id,steps,confirm:true) to operate an enabled built-in native app's classic editor. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
-
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}. Omit activate to save the supplied fields and refresh the current page. Control IDs distinguish native buttons sharing a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. Defaults are shown but are not automatically submitted; supply a required default explicitly before navigating. Use options_for:["device field name"] to expand device choices on the final returned page.
-
-Batches contain 1 through 16 ordered steps. Each step uses the form returned by the preceding step, so dependent fields require another submit after they appear. A button handler runs before that step's fields are saved, as in the native browser; submit fields in a preceding step when the handler needs them. A button without submitOnChange reloads and requires a separate field submission.
-
-The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight caller workflows. Opening another app replaces only that caller's previous context; reopen the previous app before submitting it again. Other callers' contexts are retained. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. A verified local native link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true; open that target separately. No script is evaluated. App-authored JavaScript, custom HTML inputs, uploads, external links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
-}
+String _nfGuide() { _ndGuide() }

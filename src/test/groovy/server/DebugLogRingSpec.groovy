@@ -44,7 +44,7 @@ class DebugLogRingSpec extends ToolSpecBase {
         when:
         (1..12).each { n ->
             script.mcpLog('error', 'server', "failure ${n} access_token=private-token", '42',
-                [details: [tool: 'hub_update_rule_document', appId: '123', arguments: [password: 'private-password']],
+                [details: [tool: 'hub_set_rule', appId: '123', arguments: [password: 'private-password']],
                  stackTrace: 'private stack'])
         }
         reload()
@@ -52,7 +52,7 @@ class DebugLogRingSpec extends ToolSpecBase {
         then:
         atomicStateMap.reportErrors.size() == 10
         atomicStateMap.reportErrors.first().message == 'failure 3 access_token=<redacted>'
-        atomicStateMap.reportErrors.last().details == [tool: 'hub_update_rule_document', appId: '123']
+        atomicStateMap.reportErrors.last().details == [tool: 'hub_set_rule', appId: '123']
         atomicStateMap.reportErrors.last().ruleId == '42'
         !JsonOutput.toJson(atomicStateMap.reportErrors).contains('private-')
         !JsonOutput.toJson(atomicStateMap.reportErrors).contains('stackTrace')
@@ -73,7 +73,7 @@ class DebugLogRingSpec extends ToolSpecBase {
                                         generation: atomicStateMap.debugLogGeneration]]
 
         when:
-        script.mcpLog('error', 'server', 'failure with retention off', null, [details: [tool: 'hub_update_rule_document']])
+        script.mcpLog('error', 'server', 'failure with retention off', null, [details: [tool: 'hub_set_rule']])
 
         then:
         atomicStateMap.reportErrors*.message == ['kept while the option was on']
@@ -83,11 +83,11 @@ class DebugLogRingSpec extends ToolSpecBase {
 
     def "a record retained under an earlier clear generation is dropped on read"() {
         given: 'an error retained, then a clear that a slow request did not observe'
-        script.mcpLog('error', 'server', 'before the clear', null, [details: [tool: 'hub_update_rule_document']])
+        script.mcpLog('error', 'server', 'before the clear', null, [details: [tool: 'hub_set_rule']])
         def stale = atomicStateMap.reportErrors
         script.toolClearDebugLogs([:])
         atomicStateMap.reportErrors = stale + [stale[0] + [message: 'late write from the old generation']]
-        script.mcpLog('error', 'server', 'after the clear', null, [details: [tool: 'hub_update_rule_document']])
+        script.mcpLog('error', 'server', 'after the clear', null, [details: [tool: 'hub_set_rule']])
 
         expect:
         script._reportErrorSnapshot()*.message == ['after the clear']

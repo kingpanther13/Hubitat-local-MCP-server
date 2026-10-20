@@ -76,7 +76,7 @@ class ParityCase(documents.unittest.TestCase):
         return self.client.tool(tool, **kwargs)
 
     def doc(self, rule_id):
-        result = self.call("hub_get_rule_document", rule_id=int(rule_id))
+        result = self.call("hub_set_rule", operation="read", rule_id=int(rule_id))
         self.assertIsNot(result.get("success"), False, result)
         self.assertEqual(str(result["rule_id"]), str(rule_id))
         return result
@@ -100,8 +100,7 @@ class ParityCase(documents.unittest.TestCase):
         self.created_sequence += 1
         name = self.prefix + "_" + (name or
             f"{self._testMethodName}_{self.created_sequence}")
-        result = self.call("hub_create_rule_document", parent_id=int(self.parent_id),
-                           name=name, changes=changes, confirm=True)
+        result = self.call("hub_set_rule", operation="create", confirm=True, args={"parent_id": int(self.parent_id), "name": name, "changes": changes})
         if result.get("rule_id"):
             self.adopt(result["rule_id"], name)
         self.assertTrue(result.get("success"), result)
@@ -128,8 +127,7 @@ class ParityCase(documents.unittest.TestCase):
         self.assertNotIn("installedApp", self.status(rule_id, missing_ok=True))
 
     def update(self, rule_id, changes):
-        return self.call("hub_update_rule_document", rule_id=int(rule_id),
-                         changes=changes, confirm=True)
+        return self.call("hub_set_rule", operation="update", rule_id=int(rule_id), confirm=True, args={"changes": changes})
 
     def snapshot(self, rule_id):
         state = self.state(rule_id)

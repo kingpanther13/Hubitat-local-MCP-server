@@ -90,16 +90,16 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         !mcpDriver.parseInner(response).error.contains('best_practice_reference')
     }
 
-    def "a thrown native document error points at native_rule_documents (a DIFFERENT tool -> different section)"() {
+    def "a thrown native document error points at set_rule_reference (a DIFFERENT tool -> different section)"() {
         given:
         script.metaClass.toolUpdateRuleDocument = { a -> throw new IllegalArgumentException("trigger is required") }
 
         when:
-        def response = mcpDriver.callTool('hub_update_rule_document', [rule_id: 1, changes: [], confirm: true])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', rule_id: 1, confirm: true, args: [changes: []]])
 
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('hub_get_tool_guide(section="native_rule_documents")')
+        mcpDriver.parseInner(response).error.contains('hub_get_tool_guide(section="set_rule_reference")')
     }
 
     def "reactive hint resolves the SUB-TOOL section for a gateway-routed error (not the gateway name)"() {
@@ -252,7 +252,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
 
     def "_guideSectionForTool maps each write-tool family to its own section"() {
         expect:
-        script._guideSectionForTool('hub_update_rule_document') == 'native_rule_documents'
+        script._guideSectionForTool('hub_set_rule') == 'set_rule_reference'
         script._guideSectionForTool('hub_set_visual_rule') == 'visual_rule_reference'
         script._guideSectionForTool('hub_create_custom_rule') == 'rules'
         script._guideSectionForTool('hub_update_device') == 'update_device'
@@ -270,7 +270,7 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
         and: "every mapping resolves to something hub_get_tool_guide actually serves"
         def served = (script.getToolGuideSections().keySet() as Set) +
                      (script.getToolGuideSubSections().values().collectMany { it.keySet().toList() } as Set)
-        ['hub_update_rule_document', 'hub_set_visual_rule', 'hub_create_custom_rule', 'hub_update_device',
+        ['hub_set_rule', 'hub_set_visual_rule', 'hub_create_custom_rule', 'hub_update_device',
          'hub_manage_virtual_device', 'hub_call_device_command', 'hub_clone_native_app',
          'hub_call_rule', 'hub_delete_device', 'hub_call_zwave', 'hub_call_device_swap',
          'hub_delete_native_app', 'hub_clone_native_app', 'hub_export_native_app',
@@ -290,8 +290,8 @@ class HandleToolsCallReactiveBpsSpec extends ToolSpecBase {
 
     def "_reactiveBpsWarning points at the tool's section for a genuine tool error"() {
         expect:
-        def w = script._reactiveBpsWarning('hub_update_rule_document', [:], 'some rule failure')
-        w?.contains('hub_get_tool_guide(section="native_rule_documents")')
+        def w = script._reactiveBpsWarning('hub_set_rule', [:], 'some rule failure')
+        w?.contains('hub_get_tool_guide(section="set_rule_reference")')
     }
 
     def "_reactiveBpsWarning returns null for a tool with no section"() {

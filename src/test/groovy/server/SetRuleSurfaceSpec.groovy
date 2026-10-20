@@ -31,6 +31,16 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         script.toolSetRule([operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true]) == [app_id: 42, steps: [[kind: 'open']], confirm: true]
     }
 
+    def 'create and update retain their private operation arguments'() {
+        given:
+        script.metaClass.toolCreateRuleDocument = { Map args -> args }
+        script.metaClass.toolUpdateRuleDocument = { Map args -> args }
+        def changes = [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]]
+        expect:
+        script.toolSetRule([operation: 'create', args: [parent_id: 28, name: 'Example', changes: []], confirm: true]) == [parent_id: 28, name: 'Example', changes: [], confirm: true]
+        script.toolSetRule([operation: 'update', rule_id: 42, args: [changes: changes], confirm: true]) == [rule_id: 42, changes: changes, confirm: true]
+    }
+
     def 'unknown operations and nested authority overrides are rejected'() {
         when:
         script.toolSetRule(request)
@@ -39,7 +49,21 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         where:
         request << [[operation: 'delete'], [operation: 'read', rule_id: 42, args: [rule_id: 99]],
                     [operation: 'update', args: [confirm: true]], [operation: 'form', args: [app_id: 99]],
-                    [operation: 'read', extra: true], [operation: 'form', args: [unknown: true]]]
+                    [operation: 'read', extra: true], [operation: 'form', args: [unknown: true]],
+                    [operation: 'update', confirm: 'true'], [operation: 'read', rule_id: 0],
+                    [operation: 'update', args: [changes: 'not an array']],
+                    [operation: 'form', args: [steps: [[kind: 'unknown']]]]]
+    }
+
+    def 'read shaped classification includes discovery but excludes confirmed writes'() {
+        expect:
+        script._isRuleReadCall('hub_set_rule', [:])
+        script._isRuleReadCall('hub_set_rule', [operation: 'read', confirm: true])
+        script._isRuleReadCall('hub_set_rule', [operation: 'form', confirm: false])
+        !script._isRuleReadCall('hub_set_rule', [operation: 'form', confirm: true])
+        !script._isRuleReadCall('hub_set_rule_paused', [:])
+        !script._isRuleReadCall('hub_set_rule', 'invalid arguments')
+        !script._isRuleReadCall('hub_set_rule', null)
     }
 
     def 'form rejects unrelated native apps before executing helper'() {

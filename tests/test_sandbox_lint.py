@@ -1716,10 +1716,10 @@ def getToolGuideSections() {
     return [
         best_practice_reference: '''If you are calling one of these tools, you must read its section for that section's key:
 native Rule Machine.''',
-        native_rule_documents: '''hub_get_rule_document hub_update_rule_document changes in order
+        set_rule_reference: '''hub_set_rule changes in order
 Reads use native state and typed settings without rendering its editor.
-A partial update can leave preceding changes committed; variants are not yet supported.''',
-        native_app_forms: '''hub_call_app_form expect_page Even open renders execute app code
+A partial update can leave preceding changes committed; not every capability-specific variant is supported.
+expect_page Even open renders execute app code
 dependent fields require another submit; success means returned, not that the app's intended runtime behavior was independently verified.''',
         device_authorization: '''## Device Authorization (CRITICAL)
 Body.''',
@@ -1783,10 +1783,10 @@ def test_check_tool_guide_generated_unresolvable_section_method_flagged(monkeypa
 @pytest.mark.parametrize("anchor", [
     "If you are calling one of these tools, you must read its section for that section's key:",
     "native Rule Machine",
-    "hub_get_rule_document", "hub_update_rule_document", "changes in order",
+    "hub_set_rule", "changes in order",
     "Reads use native state and typed settings without rendering its editor.",
-    "A partial update can leave preceding changes committed", "not yet supported",
-    "hub_call_app_form", "expect_page", "Even open renders execute app code",
+    "A partial update can leave preceding changes committed", "not every capability-specific variant is supported",
+    "expect_page", "Even open renders execute app code",
     "dependent fields require another submit",
     "not that the app's intended runtime behavior was independently verified",
 ])
@@ -1803,7 +1803,7 @@ def test_regenerating_guide_cannot_hide_missing_served_api_guidance(monkeypatch,
     assert sl.format_finding(findings[0])
 
 
-@pytest.mark.parametrize("section", ["best_practice_reference", "native_rule_documents", "native_app_forms"])
+@pytest.mark.parametrize("section", ["best_practice_reference", "set_rule_reference"])
 def test_regenerating_guide_cannot_hide_a_missing_required_section(monkeypatch, tmp_path, section):
     _write_generated_tree(monkeypatch, tmp_path)
     builder = sl._load_tool_guide_builder()

@@ -8,27 +8,28 @@ class NativeFormsDispatchSpec extends ToolSpecBase {
     @Shared private TestChildApp sharedAppStub = new TestChildApp(id: 7L, label: 'MCP')
 
     void setupSpec() { appExecutor.getApp() >> sharedAppStub }
-    private static Map openArgs() { [app_id: 42, steps: [[kind: 'open']], confirm: true] }
+    private static Map openArgs() { [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true] }
 
     void setup() {
         settingsMap.enableMandatoryBPS = false
         script.callerClient = null
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
     }
 
     void cleanup() { script.callerClient = null }
 
     def 'native form is a mutating nonidempotent centrally registered continuation tool'() {
         expect:
-        script.getAllToolDefinitions().find { it.name == 'hub_call_app_form' }.inputSchema.required == ['app_id', 'steps', 'confirm']
-        script.getAllToolDefinitions().find { it.name == 'hub_call_app_form' }.inputSchema.properties.steps.items.properties.activate.type == 'string'
-        !script.getReadOnlyToolNames().contains('hub_call_app_form')
-        !script.getIdempotentWriteToolNames().contains('hub_call_app_form')
-        script._mrtrWriteTools().contains('hub_call_app_form')
-        script._mrtrDetachedWorkerTools().contains('hub_call_app_form')
-        script.getGatewayConfig().hub_manage_native_rules_and_apps.tools.contains('hub_call_app_form')
-        !script.getGatewayConfig().hub_read_rules.tools.contains('hub_call_app_form')
-        script._guideSectionForTool('hub_call_app_form') == 'native_app_forms'
-        script.getToolGuideSections().native_app_forms.contains('Even open renders execute app code')
+        script.getAllToolDefinitions().find { it.name == 'hub_set_rule' }.inputSchema.properties.operation.enum == ['read', 'create', 'update', 'form']
+        script._ndOperationSchema('form').properties.steps.items.properties.activate.type == 'string'
+        !script.getReadOnlyToolNames().contains('hub_set_rule')
+        !script.getIdempotentWriteToolNames().contains('hub_set_rule')
+        script._mrtrWriteTools().contains('hub_set_rule')
+        script._mrtrDetachedWorkerTools().contains('hub_set_rule')
+        script.getGatewayConfig().hub_manage_native_rules_and_apps.tools.contains('hub_set_rule')
+        !script.getGatewayConfig().hub_read_rules.tools.contains('hub_set_rule')
+        script._guideSectionForTool('hub_set_rule') == 'set_rule_reference'
+        script.getToolGuideSections().set_rule_reference.contains('Even open renders execute app code')
     }
 
     def 'flat and gateway forms calls dispatch the same closed arguments'() {
@@ -36,12 +37,12 @@ class NativeFormsDispatchSpec extends ToolSpecBase {
         List calls = []
         script.metaClass.toolCallAppForm = { Map args -> calls << args; [success: true, app_id: args.app_id] }
         when:
-        def direct = script.executeTool('hub_call_app_form', openArgs())
-        def gateway = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_call_app_form', openArgs())
+        def direct = script.executeTool('hub_set_rule', openArgs())
+        def gateway = script.handleGateway('hub_manage_native_rules_and_apps', 'hub_set_rule', openArgs())
         then:
         direct.success
         gateway.success
-        calls == [openArgs(), openArgs()]
+        calls == [[app_id: 42, steps: [[kind: 'open']], confirm: true], [app_id: 42, steps: [[kind: 'open']], confirm: true]]
     }
 
     def 'write master and guide acknowledgment block open before native dispatch'() {
@@ -50,48 +51,49 @@ class NativeFormsDispatchSpec extends ToolSpecBase {
         script.metaClass.toolCallAppForm = { Map args -> calls++; [success: true] }
         settingsMap.enableWrite = false
         when:
-        script.executeTool('hub_call_app_form', openArgs())
+        script.executeTool('hub_set_rule', openArgs())
         then:
         thrown(IllegalArgumentException)
         calls == 0
         when:
         settingsMap.enableWrite = true
         settingsMap.enableMandatoryBPS = true
-        script.executeTool('hub_call_app_form', openArgs())
+        script.executeTool('hub_set_rule', openArgs())
         then:
         def failure = thrown(IllegalArgumentException)
-        failure.message.contains('native_app_forms')
+        failure.message.contains('set_rule_reference')
         calls == 0
         when:
-        def result = script.executeTool('hub_call_app_form', openArgs() + [bestPracticeKey: script.hubBpsGuideKey('native_app_forms')])
+        def result = script.executeTool('hub_set_rule', openArgs() + [bestPracticeKey: script.hubBpsGuideKey('set_rule_reference')])
         then:
         result.success
         calls == 1
     }
 
-    def 'open requires confirmation and a recent backup before form access'() {
+    def 'open schema does not require a backup but confirmed access does'() {
         when:
-        script.executeTool('hub_call_app_form', openArgs() + [confirm: false])
+        def probe = script.executeTool('hub_set_rule', openArgs() + [confirm: false])
         then:
-        thrown(IllegalArgumentException)
+        probe.operation == 'form'
+        probe.confirm_required
         when:
         stateMap.remove('lastBackupTimestamp')
-        script.executeTool('hub_call_app_form', openArgs())
+        script.executeTool('hub_set_rule', openArgs())
         then:
         thrown(IllegalArgumentException)
     }
 
-    def 'client grant and self target checks include native app_id before dispatch'() {
+    def 'client grant and self target checks include rule_id before dispatch'() {
         given:
         stateMap.clientTokens = ['1': [label: 'Scoped', token: 'client']]
         script.callerClient = [id: '1', label: 'Scoped']
         settingsMap.clientTools_1 = []
         expect:
-        script._clientToolDenial('hub_call_app_form', openArgs())
+        script._clientToolDenial('hub_set_rule', openArgs())
         when:
-        settingsMap.clientTools_1 = ['hub_call_app_form']
+        settingsMap.clientTools_1 = ['hub_set_rule']
         then:
-        !script._clientToolDenial('hub_call_app_form', openArgs())
-        script._clientToolDenial('hub_call_app_form', openArgs() + [app_id: 7]).contains('cannot target the MCP Rule Server app itself')
+        !script._clientToolDenial('hub_set_rule', openArgs())
+        script._clientToolDenial('hub_set_rule', openArgs() + [rule_id: 7]).contains('cannot target the MCP Rule Server app itself')
     }
 }

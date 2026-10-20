@@ -159,7 +159,7 @@ class RelayBudgetSpec extends ToolSpecBase {
         script.metaClass.toolUpdateRuleDocument = { Map args -> received = args; [success: true] }
         def changes = [[part: 'required', value: [tokens: ['1']]], [part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]]
         when:
-        def response = mcpDriver.callTool('hub_manage_rule_machine', [tool: 'hub_update_rule_document', args: [rule_id: 1, confirm: true, changes: changes]])
+        def response = mcpDriver.callTool('hub_manage_rule_machine', [tool: 'hub_set_rule', args: [operation: 'update', rule_id: 1, confirm: true, args: [changes: changes]]])
         then:
         response.error == null
         received.changes == changes

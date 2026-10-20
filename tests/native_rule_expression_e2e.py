@@ -305,11 +305,8 @@ class NativeRuleExpressionE2E(unittest.TestCase):
             with self.subTest(operation=operation):
                 before = self.config_snapshot(rule_id)
                 subscriptions = self.subscriptions(rule_id)
-                result = self.client.tool(
-                    "hub_update_rule_document", rule_id=rule_id, confirm=True,
-                    changes=[operation, change("variable", operation="set", name="Sentinel", value=99),
-                             log_action("must not be written")],
-                )
+                result = self.client.tool("hub_set_rule", operation="update", rule_id=int(rule_id), confirm=True, args={"changes": [operation, change("variable", operation="set", name="Sentinel", value=99),
+                             log_action("must not be written")]})
                 self.assertIs(result.get("success"), False, result)
                 if "partial" in result:
                     self.assertIs(result["partial"], False, result)
@@ -330,11 +327,8 @@ class NativeRuleExpressionE2E(unittest.TestCase):
         subscriptions = self.subscriptions(rule_id)
         skipped = [change("variable", operation="set", name="Sentinel", value=99),
                    log_action("must not be written")]
-        result = self.client.tool(
-            "hub_update_rule_document", rule_id=rule_id, confirm=True,
-            changes=[change("variable", operation="set", name="Stage", value=1),
-                     self.condition("switch", "__invalid_switch_state__"), *skipped],
-        )
+        result = self.client.tool("hub_set_rule", operation="update", rule_id=int(rule_id), confirm=True, args={"changes": [change("variable", operation="set", name="Stage", value=1),
+                     self.condition("switch", "__invalid_switch_state__"), *skipped]})
         self.assertIs(result.get("success"), False, result)
         self.assertIs(result.get("partial"), True, result)
         self.assertIn("state_", json.dumps(result))

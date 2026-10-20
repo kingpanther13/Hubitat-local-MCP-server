@@ -1929,13 +1929,11 @@ def check_tool_guide_generated() -> list[dict]:
             "If you are calling one of these tools, you must read its section for that section's key:",
             "native Rule Machine",
         ],
-        "native_rule_documents": [
-            "hub_get_rule_document", "hub_update_rule_document", "changes in order",
+        "set_rule_reference": [
+            "hub_set_rule", "changes in order",
             "Reads use native state and typed settings without rendering its editor.",
-            "A partial update can leave preceding changes committed", "not yet supported",
-        ],
-        "native_app_forms": [
-            "hub_call_app_form", "expect_page", "Even open renders execute app code",
+            "A partial update can leave preceding changes committed", "not every capability-specific variant is supported",
+            "expect_page", "Even open renders execute app code",
             "dependent fields require another submit",
             "not that the app's intended runtime behavior was independently verified",
         ],

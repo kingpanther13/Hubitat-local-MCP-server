@@ -550,10 +550,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "native document reference is available through the read guide without write gates"() {
         when:
-        def result = script.toolGetToolGuide('native_rule_documents')
+        def result = script.toolGetToolGuide('set_rule_reference')
         then:
         result.success
-        result.section == 'native_rule_documents'
+        result.section == 'set_rule_reference'
         result.content.contains('changes')
         result.content.contains('native names')
     }
@@ -1474,7 +1474,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         expect: "a load-failed resume steers to the pausRule toggle and never resRule, with sticky-limiter wording"
         def resumeNote = script._rmSendActionErrorNote("resumeRule", [100], "App 100 generates excessive hub load")
         resumeNote.contains("pausRule")
-        resumeNote.contains("hub_call_app_form(app_id=100")
+        resumeNote.contains("hub_set_rule")
+        resumeNote.contains("rule_id=100")
         resumeNote.contains("returned pause control")
         !resumeNote.contains("resRule")
         resumeNote.contains("sticky")
@@ -3285,11 +3286,11 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "public native writer documents verification instead of old wizard self-bake promises"() {
         when:
-        def guide = script.toolGetToolGuide('native_rule_documents').content
+        def guide = script.toolGetToolGuide('set_rule_reference').content
         then:
         guide.contains('typed readback')
         guide.contains('independently verify device behavior')
-        !script.getAllToolDefinitions().any { it.name == 'hub_set_rule' }
+        !script._ndOperationSchema('create').properties.args.properties.containsKey('buttonRule')
     }
 
     def "custom_* visibility: full mode (engine ON) shows all 8 custom_* tools"() {
@@ -3524,15 +3525,15 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "native create requires confirmation through public dispatch (useGateways=#useGateways)"() {
+    def "native create without confirmation returns schema through public dispatch (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
         when:
-        def response = mcpDriver.callTool('hub_create_rule_document', [parent_id: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'create', args: [parent_id: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
+        response.result.isError != true
+        mcpDriver.parseInner(response).confirm_required == true
         where:
         useGateways << [true, false]
     }
@@ -3542,10 +3543,10 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         settingsMap.useGateways = useGateways
         enableWrite()
         when:
-        def response = mcpDriver.callTool('hub_create_rule_document', [parent_id: 21, changes: [[part:'required', value:[tokens:['1']]]], confirm:true])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'create', confirm: true, args: [parent_id: 21, changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
         response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('rule name')
+        mcpDriver.parseInner(response).error.contains('Missing required args property')
         where:
         useGateways << [true, false]
     }
@@ -3556,27 +3557,27 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         Map received
         script.metaClass.toolCreateRuleDocument = { Map args -> received = args; [success: true, created: true, rule_id: 974] }
-        def args = [parent_id: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]], confirm:true]
+        def args = [operation: 'create', args: [parent_id: 21, name: 'BAT-RM-demo', changes: [[part:'required', value:[tokens:['1']]]]], confirm:true]
         when:
-        def response = mcpDriver.callTool('hub_create_rule_document', args)
+        def response = mcpDriver.callTool('hub_set_rule', args)
         then:
         response.error == null
         !response.result.isError
         mcpDriver.parseInner(response).rule_id == 974
-        received == args
+        received == args.args + [confirm: true]
         where:
         useGateways << [true, false]
     }
 
-    def "hub_update_rule_document public validation returns an error envelope (useGateways=#useGateways)"() {
+    def "hub_set_rule public update schema returns a successful envelope (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         enableWrite()
         when:
-        def response = mcpDriver.callTool('hub_update_rule_document', [rule_id: 100, changes: [[part:'required', value:[tokens:['1']]]]])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', rule_id: 100, args: [changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
+        response.result.isError != true
+        mcpDriver.parseInner(response).confirm_required == true
         where:
         useGateways << [true, false]
     }
@@ -3588,7 +3589,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         script.metaClass.toolUpdateRuleDocument = { Map args -> [success: false, partial: true, rule_id: args.rule_id, error: 'Native typed readback rejected'] }
         when:
-        def response = mcpDriver.callTool('hub_update_rule_document', [rule_id:100, changes:[[part:'required', value:[tokens:['1']]]], confirm:true])
+        def response = mcpDriver.callTool('hub_set_rule', [operation: 'update', rule_id: 100, confirm: true, args: [changes: [[part:'required', value:[tokens:['1']]]]]])
         then:
         response.error == null
         def inner = mcpDriver.parseInner(response)
@@ -4025,8 +4026,8 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "native authoring reference requires native field contracts without inventing enum values"() {
         expect:
-        script.toolGetToolGuide('native_rule_documents').content.contains('exact native names')
-        script.toolGetToolGuide('native_app_forms').content.contains('Native enum keys')
+        script.toolGetToolGuide('set_rule_reference').content.contains('exact native names')
+        script.toolGetToolGuide('set_rule_reference').content.contains('Native enum keys')
     }
 
     def "_appTypeRegistry registers basic_rule with the live-verified triple + commitButton null"() {
@@ -4048,7 +4049,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
 
     def "retired writer has no public buttonRule creation alias"() {
         expect:
-        !script.getAllToolDefinitions().any { it.name == 'hub_set_rule' }
+        !script._ndOperationSchema('create').properties.containsKey('buttonRule')
         !script.getAllToolDefinitions().any { it.name == 'hub_set_native_app' }
     }
 
@@ -4057,12 +4058,12 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         enableWrite()
         Map received
         script.metaClass.toolCreateRuleDocument = { Map args -> received = args; [success:true, rule_id: 974] }
-        def args = [parent_id:21, name:'BAT-gw-rule', changes:[[part:'required', value:[tokens:['1']]]], confirm:true]
+        def args = [operation: 'create', args: [parent_id:21, name:'BAT-gw-rule', changes:[[part:'required', value:[tokens:['1']]]]], confirm:true]
         when:
-        def result = script.handleGateway('hub_manage_rule_machine', 'hub_create_rule_document', args)
+        def result = script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', args)
         then:
         result.rule_id == 974
-        received == args
+        received == args.args + [confirm: true]
     }
 
     def "_resolveCommitButton: Room Lights commits with its own update button; the Room Lighting parent gets no commit click"() {

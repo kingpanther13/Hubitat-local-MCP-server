@@ -105,7 +105,7 @@ class NativeRmParityExpressions(ParityCase):
         ]
 
     def _form(self, rule_id, step):
-        result = self.call("hub_call_app_form", app_id=int(rule_id), steps=[step], confirm=True)
+        result = self.call("hub_set_rule", operation="form", rule_id=int(rule_id), confirm=True, args={"steps": [step]})
         self.assertTrue(result.get("success"), result)
         return result
 

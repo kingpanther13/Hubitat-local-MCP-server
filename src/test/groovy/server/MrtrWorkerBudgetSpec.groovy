@@ -36,7 +36,7 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
             [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg',
                 fields: [[name: 'logmsg.#', type: 'textarea', value: 'batch complete']]]]
         ]
-        def args = [rule_id: 77, confirm: true, changes: changes]
+        def args = [operation: 'update', rule_id: 77, confirm: true, args: [changes: changes]]
         List dispatched = []
         script.metaClass.toolUpdateRuleDocument = { Map actual ->
             dispatched << new LinkedHashMap(actual)
@@ -47,15 +47,15 @@ class MrtrWorkerBudgetSpec extends ToolSpecBase {
         }
 
         when:
-        def completed = modernCall('hub_update_rule_document', args)
+        def completed = modernCall('hub_set_rule', args)
         String stateId = atomicStateMap.mrtrRequests.keySet().first()
         def terminal = mcpDriver.parseInner(completed)
-        def replay = modernCall('hub_update_rule_document', args, stateId)
+        def replay = modernCall('hub_set_rule', args, stateId)
 
         then:
         completed.result.resultType == 'complete'
         stateId instanceof String
-        dispatched == [args]
+        dispatched == [args.args + [rule_id: args.rule_id, confirm: true]]
         terminal.success == true
         terminal.rule_id == 77
         terminal.results*.part == ['variable', 'action']

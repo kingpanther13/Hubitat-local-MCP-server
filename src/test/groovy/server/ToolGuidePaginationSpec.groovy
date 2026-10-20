@@ -158,15 +158,15 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
 
     def "native form guide is fetched explicitly through the public guide tool"() {
         when:
-        def result = dispatch([section: 'native_app_forms'])
+        def result = dispatch([section: 'set_rule_reference'])
 
         then:
         result.payload.success == true
-        result.payload.content == script._guideSectionServed('native_app_forms', script.getToolGuideSections()['native_app_forms'] as String)
+        result.payload.content == script._guideSectionServed('set_rule_reference', script.getToolGuideSections()['set_rule_reference'] as String)
         !(result.payload as Map).containsKey('nextCursor')
         !(result.payload as Map).containsKey('offset')
         !(result.payload as Map).containsKey('totalChars')
-        (result.payload.content as String).contains('hub_call_app_form')
+        (result.payload.content as String).contains('hub_set_rule')
     }
 
     def "an empty cursor is the documented first page"() {

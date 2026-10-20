@@ -200,17 +200,14 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
         return {row["name"]: row for row in rows}
 
     def document(self, rule_id):
-        result = self.client.tool("hub_get_rule_document", rule_id=rule_id)
+        result = self.client.tool("hub_set_rule", operation="read", rule_id=int(rule_id))
         self.assertIsNot(result.get("success"), False, result)
         self.assertEqual(str(result["rule_id"]), rule_id)
         return result
 
     def create_rule(self, changes):
         name = self.prefix + "_" + self._testMethodName
-        result = self.client.tool(
-            "hub_create_rule_document", parent_id=self.parent_id,
-            name=name, changes=changes, confirm=True,
-        )
+        result = self.client.tool("hub_set_rule", operation="create", confirm=True, args={"parent_id": int(self.parent_id), "name": name, "changes": changes})
         if result.get("rule_id"):
             self.addCleanup(self.remove_rule, str(result["rule_id"]), name)
         self.assertTrue(result.get("success"), result)
@@ -233,9 +230,7 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
         self.assertNotIn("installedApp", self.status(rule_id, missing_ok=True))
 
     def update(self, rule_id, changes):
-        result = self.client.tool(
-            "hub_update_rule_document", rule_id=rule_id, changes=changes, confirm=True,
-        )
+        result = self.client.tool("hub_set_rule", operation="update", rule_id=int(rule_id), confirm=True, args={"changes": changes})
         self.assertTrue(result.get("success"), result)
         self.assertEqual(str(result["rule_id"]), rule_id)
 
@@ -278,16 +273,14 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
         action_id = before["actions"][0]["id"]
         picker = f"onOffSwitch.{action_id}"
         saved_picker = self.settings(rule_id)[picker]
-        result = self.client.tool(
-            "hub_update_rule_document", rule_id=rule_id, confirm=True, changes=[
+        result = self.client.tool("hub_set_rule", operation="update", rule_id=int(rule_id), confirm=True, args={"changes": [
                 change("action", id=action_id, type="switchActs",
                        subtype="getOnOffSwitch", fields=[
                            field("onOffSwitch.#", "capability.switch",
                                  [str(self.fixtures["temperature"])]),
                            field("onOff.#", "bool", True),
                        ]),
-            ],
-        )
+            ]})
         self.assertIs(result.get("success"), False, result)
         self.assertEqual(self.settings(rule_id)[picker], saved_picker)
         self.assertEqual(self.document(rule_id)["actions"], before["actions"])
@@ -411,10 +404,7 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
                 ])
                 before = self.config_snapshot(rule_id)
                 status_before = self.status(rule_id)
-                response = self.client.tool(
-                    "hub_update_rule_document", rule_id=rule_id,
-                    changes=[invalid], confirm=True,
-                )
+                response = self.client.tool("hub_set_rule", operation="update", rule_id=int(rule_id), confirm=True, args={"changes": [invalid]})
                 self.assertIs(response.get("success"), False, response)
                 self.assertIsInstance(response.get("partial"), bool, response)
                 field_prefix = "state_" if invalid["part"] == "condition" else "numOp."

@@ -715,12 +715,12 @@ class NativeFormsSpec extends ToolSpecBase {
 
     def 'tool catalog exposes one bounded mutating form surface'() {
         when:
-        def definitions = script._getAllToolDefinitions_partNativeForms()
+        def definitions = script._getAllToolDefinitions_partNativeDocuments()
         then:
-        definitions*.name == ['hub_call_app_form']
-        definitions[0].inputSchema.properties.steps.maxItems == 16
-        definitions[0].inputSchema.required.contains('confirm')
-        definitions[0].description.contains('Rendering executes app code')
+        definitions*.name == ['hub_set_rule']
+        script._ndOperationSchema('form').properties.steps.maxItems == 16
+        !definitions[0].inputSchema.required?.contains('confirm')
+        script._nfGuide().contains('Even open renders execute app code')
     }
     def 'shared validation preserves optional form clearing and native wire encodings'() {
         given:

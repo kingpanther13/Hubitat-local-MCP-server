@@ -37,14 +37,11 @@ class NativeAppFormE2E(unittest.TestCase):
     def tearDownClass(cls):
         print(f"\nTOTAL {time.monotonic() - cls.started:.2f}s "
               f"calls={dict(cls.client.calls)}", flush=True)
-        print("COVERAGE GAPS: other native app families, deeper child configuration, "
+        print("COVERAGE GAPS: deeper Rule Machine child configuration, "
               "and remaining native editor controls", flush=True)
 
     def form(self, rule_id, steps, **options):
-        return self.client.tool(
-            "hub_call_app_form", app_id=int(rule_id),
-            steps=steps, confirm=True, **options,
-        )
+        return self.client.tool("hub_set_rule", operation="form", rule_id=int(rule_id), confirm=True, args={"steps": steps, **options})
 
     def open_form(self, rule_id, page=None):
         step = {"kind": "open"}

@@ -149,9 +149,9 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         enableEveryToggle()
         settingsMap.useGateways = false
         when:
-        def flat = script.getToolDefinitions().find { it.name == 'hub_update_rule_document' }
+        def flat = script.getToolDefinitions().find { it.name == 'hub_set_rule' }
         settingsMap.useGateways = true
-        def gateway = script.handleGateway('hub_manage_rule_machine', null, [:]).tools.find { it.name == 'hub_update_rule_document' }
+        def gateway = script.handleGateway('hub_manage_rule_machine', null, [:]).tools.find { it.name == 'hub_set_rule' }
         then:
         flat && gateway
         flat.inputSchema == gateway.inputSchema
@@ -167,15 +167,15 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         given:
         enableEveryToggle()
         expect:
-        !script.getAllToolDefinitions().any { it.name in ['hub_set_rule', 'hub_set_native_app'] }
-        !script.getGatewayConfig().values().any { it.tools.any { name -> name in ['hub_set_rule', 'hub_set_native_app'] } }
+        !script.getAllToolDefinitions().any { it.name in ['hub_get_rule_document', 'hub_create_rule_document', 'hub_update_rule_document', 'hub_call_app_form', 'hub_set_native_app'] }
+        !script.getGatewayConfig().values().any { it.tools.any { name -> name in ['hub_get_rule_document', 'hub_create_rule_document', 'hub_update_rule_document', 'hub_call_app_form', 'hub_set_native_app'] } }
     }
 
     def "native guides describe supported contracts without claiming full capability parity"() {
         expect:
-        script.toolGetToolGuide('native_rule_documents').content.contains('not yet supported')
-        script.toolGetToolGuide('native_app_forms').content.contains('unsupported')
-        !script.getToolGuideSections().containsKey('set_rule_reference')
+        script.toolGetToolGuide('set_rule_reference').content.contains('not every capability-specific variant is supported')
+        script.toolGetToolGuide('set_rule_reference').content.contains('unsupported')
+        script.getToolGuideSections().containsKey('set_rule_reference')
     }
 
     def "stripFlatTrim strips include-library line markers on every description surface (issue #342)"() {
@@ -357,12 +357,12 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
 
     def "hub_get_tool_guide dispatcher serves new native guides with their actual contracts"() {
         when:
-        def documents = script.toolGetToolGuide('native_rule_documents')
-        def forms = script.toolGetToolGuide('native_app_forms')
+        def documents = script.toolGetToolGuide('set_rule_reference')
+        def forms = script.toolGetToolGuide('set_rule_reference')
         then:
         documents.success && forms.success
-        documents.section == 'native_rule_documents'
-        forms.section == 'native_app_forms'
+        documents.section == 'set_rule_reference'
+        forms.section == 'set_rule_reference'
         documents.content.contains('Typed fields use exact native names')
         documents.content.contains('Partial') || documents.content.contains('partial')
         forms.content.contains('Even open renders execute app code')
@@ -448,18 +448,18 @@ class UpdateNativeAppSchemaTrimSpec extends ToolSpecBase {
         // here -- next test gets a clean script instance.
     }
 
-    def "missing-param hint for native document writes names every required field without trim markers"() {
+    def "native update probe exposes required fields without trim markers"() {
         when:
-        script.handleGateway('hub_manage_rule_machine', 'hub_update_rule_document', [:])
+        def probe = script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', [operation: 'update'])
         then:
-        def failure = thrown(IllegalArgumentException)
-        failure.message.contains('Missing required parameter')
-        ['rule_id', 'changes', 'confirm'].every { failure.message.contains(it) }
-        !failure.message.contains(OPEN_MARKER)
-        !failure.message.contains(CLOSE_MARKER)
+        probe.confirm_required
+        probe.inputSchema.required.containsAll(['rule_id', 'args', 'confirm'])
+        probe.inputSchema.properties.args.required == ['changes']
+        !JsonOutput.toJson(probe).contains(OPEN_MARKER)
+        !JsonOutput.toJson(probe).contains(CLOSE_MARKER)
     }
 
-    def "retired writer cannot be invoked through its old gateway"() {
+    def "legacy guide flag is rejected through the rule gateway"() {
         when:
         script.handleGateway('hub_manage_rule_machine', 'hub_set_rule', [guide: true])
         then:

@@ -89,7 +89,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_list_files', 'hub_read_file',
             'hub_get_app_config',
             'hub_list_hpm_packages',
-            'hub_get_rule_document', 'hub_list_rules', 'hub_get_rule_health',
+            'hub_list_rules', 'hub_get_rule_health',
             'hub_get_tool_guide'
         ]
     }
@@ -139,7 +139,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_restore_backup', 'hub_delete_backup',
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
-            'hub_create_rule_document', 'hub_update_rule_document', 'hub_call_app_form', 'hub_clone_native_app',
+            'hub_set_rule', 'hub_clone_native_app',
             'hub_import_native_app', 'hub_delete_native_app', 'hub_export_native_app'
         ]
     }
@@ -356,7 +356,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_create_device',
             'hub_create_room',
             'hub_create_app', 'hub_create_driver', 'hub_create_library',
-            'hub_call_rule', 'hub_create_rule_document', 'hub_update_rule_document', 'hub_call_app_form',
+            'hub_call_rule', 'hub_set_rule',
             'hub_clone_native_app', 'hub_import_native_app', 'hub_delete_native_app',
             'hub_set_visual_rule',
             'hub_create_dashboard', 'hub_clone_dashboard'
@@ -508,7 +508,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_list_device_dependents', 'hub_get_app_config',
             'hub_list_app_pages',
             'hub_list_hpm_packages',
-            'hub_get_rule_document', 'hub_list_rules', 'hub_get_rule_health', 'hub_list_rule_local_variables', 'hub_get_visual_rule',
+            'hub_list_rules', 'hub_get_rule_health', 'hub_list_rule_local_variables', 'hub_get_visual_rule',
             'hub_list_dashboards', 'hub_get_dashboard',
             'hub_get_tool_guide'
             // hub_search_tools is in getReadOnlyToolNames() but suppressed in flat mode.
@@ -540,7 +540,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
             'hub_restore_backup', 'hub_delete_backup',
             'hub_write_file', 'hub_delete_file',
             'hub_call_rule', 'hub_set_rule_paused', 'hub_set_rule_private_boolean',
-            'hub_create_rule_document', 'hub_update_rule_document', 'hub_call_app_form', 'hub_set_app_disabled', 'hub_clone_native_app',
+            'hub_set_rule', 'hub_set_app_disabled', 'hub_clone_native_app',
             'hub_import_native_app', 'hub_delete_native_app', 'hub_export_native_app',
             'hub_set_visual_rule', 'hub_delete_visual_rule',
             'hub_create_dashboard', 'hub_update_dashboard', 'hub_delete_dashboard', 'hub_clone_dashboard'
@@ -570,7 +570,7 @@ class McpToolAnnotationsSpec extends ToolSpecBase {
         names.size() == (names as Set).size()
 
         and: 'no chunk dropped — the full surface is present (bump on intentional add/remove)'
-        names.size() == 120
+        names.size() == 117
 
         and: 'sentinels from the first and last chunks survive the concatenation chain'
         names.contains('hub_list_devices')   // first chunk

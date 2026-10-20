@@ -24,7 +24,7 @@ This app lets AI assistants like Claude control your Hubitat smart home through 
 
 > "What's the hub's health status?"
 
-Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 120 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
+Behind the scenes, the AI uses MCP tools to control devices, create automation rules, manage rooms, query system state, and administer the hub. The server exposes 117 tools total — 13 core tools are always visible, while the rest are organized behind 23 domain-named gateways to keep the tool list manageable. If your client handles long tool lists well, you can disable the gateways via the **Consolidate tools behind category gateways** setting and every tool is exposed individually instead. (Counts here describe the shipped catalog; the runtime count on `tools/list` varies based on enabled settings.)
 
 ## Requirements
 
@@ -257,7 +257,7 @@ For free remote access without a Hubitat Cloud subscription:
 
 ### MCP Tools (120 total — 36 on tools/list)
 
-The server has 120 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
+The server has 117 tools total. To keep the MCP `tools/list` manageable, **13 core tools** are always visible and the remaining tools are organized behind **23 domain-named gateways** (8 read-only `hub_read_*` gateways + 15 write-bearing `hub_manage_*` gateways). The AI sees 36 items on `tools/list` (13 + 23 gateways). A tool may appear under more than one gateway — read tools inside a mixed `hub_manage_*` gateway are also surfaced in a pure-read `hub_read_*` gateway. Each gateway's description includes tool summaries (always visible to the AI), and calling a gateway with no arguments returns full parameter schemas on demand.
 
 #### Core Tools (13) — Always visible on tools/list
 
@@ -595,13 +595,11 @@ Write/delete require the Write master + confirm + a recent backup.
 </details>
 
 <details>
-<summary><b>hub_manage_rule_machine</b> (13) — Rule authoring (Rule Machine + Visual Rules Builder) and RM runtime control</summary>
+<summary><b>hub_manage_rule_machine</b> (11) — Rule authoring (Rule Machine + Visual Rules Builder) and RM runtime control</summary>
 
 | Tool | Description |
 |------|-------------|
-| `hub_get_rule_document` | Read native ordered actions, conditions, triggers, expressions, locals and typed settings without editor renders. |
-| `hub_create_rule_document` | Create and install a native Rule Machine child with ordered supported changes. |
-| `hub_update_rule_document` | Update supported native structures in place, preserving rule identity; inspect partial outcomes and verify runtime behavior. |
+| `hub_set_rule` | Read, create, update or use native RM editor forms. Omit operation for help; unconfirmed writes return argument schemas. |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
 | `hub_call_rule` | Trigger one or more RM rules (`ruleId` takes an id or an array; `action`: "rule"/"actions"/"stop"/"start") |
 | `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
@@ -613,23 +611,20 @@ Write/delete require the Write master + confirm + a recent backup.
 | `hub_set_visual_rule` | Create or update a Visual Rules Builder rule — VRB is the primary rule engine; one JSON write with if/then/else gating. Use native document tools for supported RM structures. |
 | `hub_delete_visual_rule` | Delete a Visual Rules Builder rule (type-gated; returns the pre-delete definition for recovery) |
 
-Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated by the Read master; the writes by the Write master (both ON by default). `hub_create_rule_document`, `hub_update_rule_document`, `hub_call_app_form`, `hub_delete_native_app`, `hub_set_visual_rule`, and `hub_delete_visual_rule` additionally require `confirm=true` + a backup within 24h.
+Reads (`hub_list_rules`, `hub_get_rule_health`, `hub_get_visual_rule`) are gated by the Read master; the writes by the Write master (both ON by default). Confirmed `hub_set_rule` writes, `hub_delete_native_app`, `hub_set_visual_rule`, and `hub_delete_visual_rule` additionally require `confirm=true` + a backup within 24h.
 
 </details>
 
 <details>
-<summary><b>hub_manage_native_rules_and_apps</b> (14) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
+<summary><b>hub_manage_native_rules_and_apps</b> (11) — Rule Machine interop (RMUtils) + native CRUD on any classic SmartApp (RM, Room Lighting, Button Controllers, Basic Rules, Notifier, etc.)</summary>
 
 | Tool | Description |
 |------|-------------|
-| `hub_call_app_form` | Operate native editor forms using returned controls. All operations, including open, require write access, confirmation and a recent hub backup. |
 | `hub_list_rules` | List all Rule Machine rules (RM 4.x + 5.x) via official `hubitat.helper.RMUtils` API (also in `hub_read_rules`) |
 | `hub_call_rule` | Trigger one or more RM rules (`ruleId` takes an id or an array; `action`: "rule"/"actions"/"stop"/"start") |
 | `hub_set_rule_paused` | Pause or resume one or more RM rules (`paused=true` pauses, `paused=false` resumes; `ruleId` takes an id or an array; reversible) |
 | `hub_set_rule_private_boolean` | Set the private boolean of one or more RM rules (`ruleId` takes an id or an array) |
-| `hub_get_rule_document` | Read native ordered actions, conditions, triggers, expressions, locals and typed settings without editor renders. |
-| `hub_create_rule_document` | Create and install a native Rule Machine child with ordered supported changes. |
-| `hub_update_rule_document` | Update supported native structures in place, preserving rule identity; inspect partial outcomes and verify runtime behavior. |
+| `hub_set_rule` | Read, create, update or use native RM editor forms. Omit operation for help; unconfirmed writes return argument schemas. |
 | `hub_delete_native_app` | Delete a classic native app (auto-snapshot to File Manager before deleting). |
 | `hub_clone_native_app` | Clone an existing classic SmartApp via Hubitat's `appCloner` endpoint (deep: child apps + pause state copy; `stageDisabled` lands it disabled). Returns the new `appId`. |
 | `hub_export_native_app` | Export a classic SmartApp to JSON and persist it to File Manager (round-trippable with `hub_import_native_app`). |

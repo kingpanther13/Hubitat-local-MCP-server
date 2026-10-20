@@ -17,7 +17,7 @@ class NativeRmParityLifecycleE2E(ParityCase):
         step = {"kind": "open"}
         if page:
             step["page"] = page
-        result = self.call("hub_call_app_form", app_id=int(app_id), steps=[step], confirm=True)
+        result = self.call("hub_set_rule", operation="form", rule_id=int(app_id), confirm=True, args={"steps": [step]})
         self.assertTrue(result.get("success"), result)
         return result
 
@@ -27,7 +27,7 @@ class NativeRmParityLifecycleE2E(ParityCase):
             step["fields"] = fields
         if control is not None:
             step["activate"] = control["control_id"]
-        return self.call("hub_call_app_form", app_id=int(app_id), steps=[step], confirm=True)
+        return self.call("hub_set_rule", operation="form", rule_id=int(app_id), confirm=True, args={"steps": [step]})
 
     def _trigger(self, state="on", **extra):
         return change("trigger", capability="Switch", fields=[
@@ -61,22 +61,24 @@ class NativeRmParityLifecycleE2E(ParityCase):
         self.assertTrue(result.get("error") or any(row.get("result", {}).get("error") for row in result.get("results", [])), result)
 
     def _guide(self):
-        return self.call("hub_get_tool_guide", section="native_rule_documents")
+        return self.call("hub_get_tool_guide", section="set_rule_reference")
 
     def test_set_rule_guide_param(self):
         guide = str(self._guide())
-        for name in ("hub_update_rule_document", "condition", "trigger", "action", "fields"):
+        for name in ("hub_set_rule", "condition", "trigger", "action", "fields"):
             self.assertIn(name, guide)
-        self.assertIn("hub_call_app_form", str(self.call(
-            "hub_get_tool_guide", section="native_app_forms")))
+        self.assertIn("hub_set_rule", str(self.call(
+            "hub_get_tool_guide", section="set_rule_reference")))
 
     def test_set_rule_self_gateway_meta(self):
         app_id = self.create([log_action("meta baseline")])
         before = self.snapshot(app_id)
-        self.assertIn("hub_update_rule_document", str(self._guide()))
+        self.assertIn("hub_set_rule", str(self._guide()))
         definitions = self.client.request(self.client.mcp_url, "POST", {
             "jsonrpc": "2.0", "id": 61001, "method": "tools/list", "params": {}})
         def tool_names(node):
+            if isinstance(node, str):
+                return {node} if node.startswith("hub_") and " " not in node else set()
             if isinstance(node, dict):
                 names = {node["name"]} if isinstance(node.get("name"), str) else set()
                 for value in node.values():
@@ -86,18 +88,20 @@ class NativeRmParityLifecycleE2E(ParityCase):
                 return set().union(*(tool_names(value) for value in node))
             return set()
 
-        self.assertNotIn("hub_set_rule", tool_names(definitions))
+        names = tool_names(definitions)
+        self.assertIn("hub_set_rule", names)
+        self.assertTrue({"hub_get_rule_document", "hub_create_rule_document",
+                         "hub_update_rule_document", "hub_call_app_form"}.isdisjoint(names))
         self.assertEqual(before, self.snapshot(app_id))
-        probe = self.call("hub_update_rule_document", rule_id=app_id,
-                          changes=[log_action("must not land")], confirm=False)
-        self._refused(probe)
+        probe = self.call("hub_set_rule", operation="update", rule_id=int(app_id), confirm=False, args={"changes": [log_action("must not land")]})
+        self.assertTrue(probe.get("confirm_required"), probe)
         self.assertEqual(before, self.snapshot(app_id))
 
     def test_set_rule_self_gateway_envelope_edit(self):
         app_id = self.create([log_action("first")])
         before = self.snapshot(app_id)
-        self._refused(self.call("hub_update_rule_document", rule_id=app_id,
-                               changes=[log_action("unconfirmed")], confirm=False))
+        probe = self.call("hub_set_rule", operation="update", rule_id=int(app_id), confirm=False, args={"changes": [log_action("unconfirmed")]})
+        self.assertTrue(probe.get("confirm_required"), probe)
         self.assertEqual(before, self.snapshot(app_id))
         for message in ("via-envelope", "wrapped-list"):
             result = self.update(app_id, [log_action(message)])
@@ -151,10 +155,8 @@ class NativeRmParityLifecycleE2E(ParityCase):
         self.wait_for(lambda: self._listed(app_id).get("disabled") is True)
         self.assertEqual("disabled", self._listed(app_id).get("status"))
         try:
-            self._refused(self.call("hub_update_rule_document", rule_id=app_id,
-                                   changes=[log_action("disabled must not land")], confirm=True))
-            self._refused(self.call("hub_call_app_form", app_id=app_id,
-                                   steps=[{"kind": "open"}], confirm=True))
+            self._refused(self.call("hub_set_rule", operation="update", rule_id=int(app_id), confirm=True, args={"changes": [log_action("disabled must not land")]}))
+            self._refused(self.call("hub_set_rule", operation="form", rule_id=int(app_id), confirm=True, args={"steps": [{"kind": "open"}]}))
         finally:
             self.call("hub_set_app_disabled", appId=app_id, disabled=False)
         self.wait_for(lambda: self._listed(app_id).get("status") == "active")
@@ -619,20 +621,18 @@ class NativeRmParityLifecycleE2E(ParityCase):
                             ("Action", change("action", type="dimmerActs", subtype="getSetLevel", missingLevel=True, fields=[]))):
             name = self.prefix + "_CreateRefused" + suffix
             before = {str(row["id"]) for row in self.call("hub_list_rules").get("rules", [])}
-            result = self.call("hub_create_rule_document", parent_id=self.parent_id, name=name,
-                               changes=[log_action("first"), bad], confirm=True)
+            result = self.call("hub_set_rule", operation="create", confirm=True, args={"parent_id": int(self.parent_id), "name": name, "changes": [log_action("first"), bad]})
             if result.get("rule_id"):
                 self.adopt(result["rule_id"], name)
             self._refused(result)
             after = {str(row["id"]) for row in self.call("hub_list_rules").get("rules", [])}
             self.assertEqual(before, after, result)
         name = self.prefix + "_CreateStop"
-        result = self.call("hub_create_rule_document", parent_id=self.parent_id, name=name,
-            changes=[self._trigger(), self._trigger("purple"),
+        result = self.call("hub_set_rule", operation="create", confirm=True, args={"parent_id": int(self.parent_id), "name": name, "changes": [self._trigger(), self._trigger("purple"),
                      change("condition", capability="Switch", fields=[
                          field("rDev_#", "capability.switch", [int(self.fixtures["switch"])]),
                          field("state_#", "enum", "on")]), change("required", tokens=["3"]),
-                     log_action("skipped action")], confirm=True)
+                     log_action("skipped action")]})
         app_id = result.get("rule_id")
         if app_id:
             self.adopt(app_id, name)
@@ -688,10 +688,10 @@ class NativeRmParityLifecycleE2E(ParityCase):
             field("RelrDev_#", "enum", ">"), field("state_#", "decimal", 60 + index)])
             for index in range(68)]
         changes = [*conditions, *[log_action(message) for message in messages]]
-        arguments = {"rule_id": int(app_id), "changes": changes, "confirm": True}
+        arguments = {"operation": "update", "rule_id": int(app_id), "args": {"changes": changes}, "confirm": True}
         headers = {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call",
-                   "Mcp-Name": "hub_update_rule_document"}
-        params = {"name": "hub_update_rule_document", "arguments": arguments}
+                   "Mcp-Name": "hub_set_rule"}
+        params = {"name": "hub_set_rule", "arguments": arguments}
         legs = []
         request_state = None
         rounds = 0
@@ -730,10 +730,10 @@ class NativeRmParityLifecycleE2E(ParityCase):
         self.assertLess(max(legs), 10.0, {"legs": legs, "elapsed": elapsed})
         for index, replacement in enumerate((None, False, 0)):
             altered = json.loads(json.dumps(arguments))
-            altered["changes"][-1]["value"]["fields"][0]["value"] = replacement
+            altered["args"]["changes"][-1]["value"]["fields"][0]["value"] = replacement
             changed = self.client.request(self.client.mcp_url, "POST", {
                 "jsonrpc": "2.0", "id": 63000 + index, "method": "tools/call",
-                "params": {"name": "hub_update_rule_document", "arguments": altered,
+                "params": {"name": "hub_set_rule", "arguments": altered,
                            "requestState": request_state}}, headers)
             self.assertEqual(-32602, changed.get("error", {}).get("code"), changed)
             self.assertIn("original arguments", changed["error"].get("message", ""))
@@ -750,7 +750,7 @@ class NativeRmParityLifecycleE2E(ParityCase):
             replay_value = json.loads(next(row["text"] for row in replay_result["content"] if row.get("type") == "text"))
         self.assertEqual(result, replay_value)
         recent = self.call("hub_get_info").get("recentWrites", [])
-        mine = [row for row in recent if row.get("tool") == "hub_update_rule_document"
+        mine = [row for row in recent if row.get("tool") == "hub_set_rule"
                 and str(row.get("rule_id")) == str(app_id)]
         self.assertTrue(mine, recent)
         self.assertEqual("finished", mine[0].get("status"), mine)

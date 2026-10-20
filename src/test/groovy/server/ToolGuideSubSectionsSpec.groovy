@@ -111,15 +111,15 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         'performance_devices'           | '### hub_list_devices'                                        | '### hub_get_metrics'
         'performance_diagnostics'       | '### hub_get_logs'                                            | '### hub_list_devices'
         'builtin_app_tools_overview'    | '## Installed-App & Native-Rule Tools'                        | '### hub_call_rule'
-        'builtin_app_tools_apps'        | '### hub_list_hpm_packages'                                   | '### hub_create_rule_document'
+        'builtin_app_tools_apps'        | '### hub_list_hpm_packages'                                   | '### hub_set_rule'
         'builtin_app_tools_rules'       | '### hub_get_rule_health'                                     | '### hub_list_drivers'
         'builtin_app_tools_crud'        | '### Safety model for native CRUD'                            | '### hub_get_rule_health'
     }
 
     def "native authoring guides describe the public document and form surfaces"() {
         expect:
-        (script.toolGetToolGuide('native_rule_documents').content as String).contains('hub_update_rule_document')
-        (script.toolGetToolGuide('native_app_forms').content as String).contains('hub_call_app_form')
+        (script.toolGetToolGuide('set_rule_reference').content as String).contains('hub_set_rule')
+        (script.toolGetToolGuide('set_rule_reference').content as String).contains('hub_set_rule')
     }
 
     def "toolGetToolGuide serves a sub-section with its parent named, and the parent still serves the whole section"() {

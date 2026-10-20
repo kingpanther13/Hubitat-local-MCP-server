@@ -508,8 +508,8 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         settingsMap.enableMandatoryBPS = false
         Map received
         script.metaClass.toolUpdateRuleDocument = { Map args -> received = args; [success: true, rule_id: args.rule_id] }
-        def args = [rule_id: 42, changes: [[part: 'required', value: [tokens: ['1']]]], confirm: true]
-        mcpDriver.pushBody([jsonrpc: '2.0', id: 210, method: 'tools/call', params: [name: 'hub_manage_rule_machine', arguments: [tool: 'hub_update_rule_document', args: args]]])
+        def args = [operation: 'update', rule_id: 42, args: [changes: [[part: 'required', value: [tokens: ['1']]]]], confirm: true]
+        mcpDriver.pushBody([jsonrpc: '2.0', id: 210, method: 'tools/call', params: [name: 'hub_manage_rule_machine', arguments: [tool: 'hub_set_rule', args: args]]])
         when:
         script.handleMcpRequest()
         def response = mcpDriver.parseResponseJson()
@@ -519,7 +519,7 @@ class HandleMcpRequestDispatchSpec extends ToolSpecBase {
         response.result.isError != true
         inner.success
         inner.rule_id == 42
-        received == args
+        received == args.args + [rule_id: args.rule_id, confirm: true]
     }
 
     def "non-gateway caller passing a stray `tool` arg does NOT route the suggestion to the wrong tool"() {

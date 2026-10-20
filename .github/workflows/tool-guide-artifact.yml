@@ -1,0 +1,18 @@
+name: Tool Guide Artifact
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  guide:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+      - run: python tools/build-tool-guide.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tool-guide
+          path: TOOL_GUIDE.md

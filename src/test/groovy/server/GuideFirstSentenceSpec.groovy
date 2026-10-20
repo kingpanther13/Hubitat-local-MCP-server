@@ -60,11 +60,11 @@ class GuideFirstSentenceSpec extends ToolSpecBase {
         given:
         widestCatalog(false)
         when:
-        def writer = script.getToolDefinitions().find { it.name == 'hub_update_rule_document' }
+        def writer = script.getToolDefinitions().find { it.name == 'hub_set_rule' }
         then:
-        writer.inputSchema.properties.keySet() == ['rule_id', 'changes', 'confirm'] as Set
+        writer.inputSchema.properties.keySet() == ['operation', 'rule_id', 'args', 'confirm'] as Set
         (writer.description as String).startsWith(SENTENCE + ' ')
-        !script.getToolDefinitions().any { it.name == 'hub_set_rule' }
+        script.getToolDefinitions().count { it.name == 'hub_set_rule' } == 1
     }
 
     def "a gateway whose write sub-tools are all hidden drops the sentence"() {

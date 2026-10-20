@@ -49,7 +49,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'read document returns native stable order typed values and locals without rendering'() {
         when:
-        def result = script.executeTool('hub_get_rule_document', [rule_id: 42])
+        def result = script.executeTool('hub_set_rule', [operation: 'read', rule_id: 42, args: [:]])
         then:
         result.rule_id == 42L
         result.actions*.id == ['3', '1']
@@ -584,7 +584,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'create uses native child identity label and actual Done installation'() {
         when:
-        def result = script.executeTool('hub_create_rule_document', [parent_id: 28, name: 'New document', changes: [logChange()], confirm: true])
+        def result = script.executeTool('hub_set_rule', [operation: 'create', confirm: true, args: [parent_id: 28, name: 'New document', changes: [logChange()]]])
         then:
         result.success
         result.created
@@ -602,8 +602,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
                               eventSubscriptions: [], scheduledJobs: []])
         }
         when:
-        def result = script.executeTool('hub_create_rule_document',
-            [parent_id: 28, name: 'Empty document', changes: [], confirm: true])
+        def result = script.executeTool('hub_set_rule',
+            [operation: 'create', confirm: true, args: [parent_id: 28, name: 'Empty document', changes: []]])
         then:
         result.success
         result.created
@@ -623,8 +623,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
         when:
         def definitions = script._getAllToolDefinitions_partNativeDocuments()
         then:
-        definitions.find { it.name == 'hub_create_rule_document' }.inputSchema.properties.changes.minItems == 0
-        definitions.find { it.name == 'hub_update_rule_document' }.inputSchema.properties.changes.minItems == 1
+        script._ndOperationSchema('create').properties.changes.minItems == 0
+        script._ndOperationSchema('update').properties.changes.minItems == 1
     }
 
     def 'create accepts the native Location header prefix and absolute loopback origin'() {
@@ -664,20 +664,21 @@ class NativeDocumentsSpec extends ToolSpecBase {
     def 'read and write masters and confirmation apply through real dispatcher'() {
         when:
         settingsMap.enableRead = false
-        script.executeTool('hub_get_rule_document', [rule_id: 42])
+        script.executeTool('hub_set_rule', [operation: 'read', rule_id: 42, args: [:]])
         then:
         thrown(IllegalArgumentException)
         when:
         settingsMap.enableRead = true
         settingsMap.enableWrite = false
-        script.executeTool('hub_update_rule_document', [rule_id: 42, changes: [], confirm: true])
+        script.executeTool('hub_set_rule', [operation: 'update', rule_id: 42, confirm: true, args: [changes: []]])
         then:
         thrown(IllegalArgumentException)
         when:
         settingsMap.enableWrite = true
-        script.executeTool('hub_update_rule_document', [rule_id: 42, changes: [logChange()], confirm: false])
+        def probe = script.executeTool('hub_set_rule', [operation: 'update', rule_id: 42, confirm: false, args: [changes: [logChange()]]])
         then:
-        thrown(IllegalArgumentException)
+        probe.confirm_required
+        probe.operation == 'update'
         events.empty
     }
 }

@@ -24,12 +24,7 @@ import urllib.parse
 import urllib.request
 import uuid
 
-TOOLS = {
-    "hub_get_rule_document",
-    "hub_create_rule_document",
-    "hub_update_rule_document",
-    "hub_call_app_form",
-}
+TOOLS = {"hub_set_rule"}
 GAPS = (
     "required-expression removal and variable type conversion",
     "datetime local variables and referenced-variable deletion",
@@ -232,10 +227,10 @@ class NativeRuleDocumentE2E(unittest.TestCase):
         return {row["name"]: row["value"] for row in status["appState"]}
 
     def document(self, rule_id, sections=None):
-        args = {"rule_id": str(rule_id)}
+        args = {"rule_id": int(rule_id), "args": {}}
         if sections is not None:
-            args["sections"] = sections
-        result = self.client.tool("hub_get_rule_document", **args)
+            args["args"]["sections"] = sections
+        result = self.client.tool("hub_set_rule", operation="read", **args)
         self.assertIsNot(result.get("success"), False, result)
         self.assertEqual(str(result["rule_id"]), str(rule_id))
         return result
@@ -247,10 +242,7 @@ class NativeRuleDocumentE2E(unittest.TestCase):
 
     def create_rule(self, changes):
         name = self.prefix + "_" + self._testMethodName
-        result = self.client.tool(
-            "hub_create_rule_document", parent_id=self.parent_id,
-            name=name, changes=changes, confirm=True,
-        )
+        result = self.client.tool("hub_set_rule", operation="create", confirm=True, args={"parent_id": int(self.parent_id), "name": name, "changes": changes})
         if result.get("rule_id"):
             self.addCleanup(self.remove_rule, str(result["rule_id"]), name)
         self.assertTrue(result.get("success"), result)
@@ -275,9 +267,7 @@ class NativeRuleDocumentE2E(unittest.TestCase):
         )
 
     def update(self, rule_id, changes):
-        result = self.client.tool(
-            "hub_update_rule_document", rule_id=rule_id, changes=changes, confirm=True,
-        )
+        result = self.client.tool("hub_set_rule", operation="update", rule_id=int(rule_id), confirm=True, args={"changes": changes})
         self.assertTrue(result.get("success"), result)
         self.assertEqual(str(result["rule_id"]), rule_id)
         return result
@@ -354,10 +344,7 @@ class NativeRuleDocumentE2E(unittest.TestCase):
         self.assertEqual(settings[f"state_{a}"]["value"], "off")
         self.assertEqual(str(self.status(rule_id)["installedApp"]["id"]), rule_id)
         before = self.config_snapshot(rule_id)
-        refusal = self.client.tool(
-            "hub_update_rule_document", rule_id=rule_id, confirm=True,
-            changes=[{"part": "delete", "value": {"part": "condition", "id": a}}],
-        )
+        refusal = self.client.tool("hub_set_rule", operation="update", rule_id=int(rule_id), confirm=True, args={"changes": [{"part": "delete", "value": {"part": "condition", "id": a}}]})
         self.assertIs(refusal.get("success"), False)
         self.assertFalse(refusal.get("partial"))
         self.assertEqual(self.config_snapshot(rule_id), before)
@@ -369,10 +356,7 @@ class NativeRuleDocumentE2E(unittest.TestCase):
                        ["AND", condition_id], ["999999999"]):
             with self.subTest(tokens=tokens):
                 before = self.config_snapshot(rule_id)
-                result = self.client.tool(
-                    "hub_update_rule_document", rule_id=rule_id,
-                    changes=[change("required", tokens=tokens)], confirm=True,
-                )
+                result = self.client.tool("hub_set_rule", operation="update", rule_id=int(rule_id), confirm=True, args={"changes": [change("required", tokens=tokens)]})
                 self.assertIs(result.get("success"), False, result)
                 self.assertFalse(result.get("partial"), result)
                 self.assertEqual(self.config_snapshot(rule_id), before)
@@ -505,10 +489,7 @@ class NativeRuleDocumentE2E(unittest.TestCase):
         self.assertNotIn("logmsg." + ids[0], settings)
         self.assertEqual(settings["logmsg." + ids[2]]["value"], "third")
         before = self.config_snapshot(rule_id)
-        result = self.client.tool(
-            "hub_update_rule_document", rule_id=rule_id, confirm=True,
-            changes=[change("order", ids=[ids[2], ids[2]])],
-        )
+        result = self.client.tool("hub_set_rule", operation="update", rule_id=int(rule_id), confirm=True, args={"changes": [change("order", ids=[ids[2], ids[2]])]})
         self.assertIs(result.get("success"), False)
         self.assertFalse(result.get("partial"))
         self.assertEqual(self.config_snapshot(rule_id), before)

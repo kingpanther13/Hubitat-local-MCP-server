@@ -379,34 +379,101 @@ Map toolCreateRuleDocument(Map args) {
     }
 }
 
-def _getAllToolDefinitions_partNativeDocuments() {
-    def changes = [type: 'array', minItems: 1, maxItems: 100, items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator', 'delete', 'order']], value: [type: 'object']], required: ['part', 'value']]]
-    def warning = ' confirm=true and recent hub backup required. Preflight: read native_rule_documents guide/document; verify IDs and fields. Partial changes can remain.'
-    return [
-        [
-            name: 'hub_get_rule_document', description: 'Read native rule structure, typed settings and current local variables; no editor renders.', inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], sections: [type: 'array', items: [type: 'string', enum: ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']]]], required: ['rule_id']]],
-        [
-            name: 'hub_update_rule_document', description: 'Update a native rule with ordered {part,value} changes.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], changes: changes, confirm: [type: 'boolean']], required: ['rule_id', 'changes', 'confirm']]],
-        [
-            name: 'hub_create_rule_document', description: 'Create/install a native rule with ordered {part,value} changes; [] creates an empty rule.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes + [minItems: 0], confirm: [type: 'boolean']], required: ['parent_id', 'name', 'changes', 'confirm']]]
-    ]
+boolean _isRuleReadCall(String toolName, args) {
+    toolName == 'hub_set_rule' && args instanceof Map && (!args.containsKey('operation') || args.operation == 'read' || args.confirm != true)
 }
 
-def _readOnlyToolNames_partNativeDocuments() {
-    return ["hub_get_rule_document"]
+private Map _ndOperationSchema(String operation) {
+    def changes = [type: 'array', minItems: operation == 'create' ? 0 : 1, maxItems: 100,
+        items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator', 'delete', 'order']], value: [type: 'object']], required: ['part', 'value']]]
+    Map properties = [:]
+    List required = []
+    if (operation == 'read') {
+        properties.sections = [type: 'array', items: [type: 'string', enum: ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']]]
+    } else if (operation == 'create') {
+        properties = [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes]
+        required = ['parent_id', 'name', 'changes']
+    } else if (operation == 'update') {
+        properties.changes = changes
+        required = ['changes']
+    } else if (operation == 'form') {
+        properties = [steps: [type: 'array', minItems: 1, maxItems: 16, items: [type: 'object', additionalProperties: false,
+            properties: [kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], expect_page: [type: 'string'], fields: [type: 'object'], activate: [type: 'string']], required: ['kind']]],
+            options_for: [type: 'array', maxItems: 32, items: [type: 'string']]]
+        required = ['steps']
+    } else throw new IllegalArgumentException('Unknown rule operation; use read, create, update or form')
+    [type: 'object', additionalProperties: false, properties: properties, required: required]
 }
+
+private void _ndValidateSchema(Object value, Map schema, String path, boolean complete) {
+    boolean valid = schema.type == 'object' ? value instanceof Map : schema.type == 'array' ? value instanceof List :
+        schema.type == 'string' ? value instanceof String : schema.type == 'boolean' ? value instanceof Boolean :
+        schema.type == 'integer' ? value instanceof Number && value.toString().isLong() : true
+    if (!valid || (schema.enum != null && !(value in schema.enum))) throw new IllegalArgumentException("Invalid ${path}")
+    if (schema.type == 'object') {
+        if (schema.additionalProperties == false && value.keySet().any { !schema.properties.containsKey(it) }) throw new IllegalArgumentException("Unknown ${path} property")
+        if (complete && schema.required?.any { !value.containsKey(it) }) throw new IllegalArgumentException("Missing required ${path} property")
+        value.each { key, item -> if (schema.properties?.containsKey(key)) _ndValidateSchema(item, schema.properties[key], "${path}.${key}".toString(), complete) }
+    } else if (schema.type == 'array') {
+        if ((schema.minItems != null && value.size() < schema.minItems) || (schema.maxItems != null && value.size() > schema.maxItems)) throw new IllegalArgumentException("Invalid ${path} length")
+        value.each { item -> _ndValidateSchema(item, schema.items, path, complete) }
+    } else if (schema.type == 'string') {
+        if ((schema.minLength != null && value.trim().size() < schema.minLength) || (schema.maxLength != null && value.size() > schema.maxLength)) throw new IllegalArgumentException("Invalid ${path} length")
+    } else if (schema.minimum != null && value < schema.minimum) throw new IllegalArgumentException("Invalid ${path}")
+}
+
+Map toolSetRule(Map request) {
+    if (request.keySet().any { !(it in ['operation', 'rule_id', 'args', 'confirm', 'bestPracticeKey']) }) throw new IllegalArgumentException('Unknown hub_set_rule property')
+    if (request.containsKey('confirm') && !(request.confirm instanceof Boolean)) throw new IllegalArgumentException('confirm must be boolean')
+    if (request.containsKey('rule_id')) _ndValidateSchema(request.rule_id, [type: 'integer', minimum: 1], 'rule_id', true)
+    if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
+    if (!request.containsKey('operation')) {
+        if (request.args) throw new IllegalArgumentException('Choose an operation before supplying args')
+        return [operations: ['read', 'create', 'update', 'form'], usage: 'Choose operation for its schema. Writes return schema until confirm=true. See set_rule_reference.']
+    }
+    if (!(request.operation instanceof String)) throw new IllegalArgumentException('operation must be a string')
+    String operation = request.operation
+    Map schema = _ndOperationSchema(operation)
+    Map arguments = request.args ?: [:]
+    boolean execute = operation == 'read' || request.confirm == true
+    _ndValidateSchema(arguments, schema, 'args', execute)
+    if (operation == 'create' && request.containsKey('rule_id')) throw new IllegalArgumentException('create uses args.parent_id, not rule_id')
+    if (!execute) {
+        Map properties = [operation: [type: 'string', enum: [operation]], args: schema, confirm: [type: 'boolean']]
+        List required = ['operation', 'args', 'confirm']
+        if (operation != 'create') { properties.rule_id = [type: 'integer', minimum: 1]; required << 'rule_id' }
+        return [operation: operation, confirm_required: true, inputSchema: [type: 'object', additionalProperties: false, properties: properties, required: required],
+            usage: 'Supply these arguments with confirm=true and a recent backup to execute. See set_rule_reference.']
+    }
+    if (operation != 'create' && !request.containsKey('rule_id')) throw new IllegalArgumentException('rule_id is required')
+    if (operation == 'read') return toolGetRuleDocument(arguments + [rule_id: request.rule_id])
+    if (operation == 'create') return toolCreateRuleDocument(arguments + [confirm: true])
+    if (operation == 'update') return toolUpdateRuleDocument(arguments + [rule_id: request.rule_id, confirm: true])
+    Long id = _ndId(request.rule_id)
+    def target = getAppByAppId(id)
+    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || !(target?.appType?.name in ['Rule-5.1', 'Rule Machine'])) throw new IllegalArgumentException('rule_id must identify native Rule-5.1 or Rule Machine')
+    toolCallAppForm(arguments + [app_id: request.rule_id, confirm: true])
+}
+
+def _getAllToolDefinitions_partNativeDocuments() {
+    [[name: 'hub_set_rule', description: 'Read, create or update native Rule Machine rules, or use their native forms. Omit operation for help; select a write operation without confirm for its schema. Writes require confirm=true and a recent backup; partial changes can remain. Guide: set_rule_reference.',
+      inputSchema: [type: 'object', additionalProperties: false, properties: [operation: [type: 'string', enum: ['read', 'create', 'update', 'form']], rule_id: [type: 'integer', minimum: 1], args: [type: 'object'], confirm: [type: 'boolean']]]]]
+}
+
+def _readOnlyToolNames_partNativeDocuments() { [] }
+
 def _toolDisplayMeta_partNativeDocuments() {
-    return [hub_get_rule_document: [title: 'Get Native Rule Document', summary: 'Read native rule actions, expressions, conditions, triggers, variables and typed settings.'],
-     hub_update_rule_document: [title: 'Update Native Rule Document', summary: 'Compile ordered changes into an existing native Rule Machine rule.'],
-     hub_create_rule_document: [title: 'Create Native Rule Document', summary: 'Create and install a native Rule Machine rule from ordered changes.']]
+    [hub_set_rule: [title: 'Set Native Rule', summary: 'Read, create and update native rules or use their native editor forms.']]
 }
 
 String _ndGuide() {
-    return '''## Native Rule Documents
+    return '''## Set Rule Reference
 
-Read hub_get_rule_document(rule_id, sections?) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
+Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level rule_id identifies the target; args cannot override it or confirm.
 
-Writes require confirm=true and a recent hub backup. hub_update_rule_document(rule_id, changes, confirm) applies changes in order. hub_create_rule_document(parent_id, name, changes, confirm) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
+Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
+
+Writes require confirm=true and a recent hub backup. hub_set_rule(operation:"update",rule_id,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parent_id,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.
@@ -419,7 +486,17 @@ Each change is {part,value}. Supported parts:
 - delete: {part:action|condition|trigger,id}; referenced conditions must be detached first.
 - order: {ids:[native action IDs]}; a complete exact permutation is required.
 
-Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; wait expressions and every capability-specific variant are not yet supported. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback, native editor diagnostics, expression-reference checks and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
+Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; not every capability-specific variant is supported. Discover native options through operation:"form" when a document contract is unavailable. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback, native editor diagnostics, expression-reference checks and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
 
-Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state and are never part of document reads.'''
+Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state and are never part of document reads.
+
+## Native Rule Forms
+
+Use hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) to operate an enabled Rule-5.1 rule or its Rule Machine parent. Select operation:"form" without confirmation to inspect the schema. Discover native action variants, input names and option values through the returned forms rather than guessing a static catalogue. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
+
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}. Omit activate to save the supplied fields and refresh the current page. Control IDs distinguish native buttons sharing a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. Defaults are shown but are not automatically submitted; supply a required default explicitly before navigating. Use args.options_for:["device field name"] to expand device choices on the final returned page.
+
+Batches contain 1 through 16 ordered steps. Each step uses the form returned by the preceding step, so dependent fields require another submit after they appear. A button handler runs before that step's fields are saved, as in the native browser; submit fields in a preceding step when the handler needs them. A button without submitOnChange reloads and requires a separate field submission.
+
+The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight caller workflows. Opening another app replaces only that caller's previous context; reopen the previous app before submitting it again. Other callers' contexts are retained. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. A verified local native link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true; open that target separately. No script is evaluated. App-authored JavaScript, custom HTML inputs, uploads, external links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
 }

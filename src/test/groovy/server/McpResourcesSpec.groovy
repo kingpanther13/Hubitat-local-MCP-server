@@ -147,7 +147,7 @@ class McpResourcesSpec extends ToolSpecBase {
         text.startsWith('Acknowledgment key')
 
         where:
-        section << ['best_practice_reference', 'native_rule_documents', 'native_app_forms', 'hub_admin_write']
+        section << ['best_practice_reference', 'set_rule_reference', 'hub_admin_write']
     }
 
     def "resources/read refuses guide sections when the Read master is off, mirroring hub_get_tool_guide"() {

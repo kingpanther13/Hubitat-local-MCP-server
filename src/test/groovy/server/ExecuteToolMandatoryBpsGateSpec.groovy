@@ -32,7 +32,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
 
     private String key(String section) { script.hubBpsGuideKey(section) as String }
 
-    private static final Map SET_RULE_ARGS = [rule_id: 5, changes: [[part: 'required', value: [tokens: ['1']]]], confirm: true]
+    private static final Map SET_RULE_ARGS = [operation: 'update', rule_id: 5, args: [changes: [[part: 'required', value: [tokens: ['1']]]]], confirm: true]
 
     def "gate ON + missing key blocks a write tool with a guide-pointer message and never leaks the key"() {
         given:
@@ -92,8 +92,8 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
 
         where:
         tool                 | args                                     || section
-        'hub_update_rule_document'       | SET_RULE_ARGS                            || 'native_rule_documents'
-        'hub_call_app_form' | [app_id: 42, steps: [[kind: 'open']], confirm: true]     || 'native_app_forms'
+        'hub_set_rule'       | SET_RULE_ARGS                            || 'set_rule_reference'
+        'hub_set_rule' | [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true]     || 'set_rule_reference'
         'hub_set_hsm'        | [armCommand: 'armHome']                  || 'best_practice_reference'
     }
 
@@ -117,9 +117,9 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
 
         where:
         tool                 | args                                 | own                       | other
-        'hub_update_rule_document'       | SET_RULE_ARGS                        | 'native_rule_documents'      | 'best_practice_reference'
-        'hub_set_hsm'        | [armCommand: 'armHome']              | 'best_practice_reference' | 'native_rule_documents'
-        'hub_call_app_form' | [app_id: 42, steps: [[kind: 'open']], confirm: true] | 'native_app_forms' | 'builtin_app_tools_rules'
+        'hub_set_rule'       | SET_RULE_ARGS                        | 'set_rule_reference'      | 'best_practice_reference'
+        'hub_set_hsm'        | [armCommand: 'armHome']              | 'best_practice_reference' | 'set_rule_reference'
+        'hub_set_rule' | [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: true] | 'set_rule_reference' | 'builtin_app_tools_rules'
     }
 
     /** The value a caller offers for each refusal variant; the clock is the harness default T0. */
@@ -128,8 +128,8 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
             case 'missing': return null
             case 'unknown format': return 'not-the-key'
             case 'cached bps-ack': return 'bps-ack-0123abcd'
-            case 'expired': return script.hubBpsGuideKey('native_rule_documents', T0 - 2 * HOUR) as String
-            case 'mistyped': return 'I-HAVE-READ-THE-GUIDE-native_rule_documents-0123abcd'
+            case 'expired': return script.hubBpsGuideKey('set_rule_reference', T0 - 2 * HOUR) as String
+            case 'mistyped': return 'I-HAVE-READ-THE-GUIDE-set_rule_reference-0123abcd'
             case 'other section': return key('best_practice_reference')
         }
         throw new IllegalStateException(variant)
@@ -138,8 +138,8 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
     private String refusalAt(String chokepoint, String offered) {
         Map leafArgs = SET_RULE_ARGS + (offered == null ? [:] : [bestPracticeKey: offered])
         try {
-            if (chokepoint == 'executeTool') script.executeTool('hub_update_rule_document', leafArgs)
-            else script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_update_rule_document', [tool: 'hub_update_rule_document', args: leafArgs])
+            if (chokepoint == 'executeTool') script.executeTool('hub_set_rule', leafArgs)
+            else script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_set_rule', [tool: 'hub_set_rule', args: leafArgs])
         } catch (IllegalArgumentException e) {
             return e.message
         }
@@ -155,9 +155,9 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         def message = refusalAt(chokepoint, offered)
 
         then: 'same text at both chokepoints, pointing at the section, never carrying a key'
-        message == script._bpsBlockMessage('native_rule_documents', offered)
+        message == script._bpsBlockMessage('set_rule_reference', offered)
         message.startsWith(BLOCK_HEAD)
-        message.contains("hub_get_tool_guide(section='native_rule_documents')")
+        message.contains("hub_get_tool_guide(section='set_rule_reference')")
         !(message =~ ANY_KEY)
 
         and: 'exactly the distinguishing sentence for this variant'
@@ -191,7 +191,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         given:
         settingsMap.enableMandatoryBPS = true
 
-        def otherKey = key('native_rule_documents')
+        def otherKey = key('set_rule_reference')
         def argsValue = [
             'wrong key'    : [bestPracticeKey: 'not-the-key'],
             'other section': [bestPracticeKey: otherKey],
@@ -235,25 +235,25 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         given: 'a key read at T0'
         settingsMap.enableMandatoryBPS = true
         NOW_OVERRIDE.set({ -> T0 })
-        def readAt = key('native_rule_documents')
-        assert readAt != script.hubBpsGuideKey('native_rule_documents', T0 + HOUR)
+        def readAt = key('set_rule_reference')
+        assert readAt != script.hubBpsGuideKey('set_rule_reference', T0 + HOUR)
         assert readAt != key('best_practice_reference')
 
         when: 'one hour later'
         NOW_OVERRIDE.set({ -> T0 + HOUR })
 
         then: 'still accepted (grace for a read just before rotation)'
-        script.hubBpsKeyAccepted('native_rule_documents', readAt)
-        script.executeTool('hub_update_rule_document', SET_RULE_ARGS + [bestPracticeKey: readAt]).stubbed == true
+        script.hubBpsKeyAccepted('set_rule_reference', readAt)
+        script.executeTool('hub_set_rule', SET_RULE_ARGS + [bestPracticeKey: readAt]).stubbed == true
 
         when: 'two hours later'
         NOW_OVERRIDE.set({ -> T0 + 2 * HOUR })
 
         then: 'refused at the predicate and at the gate'
-        !script.hubBpsKeyAccepted('native_rule_documents', readAt)
+        !script.hubBpsKeyAccepted('set_rule_reference', readAt)
 
         when:
-        script.executeTool('hub_update_rule_document', SET_RULE_ARGS + [bestPracticeKey: readAt])
+        script.executeTool('hub_set_rule', SET_RULE_ARGS + [bestPracticeKey: readAt])
 
         then:
         thrown(IllegalArgumentException)
@@ -312,14 +312,15 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         !e.message.startsWith("Mandatory best-practice")
     }
 
-    def "native document calls never become exempt schema-only probes"() {
+    def "native document schema probes bypass mandatory write acknowledgment"() {
         given:
         settingsMap.enableMandatoryBPS = true
         when:
-        script.executeTool('hub_update_rule_document', [:])
+        def probe = script.executeTool('hub_set_rule', [operation: 'update', args: [:]])
         then:
-        def failure = thrown(IllegalArgumentException)
-        failure.message.contains('native_rule_documents')
+        probe.operation == 'update'
+        probe.confirm_required
+        probe.inputSchema
     }
 
     def "gateway name is not gated -- sub-tools gate on re-entry"() {
@@ -409,16 +410,16 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         settingsMap.enableMandatoryBPS = true
 
         when: 'another section key on a gateway-routed document update'
-        script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_update_rule_document',
-            [tool: 'hub_update_rule_document', args: SET_RULE_ARGS + [bestPracticeKey: key('best_practice_reference')]])
+        script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_set_rule',
+            [tool: 'hub_set_rule', args: SET_RULE_ARGS + [bestPracticeKey: key('best_practice_reference')]])
 
         then: 'the same block text as executeTool, naming the leaf section'
         def e = thrown(IllegalArgumentException)
-        e.message == script._bpsBlockMessage('native_rule_documents', key('best_practice_reference'))
+        e.message == script._bpsBlockMessage('set_rule_reference', key('best_practice_reference'))
 
         when: 'the leaf section key'
-        script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_update_rule_document',
-            [tool: 'hub_update_rule_document', args: SET_RULE_ARGS + [bestPracticeKey: key('native_rule_documents')]])
+        script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_set_rule',
+            [tool: 'hub_set_rule', args: SET_RULE_ARGS + [bestPracticeKey: key('set_rule_reference')]])
 
         then:
         noExceptionThrown()

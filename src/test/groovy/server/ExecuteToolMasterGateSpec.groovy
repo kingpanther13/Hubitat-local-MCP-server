@@ -94,8 +94,8 @@ class ExecuteToolMasterGateSpec extends ToolSpecBase {
         settingsMap.enableWrite = false
 
         when:
-        script.executeTool("hub_update_rule_document",
-            [guide: true, rule_id: 42, changes: [[part: "variable", value: [operation: "set", name: "Counter", value: 1]]], confirm: true])
+        script.executeTool("hub_set_rule",
+            [operation: 'update', rule_id: 42, confirm: true, args: [guide: true, changes: [[part: "variable", value: [operation: "set", name: "Counter", value: 1]]]]])
 
         then:
         def e = thrown(IllegalArgumentException)

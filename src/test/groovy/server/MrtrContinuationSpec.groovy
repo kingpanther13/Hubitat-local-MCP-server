@@ -99,8 +99,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
     }
 
     private Map documentArgs(int ruleId, String message = 'worker edit') {
-        [rule_id: ruleId, confirm: true, changes: [[part: 'action', value: [type: 'messageActs',
-            subtype: 'getLogMsg', fields: [[name: 'logmsg.#', type: 'textarea', value: message]]]]]]
+        [operation: 'update', rule_id: ruleId, confirm: true, args: [changes: [[part: 'action', value: [type: 'messageActs',
+            subtype: 'getLogMsg', fields: [[name: 'logmsg.#', type: 'textarea', value: message]]]]]]]
     }
 
     private Map documentResult(Map args) {
@@ -168,7 +168,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         settingsMap.useGateways = useGateways
         stateMap.lastBackupTimestamp = 1234567890000L
-        def leafArgs = [rule_id: 782, confirm: true, changes: editShape]
+        def leafArgs = [operation: 'update', rule_id: 782, confirm: true, args: [changes: editShape]]
         def wireArgs = outer == leaf
             ? leafArgs
             : [tool: leaf, args: leafArgs]
@@ -187,8 +187,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         where:
         caseName                  | useGateways | outer                     | leaf           | editShape
-        'document trigger change' | true        | 'hub_update_rule_document'            | 'hub_update_rule_document' | [[part: 'trigger', value: [capability: 'Switch', fields: [[name: 'tDev#', type: 'capability.switch', value: ['11']], [name: 'tstate#', type: 'enum', value: 'on']]]]]
-        'document action change'  | true        | 'hub_update_rule_document'            | 'hub_update_rule_document' | [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: [[name: 'logmsg.#', type: 'textarea', value: 'worker edit']]]]]
+        'document trigger change' | true        | 'hub_set_rule'            | 'hub_set_rule' | [[part: 'trigger', value: [capability: 'Switch', fields: [[name: 'tDev#', type: 'capability.switch', value: ['11']], [name: 'tstate#', type: 'enum', value: 'on']]]]]
+        'document action change'  | true        | 'hub_set_rule'            | 'hub_set_rule' | [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: [[name: 'logmsg.#', type: 'textarea', value: 'worker edit']]]]]
     }
 
     def "native access cannot outrank the #gateName gate"() {
@@ -205,7 +205,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         if (backupEpoch == null) {
             hubGet.register('/hub2/localBackups') { params -> '[]' }
         }
-        def args = [tool: 'hub_update_rule_document', args: leafArgs]
+        def args = [tool: 'hub_set_rule', args: leafArgs]
 
         when:
         def response = modernCall('hub_manage_rule_machine', args)
@@ -223,25 +223,24 @@ class MrtrContinuationSpec extends ToolSpecBase {
         gateName        | enableWrite | mandatoryBps | backupEpoch    | confirm | bestPracticeKey || expected
         'Write master'  | false       | false        | 1234567890000L | true    | null            || 'Write tools are disabled'
         'mandatory BPS' | true        | true         | 1234567890000L | true    | 'wrong'         || 'Mandatory best-practice acknowledgment'
-        'confirmation'  | true        | false        | 1234567890000L | false   | null            || 'SAFETY CHECK FAILED'
         'backup freshness' | true     | false        | null           | true    | null            || 'BACKUP REQUIRED'
     }
 
-    def "#leaf rejects missing confirmation before reserving a detached worker"() {
+    def "#leaf returns schema without confirmation or a detached worker"() {
         given:
         settingsMap.enableWrite = true
         settingsMap.enableMandatoryBPS = false
         when:
         def response = modernCall(leaf, args)
         then:
-        response.result.isError == true
-        mcpDriver.parseInner(response).error.contains('SAFETY CHECK FAILED')
+        response.result.isError != true
+        mcpDriver.parseInner(response).confirm_required == true
         !(atomicStateMap.mrtrRequests instanceof Map) || atomicStateMap.mrtrRequests.isEmpty()
         runInMillisCalls.empty
         where:
         leaf                       | args
-        'hub_create_rule_document' | [parent_id: 28, name: 'Unconfirmed', changes: [[part: 'variable', value: [operation: 'create', name: 'Counter', type: 'integer', value: 0]]], confirm: false]
-        'hub_call_app_form'         | [app_id: 42, steps: [[kind: 'open']], confirm: false]
+        'hub_set_rule' | [operation: 'create', args: [parent_id: 28, name: 'Unconfirmed', changes: [[part: 'variable', value: [operation: 'create', name: 'Counter', type: 'integer', value: 0]]]], confirm: false]
+        'hub_set_rule'         | [operation: 'form', rule_id: 42, args: [steps: [[kind: 'open']]], confirm: false]
     }
 
     def "valid #leaf document write schedules its worker"() {
@@ -265,8 +264,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         where:
         outer                              | leaf
-        'hub_update_rule_document'                     | 'hub_update_rule_document'
-        'hub_manage_rule_machine' | 'hub_update_rule_document'
+        'hub_set_rule'                     | 'hub_set_rule'
+        'hub_manage_rule_machine' | 'hub_set_rule'
     }
 
     def "a multiple-change document remains one detached work item"() {
@@ -274,17 +273,17 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         stateMap.lastBackupTimestamp = 1234567890000L
         def args = documentArgs(780)
-        args.changes << [part: 'variable', value: [operation: 'create', name: 'Counter', type: 'integer', value: 0]]
+        args.args.changes << [part: 'variable', value: [operation: 'create', name: 'Counter', type: 'integer', value: 0]]
 
         when:
-        def response = modernCall('hub_update_rule_document', args)
+        def response = modernCall('hub_set_rule', args)
         String requestState = response.result.requestState
 
         then: 'round zero retains the whole change batch for its worker'
         response.error == null
         response.result.resultType == 'input_required'
         requestState instanceof String
-        atomicStateMap.mrtrRequests[requestState].leafTool == 'hub_update_rule_document'
+        atomicStateMap.mrtrRequests[requestState].leafTool == 'hub_set_rule'
         runInMillisCalls.size() == 1
     }
 
@@ -417,7 +416,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when:
         def response = modernCall(outer,
-            [tool: 'hub_update_rule_document', args: documentArgs(777)])
+            [tool: 'hub_set_rule', args: documentArgs(777)])
 
         then: 'the canonical route error arrives at round zero, and no requestState record pins a cap slot'
         response.result?.resultType != 'input_required'
@@ -502,7 +501,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         }
 
         when: 'the first HTTP leg reserves, claims and schedules the generation'
-        def scheduled = modernCall('hub_update_rule_document', args)
+        def scheduled = modernCall('hub_set_rule', args)
         String stateId = scheduled.result.requestState
 
         then: 'the mapped request is already free and the Hubitat leaf has not run inline'
@@ -511,7 +510,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         stateId instanceof String
         leafCalls.get() == 0
         observedWaitMs.get() ==
-            (script._mrtrScheduleObserveWaitMs('hub_update_rule_document') as Long) - schedulerElapsedMs
+            (script._mrtrScheduleObserveWaitMs('hub_set_rule') as Long) - schedulerElapsedMs
         runInMillisCalls.size() == 1
         runInMillisCalls[0][0..1] == [50, 'runMrtrSlice']
         runInMillisCalls[0][2].overwrite == false
@@ -526,7 +525,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         then: 'queued work still occupies the all-write concurrency slot'
         capped.result.isError == true
         cappedInner.status == 'too_many_writes_in_flight'
-        cappedInner.active == [[tool: 'hub_update_rule_document', startedAt: 1234567890000L, transport: 'mrtr']]
+        cappedInner.active == [[tool: 'hub_set_rule', startedAt: 1234567890000L, transport: 'mrtr']]
 
         when: 'Hubitat invokes the scheduled worker and its real leaf remains blocked'
         Map workerData = new LinkedHashMap(runInMillisCalls[0][2].data as Map)
@@ -540,7 +539,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             }
         }
         assert entered.await(5, TimeUnit.SECONDS)
-        def whileRunning = (1..12).collect { modernCall('hub_update_rule_document', args, stateId) }
+        def whileRunning = (1..12).collect { modernCall('hub_set_rule', args, stateId) }
 
         then: 'more polls than the SDK default and server slice cap do not release the owner'
         whileRunning.every { it.error == null && it.result.resultType == 'input_required' }
@@ -561,7 +560,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         release.countDown()
         assert workerDone.await(5, TimeUnit.SECONDS)
         worker.join(5000)
-        def complete = modernCall('hub_update_rule_document', args, stateId)
+        def complete = modernCall('hub_set_rule', args, stateId)
         def inner = mcpDriver.parseInner(complete)
         script.runMrtrSlice(workerData)
 
@@ -596,9 +595,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
         })
 
         when:
-        def complete = modernCall('hub_update_rule_document', args)
+        def complete = modernCall('hub_set_rule', args)
         String stateId = onlyStateId()
-        def replay = modernCall('hub_update_rule_document', args, stateId)
+        def replay = modernCall('hub_set_rule', args, stateId)
 
         then:
         complete.result.resultType == 'complete'
@@ -630,9 +629,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
         })
 
         when:
-        def failed = modernCall('hub_update_rule_document', args)
+        def failed = modernCall('hub_set_rule', args)
         String stateId = onlyStateId()
-        def replay = modernCall('hub_update_rule_document', args, stateId)
+        def replay = modernCall('hub_set_rule', args, stateId)
 
         then:
         failed.result.resultType == 'complete'
@@ -1069,12 +1068,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         expect: 'detached writes wait in-leg but preserve measured cloud-relay jitter headroom'
         // budget - 2000ms headroom = 4000, now under the 4500 detached cap
-        script._mrtrContentionWaitMs('hub_update_rule_document') == 4000L
-        script._mrtrContentionWaitMs('hub_call_app_form') == 4000L
+        script._mrtrContentionWaitMs('hub_set_rule') == 4000L
 
         and: 'the scheduling observer uses a lower cloud wait cap'
-        script._mrtrScheduleObserveWaitMs('hub_update_rule_document') == 3500L
-        script._mrtrScheduleObserveWaitMs('hub_call_app_form') == 3500L
+        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
 
         and: 'synchronous slices retain half their request budget for actual leaf work'
         script._mrtrContentionWaitMs('hub_call_rule') == 3000L
@@ -1083,16 +1080,16 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.relayBudgetMs = 12000
 
         then: 'the detached 4500 and synchronous 4000 caps are the ceiling -- nothing at the default reaches them'
-        script._mrtrContentionWaitMs('hub_update_rule_document') == 4500L
+        script._mrtrContentionWaitMs('hub_set_rule') == 4500L
         script._mrtrContentionWaitMs('hub_call_rule') == 4000L
-        script._mrtrScheduleObserveWaitMs('hub_update_rule_document') == 3500L
+        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
 
         when: 'an operator configures a cloud budget below the supported minimum'
         settingsMap.relayBudgetMs = 5000
 
         then: 'the effective minimum preserves 2000ms for parsing, scheduling, and rendering'
-        script._mrtrContentionWaitMs('hub_update_rule_document') == 4000L
-        script._mrtrScheduleObserveWaitMs('hub_update_rule_document') == 3500L
+        script._mrtrContentionWaitMs('hub_set_rule') == 4000L
+        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 3500L
         script._mrtrContentionWaitMs('hub_call_rule') == 3000L
 
         when: 'the same explicit budget is applied to a LAN request'
@@ -1100,8 +1097,8 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.lanBudgetMs = 5000
 
         then: 'LAN retains its prior 1500ms reserve because the measured defect is cloud-only'
-        script._mrtrContentionWaitMs('hub_update_rule_document') == 4500L
-        script._mrtrScheduleObserveWaitMs('hub_update_rule_document') == 4500L
+        script._mrtrContentionWaitMs('hub_set_rule') == 4500L
+        script._mrtrScheduleObserveWaitMs('hub_set_rule') == 4500L
     }
 
     def "a gateway first request observes the resolved leaf terminal result"() {
@@ -1109,7 +1106,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         settingsMap.useGateways = true
         def gateway = 'hub_manage_rule_machine'
-        def args = [tool: 'hub_update_rule_document', args: documentArgs(654, 'gateway worker')]
+        def args = [tool: 'hub_set_rule', args: documentArgs(654, 'gateway worker')]
         def seen = []
         script.metaClass.toolUpdateRuleDocument = { Map actual ->
             seen << new LinkedHashMap(actual)
@@ -1127,7 +1124,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         then:
         runInMillisCalls.size() == 1
         runInMillisCalls[0][0..1] == [50, 'runMrtrSlice']
-        seen == [documentArgs(654, 'gateway worker')]
+        seen == [documentArgs(654, 'gateway worker').args + [rule_id: 654, confirm: true]]
         complete.result.resultType == 'complete'
         complete.result.isError != true
         inner.rule_id == 654
@@ -1325,9 +1322,9 @@ class MrtrContinuationSpec extends ToolSpecBase {
             calls++
             documentResult(actual)
         }
-        String completedId = modernCall('hub_update_rule_document', args).result.requestState
+        String completedId = modernCall('hub_set_rule', args).result.requestState
         script.runMrtrSlice(new LinkedHashMap(runInMillisCalls.last()[2].data as Map))
-        String queuedId = modernCall('hub_update_rule_document', args).result.requestState
+        String queuedId = modernCall('hub_set_rule', args).result.requestState
         Map lateCallback = new LinkedHashMap(runInMillisCalls.last()[2].data as Map)
 
         when: 'a new installation has empty durable state but the class statics are retained'
@@ -1336,11 +1333,11 @@ class MrtrContinuationSpec extends ToolSpecBase {
         stateMap.clear()
         script.metaClass.initialize = { -> }
         script.installed()
-        def oldTerminal = modernCall('hub_update_rule_document', args, completedId)
-        def oldQueued = modernCall('hub_update_rule_document', args, queuedId)
+        def oldTerminal = modernCall('hub_set_rule', args, completedId)
+        def oldQueued = modernCall('hub_set_rule', args, queuedId)
         script.runMrtrSlice(lateCallback)
         stateMap.lastBackupTimestamp = script.now()
-        def fresh = modernCall('hub_update_rule_document', args)
+        def fresh = modernCall('hub_set_rule', args)
 
         then: 'neither stale evidence nor queued arguments resurrects a removed request'
         oldTerminal.error.code == -32602
@@ -1362,7 +1359,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             calls++
             documentResult(actual)
         }
-        String stateId = modernCall('hub_update_rule_document', args).result.requestState
+        String stateId = modernCall('hub_set_rule', args).result.requestState
         script.runMrtrSlice(new LinkedHashMap(runInMillisCalls.last()[2].data as Map))
 
         when:
@@ -1377,7 +1374,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
             (scriptStaticField('LIVE_WRITE_EXECUTIONS') as Set).clear()
             script._writeStateCacheInvalidate()
         }
-        def replay = modernCall('hub_update_rule_document', args, stateId)
+        def replay = modernCall('hub_set_rule', args, stateId)
 
         then:
         replay.result.resultType == 'complete'
@@ -1399,7 +1396,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def args = documentArgs(654, 'append action')
         int calls = 0
         script.metaClass.toolUpdateRuleDocument = { Map actual -> calls++; [success: true] }
-        String stateId = modernCall('hub_update_rule_document', args).result.requestState
+        String stateId = modernCall('hub_set_rule', args).result.requestState
         Map lateCallback = new LinkedHashMap(runInMillisCalls.last()[2].data as Map)
         ['MRTR_TERMINAL_EVIDENCE', 'MRTR_WORK_ITEMS', 'WRITE_REQUEST_LEASES'].each {
             (scriptStaticField(it) as Map).clear()
@@ -1408,7 +1405,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script._writeStateCacheInvalidate()
 
         when: 'durable ownership survives, but queued arguments and liveness did not'
-        def waiting = modernCall('hub_update_rule_document', args, stateId)
+        def waiting = modernCall('hub_set_rule', args, stateId)
         script.runMrtrSlice(lateCallback)
 
         then: 'absence of the worker is not proof it never committed'
@@ -1418,7 +1415,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when: 'the retained claim expires without live execution or terminal evidence'
         virtualNow.addAndGet((script._mrtrActiveTtlMs() as Long) + 1L)
-        def expired = modernCall('hub_update_rule_document', args, stateId)
+        def expired = modernCall('hub_set_rule', args, stateId)
 
         then: 'reject the state instead of guessing success or repeating the write'
         expired.error.code == -32602
@@ -1433,19 +1430,19 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         settingsMap.maxConcurrentWrites = 1
         def args = documentArgs(654, 'append action')
-        def binding = script._mrtrBinding('hub_update_rule_document', 'hub_update_rule_document', args) as Map
+        def binding = script._mrtrBinding('hub_set_rule', 'hub_set_rule', args) as Map
         def calls = 0
         script.metaClass.toolUpdateRuleDocument = { Map actual ->
             calls++
             documentResult(actual)
         }
-        def scheduled = modernCall('hub_update_rule_document', args)
+        def scheduled = modernCall('hub_set_rule', args)
         String stateId = scheduled.result.requestState
         Map activeSnapshot = script._mrtrCopyMap(
             atomicStateMap.mrtrRequests[stateId] as Map) as Map
         Map workerData = new LinkedHashMap(runInMillisCalls[0][2].data as Map)
         script.runMrtrSlice(workerData)
-        def complete = modernCall('hub_update_rule_document', args, stateId)
+        def complete = modernCall('hub_set_rule', args, stateId)
 
         expect: 'the original logical write completed exactly once before the synthetic reset'
         scheduled.result.resultType == 'input_required'
@@ -1457,7 +1454,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         // Reloading atomicState is what makes the older snapshot the read path again;
         // MRTR_TERMINAL_EVIDENCE deliberately survives, and is the only repair proof.
         script._writeStateCacheInvalidate()
-        def recovered = script._mrtrClaim(stateId, 'hub_update_rule_document', 'hub_update_rule_document', binding) as Map
+        def recovered = script._mrtrClaim(stateId, 'hub_set_rule', 'hub_set_rule', binding) as Map
 
         then: 'the exact terminal generation is recovered, never treated as still running'
         recovered.outcome == 'terminal'
@@ -1466,7 +1463,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         calls == 1
 
         when: 'a later identical action addition is a new logical operation'
-        def next = script._mrtrReserve('hub_update_rule_document', 'hub_update_rule_document', binding) as Map
+        def next = script._mrtrReserve('hub_set_rule', 'hub_set_rule', binding) as Map
 
         then: 'the stale snapshot cannot cause duplicate_in_flight or consume the write cap'
         next.accepted == true
@@ -1479,18 +1476,18 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         settingsMap.maxConcurrentWrites = 1
         def args = documentArgs(654, 'append action')
-        def binding = script._mrtrBinding('hub_update_rule_document', 'hub_update_rule_document', args) as Map
+        def binding = script._mrtrBinding('hub_set_rule', 'hub_set_rule', args) as Map
         def calls = 0
         script.metaClass.toolUpdateRuleDocument = { Map actual ->
             calls++
             documentResult(actual)
         }
-        String stateId = modernCall('hub_update_rule_document', args).result.requestState
+        String stateId = modernCall('hub_set_rule', args).result.requestState
         Map activeSnapshot = script._mrtrCopyMap(
             atomicStateMap.mrtrRequests[stateId] as Map) as Map
         Map workerData = new LinkedHashMap(runInMillisCalls[0][2].data as Map)
         script.runMrtrSlice(workerData)
-        def complete = modernCall('hub_update_rule_document', args, stateId)
+        def complete = modernCall('hub_set_rule', args, stateId)
 
         expect: 'terminal evidence exists for the actual claim and generation'
         complete.result.resultType == 'complete'
@@ -1503,7 +1500,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         script._activeWrites()
         Map afterSweep = atomicStateMap.mrtrRequests[stateId] as Map
         def replay = script._mrtrReserve(
-            'hub_update_rule_document', 'hub_update_rule_document', binding) as Map
+            'hub_set_rule', 'hub_set_rule', binding) as Map
 
         then: 'terminal proof is ignored and the active operation retains the write slot'
         afterSweep.status == 'active'
@@ -1696,10 +1693,10 @@ class MrtrContinuationSpec extends ToolSpecBase {
         RUN_IN_MILLIS_OVERRIDE.set({ List call -> throw new IllegalStateException('scheduler unavailable') })
 
         when:
-        def failed = modernCall('hub_update_rule_document', args)
+        def failed = modernCall('hub_set_rule', args)
         def failedInner = mcpDriver.parseInner(failed)
         String stateId = onlyStateId()
-        def replay = modernCall('hub_update_rule_document', args, stateId)
+        def replay = modernCall('hub_set_rule', args, stateId)
         def replayInner = mcpDriver.parseInner(replay)
 
         then:
@@ -2028,7 +2025,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         ran == 1
 
         when: 'the client changes the leaf tool'
-        def mismatchedTool = modernCall('hub_update_rule_document', documentArgs(31), requestState)
+        def mismatchedTool = modernCall('hub_set_rule', documentArgs(31), requestState)
 
         then:
         mismatchedTool.error.code == -32602
@@ -2501,7 +2498,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         Map workItems = scriptStaticField('MRTR_WORK_ITEMS') as Map
         Map claim = [claimId: 'c1', generation: 1]
         Map rec = [status: 'active', claimId: 'c1', claimedGeneration: 1, generation: 1,
-                   outerTool: 'hub_update_rule_document', leafTool: 'hub_update_rule_document',
+                   outerTool: 'hub_set_rule', leafTool: 'hub_set_rule',
                    startedAt: script.now(), expiresAt: script.now() + 60000L]
         atomicStateMap.mrtrRequests = ['s1': rec]
         script._writeStateCacheInvalidate()
@@ -2636,7 +2633,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def virtualNow = new AtomicLong(1234567890000L)
         NOW_OVERRIDE.set({ -> virtualNow.get() })
         PAUSE_EXECUTION_OVERRIDE.set({ Long ms -> virtualNow.addAndGet(ms) })
-        assert script._writeReserveRequest('hub_update_rule_document', 'legacy').accepted == true
+        assert script._writeReserveRequest('hub_set_rule', 'legacy').accepted == true
         def args = [tool: 'hub_get_jobs', args: [cursor: '']]
 
         when: 'round zero runs the read: the fetch is scheduled and observed, and is still pending'
@@ -2650,7 +2647,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         fetches.get() == 0
         runInMillisCalls.size() == 1
         runInMillisCalls[0][0..1] == [50, 'runLogsJsonFetch']
-        script._activeWrites()*.tool == ['hub_update_rule_document']
+        script._activeWrites()*.tool == ['hub_set_rule']
 
         when: 'the client continues while the worker is still queued'
         def leg1 = modernCall('hub_read_diagnostics', args, stateId)
@@ -2661,7 +2658,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         leg1.result.requestState == stateId
         fetches.get() == 0
         runInMillisCalls.size() == 1
-        script._activeWrites()*.tool == ['hub_update_rule_document']
+        script._activeWrites()*.tool == ['hub_set_rule']
 
         when: 'the worker lands the snapshot; five seconds later the client continues'
         script.runLogsJsonFetch(runInMillisCalls[0][2].data as Map)
@@ -2719,7 +2716,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         int writeCap = script._mrtrMaxRecords() as Integer
         int readCap = script._mrtrMaxReadRecords() as Integer
         (1..writeCap).each {
-            pool["mrtr-wterm-${it}".toString()] = fakeRecord('hub_update_rule_document', 1234567890000L - 100000L - it) +
+            pool["mrtr-wterm-${it}".toString()] = fakeRecord('hub_set_rule', 1234567890000L - 100000L - it) +
                 [status: 'terminal', terminalResult: [success: true], terminalIsError: false]
         }
         (1..readCap).each { pool["mrtr-read-${it}".toString()] = fakeRecord('hub_get_jobs', 1234567890000L - it) }
@@ -2806,7 +2803,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def pool = [:]
         int writeCap = script._mrtrMaxRecords() as Integer
         int readCap = script._mrtrMaxReadRecords() as Integer
-        (1..writeCap).each { pool["mrtr-write-${it}".toString()] = fakeRecord('hub_update_rule_document', 1234567890000L - it) }
+        (1..writeCap).each { pool["mrtr-write-${it}".toString()] = fakeRecord('hub_set_rule', 1234567890000L - it) }
         (1..readCap).each { pool["mrtr-read-${it}".toString()] = fakeRecord('hub_get_performance_stats', 1234567890000L - it) }
         atomicStateMap.mrtrRequests = pool
         script._writeStateCacheInvalidate()
@@ -3040,7 +3037,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         where:
         mode      | gateways | unhinted
         'gateway' | true     | ['hub_read_devices', 'hub_read_rules', 'hub_get_info', 'hub_manage_mode']
-        'flat'    | false    | ['hub_manage_virtual_device', 'hub_update_device', 'hub_update_rule_document',
+        'flat'    | false    | ['hub_manage_virtual_device', 'hub_update_device', 'hub_set_rule',
                                'hub_get_info', 'hub_list_devices', 'hub_call_device_command']
     }
 
@@ -3271,7 +3268,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when:
         script._mrtrScheduleAutoContinue('mrtr-sched-retry-0001',
-            [leafTool: 'hub_update_rule_document', generation: 2, nextArguments: documentArgs(1)])
+            [leafTool: 'hub_set_rule', generation: 2, nextArguments: documentArgs(1)])
 
         then: 'two bounded attempts at increasing delays, then it stops'
         attempts.size() == 2
@@ -3729,7 +3726,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         settingsMap.enableWrite = true
         stateMap.accessToken = 'main,client-a'
         stateMap.clientTokens = ['1': [label: 'Alpha', token: 'client-a']]
-        settingsMap['clientTools_1'] = ['hub_update_rule_document']
+        settingsMap['clientTools_1'] = ['hub_set_rule']
         settingsMap['clientWrite_1'] = false
         script.metaClass._requestAccessToken = { -> 'client-a' }
         List seenByLeaf = []
@@ -3743,7 +3740,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
         def args = documentArgs(331, 'client write')
 
         when: 'the client has Write off'
-        def refused = modernCall('hub_update_rule_document', args)
+        def refused = modernCall('hub_set_rule', args)
 
         then: 'the refusal names the client and nothing was reserved or scheduled'
         refused.result.isError == true
@@ -3754,7 +3751,7 @@ class MrtrContinuationSpec extends ToolSpecBase {
 
         when: 'Write is turned back on'
         settingsMap['clientWrite_1'] = true
-        def done = modernCall('hub_update_rule_document', args)
+        def done = modernCall('hub_set_rule', args)
 
         then: 'the detached worker ran the leaf as Alpha'
         done.error == null

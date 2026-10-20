@@ -164,7 +164,7 @@ def toolUpdateRule(ruleId, args, String customEngineMode = "full") {
         // Fields in args besides 'enabled' (ruleId is passed as a separate param, not in args)
         def structuralKeys = (args?.keySet() ?: []).findAll { it != "enabled" && it != "ruleId" }
         if (!structuralKeys.isEmpty()) {
-            throw new IllegalArgumentException("In read-only mode (Custom Rule Engine toggle OFF), only the 'enabled' field can be updated. Structural fields provided: ${structuralKeys.sort().join(', ')}. To modify rule structure (triggers/conditions/actions), turn ON the Custom Rule Engine toggle in MCP server settings. The custom rule engine is legacy -- for new rule structure work, use hub_manage_rule_machine hub_update_rule_document instead.")
+            throw new IllegalArgumentException("In read-only mode (Custom Rule Engine toggle OFF), only the 'enabled' field can be updated. Structural fields provided: ${structuralKeys.sort().join(', ')}. To modify rule structure (triggers/conditions/actions), turn ON the Custom Rule Engine toggle in MCP server settings. The custom rule engine is legacy -- for new rule structure work, use hub_manage_rule_machine hub_set_rule instead.")
         }
     }
 
@@ -402,7 +402,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
                 "`hub_update_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
-                "Use `hub_manage_rule_machine -> hub_update_rule_document(rule_id=${idStr})` to modify it programmatically " +
+                "Use `hub_manage_rule_machine -> hub_set_rule(rule_id=${idStr})` to modify it programmatically " +
                 "(requires the Write master)."
         }
     } catch (Exception e) {
@@ -759,7 +759,7 @@ def _getAllToolDefinitions_partCustomRules() {
         ],
         [
             name: "hub_create_custom_rule",
-            description: """*** LEGACY (MCP sandbox engine): for "create a Rule Machine rule" / "Hubitat rule" / anything the user wants visible in Hubitat's RM UI, use hub_manage_rule_machine hub_update_rule_document instead. ***
+            description: """*** LEGACY (MCP sandbox engine): for "create a Rule Machine rule" / "Hubitat rule" / anything the user wants visible in Hubitat's RM UI, use hub_manage_rule_machine hub_set_rule instead. ***
 
 Create a new automation rule (MCP sandbox engine). The custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. Call `hub_get_tool_guide(section='rules')` for the trigger/condition/action type lists, per-type fields, structure, syntax, and examples.
 
