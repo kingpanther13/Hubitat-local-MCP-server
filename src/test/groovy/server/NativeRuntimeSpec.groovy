@@ -120,6 +120,8 @@ class NativeRuntimeSpec extends ToolSpecBase {
         then:
         result.verificationNeeded
         calls*.value == [['a', 'b'], [1, '2'], '3']
+        result.success
+        result.settingsVerified
     }
 
     def 'existing type mismatch rejects the entire batch before any update'() {
@@ -157,7 +159,7 @@ class NativeRuntimeSpec extends ToolSpecBase {
         when:
         def result = script._nrSettings(42L, ['devices', 'flag', 'count'])
         then:
-        result.devices.value == ['3', '2']
+        result.devices.value == ['2', '3']
         result.flag.value == false
         result.count.value == 0
     }
@@ -215,7 +217,14 @@ class NativeRuntimeChild {
     void setState(Map value) { snapshot = value; calls << [name: 'setState'] }
     void saveState() { backing.clear(); backing.putAll(snapshot); calls << [name: 'saveState'] }
     String getSettingType(String name) { typedSettings[name]?.type }
-    Object getSetting(String name) { typedSettings[name]?.value }
+    Object getSetting(String name) {
+        def row = typedSettings[name]
+        if (row?.type?.startsWith('capability')) {
+            def ids = row.value instanceof List ? row.value : [row.value]
+            return ids.reverse().collect { id -> id instanceof NativeRuntimeDevice ? id : new NativeRuntimeDevice(id: id.toString().toLong()) }
+        }
+        row?.value
+    }
     void updateSetting(String name, Map row) {
         calls << [name: name, type: row.type, value: row.value]
         if (!ignoreWrites) typedSettings[name] = [type: row.type, value: row.value]
