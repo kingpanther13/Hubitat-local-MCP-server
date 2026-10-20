@@ -245,6 +245,7 @@ definition(
 #include mcp.McpNativeRulesLib
 #include mcp.McpNativeRuntimeLib
 #include mcp.McpNativeModelLib
+#include mcp.McpNativeDocumentsLib
 
 preferences {
     page(name: "mainPage")
@@ -646,7 +647,7 @@ private Set _installedAppTargetTools() {
             "hub_set_native_app", "hub_delete_native_app", "hub_set_app_disabled", "hub_set_rule",
             "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule",
             "hub_set_visual_rule", "hub_delete_visual_rule", "hub_call_rule", "hub_set_rule_paused",
-            "hub_set_rule_private_boolean"] as Set
+            "hub_set_rule_private_boolean", "hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document"] as Set
 }
 
 // Every argument these tools accept as the target app: appId, the cloner's sourceAppId alias
@@ -654,7 +655,7 @@ private Set _installedAppTargetTools() {
 private boolean _targetsThisApp(Map args) {
     String self = app?.id?.toString()
     if (!self || args == null) return false
-    return ["appId", "sourceAppId", "ruleId"].any { key ->
+    return ["appId", "sourceAppId", "ruleId", "rule_id", "parent_id"].any { key ->
         def target = args.get(key)
         def ids = (target instanceof Collection) ? target : [target]
         ids.any { it?.toString() == self }
@@ -2916,7 +2917,7 @@ def _budgetAwareTools() {
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
 
 def _mrtrWriteTools() {
-    return ["hub_set_rule", "hub_set_native_app", "hub_call_rule",
+    return ["hub_create_rule_document", "hub_update_rule_document", "hub_set_rule", "hub_set_native_app", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
             "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device",
@@ -2951,7 +2952,7 @@ def _mrtrReadContinuationActive() {
 }
 
 private Set _mrtrDetachedWorkerTools() {
-    return ["hub_set_rule", "hub_set_native_app",
+    return ["hub_create_rule_document", "hub_update_rule_document", "hub_set_rule", "hub_set_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
             "hub_manage_virtual_device", "hub_update_device", "hub_restore_backup", "hub_create_backup"] as Set
 }
@@ -4541,7 +4542,7 @@ def _mrtrRecentOperations(int limit = 10) {
         if (callerClient == null && rec.clientLabel) row.client = rec.clientLabel
         if (status == "terminal" && rec.terminalResult instanceof Map) {
             Map result = rec.terminalResult as Map
-            ["success", "appId", "ruleId", "newAppId", "deviceId", "driverId", "error"].each {
+            ["success", "appId", "ruleId", "rule_id", "newAppId", "deviceId", "driverId", "error"].each {
                 if (result.containsKey(it)) row.put(it, result.get(it))
             }
             if (result.device instanceof Map && result.device.id != null) row.deviceId = result.device.id
@@ -4919,7 +4920,7 @@ private Map _toolLogDetails(reactiveToolName, toolName, args, Map extra = [:]) {
     def details = [tool: reactiveToolName, gateway: (reactiveToolName != toolName) ? toolName : null]
     // A gateway call arrives as the envelope {tool, args}; the leaf's own arguments sit inside it.
     def leafArgs = (reactiveToolName != toolName && args instanceof Map && args.args instanceof Map) ? args.args : args
-    def appId = leafArgs instanceof Map ? (leafArgs.appId ?: leafArgs.nativeAppId) : null
+    def appId = leafArgs instanceof Map ? (leafArgs.appId ?: leafArgs.nativeAppId ?: leafArgs.rule_id) : null
     if (appId != null && appId.toString()) details.appId = appId.toString()
     return details + extra
 }
@@ -5504,8 +5505,10 @@ def getGatewayConfig() {
         ],
         hub_read_rules: [
             description: "Read-only inspection of automation rules: list/inspect MCP custom rules (legacy engine), list native Rule Machine rules + check rule health, and list/read Visual Rules Builder rules. All operations are read-only; rule writes live in hub_manage_custom_rules, hub_manage_rule_machine, and hub_manage_native_rules_and_apps.",
-            tools: ["hub_get_custom_rule", "hub_test_custom_rule", "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule"],
+            tools: ["hub_get_rule_document", "hub_get_custom_rule", "hub_test_custom_rule", "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule"],
             summaries: [
+                hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
+
                 hub_get_custom_rule: "List MCP custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
                 hub_test_custom_rule: "Dry-run an MCP custom rule without executing actions. Args: ruleId",
                 hub_list_rules: "List all native Rule Machine rules (RM 4.x + 5.x) with IDs and labels",
@@ -5514,6 +5517,8 @@ def getGatewayConfig() {
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?"
             ],
             searchHints: [
+                hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
+
                 hub_get_custom_rule: "read fetch inspect list show custom mcp sandbox rule automation diagnostics",
                 hub_test_custom_rule: "simulate preview validate check automation custom dry run",
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
@@ -5524,8 +5529,12 @@ def getGatewayConfig() {
         ],
         hub_manage_native_rules_and_apps: [
             description: "Native classic-app CRUD plus Rule Machine runtime control. Use hub_set_native_app to create/edit non-RM classic SmartApps; use hub_manage_rule_machine (hub_set_rule) to author RM triggers/actions/conditions. Also delete/clone/export/import apps and list/run/pause/resume RM rules. Not the legacy custom_* engine. Edits ensure a rollback baseline, reused for the same app for one hour by default. Writes need confirm=true plus a recent hub backup; verify async failures via hub_get_app_config(appId) before retrying.",
-            tools: ["hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
+            tools: ["hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
+                hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
+                hub_create_rule_document: "Create and install a native Rule Machine child. Args: parent_id, name, changes, confirm.",
+                hub_update_rule_document: "Compile ordered semantic changes in place. Args: rule_id, changes, confirm.",
+
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start resets private boolean).",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call (RMUtils). Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
@@ -5539,6 +5548,10 @@ def getGatewayConfig() {
                 hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption. Args: appId, source. Returns {ok, broken, source, ruleFormat, issues, ...}. Auto-attached to hub_set_rule and hub_set_visual_rule responses too."
             ],
             searchHints: [
+                hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
+                hub_create_rule_document: "Create and install a native Rule Machine child. Args: parent_id, name, changes, confirm.",
+                hub_update_rule_document: "Compile ordered semantic changes in place. Args: rule_id, changes, confirm.",
+
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
                 hub_call_rule: "trigger fire execute native rule machine rule",
                 hub_set_rule_paused: "pause resume disable enable stop unpause temporarily rule machine rule",
@@ -5652,8 +5665,12 @@ def getGatewayConfig() {
         ],
         hub_manage_rule_machine: [
             description: "Dedicated rule-authoring gateway. Visual Rules Builder is the primary engine for new automations (hub_set_visual_rule / hub_get_visual_rule / hub_delete_visual_rule) — one clean JSON write with if/then/else gating. Use hub_set_rule to create/edit a full RM rule (triggers, actions, conditions, required expressions, IF/THEN/ELSE, local variables, walkStep) when the automation needs nested logic, loops, variables, or arbitrary device commands; delete RM rules with hub_delete_native_app; plus RMUtils runtime control (list/run, pause/resume, private boolean, health). This is the path for 'create a rule' / 'make a Hubitat automation'. For non-RM classic apps (Room Lighting, Button Controllers, Notifier, Groups+Scenes) use hub_manage_native_rules_and_apps. Read-only views are in hub_read_rules. Inspect a rule's config after a write via hub_get_app_config (in hub_read_apps_code, not here).",
-            tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
+            tools: ["hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document", "hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
             summaries: [
+                hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
+                hub_create_rule_document: "Create and install a native Rule Machine child. Args: parent_id, name, changes, confirm.",
+                hub_update_rule_document: "Compile ordered semantic changes in place. Args: rule_id, changes, confirm.",
+
                 hub_set_rule: "Create or edit a Rule Machine rule (RM 5.1) — the full authoring surface. Omit appId to create (name; optionally bundle addTriggers/addActions); provide appId to edit via addTrigger / addAction / addRequiredExpression / replaceRequiredExpression / addTriggers / addActions / replaceActions / removeAction / clearActions / moveAction / removeTrigger / modifyTrigger / modifyAction / addLocalVariable / removeLocalVariable / patches / walkStep, or raw settings/button. Auto-backs-up first. Args: appId (omit=create), name, <shortcut>|settings|button, confirm.",
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (RMUtils — RM only)",
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule)",
@@ -5667,6 +5684,10 @@ def getGatewayConfig() {
                 hub_delete_visual_rule: "Delete a Visual Rules Builder rule (type-gated; returns the pre-delete definition for recovery). Args: appId, confirm."
             ],
             searchHints: [
+                hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
+                hub_create_rule_document: "Create and install a native Rule Machine child. Args: parent_id, name, changes, confirm.",
+                hub_update_rule_document: "Compile ordered semantic changes in place. Args: rule_id, changes, confirm.",
+
                 hub_set_rule: "create edit modify make rule machine rule trigger action condition required expression walkStep RM authoring native automation hubitat rule upsert",
                 hub_list_rules: "rule machine rules native builtin automation list enumerate RM",
                 hub_call_rule: "trigger fire execute run native rule machine rule stop start",
@@ -5821,6 +5842,7 @@ def getReadOnlyToolNames() {
     if (cached != null) return cached
     def built = ([
     ]
+        + _readOnlyToolNames_partNativeDocuments()
         + _readOnlyToolNames_partNativeRM()
         + _readOnlyToolNames_partRooms()
         + _readOnlyToolNames_partBundles()
@@ -5938,7 +5960,7 @@ def getToolDisplayMeta() {
     // this file keeps only the gateway entries (gateway membership is cross-domain
     // and lives in getGatewayConfig).
     def meta = [:]
-    [_toolDisplayMeta_partNativeRM(),
+    [_toolDisplayMeta_partNativeDocuments(), _toolDisplayMeta_partNativeRM(),
      _toolDisplayMeta_partRooms(),
      _toolDisplayMeta_partBundles(),
      _toolDisplayMeta_partVisualRules(),
@@ -6460,7 +6482,7 @@ def getAllToolDefinitions() {
     // McpBundlesLib / McpVisualRulesLib #include libraries (issue #209 modularization -- a
     // domain's tool DEFINITIONS live with its impl in the library; only the gateway membership
     // + dispatch case stay in this file).
-    return _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
+    return _getAllToolDefinitions_partNativeDocuments() + _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
 }
 
 // Only names and required parameter lists are shared; raw definitions stay mutable per call.
@@ -6752,6 +6774,9 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_update_room": return toolRenameRoom(args)
 
         // Hub Admin App Configuration Read
+        case "hub_get_rule_document": return toolGetRuleDocument(args)
+        case "hub_create_rule_document": return toolCreateRuleDocument(args)
+        case "hub_update_rule_document": return toolUpdateRuleDocument(args)
         case "hub_get_app_config": return toolGetAppConfig(args)
         case "hub_list_app_pages": return toolListAppPages(args)
 
@@ -11263,6 +11288,7 @@ String _guideSectionServed(String key, String body) {
 // that publishes a key must map every write tool it documents to that key (both drift guards).
 def _guideSectionForTool(toolName) {
     def t = (toolName ?: '').toString()
+    if (t in ['hub_get_rule_document', 'hub_create_rule_document', 'hub_update_rule_document']) return 'native_rule_documents'
     if (t == 'hub_set_rule') return 'set_rule_reference'
     if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
     if (t.endsWith('_custom_rule')) return 'rules'
@@ -11316,6 +11342,7 @@ def _applyReactiveBpsWarning(toolName, args, result) {
 
 def getToolGuideSections() {
     return [
+        native_rule_documents: _ndGuide(),
         device_authorization: '''## Device Authorization (CRITICAL)
 
 **Exact match rule:**
@@ -11353,6 +11380,8 @@ hub_get_tool_guide, and hub_update_mcp_settings are never gated, so you can alwa
 and (if needed) toggle the gate off.
 
 If you are calling one of these tools, you must read its section for that section's key:
+- hub_create_rule_document -> native_rule_documents
+- hub_update_rule_document -> native_rule_documents
 - hub_create_backup -> backup
 - hub_restore_backup -> backup
 - hub_clone_native_app -> builtin_app_tools_crud

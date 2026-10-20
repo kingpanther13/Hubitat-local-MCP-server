@@ -4,6 +4,24 @@
 
 Detailed reference for MCP Rule Server tools, the same text `hub_get_tool_guide` serves. Each `##` section below is one `section` key. Acknowledgment keys are added at serve time and are absent from this file.
 
+## Native Rule Documents
+
+Read hub_get_rule_document(rule_id, sections?) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
+
+Writes require confirm=true and a recent hub backup. hub_update_rule_document(rule_id, changes, confirm) applies changes in order. hub_create_rule_document(parent_id, name, changes, confirm) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
+
+Each change is {part,value}. Supported parts:
+- condition or trigger: {id?,capability,fields:[{name,type,value}]}.
+- action: {id?,type,subtype,fields:[{name,type,value}],expression?,events?}.
+- expression: {id,tokens}; required: {tokens}.
+- getWaitEvents actions accept events:[{capability,fields}] (1 through 16 native event rows); an edit preserves the event count. Duration fields remain native typed fields.
+- variable: {operation:create|set|delete,name,type?,value?}. Create types: integer,bigdecimal,boolean,string,datetime.
+- terminator: {subtype:endIf|else|endRep}.
+
+Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; wait expressions and every capability-specific variant are not yet supported. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
+
+Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state and are never part of document reads.
+
 ## Device Authorization (CRITICAL)
 
 **Exact match rule:**
@@ -41,6 +59,8 @@ hub_get_tool_guide, and hub_update_mcp_settings are never gated, so you can alwa
 and (if needed) toggle the gate off.
 
 If you are calling one of these tools, you must read its section for that section's key:
+- hub_create_rule_document -> native_rule_documents
+- hub_update_rule_document -> native_rule_documents
 - hub_create_backup -> backup
 - hub_restore_backup -> backup
 - hub_clone_native_app -> builtin_app_tools_crud

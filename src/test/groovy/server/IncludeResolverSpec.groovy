@@ -214,7 +214,7 @@ class IncludeResolverSpec extends Specification {
         def out = IncludeResolver.resolve(src, realLibs)
 
         then:
-        out.contains("def ${markerImpl}")
+        (out.contains("def ${markerImpl}") || out.contains("Map ${markerImpl}"))
         out.contains("def _getAllToolDefinitions_part${part}")
         out.contains("def _toolDisplayMeta_part${part}")
         !(out =~ /(?m)^\s*#include\b/)
@@ -236,6 +236,7 @@ class IncludeResolverSpec extends Specification {
         'McpSelfAdminLib'       | 'toolUpdatePackage'       | 'SelfAdmin'
         'McpAppClonerLib'       | 'toolCloneNativeApp'      | 'AppCloner'
         'McpDiscoveryLib'       | 'toolSearchTools'         | 'Discovery'
+        'McpNativeDocumentsLib' | 'toolGetRuleDocument'     | 'NativeDocuments'
         'McpNativeRulesLib'     | 'toolSetRule'             | 'NativeRM'
         'McpDashboardsLib'      | 'toolListDashboards'      | 'Dashboards'
     }
