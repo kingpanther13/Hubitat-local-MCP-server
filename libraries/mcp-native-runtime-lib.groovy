@@ -55,12 +55,12 @@ private Object _nrSettingValue(Object value) {
     throw new IllegalStateException('Unsupported native setting value')
 }
 
-private Object _nrComparable(String type, Object value) {
+private Object _nrComparableSetting(String type, Object value) {
     if (type == 'capability' || type.startsWith('capability.')) {
         def ids = value instanceof List ? value : (value == null ? [] : [value])
         return ids.collect { id -> id.toString().isLong() ? id.toString().toLong().toString() : id.toString() }.sort()
     }
-    if (value instanceof List) return value.collect { item -> _nrComparable(type, item) }.sort()
+    if (value instanceof List) return value.collect { item -> _nrComparableSetting(type, item) }.sort()
     if (value == null) return null
     if (type == 'number' || type == 'decimal') return value.toString().isBigDecimal() ? new BigDecimal(value.toString()).stripTrailingZeros().toPlainString() : value.toString()
     if (type == 'bool') return value.toString().toLowerCase()
@@ -112,7 +112,7 @@ Map _nrWriteSettings(Long ruleId, List rows) {
         def actual = _nrSettings(ruleId, names)
         def rejected = rows.findAll { row ->
             actual.get(row.name).type?.toString() != row.type ||
-                _nrComparable(row.type, actual.get(row.name).value) != _nrComparable(row.type, row.value)
+                _nrComparableSetting(row.type, actual.get(row.name).value) != _nrComparableSetting(row.type, row.value)
         }.collect { row -> row.name }
         return [success: rejected.empty, verificationNeeded: true, settingsVerified: rejected.empty,
                 partial: !rejected.empty && !attempted.empty, attempted: attempted, results: results,
