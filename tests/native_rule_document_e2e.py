@@ -104,15 +104,15 @@ class HubClient:
             headers["Cookie"] = os.environ["HUB_UI_COOKIE"]
         return self.request(self.base + path, method, payload, headers, form)
 
-    def tool(self, name, **arguments):
-        if name not in TOOLS:
+    def tool(self, tool_name, **arguments):
+        if tool_name not in TOOLS:
             raise ValueError("Only the three document tools belong in this suite")
-        self.calls[name] += 1
-        params = {"name": name, "arguments": arguments}
+        self.calls[tool_name] += 1
+        params = {"name": tool_name, "arguments": arguments}
         headers = {
             "MCP-Protocol-Version": "2026-07-28",
             "Mcp-Method": "tools/call",
-            "Mcp-Name": name,
+            "Mcp-Name": tool_name,
         }
         for round_number in range(21):
             self.sequence += 1
@@ -122,7 +122,7 @@ class HubClient:
                 "method": "tools/call", "params": params,
             }, headers)
             if "error" in envelope:
-                raise AssertionError(f"{name}: JSON-RPC error {envelope['error'].get('code')}")
+                raise AssertionError(f"{tool_name}: JSON-RPC error {envelope['error'].get('code')}")
             result = envelope["result"]
             if result.get("resultType") == "input_required":
                 state = result.get("requestState")
