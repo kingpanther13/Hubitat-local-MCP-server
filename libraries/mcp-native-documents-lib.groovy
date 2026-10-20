@@ -20,7 +20,7 @@ private List _ndSettings(Long id) {
     }
 }
 
-private List _ndStructuralIssues(Map nativeState) {
+private List _ndStructuralIssues(Map nativeState, boolean requiredEnabled) {
     def issues = []
     def actions = nativeState.actions instanceof Map ? nativeState.actions : [:]
     def conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
@@ -43,7 +43,7 @@ private List _ndStructuralIssues(Map nativeState) {
         }
     }
     if (blocks) issues << 'Native IF block has no END-IF'
-    if (nativeState.hasPredicate == true) expressionIds << '0'
+    if (requiredEnabled) expressionIds << '0'
     expressionIds.unique().each { id ->
         def tokens = _nmEntry(expressions, id)
         try {
@@ -86,13 +86,13 @@ Map toolGetRuleDocument(Map args) {
     def allowed = ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']
     def sections = args.sections == null ? allowed : args.sections
     if (!(sections instanceof List) || sections.any { !(it in allowed) }) throw new IllegalArgumentException('Unknown document section')
-    _nrHandle(id)
+    boolean requiredEnabled = _nrHandle(id).getSetting('useST') == true
     Map nativeState = _nrState(id)
-    def structuralIssues = _ndStructuralIssues(nativeState)
+    def structuralIssues = _ndStructuralIssues(nativeState, requiredEnabled)
     def document = [rule_id: id, validation: [structuralIssues: structuralIssues, uiChecked: false]]
     try {
         def health = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
-        if (health instanceof Map) document.validation.structuralIssues = _ndStructuralIssues(nativeState + health)
+        if (health instanceof Map) document.validation.structuralIssues = _ndStructuralIssues(nativeState + health, requiredEnabled)
         document.nativeHealth = health instanceof Map && health.broken instanceof Boolean ? [available: true, broken: health.broken, stopped: health.stopped == true, paused: health.paused == true] : [available: false]
     } catch (Exception failure) { document.nativeHealth = [available: false, error: failure.message?.toString()] }
     if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
@@ -254,7 +254,7 @@ private Map _ndApply(Long id, List changes, boolean created) {
         _ndRender(id, 'mainPage')
         def health = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
         Map renderedState = _nrState(id) + (health instanceof Map ? health : [:])
-        def structuralIssues = _ndStructuralIssues(renderedState)
+        def structuralIssues = _ndStructuralIssues(renderedState, _nrHandle(id).getSetting('useST') == true)
         structuralIssues.addAll(_nmValidateStructure(id, renderedState).structuralIssues ?: [])
         if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
         if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified']

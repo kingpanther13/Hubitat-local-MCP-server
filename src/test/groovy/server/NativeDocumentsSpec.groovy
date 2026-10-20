@@ -9,11 +9,13 @@ class NativeDocumentsSpec extends ToolSpecBase {
     boolean failAction
     boolean broken
     Map lifecycle
+    Map typedSettings
 
     void setup() {
         events = []
         failAction = false
         broken = false
+        typedSettings = [:]
         lifecycle = [stopped: false, paused: false]
         nativeState = [actionList: ['3', '1'], actions: ['3': [method: 'getLogMsg'], '1': [method: 'getLogMsg']],
                        capabsfalse: ['4': 'Switch is on'], capabstrue: ['5': 'Switch changed'], eval: ['0': ['4']],
@@ -24,7 +26,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean retry = false -> events << 'create'; [status: 302, location: '/installedapp/configure/42'] }
         script.metaClass._nrHandle = { Long id ->
             if (id != 42L) throw new IllegalArgumentException('missing rule')
-            new NativeDocumentChild(events, lifecycle, nativeState.allLocalVars)
+            new NativeDocumentChild(events, lifecycle, nativeState.allLocalVars, typedSettings)
         }
         script.metaClass._nrState = { Long id -> [:] + nativeState }
         script.metaClass._nmUpsertAction = { Long id, Map value -> events << 'action'; [success: !failAction, partial: failAction, id: '6'] }
@@ -73,6 +75,49 @@ class NativeDocumentsSpec extends ToolSpecBase {
         result.settings.find { it.name == 'flag' }.value == false
         result.settings.find { it.name == 'count' }.value == 0
         events.isEmpty()
+    }
+
+    def 'disabled native required expression ignores stale predicate flags without rendering'() {
+        given:
+        typedSettings.useST = false
+        nativeState.hasPredicate = true
+        nativeState.isPredicate = false
+        nativeState.predCapabs = [4]
+        nativeState.eval = [:]
+        when:
+        def document = script.toolGetRuleDocument([rule_id: 42, sections: ['expressions']])
+        then:
+        document.validation.structuralIssues.isEmpty()
+        nativeState.hasPredicate == true
+        nativeState.eval.isEmpty()
+        events.isEmpty()
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]], confirm: true])
+        then:
+        result.success
+        events.any { it instanceof Map && it.path == '/installedapp/update/json' }
+    }
+
+    def 'enabled native required expression detects missing and invalid operands despite stale flags'() {
+        given:
+        typedSettings.useST = true
+        nativeState.hasPredicate = false
+        nativeState.eval = expression
+        when:
+        def document = script.toolGetRuleDocument([rule_id: 42, sections: ['expressions']])
+        then:
+        document.validation.structuralIssues.any { it.contains(expected) }
+        events.isEmpty()
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]], confirm: true])
+        then:
+        !result.success
+        result.error.contains(expected)
+        !events.any { it instanceof Map }
+        where:
+        expression           | expected
+        [:]                  | 'Missing native expression'
+        ['0': ['999999']]    | 'unknown condition'
     }
 
     def 'projection suppresses unrequested native sections'() {
@@ -326,7 +371,9 @@ class NativeDocumentChild {
     List events
     Map lifecycle
     Map locals
-    NativeDocumentChild(List events, Map lifecycle, Map locals = [:]) { this.events = events; this.lifecycle = lifecycle; this.locals = locals }
+    Map typedSettings
+    NativeDocumentChild(List events, Map lifecycle, Map locals = [:], Map typedSettings = [:]) { this.events = events; this.lifecycle = lifecycle; this.locals = locals; this.typedSettings = typedSettings }
+    Object getSetting(String name) { typedSettings.get(name) }
     Map getAllLocalVars() { locals }
     void appButtonHandler(String name) {
         events << name
