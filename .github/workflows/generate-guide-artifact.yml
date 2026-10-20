@@ -1,0 +1,18 @@
+name: Generate tool guide artifact
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+      - run: python tools/build-tool-guide.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: generated-tool-guide
+          path: TOOL_GUIDE.md
