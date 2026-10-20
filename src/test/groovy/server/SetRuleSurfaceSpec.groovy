@@ -6,6 +6,7 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
     def 'only one native rule document and form tool is advertised'() {
         expect:
         script._getAllToolDefinitions_partNativeDocuments()*.name == ['hub_set_rule']
+        script._getAllToolDefinitions_partNativeDocuments()[0].inputSchema.properties.bestPracticeKey.type == 'string'
         script._getAllToolDefinitions_partNativeForms().empty
         script._toolDisplayMeta_partNativeForms().empty
     }
@@ -17,7 +18,7 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
         script.toolSetRule([:]).operations == ['read', 'create', 'update', 'form']
         ['create', 'update', 'form'].every { op ->
             def result = script.toolSetRule([operation: op])
-            result.operation == op && result.inputSchema.properties && result.confirm_required == true
+            result.operation == op && result.inputSchema.properties.bestPracticeKey.type == 'string' && result.confirm_required == true
         }
     }
 
@@ -51,6 +52,9 @@ class SetRuleSurfaceSpec extends ToolSpecBase {
                     [operation: 'update', args: [confirm: true]], [operation: 'form', args: [app_id: 99]],
                     [operation: 'read', extra: true], [operation: 'form', args: [unknown: true]],
                     [operation: 'update', confirm: 'true'], [operation: 'read', rule_id: 0],
+                    [operation: 'read', rule_id: true], [operation: 'read', rule_id: 1.5],
+                    [operation: 'create', args: [parent_id: false]],
+                    [operation: 'create', args: [parent_id: 2.5]],
                     [operation: 'update', args: [changes: 'not an array']],
                     [operation: 'form', args: [steps: [[kind: 'unknown']]]]]
     }

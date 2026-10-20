@@ -11166,13 +11166,13 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_call_zwave -> hub_admin_write_radios
 - hub_set_zigbee -> hub_admin_write_radios
 - hub_set_zwave -> hub_admin_write_radios
-- hub_set_rule -> set_rule_reference
 - hub_clone_custom_rule -> rules
 - hub_create_custom_rule -> rules
 - hub_delete_custom_rule -> rules
 - hub_export_custom_rule -> rules
 - hub_import_custom_rule -> rules
 - hub_update_custom_rule -> rules
+- hub_set_rule -> set_rule_reference
 - hub_update_device -> update_device
 - hub_manage_virtual_device -> virtual_devices
 - hub_delete_visual_rule -> visual_rule_reference

@@ -809,7 +809,7 @@ def toolGetAppConfig(args) {
         result.modeInputsNote = "Framework-standard mode input(s) (type='mode') on this page. Semantics are app-specific -- a 'only run during these modes' restriction OR per-mode overrides -- read the input titles/settings to interpret; `modes` is the configured list. Per-page only; absence does NOT mean the app ignores mode: some built-ins gate via mode-ID settings, not a type='mode' input (e.g. Room Lights). See hub_get_tool_guide(section='builtin_app_tools_apps') for the per-built-in key reference."
     }
     // Sub-pages this page links to. Their inputs are not in `sections`; read one with
-    // pageName=<page>, or drive it with hub_call_app_form open/submit steps and returned control IDs.
+    // pageName=<page>, or use hub_set_rule form operations for RM or the native editor for other apps.
     def pageHrefs = _rmPageHrefs(parsed.configPage as Map)
     if (pageHrefs) result.page.hrefs = pageHrefs
     if (disabledActions) {
@@ -930,7 +930,7 @@ def toolListAppPages(args) {
     def linked = _rmPageHrefs(parsed.configPage as Map).findAll { !(it.page in knownNames) }.unique { it.page }
     linked.each { pages << [name: it.page, title: it.title, role: "sub-page"] }
     if (linked) {
-        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Drive native page controls with hub_call_app_form; use native document tools for supported Rule Machine structure changes."
+        note = "Sub-pages are linked from the primary page. A sub-page can link further pages of its own: read hub_get_app_config(appId, pageName=<sub-page>).page.hrefs. Use hub_set_rule for Rule Machine changes and native form controls; use the native editor for other apps."
     } else if (!curatedHpm) {
         note = "The primary page links no sub-pages."
     }
@@ -1033,7 +1033,7 @@ private Map _createUserAppInstance(Integer codeAppId) {
         // Deleting and retrying would meet the same refusal: keep the shell and fill it in.
         return [
             success: false,
-            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- open hub_call_app_form(app_id:${newId}, steps:[{kind:'open'}], confirm:true), submit the listed fields using the returned expect_page, then activate the returned Done control_id to install the app.".toString(),
+            error: "Instance ${newId} was created but not installed: ${commit.error} Keep it -- open the native app editor, submit the listed fields, then click Done to install the app.".toString(),
             codeAppId: codeAppId,
             instanceAppId: newId,
             committed: false
@@ -1219,7 +1219,7 @@ private Map _commitUserAppInstall(Integer instanceId, String pageName) {
             success: false,
             uiBlocked: true,
             error: submit.uiReason,
-            note: "No Done was submitted, so the instance is not installed yet. Open hub_call_app_form(app_id:${instanceId}, steps:[{kind:'open'}], confirm:true), submit the listed fields using the returned expect_page, then activate the returned Done control_id to install it.".toString(),
+            note: "No Done was submitted, so the instance is not installed yet. Open the native app editor, submit the listed fields, then click Done to install it.".toString(),
             scheduledJobCount: 0,
             eventSubscriptionCount: 0
         ]
@@ -3391,7 +3391,7 @@ A transport drop can lose the response while the hub still commits this write; v
             name: "hub_get_app_config",
             description: """Read an installed app's configuration — the structured data the Hubitat Web UI shows on an app's settings page.[[FLAT_TRIM]] Works for any legacy SmartApp (Rule Machine rules, Room Lighting, Basic Rules, HPM, Mode Manager, etc.).[[/FLAT_TRIM]] Read-only.
 
-Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable native editor buttons; hub_call_app_form returns supported controls. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
+Returns the app's identity plus its current config page (sections, inputs, current values) and `embeddedActions` — clickable native editor buttons; hub_set_rule form operations return supported Rule Machine controls. Multi-page apps (e.g. RM 5.1): pass pageName; call hub_list_app_pages to discover sub-page names.[[FLAT_TRIM]] A Rule Machine action disabled in the UI is prefixed `[DISABLED]` in paragraphs, listed in `disabledActions` (`{text, disableButton}`), and flagged `disabled:true` on its selectActions (Button Rule: selectActionsX) row in embeddedActions; unmarked actions are live.[[/FLAT_TRIM]]
 
 Get appId from hub_list_apps (scope='instances') or hub_list_rules.[[FLAT_TRIM]] For RM rules use hub_list_rules, NOT hub_get_custom_rule (which only handles MCP-native rules).[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
             inputSchema: [

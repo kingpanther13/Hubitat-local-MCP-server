@@ -62,7 +62,7 @@ class GuideFirstSentenceSpec extends ToolSpecBase {
         when:
         def writer = script.getToolDefinitions().find { it.name == 'hub_set_rule' }
         then:
-        writer.inputSchema.properties.keySet() == ['operation', 'rule_id', 'args', 'confirm'] as Set
+        writer.inputSchema.properties.keySet() == ['operation', 'rule_id', 'args', 'confirm', 'bestPracticeKey'] as Set
         (writer.description as String).startsWith(SENTENCE + ' ')
         script.getToolDefinitions().count { it.name == 'hub_set_rule' } == 1
     }

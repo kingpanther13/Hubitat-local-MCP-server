@@ -3290,7 +3290,7 @@ class ToolRmNativeCrudSpec extends ToolSpecBase {
         then:
         guide.contains('typed readback')
         guide.contains('independently verify device behavior')
-        !script._ndOperationSchema('create').properties.args.properties.containsKey('buttonRule')
+        !script._ndOperationSchema('create').properties.containsKey('buttonRule')
     }
 
     def "custom_* visibility: full mode (engine ON) shows all 8 custom_* tools"() {

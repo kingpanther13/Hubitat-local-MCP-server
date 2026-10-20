@@ -439,7 +439,7 @@ Map toolSetRule(Map request) {
     _ndValidateSchema(arguments, schema, 'args', execute)
     if (operation == 'create' && request.containsKey('rule_id')) throw new IllegalArgumentException('create uses args.parent_id, not rule_id')
     if (!execute) {
-        Map properties = [operation: [type: 'string', enum: [operation]], args: schema, confirm: [type: 'boolean']]
+        Map properties = [operation: [type: 'string', enum: [operation]], args: schema, confirm: [type: 'boolean'], bestPracticeKey: [type: 'string']]
         List required = ['operation', 'args', 'confirm']
         if (operation != 'create') { properties.rule_id = [type: 'integer', minimum: 1]; required << 'rule_id' }
         return [operation: operation, confirm_required: true, inputSchema: [type: 'object', additionalProperties: false, properties: properties, required: required],
@@ -458,7 +458,7 @@ Map toolSetRule(Map request) {
 def _getAllToolDefinitions_partNativeDocuments() {
     return [[
       name: 'hub_set_rule', description: 'Read, create or update native Rule Machine rules, or use their native forms. Omit operation for help; select a write operation without confirm for its schema. Writes require confirm=true and a recent backup; partial changes can remain. Guide: set_rule_reference.',
-      inputSchema: [type: 'object', additionalProperties: false, properties: [operation: [type: 'string', enum: ['read', 'create', 'update', 'form']], rule_id: [type: 'integer', minimum: 1], args: [type: 'object'], confirm: [type: 'boolean']]]]]
+      inputSchema: [type: 'object', additionalProperties: false, properties: [operation: [type: 'string', enum: ['read', 'create', 'update', 'form']], rule_id: [type: 'integer', minimum: 1], args: [type: 'object'], confirm: [type: 'boolean'], bestPracticeKey: [type: 'string']]]]]
 }
 
 def _readOnlyToolNames_partNativeDocuments() { [] }
@@ -470,7 +470,7 @@ def _toolDisplayMeta_partNativeDocuments() {
 String _ndGuide() {
     return '''## Set Rule Reference
 
-Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level rule_id identifies the target; args cannot override it or confirm.
+Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level rule_id identifies the target; args cannot override it or confirm. When mandatory guide acknowledgment is enabled, pass its key as top-level bestPracticeKey alongside operation, rule_id, args and confirm.
 
 Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 

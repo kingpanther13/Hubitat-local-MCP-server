@@ -25,6 +25,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         // of touching the hub. The base setup() wiped the metaClass first, so stubs are fresh.
         script.metaClass.toolSetHsm = { m -> [success: true, stubbed: true] }
         script.metaClass.toolUpdateRuleDocument = { Map m -> [success: true, stubbed: true] }
+        script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
         settingsMap.enableWrite = true
         settingsMap.enableRead = true
         stateMap.lastBackupTimestamp = script.now()

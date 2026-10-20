@@ -2147,7 +2147,7 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
         try { vrbFallback = _vrbDetect(ruleId) } catch (Exception ignored) { }
         if (vrbFallback == null) {
             if (e.message?.contains("404")) {
-                throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='native_rule_documents').")
+                throw new IllegalArgumentException("No rule/app with id ${ruleId} exists on this hub (configure/json returned 404). Nothing was changed. Use hub_list_rules for valid ids. See hub_get_tool_guide(section='set_rule_reference').")
             }
             throw new IllegalArgumentException("Cannot back up rule ${ruleId}: configure/json failed -- ${e.message}")
         }
