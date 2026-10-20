@@ -6504,7 +6504,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
 
         then:
         result.success == false
-        result.error.contains("yyyy-MM-ddTHH:mm")
+        result.error.contains("requires a valid date and time")
         result.backup == null
         posts.isEmpty()
     }
@@ -6525,11 +6525,11 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
 
         then:
         result.success == false
-        result.error.contains("yyyy-MM-ddTHH:mm")
+        result.error.contains("requires a valid date and time")
         posts.isEmpty()
 
         where:
-        value << ["2026-01-01T12:30garbage", "2026-13-45T25:99", "2026-02-30T10:00"]
+        value << ["2026-01-01T12:30garbage", "2026-13-45T25:99", "2026-02-30T10:00", "12:30"]
     }
 
     def "addLocalVariable DateTime whose stored wall clock differs from the request is not verified"() {
@@ -6612,6 +6612,170 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         result.error.contains("did not offer")
         posts.any { it.path == "/installedapp/btn" && it.body.name == "cancelGV" && it.body.stateAttribute == "cancelGV" }
         !posts.any { it.body?.containsKey("settings[varValue]") }
+    }
+
+    def "addLocalVariable refuses a #type value RM would store but not render (#value) before anything is sent"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params -> JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]]) }
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: type, value: value], confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("RM is not touched")
+        result.backup == null
+        posts.isEmpty()
+
+        where:
+        type      | value
+        "Number"  | "abc"
+        "Number"  | "1.5"
+        "Decimal" | "1.2.3"
+    }
+
+    def "addLocalVariable DateTime takes the hub-variable forms: a space instead of T"() {
+        given:
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number", "DateTime"]],
+                       [name: "varTime", type: "time"], [name: "varDate", type: "date"]]
+        boolean done = false
+        def posts = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", done ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: done ? [[name: "allLocalVars", value: [seenAt: [type: "datetime", value: "2026-05-17T14:30:00.000+0000"]]]] : [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/btn" && body.name == "dateTimeDone") done = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: "2026-05-17 14:30"], confirm: true])
+
+        then:
+        result.success == true
+        def dt = posts.find { it.path == "/installedapp/update/json" && it.body.containsKey("settings[varDate]") }
+        dt.body["settings[varDate]"] == "2026-05-17"
+        dt.body["settings[varTime]"] == "14:30"
+    }
+
+    def "an addLocalVariable write that throws, with cancelGV also failing, reports the open editor and names cancelGV"() {
+        given: "the varValue POST fails and the hub refuses cancelGV"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params -> JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (body?.containsKey("settings[varValue]")) throw new RuntimeException("status code: 500")
+            if (path == "/installedapp/btn" && body.name == "cancelGV") throw new RuntimeException("button refused")
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        result.success == false
+        result.wizardStuck == true
+        result.applied == null
+        result.restoreHint.contains("button='cancelGV'")
+        !result.restoreHint.contains("actionCancel")
+    }
+
+    def "an addLocalVariable write whose response is lost after RM committed the variable is a success, and cancelGV is not clicked"() {
+        given: "the varValue POST commits on the hub but its response is lost"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        boolean committed = false
+        def clicks = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", committed ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: committed ? [[name: "allLocalVars", value: [n: [type: "integer", value: 5]]]] : [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body.name
+            if (body?.containsKey("settings[varValue]")) { committed = true; throw new RuntimeException("Read timed out") }
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        result.success == true
+        result.applied == true
+        !clicks.contains("cancelGV")
+    }
+
+    def "an addLocalVariable that did not commit and whose editor was cancelled is applied:false"() {
+        given: "varValue is written, nothing commits, and cancelGV closes the editor"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        boolean cancelled = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", cancelled ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params -> JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]]) }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body.name == "cancelGV") cancelled = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        cancelled
+        result.success == false
+        result.applied == false
+        !result.wizardStuck
+        result.note.contains("NOT added")
+    }
+
+    def "an addLocalVariable whose every read-back fails with the editor closed is unknown, and cancelGV is not clicked"() {
+        given: "statusJson fails after the value is written, and RM closed the editor"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number"]], [name: "varValue", type: "number"]]
+        boolean written = false
+        def clicks = []
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", written ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            if (written) throw new RuntimeException("HTTP 502")
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") clicks << body.name
+            if (body?.containsKey("settings[varValue]")) written = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "n", type: "Number", value: 5], confirm: true])
+
+        then:
+        result.success == false
+        result.applied == null
+        result.verified == false
+        result.verificationFetchFailed == true
+        result.error.contains("unknown")
+        !clicks.contains("cancelGV")
     }
 
     def "addLocalVariable on a name the rule already has is refused before the wizard opens"() {
@@ -44444,6 +44608,29 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         skipped.find { it.key == "relDevice_1" }?.reason == "silent_rejection"
         !posts.any { it.body.containsKey("settings[state_1]") }
         !posts.any { it.body?.name == "hasAll" }
+    }
+
+    def "a compareToDevice reference device whose read-back fails is unconfirmed, not refused: the condition goes on"() {
+        given: "the page read right after the relDevice_1 POST fails once"
+        enableWrite()
+        def wired = wireEchoingSelectTriggers({ List p -> temperatureConditionInputs(p) })
+        def posts = wired.posts
+        boolean failed = false
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            if (!failed && posts && posts.last().body.containsKey("settings[relDevice_1]")) { failed = true; throw new RuntimeException("read timed out") }
+            ruleConfigJson(100, "r", temperatureConditionInputs(posts) as List, null, wired.landed)
+        }
+        def applied = []
+        def skipped = []
+
+        when:
+        script._rmBuildCondition(100, 1, [capability: "Temperature", deviceIds: [8], comparator: ">",
+            compareToDevice: [deviceId: 9, offset: 2]], applied, skipped)
+
+        then:
+        failed
+        skipped.find { it.key == "relDevice_1" }?.reason == "verification_fetch_failed"
+        posts.any { it.body.containsKey("settings[state_1]") }
     }
 
     def "a conditional trigger's compareToDevice condition fails before Done when the reference-device picker never appears"() {

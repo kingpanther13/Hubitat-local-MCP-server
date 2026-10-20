@@ -2229,7 +2229,8 @@ private Map _rmAddTrigger(Integer appId, Map triggerSpec) {
             throw new IllegalStateException("addTrigger: compareToDevice: the reference-device picker reltDevice${idx} did not appear after istDev${idx}=true.".toString())
         }
         writeIfPresent("reltDevice${idx}", ctd.deviceId.toString())
-        if (!applied.contains("reltDevice${idx}".toString())) {
+        // A failed read-back is unconfirmed, not a refusal: the device may have landed.
+        if (!applied.contains("reltDevice${idx}".toString()) && !_rmSkipUnconfirmed(skipped, "reltDevice${idx}")) {
             throw new IllegalStateException("addTrigger: compareToDevice: reference device ${ctd.deviceId} did not land in reltDevice${idx}, so the trigger was not committed (it would compare against no device).".toString())
         }
         if (ctd.offset != null) rhsOverride = ctd.offset
@@ -6701,7 +6702,7 @@ private Integer _rmBuildCondition(Integer appId, Integer idx, Map condSpec, List
             throw new IllegalStateException("addTrigger.condition: compareToDevice: the reference-device picker relDevice_${idx} did not appear after isDev_${idx}=true.".toString())
         }
         _rmWriteSettingOnPage(appId, "selectTriggers", "relDevice_${idx}", ctd.deviceId.toString(), applied, null, skipped)
-        if (!(applied ?: []).contains("relDevice_${idx}".toString())) {
+        if (!(applied ?: []).contains("relDevice_${idx}".toString()) && !_rmSkipUnconfirmed(skipped, "relDevice_${idx}")) {
             throw new IllegalStateException("addTrigger.condition: compareToDevice: reference device ${ctd.deviceId} did not land in relDevice_${idx}, so the condition was not committed (it would compare against no device).".toString())
         }
         if (ctd.offset != null) {
@@ -6971,7 +6972,7 @@ private Map _rmBuildUpdateErrorResponse(Integer appId, String msg, Map backup, S
         // pageName tells the caller which wizard page the cancelCapab recovery click belongs on
         // (doActPage for addAction, STPage for addRequiredExpression). The wizardStuck markers
         // themselves carry no page info, so callers thread it in.
-        restoreHint = _rmBackupHint(backup, "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup?.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain.") + " Or, before your next write, close the in-flight wizard manually: hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a stuck editor on a new action row, or button='actionDone' for an editor modifyAction opened on a committed action (actionCancel would delete that action)."
+        restoreHint = _rmBackupHint(backup, "Backup baseline available -- restore via hub_restore_backup with backupKey='${backup?.backupKey}'. Restoring returns the app to that snapshot and may undo every later edit in the baseline's one-hour chain.") + (flags.closeHint ?: " Or, before your next write, close the in-flight wizard manually: hub_set_rule(button='cancelCapab', pageName='${pageName}', confirm=true) for an open condition sub-wizard, hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a stuck editor on a new action row, or button='actionDone' for an editor modifyAction opened on a committed action (actionCancel would delete that action).")
     } else {
         restoreHint = _rmBackupHint(backup)
     }
@@ -7327,10 +7328,11 @@ Map _rmWalkStep(Integer appId, Map spec) {
             def writtenStr = writtenValue?.toString()
             // For multi-enum, value may be a list — check each.
             def values = (writtenValue instanceof List) ? writtenValue.collect { it?.toString() } : [writtenStr]
-            def invalid = values.findAll { v -> v != null && !validValues.contains(v) }
+            // "" clears the picker, as the settings writer allows.
+            def invalid = values.findAll { v -> v != null && v != "" && !validValues.contains(v) }
             if (invalid) {
                 def valueWord = (invalid.size() == 1) ? "value" : "values"
-                throw new IllegalArgumentException("walkStep.write enum validation failed: ${valueWord} ${invalid} not in options ${validValues} for field '${writtenKey}'. Pick values from the options list (a single value the picker does not list is always refused; validateEnum=false lets a list through unchecked).")
+                throw new IllegalArgumentException("walkStep.write enum validation failed: ${valueWord} ${invalid} not in options ${validValues} for field '${writtenKey}'. Pick values from the options list (a single value the picker does not list is always refused; validateEnum=false lets a list through unchecked). RM is not touched.")
             }
         }
         def fullSchemaMap = _rmCollectInputSchema(beforeCfg?.configPage)
@@ -9345,11 +9347,18 @@ private Map _rmPreflightAddLocalVariable(Integer appId, Map varSpec) {
         }
     }
 
+    // RM stores a Number or Decimal value as given, and a non-numeric one breaks the rule's page.
+    if (typeCanonical == "Number" && !(value.toString().trim() ==~ /-?\d+/)) {
+        throw new IllegalArgumentException("addLocalVariable.value for Number must be a whole number (got '${value}'). RM is not touched.")
+    }
+    if (typeCanonical == "Decimal") {
+        try { new BigDecimal(value.toString().trim()) }
+        catch (NumberFormatException ignored) { throw new IllegalArgumentException("addLocalVariable.value for Decimal must be a number (got '${value}'). RM is not touched.") }
+    }
+
     if (typeCanonical == "DateTime") {
-        if (!_rmLocalDateTimeWallClock(value.toString())) {
-            throw new IllegalArgumentException("addLocalVariable.value for DateTime must be yyyy-MM-ddTHH:mm (seconds and zone are ignored), e.g. 2026-05-06T12:00; got '${value}'. RM is not touched.")
-        }
-        serializedValue = _rmLocalDateTimeWallClock(value.toString())
+        try { serializedValue = _dateTimeVariableValue(name, value) }
+        catch (IllegalArgumentException dtExc) { throw new IllegalArgumentException("addLocalVariable: ${dtExc.message}. RM is not touched.".toString()) }
     }
 
     def existing = _rmReadLocalVarsMap(appId)
@@ -9364,17 +9373,6 @@ private Map _rmPreflightAddLocalVariable(Integer appId, Map varSpec) {
         throw new IllegalArgumentException("addLocalVariable: local variable '${name}' already exists on rule ${appId} (type ${curType}, value ${curValue}); use an action setLocalVariable to change its value, or removeLocalVariable first. RM is not touched.")
     }
     return [name: name, type: typeCanonical, value: value, serializedValue: serializedValue]
-}
-
-// The yyyy-MM-ddTHH:mm wall clock of a DateTime value, or null when it is not a real date and time
-// (optional :ss, .SSS and zone after it are allowed and ignored).
-private String _rmLocalDateTimeWallClock(String raw) {
-    def m = raw?.trim() =~ /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2})(:\d{2}(\.\d{1,3})?)?([+-]\d{2}:?\d{2}|Z)?$/
-    if (!m.matches()) return null
-    String wall = m.group(1)
-    def fmt = new java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm")
-    fmt.setLenient(false)
-    try { return fmt.format(fmt.parse(wall)) == wall ? wall : null } catch (Exception ignored) { return null }
 }
 
 // Whether a committed allLocalVars entry holds the type and value an add asked for. A DateTime is
@@ -9392,12 +9390,29 @@ private boolean _rmLocalVarMatches(Object meta, String typeCanonical, Object ser
     return stored?.toString() == serializedValue?.toString()
 }
 
-// Cancels the local-variable editor a failed add can leave open on selectActions; true when it closed.
+// Whether RM's local-variable editor shows on selectActions; null when the page cannot be read.
+private Boolean _rmLocalVarEditorOpen(Integer appId) {
+    try {
+        return (_rmCollectInputSchema(_rmFetchConfigJson(appId, "selectActions")?.configPage as Map) ?: [:]).keySet().any { it in ["hbVar", "varType", "varValue", "varDate", "varTime"] }
+    } catch (Exception e) {
+        mcpLog("warn", "rm-native", "addLocalVariable: selectActions on app ${appId} could not be read: ${e.message ?: e.toString()}")
+        return null
+    }
+}
+
+// Whether a write of key was sent but its read-back failed (unconfirmed, not refused).
+private boolean _rmSkipUnconfirmed(List skipped, String key) {
+    (skipped ?: []).any { it instanceof Map && it.key?.toString() == key && it.reason == "verification_fetch_failed" }
+}
+
+// Cancels the local-variable editor a failed add can leave open on selectActions; true when it is closed.
+// RM handles cancelGV only while the editor is open (it then deletes the variable named in hbVar), so a
+// closed editor is not clicked.
 private boolean _rmCancelLocalVarEditor(Integer appId) {
+    if (_rmLocalVarEditorOpen(appId) == false) return true
     try {
         _rmClickAppButton(appId, "cancelGV", "cancelGV", "selectActions")
-        def fields = (_rmCollectInputSchema(_rmFetchConfigJson(appId, "selectActions")?.configPage as Map) ?: [:]).keySet()
-        return !fields.any { it in ["hbVar", "varType", "varValue", "varDate", "varTime"] }
+        return _rmLocalVarEditorOpen(appId) == false
     } catch (Exception e) {
         mcpLog("warn", "rm-native", "addLocalVariable: closing the variable editor on app ${appId} failed: ${e.message ?: e.toString()}")
         return false
@@ -9454,9 +9469,19 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
         _rmWriteSettingOnPage(appId, "selectActions", "varValue", serializedValue, applied, null, skipped)
     }
     } catch (Exception writeExc) {
+        // A response lost after RM committed the variable: the variable is there, so the add stands.
+        def afterRead = _rmReadLocalVarsMap(appId)
+        if (afterRead.ok && _rmLocalVarMatches(afterRead.vars.get(name), typeCanonical, serializedValue)) {
+            mcpLog("warn", "rm-native", "addLocalVariable: a write for '${name}' on app ${appId} failed (${writeExc.message}), but the variable is on the rule as asked")
+            return [success: true, name: name, type: typeCanonical, value: value, settingsApplied: applied, settingsSkipped: skipped]
+        }
         boolean closed = _rmCancelLocalVarEditor(appId)
-        mcpLog("warn", "rm-native", "addLocalVariable: a write for '${name}' on app ${appId} failed (${writeExc.message}); the variable editor ${closed ? 'was cancelled' : 'may still be open'}")
-        throw writeExc
+        mcpLog("warn", "rm-native", "addLocalVariable: a write for '${name}' on app ${appId} failed (${writeExc.message}); the variable editor ${closed ? 'is closed' : 'may still be open'}")
+        if (closed && afterRead.ok) throw writeExc
+        String unread = afterRead.ok ? "" : " Whether '${name}' was added could not be read back (${afterRead.error ?: 'no map'}); check hub_list_rule_local_variables."
+        String stuck = closed ? "" : " [wizardStuck -- the variable editor may still be open]"
+        throw _rmFail(new IllegalStateException("${writeExc.message ?: writeExc}${unread}${stuck}".toString(), writeExc), [wizardStuck: !closed, fieldsWritten: true,
+            closeHint: " Or, before your next write, close the variable editor: hub_set_rule(button='cancelGV', stateAttribute='cancelGV', pageName='selectActions', confirm=true)."])
     }
 
     // Verify via appState.allLocalVars that the variable committed. RM
@@ -9466,9 +9491,11 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
     def found = null
     def attempts = 0
     def lastFetchErr = null
+    boolean anyReadOk = false
     while (attempts < 3 && !committed) {
         def lvRead = _rmReadLocalVarsMap(appId)
         if (lvRead.ok) {
+            anyReadOk = true
             if (lvRead.vars.containsKey(name)) {
                 found = lvRead.vars.get(name)
                 committed = _rmLocalVarMatches(found, typeCanonical, serializedValue)
@@ -9507,11 +9534,20 @@ private Map _rmAddLocalVariable(Integer appId, Map varSpec, Map plan = null) {
             ]
         ]
     }
+    if (!committed && !anyReadOk && _rmLocalVarEditorOpen(appId) == false) {
+        // No read answered and the editor is closed: RM closes it when it commits, so the add may have landed.
+        return [
+            success: false, partial: true, fieldsWritten: true, verificationFetchFailed: true,
+            name: name, type: typeCanonical, value: value, settingsApplied: applied, settingsSkipped: skipped,
+            error: "Variable '${name}' was written but the rule's local variables could not be read back (${lastFetchErr}), so whether it was added is unknown.".toString(),
+            repairHints: ["Read the rule's local variables (hub_list_rule_local_variables) before retrying; a retry of an added name is refused as already existing."]
+        ]
+    }
     if (!committed) {
         boolean closed = _rmCancelLocalVarEditor(appId)
         return [
             success: false,
-            partial: true,
+            partial: !closed,
             wizardStuck: !closed,
             hubRenderError: true,
             name: name,
@@ -9810,6 +9846,8 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
     if (isAdd) {
         note = addCommitted
             ? "Local variable '${varResult?.name}' (${varResult?.type}) added with value ${varResult?.value}; updateRule ${updateRuleFailed ? 'FAILED -- variable may not be live' : 'fired'}."
+            : varResult?.verificationFetchFailed == true
+            ? "Local variable '${varResult?.name}' (${varResult?.type}) may or may not have been added (its read-back failed -- see error); updateRule ${updateRuleFailed ? 'FAILED' : 'fired'}."
             : "Local variable '${varResult?.name}' (${varResult?.type}) NOT added (commit miss -- see repairHints); updateRule ${updateRuleFailed ? 'FAILED -- variable may not be live' : 'fired (add unconfirmed)'}."
     } else if (deleteBrokeRule) {
         // Baseline-aware: only claim the delete broke the rule when it was clean beforehand.
@@ -9847,6 +9885,8 @@ private Map _rmApplyLocalVarResult(Integer appId, Map varResult, Map backup, Str
         envelope.settingsSkipped = varResult?.settingsSkipped
         envelope.hubRenderError = varResult?.hubRenderError
         if (varResult?.wizardStuck == true) envelope.wizardStuck = true
+        if (varResult?.fieldsWritten == true) envelope.fieldsWritten = true
+        if (varResult?.verificationFetchFailed == true) envelope.verificationFetchFailed = true
     }
     return envelope
 }
@@ -11218,7 +11258,8 @@ private void _rmWalkConditionReveal(Integer appId, Map ctx, Map cond, Integer cI
         // relDevice_<N> is multiple:false (SINGLE device); write the bare id. It must land: without it the
         // condition compares against no device.
         writeST(hrefParams, relDeviceField, refDevId)
-        if (skippedAccum.any { it instanceof Map && it.key?.toString() == relDeviceField }) {
+        // A failed read-back is unconfirmed, not a refusal: the device may have landed.
+        if (skippedAccum.any { it instanceof Map && it.key?.toString() == relDeviceField } && !_rmSkipUnconfirmed(skippedAccum, relDeviceField)) {
             cancelInFlightCond()
             throw new IllegalStateException("conditions[${condIdx}]: compareToDevice: reference device ${refDevId} did not land in ${relDeviceField}, so the condition was not committed (it would compare against no device).".toString())
         }
@@ -12992,7 +13033,7 @@ private Map _rmBulkStoppedResult(Integer appId, Map backup, String stoppedAfter,
         out.wizardStuck = true
         def recoveryHint = (stopItem instanceof Map && stopItem.op == "modifyTrigger") ?
             _rmModifyTriggerWizardRecoveryHint(appId) :
-            "An item left an editor open (wizardStuck). Close it before any retry: hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a new action's editor (button='actionDone' for one modifyAction opened on a committed action), or button='cancelCapab' with the wizard's pageName for a condition or trigger. Verify with hub_get_app_config(includeSettings=true), then retry the failed item.".toString()
+            "An item left an editor open (wizardStuck). Close it before any retry: hub_set_rule(button='actionCancel', pageName='doActPage', confirm=true) for a new action's editor (button='actionDone' for one modifyAction opened on a committed action), button='cancelCapab' with the wizard's pageName for a condition or trigger, or button='cancelGV' (stateAttribute 'cancelGV', pageName 'selectActions') for the local-variable editor. Verify with hub_get_app_config(includeSettings=true), then retry the failed item.".toString()
         out.repairHints = ([recoveryHint] + (out.repairHints as List))
     }
     out.putAll(extra ?: [:])
@@ -13926,16 +13967,24 @@ def _applyNativeAppEdit(args) {
                         // Apply settings via _rmUpdateAppSettings (no auto-updateRule).
                         def cfg = _rmFetchConfigJson(appId, pm.pageName?.toString())
                         def schema = _rmCollectInputSchema(cfg?.configPage)
-                        def opRefused = (pm.settings as Map).collect { k, v -> _rmRawNotOffered(schema?.get(k.toString()) as Map, k.toString(), v) }.findAll { it }
-                        if (opRefused) {
-                            patchResults << [success: false, op: "settings", settingsNotLanded: opRefused,
-                                error: "patches[${pi}].settings: ${opRefused.collect { it.key }} ${opRefused.size() == 1 ? 'is' : 'are'} not a value the picker offers; nothing in this op was sent.".toString()]
+                        // As top-level settings: a key not on the page or a value the picker does not offer is
+                        // reported and not sent, and the rest is written.
+                        def opSkipped = (pm.settings as Map).keySet().collect { it.toString() }.findAll { !schema?.containsKey(it) }
+                        def opRefused = (pm.settings as Map).findAll { k, v -> !(k.toString() in opSkipped) }
+                            .collect { k, v -> _rmRawNotOffered(schema?.get(k.toString()) as Map, k.toString(), v) }.findAll { it }
+                        def opWritable = (pm.settings as Map).findAll { k, v -> !(k.toString() in opSkipped) && !opRefused.any { it.key == k.toString() } }
+                        def opEntry = [op: "settings"]
+                        if (opRefused) opEntry.settingsNotLanded = opRefused
+                        if (opSkipped) opEntry.settingsSkipped = opSkipped
+                        if (!opWritable) {
+                            patchResults << (opEntry + [success: false,
+                                error: "patches[${pi}].settings: none of ${(pm.settings as Map).keySet().toList()} can be written (settingsNotLanded: not a value the picker offers; settingsSkipped: not an input on the page); nothing in this op was sent.".toString()])
                             patchStopAfter = "patches[${pi}]".toString()
                             patchStopItem = patchResults.last()
                             continue
                         }
-                        _rmUpdateAppSettings(appId, pm.settings as Map, schema)
-                        patchResults << [success: true, op: "settings", keys: (pm.settings as Map).keySet().toList()]
+                        _rmUpdateAppSettings(appId, opWritable, schema)
+                        patchResults << (opEntry + [success: true, keys: opWritable.keySet().collect { it.toString() }] + ((opRefused || opSkipped) ? [partial: true] : [:]))
                     } else if (pm.containsKey("button")) {
                         if (pm.pageName) _rmClickRenderedButton(appId, pm.button.toString(), pm.stateAttribute?.toString(), pm.pageName.toString())
                         else _rmClickAppButton(appId, pm.button.toString(), pm.stateAttribute?.toString(), null)
@@ -14481,12 +14530,14 @@ def _applyNativeAppEdit(args) {
                 // Write sub-page keys one at a time with page context and verify each landed, including
                 // the sticky multiple flag; settingsApplied lists only confirmed keys.
                 writable.each { k, v ->
+                    // The writer reads the page this check read (one GET per key).
+                    Map keyCache = [:]
                     if (v instanceof List) {
-                        def fresh = _rmCollectInputSchema(_rmFetchConfigJson(appId, pageName)?.configPage)
+                        def fresh = _rmCollectInputSchema(_rmFetchConfigJson(appId, pageName, keyCache)?.configPage)
                         def listRefusal = _rmRawNotOffered(fresh?.get(k.toString()) as Map, k.toString(), v)
                         if (listRefusal) { notOffered << listRefusal; return }
                     }
-                    _rmWriteSettingOnPage(appId, pageName, k.toString(), v, subPageApplied, null, subPageSkipped)
+                    _rmWriteSettingOnPage(appId, pageName, k.toString(), v, subPageApplied, null, subPageSkipped, keyCache)
                     _rmVerifySubPageMultipleFlags(appId, pageName, [(k.toString()): v], schema)
                 }
             } else if (writable) {
@@ -14513,10 +14564,12 @@ def _applyNativeAppEdit(args) {
             }
             result.settingsApplied = isSubPageWrite ? subPageApplied : writable.keySet().toList()
             settingsWritten = !((result.settingsApplied ?: []) as List).isEmpty()
-            if (notOffered || subPageSkipped) {
-                result.settingsNotLanded = notOffered + subPageSkipped
-                result.partial = true
-            }
+            // A write whose read-back failed was sent and may have landed: it is unconfirmed, not "not landed".
+            def notLanded = notOffered + subPageSkipped.findAll { !(it instanceof Map && it.reason == "verification_fetch_failed") }
+            result.settingsUnconfirmed = subPageSkipped.findAll { it instanceof Map && it.reason == "verification_fetch_failed" }.collect { it.key }
+            if (!result.settingsUnconfirmed) result.remove("settingsUnconfirmed")
+            if (notLanded) result.settingsNotLanded = notLanded
+            if (notLanded || result.settingsUnconfirmed) result.partial = true
             if (unknownSettings) {
                 result.settingsSkipped = unknownSettings
                 def settingWord = (unknownSettings.size() == 1) ? "Setting" : "Settings"
@@ -14538,12 +14591,12 @@ def _applyNativeAppEdit(args) {
             ["settingsNotLanded", "settingsSkipped", "unknownSettingsWarning"].each { f -> if (result[f]) m[f] = result[f] }
             return m
         }
-        // A write whose read-back failed was sent: it may have landed, so it is a partial with applied unknown.
-        def unconfirmed = ((result.settingsNotLanded ?: []) as List).findAll { it instanceof Map && it.reason == "verification_fetch_failed" }.collect { it.key }
-        if (settingsMap && !settingsWritten && unconfirmed) {
-            return notLandedFields([success: false, partial: true, fieldsWritten: true, appId: appId, backup: backup, settingsApplied: [],
+        // An unconfirmed write leaves the outcome unknown, whatever else landed: the call stops before the button.
+        def unconfirmed = (result.settingsUnconfirmed ?: []) as List
+        if (settingsMap && unconfirmed) {
+            return notLandedFields([success: false, partial: true, fieldsWritten: true, appId: appId, backup: backup, settingsApplied: result.settingsApplied ?: [],
                     settingsUnconfirmed: unconfirmed,
-                    error: "The settings ${unconfirmed} were sent to page '${pageName ?: 'mainPage'}' but could not be read back, so whether they landed is unknown${button ? "; the button '${button}' was not clicked" : ''}. Read the page with hub_get_app_config before retrying.".toString(),
+                    error: "The settings ${unconfirmed} were sent to page '${pageName ?: 'mainPage'}' but could not be read back, so whether they landed is unknown${settingsWritten ? " (${result.settingsApplied} landed)" : ''}${button ? "; the button '${button}' was not clicked" : ''}. Read the page with hub_get_app_config before retrying.".toString(),
                     restoreHint: _rmBackupHint(backup)])
         }
         if (settingsMap && !settingsWritten) {

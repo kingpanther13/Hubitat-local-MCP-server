@@ -8560,16 +8560,30 @@ class TestRunner:
                 and any(s.get("key") == "logging" and s.get("reason") == "not_offered"
                         for s in (raw_rendered.get("settingsNotLanded") or [])), \
                 f"an unoffered value with a rendered button should be refused, no click: {raw_rendered}"
-            # patches[].settings take the same refusal before the op sends anything.
+            # patches[].settings take the same refusal: an op with nothing writable sends nothing.
             patch_enum = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
                 "appId": int(app_id), "confirm": True, "patches": [{"settings": {"logging": ["NopeE2E"]}}]}})
             patch_op = (patch_enum.get("patches") or [{}])[0]
             assert patch_enum.get("success") is False and patch_op.get("success") is False \
                 and (patch_op.get("settingsNotLanded") or [{}])[0].get("notOffered") == ["NopeE2E"], \
                 f"patches settings with an unoffered value should be refused: {patch_enum}"
+            # A key that is not an input on the page is reported, as top-level settings report it, not claimed written.
+            patch_unknown = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": int(app_id), "confirm": True, "patches": [{"settings": {"notAnInputE2E": "1"}}]}})
+            unknown_op = (patch_unknown.get("patches") or [{}])[0]
+            assert patch_unknown.get("success") is False and unknown_op.get("success") is False \
+                and unknown_op.get("settingsSkipped") == ["notAnInputE2E"], \
+                f"a patches settings key the page does not show should be reported unsent: {patch_unknown}"
             settings_after = self._get_persisted_rule_config(app_id).get("settings") or {}
             assert settings_after == settings_before, \
                 f"the refused walkStep and raw calls changed the rule's settings: {settings_before} -> {settings_after}"
+            # Under validateEnum a "" clears an enum, as the settings writer allows; the original is put back.
+            self._set_rule(app_id, {"walkStep": {"page": "mainPage", "operation": "write", "write": {"logging": ""},
+                                                 "validateEnum": True}}, strict=True)
+            cleared = (self._get_persisted_rule_config(app_id).get("settings") or {}).get("logging")
+            assert cleared in (None, "", []), f"a validateEnum walkStep write of '' should clear logging: {cleared}"
+            if settings_before.get("logging"):
+                self._set_rule(app_id, {"settings": {"logging": settings_before["logging"]}, "pageName": "mainPage"}, strict=True)
 
             # (2) WRITE composition: open the trigger editor then pick a capability, in ONE
             #     drive call. Mirrors _rmAddTrigger's proven wire format (click name='true'/
@@ -9747,8 +9761,26 @@ class TestRunner:
             bad_dt = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
                 "appId": int(app_id), "confirm": True,
                 "addLocalVariable": {"name": "seenBad", "type": "DateTime", "value": "tomorrow"}}})
-            assert bad_dt.get("success") is False and "yyyy-MM-ddTHH:mm" in str(bad_dt.get("error", "")) \
+            assert bad_dt.get("success") is False and "requires a valid date and time" in str(bad_dt.get("error", "")) \
                 and bad_dt.get("backup") is None, f"a malformed DateTime local should be refused before any write: {bad_dt}"
+            # The hub-variable forms are accepted too: a space instead of T.
+            dt_space = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": int(app_id), "confirm": True,
+                "addLocalVariable": {"name": "seenSpace", "type": "DateTime", "value": "2026-01-02 08:15"}}})
+            assert dt_space.get("success") is True, f"a space-separated DateTime local add failed: {dt_space}"
+            space_locals = self.client.call_tool("hub_read_rules", {
+                "tool": "hub_list_rule_local_variables", "args": {"appId": app_id}})
+            spaced = next((lv for lv in (space_locals.get("localVariables") or []) if lv.get("name") == "seenSpace"), {})
+            assert "2026-01-02" in str(spaced.get("value")) and "08:15" in str(spaced.get("value")), \
+                f"the space-separated DateTime local did not read back: {space_locals}"
+            # A Number that is not a whole number, or a Decimal that is not a number, is refused before any
+            # write: RM would store it and the rule's page would then fail to render.
+            for bad_type, bad_value in (("Number", "abc"), ("Number", "1.5"), ("Decimal", "1.2.3")):
+                bad_num = self._refusal_call("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                    "appId": int(app_id), "confirm": True,
+                    "addLocalVariable": {"name": "badNum", "type": bad_type, "value": bad_value}}})
+                assert bad_num.get("success") is False and "RM is not touched" in str(bad_num.get("error", "")) \
+                    and bad_num.get("backup") is None, f"a {bad_type} local of {bad_value!r} should be refused before any write: {bad_num}"
 
             self._assert_rule_healthy(app_id)
 

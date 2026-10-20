@@ -599,6 +599,125 @@ class WalkStepSourceSpec extends ToolSpecBase {
         !posts.any { it.body?.containsKey("settings[logging]") }
     }
 
+    def "a raw sub-page write with one key landed and one unconfirmed stops before the button, applied unknown"() {
+        given: "the read after the tDev1 POST fails; tCapab1 lands"
+        enableWrite()
+        def posts = []
+        boolean failNext = false
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            if (failNext) { failNext = false; throw new RuntimeException("read timed out") }
+            def capab = [name: "tCapab1", type: "enum", options: ["Switch"]]
+            if (posts.any { it.body?.containsKey("settings[tCapab1]") }) capab.value = "Switch"
+            page("selectTriggers", [capab, [name: "tDev1", type: "text"], [name: "hasAll", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (body?.containsKey("settings[tDev1]")) failNext = true
+            [status: 200, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, settings: [tCapab1: "Switch", tDev1: "7"], pageName: "selectTriggers", button: "hasAll"])
+
+        then:
+        result.success == false
+        result.partial == true
+        result.applied == null
+        result.verified == false
+        result.settingsApplied == ["tCapab1"]
+        result.settingsUnconfirmed == ["tDev1"]
+        !((result.settingsNotLanded ?: []) as List).any { it.key == "tDev1" }
+        result.error.contains("the button 'hasAll' was not clicked")
+        !posts.any { it.path == "/installedapp/btn" }
+    }
+
+    def "a raw sub-page list value is checked and written from one page read"() {
+        given:
+        enableWrite()
+        def events = []
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            events << "GET"
+            def state = [name: "tstate1", type: "enum", options: ["on", "off"]]
+            if (events.contains("POST")) state.value = "on"
+            page("selectTriggers", [state])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (body?.containsKey("settings[tstate1]")) events << "POST"
+            [status: 200, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, settings: [tstate1: ["on"]], pageName: "selectTriggers"])
+
+        then: "before the POST: the call's own read and one read the check and writer share"
+        result.settingsApplied == ["tstate1"]
+        events.subList(0, events.indexOf("POST")) == ["GET", "GET"]
+    }
+
+    def "patches settings write the keys they can and report the rest, as top-level settings do"() {
+        given:
+        enableWrite()
+        def posts = []
+        def main = { -> page("mainPage", [[name: "logging", type: "enum", multiple: true, options: ["Events", "Triggers"]],
+                                          [name: "comments", type: "text"], [name: "updateRule", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> main() }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> main() }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << [path: path, body: body]; [status: 200, data: ''] }
+
+        when:
+        def mixed = script.toolSetRule([appId: 100, confirm: true, patches: [[settings: [logging: ["Events", "Nope"], comments: "x", notAnInput: "1"]]]])
+
+        then:
+        def op = (mixed.patches as List)[0]
+        op.success == true
+        op.partial == true
+        op.keys == ["comments"]
+        op.settingsNotLanded*.key == ["logging"]
+        op.settingsSkipped == ["notAnInput"]
+        mixed.partial == true
+        posts.any { it.body?.get("settings[comments]") == "x" }
+        !posts.any { it.body?.containsKey("settings[logging]") || it.body?.containsKey("settings[notAnInput]") }
+
+        when:
+        posts.clear()
+        def unknown = script.toolSetRule([appId: 100, confirm: true, patches: [[settings: [notAnInput: "1"]]]])
+
+        then: "nothing writable: refused unsent, and the batch stops"
+        unknown.success == false
+        (unknown.patches as List)[0].success == false
+        (unknown.patches as List)[0].settingsSkipped == ["notAnInput"]
+        unknown.bulkStoppedAfter == "patches[0]"
+        !posts.any { it.body?.containsKey("settings[notAnInput]") }
+    }
+
+    def "walkStep validateEnum lets an empty value clear the picker, as the settings writer does"() {
+        given:
+        enableWrite()
+        def posts = []
+        def main = { -> page("mainPage", [[name: "logging", type: "enum", multiple: true, options: ["Events", "Triggers"]], [name: "updateRule", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> main() }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> main() }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << [path: path, body: body]; [status: 200, data: ''] }
+
+        when:
+        def cleared = script.toolSetRule([appId: 100, confirm: true, walkStep: [page: "mainPage", operation: "write", write: [logging: ""], validateEnum: true]])
+        def refused = script.toolSetRule([appId: 100, confirm: true, walkStep: [page: "mainPage", operation: "write", write: [logging: "Nope"], validateEnum: true]])
+
+        then:
+        !cleared.error?.toString()?.contains("enum validation failed")
+        posts.any { it.body?.containsKey("settings[logging]") }
+        refused.success == false
+        refused.error.contains("enum validation failed")
+        refused.restoreHint.contains("nothing needs to be restored")
+    }
+
     def "an enum can be cleared: an empty or null value is never refused as not offered"() {
         expect:
         script._rmNotOfferedSkip([type: "enum", options: ["A", "B"]], "k", value) == null
