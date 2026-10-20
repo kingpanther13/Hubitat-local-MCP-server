@@ -26062,7 +26062,7 @@ private void _ndValidateSchema(Object value, Map schema, String path, boolean co
     if (schema.type == 'object') {
         if (schema.additionalProperties == false && value.keySet().any { !schema.properties.containsKey(it) }) throw new IllegalArgumentException("Unknown ${path} property")
         if (complete && schema.required?.any { !value.containsKey(it) }) throw new IllegalArgumentException("Missing required ${path} property")
-        value.each { key, item -> if (schema.properties?.containsKey(key)) _ndValidateSchema(item, schema.properties[key], "${path}.${key}".toString(), complete) }
+        value.each { key, item -> if (schema.properties?.containsKey(key)) _ndValidateSchema(item, schema.properties.get(key), "${path}.${key}".toString(), complete) }
     } else if (schema.type == 'array') {
         if ((schema.minItems != null && value.size() < schema.minItems) || (schema.maxItems != null && value.size() > schema.maxItems)) throw new IllegalArgumentException("Invalid ${path} length")
         value.each { item -> _ndValidateSchema(item, schema.items, path, complete) }
