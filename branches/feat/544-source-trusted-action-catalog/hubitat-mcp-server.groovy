@@ -26618,6 +26618,9 @@ private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean co
     try { _rmClickAppButton(appId, "actionCancel", null, "doActPage") } catch (Exception cancelExc) {
         mcpLog("debug", "rm-native", "_rmRollbackInFlightAction: actionCancel click failed for app ${appId} action ${idx} (${cancelExc.message ?: cancelExc.toString()})")
     }
+    try { _rmFetchConfigJson(appId, "doActPage") } catch (Exception renderExc) {
+        mcpLog("debug", "rm-native", "_rmRollbackInFlightAction: doActPage render after actionCancel failed for app ${appId} action ${idx} (${renderExc.message ?: renderExc.toString()})")
+    }
     try {
         if (!_rmLiveActionIndicesFromSettings(_rmFetchStatusJson(appId)).contains(idx)) return true
         _rmDeleteAction(appId, idx, true)
