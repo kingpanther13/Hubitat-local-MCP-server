@@ -20304,6 +20304,7 @@ def toolUpdateMcpSettings(args) {
         "enableMandatoryBPS":     "bool",
         "bypassDeviceAllowlist":  "bool",
         "maxConcurrentWrites":    "number",
+        "backupBeforeRuleEdits":  "bool",
         "backupEveryRuleWrite":   "bool",
         "backupBudgetMb":         "number",
         "enableLocalAccess":      "bool",
@@ -21001,7 +21002,7 @@ def _getAllToolDefinitions_partSelfAdmin() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupEveryRuleWrite (bool, default OFF): ON takes a fresh File Manager backup before every native-app edit instead of reusing a same-app baseline for one hour.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
+                    settings: [type: "object", description: "Map of setting key → new value[[FLAT_TRIM]] (e.g. {\"mcpLogLevel\":\"warn\",\"enableCustomRuleEngine\":true})[[/FLAT_TRIM]]. Unlisted keys are rejected. bypassDeviceAllowlist (bool, default OFF): DANGEROUS escape hatch — when ON native device reads, writes, commands, inventory, health, dependents, swaps and replacements reach ANY hub device by id, IGNORING selectedDevices. Allowlisted keys: mcpLogLevel, debugLogging, maxCapturedStates, loopGuardMax, loopGuardWindowSec, enableRead, enableCustomRuleEngine, useGateways, enableMandatoryBPS, bypassDeviceAllowlist, maxConcurrentWrites, backupBeforeRuleEdits, backupEveryRuleWrite, backupBudgetMb, enableLocalAccess, enableCloudAccess, redactAccessTokens, selectedDevices.[[FLAT_TRIM]] enableLocalAccess / enableCloudAccess (bool): allow requests over the LAN / Hubitat cloud endpoint; a call cannot turn off the connection it arrived on.[[/FLAT_TRIM]] mcpLogLevel: debug|info|warn|error. maxConcurrentWrites: integer 0-100[[FLAT_TRIM]] (default 2; 0 disables the server-side all-write concurrency cap)[[/FLAT_TRIM]]. backupBeforeRuleEdits (bool, default ON): take one fresh snapshot per native rule edit batch or form workflow. backupEveryRuleWrite (bool, default OFF): prioritize the session's first snapshot over later rolling snapshots when pruning; this does not change snapshot frequency.[[FLAT_TRIM]] backupBudgetMb: whole number of MB from 1 to 1000000 (default 10): code and rule backups are evicted only when together they exceed it, rolling steps first; see hub_get_tool_guide(section='backup').[[/FLAT_TRIM]][[FLAT_TRIM]] bypassDeviceAllowlist is independent of Developer Mode.[[/FLAT_TRIM]] selectedDevices = the device-access scope[[FLAT_TRIM]]: {mode:replace|add|remove, ids:[device id strings]}; a bare array is shorthand for a destructive replace[[/FLAT_TRIM]] — see hub_get_tool_guide(section='hub_admin_write_system') for per-mode semantics."],
                     clientToken: [type: "object", description: "Per-client tokens, instead of settings: see hub_get_tool_guide(section='hub_admin_write_system').[[FLAT_TRIM]] {action: list|create|update|rotate|revoke, ...}. Shape: clientId (update/rotate/revoke), label (create), access? {tools: [names]|\"all\", read, write, local, cloud, toolNumber: main|none|0-9}. create and rotate return the new token; a new client starts with every grantable tool on and access narrows it.[[/FLAT_TRIM]]"],
                     confirm: [type: "boolean", description: "REQUIRED: must be true to confirm the operation"]
                 ],
@@ -21831,6 +21832,19 @@ String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
     def copy = _rmReadRuleState(copyId)
     if (!copy) return "app ${copyId}'s state could not be read".toString()
     if (copy.broken == true) return "app ${copyId} reads as broken".toString()
+    if (snapshot.captureFormat == 'native-rule-edit-v1') {
+        try {
+            Map payload = _rmDecodeRuleExport(_ndId(snapshot.ruleId).toString().toInteger(), snapshot.nativeExport)
+            Map data = payload.appData.find { key, value -> key.toString() == snapshot.ruleId.toString() }.value as Map
+            def expected = _rmNativeModelSignature(data.state)
+            def actual = _rmNativeModelSignature(copy).findAll { key, value -> expected.containsKey(key) }
+            if (_rmNativeComparable(actual) != _rmNativeComparable(expected)) return 'the compiled native configuration differs from recovery'
+            if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(copyId.toLong()))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) return 'the native settings differ from recovery'
+            def locals = _nrHandle(copyId.toLong()).getAllLocalVars().collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
+            if (_rmNativeComparable(locals) != _rmNativeComparable(_rmNativeLocalSignature(data.state))) return 'the native local variables differ from recovery'
+            return null
+        } catch (Exception failure) { return "the native recovery configuration could not be verified: ${failure.message}".toString() }
+    }
     def keys = { m -> (m instanceof Map) ? (m as Map).keySet().collect { it.toString() }.sort() : [] }
     def list = { l -> (l instanceof List) ? (l as List).collect { it.toString() } : [] }
     def problems = []
@@ -21853,9 +21867,133 @@ void _rmRecordNativeRestore(String backupKey, Integer newId, boolean keepDisable
         mcpLog("warn", "rm-native", "Recording that backup ${backupKey} was restored as app ${newId} failed (${e.message}); a retry would import it again")
     }
 }
+private Object _rmNativeComparable(Object value) {
+    if (value instanceof Map) return value.collectEntries { key, item -> [(key.toString()): _rmNativeComparable(item)] }
+    if (value instanceof List) return value.collect { item -> _rmNativeComparable(item) }
+    if (value instanceof Number) return new BigDecimal(value.toString()).stripTrailingZeros()
+    value
+}
+private List _rmNativeSettingPlan(List rows) {
+    List plan = []
+    rows.each { row ->
+        if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.type ||
+            (row.multiple != null && !(row.multiple instanceof Boolean))) throw new IllegalArgumentException('Invalid native recovery setting')
+        if (row.type == 'button') {
+            if (row.value != null && row.value != '') throw new IllegalArgumentException('Recovery contains an unfinished native button operation')
+        } else {
+            boolean device = row.type == 'capability' || row.type.startsWith('capability.')
+            def value = row.value
+            if (device) {
+                if (row.deviceList != null && !(row.deviceList instanceof Map)) throw new IllegalArgumentException('Invalid recovery device selection')
+                List ids = row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() } : []
+                if (ids.any { !it.isLong() || it.toLong() <= 0L } || (row.multiple != true && ids.size() > 1)) throw new IllegalArgumentException('Invalid recovery device IDs')
+                value = ids ? (row.multiple == true ? ids : ids[0]) : null
+            } else if (row.multiple == true && value instanceof String) value = new groovy.json.JsonSlurper().parseText(value)
+            if (value != null) {
+                if (row.multiple == true && !(value instanceof List)) throw new IllegalArgumentException('Recovery setting requires a list')
+                List values = value instanceof List ? value : [value]
+                if (values.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Recovery settings require scalar values')
+                _nrComparableSetting(row.type, value)
+                plan << [name: row.name, type: row.type, multiple: row.multiple == true, value: value]
+            }
+        }
+    }
+    if (rows.collect { it.name }.unique().size() != rows.size()) throw new IllegalArgumentException('Duplicate recovery setting')
+    plan
+}
+private Map _rmNativeSettingsSignature(List rows) {
+    _rmNativeSettingPlan(rows).collectEntries { row -> [(row.name): [type: row.type, multiple: row.multiple, value: _nrComparableSetting(row.type, row.value)]] }
+}
+private List _rmNativeCurrentSettings(Long id) {
+    _nmSettingsInventory(id).collect { name, row -> [name: name] + row }
+}
+private Map _rmNativeModelSignature(Map state) {
+    def keys = ['actions', 'actionList', 'capabstrue', 'capabsfalse', 'eval', 'disabledActions', 'disabledTriggers',
+                'actNdx', 'ndx', 'ruleNdx', 'waitCondNdx', 'predCapabs', 'hasPredicate']
+    Map result = state.findAll { key, value -> key in keys }
+    ['actions', 'capabstrue', 'capabsfalse', 'eval'].each { key -> result[key] = state.get(key) instanceof Map ? state.get(key) : [:] }
+    result.actionList = state.actionList instanceof List ? state.actionList : []
+    result
+}
+private Map _rmNativeLocalSignature(Map state) {
+    Map locals = state.allLocalVars instanceof Map ? [:] + state.allLocalVars : [:]
+    state.each { key, value -> if (key.toString().startsWith('lv_') && value instanceof Map) locals.put(key.toString().substring(3), value) }
+    locals.collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
+}
+private void _rmNativeRestoreFlags(Long id, Map savedState) {
+    Map live = _nrState(id)
+    if ((live.stopped == true) != (savedState.stopped == true)) _nrHandle(id).appButtonHandler('stopRule')
+    live = _nrState(id)
+    if ((live.paused == true) != (savedState.paused == true)) _nrHandle(id).appButtonHandler('pausRule')
+}
+private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
+    Long id = _ndId(snapshot.ruleId)
+    Map payload = _rmDecodeRuleExport(id.toString().toInteger(), snapshot.nativeExport)
+    Map identity = payload.appReplacements.find { key, value -> key.toString() == id.toString() }.value as Map
+    Map data = payload.appData.find { key, value -> key.toString() == id.toString() }.value as Map
+    def target = getAppByAppId(id)
+    _requireUnprotectedAppMutation(id, 'restore native rule configuration')
+    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || target?.appType?.name != 'Rule-5.1' ||
+        target.parentAppId?.toString() != identity.parentAppInstalledAppId?.toString()) throw new IllegalArgumentException('Recovery target must be the original native rule under its original parent')
+    if (target.disabled == true) throw new IllegalArgumentException('Enable the native rule before restoring its configuration')
+    Map expectedState = data.state as Map
+    if (_ndStructuralIssues(expectedState, data.appSettings.any { it.name == 'useST' && it.value?.toString() == 'true' }) ||
+        _nmValidateStructure(id, expectedState).success != true) throw new IllegalArgumentException('Recovery contains an unfinished native rule model')
+    List plan = _rmNativeSettingPlan(data.appSettings)
+    def deviceIds = payload.deviceReplacements.keySet().collect { it.toString() }
+    plan.findAll { it.type == 'capability' || it.type.startsWith('capability.') }.each { row -> deviceIds.addAll(row.value instanceof List ? row.value : [row.value]) }
+    if (deviceIds) {
+        def raw = hubInternalGet('/device/listJson')
+        def devices = raw instanceof List ? raw : new groovy.json.JsonSlurper().parseText(raw?.toString() ?: '')
+        if (!(devices instanceof List) || deviceIds.any { wanted -> !devices.any { it instanceof Map && it.id?.toString() == wanted.toString() } }) throw new IllegalArgumentException('Recovery device references could not all be verified; nothing was restored')
+    }
+    Map undo = _rmBackupRuleSnapshot(id.toString().toInteger(), 'pre-native-restore', true, sourceBackupKey)
+    if (!(undo?.backupKey instanceof String) || !undo.backupKey) throw new IllegalStateException('Pre-restore recovery capture returned no handle')
+    boolean attempted = false
+    try {
+        attempted = true
+        if (_nrState(id).stopped != true) _nrHandle(id).appButtonHandler('stopRule')
+        def wantedNames = plan.collect { it.name }
+        _rmNativeCurrentSettings(id).each { row -> if (!(row.name in wantedNames) || !plan.any { it.name == row.name && it.type == row.type && it.multiple == (row.multiple == true) }) _nrHandle(id).removeSetting(row.name) }
+        plan.each { row -> _nrHandle(id).updateSetting(row.name, [type: row.type, value: row.value]) }
+        if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(id))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native typed settings did not restore exactly')
+        Map restoreState = [:] + expectedState + [stopped: true]
+        _nrStatePatch(id, restoreState, _nrState(id).keySet().findAll { !restoreState.containsKey(it) }.collect { it.toString() })
+        if (_rmNativeComparable(_nrState(id)) != _rmNativeComparable(restoreState)) throw new IllegalStateException('Complete native state did not persist exactly')
+        _nrHandle(id).updateLabel(identity.appLabel)
+        _nrHandle(id).appButtonHandler('updateRule')
+        _rmNativeRestoreFlags(id, expectedState)
+        Map rebuilt = _ndApply(id, [], false)
+        if (rebuilt.success != true || rebuilt.broken != false) throw new IllegalStateException(rebuilt.error?.toString() ?: 'Native rule rebuild failed')
+        Map actual = _nrState(id)
+        def expectedModel = _rmNativeModelSignature(expectedState)
+        def actualModel = _rmNativeModelSignature(actual).findAll { key, value -> expectedModel.containsKey(key) }
+        if (_rmNativeComparable(actualModel) != _rmNativeComparable(expectedModel)) throw new IllegalStateException('Rebuilt native actions, triggers, conditions or expressions differ from recovery')
+        Map actualLocals = _nrHandle(id).getAllLocalVars().collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
+        if (_rmNativeComparable(actualLocals) != _rmNativeComparable(_rmNativeLocalSignature(expectedState))) throw new IllegalStateException('Native local variables differ from recovery')
+        if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(id))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native rebuild changed restored settings')
+        if ((actual.stopped == true) != (expectedState.stopped == true) || (actual.paused == true) != (expectedState.paused == true) ||
+            (_nrHandle(id).label ?: '') != (identity.appLabel ?: '')) throw new IllegalStateException('Native label or lifecycle state differs from recovery')
+        [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
+         stateVerified: true, settingsVerified: true, localVariablesVerified: true, broken: rebuilt.broken, stopped: rebuilt.stopped, paused: rebuilt.paused,
+         eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]
+    } catch (Exception failure) {
+        [success: false, partial: attempted, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
+         error: failure.message?.toString(), note: 'Restore did not pass complete verification. Inspect the native rule; the pre-restore backup is available for recovery.']
+    }
+}
 private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean preserveRuleId = true, String backupKey = null) {
     def fileName = entry.fileName
     Map snapshot = preparedSnapshot != null ? preparedSnapshot : _rmReadBackupSnapshot(entry)
+    if (snapshot.containsKey('captureFormat')) {
+        if (snapshot.captureFormat != 'native-rule-edit-v1') throw new IllegalArgumentException('Unsupported native recovery format')
+        _rmDecodeRuleExport(_ndId(snapshot.ruleId).toString().toInteger(), snapshot.nativeExport)
+        if (preserveRuleId) {
+            if (getAppByAppId(_ndId(snapshot.ruleId)) != null) return _rmRestoreNativeEdit(snapshot, backupKey)
+            def inventory = _collectLiveApps()
+            if (!(inventory instanceof Map) || inventory.keySet().any { it.toString() == snapshot.ruleId.toString() }) throw new IllegalArgumentException('The original native rule could not be confirmed absent; nothing was restored')
+        }
+    }
     def savedId = snapshot.ruleId as Integer
     def savedSettings = (snapshot?.configJson?.settings ?: [:]) as Map
     def savedLabel = snapshot?.appLabel
@@ -21890,6 +22028,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             nativeSkipped = "App Cloner restore is used for Rule Machine rules only"
         } else {
             def nativeOut = _rmRestoreViaNativeImport(snapshot, savedId, exists, fileName?.toString(), backupKey)
+            if (nativeOut?.fallback && snapshot.captureFormat == 'native-rule-edit-v1') return [success: false, type: 'rm-rule', originalRuleId: savedId, error: "Exact native recovery is unavailable: ${nativeOut.fallback}".toString()]
             if (nativeOut?.fallback) nativeSkipped = nativeOut.fallback.toString()
             else return nativeOut
         }
@@ -23963,9 +24102,53 @@ private def _rmRecentRuleBackup(Map mfst, Integer ruleId, long nowMs) {
         return age >= 0L && age < 60L * 60L * 1000L
     }.max { a, b -> (a.value.timestamp as Long) <=> (b.value.timestamp as Long) }
 }
-Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
-    def built = _rmBuildRuleSnapshot(ruleId, reason)
-    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map) }
+private String _rmCaptureRuleExport(Integer ruleId) {
+    def raw = _nrHandle(ruleId.toLong()).exportAppData([ruleId.toLong()])
+    _rmDecodeRuleExport(ruleId, raw)
+    raw
+}
+private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
+    if (!(raw instanceof String) || !raw) throw new IllegalStateException('Native recovery export is unavailable')
+    def payload = new groovy.json.JsonSlurper().parseText(raw)
+    def identity = payload instanceof Map && payload.appReplacements instanceof Map ? payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }?.value : null
+    def data = payload instanceof Map && payload.appData instanceof Map ? payload.appData.find { key, value -> key.toString() == ruleId.toString() }?.value : null
+    if (!(identity instanceof Map) || identity.appTypeNamespace != 'hubitat' || identity.appTypeName != 'Rule-5.1' ||
+        !identity.parentAppInstalledAppId?.toString()?.isLong() || identity.parentAppInstalledAppId.toString().toLong() <= 0L ||
+        !(payload.deviceReplacements instanceof Map) || !(data instanceof Map) || !(data.state instanceof Map) ||
+        ['actions', 'capabstrue', 'capabsfalse', 'eval'].any { data.state.get(it) != null && !(data.state.get(it) instanceof Map) } ||
+        (data.state.actionList != null && !(data.state.actionList instanceof List)) ||
+        data.state.keySet().any { !(it instanceof String) || !it } ||
+        ['stopped', 'paused'].any { data.state.containsKey(it) && !(data.state.get(it) instanceof Boolean) } ||
+        !(data.appSettings instanceof List) || !(data.subscriptions instanceof List) ||
+        data.appSettings.any { !(it instanceof Map) || !(it.name instanceof String) || !it.name || !(it.type instanceof String) || !it.type } ||
+        data.appSettings.collect { it.name }.unique().size() != data.appSettings.size()) {
+        throw new IllegalStateException('Native recovery export does not identify a complete Rule-5.1 configuration')
+    }
+    _rmNativeSettingPlan(data.appSettings)
+    payload
+}
+Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeExport = false, String protectedKey = null) {
+    def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason)
+    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, protectedKey) }
+}
+private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String nativeExport) {
+    Map payload = new groovy.json.JsonSlurper().parseText(nativeExport) as Map
+    Map identity = payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }.value as Map
+    Map data = payload.appData.find { key, value -> key.toString() == ruleId.toString() }.value as Map
+    Map savedSettings = [:]
+    List settingRows = data.appSettings.collect { row ->
+        savedSettings.put(row.name, row.deviceList instanceof Map && row.deviceList ? row.deviceList : row.value)
+        [:] + row + [deviceIdsForDeviceList: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() } : []]
+    }
+    Map config = [app: [id: ruleId, label: identity.appLabel, trueLabel: identity.appLabel,
+        appType: [name: identity.appTypeName, namespace: identity.appTypeNamespace]], settings: savedSettings,
+        configPage: [name: 'mainPage', sections: [[input: settingRows.collect { row -> [element: 'input', name: row.name, type: row.type, multiple: row.multiple == true] }]]]]
+    long capturedAt = now()
+    Map snapshot = [schemaVersion: 1, captureFormat: 'native-rule-edit-v1', ruleId: ruleId, appId: ruleId, appType: 'rule_machine', reason: reason,
+        timestamp: capturedAt, timestampIso: formatTimestamp(capturedAt), appLabel: stripAppConfigHtml(identity.appLabel),
+        nativeExport: nativeExport, configJson: config,
+        statusJson: [appSettings: settingRows, appState: data.state.collect { key, value -> [name: key, value: value] }]]
+    [snapshot: snapshot, config: config]
 }
 private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
     def config
@@ -24062,9 +24245,9 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
     }
     return [snapshot: snapshot, config: config]
 }
-private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config) {
+private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config, String protectedKey = null) {
     boolean editStep = settings?.backupEveryRuleWrite == true &&
-        !(reason in ["pre-delete", "pre-forcedelete", "pre-replaceRequiredExpression"])
+        !(reason in ["pre-delete", "pre-forcedelete", "pre-replaceRequiredExpression", "pre-native-restore"])
     String retention = editStep && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
@@ -24078,7 +24261,14 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
     }
     try {
         uploadHubFile(fileName, jsonBytes)
+        if (snapshot.captureFormat == 'native-rule-edit-v1') {
+            def savedBytes = downloadHubFile(fileName)
+            if (savedBytes == null || new String(savedBytes as byte[], 'UTF-8') != new String(jsonBytes, 'UTF-8')) throw new IllegalStateException('Uploaded recovery snapshot did not match its readback')
+        }
     } catch (Exception e) {
+        if (snapshot.captureFormat == 'native-rule-edit-v1') {
+            try { deleteHubFile(fileName) } catch (Exception ignored) { }
+        }
         throw new IllegalArgumentException("Cannot save backup file '${fileName}' for rule ${ruleId}: ${e.message}")
     }
     def suffix = fileName.substring(namePrefix.length(), fileName.length() - nameExt.length())
@@ -24095,7 +24285,7 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
         sizeBytes: jsonBytes.length,
         retention: retention
     ]
-    _publishUploadedItemBackup(backupKey, entry)
+    _publishUploadedItemBackup(backupKey, entry, protectedKey)
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
     return [backupKey: backupKey,
             brokenBefore: (config == null ? null : _rmConfigHasBrokenMarkers(config)),
@@ -26000,7 +26190,16 @@ Map toolUpdateRuleDocument(Map args) {
     if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
     try { _ndPreflight(id, changes) }
     catch (IllegalArgumentException failure) { return [success: false, partial: false, rule_id: id, error: failure.message?.toString()] }
-    _ndApply(id, changes, false)
+    Map backup
+    try { backup = _ndEditBackup(id, 'pre-document-update') }
+    catch (Exception failure) { return [success: false, partial: false, rule_id: id, error: "Pre-edit backup failed; no document changes were applied: ${failure.message}".toString()] }
+    _ndApply(id, changes, false) + [backup: backup]
+}
+private Map _ndEditBackup(Long id, String reason) {
+    if (settings.backupBeforeRuleEdits == false) return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
+    Map backup = _rmBackupRuleSnapshot(id.toString().toInteger(), reason, true)
+    if (!(backup?.backupKey instanceof String) || !backup.backupKey) throw new IllegalStateException('No recovery handle was returned')
+    backup
 }
 Map toolCreateRuleDocument(Map args) {
     Long parentId = _ndId(args.parent_id)
@@ -26118,7 +26317,7 @@ Call hub_set_rule without operation for help, or choose a write operation withou
 
 Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 
-Writes require confirm=true and a recent hub backup. hub_set_rule(operation:"update",rule_id,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parent_id,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
+Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",rule_id,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parent_id,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.
@@ -26353,7 +26552,7 @@ private String _nfReloadPath(Long id, Map context) {
 }
 private void _nfCache(String key, Map context) {
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
-                  fields: [:], controls: [:]]
+                  fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
         Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
@@ -26436,14 +26635,18 @@ Map toolCallAppForm(Map args) {
     Long createdId = null
     Map navigation = null
     Map context = NATIVE_FORM_CONTEXTS[key]
+    Map backup = null
     try {
         if (context && context.expires < now()) { NATIVE_FORM_CONTEXTS.remove(key); context = null }
         if (context && context.app_id != id) context = null
+        backup = args.steps[0].kind == 'open' ? null : context?.backup
         args.steps.eachWithIndex { step, index ->
             Map model
             if (step.kind == 'open') {
                 NATIVE_FORM_CONTEXTS.remove(key)
                 context = null
+                if (backup == null) backup = nativeApp?.appType?.name == 'Rule Machine' ?
+                    [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow'] : _ndEditBackup(id, 'pre-native-form')
                 attempted = true
                 model = _nfJson(hubInternalGet("/installedapp/configure/json/${id}" + (step.page ? "/${_nfEncode(step.page)}" : '')))
             } else {
@@ -26473,6 +26676,8 @@ Map toolCallAppForm(Map args) {
                         if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
                     }
                 }
+                if (backup == null) backup = nativeApp?.appType?.name == 'Rule Machine' ?
+                    [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow'] : _ndEditBackup(id, 'pre-native-form')
                 attempted = true
                 if (control?.kind == 'local_app') {
                     navigation = _nfVerifyNavigation(id, [app_id: control.value.toString().toLong(), page: control.stateAttribute])
@@ -26504,15 +26709,16 @@ Map toolCallAppForm(Map args) {
                 if (index + 1 < args.steps.size()) throw new IllegalStateException('Native navigation ended the form; remaining steps were not executed')
             } else {
                 context = _nfContext(id, model)
+                context.backup = backup
                 _nfCache(key, context)
                 completed << [kind: step.kind, page: context.page.name]
             }
         }
-        [success: true, app_id: id, completed: completed] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true])
+        [success: true, app_id: id, completed: completed, backup: backup] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true])
     } catch (Exception failure) {
         if (attempted) NATIVE_FORM_CONTEXTS.remove(key)
         [success: false, app_id: id, partial: attempted, completed: completed, error: failure.message?.toString(),
-         reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
+         reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + (backup == null ? [:] : [backup: backup]) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
     } finally { NATIVE_FORM_BUSY.remove(appKey); NATIVE_FORM_BUSY.remove(key) }
 }
 def _getAllToolDefinitions_partNativeForms() { [] }
@@ -27181,9 +27387,12 @@ def advancedOverridesPage() {
                   defaultValue: false
         }
         section("Native app edit backups") {
-            paragraph "By default, edits to the same native app reuse its newest File Manager baseline for one hour. Restoring that baseline returns the app to the start of the edit chain, undoing every later edit in the hour. This avoids uploading the same app before every small edit. Deletes and a standalone Required Expression replacement still take a fresh snapshot."
-            input "backupEveryRuleWrite", "bool", title: "Back up before every native app edit",
-                  description: "Leave OFF (default) to reuse a same-app baseline for one hour. Turn ON for a fresh File Manager snapshot before every native app edit: the first in an editing session is kept as its pinned baseline, and the later ones are rolling steps, the first removed when the backup storage budget is exceeded. A session ends once an hour passes with no snapshot of that app.",
+            paragraph "Rule edits take one fresh File Manager snapshot before each changes batch or native editor workflow. A new rule has no earlier version to back up. Delete backups remain enabled independently."
+            input "backupBeforeRuleEdits", "bool", title: "Back up before editing a native rule",
+                  description: "ON by default. If the snapshot cannot be saved, the edit is refused. One snapshot covers the whole batch or editor workflow, rather than every individual step.",
+                  defaultValue: true
+            input "backupEveryRuleWrite", "bool", title: "Prioritize the first snapshot when pruning backups",
+                  description: "OFF (default): edit snapshots have equal retention priority. ON: keep the first snapshot in an editing session pinned and mark later snapshots as rolling, so they are removed first when the storage budget is exceeded. A session ends after one hour without a snapshot. This does not change how many snapshots each edit takes.",
                   defaultValue: false
         }
         section("Backup storage") {
@@ -34828,7 +35037,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - Created when using hub_update_app, hub_update_driver, hub_update_library, hub_delete_item, and before Rule Machine edits and deletes
 - Stored in File Manager (.groovy for code, .json for rule snapshots) and indexed in `mcp-backup-index.json`
 - Persist even if MCP uninstalled
-- Rapid edits preserve original (1-hour protection)
+- Rapid source-code edits preserve the original for one hour. Rule edits take a fresh pre-edit snapshot as described below.
 
 ### Backup retention
 - There is no count limit: backups are removed only when all MCP backups together exceed the storage budget. Another item's backup never replaces this one, but once the shared budget is exceeded any new backup can evict older backups of any item: **rolling** steps first, then **pinned** baselines, oldest first. The backup just taken and an active restore target are never removed.
@@ -34844,6 +35053,7 @@ Duplicates an existing MCP custom-engine rule into a new, independent rule with 
 - If the index file is missing, it is rebuilt from the File Manager listing, which also brings backup files left by older versions under retention. An index file that is listed but cannot be read is never rebuilt over: backup reads and backup-taking writes return `success: false` until it reads again. An index file that is not valid JSON is copied to `mcp-backup-index.corrupt-<time>.json` before the rebuild.
 
 ### Rule Backups (Automatic)
+- With `backupBeforeRuleEdits` enabled (default), hub_set_rule takes one fresh snapshot before an update batch and one before a native rule form workflow. Subsequent submissions in that workflow reuse its snapshot. Snapshot failure prevents the edit. Creating a new rule or navigating its parent does not have a previous child rule to restore.
 - hub_delete_custom_rule auto-backs up to File Manager as mcp_rule_backup_<name>_<timestamp>.json
 - Restore via: hub_read_file → hub_import_custom_rule
 - Skip backup: set testRule=true when creating/updating
@@ -34871,9 +35081,9 @@ Reads the saved source from one backup -- use it to inspect or diff a prior vers
 - `scope=source` (default) -- restore an app/driver/rule by `backupKey` (for deleted code use hub_create_*; deleted rules DO recreate).
 - App/driver source restores report `undoAvailable=true` only after verifying the pre-restore file. Use the returned `preRestoreBackup` handle to undo. A failed required pre-restore capture aborts before saving the source. Only a retry whose live source already matches the target backup may succeed without verified undo, with `undoAvailable=false` and a warning; do not rely on an older undo record for that restore.
 - Native rule restore requires confirmed absence from the app inventory before recreating an unreadable rule. If the config read fails and absence cannot be confirmed, inspect the rule/inventory and retry when readable.
-- A native rule snapshot restores in place by default (`preserveRuleId` defaults to true), keeping the rule's id; see the settings replay below. A rule that no longer exists gets a new id either way, so it is restored through the App Cloner import below when the backup carries an export.
-- A Rule Machine rule snapshot (type `rm-rule`) also carries Hubitat's own App Cloner export of the rule when the cloner can produce one (it cannot for a rule with a Required Expression). With `preserveRuleId: false` such a backup restores through the App Cloner import: an exact copy of the app, settings and app state alike, created as a NEW app (`ruleId`, with `originalRuleId` and `restoredVia: "nativeImport"`). The copy must match the backup (the same trigger and action ids, not broken) before the old app is deleted (its pre-delete backup is `replacedRuleBackup`); a copy that does not match is deleted and the old rule left as it was. Update anything that referenced the old id: Run Rule, Pause Rule and Private Boolean actions in other rules, dashboards. A rule disabled before the restore leaves its copy disabled (`leftDisabled: true`). The backup remembers its copy, so restoring it again, with either `preserveRuleId`, returns that copy (`alreadyRestored: true`) instead of creating another; a copy still disabled that the restore meant to enable is reported with `success: false`. If the import creates the copy but cannot stage it disabled, the old rule is NOT deleted: the result names the copy in `importedAppId` with `partial: true`; delete one of the two before retrying. The import is skipped for the settings replay below (`restoredVia: "settingsReplay"`, the reason in `nativeImportSkipped`) when the export cannot be used -- a device it names no longer exists, or no rule is left to seed the import.
-- Without a native export (or with the default `preserveRuleId: true`), a native rule snapshot replays its settings in place when the rule still exists. If the rule was deleted, the restore creates a NEW rule and replays the settings onto it. The result then carries the new `ruleId`, the `originalRuleId` and `recreated: true`, so update anything that referenced the old id. A Required Expression lives in Rule Machine's app state, which a settings replay cannot write, so the restore then makes the rule's expression match the snapshot: it rebuilds the snapshot's expression (each condition re-walked from its saved settings), or removes the live one when the snapshot had none, and confirms the rendered result before the old expression's tokens are removed. `requiredExpressionRestored: true` means it matches. A snapshot expression naming a device deleted since the backup is not rebuilt: the live expression stays (`preRestoreExpressionKept: true`) and the error names the device. Conditions are compared by their rendered text, so a device renamed since the backup reads as a mismatch: the rebuild is backed out with `requiredExpressionRestored: false`, and the expression can be set with supported native document changes. A failed rebuild puts back what was committed before it: `preRestoreExpressionKept` (true or false) when the rule had an expression; otherwise `requiredExpressionPartial` when part of the snapshot's expression got committed (the error says whether it is only the first condition). Conditions it could not remove are listed in `leftoverConditionIds`. `requiredExpressionRestored: false` turns the result into `success: false` + `partial: true` with the reason in `error`, and the rule's expression must be rebuilt with the retired legacy authoring tool. Triggers and actions also live in app state: a trigger, action or condition the live rule has beyond the snapshot is removed (`removedTriggers` / `removedActions` / `removedConditionIds`), while one the snapshot has and the rule lacks cannot be rebuilt by a replay. It is named in `missingTriggers` / `missingActions` with `structureRestored: false`, `success: false` and `partial: true`; add it back with the retired legacy authoring tool. Actions the backup also has are moved back into its order; an order the moves cannot restore is reported in `actionOrder` with `structureRestored: false`, and a failed closing Update Rule in `updateRuleFailed`. A device deleted since the backup is left out of the replay (listed in `settingsSkipped`, `partial: true`), because Rule Machine stops rendering a rule whose picker names a missing device. A settings replay writes back the settings the backup holds. For a Rule Machine rule, settings added after the backup go with the trigger, action or condition the restore removes. For any other app type (Basic Rules among them), every non-button setting the app gained after the backup is emptied and listed in `settingsCleared` (the hub keeps no way to delete one), and the app is finished with its own commit -- its Done where it has no Update button, since an Update click breaks a Basic Rule's page (a Done that does not commit returns `success: false`). The App Cloner restore has no such leftovers, since it builds a new app from the backup alone.
+- Native rule snapshots made before hub_set_rule edits contain the complete native state and typed settings. Restoring one to its existing rule keeps the rule ID and rebuilds deleted rows, expressions and variables, then runs the native lifecycle and verifies the recovered configuration. The restore first saves an undo snapshot; capture or validation failure stops before changing the rule.
+- Older snapshots use their original restore path. A settings-only replay cannot reconstruct missing actions or triggers; inspect partial results and missing rows. Do not treat a successful settings write as proof of full recovery.
+- A deleted rule cannot retain its old ID. Native import creates a new rule from an available export; `preserveRuleId:false` also explicitly selects replacement. Check the returned `ruleId` and update references when it changes. Missing devices or an unusable export can prevent complete restoration.
 
 - `scope=hub_local` (`fileName`) and `scope=hub_cloud` (`path` + `cloudBackupPassword`) -- restore the WHOLE hub DB and REBOOT the hub. A full local backup (`fullBackup:true`) never goes to the database restore: it runs the full-restore flow the web UI uses (the archive is read off the hub, uploaded to the full-restore endpoint, then restored).
 - `scope=hub_uploaded` -- fetch a backup from `backupUrl` and restore it (open-world). The fetched file decides the route: a `.tar.gz` full backup runs the full-restore flow, a `.lzf` database backup the database restore, and anything else is refused. `fullRestore` needs a full backup and is refused with a `.lzf` URL. The URL's size is read first with a one-byte range request (or the declared length of a host that ignores it): a backup over 16 MB (8 MB for a `.lzf` URL), or one whose size the host does not report, is refused before it is fetched. The URL may not point at this hub (loopback or its own address) except a File Manager file under `/local/`, and must use a host name or a dotted-quad IPv4 address. A full local backup whose size the hub's list does not give is refused rather than downloaded.
@@ -35211,7 +35421,7 @@ For reading a native RM rule without editor renders, use hub_set_rule(operation=
 For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
 ### Safety model for native CRUD
-1. Every existing-app edit has a full File Manager rollback baseline (configure/json + statusJson); by default, edits to the same app reuse the newest baseline for one hour. The response's backup.backupKey is the restore handle, and restoring a reused baseline undoes every edit made after it. Deletes and a standalone Required Expression replacement always take a fresh snapshot.
+1. With backupBeforeRuleEdits enabled (default), each hub_set_rule update batch saves one fresh native snapshot in File Manager before editing. A native form workflow saves one snapshot before opening and reuses it for subsequent submissions. The response's backup.backupKey restores the configuration from before that batch or workflow. Snapshot failure prevents the edit.
 2. Native form writes validate native field types and cardinality before submission; omitted values remain unchanged.
 3. Inspect partial outcomes and native health after writes; a persisted setting alone does not prove runtime behavior.
 4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
