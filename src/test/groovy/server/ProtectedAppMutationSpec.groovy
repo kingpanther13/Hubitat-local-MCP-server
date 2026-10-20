@@ -49,7 +49,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         where:
         [developerMode, row] << [[false, true], [
             ['toolSetNativeApp', [appId: 42, settings: [protectedAppIds: []]]],
-            ['toolSetRule', [appId: ' 42 ', settings: [enableDeveloperMode: true]]],
+            ['toolSetNativeApp', [appId: ' 42 ', settings: [enableDeveloperMode: true]]],
             ['toolSetNativeApp', [appId: '00042', button: 'updateRule']],
             ['toolSetAppDisabled', [appId: '00042', disabled: true]],
             ['toolSetAppDisabled', [appId: 42, disabled: false]],
@@ -83,7 +83,7 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
     def 'retired authoring catalog refuses before touching a protected target'() {
         when:
-        script.toolSetRule([appId:42, addTrigger:[discover:true]])
+        script.toolSetNativeApp([appId:42, addTrigger:[discover:true]])
         then:
         def refusal = thrown(IllegalArgumentException)
         refusal.message.contains('hub_call_app_form')

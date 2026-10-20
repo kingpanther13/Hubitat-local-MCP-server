@@ -392,7 +392,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
 
     def "hub_set_rule replaceRequiredExpression success envelope"() {
         when:
-        def result = script.toolSetRule([appId: 100, replaceRequiredExpression: switchSpec(), confirm: true])
+        def result = script.toolSetNativeApp([appId: 100, replaceRequiredExpression: switchSpec(), confirm: true])
 
         then:
         result.success == true
@@ -404,7 +404,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
 
     def "hub_set_rule replaceRequiredExpression refuses on CREATE (no appId) -- loudly rejected as edit-only"() {
         when:
-        script.toolSetRule([name: "New Rule", replaceRequiredExpression: switchSpec(), confirm: true])
+        script.toolSetNativeApp([appType: 'rule_machine', name: "New Rule", replaceRequiredExpression: switchSpec(), confirm: true])
 
         then:
         def ex = thrown(IllegalArgumentException)
@@ -414,7 +414,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
 
     def "hub_set_rule replaceRequiredExpression validation throw carries a no-changes restoreHint"() {
         when:
-        def result = script.toolSetRule([appId: 100, replaceRequiredExpression: [
+        def result = script.toolSetNativeApp([appId: 100, replaceRequiredExpression: [
             conditions: [[capability: "Mode", modeIds: ["2"]], [capability: "Mode", modeIds: ["3"]]], operator: "NAND"], confirm: true])
 
         then:
@@ -442,7 +442,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
 
     def "patches[] replace op: a success commits with the single batch-end updateRule; a failed build leaves the earlier op and the original expression"() {
         when:
-        def result = script.toolSetRule([appId: 100,
+        def result = script.toolSetNativeApp([appId: 100,
             patches: [[button: "pausRule"], [replaceRequiredExpression: switchSpec(state)]], confirm: true])
 
         then: "the preceding op is untouched either way"
@@ -475,7 +475,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         fake.onUpdateRule = { (++calls == 1) ? 500 : null }
 
         when:
-        def result = script.toolSetRule([appId: 100, patches: [[replaceRequiredExpression: switchSpec()]], confirm: true])
+        def result = script.toolSetNativeApp([appId: 100, patches: [[replaceRequiredExpression: switchSpec()]], confirm: true])
 
         then:
         def repl = result.patches.find { it.op == "replaceRequiredExpression" }
@@ -491,7 +491,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         fake.onClick = { String n, String at -> if (n == "updateRule" && fake.tokens == [2]) fake.mainExtra = "**Broken Action**" }
 
         when:
-        def result = script.toolSetRule([appId: 100, patches: [[replaceRequiredExpression: switchSpec()]], confirm: true])
+        def result = script.toolSetNativeApp([appId: 100, patches: [[replaceRequiredExpression: switchSpec()]], confirm: true])
 
         then:
         def repl = result.patches.find { it.op == "replaceRequiredExpression" }
@@ -505,7 +505,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         fake.onClick = { String n, String at -> if (n == "updateRule" && fake.tokens == [2]) fake.mainExtra = "**Broken Action**" }
 
         when:
-        def result = script.toolSetRule([appId: 100, patches: [[button: "pausRule"], [replaceRequiredExpression: switchSpec()]], confirm: true])
+        def result = script.toolSetNativeApp([appId: 100, patches: [[button: "pausRule"], [replaceRequiredExpression: switchSpec()]], confirm: true])
 
         then:
         result.patches.find { it.op == "replaceRequiredExpression" }.requiredExpressionReplaced == true
@@ -517,7 +517,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         fake.onUpdateRule = { 500 }
 
         when:
-        def result = script.toolSetRule([appId: 100, patches: [[replaceRequiredExpression: switchSpec()]], confirm: true])
+        def result = script.toolSetNativeApp([appId: 100, patches: [[replaceRequiredExpression: switchSpec()]], confirm: true])
 
         then:
         def repl = result.patches.find { it.op == "replaceRequiredExpression" }
@@ -541,7 +541,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
 
     def "patches[]: a second replaceRequiredExpression in one batch is refused (a rule has a single Required Expression)"() {
         when:
-        def result = script.toolSetRule([appId: 100,
+        def result = script.toolSetNativeApp([appId: 100,
             patches: [[replaceRequiredExpression: switchSpec()], [replaceRequiredExpression: switchSpec("off")]], confirm: true])
 
         then:
@@ -670,7 +670,7 @@ class ReplaceRequiredExpressionSpec extends ToolSpecBase {
         fake.mainExtra = "IF(**Broken Condition**) THEN"
 
         when:
-        def result = script.toolSetRule([
+        def result = script.toolSetNativeApp([
             appId: 100, replaceRequiredExpression: switchSpec(), confirm: true
         ])
 

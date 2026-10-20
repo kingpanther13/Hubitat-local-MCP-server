@@ -1,5 +1,7 @@
 # RM 5.1 Wire Format Notes
 
+> This describes retained compatibility internals used by existing classic-app and backup paths. Public native authoring uses native_rule_documents and native_app_forms; the retired hub_set_rule tool is unavailable.
+
 Internal reference for the RM 5.1 helpers in the `McpNativeRulesLib` library plus the shared classic-dynamicPage wizard primitives in `hubitat-mcp-server.groovy`.
 Moved from in-source Groovydocs to avoid multi-paragraph docblock sprawl.
 

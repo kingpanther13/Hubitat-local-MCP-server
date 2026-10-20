@@ -19,7 +19,7 @@ class SetRuleSelfGatewaySpec extends ToolSpecBase {
         given:
         settingsMap.enableWrite = true
         boolean invoked = false
-        script.metaClass.toolSetRule = { Map args -> invoked = true; [success: true] }
+        script.metaClass.toolUpdateRuleDocument = { Map args -> invoked = true; [success: true] }
 
         when:
         script.executeTool('hub_set_rule', [operation: 'addAction'])

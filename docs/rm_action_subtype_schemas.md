@@ -1,6 +1,8 @@
 # RM 5.1 Action Capability Reference
 
-Hand-maintained copy of `_rmActionSchemaForDiscover()` in `libraries/mcp-native-rules-lib.groovy`;
+> Historical compatibility reference: the old public RM discovery catalog has been removed. Use native_rule_documents for supported structure changes and hub_call_app_form for actual native fields and options; this table is not a current public tool contract.
+
+Historical copy of the removed `_rmActionSchemaForDiscover()` in `libraries/mcp-native-rules-lib.groovy`;
 keep it in step with that method. Use `addAction({discover: true})` to retrieve the schema live
 from the current code (the authoritative source when this doc and the code disagree).
 
