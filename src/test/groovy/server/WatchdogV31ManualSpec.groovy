@@ -480,6 +480,19 @@ class WatchdogV31ManualSpec extends WatchdogSpec {
         info.freeMemoryKB == 456232L
     }
 
+    def "hub_get_metrics reports a failed reading as unavailable"() {
+        given:
+        script.metaClass.hubGet = { String p, Map q -> null }
+
+        when:
+        def metrics = script.adminGetMetrics([:])
+
+        then:
+        metrics.current.freeMemoryKB == 'unavailable'
+        metrics.current.internalTempC == 'unavailable'
+        metrics.current.databaseSizeMB == 'unavailable'
+    }
+
     def "hub_get_source and hub_read_file read 30000 characters by default"() {
         given:
         String big = 'x' * 70000

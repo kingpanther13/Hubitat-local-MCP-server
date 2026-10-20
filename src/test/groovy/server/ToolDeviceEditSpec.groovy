@@ -1308,7 +1308,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         appStub.settingsStore.selectedDevices == [type: 'capability.*', value: ['900']]
     }
 
-    def "a linked device the read-back cannot tie to the requested hub is not added to the selection"() {
+    def "a new link from another hub is not reported or selected as this link"() {
         given: 'the only new local link names a different source hub'
         def done = false
         hubGet.register('/device/createLinked/HUB-A/42') { params -> done = true; '' }
@@ -1324,8 +1324,8 @@ class ToolDeviceEditSpec extends ToolSpecBase {
 
         then:
         result.success == true
-        result.deviceId == '901'
-        result.warnings.any { it.contains('could not tie it to hub HUB-A') }
+        result.deviceId == null
+        result.warnings.any { it.contains('could not resolve its new local id') }
         appStub.settingsStore.selectedDevices == null
     }
 

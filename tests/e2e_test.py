@@ -4460,7 +4460,6 @@ class TestRunner:
             raise AssertionError("hub_create_device created a device without confirm")
         except (McpToolError, McpError):
             pass
-        count_before = self.client.call_tool("hub_get_info", {}).get("mcpDeviceCount")
         created = self.client.call_tool("hub_manage_devices", {
             "tool": "hub_create_device",
             "args": {"deviceTypeId": type_id, "label": f"{PREFIX}FromDriver", "confirm": True},
@@ -4469,15 +4468,21 @@ class TestRunner:
         new_id = str(created.get("deviceId") or "")
         assert new_id, f"create from driver returned no deviceId: {created}"
         try:
-            # A created device joins the MCP device selection: the count grows and the scoped
-            # device read (selected/child devices only) resolves it.
-            count_after = self.client.call_tool("hub_get_info", {}).get("mcpDeviceCount")
-            assert count_after == count_before + 1, (
-                f"mcpDeviceCount {count_before} -> {count_after}: the created device did not join the selection "
-                f"(warnings={created.get('warnings')!r})")
-            got = self.client.call_tool("hub_read_devices", {"tool": "hub_get_device", "args": {"deviceId": new_id}})
-            assert isinstance(got, dict) and str(got.get("id")) == new_id, \
-                f"the device tools do not reach the created device {new_id}: {str(got)[:300]}"
+            # A created device joins the MCP device selection. The suite's allowlist bypass reaches
+            # and counts every device, so the selection is checked with it off.
+            self._set_device_bypass(False)
+            try:
+                inventory = self.client.call_tool("hub_list_devices", {
+                    "scope": "all", "labelFilter": f"{PREFIX}FromDriver"})
+                assert any(str(row.get("id")) == new_id and row.get("mcpAuthorized") is True
+                           for row in inventory.get("devices", [])), (
+                    f"the created device did not join the selection (warnings={created.get('warnings')!r}): "
+                    f"{str(inventory)[:300]}")
+                got = self.client.call_tool("hub_read_devices", {"tool": "hub_get_device", "args": {"deviceId": new_id}})
+                assert isinstance(got, dict) and str(got.get("id")) == new_id, \
+                    f"the device tools do not reach the created device {new_id}: {str(got)[:300]}"
+            finally:
+                self._set_device_bypass(True)
 
             # The label leg is /device/updateLabel -- and this is its only UNCONDITIONAL live proof.
             # (The bypass-block leg that also exercises it is gated on the arbitrarily-picked device
@@ -14556,14 +14561,15 @@ class TestRunner:
         # updateAvailable is derived from the versions shown, so it can never contradict them: if an
         # update is flagged available, latestVersion must actually differ from installedVersion (the
         # bug being guarded was a stale updateAvailable:true reading as available when latest==installed).
-        if au.get("latestVersion") not in (None, "unknown (check in progress)"):
-            if au.get("updateAvailable") is True:
-                assert au["latestVersion"] != au["installedVersion"], (
-                    f"updateAvailable true but latest == installed: {au}"
+        assert "error" not in settled, f"the settled app check returned an error: {settled}"
+        if settled.get("latestVersion") not in (None, "unknown (check in progress)"):
+            if settled.get("updateAvailable") is True:
+                assert settled["latestVersion"] != settled["installedVersion"], (
+                    f"updateAvailable true but latest == installed: {settled}"
                 )
-            elif au["latestVersion"] == au["installedVersion"]:
-                assert au.get("updateAvailable") is False, (
-                    f"latest == installed but updateAvailable not False: {au}"
+            elif settled["latestVersion"] == settled["installedVersion"]:
+                assert settled.get("updateAvailable") is False, (
+                    f"latest == installed but updateAvailable not False: {settled}"
                 )
 
     @test("system_tools")

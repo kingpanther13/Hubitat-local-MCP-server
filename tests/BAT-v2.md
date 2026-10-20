@@ -3357,7 +3357,7 @@ All tests below require the Write master enabled and a recent backup. Tests are 
 {
   "setup_prompt": "the Write master enabled, recent backup exists. This test intentionally installs broken Groovy source. The hub refuses it with its compile error; older firmware also left a stub slot in an error state -- if a driver ID comes back, note it for cleanup.",
   "test_prompt": "Install a driver whose source is deliberately broken Groovy — literally 'this is not valid groovy {{ }}' — confirming the install. Report what happens.",
-  "teardown_prompt": "Delete the error-state driver slot created in this test using hub_delete_item (type=driver) with the driverId returned and confirm=true."
+  "teardown_prompt": "Only if the install response returned a driverId, delete that error-state driver slot using hub_delete_item (type=driver) with that driverId and confirm=true; otherwise there is nothing to clean up."
 }
 ```
 

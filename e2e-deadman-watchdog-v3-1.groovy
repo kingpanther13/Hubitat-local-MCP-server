@@ -1986,10 +1986,11 @@ def adminSetAppDisabled(args) {
 // server's toolGetHubPerformance current block (/hub/advanced/* reads) and _healthAlertsFromHub2
 // (/hub2/hubData), WITHOUT the CSV trend history (that stays main's). Exists so the e2e status probe
 // reads hub health through THIS always-alive endpoint instead of 504ing against a busy main app.
-// A hub status reading as a number (the /hub/advanced endpoints answer plain text), else the text.
+// A hub status reading as a number (the /hub/advanced endpoints answer plain text), else the text;
+// no reading at all (a failed or empty read) is "unavailable".
 def hubNumber(raw) {
     String s = raw?.toString()?.trim()
-    if (s == null || s.isEmpty()) return s
+    if (s == null || s.isEmpty()) return "unavailable"
     if (s.isLong()) return s.toLong()
     if (s.isBigDecimal()) return s.toBigDecimal()
     return s

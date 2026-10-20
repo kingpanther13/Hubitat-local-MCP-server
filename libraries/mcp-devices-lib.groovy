@@ -4961,16 +4961,14 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
     Boolean linked = null
     String newId = null
     String newName = null
-    boolean newIdFromSource = false
     for (int attempt = 0; attempt < 3; attempt++) {
         Map j = _meshJson()
         def after = (j?.localLinkedDevices instanceof List) ? j.localLinkedDevices : null
         def avail = (j?.availableLinkedDevices instanceof List) ? j.availableLinkedDevices : null
         if (newId == null && before != null && after != null) {
-            def added = after.findAll { !before.contains(it.id?.toString()) }
-            def fromSource = added.findAll { it.sourceHubId?.toString() == meshHubId }
-            def pick = (fromSource.size() == 1) ? fromSource[0] : (added.size() == 1 ? added[0] : null)
-            if (pick != null) { newId = pick.id?.toString(); newName = pick.name?.toString(); newIdFromSource = fromSource.size() == 1 }
+            // Only a new row from the requested hub is this link; another hub's new link is not.
+            def fromSource = after.findAll { !before.contains(it.id?.toString()) && it.sourceHubId?.toString() == meshHubId }
+            if (fromSource.size() == 1) { newId = fromSource[0].id?.toString(); newName = fromSource[0].name?.toString() }
         }
         if (avail != null) {
             // The source's own row is authoritative: still present-and-unlinked means the link did
@@ -5023,12 +5021,9 @@ private Map _createLinkedMeshDevice(String meshHubId, String meshDeviceId) {
         warnings << "Linked the shared device, but could not resolve its new local id from hub_get_hub_mesh localLinkedDevices (read-back lag or an ambiguous diff). Find it with hub_get_hub_mesh."
     }
 
-    // Only a local link the read-back ties to the requested source joins the device selection.
-    if (newId != null && newIdFromSource) {
+    if (newId != null) {
         def selectWarning = _selectCreatedDevice(newId)
         if (selectWarning) warnings << selectWarning
-    } else if (newId != null) {
-        warnings << "Linked as local device ${newId}, but the read-back could not tie it to hub ${meshHubId}, so it was not added to this app's selected devices; add it in the app's device picker once confirmed with hub_get_hub_mesh.".toString()
     }
     mcpLog("info", "device", "hub_create_device: linked Hub Mesh device (hub ${meshHubId}, device ${meshDeviceId})${newId ? " as local ${newId}" : ''}")
     return [

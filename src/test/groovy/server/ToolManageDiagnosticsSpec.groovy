@@ -277,7 +277,7 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         result.trends*.incomplete == [true, null]
     }
 
-    def "a hub reading is a number when it is one, else its text"() {
+    def "a hub reading is a number when it is one, else its text, and unavailable when there is none"() {
         expect:
         script._hubNumber(raw) == value
 
@@ -285,8 +285,8 @@ class ToolManageDiagnosticsSpec extends ToolSpecBase {
         raw       || value
         '42'      || 42L
         ' 42.5 '  || 42.5G
-        ''        || ''
-        null      || null
+        ''        || 'unavailable'
+        null      || 'unavailable'
         'abc'     || 'abc'
     }
 
