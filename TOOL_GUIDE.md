@@ -4,6 +4,16 @@
 
 Detailed reference for MCP Rule Server tools, the same text `hub_get_tool_guide` serves. Each `##` section below is one `section` key. Acknowledgment keys are added at serve time and are absent from this file.
 
+## Native App Forms
+
+Use hub_call_app_form(app_id,steps,confirm:true) to operate an enabled built-in native app's classic editor. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. App removal uses the dedicated deletion tool.
+
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:{name:"returned control name",value:"optional exact control value"}}. Omit activate to save the supplied fields and refresh the current page. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Omitted settings are preserved; defaults are shown but are not automatically submitted. Use options_for:["device field name"] to expand device choices on the final returned page.
+
+Batches contain 1 through 16 ordered steps. Each step uses the form returned by the preceding step, so dependent fields require another submit after they appear. A button handler runs before that step's fields are saved, as in the native browser; submit fields in a preceding step when the handler needs them. A button without submitOnChange reloads and requires a separate field submission.
+
+The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight apps. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. App-authored JavaScript, custom HTML inputs, uploads, external/child links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.
+
 ## Native Rule Documents
 
 Read hub_get_rule_document(rule_id, sections?) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
@@ -94,6 +104,7 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_call_zwave -> hub_admin_write_radios
 - hub_set_zigbee -> hub_admin_write_radios
 - hub_set_zwave -> hub_admin_write_radios
+- hub_call_app_form -> native_app_forms
 - hub_create_rule_document -> native_rule_documents
 - hub_update_rule_document -> native_rule_documents
 - hub_clone_custom_rule -> rules

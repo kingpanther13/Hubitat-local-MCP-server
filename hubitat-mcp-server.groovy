@@ -246,6 +246,7 @@ definition(
 #include mcp.McpNativeRuntimeLib
 #include mcp.McpNativeModelLib
 #include mcp.McpNativeDocumentsLib
+#include mcp.McpNativeFormsLib
 
 preferences {
     page(name: "mainPage")
@@ -647,7 +648,7 @@ private Set _installedAppTargetTools() {
             "hub_set_native_app", "hub_delete_native_app", "hub_set_app_disabled", "hub_set_rule",
             "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule",
             "hub_set_visual_rule", "hub_delete_visual_rule", "hub_call_rule", "hub_set_rule_paused",
-            "hub_set_rule_private_boolean", "hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document"] as Set
+            "hub_set_rule_private_boolean", "hub_call_app_form", "hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document"] as Set
 }
 
 // Every argument these tools accept as the target app: appId, the cloner's sourceAppId alias
@@ -655,7 +656,7 @@ private Set _installedAppTargetTools() {
 private boolean _targetsThisApp(Map args) {
     String self = app?.id?.toString()
     if (!self || args == null) return false
-    return ["appId", "sourceAppId", "ruleId", "rule_id", "parent_id"].any { key ->
+    return ["appId", "app_id", "sourceAppId", "ruleId", "rule_id", "parent_id"].any { key ->
         def target = args.get(key)
         def ids = (target instanceof Collection) ? target : [target]
         ids.any { it?.toString() == self }
@@ -2917,7 +2918,7 @@ def _budgetAwareTools() {
 // ==================== MCP 2026-07-28 request-to-request continuation ====================
 
 def _mrtrWriteTools() {
-    return ["hub_create_rule_document", "hub_update_rule_document", "hub_set_rule", "hub_set_native_app", "hub_call_rule",
+    return ["hub_call_app_form", "hub_create_rule_document", "hub_update_rule_document", "hub_set_rule", "hub_set_native_app", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
             "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device",
@@ -2952,7 +2953,7 @@ def _mrtrReadContinuationActive() {
 }
 
 private Set _mrtrDetachedWorkerTools() {
-    return ["hub_create_rule_document", "hub_update_rule_document", "hub_set_rule", "hub_set_native_app",
+    return ["hub_call_app_form", "hub_create_rule_document", "hub_update_rule_document", "hub_set_rule", "hub_set_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
             "hub_manage_virtual_device", "hub_update_device", "hub_restore_backup", "hub_create_backup"] as Set
 }
@@ -5528,9 +5529,10 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_native_rules_and_apps: [
-            description: "Native classic-app CRUD plus Rule Machine runtime control. Use hub_set_native_app to create/edit non-RM classic SmartApps; use hub_manage_rule_machine (hub_set_rule) to author RM triggers/actions/conditions. Also delete/clone/export/import apps and list/run/pause/resume RM rules. Not the legacy custom_* engine. Edits ensure a rollback baseline, reused for the same app for one hour by default. Writes need confirm=true plus a recent hub backup; verify async failures via hub_get_app_config(appId) before retrying.",
-            tools: ["hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
+            description: "Native classic-app CRUD plus Rule Machine runtime control. hub_call_app_form operates native editor pages with ordered open/submit steps; even opening can mutate state and requires confirm plus a recent hub backup. Use hub_set_native_app to create/edit non-RM classic SmartApps; use hub_manage_rule_machine (hub_set_rule) to author RM triggers/actions/conditions. Also delete/clone/export/import apps and list/run/pause/resume RM rules. Not the legacy custom_* engine. Edits ensure a rollback baseline, reused for the same app for one hour by default. Writes need confirm=true plus a recent hub backup; verify async failures via hub_get_app_config(appId) before retrying.",
+            tools: ["hub_call_app_form", "hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_native_app", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
+                hub_call_app_form: "Operate native app forms with ordered open/submit steps. Rendering can mutate app state. Args: app_id, steps, options_for?, confirm.",
                 hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
                 hub_create_rule_document: "Create and install a native Rule Machine child. Args: parent_id, name, changes, confirm.",
                 hub_update_rule_document: "Compile ordered semantic changes in place. Args: rule_id, changes, confirm.",
@@ -5548,6 +5550,7 @@ def getGatewayConfig() {
                 hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption. Args: appId, source. Returns {ok, broken, source, ruleFormat, issues, ...}. Auto-attached to hub_set_rule and hub_set_visual_rule responses too."
             ],
             searchHints: [
+                hub_call_app_form: "Operate native app forms with ordered open/submit steps. Rendering can mutate app state. Args: app_id, steps, options_for?, confirm.",
                 hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
                 hub_create_rule_document: "Create and install a native Rule Machine child. Args: parent_id, name, changes, confirm.",
                 hub_update_rule_document: "Compile ordered semantic changes in place. Args: rule_id, changes, confirm.",
@@ -5960,7 +5963,7 @@ def getToolDisplayMeta() {
     // this file keeps only the gateway entries (gateway membership is cross-domain
     // and lives in getGatewayConfig).
     def meta = [:]
-    [_toolDisplayMeta_partNativeDocuments(), _toolDisplayMeta_partNativeRM(),
+    [_toolDisplayMeta_partNativeForms(), _toolDisplayMeta_partNativeDocuments(), _toolDisplayMeta_partNativeRM(),
      _toolDisplayMeta_partRooms(),
      _toolDisplayMeta_partBundles(),
      _toolDisplayMeta_partVisualRules(),
@@ -6482,7 +6485,7 @@ def getAllToolDefinitions() {
     // McpBundlesLib / McpVisualRulesLib #include libraries (issue #209 modularization -- a
     // domain's tool DEFINITIONS live with its impl in the library; only the gateway membership
     // + dispatch case stay in this file).
-    return _getAllToolDefinitions_partNativeDocuments() + _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
+    return _getAllToolDefinitions_partNativeForms() + _getAllToolDefinitions_partNativeDocuments() + _getAllToolDefinitions_partNativeRM() + _getAllToolDefinitions_partRooms() + _getAllToolDefinitions_partBundles() + _getAllToolDefinitions_partVisualRules() + _getAllToolDefinitions_partDiscovery() + _getAllToolDefinitions_partAppCloner() + _getAllToolDefinitions_partSelfAdmin() + _getAllToolDefinitions_partHpm() + _getAllToolDefinitions_partCodeManagement() + _getAllToolDefinitions_partCustomRules() + _getAllToolDefinitions_partVariables() + _getAllToolDefinitions_partVirtualDevices() + _getAllToolDefinitions_partDevices() + _getAllToolDefinitions_partSystem() + _getAllToolDefinitions_partDiagnostics() + _getAllToolDefinitions_partDebugLogging() + _getAllToolDefinitions_partItemBackups() + _getAllToolDefinitions_partFiles() + _getAllToolDefinitions_partDashboards()
 }
 
 // Only names and required parameter lists are shared; raw definitions stay mutable per call.
@@ -6774,6 +6777,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_update_room": return toolRenameRoom(args)
 
         // Hub Admin App Configuration Read
+        case "hub_call_app_form": return toolCallAppForm(args)
         case "hub_get_rule_document": return toolGetRuleDocument(args)
         case "hub_create_rule_document": return toolCreateRuleDocument(args)
         case "hub_update_rule_document": return toolUpdateRuleDocument(args)
@@ -11288,6 +11292,7 @@ String _guideSectionServed(String key, String body) {
 // that publishes a key must map every write tool it documents to that key (both drift guards).
 def _guideSectionForTool(toolName) {
     def t = (toolName ?: '').toString()
+    if (t == 'hub_call_app_form') return 'native_app_forms'
     if (t in ['hub_get_rule_document', 'hub_create_rule_document', 'hub_update_rule_document']) return 'native_rule_documents'
     if (t == 'hub_set_rule') return 'set_rule_reference'
     if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
@@ -11342,6 +11347,7 @@ def _applyReactiveBpsWarning(toolName, args, result) {
 
 def getToolGuideSections() {
     return [
+        native_app_forms: _nfGuide(),
         native_rule_documents: _ndGuide(),
         device_authorization: '''## Device Authorization (CRITICAL)
 
@@ -11413,6 +11419,7 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_call_zwave -> hub_admin_write_radios
 - hub_set_zigbee -> hub_admin_write_radios
 - hub_set_zwave -> hub_admin_write_radios
+- hub_call_app_form -> native_app_forms
 - hub_create_rule_document -> native_rule_documents
 - hub_update_rule_document -> native_rule_documents
 - hub_clone_custom_rule -> rules
