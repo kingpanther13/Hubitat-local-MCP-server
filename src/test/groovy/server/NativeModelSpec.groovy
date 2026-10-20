@@ -452,7 +452,7 @@ class NativeModelSpec extends ToolSpecBase {
 
     def 'referenced conditions and missing rows refuse before any native write'() {
         given:
-        nativeRule.deleteCapab = { Object id, Object trigger, Object action -> writes << 'unexpected' }
+        nativeRule.deleteCapab = { Object deletedId, Object trigger, Object action -> writes << 'unexpected' }
         when:
         script._nmDeleteRow(42L, part, id)
         then:
