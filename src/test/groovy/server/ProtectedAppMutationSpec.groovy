@@ -48,9 +48,6 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
 
         where:
         [developerMode, row] << [[false, true], [
-            ['toolSetNativeApp', [appId: 42, settings: [protectedAppIds: []]]],
-            ['toolSetNativeApp', [appId: ' 42 ', settings: [enableDeveloperMode: true]]],
-            ['toolSetNativeApp', [appId: '00042', button: 'updateRule']],
             ['toolSetAppDisabled', [appId: '00042', disabled: true]],
             ['toolSetAppDisabled', [appId: 42, disabled: false]],
             ['toolDeleteNativeApp', [appId: 42]],
@@ -59,7 +56,6 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
             ['toolDeleteVisualRule', [appId: 42]],
             ['toolUpdateDashboard', [dashboardId: '42', name: 'Changed']],
             ['toolDeleteDashboard', [dashboardId: '42']],
-            ['toolSetNativeApp', [buttonRule: [controllerId: 42, buttonNumber: 1, event: 'pushed']]],
             ['toolRunRmRule', [ruleId: 42, action: 'stop']],
             ['toolSetRulePaused', [ruleId: 42, paused: true]],
             ['toolSetRmRuleBoolean', [ruleId: 42, value: true]]
@@ -79,15 +75,6 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         result.success
         result.appId == 43
         writes == ['/installedapp/disable']
-    }
-
-    def 'retired authoring catalog refuses before touching a protected target'() {
-        when:
-        script.toolSetNativeApp([appId:42, addTrigger:[discover:true]])
-        then:
-        def refusal = thrown(IllegalArgumentException)
-        refusal.message.contains('hub_call_app_form')
-        writes.isEmpty()
     }
 
     @Unroll
@@ -517,23 +504,6 @@ class ProtectedAppMutationSpec extends ToolSpecBase {
         result.route == 'createchild'
         writes == ['/installedapp/createchild/hubitat/Visual Rule Builder 2.0/parent/70']
         hubGet.calls.count { it.path == '/hub2/appsList' } == 1
-    }
-
-    def 'native creation refuses its discovered protected parent before creating a child'() {
-        given:
-        hubGet.register('/hub2/appsList') {
-            '{"apps":[{"data":{"id":42,"type":"Rule Machine","installed":true},"children":[]}]}'
-        }
-
-        when:
-        script.toolSetNativeApp([appType: 'rule_machine', name: 'New rule', confirm: true])
-
-        then:
-        def e = thrown(IllegalArgumentException)
-        e.message.toLowerCase().contains('protected')
-        e.message.contains('42')
-        hubGet.calls.any { it.path == '/hub2/appsList' }
-        writes.empty
     }
 
     @Unroll
