@@ -107,18 +107,64 @@ class NativeRmParityActions(ParityCase):
         self.healthy(rule_id)
 
     def test_set_rule_wait_events_mode_event(self):
-        rule_id = self.create([self._wait([
-            self._event(), {"capability": "Mode", "fields": [
-                field("modesX#", "enum", [str(self.mode_id)])]},
-        ])])
-        _, slots = self._wait_row(rule_id)
+        rule_id = self.create([self._wait([self._event()])])
+        original, original_slots = self._wait_row(rule_id)
+        action_id, order = str(original["id"]), self._ids(rule_id)
+        form = self._form(rule_id, {"kind": "open", "page": "selectActions"})
+        edit = [row for row in form["controls"] if row.get("kind") == "button"
+                and row.get("name", "").split(".")[0] == action_id
+                and row.get("control_id", "").endswith("||doAct")]
+        self.assertEqual(len(edit), 1, form)
+        form = self._submit(rule_id, form, control=edit[0])
+        links = [row for row in form["controls"] if row.get("kind") == "href"
+                 and row.get("page") == "doActPage"]
+        self.assertEqual(len(links), 1, form)
+        form = self._submit(rule_id, form, control=links[0])
+
+        def wait_control(name):
+            nonlocal form
+            if not any(row.get("name") == name for row in form["controls"]):
+                form = self._form(rule_id, {"kind": "open", "page": "doActPage"})
+            return self._control(form, name=name)
+
+        control = wait_control("anotherWait")
+        form = self._submit(rule_id, form, control=control)
+        # Native anotherWait requests a same-page submit to expose its new slot.
+        form = self._form(rule_id, {"kind": "open", "page": "doActPage"})
+        capabilities = [row["name"] for row in form["fields"]
+                        if re.fullmatch(r"tCapab-\d+", row["name"])
+                        and row["name"].removeprefix("tCapab") not in original_slots]
+        self.assertEqual(len(capabilities), 1, form)
+        added_slot = capabilities[0].removeprefix("tCapab")
+        form = self._submit(rule_id, form, fields={capabilities[0]: "Mode"})
+        form = self._submit(rule_id, form, fields={"modesX" + added_slot: [str(self.mode_id)]})
+        control = wait_control("hasAll")
+        form = self._submit(rule_id, form, control=control)
+        control = wait_control("doneWaits")
+        form = self._submit(rule_id, form, control=control)
+        for _ in range(3):
+            compiled = next(row for row in self.doc(rule_id)["actions"]
+                            if str(row["id"]) == action_id)
+            if len(compiled["value"]["wait"]) == 2:
+                break
+            form = self._form(rule_id, {"kind": "open", "page": "doActPage"})
+        self._form(rule_id, {"kind": "open", "page": "selectActions"})
+        action, slots = self._wait_row(rule_id)
+        self.assertEqual(str(action["id"]), action_id)
+        self.assertEqual(self._ids(rule_id), order)
         self.assertEqual(len(slots), 2)
+        self.assertEqual(slots, original_slots + [added_slot])
         self._assert_event(rule_id, slots[0])
         self.assertEqual(self._value(rule_id, "tCapab" + slots[1]), "Mode")
         values = self._values(rule_id)
         self.assertEqual([str(value) for value in values["modesX" + slots[1]]],
                          [str(self.mode_id)])
         self.assertNotIn("tstate" + slots[1], values)
+        typed = self.settings(rule_id)
+        self.assertTrue(typed["tDev" + slots[0]]["type"].startswith("capability"))
+        for name in ("tCapab" + slots[0], "tstate" + slots[0],
+                     "tCapab" + slots[1], "modesX" + slots[1]):
+            self.assertEqual(typed[name]["type"], "enum", typed[name])
         self.healthy(rule_id)
 
     def test_set_rule_wait_events_and_stays_duration(self):
