@@ -5009,7 +5009,10 @@ private Map _rmWriteSubPageField(Integer appId, String page, String parentPage, 
     // fix applied to _rmWriteSettingOnPage for the same field class.
     def settingsValue = afterCfg?.settings?."${key}"
     def settingsValueNorm
-    if (settingsValue instanceof List) {
+    if (settingsValue instanceof Map) {
+        // A device picker's setting is {id: label}.
+        settingsValueNorm = ((settingsValue as Map).keySet().collect { it?.toString() } as List).sort().join(",")
+    } else if (settingsValue instanceof List) {
         settingsValueNorm = ((settingsValue as List).collect { it?.toString() }.findAll { it != null } as List).sort().join(",")
     } else if (settingsValue != null) {
         def settingsValueStr = settingsValue.toString()

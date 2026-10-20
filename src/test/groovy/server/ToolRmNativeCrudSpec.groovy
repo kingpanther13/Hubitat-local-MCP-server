@@ -32351,7 +32351,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -32795,7 +32795,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["9": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -35905,7 +35905,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"], relDevice_2: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
@@ -36332,7 +36332,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
@@ -36731,7 +36731,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
@@ -37762,7 +37762,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["static"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
@@ -38393,7 +38393,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
@@ -40880,7 +40880,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
@@ -42826,7 +42826,7 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
                       appType: [name: "Rule-5.1", namespace: "hubitat"]],
                 configPage: [name: "STPage", title: "RE", install: false, error: null,
                              sections: [[title: "", input: inputs, paragraphs: ["seq"]]]],
-                settings: [:], childApps: []
+                settings: [relDevice_1: ["99": "ref"]]  /* RM echoes the reference picker as {id: label} */, childApps: []
             ])
         }
         hubGet.register('/installedapp/configure/json/100/selectActions') { params ->
