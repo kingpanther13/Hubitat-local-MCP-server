@@ -52,6 +52,29 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.empty
     }
 
+    def 'native password settings are redacted without rendering or altering false and zero'() {
+        given:
+        String secret = 'native-password-secret'
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: [
+            [name: 'credential', type: 'password', value: secret],
+            [name: 'passwordHint', type: 'text', value: 'visible hint'],
+            [name: 'flag', type: 'bool', value: false],
+            [name: 'count', type: 'number', value: 0]
+        ]]) }
+        when:
+        def result = script.toolGetRuleDocument([rule_id: 42, sections: ['settings']])
+        then:
+        def credential = result.settings.find { it.name == 'credential' }
+        credential.value == null
+        credential.redacted == true
+        !JsonOutput.toJson(result).contains(secret)
+        result.settings.find { it.name == 'passwordHint' }.value == 'visible hint'
+        result.settings.findAll { it.type != 'password' }.every { !it.containsKey('redacted') }
+        result.settings.find { it.name == 'flag' }.value == false
+        result.settings.find { it.name == 'count' }.value == 0
+        events.isEmpty()
+    }
+
     def 'projection suppresses unrequested native sections'() {
         when:
         def result = script.toolGetRuleDocument([rule_id: 42, sections: ['actions']])
