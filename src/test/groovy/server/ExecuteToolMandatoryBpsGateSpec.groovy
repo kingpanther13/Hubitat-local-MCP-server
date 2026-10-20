@@ -408,9 +408,9 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
         given:
         settingsMap.enableMandatoryBPS = true
 
-        when: 'another section key on a gateway-routed hub_set_rule'
+        when: 'another section key on a gateway-routed document update'
         script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_update_rule_document',
-            [tool: 'hub_update_rule_document', args: [bestPracticeKey: key('best_practice_reference')]])
+            [tool: 'hub_update_rule_document', args: SET_RULE_ARGS + [bestPracticeKey: key('best_practice_reference')]])
 
         then: 'the same block text as executeTool, naming the leaf section'
         def e = thrown(IllegalArgumentException)
@@ -418,7 +418,7 @@ class ExecuteToolMandatoryBpsGateSpec extends ToolSpecBase {
 
         when: 'the leaf section key'
         script._mrtrValidateAccess('hub_manage_rule_machine', 'hub_update_rule_document',
-            [tool: 'hub_update_rule_document', args: [bestPracticeKey: key('native_rule_documents')]])
+            [tool: 'hub_update_rule_document', args: SET_RULE_ARGS + [bestPracticeKey: key('native_rule_documents')]])
 
         then:
         noExceptionThrown()
