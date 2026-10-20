@@ -243,6 +243,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
         then:
         !result.success
         result.partial
+        !result.created
+        result.rule_id == null
         events == ['create']
     }
 

@@ -296,6 +296,7 @@ Map toolCreateRuleDocument(Map args) {
     def parent = getAppByAppId(parentId)
     if (parent?.appType?.namespace != 'hubitat' || parent?.appType?.name != 'Rule Machine') throw new IllegalArgumentException('parent_id must identify native Rule Machine')
     Long id = null
+    boolean verifiedChild = false
     try {
         def response = hubInternalGetRaw("/installedapp/createchild/hubitat/Rule-5.1/parent/${parentId}")
         String location = response?.location?.toString()?.trim()?.replaceFirst(/(?i)^Location:\s*/, '')
@@ -305,13 +306,14 @@ Map toolCreateRuleDocument(Map args) {
         id = _ndId(match.group(1))
         def child = getAppByAppId(id)
         if (child?.parentAppId?.toString() != parentId.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != 'Rule-5.1') throw new IllegalStateException('Created child did not match the requested native parent and rule type')
+        verifiedChild = true
         _nrHandle(id).initState()
         _nrHandle(id).updateSetting('origLabel', [type: 'text', value: args.name.trim()])
         _nrHandle(id).updateLabel(args.name.trim())
         _ndPreflight(id, changes)
         _ndApply(id, changes, true)
     } catch (Exception failure) {
-        [success: false, partial: true, rule_id: id, created: id != null, error: failure.message?.toString()]
+        [success: false, partial: true, rule_id: verifiedChild ? id : null, created: verifiedChild, error: failure.message?.toString()]
     }
 }
 
