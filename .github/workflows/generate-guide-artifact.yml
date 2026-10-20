@@ -1,6 +1,8 @@
 name: Generate tool guide artifact
 on:
   workflow_dispatch:
+  push:
+    branches: [feat/native-app-model]
 permissions:
   contents: read
 jobs:
