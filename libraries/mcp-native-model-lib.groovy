@@ -255,7 +255,7 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
     if (editing) context.editCond = id
     else { context.moreCond = true; context.ndx = id.toInteger() }
     _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
-    Closure render = { -> trigger ? _nrHandle(ruleId).selectTriggers() : _nrHandle(ruleId).selectConditions([pred: false]) }
+    Closure render = { unused -> trigger ? _nrHandle(ruleId).selectTriggers() : _nrHandle(ruleId).selectConditions([pred: false]) }
     Map inputValidation = _nmWriteExposed(ruleId, settings, [selector], render.call(), render)
     if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
     _nrStatePatch(ruleId, [hasAll: true])
@@ -303,7 +303,7 @@ Map _nmUpsertAction(Long ruleId, Map row) {
         editToken = "${id}.${prior.cond ?: 0}.${expressionAction}".toString()
     }
     _nrStatePatch(ruleId, [doActN: editToken])
-    Closure render = { -> _nrHandle(ruleId).doActPage() }
+    Closure render = { unused -> _nrHandle(ruleId).doActPage() }
     Map inputValidation = _nmWriteExposed(ruleId, settings, settings.take(2).collect { it.name }, render.call(), render)
     if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
     List waitIds = null
@@ -350,7 +350,7 @@ private Map _nmCompileWait(Long ruleId, String actionId, List events, boolean ed
         eventIds << eventId
         Map event = events.get(position)
         List fields = [[name: "tCapab-${eventId}".toString(), type: 'enum', value: event.capability]] + _nmFields(event.get('fields') as List, "-${eventId}".toString())
-        Closure render = { -> _nrHandle(ruleId).doActPage() }
+        Closure render = { unused -> _nrHandle(ruleId).doActPage() }
         Map inputValidation = _nmWriteExposed(ruleId, fields, [fields.get(0).name], render.call(), render)
         settings.addAll(fields)
         if (inputValidation.success != true) return [success: false, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
