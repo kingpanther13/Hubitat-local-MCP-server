@@ -4954,7 +4954,7 @@ private _restoreUploadedBackup(Map args) {
             note: "The backup uploaded but the restore did not confirm — verify hub state."]
 }
 def _getAllToolDefinitions_partItemBackups() {
-    return [
+    def defs = { [
         [
             name: "hub_create_backup",
             description: """Create a hub-database backup. Destructive tools require one within 24h.[[FLAT_TRIM]] Whole-hub .lzf, or with full=true a full local backup (.tar.gz: database, File Manager files, Zigbee and Z-Wave data). Optionally set the automatic-backup schedule (`schedule`) and the network-share backup (`networkBackup`, `testNetworkBackup`); scheduleOnly=true changes those settings only. cloudDownload copies an existing cloud backup into File Manager instead. The only write tool needing no prior backup.[[/FLAT_TRIM]]
@@ -5042,7 +5042,8 @@ A transport drop can lose the response while the hub still commits this write; v
                 required: ["confirm"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partItemBackups() {
     return [
@@ -8182,7 +8183,7 @@ def toolDeleteCapturedState(args) {
     return stateId ? deleteCapturedState(stateId) : clearAllCapturedStates()
 }
 def _getAllToolDefinitions_partDiagnostics() {
-    return [
+    def defs = { [
         [
             name: "hub_get_logs",
             description: """Read log history and MCP logging status. mode='hub' (default) returns native hub logs; mode='mcp' returns structured MCP entries with component/rule filters; mode='status' returns MCP log level, counts, and capacity.[[FLAT_TRIM]] MCP history recovers from native Past Logs after reload; retention follows the hub's shared log limit.[[/FLAT_TRIM]][[FLAT_TRIM]] Requires Read master.[[/FLAT_TRIM]]""",
@@ -8415,7 +8416,8 @@ Requires Write master.""",
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partDiagnostics() {
     return [
@@ -9612,7 +9614,7 @@ private Map _parseFirmwareCheck(rawText) {
     }
 }
 def _getAllToolDefinitions_partSystem() {
-    return [
+    def defs = { [
         [
             name: "hub_get_info",
             description: "Get comprehensive hub diagnostics in one call: model, firmware, uptime, memory, temperature, DB size, MCP stats, the calling MCP client, and security/toggle settings. See hub_get_tool_guide(section='hub_admin_write_system')[[FLAT_TRIM]] for the optional deep-dive flags and PII gating[[/FLAT_TRIM]].",
@@ -9771,7 +9773,8 @@ PRE-FLIGHT (apply): 1) Ensure backup <24h old 2) Confirm an update is actually p
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partSystem() {
     return [
@@ -14298,7 +14301,7 @@ private boolean _deviceSwapCleanup(Integer appId) {
     }
 }
 def _getAllToolDefinitions_partDevices() {
-    return [
+    def defs = { [
         [
             name: "hub_list_devices",
             description: """List all devices available to MCP with current states. format='context' returns a token-cheap plain-text house snapshot (mode + one line per device)[[FLAT_TRIM]] -- the best first call for broad "what's going on / what's in this house" questions[[/FLAT_TRIM]].
@@ -14550,7 +14553,8 @@ Pre-flight: backup <24h (hub_create_backup) + user OK.""",
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partDevices() {
     return [
@@ -16266,7 +16270,7 @@ private String _hubVarRevealHtml(String raw) {
     return chunks ? chunks.join("\n") : raw
 }
 def _getAllToolDefinitions_partVariables() {
-    return [
+    def defs = { [
         [
             name: "hub_list_variables",
             description: "List all hub variables and rule-engine variables.[[FLAT_TRIM]] Includes every type, even ones without connectors.[[/FLAT_TRIM]]",
@@ -16380,7 +16384,8 @@ def _getAllToolDefinitions_partVariables() {
                 ]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partVariables() {
     return [
@@ -19592,7 +19597,7 @@ def toolGetDeviceInUseBy(args) {
     }
 }
 def _getAllToolDefinitions_partCodeManagement() {
-    return [
+    def defs = { [
         [
             name: "hub_list_apps",
             description: """List apps on the hub — running instances or installed app code/types (see scope).[[FLAT_TRIM]] scope='types' returns both community and built-in app types, each tagged system/isBuiltIn and with its menu tab (Apps/Automations/Integrations). Use system=false/isBuiltIn=false to isolate community (user-installed) types, or menu to group types by the admin UI's Apps/Automations/Integrations tabs. menu is null for a type that declares none. See hub_get_tool_guide(section='builtin_app_tools_apps').[[/FLAT_TRIM]] Per-app event history: hub_list_device_events with appId.[[FLAT_TRIM]] Each instance row carries appTypeId, the app type's code-class id shared with scope='types' and hub_get_source(type='app'), so an instance resolves to its code without matching on the type name. Requires the Read master.[[/FLAT_TRIM]]""",
@@ -19890,7 +19895,8 @@ Use before hub_get_app_config on multi-page apps to avoid guessing page names.[[
                 required: ["deviceId"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partCodeManagement() {
     return [
@@ -22899,7 +22905,7 @@ private Map _withGuidePage(Map result, content, cursor, int pageChars = guidePag
     return result
 }
 def _getAllToolDefinitions_partDiscovery() {
-    return [
+    def defs = { [
         [
             name: "hub_get_tool_guide",
             description: "Get the deep-reference guide for an MCP tool topic[[FLAT_TRIM]] (exhaustive capability tables, wire formats, worked examples)[[/FLAT_TRIM]]. Read a write tool's section before calling that tool: the section publishes the acknowledgment key the best-practice gate requires, and best_practice_reference maps each write tool to its section. A `<parent>_<part>` key (e.g. set_rule_reference_conditions) returns just that part of its parent section; the bare parent key returns all of it.[[FLAT_TRIM]] A parent's response lists its own sub-keys.[[/FLAT_TRIM]] Prefer a section: omitting it returns the key list plus the first page of the whole guide (30,000-character pages via nextCursor).[[FLAT_TRIM]] platform_api_search / platform_api_page read the hub's own Groovy API documentation instead.[[/FLAT_TRIM]]",
@@ -22925,7 +22931,8 @@ def _getAllToolDefinitions_partDiscovery() {
                 required: ["query"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def _readOnlyToolNames_partDiscovery() {
     return [
@@ -22939,7 +22946,7 @@ def _toolDisplayMeta_partDiscovery() {
     ]
 }
 def _getAllToolDefinitions_partNativeRM() {
-    return [
+    def defs = { [
         [
             name: "hub_list_rules",
             description: "List all Rule Machine rules (RM 4.x + 5.x, deduplicated by id) with each rule's id, label, and live `status` (`active`/`paused`/`stopped`/`disabled`).[[FLAT_TRIM]] Requires the Read master.[[/FLAT_TRIM]][[FLAT_TRIM]] `status` is `unknown` when the hub's app list is momentarily unreadable. CAVEAT: the runtime-STOPPED state is only visible here when the hub's list source decorates the label (many firmwares don't) — the authoritative stopped check is hub_get_rule_health's `stopped` field. For ONE rule's state, call hub_get_rule_health(appId) instead of listing every rule — it returns that rule's paused/disabled/stopped/broken directly. For the enabled/disabled state of NON-RM classic apps (Room Lighting, Notifier, Basic Rules, Button Controllers) use `hub_list_apps` (scope='instances'). Call `hub_get_tool_guide(section='builtin_app_tools_rules')` for the status-detection semantics and platform limitations on RM rule internals.[[/FLAT_TRIM]]",
@@ -23162,7 +23169,8 @@ Requires Write master + confirm=true + recent hub backup.""",
                 required: ["appId", "disabled"]
             ]
         ],
-    ]
+    ] }
+    return defs()
 }
 def toolSetAppDisabled(args) {
     def id = args?.appId
