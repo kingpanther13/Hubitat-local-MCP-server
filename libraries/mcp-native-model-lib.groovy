@@ -316,7 +316,7 @@ private Map _nmRejectCondition(Long ruleId, boolean trigger, boolean editing, St
     String collection = trigger ? 'capabstrue' : 'capabsfalse'
     List keys = ([collection, 'ndx', 'hasAll', 'moreCond', 'editCond', 'capabDone', 'cancelCapab', 'updatingTrig', 'hasConditions', "hhmmss${id}".toString()] + fields.collect { it.name }).unique()
     Closure cancel = { unused ->
-        Map context = [hasAll: false]
+        Map context = [hasAll: false, capabDone: false]
         if (editing) context.editCond = id
         else { context.moreCond = true; context.ndx = id.toInteger() }
         _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
@@ -365,7 +365,7 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
     if (before.containsKey(collection)) baseline.put(collection, prior)
     Closure render = { unused -> trigger ? _nrHandle(ruleId).selectTriggers() : _nrHandle(ruleId).selectConditions([pred: false]) }
     try {
-        Map context = [hasAll: false]
+        Map context = [hasAll: false, capabDone: false]
         if (editing) context.editCond = id
         else { context.moreCond = true; context.ndx = id.toInteger() }
         _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])

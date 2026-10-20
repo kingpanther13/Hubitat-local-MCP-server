@@ -688,6 +688,44 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.eval == ['0': ['1']]
     }
 
+    def 'condition edit after native deletion keeps its selector context through dependent renders'() {
+        given:
+        settings.put('rCapab_1', [type: 'enum', value: 'Switch'])
+        settings.put('state_1', [type: 'enum', value: 'on'])
+        nativeRule.selectConditions = { Map params ->
+            assert params == [pred: false]
+            if (nativeState.deleteCon != null) {
+                nativeState.capabsfalse.remove(nativeState.deleteCon.toString())
+                nativeState.remove('deleteCon')
+                nativeState.capabDone = true
+                return nativeForm([])
+            }
+            Map rendered = nativeForm([])
+            if (nativeState.editCond == '1') {
+                rendered = nativeForm([[name: 'rCapab_1', type: 'enum', options: ['Switch'], submitOnChange: true],
+                    [name: 'rDev_1', type: 'capability.switch', multiple: true],
+                    [name: 'state_1', type: 'enum', options: ['on', 'off']]])
+                if (nativeState.hasAll == true) {
+                    nativeState.capabsfalse['1'] = 'Switch A off'
+                    nativeState.capabDone = true
+                }
+                if (nativeState.capabDone == true) nativeState.remove('editCond')
+            }
+            rendered
+        }
+        when:
+        def deleted = script._nmDeleteRow(42L, 'condition', '2')
+        def edited = script._nmUpsertCondition(42L, false, [id: '1', capability: 'Switch', fields: [
+            [name: 'rDev_#', type: 'capability.switch', value: ['7']],
+            [name: 'state_#', type: 'enum', value: 'off']]])
+        then:
+        deleted.success
+        edited.success && !edited.partial
+        nativeState.capabsfalse == ['1': 'Switch A off']
+        settings.state_1.value == 'off'
+        settings.rDev_1.value == ['7']
+    }
+
     def 'trigger deletion uses native delete callback and verifies setting cleanup'() {
         given:
         nativeState.capabstrue = ['2': 'Switch A off']

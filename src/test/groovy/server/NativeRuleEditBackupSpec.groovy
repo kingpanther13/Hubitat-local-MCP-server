@@ -9,6 +9,8 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
     @Shared TestChildApp serverApp = new TestChildApp(id: 7L, label: 'MCP')
     List events
     boolean backupFails
+    boolean applyFails
+    Map model
     boolean renderFails
     Map nativeApp
 
@@ -19,13 +21,21 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
         events = []
         backupFails = false
         renderFails = false
+        applyFails = false
+        model = [capabsfalse: ['1': 'Switch on', '2': 'Switch off'], eval: [:], actNdx: 1]
         settingsMap.enableMandatoryBPS = false
         stateMap.lastBackupTimestamp = script.now()
         nativeApp = [id: 42L, appType: [namespace: 'hubitat', name: 'Rule-5.1']]
         script.metaClass.getAppByAppId = { Long id -> nativeApp }
-        script.metaClass._nrHandle = { Long id -> [:] }
-        script.metaClass._ndPreflight = { Long id, List changes -> events << 'preflight' }
-        script.metaClass._ndApply = { Long id, List changes, boolean created -> events << 'apply'; [success: true, rule_id: id] }
+        script.metaClass._nrHandle = { Long id -> new NativeDocumentChild([], [stopped: false, paused: false]) }
+        script.metaClass._nrState = { Long id ->
+            if (!events.contains('preflight')) events << 'preflight'
+            [:] + model
+        }
+        script.metaClass._nmUpsertAction = { Long id, Map value ->
+            if (!events.contains('apply')) events << 'apply'
+            [success: !applyFails, partial: applyFails, id: '1']
+        }
         script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean requireNativeExport ->
             events << 'snapshot'
             assert requireNativeExport
@@ -33,11 +43,15 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
             [backupKey: 'rm-rule_42_fixture', ruleId: id]
         }
         script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30, boolean retry = false ->
+            if (path.startsWith('/app/ruleBuilderJson/')) return [broken: false, stopped: false, paused: false]
+            if (path.startsWith('/installedapp/settings/')) return [settings: []]
+            if (path.startsWith('/installedapp/statusJson/')) return [eventSubscriptions: [], scheduledJobs: []]
             events << 'open'
             if (renderFails) throw new IllegalStateException('render failed')
             JsonOutput.toJson(form())
         }
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 420, boolean retry = false ->
+            if (path == '/installedapp/update/json') return [status: 200]
             events << 'submit'
             [status: 200, data: JsonOutput.toJson(form())]
         }
@@ -56,8 +70,8 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
 
     private static Map update() {
         [rule_id: 42, confirm: true, changes: [
-            [part: 'required', value: [tokens: ['1']]],
-            [part: 'required', value: [tokens: ['1', 'OR', '2']]]]]
+            [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]],
+            [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]]]]
     }
 
     def 'a whole document batch gets one fresh snapshot after preflight and before mutation'() {
@@ -92,7 +106,7 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
 
     def 'partial document changes retain their pre-edit recovery handle'() {
         given:
-        script.metaClass._ndApply = { Long id, List changes, boolean created -> [success: false, partial: true] }
+        applyFails = true
         when:
         def result = script.toolUpdateRuleDocument(update())
         then:
@@ -102,12 +116,13 @@ class NativeRuleEditBackupSpec extends ToolSpecBase {
 
     def 'rejected document preflight does not take a snapshot'() {
         given:
-        script.metaClass._ndPreflight = { Long id, List changes -> throw new IllegalArgumentException('invalid edit') }
+        def invalid = update()
+        invalid.changes = [[part: 'required', value: [tokens: ['999']]]]
         when:
-        def result = script.toolUpdateRuleDocument(update())
+        def result = script.toolUpdateRuleDocument(invalid)
         then:
         !result.success && !result.partial
-        events.empty
+        events == ['preflight']
     }
 
     def 'a form workflow snapshots before rendering and reuses its recovery handle through submissions'() {

@@ -45,8 +45,8 @@ class NativeRmBackupE2E(ParityCase):
         self.assertEqual(str(result["ruleId"]), str(rule_id))
         self.assertEqual(result.get("restoredVia"), "nativeStateReplay", result)
         self.healthy(rule_id)
-        print("BACKUP_RESTORE", json.dumps(dict(rule_id=rule_id, backupKey=key,
-            seconds=time.monotonic() - started, result=result)), flush=True)
+        print("BACKUP_RESTORE", json.dumps({"rule_id": rule_id, "backupKey": key,
+            "seconds": time.monotonic() - started, "result": result}), flush=True)
         return result
 
     def condition(self, state="on", **extra):
@@ -117,8 +117,8 @@ class NativeRmBackupE2E(ParityCase):
         key = edited["backup"]["backupKey"]
         self.assertEqual(self.backup_keys(rule_id) - keys, {key})
         self.assertNotEqual(self.configuration(rule_id), before)
-        print("BACKUP_EDIT", json.dumps(dict(rule_id=rule_id, seconds=time.monotonic() - started,
-            backup=edited["backup"])), flush=True)
+        print("BACKUP_EDIT", json.dumps({"rule_id": rule_id, "seconds": time.monotonic() - started,
+            "backup": edited["backup"]}), flush=True)
         self.recovery(rule_id, key)
         self.assertEqual(self.configuration(rule_id), before)
         self.assertEqual(str(self.status(rule_id)["installedApp"]["id"]), str(rule_id))
@@ -127,9 +127,9 @@ class NativeRmBackupE2E(ParityCase):
         self.wait_for(lambda: self.attribute("out", "switch") == "on")
         self.command("switch", "off")
         self.wait_for(lambda: self.attribute("out", "switch") == "off")
-        print("BACKUP_BEHAVIOR", json.dumps(dict(rule_id=rule_id,
-            deleted_rows_restored=True, same_id_payload_restored=True,
-            variables_restored=True, native_trigger_and_wait_fired=True)), flush=True)
+        print("BACKUP_BEHAVIOR", json.dumps({"rule_id": rule_id,
+            "deleted_rows_restored": True, "same_id_payload_restored": True,
+            "variables_restored": True, "native_trigger_and_wait_fired": True}), flush=True)
 
     def test_form_workflow_has_one_pre_edit_snapshot(self):
         rule_id = self.create([log_action("form recovery")])
@@ -148,6 +148,11 @@ class NativeRmBackupE2E(ParityCase):
             self.assertEqual(self.settings(rule_id)["comments"]["value"], value)
         self.assertEqual(self.backup_keys(rule_id) - keys, {key})
         self.recovery(rule_id, key)
+        self.assertEqual(self.settings(rule_id).get("comments", {}).get("value", ""), before)
+        stale = self.call("hub_set_rule", operation="form", rule_id=rule_id, confirm=True,
+            args={"steps": [{"kind": "submit", "expect_page": page["page"]["name"],
+                            "fields": {"comments": "stale edit must not apply"}}]})
+        self.assertIs(stale.get("success"), False, stale)
         self.assertEqual(self.settings(rule_id).get("comments", {}).get("value", ""), before)
 
     def test_reads_and_disabled_backups_do_not_capture(self):

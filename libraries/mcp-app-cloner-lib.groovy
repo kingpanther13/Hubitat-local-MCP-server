@@ -1124,15 +1124,20 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
     List plan = _rmNativeSettingPlan(data.appSettings)
     def deviceIds = payload.deviceReplacements.keySet().collect { it.toString() }
     plan.findAll { it.type == 'capability' || it.type.startsWith('capability.') }.each { row -> deviceIds.addAll(row.value instanceof List ? row.value : [row.value]) }
-    if (deviceIds) {
-        def raw = hubInternalGet('/device/listJson')
-        def devices = raw instanceof List ? raw : new groovy.json.JsonSlurper().parseText(raw?.toString() ?: '')
-        if (!(devices instanceof List) || deviceIds.any { wanted -> !devices.any { it instanceof Map && it.id?.toString() == wanted.toString() } }) throw new IllegalArgumentException('Recovery device references could not all be verified; nothing was restored')
+    deviceIds.unique().each { wanted ->
+        if (!wanted.toString().isLong() || wanted.toString().toLong() <= 0L) throw new IllegalArgumentException('Invalid recovery device reference')
+        def raw = hubInternalGet("/device/fullJson/${wanted}")
+        def device = raw instanceof Map ? raw : new groovy.json.JsonSlurper().parseText(raw?.toString() ?: '')
+        if (!(device instanceof Map) || device.device?.id?.toString() != wanted.toString()) throw new IllegalArgumentException("Recovery device ${wanted} could not be verified; nothing was restored".toString())
     }
-    Map undo = _rmBackupRuleSnapshot(id.toString().toInteger(), 'pre-native-restore', true, sourceBackupKey)
-    if (!(undo?.backupKey instanceof String) || !undo.backupKey) throw new IllegalStateException('Pre-restore recovery capture returned no handle')
+    String formKey = _nfKey(id)
+    if (NATIVE_FORM_BUSY.putIfAbsent(formKey, true) != null) throw new IllegalStateException('This rule already has an active native form operation')
+    Map undo = null
     boolean attempted = false
     try {
+        undo = _rmBackupRuleSnapshot(id.toString().toInteger(), 'pre-native-restore', true, sourceBackupKey)
+        if (!(undo?.backupKey instanceof String) || !undo.backupKey) throw new IllegalStateException('Pre-restore recovery capture returned no handle')
+        NATIVE_FORM_CONTEXTS.entrySet().findAll { entry -> entry.value.app_id?.toString() == id.toString() }.each { entry -> NATIVE_FORM_CONTEXTS.remove(entry.key) }
         attempted = true
         if (_nrState(id).stopped != true) _nrHandle(id).appButtonHandler('stopRule')
         def wantedNames = plan.collect { it.name }
@@ -1160,9 +1165,10 @@ private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
          stateVerified: true, settingsVerified: true, localVariablesVerified: true, broken: rebuilt.broken, stopped: rebuilt.stopped, paused: rebuilt.paused,
          eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]
     } catch (Exception failure) {
+        if (!attempted) throw failure
         [success: false, partial: attempted, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
          error: failure.message?.toString(), note: 'Restore did not pass complete verification. Inspect the native rule; the pre-restore backup is available for recovery.']
-    }
+    } finally { NATIVE_FORM_BUSY.remove(formKey) }
 }
 
 private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean preserveRuleId = true, String backupKey = null) {

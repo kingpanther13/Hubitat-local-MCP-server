@@ -16,20 +16,16 @@ class NativeRuleRecoveryExportSpec extends ToolSpecBase {
         List calls = []
         String exported = JsonOutput.toJson(payload())
         script.metaClass._nrHandle = { Long id -> [exportAppData: { List ids -> calls << ['export', ids]; exported }] }
-        script.metaClass._rmBuildNativeEditSnapshot = { Integer id, String reason, String captured ->
-            calls << ['snapshot', captured]
-            [snapshot: [nativeExport: captured], config: [:]]
-        }
+        byte[] stored
         script.metaClass._withBackupLock = { String label, Closure work -> work.call() }
-        script.metaClass._rmWriteRuleSnapshotLocked = { Integer id, String reason, Map snapshot, Map config, String protectedKey ->
-            calls << ['upload', snapshot.nativeExport]
-            [backupKey: 'rm-rule_42_fixture']
-        }
+        script.metaClass.uploadHubFile = { String name, byte[] bytes -> stored = bytes; calls << ['upload', new groovy.json.JsonSlurper().parseText(new String(bytes, 'UTF-8')).nativeExport] }
+        script.metaClass.downloadHubFile = { String name -> stored }
+        script.metaClass._publishUploadedItemBackup = { String key, Map entry, String protectedKey -> }
         when:
         def result = script._rmBackupRuleSnapshot(42, 'pre-document-update', true)
         then:
-        result.backupKey == 'rm-rule_42_fixture'
-        calls == [['export', [42L]], ['snapshot', exported], ['upload', exported]]
+        result.backupKey.startsWith('rm-rule_42_')
+        calls == [['export', [42L]], ['upload', exported]]
     }
 
     def 'native capture rejects unavailable mismatched and incomplete recovery payloads'() {

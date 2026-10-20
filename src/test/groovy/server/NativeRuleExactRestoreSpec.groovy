@@ -17,6 +17,10 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
     void setupSpec() { appExecutor.getApp() >> serverApp }
 
     void setup() {
+        script.callerClient = null
+        stateMap.lastBackupTimestamp = script.now()
+        nativeContexts().clear()
+        busyContexts().clear()
         events = []
         rebuildDrifts = false
         undoFails = false
@@ -36,19 +40,40 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         child.typed = [count: [type: 'text', value: 'edited', multiple: false], extra: [type: 'text', value: 'remove', multiple: false]]
         script.metaClass.getAppByAppId = { Long id -> [id: id, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
         script.metaClass._nrHandle = { Long id -> child }
-        script.metaClass._nmSettingsInventory = { Long id -> [:] + child.typed }
+        hubGet.register('/installedapp/settings/42') { q -> JsonOutput.toJson([settings: child.typed.collect { name, row -> [name: name] + row }]) }
         script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean strict, String protectedKey ->
             events << ['undo', strict, protectedKey]
             if (undoFails) throw new IllegalStateException('undo unavailable')
             [backupKey: 'rm-rule_42_undo']
         }
-        script.metaClass._ndApply = { Long id, List changes, boolean created ->
+        child.rebuild = {
             events << 'rebuild'
-            assert changes.empty && !created
             child.backing.runtimeCursor = 'native rebuilt'
             if (rebuildDrifts) child.backing.actions['1'].method = 'wrong after rebuild'
-            [success: true, broken: false, stopped: child.backing.stopped, paused: child.backing.paused, eventSubscriptions: [], scheduledJobs: []]
         }
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson([broken: false, stopped: child.backing.stopped == true, paused: child.backing.paused == true]) }
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([eventSubscriptions: [], scheduledJobs: []]) }
+        script.metaClass.hubInternalPostFormRaw = { String path, String body, int timeout = 420, boolean retry = false -> [status: 200] }
+
+    }
+
+    void cleanup() { script.callerClient = null; nativeContexts().clear(); busyContexts().clear() }
+
+    private Map nativeContexts() {
+        def field = script.class.getDeclaredField('NATIVE_FORM_CONTEXTS')
+        field.accessible = true
+        field.get(null) as Map
+    }
+
+    private Map busyContexts() {
+        def field = script.class.getDeclaredField('NATIVE_FORM_BUSY')
+        field.accessible = true
+        field.get(null) as Map
+    }
+
+    private void cacheForm() {
+        nativeContexts()[script._nfCallerKey()] = [app_id: 42L, expires: script.now() + 300000L,
+            page: [name: 'mainPage'], envelope: [:], fields: [:], controls: [:]]
     }
 
     private Map restore() { script._rmRestoreFromBackup([fileName: 'snapshot.json'], snapshot, true, 'rm-rule_42_source') }
@@ -79,6 +104,34 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         events[0] == ['undo', true, 'rm-rule_42_source']
     }
 
+    def 'device references use verified native device identity before undo capture'() {
+        given:
+        Map payload = new JsonSlurper().parseText(snapshot.nativeExport) as Map
+        payload.deviceReplacements = ['591': [value: '591']]
+        payload.appData['42'].appSettings << [name: 'rDev_1', type: 'capability.switch', multiple: true, deviceList: ['591': 'Switch']]
+        snapshot.nativeExport = JsonOutput.toJson(payload)
+        hubGet.register('/device/fullJson/591') { q -> JsonOutput.toJson([device: [id: 591]]) }
+        when:
+        def result = restore()
+        then:
+        result.success
+    }
+
+    def 'missing or mismatched device identities refuse before undo capture'() {
+        given:
+        Map payload = new JsonSlurper().parseText(snapshot.nativeExport) as Map
+        payload.deviceReplacements = ['591': [value: '591']]
+        snapshot.nativeExport = JsonOutput.toJson(payload)
+        hubGet.register('/device/fullJson/591') { q -> JsonOutput.toJson(response) }
+        when:
+        restore()
+        then:
+        thrown(IllegalArgumentException)
+        events.empty
+        where:
+        response << [[:], [device: [id: 595]]]
+    }
+
     def 'same IDs with changed compiled payload after rebuild cannot be reported restored'() {
         given:
         rebuildDrifts = true
@@ -93,6 +146,7 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
     def 'failed undo capture leaves original live configuration untouched'() {
         given:
         undoFails = true
+        cacheForm()
         def before = JsonOutput.toJson(child.backing)
         when:
         restore()
@@ -100,6 +154,8 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         thrown(IllegalStateException)
         JsonOutput.toJson(child.backing) == before
         events == [['undo', true, 'rm-rule_42_source']]
+        nativeContexts().containsKey(script._nfCallerKey())
+        busyContexts().isEmpty()
     }
 
     def 'malformed strict recovery never falls through to legacy settings replay'() {
@@ -115,12 +171,14 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
 
     def 'wrong native parent fails before undo capture or writes'() {
         given:
+        cacheForm()
         script.metaClass.getAppByAppId = { Long id -> [id: id, parentAppId: 99L, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
         when:
         restore()
         then:
         thrown(IllegalArgumentException)
         events.empty
+        nativeContexts().containsKey(script._nfCallerKey())
     }
 
     def 'native copy verification also rejects same ID rows with altered compiled payloads'() {
@@ -131,21 +189,71 @@ class NativeRuleExactRestoreSpec extends ToolSpecBase {
         expect:
         script._rmNativeCopyMismatch(42, snapshot).contains('configuration differs')
     }
+
+    def 'restoring invalidates old form descriptors while preserving other rule workflows'() {
+        given:
+        cacheForm()
+        nativeContexts()['other caller'] = [app_id: 99L, expires: script.now() + 300000L]
+        when:
+        def restored = restore()
+        def staleSubmit = script.toolCallAppForm([app_id: 42, confirm: true, steps: [[kind: 'submit', expect_page: 'mainPage']]])
+        then:
+        restored.success
+        !staleSubmit.success && !staleSubmit.partial
+        staleSubmit.error.contains('Open the native form first')
+        nativeContexts().containsKey('other caller')
+        busyContexts().isEmpty()
+    }
+
+    def 'restore refuses an active form without dropping its lock or cached descriptors'() {
+        given:
+        cacheForm()
+        busyContexts()[script._nfKey(42L)] = true
+        when:
+        restore()
+        then:
+        def failure = thrown(IllegalStateException)
+        failure.message.contains('active native form operation')
+        events.empty
+        nativeContexts().containsKey(script._nfCallerKey())
+        busyContexts().containsKey(script._nfKey(42L))
+    }
+
+    def 'the restore lock also refuses a form started during undo capture'() {
+        given:
+        script.metaClass._rmBackupRuleSnapshot = { Integer id, String reason, boolean strict, String protectedKey ->
+            boolean refused = false
+            try { script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true]) }
+            catch (IllegalStateException failure) { refused = failure.message.contains('active form operation') }
+            assert refused
+            [backupKey: 'rm-rule_42_undo']
+        }
+        when:
+        def result = restore()
+        then:
+        result.success
+        busyContexts().isEmpty()
+    }
 }
 
 class RestoreNativeChild {
     Map backing
     Map typed
     Map pending
+    Closure rebuild
     String label = 'Edited'
     List events
 
     RestoreNativeChild(List events) { this.events = events }
+    Object getSetting(String name) { typed.get(name)?.value }
+    Map selectTriggers() { rebuild.call(); [name: 'selectTriggers', sections: [[body: []]]] }
+    Map selectActions(Map params) { [name: 'selectActions', sections: [[body: []]]] }
+    Map mainPage() { [name: 'mainPage', sections: [[body: []]]] }
     Map getState() { backing }
     void setState(Map value) { pending = value }
     void saveState() { backing = new JsonSlurper().parseText(JsonOutput.toJson(pending)) as Map }
     void removeSetting(String name) { typed.remove(name); events << ['removeSetting', name] }
-    void updateSetting(String name, Map value) { typed[name] = [type: value.type, value: value.value, multiple: value.value instanceof List]; events << ['updateSetting', name] }
+    void updateSetting(String name, Map value) { typed[name] = [type: value.type, value: value.value, multiple: value.value instanceof List]; if (value.type.startsWith('capability.')) typed[name].deviceList = (value.value instanceof List ? value.value : [value.value]).collectEntries { [(it.toString()): 'Switch'] }; events << ['updateSetting', name] }
     void updateLabel(String value) { label = value }
     void appButtonHandler(String name) {
         events << name
