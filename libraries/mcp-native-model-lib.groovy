@@ -314,7 +314,7 @@ private Map _nmRejectEdit(Long ruleId, String id, Map baseline, Map savedSetting
 
 private Map _nmRejectCondition(Long ruleId, boolean trigger, boolean editing, String id, Map baseline, Map savedSettings, List fields, Closure render, Map failure) {
     String collection = trigger ? 'capabstrue' : 'capabsfalse'
-    List keys = ([collection, 'ndx', 'hasAll', 'moreCond', 'editCond', 'capabDone', 'cancelCapab', 'updatingTrig', 'hasConditions', 'isPredicate', "hhmmss${id}".toString()] + fields.collect { it.name }).unique()
+    List keys = ([collection, 'ndx', 'hasAll', 'moreCond', 'editCond', 'capabDone', 'cancelCapab', 'updatingTrig', 'hasConditions', 'isPredicate', 'predCapabs', "hhmmss${id}".toString()] + fields.collect { it.name }).unique()
     Closure cancel = { unused ->
         Map context = [hasAll: false]
         if (editing) context.editCond = id
@@ -363,6 +363,7 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
     Map savedSettings = _nmSettingsInventory(ruleId)
     Map baseline = [:] + before
     if (before.containsKey(collection)) baseline.put(collection, prior)
+    if (before.predCapabs instanceof List) baseline.predCapabs = new ArrayList(before.predCapabs)
     // Native condition pages only expose edits in the row's predicate group.
     boolean predicate = !trigger && editing && before.predCapabs instanceof List && before.predCapabs.any { it?.toString() == id }
     Closure render = { unused -> trigger ? _nrHandle(ruleId).selectTriggers() : _nrHandle(ruleId).selectConditions([pred: predicate]) }
@@ -376,11 +377,17 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
         _nrStatePatch(ruleId, [hasAll: true])
         render.call()
         Map after = _nrState(ruleId)
+        if (predicate && after.predCapabs != baseline.predCapabs) {
+            // Editing a predicate must not add a second binding with a different ID type.
+            _nrStatePatch(ruleId, [predCapabs: new ArrayList(baseline.predCapabs)])
+            after = _nrState(ruleId)
+        }
+        boolean membership = !predicate || after.predCapabs == baseline.predCapabs
         def label = _nmEntry(after.get(collection) instanceof Map ? after.get(collection) : [:], id)
         Map echoed = _nrSettings(ruleId, settings.collect { it.name })
         boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
         boolean compiled = label instanceof String && label.trim() && !label.contains('null') && !label.contains('BROKEN')
-        if (!(compiled && persisted)) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render,
+        if (!(compiled && persisted && membership)) return _nmRejectCondition(ruleId, trigger, editing, id, baseline, savedSettings, settings, render,
             [error: compiled ? 'Native input persistence failed' : 'Native row did not compile a valid label'])
         [success: true, id: id, label: label, partial: false, settingsVerified: true]
     } catch (Exception failure) {

@@ -720,7 +720,9 @@ class NativeModelSpec extends ToolSpecBase {
             // The native input renderer consumes the prior operation's Done flag.
             nativeState.remove('capabDone')
             if (nativeState.hasAll == true) {
-                nativeState.capabsfalse['1'] = 'Switch A off'
+                nativeState.capabsfalse['1'] = reject ? 'BROKEN' : 'Switch A off'
+                // Native string membership checks can append a String beside an Integer ID.
+                nativeState.predCapabs = nativeState.predCapabs + ['1']
                 nativeState.capabDone = true
                 nativeState.remove('editCond')
             }
@@ -730,7 +732,6 @@ class NativeModelSpec extends ToolSpecBase {
         }
         List fields = [[name: 'rDev_#', type: 'capability.switch', value: ['7']],
             [name: 'state_#', type: 'enum', value: 'off']]
-        if (reject) fields << [name: 'notExposed_#', type: 'text', value: 'refuse']
         when:
         def deleted = script._nmDeleteRow(42L, 'condition', '3')
         def edited = script._nmUpsertCondition(42L, false, [id: '1', capability: 'Switch', fields: fields])

@@ -169,6 +169,16 @@ class NativeRuntimeSpec extends ToolSpecBase {
         calls.empty
     }
 
+    def 'native exported time settings compare with their persisted local clocks'() {
+        given:
+        sharedLocation.timeZone = TimeZone.getTimeZone('America/New_York')
+        expect:
+        script._nrComparableSetting('time', '17:00') ==
+            script._nrComparableSetting('time', '2026-10-20T17:00:00.000-0400')
+        script._nrComparableSetting('time', '00:00') == '00:00:00.000'
+        script._nrComparableSetting('time', '23:59') == '23:59:00.000'
+    }
+
     def 'native number inputs accept fractions while enforcing their range'() {
         expect:
         script._nrValidateInput([name: 'valConst2.1', type: 'number', multiple: false,

@@ -131,6 +131,26 @@ class NativeRmBackupE2E(ParityCase):
             "deleted_rows_restored": True, "same_id_payload_restored": True,
             "variables_restored": True, "native_trigger_and_wait_fired": True}), flush=True)
 
+    def test_stopped_time_rule_recovers_clock_and_schedule(self):
+        def clock(value, **extra):
+            return change("trigger", capability="Certain Time (and optional date)", fields=[
+                field("time#", "enum", "A specific time"),
+                field("atTime#", "time", value)], **extra)
+
+        rule_id = self.create([clock("2026-01-01T17:00:00.000-0500"), log_action("timed recovery")])
+        self.call("hub_call_rule", ruleId=rule_id, action="stop")
+        before = self.configuration(rule_id)
+        trigger_id = next(iter(self.doc(rule_id)["triggers"]))
+        edited = self.update(rule_id, [clock("2026-01-01T18:00:00.000-0500", id=trigger_id),
+                                      log_action("remove timed edit")])
+        self.assertTrue(edited.get("success"), edited)
+        self.assertNotEqual(self.configuration(rule_id), before)
+        self.recovery(rule_id, edited["backup"]["backupKey"])
+        self.assertEqual(self.configuration(rule_id), before)
+        self.assertTrue(self.state(rule_id).get("stopped"))
+        self.call("hub_call_rule", ruleId=rule_id, action="start")
+        self.wait_for(lambda: bool(self.status(rule_id).get("scheduledJobs")))
+
     def test_form_workflow_has_one_pre_edit_snapshot(self):
         rule_id = self.create([log_action("form recovery")])
         before = self.settings(rule_id).get("comments", {}).get("value", "")

@@ -72,7 +72,11 @@ private Object _nrComparableSetting(String type, Object value) {
     if (type == 'number' || type == 'decimal') return value.toString().isBigDecimal() ? new BigDecimal(value.toString()).stripTrailingZeros().toPlainString() : value.toString()
     if (type == 'bool') return value.toString().toLowerCase()
     // Native time settings keep the local clock while normalizing the stored date and timezone offset.
-    if (type == 'time') return toDateTime(value.toString()).format('HH:mm:ss.SSS', location.timeZone)
+    if (type == 'time') {
+        String clock = value.toString()
+        if (clock ==~ /(?:[01][0-9]|2[0-3]):[0-5][0-9]/) return clock + ':00.000'
+        return toDateTime(clock).format('HH:mm:ss.SSS', location.timeZone)
+    }
     value.toString()
 }
 
