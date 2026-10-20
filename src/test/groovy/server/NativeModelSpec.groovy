@@ -33,6 +33,9 @@ class NativeModelSpec extends ToolSpecBase {
             [success: true]
         }
         script.metaClass._nrSettings = { Long id, List names -> settings.subMap(names) }
+        script.metaClass.hubInternalGet = { String path -> [settings: settings.collect { name, row ->
+            [name: name, type: row.type, value: row.value, multiple: row.multiple, deviceList: row.deviceList]
+        }] }
     }
 
     def 'malformed expressions refuse before state write even when native validation would accept'() {
@@ -392,5 +395,119 @@ class NativeModelSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
         writes.empty
         settings.isEmpty()
+    }
+
+    def 'action deletion verifies arbitrary action settings removed and surviving order retained'() {
+        given:
+        nativeState.actions = ['1': [method: 'getLogMsg'], '2': [method: 'getLogMsg']]
+        nativeState.actionList = ['2', '1']
+        settings.put('actSubType.1', [type: 'enum', value: 'getLogMsg'])
+        settings.put('unknownActionField.1', [type: 'text', value: 'owned'])
+        settings.put('unknownOtherField', [type: 'text', value: 'retain'])
+        nativeRule.deleteAction = { Object id ->
+            nativeState.actions.remove(id.toString())
+            nativeState.actionList.remove(id.toString())
+            settings.keySet().findAll { it.endsWith('.1') }.each { settings.remove(it) }
+        }
+        when:
+        def result = script._nmDeleteRow(42L, 'action', '1')
+        then:
+        result.success && result.deleted && result.settingsVerified
+        nativeState.actionList == ['2']
+        nativeState.actions.keySet() == ['2'] as Set
+        settings.keySet() == ['unknownOtherField'] as Set
+        nativeState.keep == [unknown: true]
+    }
+
+    def 'native deletion leaving settings behind reports partial rather than clean success'() {
+        given:
+        nativeState.actions = ['1': [method: 'getLogMsg']]
+        nativeState.actionList = ['1']
+        settings.put('unknownActionField.1', [type: 'text', value: 'stale'])
+        nativeRule.deleteAction = { Object id -> nativeState.actions.remove(id.toString()); nativeState.actionList.remove(id.toString()) }
+        when:
+        def result = script._nmDeleteRow(42L, 'action', '1')
+        then:
+        !result.success && result.partial && result.deleted
+        !result.settingsVerified
+    }
+
+    def 'unreferenced condition deletes with native condition selector and settings cleanup'() {
+        given:
+        settings.put('rCapab_2', [type: 'enum', value: 'Switch'])
+        settings.put('state_2', [type: 'enum', value: 'off'])
+        nativeRule.deleteCapab = { Object id, Object trigger, Object action ->
+            assert id == 2 && trigger == false && action == false
+            nativeState.capabsfalse.remove('2')
+            settings.remove('rCapab_2')
+            settings.remove('state_2')
+        }
+        when:
+        def result = script._nmDeleteRow(42L, 'condition', '2')
+        then:
+        result.success
+        nativeState.capabsfalse == ['1': 'Switch A on']
+        nativeState.eval == ['0': ['1']]
+    }
+
+    def 'referenced conditions and missing rows refuse before any native write'() {
+        given:
+        nativeRule.deleteCapab = { Object id, Object trigger, Object action -> writes << 'unexpected' }
+        when:
+        script._nmDeleteRow(42L, part, id)
+        then:
+        thrown(IllegalArgumentException)
+        writes.empty
+        where:
+        part        | id
+        'condition' | '1'
+        'condition' | '99'
+        'action'    | '99'
+        'trigger'   | '0'
+    }
+
+    def 'action order requires exact permutation before state writes'() {
+        given:
+        nativeState.actions = ['1': [method: 'getLogMsg'], '2': [method: 'getLogMsg']]
+        nativeState.actionList = ['1', '2']
+        when:
+        script._nmOrderActions(42L, order)
+        then:
+        thrown(IllegalArgumentException)
+        writes.empty
+        nativeState.actionList == ['1', '2']
+        where:
+        order << [['1'], ['1', '1'], ['1', '99'], ['1', '2', '3'], ['0', '2']]
+    }
+
+    def 'action order changes native runtime sequence without dropping action contracts'() {
+        given:
+        nativeState.actions = ['1': [method: 'getLogMsg', indent: ''], '2': [method: 'getLogMsg', indent: '']]
+        nativeState.actionList = ['1', '2']
+        nativeRule.selectActions = { Map params -> }
+        nativeRule.markIfs = { -> nativeState.actions.get('1').quick = true }
+        when:
+        def result = script._nmOrderActions(42L, ['2', '1'])
+        then:
+        result.success && result.orderVerified && result.actionsPreserved
+        nativeState.actionList == ['2', '1']
+        nativeState.actions.keySet() == ['1', '2'] as Set
+        nativeState.keep == [unknown: true]
+    }
+
+    def 'native structural flags reject unfinished IF and repeat without relying on broken flag'() {
+        given:
+        nativeRule.selectActions = { Map params -> nativeState.inIf = inIf; nativeState.inRepeat = inRepeat }
+        when:
+        def result = script._nmValidateStructure(42L)
+        then:
+        result.success == healthy
+        result.structuralIssues.size() == count
+        where:
+        inIf | inRepeat | healthy | count
+        true | false    | false   | 1
+        false| true     | false   | 1
+        true | true     | false   | 2
+        false| false    | true    | 0
     }
 }

@@ -317,3 +317,99 @@ Map _nmAddTerminator(Long ruleId, String subtype) {
     boolean verified = action instanceof Map && action.method == expected.get(subtype) && after.actionList instanceof List && after.actionList.collect { it.toString() } == priorOrder + [id]
     [success: verified, id: id, action: action, partial: !verified, verificationNeeded: true]
 }
+
+Map _nmValidateStructure(Long ruleId, Map renderedState = null) {
+    if (renderedState == null) _nrHandle(ruleId).selectActions([:])
+    Map fresh = renderedState == null ? _nrState(ruleId) : renderedState
+    List issues = []
+    if (fresh.inIf == true) issues << 'An IF block remains open'
+    if (fresh.inRepeat == true) issues << 'A repeat block remains open'
+    [success: issues.isEmpty(), structuralIssues: issues, nativeFlags: [inIf: fresh.inIf, inRepeat: fresh.inRepeat]]
+}
+
+private Map _nmSettingsInventory(Long ruleId) {
+    def response = hubInternalGet("/installedapp/settings/${ruleId}")
+    def decoded = response instanceof Map ? response : new groovy.json.JsonSlurper().parseText(response?.toString() ?: '{}')
+    if (!(decoded instanceof Map) || !(decoded.settings instanceof List)) throw new IllegalStateException('Native setting inventory is unavailable')
+    Map inventory = [:]
+    decoded.settings.each { row ->
+        if (!(row instanceof Map) || !(row.name instanceof String) || inventory.containsKey(row.name)) throw new IllegalStateException('Native setting inventory contains invalid names')
+        inventory.put(row.name, [type: row.type, value: row.value, multiple: row.multiple, deviceList: row.deviceList])
+    }
+    inventory
+}
+
+Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
+    if (!(part in ['action', 'condition', 'trigger'])) throw new IllegalArgumentException('Unsupported native row collection')
+    String id = _nmId(rowId)
+    Map before = _nrState(ruleId)
+    String collection = part == 'action' ? 'actions' : (part == 'trigger' ? 'capabstrue' : 'capabsfalse')
+    Map rows = before.get(collection) instanceof Map ? [:] + before.get(collection) : [:]
+    if (!rows.keySet().any { it.toString() == id }) throw new IllegalArgumentException('Native row does not exist')
+    if (part == 'condition') {
+        boolean referenced = before.eval instanceof Map && before.eval.values().any { it instanceof List && it.any { token -> token?.toString() == id } }
+        referenced = referenced || (before.predCapabs instanceof List && before.predCapabs.any { it.toString() == id })
+        referenced = referenced || (before.actions instanceof Map && before.actions.values().any { it instanceof Map && it.cond?.toString() == id })
+        if (referenced) throw new IllegalArgumentException('Referenced native conditions must be detached before deletion')
+    }
+    List oldOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
+    Map settingsBefore = _nmSettingsInventory(ruleId)
+    if (part == 'condition' && settingsBefore.any { name, setting -> name.startsWith('condTrig.') && setting.value?.toString() == id }) throw new IllegalArgumentException('Referenced trigger conditions must be detached before deletion')
+    List removedNames = []
+    if (part == 'action') {
+        removedNames = settingsBefore.keySet().findAll { it.endsWith(".${id}".toString()) }
+        def deletedAction = _nmEntry(rows, id)
+        if (deletedAction instanceof Map && deletedAction.wait instanceof List) {
+            List prefixes = ['tCapab', 'tDev', 'ReltDev', 'reltDevice', 'xVarT', 'tstate', 'istVar', 'istDev', 'AlltDev', 'SHours', 'SMins', 'SSecs', 'stays', 'ButtontDev', 'tCustomAttr', 'tCustomAttrType', 'not', 'hhmmss', 'modesX', 'elapseHor', 'elapseMin', 'elapseSec', 'elapseTime']
+            removedNames.addAll(settingsBefore.keySet().findAll { name -> deletedAction.wait.any { eventId -> prefixes.any { name == "${it}-${eventId}".toString() } } })
+        }
+    } else {
+        List prefixes = part == 'trigger' ? ['tCapab', 'tDev', 'ReltDev', 'reltDevice', 'xVarT', 'tstate', 'istVar', 'istDev', 'AlltDev', 'SHours', 'SMins', 'SSecs', 'stays', 'ButtontDev', 'tCustomAttr', 'tCustomAttrType'] : ['rCapab_', 'rDev_', 'RelrDev_', 'relDevice_', 'xVarR_', 'state_', 'isVar_', 'isDev_', 'AllrDev_', 'SHours_', 'SMins_', 'SSecs_', 'stays_', 'rCustomAttr_', 'rCustomAttrType_']
+        prefixes.addAll(['not', 'hhmmss', 'atTime', 'atSunriseOffset', 'atSunsetOffset', 'time', 'date', 'atVarTime', 'atDate', 'modesX', 'elapseHor', 'elapseMin', 'elapseSec', 'elapseTime'])
+        removedNames = settingsBefore.keySet().findAll { name -> prefixes.any { name == "${it}${id}".toString() } || (part == 'trigger' && name in ["isCondTrig.${id}".toString(), "condTrig.${id}".toString()]) }
+    }
+    if (part == 'action') _nrHandle(ruleId).deleteAction(id)
+    else _nrHandle(ruleId).deleteCapab(id.toInteger(), part == 'trigger', false)
+    Map after = _nrState(ruleId)
+    Map settingsAfter = _nmSettingsInventory(ruleId)
+    Map remaining = after.get(collection) instanceof Map ? after.get(collection) : [:]
+    boolean deleted = !remaining.keySet().any { it.toString() == id }
+    List expectedRows = rows.keySet().collect { it.toString() }.findAll { it != id }.sort()
+    boolean preserved = remaining.keySet().collect { it.toString() }.sort() == expectedRows
+    List expectedOrder = part == 'action' ? oldOrder.findAll { it != id } : oldOrder
+    boolean ordered = (after.actionList instanceof List ? after.actionList.collect { it.toString() } : []) == expectedOrder
+    boolean cleaned = removedNames.every { !settingsAfter.containsKey(it) }
+    Map expectedSettings = [:] + settingsBefore
+    removedNames.each { expectedSettings.remove(it) }
+    boolean settingsPreserved = settingsAfter == expectedSettings
+    [success: deleted && preserved && ordered && cleaned && settingsPreserved, partial: !(deleted && preserved && ordered && cleaned && settingsPreserved), deleted: deleted, part: part, id: id,
+     settingsVerified: cleaned && settingsPreserved, removedSettings: removedNames, remainingSettings: settingsAfter, verificationNeeded: true]
+}
+
+Map _nmOrderActions(Long ruleId, List ids) {
+    if (ids == null) throw new IllegalArgumentException('A complete action order is required')
+    List requested = ids.collect { _nmId(it) }
+    Map before = _nrState(ruleId)
+    if (!(before.actionList instanceof List) || !(before.actions instanceof Map)) throw new IllegalStateException('Native action order is unavailable')
+    List original = before.actionList.collect { it.toString() }
+    List originalKeys = before.actions.keySet().collect { it.toString() }.sort()
+    if (requested.unique(false).size() != requested.size() || original.unique(false).size() != original.size() || requested.sort(false) != original.sort(false)) throw new IllegalArgumentException('Action order must be an exact permutation of existing action IDs')
+    if (requested.any { !(_nmEntry(before.actions, it) instanceof Map) }) throw new IllegalArgumentException('Action order references an unavailable native action')
+    Map contracts = [:]
+    original.each { id ->
+        Map action = _nmEntry(before.actions, id)
+        contracts.put(id, [method: action.method, cond: action.cond, rule: action.rule, wait: action.wait instanceof List ? new ArrayList(action.wait) : action.wait])
+    }
+    List ordered = requested.collect { id -> before.actionList.find { it.toString() == id } }
+    _nrStatePatch(ruleId, [actionList: ordered])
+    _nrHandle(ruleId).selectActions([:])
+    _nrHandle(ruleId).markIfs()
+    Map after = _nrState(ruleId)
+    boolean verified = after.actionList instanceof List && after.actionList.collect { it.toString() } == requested
+    boolean retained = after.actions instanceof Map && after.actions.keySet().collect { it.toString() }.sort() == originalKeys && contracts.every { id, contract ->
+        def action = _nmEntry(after.actions, id)
+        action instanceof Map && action.method == contract.method && action.cond == contract.cond && action.rule == contract.rule && action.wait == contract.wait
+    }
+    Map structure = _nmValidateStructure(ruleId, after)
+    [success: verified && retained && structure.success, partial: !(verified && retained && structure.success), orderVerified: verified, actionsPreserved: retained, ids: requested, structuralIssues: structure.structuralIssues, verificationNeeded: true]
+}
