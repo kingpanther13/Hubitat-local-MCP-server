@@ -6480,6 +6480,83 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         posts.isEmpty()
     }
 
+    def "addLocalVariable DateTime refuses a value that is not a real date and time: #value"() {
+        given:
+        enableWrite()
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]])
+        }
+        def posts = []
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << path; [status: 200, location: null, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: value], confirm: true])
+
+        then:
+        result.success == false
+        result.error.contains("yyyy-MM-ddTHH:mm")
+        posts.isEmpty()
+
+        where:
+        value << ["2026-01-01T12:30garbage", "2026-13-45T25:99", "2026-02-30T10:00"]
+    }
+
+    def "addLocalVariable DateTime whose stored wall clock differs from the request is not verified"() {
+        given: "RM commits the variable, but at another time than asked"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number", "DateTime"]],
+                       [name: "varTime", type: "time"], [name: "varDate", type: "date"]]
+        boolean done = false
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", done ? [] : selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [],
+                appState: done ? [[name: "allLocalVars", value: [seenAt: [type: "datetime", value: "2026-05-17T09:00:00.000-0400"]]]] : [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body.name == "dateTimeDone") done = true
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: "2026-05-17T14:30"], confirm: true])
+
+        then:
+        result.success == false
+        result.partial == true
+        result.verified == false
+        result.error.contains("2026-05-17T09:00")
+    }
+
+    def "an addLocalVariable that leaves the editor open because cancelGV fails reports wizardStuck and applied unknown"() {
+        given: "a DateTime editor without its fields, and a cancelGV click that the hub refuses"
+        enableWrite()
+        def selActs = [[name: "hbVar", type: "text"], [name: "varType", type: "enum", options: ["Number", "DateTime"]]]
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", []) }
+        hubGet.register('/installedapp/configure/json/100/selectActions') { params -> ruleConfigJson(100, "r", selActs) }
+        hubGet.register('/installedapp/statusJson/100') { params ->
+            JsonOutput.toJson([installedApp: [id: 100], appSettings: [], eventSubscriptions: [], scheduledJobs: [], appState: [], state: [:]])
+        }
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn" && body.name == "cancelGV") throw new RuntimeException("button refused")
+            [status: 200, location: null, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, addLocalVariable: [name: "seenAt", type: "DateTime", value: "2026-05-17T14:30"], confirm: true])
+
+        then:
+        result.success == false
+        result.wizardStuck == true
+        result.applied == null
+        result.activated == false
+        (result.repairHints as List).any { it.toString().contains("cancelGV") }
+    }
+
     def "addLocalVariable DateTime cancels the editor when RM offers no date or time field"() {
         given: "a DateTime editor that never reveals varDate/varTime"
         enableWrite()
@@ -31650,6 +31727,63 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         def skip = (result.settingsSkipped as List) ?: []
         !skip.any { it instanceof Map && it.key == "compareToDevice-validation" }
         !skip.any { it instanceof Map && it.key == "compareToDevice" && it.reason == "rhs_type_not_revealed" }
+    }
+
+    def "addRequiredExpression compareToDevice: a reference device that does not land cancels the condition before hasAll"() {
+        given: "STPage stops re-rendering once relDevice_1 is posted, so that write reads as not kept"
+        enableWrite()
+        def posts = []
+        def isDevWritten = false
+        boolean frozen = false
+        script.metaClass.uploadHubFile = { String fn, byte[] b -> }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (path == "/installedapp/update/json") {
+                body.each { k, v ->
+                    def key = _settingKeyOf(k)
+                    if (key == "isDev_1") isDevWritten = true
+                    if (key == "relDevice_1") frozen = true
+                }
+            }
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100') { params -> ruleConfigJson(100, "r", [[name: "useST", type: "bool"]]) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params ->
+            JsonOutput.toJson([app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                               configPage: [name: "mainPage", title: "Edit Rule", install: true, error: null, sections: [[title: "", input: [[name: "useST", type: "bool"]]]]],
+                               settings: [useST: "true"], childApps: []])
+        }
+        def seq = 0
+        hubGet.register('/installedapp/configure/json/100/STPage') { params ->
+            if (!frozen) seq++
+            def inputs = [
+                [name: "cond", type: "enum", options: ["a": "New condition"]],
+                [name: "rCapab_1", type: "enum", options: ["Temperature"]],
+                [name: "rDev_1", type: "capability.sensor", multiple: true],
+                [name: "RelrDev_1", type: "enum", options: [">", "<", "="]],
+                [name: "isDev_1", type: "bool"],
+                [name: "state_1", type: "number"],
+                [name: "hasAll", type: "button"],
+                [name: "cancelCapab", type: "button"],
+                [name: "doneST", type: "button"]
+            ]
+            if (isDevWritten) inputs = inputs + [[name: "relDevice_1", type: "capability.temperatureMeasurement", multiple: false]]
+            JsonOutput.toJson([app: [id: 100, name: "Rule-5.1", label: "r", trueLabel: "r", installed: true, appType: [name: "Rule-5.1", namespace: "hubitat"]],
+                               configPage: [name: "STPage", title: "RE", install: false, error: null, sections: [[title: "", input: inputs, paragraphs: ["seq ${seq}".toString()]]]],
+                               settings: [:], childApps: []])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> statusJson(100) }
+        hubGet.register('/device/fullJson/8') { params -> '{"id":"8","name":"T1"}' }
+        hubGet.register('/device/fullJson/99') { params -> '{"id":"99","name":"T2"}' }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, addRequiredExpression: [conditions: [[
+            capability: "Temperature", deviceIds: [8], comparator: ">", compareToDevice: [deviceId: 99]]]]])
+
+        then:
+        result.success == false
+        result.error.toString().contains("did not land in relDevice_1")
+        !posts.any { it.path == "/installedapp/btn" && it.body?.name == "hasAll" }
     }
 
     def "addRequiredExpression compareToDevice: fail-loud when relDevice picker not revealed after isDev=true"() {

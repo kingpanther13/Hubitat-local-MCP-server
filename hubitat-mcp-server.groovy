@@ -9977,7 +9977,7 @@ def _rmClickRenderedButton(Integer appId, String buttonName, String stateAttribu
 
 // The skip for a single value an enum picker does not list; null when the picker offers it.
 Map _rmNotOfferedSkip(Map field, String key, Object value) {
-    if (field?.type != "enum" || field.options == null || value instanceof List) return null
+    if (field?.type != "enum" || field.options == null || value instanceof List || value == null || value.toString() == "") return null
     List offered = _rmReadPickerOptionStrings(field)
     return (offered && !(value?.toString() in offered)) ? [key: key, reason: "not_offered", value: value, offered: offered] : null
 }

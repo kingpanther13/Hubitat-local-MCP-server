@@ -524,6 +524,89 @@ class WalkStepSourceSpec extends ToolSpecBase {
         "a list beside a setting that lands" | ["Events", "Nope"] | [origLabel: "r2"]
     }
 
+    def "raw settings where nothing lands are refused with a rendered button too, and the button is not clicked"() {
+        given: "updateRule is rendered on mainPage, logging offers only Events"
+        enableWrite()
+        def posts = []
+        def main = { -> page("mainPage", [[name: "logging", type: "enum", multiple: true, options: ["Events"]], [name: "updateRule", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> main() }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> main() }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << [path: path, body: body]; [status: 200, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, settings: [logging: ["Nope"]], button: "updateRule", pageName: "mainPage"])
+
+        then:
+        result.success == false
+        !result.partial
+        result.applied == false
+        result.error.contains("was not clicked")
+        result.restoreHint.contains("click was not sent")
+        !posts.any { it.path == "/installedapp/btn" }
+        !posts.any { it.body?.get("settings[logging]")?.toString()?.contains("Nope") }
+    }
+
+    def "a raw sub-page write whose read-back fails is partial with applied unknown, not 'nothing landed'"() {
+        given: "the page read after the POST fails once"
+        enableWrite()
+        def posts = []
+        boolean failNext = false
+        hubGet.register('/installedapp/configure/json/100') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> page("mainPage", []) }
+        hubGet.register('/installedapp/configure/json/100/selectTriggers') { params ->
+            if (failNext) { failNext = false; throw new RuntimeException("read timed out") }
+            page("selectTriggers", [[name: "tCapab1", type: "enum", options: ["Switch"]], [name: "hasAll", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            posts << [path: path, body: body]
+            if (body?.containsKey("settings[tCapab1]")) failNext = true
+            [status: 200, data: '']
+        }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, settings: [tCapab1: "Switch"], pageName: "selectTriggers"])
+
+        then: "the POST went out, so the call is a partial whose outcome is unknown"
+        posts.any { it.body?.get("settings[tCapab1]") == "Switch" }
+        result.success == false
+        result.partial == true
+        result.applied == null
+        result.settingsUnconfirmed == ["tCapab1"]
+        !result.restoreHint.contains("nothing needs to be restored")
+    }
+
+    def "patches settings refuse an enum value the picker does not offer before the op sends anything"() {
+        given:
+        enableWrite()
+        def posts = []
+        def main = { -> page("mainPage", [[name: "logging", type: "enum", multiple: true, options: ["Events", "Triggers"]], [name: "updateRule", type: "button"]]) }
+        hubGet.register('/installedapp/configure/json/100') { params -> main() }
+        hubGet.register('/installedapp/configure/json/100/mainPage') { params -> main() }
+        hubGet.register('/installedapp/statusJson/100') { params -> status() }
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 -> posts << [path: path, body: body]; [status: 200, data: ''] }
+
+        when:
+        def result = script.toolSetRule([appId: 100, confirm: true, patches: [[settings: [logging: ["Events", "Nope"]]]]])
+
+        then:
+        result.success == false
+        def op = (result.patches as List)[0]
+        op.success == false
+        op.settingsNotLanded*.key == ["logging"]
+        op.settingsNotLanded[0].notOffered == ["Nope"]
+        !posts.any { it.body?.containsKey("settings[logging]") }
+    }
+
+    def "an enum can be cleared: an empty or null value is never refused as not offered"() {
+        expect:
+        script._rmNotOfferedSkip([type: "enum", options: ["A", "B"]], "k", value) == null
+
+        where:
+        value << [null, ""]
+    }
+
     def "raw sub-page settings where no value lands are refused, nothing written: #desc"() {
         given: "tCapab1 offers only Switch, and the page never keeps a write"
         enableWrite()

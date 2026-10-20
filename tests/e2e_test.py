@@ -8473,12 +8473,27 @@ class TestRunner:
                 and "'tCapab9' is not an input on page 'selectTriggers'" in str(off_slot.get("error", "")) \
                 and any("renders only in an open slot" in str(h) for h in (off_slot.get("repairHints") or [])), \
                 f"a write outside the open slot should be refused with the slot hint: {off_slot}"
-            # With no slot open tCapab1 is not an input, so nothing is written and the unrendered click is refused unsent.
+            # With no slot open tCapab1 is not an input, so nothing lands and the call is refused before any click.
             raw_click = _walk_refusal({"settings": {"tCapab1": "Contact"}, "button": "noSuchButtonE2E", "pageName": "selectTriggers"})
-            assert raw_click.get("success") is False \
-                and "Button 'noSuchButtonE2E' is not rendered on page 'selectTriggers'" in str(raw_click.get("error", "")) \
+            assert raw_click.get("success") is False and raw_click.get("applied") is False \
+                and "None of the settings [tCapab1] landed" in str(raw_click.get("error", "")) \
+                and "was not clicked" in str(raw_click.get("error", "")) \
                 and "nothing needs to be restored" in str(raw_click.get("restoreHint", "")), \
-                f"raw settings the page does not show with an unrendered pageName button should be refused unsent: {raw_click}"
+                f"raw settings the page does not show with a pageName button should be refused unsent: {raw_click}"
+            # A rendered button does not rescue a call where nothing lands: mainPage refuses an unoffered logging value.
+            raw_rendered = _walk_refusal({"settings": {"logging": ["NopeE2E"]}, "button": "updateRule", "pageName": "mainPage"})
+            assert raw_rendered.get("success") is False and raw_rendered.get("applied") is False \
+                and "was not clicked" in str(raw_rendered.get("error", "")) \
+                and any(s.get("key") == "logging" and s.get("reason") == "not_offered"
+                        for s in (raw_rendered.get("settingsNotLanded") or [])), \
+                f"an unoffered value with a rendered button should be refused, no click: {raw_rendered}"
+            # patches[].settings take the same refusal before the op sends anything.
+            patch_enum = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_set_rule", "args": {
+                "appId": int(app_id), "confirm": True, "patches": [{"settings": {"logging": ["NopeE2E"]}}]}})
+            patch_op = (patch_enum.get("patches") or [{}])[0]
+            assert patch_enum.get("success") is False and patch_op.get("success") is False \
+                and (patch_op.get("settingsNotLanded") or [{}])[0].get("notOffered") == ["NopeE2E"], \
+                f"patches settings with an unoffered value should be refused: {patch_enum}"
             settings_after = self._get_persisted_rule_config(app_id).get("settings") or {}
             assert settings_after == settings_before, \
                 f"the refused walkStep and raw calls changed the rule's settings: {settings_before} -> {settings_after}"
