@@ -33819,7 +33819,7 @@ private List _ndStructuralIssues(Map nativeState) {
     def blocks = []
     if (nativeState.inIf == true) issues << 'Native editor has an unfinished IF block'
     (nativeState.actionList instanceof List ? nativeState.actionList : []).each { id ->
-        def action = actions.find { key, value -> key.toString() == id.toString() }?.value
+        def action = _nmEntry(actions, id.toString())
         if (!(action instanceof Map)) issues << 'Native action order references a missing action'
         else {
             if (action.rule != null) expressionIds << action.rule.toString()
@@ -33835,7 +33835,7 @@ private List _ndStructuralIssues(Map nativeState) {
     if (blocks) issues << 'Native IF block has no END-IF'
     if (nativeState.hasPredicate == true) expressionIds << '0'
     expressionIds.unique().each { id ->
-        def tokens = expressions.find { key, value -> key.toString() == id }?.value
+        def tokens = _nmEntry(expressions, id)
         try {
             if (!(tokens instanceof List)) throw new IllegalArgumentException('Missing native expression')
             _nmTokens(tokens, conditions)
@@ -33883,7 +33883,7 @@ Map toolGetRuleDocument(Map args) {
         document.nativeHealth = health instanceof Map && health.broken instanceof Boolean ? [available: true, broken: health.broken, stopped: health.stopped == true, paused: health.paused == true] : [available: false]
     } catch (Exception failure) { document.nativeHealth = [available: false, error: failure.message?.toString()] }
     if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
-        [id: actionId.toString(), value: nativeState.actions instanceof Map ? nativeState.actions.find { k, v -> k.toString() == actionId.toString() }?.value : null]
+        [id: actionId.toString(), value: nativeState.actions instanceof Map ? _nmEntry(nativeState.actions, actionId.toString()) : null]
     }
     if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
     if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
