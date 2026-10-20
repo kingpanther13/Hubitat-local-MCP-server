@@ -438,8 +438,25 @@ class NativeRmParityExpressions(ParityCase):
             field("devices.#", "capability.switch", [str(self.fixtures["switch"])]),
             field("cCmd.#", "enum", "noSuchCommandE2E"),
         ])])
-        # This proves preservation of reused conditions. Creating and rolling back
-        # a new inline condition remains a separate historical coverage gap.
+        # A separately committed condition belongs to the caller even when its
+        # first action is refused; deleting it is a separate explicit operation.
+        before_condition = self.doc(rule_id)
+        unused = self._switch_condition(rule_id, state="off")
+        self._refuse_unchanged(rule_id, [change(
+            "action", type="modeActs", subtype="getDefinedAction", condition=unused,
+            fields=[
+                field("myCapab.#", "enum", "Switch"),
+                field("devices.#", "capability.switch", [str(self.fixtures["switch"])]),
+                field("cCmd.#", "enum", "noSuchCommandE2E"),
+            ],
+        )])
+        self.assertIn(unused, set(map(str, self.doc(rule_id)["conditions"])))
+        self._ok(rule_id, [{"part": "delete", "value": {"part": "condition", "id": unused}}])
+        after_condition = self.doc(rule_id)
+        for section in ("conditions", "actions", "expressions"):
+            self.assertEqual(after_condition[section], before_condition[section])
+        self.assertNotIn(f"rCapab_{unused}", self.settings(rule_id))
+        self.healthy(rule_id)
 
     def test_set_rule_walkstep_action_after_required_expression(self):
         rule_id = self.create([])
