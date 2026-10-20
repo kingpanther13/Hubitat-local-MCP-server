@@ -73,6 +73,32 @@ Map _nmSetExpression(Long ruleId, Object expressionId, List tokens) {
     [success: true, expressionId: id, tokens: tokens]
 }
 
+Map _nmSetRequired(Long ruleId, List tokens) {
+    Map before = _nrState(ruleId)
+    _nmTokens(tokens, before.capabsfalse instanceof Map ? before.capabsfalse : [:])
+    Map enabled = _nrWriteSettings(ruleId, [[name: 'useST', type: 'bool', value: true]])
+    if (enabled.success != true) return [success: false, partial: enabled.partial ?: false, settings: enabled]
+    _nrHandle(ruleId).STPage([:])
+    Map expression = _nmSetExpression(ruleId, '0', tokens)
+    if (expression.success != true) return [success: false, partial: true, expression: expression]
+    List operands = tokens.findAll { it.toString().isInteger() }.collect { it.toString().toInteger() }.unique()
+    Map fresh = _nrState(ruleId)
+    Map first = fresh.firstR instanceof Map ? [:] + fresh.firstR : [:]
+    first.put('0', false)
+    _nrStatePatch(ruleId, [predCapabs: operands, firstR: first, hasRule: true])
+    _nrHandle(ruleId).STPage([:])
+    _nrStatePatch(ruleId, [doneST: true])
+    _nrHandle(ruleId).STPage([:])
+    _nrHandle(ruleId).mainPage()
+    _nrHandle(ruleId).selectActions([:])
+    Map after = _nrState(ruleId)
+    Map settings = _nrSettings(ruleId, ['useST'])
+    boolean predicate = after.hasPredicate == true && _nmEntry(after.eval instanceof Map ? after.eval : [:], '0') == tokens
+    boolean bound = after.predCapabs instanceof List && after.predCapabs.collect { it.toString() }.sort() == operands.collect { it.toString() }.sort()
+    boolean persisted = settings.get('useST')?.type == 'bool' && _nrComparableSetting('bool', settings.get('useST')?.value) == 'true'
+    [success: predicate && bound && persisted, partial: !(predicate && bound && persisted), expressionId: '0', tokens: tokens, predicateVerified: predicate && bound, settingsVerified: persisted, verificationNeeded: true]
+}
+
 private void _nmLocalValue(String type, Object value) {
     boolean valid = false
     switch (type) {
@@ -130,10 +156,10 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
     else { context.moreCond = true; context.ndx = id.toInteger() }
     _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
     if (trigger) _nrHandle(ruleId).selectTriggers()
-    else _nrHandle(ruleId).selectConditions([:])
+    else _nrHandle(ruleId).selectConditions([pred: false])
     _nrStatePatch(ruleId, [hasAll: true])
     if (trigger) _nrHandle(ruleId).selectTriggers()
-    else _nrHandle(ruleId).selectConditions([:])
+    else _nrHandle(ruleId).selectConditions([pred: false])
     Map after = _nrState(ruleId)
     def label = _nmEntry(after.get(collection) instanceof Map ? after.get(collection) : [:], id)
     Map echoed = _nrSettings(ruleId, settings.collect { it.name })

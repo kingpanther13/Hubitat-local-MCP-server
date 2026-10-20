@@ -22,7 +22,7 @@ class NativeModelSpec extends ToolSpecBase {
         nativeRule.createLocalVar = { String name, Object value, String type -> locals.put(name, [name: name, value: value, type: type]) }
         nativeRule.setLocalVar = { String name, Object value -> locals.get(name).value = value }
         nativeRule.deleteLocalVar = { String name -> locals.remove(name) }
-        nativeRule.selectConditions = { Map ignored -> nativeState.capabsfalse['4'] = 'Switch A on' }
+        nativeRule.selectConditions = { Map params -> assert params == [pred: false]; nativeState.capabsfalse['4'] = 'Switch A on' }
         nativeRule.selectTriggers = { -> nativeState.capabstrue = ['4': 'Switch A on'] }
         script.metaClass._nrHandle = { Long id -> nativeRule }
         script.metaClass._nrState = { Long id -> [:] + nativeState }
@@ -88,6 +88,49 @@ class NativeModelSpec extends ToolSpecBase {
         !result.success
         result.originalPreserved
         nativeState.eval['0'] == ['1']
+    }
+
+    def 'required expression binds reused condition IDs and finalizes before returning to actions'() {
+        given:
+        List pages = []
+        nativeRule.STPage = { Map params ->
+            pages << 'STPage'
+            if (nativeState.doneST == true) nativeState.hasPredicate = true
+        }
+        nativeRule.mainPage = { -> pages << 'mainPage' }
+        nativeRule.selectActions = { Map params -> pages << 'selectActions' }
+        when:
+        def result = script._nmSetRequired(42L, ['1', 'AND', '2', 'OR', '1'])
+        then:
+        result.success
+        result.predicateVerified
+        nativeState.predCapabs == [1, 2]
+        nativeState.firstR == ['0': false]
+        nativeState.eval['0'] == ['1', 'AND', '2', 'OR', '1']
+        pages == ['STPage', 'STPage', 'STPage', 'mainPage', 'selectActions']
+        nativeState.keep == [unknown: true]
+    }
+
+    def 'required expression does not call a swallowed native finalize success'() {
+        given:
+        nativeRule.STPage = { Map params -> }
+        nativeRule.mainPage = { -> }
+        nativeRule.selectActions = { Map params -> }
+        when:
+        def result = script._nmSetRequired(42L, ['1'])
+        then:
+        !result.success
+        result.partial
+        !result.predicateVerified
+    }
+
+    def 'invalid required expression refuses before enabling predicate settings'() {
+        when:
+        script._nmSetRequired(42L, ['1', 'AND'])
+        then:
+        thrown(IllegalArgumentException)
+        settings.empty
+        writes.empty
     }
 
     def 'invalid native local types values and names refuse without creating locals'() {
