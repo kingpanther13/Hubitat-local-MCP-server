@@ -24,7 +24,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean retry = false -> events << 'create'; [status: 302, location: '/installedapp/configure/42'] }
         script.metaClass._nrHandle = { Long id ->
             if (id != 42L) throw new IllegalArgumentException('missing rule')
-            new NativeDocumentChild(events, lifecycle)
+            new NativeDocumentChild(events, lifecycle, nativeState.allLocalVars)
         }
         script.metaClass._nrState = { Long id -> [:] + nativeState }
         script.metaClass._nmUpsertAction = { Long id, Map value -> events << 'action'; [success: !failAction, partial: failAction, id: '6'] }
@@ -214,7 +214,9 @@ class NativeDocumentsSpec extends ToolSpecBase {
 class NativeDocumentChild {
     List events
     Map lifecycle
-    NativeDocumentChild(List events, Map lifecycle) { this.events = events; this.lifecycle = lifecycle }
+    Map locals
+    NativeDocumentChild(List events, Map lifecycle, Map locals = [:]) { this.events = events; this.lifecycle = lifecycle; this.locals = locals }
+    Map getAllLocalVars() { locals }
     void appButtonHandler(String name) {
         events << name
         if (name == 'stopRule') lifecycle.stopped = !lifecycle.stopped

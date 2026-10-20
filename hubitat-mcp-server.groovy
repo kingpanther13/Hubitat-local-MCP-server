@@ -12403,7 +12403,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - Data-quality warning types in dataQualityWarnings[]: heid-whitespace-normalized (padded heID normalized; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid, skipped-malformed-component
   - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via hub_update_app are not detectable
 
-### hub_manage_native_rules_and_apps (11 tools) — read, trigger, AND full CRUD on native RM rules
+### hub_manage_native_rules_and_apps (14 tools) — read, trigger, AND full CRUD on native RM rules
 
 RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
 (These four tools and hub_get_rule_health are also in hub_manage_rule_machine. The reads, hub_list_rules and hub_get_rule_health, are also in hub_read_rules.)

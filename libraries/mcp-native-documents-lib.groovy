@@ -86,14 +86,19 @@ Map toolGetRuleDocument(Map args) {
     if (!(sections instanceof List) || sections.any { !(it in allowed) }) throw new IllegalArgumentException('Unknown document section')
     _nrHandle(id)
     Map nativeState = _nrState(id)
-    def document = [rule_id: id, validation: [structuralIssues: _ndStructuralIssues(nativeState)]]
+    def structuralIssues = _ndStructuralIssues(nativeState)
+    def document = [rule_id: id, validation: [structuralIssues: structuralIssues, uiChecked: false]]
+    try {
+        def health = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
+        document.nativeHealth = health instanceof Map && health.broken instanceof Boolean ? [available: true, broken: health.broken, stopped: health.stopped == true, paused: health.paused == true] : [available: false]
+    } catch (Exception failure) { document.nativeHealth = [available: false, error: failure.message?.toString()] }
     if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
         [id: actionId.toString(), value: nativeState.actions instanceof Map ? nativeState.actions.find { k, v -> k.toString() == actionId.toString() }?.value : null]
     }
     if ('conditions' in sections) document.conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
     if ('triggers' in sections) document.triggers = nativeState.capabstrue instanceof Map ? nativeState.capabstrue : [:]
     if ('expressions' in sections) document.expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
-    if ('variables' in sections) document.variables = nativeState.allLocalVars instanceof Map ? nativeState.allLocalVars : [:]
+    if ('variables' in sections) document.variables = _nrHandle(id).getAllLocalVars()
     if ('settings' in sections) document.settings = _ndSettings(id)
     document
 }
@@ -130,6 +135,7 @@ private List _ndChanges(Object changes) {
         }
         if (change.part == 'action' && value.subtype == 'getWaitEvents') {
             if (!(value.events instanceof List) || !value.events || value.events.size() > 16) throw new IllegalArgumentException('Wait events require between 1 and 16 events')
+            if (value.events.any { !(it instanceof Map) || it.keySet().any { key -> !(key in ['capability', 'fields']) } }) throw new IllegalArgumentException('Wait events require capability and fields only')
             _ndChanges(value.events.collect { event -> [part: 'condition', value: event] })
         } else if (value.containsKey('events')) throw new IllegalArgumentException('Only wait-event actions accept events')
         if (change.part == 'expression' && (!value.containsKey('id') || !(value.tokens instanceof List) || !value.tokens)) throw new IllegalArgumentException('Expression ID and tokens are required')
@@ -236,14 +242,14 @@ Map toolCreateRuleDocument(Map args) {
 def _getAllToolDefinitions_partNativeDocuments() {
     def changes = [type: 'array', minItems: 1, maxItems: 100, description: 'Ordered changes. Each has part and value: condition/trigger {id?,capability,fields}; action {id?,type,subtype,fields,expression?,events?}; expression {id,tokens}; required {tokens}; variable {operation:create|set|delete,name,type?,value?}; terminator {subtype:endIf|else|endRep}. Typed fields use {name:native name containing # for allocated ID,type,value}. Wait events support up to 16 verified native event rows; wait expressions remain unsupported.', items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator']], value: [type: 'object']], required: ['part', 'value']]]
     def warning = ' Requires confirm=true and a hub backup within 24 hours. Before writing: read the native document, verify target IDs and fields, and preserve a recovery backup. Stops at first failure; partial changes can remain. Native UI retains the same rule ID. Verify resulting settings and runtime behavior before relying on the rule. Wait expressions and all capability-specific variants are not yet supported.'
-    [[name: 'hub_get_rule_document', description: 'Read native Rule Machine state, ordered actions, conditions, triggers, expressions, local variables and typed settings without rendering editor pages.', inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], sections: [type: 'array', items: [type: 'string', enum: ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']]]], required: ['rule_id']]],
+    return [[name: 'hub_get_rule_document', description: 'Read native Rule Machine state, ordered actions, conditions, triggers, expressions, local variables and typed settings without rendering editor pages.', inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], sections: [type: 'array', items: [type: 'string', enum: ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']]]], required: ['rule_id']]],
      [name: 'hub_update_rule_document', description: 'Apply ordered semantic changes to an existing native Rule Machine rule and finalize through its native compiler.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], changes: changes, confirm: [type: 'boolean']], required: ['rule_id', 'changes', 'confirm']]],
      [name: 'hub_create_rule_document', description: 'Create and install a native Rule Machine child with ordered semantic changes.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes, confirm: [type: 'boolean']], required: ['parent_id', 'name', 'changes', 'confirm']]]]
 }
 
-def _readOnlyToolNames_partNativeDocuments() { ['hub_get_rule_document'] }
+def _readOnlyToolNames_partNativeDocuments() { return ['hub_get_rule_document'] }
 def _toolDisplayMeta_partNativeDocuments() {
-    [hub_get_rule_document: [title: 'Get Native Rule Document', summary: 'Read native rule actions, expressions, conditions, triggers, variables and typed settings.'],
+    return [hub_get_rule_document: [title: 'Get Native Rule Document', summary: 'Read native rule actions, expressions, conditions, triggers, variables and typed settings.'],
      hub_update_rule_document: [title: 'Update Native Rule Document', summary: 'Compile ordered changes into an existing native Rule Machine rule.'],
      hub_create_rule_document: [title: 'Create Native Rule Document', summary: 'Create and install a native Rule Machine rule from ordered changes.']]
 }
