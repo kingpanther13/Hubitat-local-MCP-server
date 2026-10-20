@@ -211,6 +211,28 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !events.any { it instanceof Map }
     }
 
+    def 'explicit null activation collections are empty only for the verified installed rule'() {
+        given:
+        nativeState.capabstrue = [:]
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([installedApp: [id: 42, installed: true], eventSubscriptions: null, scheduledJobs: null]) }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        then:
+        result.success
+        result.eventSubscriptions == []
+    }
+
+    def 'null activation collections cannot stand in for missing or mismatched rule identity'() {
+        given:
+        hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([installedApp: [id: 99, installed: true], eventSubscriptions: null, scheduledJobs: null]) }
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        then:
+        !result.success
+        result.partial
+        result.error.contains('cannot verify')
+    }
+
     def 'create uses native child identity label and actual Done installation'() {
         when:
         def result = script.executeTool('hub_create_rule_document', [parent_id: 28, name: 'New document', changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])

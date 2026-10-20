@@ -265,7 +265,14 @@ private Map _ndApply(Long id, List changes, boolean created) {
             if (!(finalHealth instanceof Map) || finalHealth.broken != false || (beforeHealth.stopped == true) != (finalHealth.stopped == true) || (beforeHealth.paused == true) != (finalHealth.paused == true)) throw new IllegalStateException('Native stopped or paused state was not preserved')
         }
         def status = _ndJson(hubInternalGet("/installedapp/statusJson/${id}"))
-        if (!(status instanceof Map) || !(status.eventSubscriptions instanceof List)) throw new IllegalStateException('Native activation status is unavailable')
+        if (!(status instanceof Map) || !status.containsKey('eventSubscriptions') || !status.containsKey('scheduledJobs')) throw new IllegalStateException('Native activation status is unavailable')
+        if (status.eventSubscriptions == null || status.scheduledJobs == null) {
+            def installed = status.installedApp
+            if (!(installed instanceof Map) || installed.id?.toString() != id.toString() || installed.installed != true) throw new IllegalStateException('Native activation status cannot verify an installed rule')
+            status = [:] + status
+            ['eventSubscriptions', 'scheduledJobs'].each { key -> if (status.get(key) == null) status.put(key, []) }
+        }
+        if (!(status.eventSubscriptions instanceof List) || !(status.scheduledJobs instanceof List)) throw new IllegalStateException('Native activation status is malformed')
         if (finalHealth.stopped == true && (!(status.scheduledJobs instanceof List) || status.scheduledJobs || status.eventSubscriptions)) throw new IllegalStateException('Stopped native rule retained jobs or subscriptions')
         def persistedState = _nrState(id)
         def actualTriggers = persistedState.capabstrue instanceof Map ? persistedState.capabstrue.findAll { key, value -> key.toString().isInteger() && key.toString().toInteger() > 0 && value?.toString()?.trim() } : [:]
