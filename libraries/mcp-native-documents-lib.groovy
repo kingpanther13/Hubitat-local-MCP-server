@@ -18,6 +18,67 @@ private List _ndSettings(Long id) {
     }
 }
 
+private List _ndStructuralIssues(Map nativeState) {
+    def issues = []
+    def actions = nativeState.actions instanceof Map ? nativeState.actions : [:]
+    def conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
+    def expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
+    def expressionIds = []
+    def blocks = []
+    if (nativeState.inIf == true) issues << 'Native editor has an unfinished IF block'
+    (nativeState.actionList instanceof List ? nativeState.actionList : []).each { id ->
+        def action = actions.find { key, value -> key.toString() == id.toString() }?.value
+        if (!(action instanceof Map)) issues << 'Native action order references a missing action'
+        else {
+            if (action.rule != null) expressionIds << action.rule.toString()
+            if (action.method == 'getIfThen') blocks << 'if'
+            else if (action.method in ['getElse', 'getElseIf', 'getElseIfThen']) {
+                if (!blocks || blocks.last() != 'if') issues << 'Native ELSE has no matching IF'
+            } else if (action.method == 'getEndIf') {
+                if (!blocks || blocks.last() != 'if') issues << 'Native END-IF has no matching IF'
+                else blocks.remove(blocks.size() - 1)
+            }
+        }
+    }
+    if (blocks) issues << 'Native IF block has no END-IF'
+    if (nativeState.hasPredicate == true) expressionIds << '0'
+    expressionIds.unique().each { id ->
+        def tokens = expressions.find { key, value -> key.toString() == id }?.value
+        try {
+            if (!(tokens instanceof List)) throw new IllegalArgumentException('Missing native expression')
+            _nmTokens(tokens, conditions)
+        } catch (Exception failure) { issues << "Native expression ${id}: ${failure.message}".toString() }
+    }
+    issues
+}
+
+private List _ndPageIssues(Object node) {
+    def issues = []
+    if (node instanceof List) node.each { child -> issues.addAll(_ndPageIssues(child)) }
+    else if (node instanceof Map) {
+        if ((node.type ?: node.element) in ['paragraph', 'href']) {
+            def description = node.description?.toString() ?: ''
+            if (description =~ /(?is)<span\b[^>]*color\s*:\s*red[^>]*>[^<]*\*\*Broken [^*]+\*\*/) issues << 'Native editor reports a broken condition, trigger or action'
+        }
+        if (node.error || node.errors) issues << 'Native editor returned an error'
+        ['sections', 'body', 'children'].each { key -> if (node.get(key) != null) issues.addAll(_ndPageIssues(node.get(key))) }
+    }
+    issues
+}
+
+private Map _ndRender(Long id, String page) {
+    def rendered
+    switch (page) {
+        case 'selectTriggers': rendered = _nrHandle(id).selectTriggers(); break
+        case 'selectActions': rendered = _nrHandle(id).selectActions([:]); break
+        case 'mainPage': rendered = _nrHandle(id).mainPage(); break
+    }
+    if (!(rendered instanceof Map) || rendered.name != page || !(rendered.sections instanceof List) || rendered.sections.isEmpty()) throw new IllegalStateException('Native editor page is unavailable or unexpected')
+    def issues = _ndPageIssues(rendered)
+    if (issues) throw new IllegalStateException(issues.join('; '))
+    rendered
+}
+
 Map toolGetRuleDocument(Map args) {
     Long id = _ndId(args.rule_id)
     def allowed = ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']
@@ -25,7 +86,7 @@ Map toolGetRuleDocument(Map args) {
     if (!(sections instanceof List) || sections.any { !(it in allowed) }) throw new IllegalArgumentException('Unknown document section')
     _nrHandle(id)
     Map nativeState = _nrState(id)
-    def document = [rule_id: id]
+    def document = [rule_id: id, validation: [structuralIssues: _ndStructuralIssues(nativeState)]]
     if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
         [id: actionId.toString(), value: nativeState.actions instanceof Map ? nativeState.actions.find { k, v -> k.toString() == actionId.toString() }?.value : null]
     }
@@ -111,9 +172,11 @@ private Map _ndApply(Long id, List changes, boolean created) {
             outcomes << [part: change.part, result: outcome]
             if (outcome?.success != true) return [success: false, partial: created || outcomes.size() > 1 || outcome?.partial == true, rule_id: id, created: created, results: outcomes, remaining: changes.drop(outcomes.size())]
         }
-        _nrHandle(id).selectTriggers()
-        _nrHandle(id).selectActions([:])
-        _nrHandle(id).mainPage()
+        _ndRender(id, 'selectTriggers')
+        _ndRender(id, 'selectActions')
+        _ndRender(id, 'mainPage')
+        def structuralIssues = _ndStructuralIssues(_nrState(id))
+        if (structuralIssues) throw new IllegalStateException(structuralIssues.join('; '))
         def health = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
         if (!(health instanceof Map) || health.broken != false) return [success: false, partial: true, rule_id: id, created: created, results: outcomes, broken: health instanceof Map ? health.broken : null, error: 'Native rule health is broken or unverified']
         def done = hubInternalPostFormRaw('/installedapp/update/json', 'id=' + id.toString() + '&_action_update=Done&_cancellable=true')
@@ -200,7 +263,7 @@ Each change is {part,value}. Supported parts:
 - variable: {operation:create|set|delete,name,type?,value?}. Create types: integer,bigdecimal,boolean,string,datetime.
 - terminator: {subtype:endIf|else|endRep}.
 
-Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; wait expressions and every capability-specific variant are not yet supported. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
+Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; wait expressions and every capability-specific variant are not yet supported. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback, native editor diagnostics, expression-reference checks and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
 
 Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state and are never part of document reads.'''
 }

@@ -103,6 +103,47 @@ class NativeDocumentsSpec extends ToolSpecBase {
         !events.any { it instanceof Map }
     }
 
+    def 'native expression with missing condition cannot pass a false broken flag'() {
+        given:
+        nativeState.actions.'3' = [method: 'getIfThen', rule: '1']
+        nativeState.eval.'1' = ['999999']
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        then:
+        !result.success
+        result.error.contains('unknown condition')
+        !events.any { it instanceof Map }
+    }
+
+    def 'native unfinished IF cannot finalize despite a false broken flag'() {
+        given:
+        nativeState.actions.'3' = [method: 'getIfThen', rule: '0']
+        nativeState.inIf = true
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]], confirm: true])
+        then:
+        !result.success
+        result.error.contains('unfinished IF')
+        !events.any { it instanceof Map }
+    }
+
+    def 'native red broken diagnostic blocks Done but a user text marker does not'() {
+        given:
+        script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, true) }
+        when:
+        def failed = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        then:
+        !failed.success
+        failed.error.contains('broken condition')
+        !events.any { it instanceof Map }
+        when:
+        events.clear()
+        script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, false) }
+        def passed = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        then:
+        passed.success
+    }
+
     def 'Done preserves an existing stopped and paused native rule using verified toggles'() {
         given:
         lifecycle.stopped = true
@@ -182,7 +223,16 @@ class NativeDocumentChild {
     void initState() { events << 'initState' }
     void updateSetting(String name, Map value) { events << (name + ':' + value.value) }
     void updateLabel(String name) { events << ('label:' + name) }
-    Object selectTriggers() { events << 'selectTriggers'; null }
-    Object selectActions(Map params) { events << 'selectActions'; null }
-    Object mainPage() { events << 'mainPage'; null }
+    Object selectTriggers() { events << 'selectTriggers'; [name: 'selectTriggers', sections: [[body: []]]] }
+    Object selectActions(Map params) { events << 'selectActions'; [name: 'selectActions', sections: [[body: []]]] }
+    Object mainPage() { events << 'mainPage'; [name: 'mainPage', sections: [[body: []]]] }
+}
+
+class NativeDocumentDiagnosticChild extends NativeDocumentChild {
+    boolean diagnostic
+    NativeDocumentDiagnosticChild(List events, Map lifecycle, boolean diagnostic) { super(events, lifecycle); this.diagnostic = diagnostic }
+    Object selectActions(Map params) {
+        events << 'selectActions'
+        [name: 'selectActions', sections: [[input: [[name: 'logmsg.1', value: '**Broken Condition**']], body: [[type: 'paragraph', description: diagnostic ? '<span style=color:red>**Broken Condition**</span>' : 'Log: **Broken Condition**']]]]]
+    }
 }
