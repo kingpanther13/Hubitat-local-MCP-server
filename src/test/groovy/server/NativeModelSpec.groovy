@@ -18,7 +18,7 @@ class NativeModelSpec extends ToolSpecBase {
         nativeRule = new Expando()
         nativeRule.checkTokens = { Object id -> '' }
         nativeRule.getLocalVar = { String name -> locals.get(name) }
-        nativeRule.getAllLocalVars = { -> [:] + locals }
+        nativeRule.getAllLocalVars = { -> locals.collectEntries { localName, variable -> [(localName): [type: variable.type, value: variable.value]] } }
         nativeRule.createLocalVar = { String name, Object value, String type -> locals.put(name, [name: name, value: value, type: type]) }
         nativeRule.setLocalVar = { String name, Object value -> locals.get(name).value = value }
         nativeRule.deleteLocalVar = { String name -> locals.remove(name) }
@@ -218,6 +218,17 @@ class NativeModelSpec extends ToolSpecBase {
         locals.isEmpty()
     }
 
+    def 'local verification compares projected inventory fields and rejects a conflicting value'() {
+        given:
+        nativeRule.getAllLocalVars = { -> locals.collectEntries { localName, variable -> [(localName): [type: variable.type, value: variable.value + 1]] } }
+        when:
+        def result = script._nmLocal(42L, 'create', 'Counter', 1, 'integer')
+        then:
+        !result.success
+        result.variable == [name: 'Counter', type: 'integer', value: 1]
+        locals.Counter.value == 1
+    }
+
     def 'condition compile uses native selector and placeholder fields preserves unrelated state'() {
         when:
         def result = script._nmUpsertCondition(42L, false, [capability: 'Switch', fields: [[name: 'state_#', type: 'enum', value: 'on']]])
@@ -404,10 +415,12 @@ class NativeModelSpec extends ToolSpecBase {
         settings.put('actSubType.1', [type: 'enum', value: 'getLogMsg'])
         settings.put('unknownActionField.1', [type: 'text', value: 'owned'])
         settings.put('unknownOtherField', [type: 'text', value: 'retain'])
-        nativeRule.deleteAction = { Object id ->
-            nativeState.actions.remove(id.toString())
-            nativeState.actionList.remove(id.toString())
+        nativeRule.selectActions = { Map params ->
+            assert nativeState.delAct == '1'
+            nativeState.actions.remove(nativeState.delAct)
+            nativeState.actionList.remove(nativeState.delAct)
             settings.keySet().findAll { it.endsWith('.1') }.each { settings.remove(it) }
+            nativeState.remove('delAct')
         }
         when:
         def result = script._nmDeleteRow(42L, 'action', '1')
@@ -424,7 +437,7 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.actions = ['1': [method: 'getLogMsg']]
         nativeState.actionList = ['1']
         settings.put('unknownActionField.1', [type: 'text', value: 'stale'])
-        nativeRule.deleteAction = { Object id -> nativeState.actions.remove(id.toString()); nativeState.actionList.remove(id.toString()) }
+        nativeRule.selectActions = { Map params -> nativeState.actions.remove(nativeState.delAct); nativeState.actionList.remove(nativeState.delAct); nativeState.remove('delAct') }
         when:
         def result = script._nmDeleteRow(42L, 'action', '1')
         then:
@@ -436,11 +449,12 @@ class NativeModelSpec extends ToolSpecBase {
         given:
         settings.put('rCapab_2', [type: 'enum', value: 'Switch'])
         settings.put('state_2', [type: 'enum', value: 'off'])
-        nativeRule.deleteCapab = { Object id, Object trigger, Object action ->
-            assert id == 2 && trigger == false && action == false
+        nativeRule.selectConditions = { Map params ->
+            assert params == [pred: false] && nativeState.deleteCon == 2
             nativeState.capabsfalse.remove('2')
             settings.remove('rCapab_2')
             settings.remove('state_2')
+            nativeState.remove('deleteCon')
         }
         when:
         def result = script._nmDeleteRow(42L, 'condition', '2')
@@ -448,6 +462,38 @@ class NativeModelSpec extends ToolSpecBase {
         result.success
         nativeState.capabsfalse == ['1': 'Switch A on']
         nativeState.eval == ['0': ['1']]
+    }
+
+    def 'trigger deletion uses native delete callback and verifies setting cleanup'() {
+        given:
+        nativeState.capabstrue = ['2': 'Switch A off']
+        settings.put('tCapab2', [type: 'enum', value: 'Switch'])
+        settings.put('tstate2', [type: 'enum', value: 'off'])
+        nativeRule.selectTriggers = { ->
+            assert nativeState.deleteCon == 2
+            nativeState.capabstrue.remove('2')
+            settings.remove('tCapab2')
+            settings.remove('tstate2')
+            nativeState.remove('deleteCon')
+        }
+        when:
+        def result = script._nmDeleteRow(42L, 'trigger', '2')
+        then:
+        result.success && result.deleted && result.settingsVerified
+        nativeState.capabstrue.isEmpty()
+        !nativeState.containsKey('deleteCon')
+    }
+
+    def 'condition deletion cannot succeed over removed settings while native condition remains'() {
+        given:
+        settings.put('rCapab_2', [type: 'enum', value: 'Switch'])
+        nativeRule.selectConditions = { Map params -> settings.remove('rCapab_2'); nativeState.remove('deleteCon') }
+        when:
+        def result = script._nmDeleteRow(42L, 'condition', '2')
+        then:
+        !result.success && result.partial && !result.deleted
+        result.settingsVerified
+        nativeState.capabsfalse.containsKey('2')
     }
 
     def 'referenced conditions and missing rows refuse before any native write'() {

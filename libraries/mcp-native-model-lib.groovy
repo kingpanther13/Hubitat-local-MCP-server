@@ -144,7 +144,8 @@ Map _nmLocal(Long ruleId, String operation, String name = null, Object value = n
     }
     def after = _nrHandle(ruleId).getLocalVar(name)
     def allAfter = _nrHandle(ruleId).getAllLocalVars()
-    boolean verified = allAfter instanceof Map && (operation == 'delete' ? after == null && !allAfter.containsKey(name) : after instanceof Map && allAfter.get(name) == after && after.name == name && after.value == value && after.type == (operation == 'create' ? type : before.type))
+    def inventoryRow = allAfter instanceof Map ? allAfter.get(name) : null
+    boolean verified = allAfter instanceof Map && (operation == 'delete' ? after == null && !allAfter.containsKey(name) : after instanceof Map && inventoryRow instanceof Map && inventoryRow.type == after.type && inventoryRow.value == after.value && after.name == name && after.value == value && after.type == (operation == 'create' ? type : before.type))
     [success: verified, deleted: operation == 'delete' && verified, variable: after, verificationNeeded: true]
 }
 
@@ -372,8 +373,14 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
         String selector = part == 'trigger' ? "tCapab${id}".toString() : "rCapab_${id}".toString()
         if (settingsBefore.get(selector)?.value == 'Days of Week Schedule') removedNames.addAll(settingsBefore.keySet().findAll { it.endsWith("-${id}".toString()) })
     }
-    if (part == 'action') _nrHandle(ruleId).deleteAction(id)
-    else _nrHandle(ruleId).deleteCapab(id.toInteger(), part == 'trigger', false)
+    if (part == 'action') {
+        _nrStatePatch(ruleId, [delAct: id])
+        _nrHandle(ruleId).selectActions([:])
+    } else {
+        _nrStatePatch(ruleId, [deleteCon: id.toInteger()])
+        if (part == 'trigger') _nrHandle(ruleId).selectTriggers()
+        else _nrHandle(ruleId).selectConditions([pred: false])
+    }
     Map after = _nrState(ruleId)
     Map settingsAfter = _nmSettingsInventory(ruleId)
     Map remaining = after.get(collection) instanceof Map ? after.get(collection) : [:]
@@ -383,11 +390,12 @@ Map _nmDeleteRow(Long ruleId, String part, Object rowId) {
     List expectedOrder = part == 'action' ? oldOrder.findAll { it != id } : oldOrder
     boolean ordered = (after.actionList instanceof List ? after.actionList.collect { it.toString() } : []) == expectedOrder
     boolean cleaned = removedNames.every { !settingsAfter.containsKey(it) }
+    boolean callbackConsumed = after.get(part == 'action' ? 'delAct' : 'deleteCon') == null
     Map expectedSettings = [:] + settingsBefore
     removedNames.each { expectedSettings.remove(it) }
     boolean settingsPreserved = settingsAfter == expectedSettings
-    [success: deleted && preserved && ordered && cleaned && settingsPreserved, partial: !(deleted && preserved && ordered && cleaned && settingsPreserved), deleted: deleted, part: part, id: id,
-     settingsVerified: cleaned && settingsPreserved, removedSettings: removedNames, remainingSettings: settingsAfter, verificationNeeded: true]
+    [success: deleted && preserved && ordered && cleaned && settingsPreserved && callbackConsumed, partial: !(deleted && preserved && ordered && cleaned && settingsPreserved && callbackConsumed), deleted: deleted, part: part, id: id,
+     settingsVerified: cleaned && settingsPreserved, callbackConsumed: callbackConsumed, removedSettings: removedNames, remainingSettings: settingsAfter, verificationNeeded: true]
 }
 
 Map _nmOrderActions(Long ruleId, List ids) {
