@@ -40,9 +40,12 @@ class NativeModelSpec extends ToolSpecBase {
             [success: true]
         }
         script.metaClass._nrSettings = { Long id, List names -> settings.subMap(names) }
-        script.metaClass.hubInternalGet = { String path, Map query = null -> path == '/device/listJson' ? [[id: 9]] : [settings: settings.collect { name, row ->
-            [name: name, type: row.type, value: row.value, multiple: row.multiple, deviceList: row.deviceList]
-        }] }
+        script.metaClass.hubInternalGet = { String path, Map query = null ->
+            if (path == '/device/listJson') return query?.capability == 'capability.temperatureMeasurement' ? [[id: 9]] : (query?.capability == 'capability.switch' ? [[id: 7], [id: 8]] : [])
+            [settings: settings.collect { name, row ->
+                [name: name, type: row.type, value: row.value, multiple: row.multiple, deviceList: row.deviceList]
+            }]
+        }
     }
 
     private Map nativeForm(List descriptors) {

@@ -147,8 +147,8 @@ Map _nrButton(Long ruleId, String name) {
     [verificationNeeded: true, result: result]
 }
 
-// Shared native descriptor checks. Callers retain their own admission and wire encoding.
 private List _nrChoiceKeys(Object options) {
+    // Shared native descriptor checks. Callers retain their own admission and wire encoding.
     if (options instanceof Map) return options.keySet().collect { it.toString() }.unique()
     if (!(options instanceof List)) return null
     List keys = []
