@@ -292,10 +292,14 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
             variable_action("Reading", "sensor value", [
                 field("valCapab.#", "enum", "Temperature"),
                 field("valDev.#", "capability.temperatureMeasurement",
-                      [str(self.fixtures["temperature"])]),
+                      str(self.fixtures["temperature"])),
                 field("valOffset.#", "decimal", 0),
             ]),
         ])
+        action_id = str(self.document(rule_id)["actions"][0]["id"])
+        sensor_setting = self.settings(rule_id)[f"valDev.{action_id}"]
+        self.assertIs(sensor_setting["multiple"], False)
+        self.assertEqual(set(sensor_setting["deviceList"]), {str(self.fixtures["temperature"])})
         self.run_actions(rule_id)
         self.assert_variable(rule_id, "Reading", 23.5, "bigdecimal")
         self.command("temperature", "setTemperature", [31.25])
