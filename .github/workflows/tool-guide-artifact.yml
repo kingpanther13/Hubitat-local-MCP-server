@@ -1,6 +1,9 @@
 name: Tool Guide Artifact
 on:
   workflow_dispatch:
+  push:
+    branches: [feat/native-app-model]
+    paths: [.github/workflows/tool-guide-artifact.yml]
 permissions:
   contents: read
 jobs:
