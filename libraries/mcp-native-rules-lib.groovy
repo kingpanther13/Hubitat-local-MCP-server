@@ -9,6 +9,7 @@ def _getAllToolDefinitions_partNativeRM() {
             inputSchema: [
                 type: "object",
                 properties: [
+                    labelFilter: [type: "string", description: "Case-insensitive label substring; applied before pagination."],
                     cursor: [type: "string", description: "Opt-in pagination cursor. Omit for unbounded; pass \"\" for the first page, iterate nextCursor (page size 50)."]
                 ]
             ]
@@ -178,7 +179,7 @@ def toolSetAppDisabled(args) {
 //   v4Error/v5Error -- RM 4.x / 5.x lookup error strings (null on success)
 //   treeReadable -- false when /hub2/appsList could not be read; combined is
 //                   then UNfiltered (may still carry post-delete cache ghosts)
-//   liveApps     -- the /hub2/appsList map (id -> [name, disabled]) used for the
+//   liveApps     -- the /hub2/appsList map (id -> [name, disabled, type]) used for the
 //                   ghost filter AND hub_list_rules status enrichment; null when
 //                   the tree was unreadable (treeReadable=false)
 // Fetch a guide section in full for an inline meta-call on a tool that has no cursor of its own.
@@ -289,6 +290,8 @@ def toolListRmRules(args) {
     // combined.values() returns a Collection view in some Groovy versions; materialize
     // as a concrete List via toList() so subList in _paginateList is safe.
     def rules = combined.values().sort { it.label ?: "" }.toList()
+    def labelFilter = args?.labelFilter?.toString()?.toLowerCase()
+    if (labelFilter) rules = rules.findAll { (it.label ?: "").toString().toLowerCase().contains(labelFilter) }
 
     def cursor = args?.cursor
     def paged = _paginateList(rules, cursor, 50, "hub_list_rules")
@@ -444,6 +447,11 @@ private void _rmAnnotateRuleStatus(Map entry, boolean treeReadable, Map liveApps
     if (node == null) {
         entry.status = "unknown"
         return
+    }
+    if (node.type instanceof String && node.type) {
+        entry.type = node.type
+        if (node.type.startsWith("Rule-5.")) entry.rmVersion = "5.x"
+        else if (node.type.startsWith("Rule-4.")) entry.rmVersion = "4.x"
     }
     def disabledRaw = node.disabled
     def cleanApps = stripAppConfigHtml(node.name)
@@ -933,7 +941,7 @@ private Map _collectLiveApps() {
                 // coercing to == true here would erase the "field missing" signal that
                 // _rmAnnotateRuleStatus needs to classify the rule as per-entry unknown.
                 if (!(idVal.toString() ==~ /[1-9][0-9]*/)) throw new IllegalArgumentException("Invalid app ID")
-                apps.put(idVal as Integer, [name: node.data?.name, disabled: node.data?.disabled])
+                apps.put(idVal as Integer, [name: node.data?.name, disabled: node.data?.disabled, type: node.data?.type])
             } catch (Exception ignored) { complete = false }
         } else if (node.data) {
             // An idless structural container is safe only when all its children can be read;

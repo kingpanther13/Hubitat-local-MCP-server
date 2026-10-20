@@ -206,22 +206,22 @@ class NativeRmParityLifecycleE2E(ParityCase):
         # of the retired convenience argument vocabulary.
         switch = int(self.fixtures["switch"])
         negatives = [
-            ("wrong garage device", change("action", type="lockActs", subtype="getOCGarage", fields=[field("garageOpenClose#", "capability.garageDoorControl", [switch])])),
-            ("wrong valve device", change("action", type="lockActs", subtype="getOCValve", fields=[field("valveOpenClose#", "capability.valve", [switch])])),
-            ("wrong tone device", change("action", type="soundActs", subtype="getTone", fields=[field("toner#", "capability.tone", [switch])])),
-            ("blind tilt requires number", change("action", type="sceneActs", subtype="getBlindTilt", fields=[field("tiltLevel#", "number", "forty")])),
+            ("wrong garage device", change("action", type="lockActs", subtype="getOCGarage", fields=[field("garageOpenClose.#", "capability.garageDoorControl", [switch])])),
+            ("wrong valve device", change("action", type="lockActs", subtype="getOCValve", fields=[field("valveOpenClose.#", "capability.valve", [switch])])),
+            ("wrong tone device", change("action", type="soundActs", subtype="getTone", fields=[field("toner.#", "capability.tone", [switch])])),
+            ("blind tilt requires number", change("action", type="sceneActs", subtype="getBlindTilt", fields=[field("tiltLevel.#", "number", "forty")])),
             ("blind tilt missing", change("action", type="sceneActs", subtype="getBlindTilt", fields=[])),
-            ("music command invalid", change("action", type="soundActs", subtype="getSetMusicPlayer", fields=[field("playerCommand#", "enum", "noSuchMusicCommand")])),
-            ("music volume requires number", change("action", type="soundActs", subtype="getSetMusicPlayer", fields=[field("playerLevel#", "number", "loud")])),
-            ("invalid return boolean", change("action", type="modeActs", subtype="getReturnValue", fields=[field("valType#", "enum", "Boolean"), field("valBool#", "enum", "maybe")])),
-            ("zero integer return produces no native row", change("action", type="modeActs", subtype="getReturnValue", fields=[field("valType#", "enum", "Integer"), field("valInt#", "number", 0)])),
-            ("invalid custom command capability", change("action", type="modeActs", subtype="getDefinedAction", fields=[field("myCapab#", "enum", "Initialize")])),
-            ("nonexistent custom command", change("action", type="modeActs", subtype="getDefinedAction", fields=[field("myCapab#", "enum", "Switch"), field("devices#", "capability.switch", [switch]), field("cCmd#", "enum", "noSuchCommandE2E")])),
-            ("last event command without trigger device", change("action", type="modeActs", subtype="getDefinedAction", fields=[field("useLastDev#", "bool", True), field("cCmd#", "enum", "off")])),
-            ("missing append file", change("action", type="modeActs", subtype="getAppendLocalFile", fields=[field("localFile#", "enum", self.prefix + "_no_such_file.txt"), field("fileContents#", "textarea", "x")])),
-            ("missing delete file", change("action", type="modeActs", subtype="getDeleteLocalFile", fields=[field("deleteFile#", "enum", self.prefix + "_no_such_file.txt")])),
-            ("invalid HSM command", change("action", type="lockActs", subtype="getSetHSM", fields=[field("alarm#", "enum", "armEverything")])),
-            ("invalid return type", change("action", type="modeActs", subtype="getReturnValue", fields=[field("valType#", "enum", "UnknownType")])),
+            ("music command invalid", change("action", type="soundActs", subtype="getSetMusicPlayer", fields=[field("playerCommand.#", "enum", "noSuchMusicCommand")])),
+            ("music volume requires number", change("action", type="soundActs", subtype="getSetMusicPlayer", fields=[field("playerLevel.#", "number", "loud")])),
+            ("invalid return boolean", change("action", type="modeActs", subtype="getReturnValue", fields=[field("valType.#", "enum", "Boolean"), field("valBool.#", "enum", "maybe")])),
+            ("zero integer return produces no native row", change("action", type="modeActs", subtype="getReturnValue", fields=[field("valType.#", "enum", "Integer"), field("valInt.#", "number", 0)])),
+            ("invalid custom command capability", change("action", type="modeActs", subtype="getDefinedAction", fields=[field("myCapab.#", "enum", "Initialize")])),
+            ("nonexistent custom command", change("action", type="modeActs", subtype="getDefinedAction", fields=[field("myCapab.#", "enum", "Switch"), field("devices.#", "capability.switch", [switch]), field("cCmd.#", "enum", "noSuchCommandE2E")])),
+            ("last event command without trigger device", change("action", type="modeActs", subtype="getDefinedAction", fields=[field("useLastDev.#", "bool", True), field("cCmd.#", "enum", "off")])),
+            ("missing append file", change("action", type="modeActs", subtype="getAppendLocalFile", fields=[field("localFile.#", "enum", self.prefix + "_no_such_file.txt"), field("fileContents.#", "textarea", "x")])),
+            ("missing delete file", change("action", type="modeActs", subtype="getDeleteLocalFile", fields=[field("deleteFile.#", "enum", self.prefix + "_no_such_file.txt")])),
+            ("invalid HSM command", change("action", type="lockActs", subtype="getSetHSM", fields=[field("alarm.#", "enum", "armEverything")])),
+            ("invalid return type", change("action", type="modeActs", subtype="getReturnValue", fields=[field("valType.#", "enum", "UnknownType")])),
             ("missing referenced condition", log_action("conditional must not land", condition=999999999)),
             ("block cannot carry simple condition", change("action", type="condActs", subtype="getIfThen", fields=[], expression=["999999999"], condition=999999999)),
             ("missing expression condition", change("required", tokens=["999999999"])),
@@ -237,23 +237,33 @@ class NativeRmParityLifecycleE2E(ParityCase):
         target = app_id
         original = self.settings(target)
         original_actions = self.doc(target)["actions"]
+        function = self.create([log_action("function baseline")])
+        form = self._form(function, "mainPage")
+        enabled = self._submit(function, form, fields={"isFunction": True})
+        self.assertTrue(enabled.get("success"), enabled)
+        self.assertIn(self._values(function)["isFunction"], (True, "true"))
+        function_settings = self.settings(function)
+        function_actions = self.doc(function)["actions"]
         for label, requested in negatives:
             with self.subTest(case=label):
-                refused = self.update(target, [requested])
+                is_return = requested["value"].get("subtype") == "getReturnValue"
+                current = function if is_return else target
+                refused = self.update(current, [requested])
                 self._refused(refused)
-                self.assertEqual(original, self.settings(target), refused)
-                self.assertEqual(original_actions, self.doc(target)["actions"], refused)
-                self.healthy(target)
-                health = self._health(target)
+                self.assertEqual(function_settings if is_return else original, self.settings(current), refused)
+                self.assertEqual(function_actions if is_return else original_actions,
+                                 self.doc(current)["actions"], refused)
+                self.healthy(current)
+                health = self._health(current)
                 self.assertFalse(health.get("orphanedActionRows"), health)
-                self.assertNotIn(self.prefix + "_no_such_file.txt", self.page_text(target))
+                self.assertNotIn(self.prefix + "_no_such_file.txt", self.page_text(current))
 
         # First compile a valid literal action using a capability-matching
         # fixture, so a later refusal cannot pass merely on a bad device.
         variable = "parityAmount"
         for label, fixture, action_type, subtype, device_name, device_type, literal_name, selectors in (
-            ("blind literal and variable", "blind", "sceneActs", "getBlindTilt", "blindTilt#", "capability.windowBlind", "tiltLevel#", []),
-            ("music literal and variable", "player", "soundActs", "getSetMusicPlayer", "player#", "capability.musicPlayer", "playerLevel#", [field("playerCommand#", "enum", "set volume")]),
+            ("blind literal and variable", "blind", "sceneActs", "getBlindTilt", "blindTilt.#", "capability.windowBlind", "tiltLevel.#", []),
+            ("music literal and variable", "player", "soundActs", "getSetMusicPlayer", "player.#", "capability.musicPlayer", "playerLevel.#", [field("playerCommand.#", "enum", "set volume")]),
         ):
             with self.subTest(case=label):
                 self.assertIn(fixture, self.fixtures)
@@ -264,28 +274,154 @@ class NativeRmParityLifecycleE2E(ParityCase):
                                                    fields=[*base_fields, field(literal_name, "number", 30)])])
                 self.assertTrue(valid.get("success"), valid)
                 action = next(row for row in self.doc(target)["actions"] if row["value"].get("method") == subtype)
-                literal_key = literal_name.replace("#", "." + str(action["id"]))
+                literal_key = literal_name.replace("#", str(action["id"]))
                 self.assertEqual(30.0, float(self._values(target)[literal_key]))
                 original = self.snapshot(target)
                 refused = self.update(target, [change("action", id=action["id"], type=action_type, subtype=subtype,
-                    fields=[*base_fields, field("uVar#", "bool", True), field("xVar#", "enum", variable),
+                    fields=[*base_fields, field("uVar.#", "bool", True), field("xVar.#", "enum", variable),
                             field(literal_name, "number", 30)])])
                 self._refused(refused)
                 self.assertEqual(original, self.snapshot(target))
                 self.healthy(target)
 
+        # Each remaining semantic negative starts from a successfully compiled
+        # native row, so unsupported selectors or unrelated device types cannot
+        # masquerade as proof of the intended restriction.
+        with self.subTest(case="location event requires a selected name"):
+            target = self.create([change("trigger", capability="Location Event", fields=[
+                field("tstate#", "enum", "mode")]), log_action("location baseline")])
+            slot = next(iter(self.doc(target)["triggers"]))
+            self.assertEqual("mode", self._values(target)["tstate" + slot])
+            before = self.snapshot(target)
+            refused = self.update(target, [change("trigger", id=slot, capability="Location Event",
+                                                  fields=[field("tstate#", "enum", "")])])
+            self._refused(refused)
+            self.assertEqual(before, self.snapshot(target), refused)
+
+        with self.subTest(case="empty variable comparator has no stays duration"):
+            name = self.create_hub_variable("empty_stays", "String", "nonempty")
+            target = self.create([change("trigger", capability="Variable", fields=[
+                field("xVar#", "enum", name), field("ReltDev#", "enum", "*is empty*")]),
+                log_action("variable baseline")])
+            slot = next(iter(self.doc(target)["triggers"]))
+            self.assertEqual("*is empty*", self._values(target)["ReltDev" + slot])
+            before = self.snapshot(target)
+            refused = self.update(target, [change("trigger", id=slot, capability="Variable", fields=[
+                field("stays#", "bool", True), field("SMins#", "number", 5)])])
+            self._refused(refused)
+            self.assertEqual(before, self.snapshot(target), refused)
+
+        with self.subTest(case="periodic frequency refuses another frequency's time input"):
+            target = self.create([log_action("periodic baseline")])
+            form = self._form(target, "selectTriggers")
+            more = next(row for row in form["controls"] if row["control_id"] == "true||moreCond")
+            form = self._submit(target, form, control=more)
+            self.assertTrue(form.get("success"), form)
+            capability = next(row for row in form["fields"] if row["name"].startswith("tCapab"))
+            form = self._submit(target, form, fields={capability["name"]: "Periodic Schedule"})
+            self.assertTrue(form.get("success"), form)
+            periodic = next(row for row in form["controls"] if row.get("kind") == "href" and row.get("page") == "periodic")
+            form = self._submit(target, form, control=periodic)
+            self.assertTrue(form.get("success"), form)
+            frequency = next(row for row in form["fields"] if row["name"].startswith("whichPeriod"))
+            offered = {row["value"] for row in frequency["options"]}
+            self.assertTrue({"Daily", "Hourly"}.issubset(offered), form)
+            form = self._submit(target, form, fields={frequency["name"]: "Daily"})
+            self.assertTrue(form.get("success"), form)
+            daily_time = next(row for row in form["fields"] if row["name"].startswith("startingDC") and row["type"] == "time")
+            form = self._submit(target, form, fields={frequency["name"]: "Hourly"})
+            self.assertTrue(form.get("success"), form)
+            self.assertNotIn(daily_time["name"], {row["name"] for row in form["fields"]})
+            before = self.snapshot(target)
+            refused = self._submit(target, form, fields={daily_time["name"]: "2026-01-01T08:00:00.000-0500"})
+            self._refused(refused)
+            self.assertFalse(refused.get("partial"), refused)
+            self.assertIn(daily_time["name"], refused["error"])
+            self.assertEqual(before, self.snapshot(target), refused)
+
+        referenced = self.create([log_action("referenced rule")])
+        with self.subTest(case="rule paused condition has no changed comparator"):
+            target = self.create([change("condition", capability="Rule paused", fields=[
+                field("rDev_#", "enum", [self._values(referenced)["origLabel"]]), field("state_#", "enum", "true")])])
+            slot = next(iter(self.doc(target)["conditions"]))
+            self.assertEqual("true", str(self._values(target)["state_" + slot]).lower())
+            before = self.snapshot(target)
+            refused = self.update(target, [change("condition", id=slot, capability="Rule paused",
+                                                  fields=[field("RelrDev_#", "enum", "*changed*")])])
+            self._refused(refused)
+            self.assertEqual(before, self.snapshot(target), refused)
+            self.assertNotIn("addTrigger", json.dumps(refused))
+
+        with self.subTest(case="run actions requires actual rule IDs"):
+            target = self.create([change("action", type="rulesActs", subtype="getRuleActions", fields=[
+                field("runRuleType.#", "enum", "Rule Machine"),
+                field("ruleAct.#", "enum", [str(referenced)])])])
+            action = self.doc(target)["actions"][0]
+            self.assertEqual([str(referenced)], list(map(str, self._values(target)["ruleAct." + action["id"]])))
+            before = self.snapshot(target)
+            for invalid in (["999999999"], ["*"], []):
+                with self.subTest(targets=invalid):
+                    refused = self.update(target, [change("action", id=action["id"], type="rulesActs",
+                        subtype="getRuleActions", fields=[field("ruleAct.#", "enum", invalid)])])
+                    self._refused(refused)
+                    self.assertEqual(before, self.snapshot(target), refused)
+
+        with self.subTest(case="required days condition cannot have no days"):
+            target = self.create([change("condition", capability="Days of week", fields=[
+                field("days#", "enum", ["Monday"])])])
+            slot = next(iter(self.doc(target)["conditions"]))
+            enabled = self.update(target, [change("required", tokens=[slot])])
+            self.assertTrue(enabled.get("success"), enabled)
+            self.assertEqual(["Monday"], self._values(target)["days" + slot])
+            before = self.snapshot(target)
+            refused = self.update(target, [change("condition", id=slot, capability="Days of week",
+                                                  fields=[field("days#", "enum", [])])])
+            self._refused(refused)
+            self.assertEqual(before, self.snapshot(target), refused)
+            self.healthy(target)
+
+        with self.subTest(case="water condition has state choices without a comparator"):
+            water_key = "water" if "water" in self.fixtures else "omni"
+            self.fixture_metadata(water_key)
+            target = self.create([change("condition", capability="Water sensor", fields=[
+                field("rDev_#", "capability.waterSensor", [str(self.fixtures[water_key])]),
+                field("state_#", "enum", "wet")])])
+            slot = next(iter(self.doc(target)["conditions"]))
+            enabled = self.update(target, [change("required", tokens=[slot])])
+            self.assertTrue(enabled.get("success"), enabled)
+            self.assertEqual("wet", self._values(target)["state_" + slot])
+            before = self.snapshot(target)
+            refused = self.update(target, [change("condition", id=slot, capability="Water sensor",
+                                                  fields=[field("RelrDev_#", "enum", "*changed*")])])
+            self._refused(refused)
+            self.assertEqual(before, self.snapshot(target), refused)
+            self.healthy(target)
+
+        # The native inline-condition creator excludes Mode, but its defined
+        # condition picker includes an existing valid Mode condition.
+        with self.subTest(case="existing Mode condition is a legitimate simple action condition"):
+            target = self.create([change("condition", capability="Mode", fields=[
+                field("modes#", "enum", [str(self.mode_id)])])])
+            slot = next(iter(self.doc(target)["conditions"]))
+            attached = self.update(target, [log_action("mode conditional action", condition=slot)])
+            self.assertTrue(attached.get("success"), attached)
+            action = self.doc(target)["actions"][0]
+            self.assertEqual(slot, str(action["value"].get("cond")))
+            self.assertIn("mode conditional action", self.page_text(target))
+            self.healthy(target)
+
         accepted_id = self.create([log_action("custom command baseline")])
         accepted = self.update(accepted_id, [change("action", type="modeActs", subtype="getDefinedAction", fields=[
-            field("myCapab#", "enum", "Switch"), field("devices#", "capability.switch", [switch]),
-            field("cCmd#", "enum", "off")])])
+            field("myCapab.#", "enum", "Switch"), field("devices.#", "capability.switch", [switch]),
+            field("cCmd.#", "enum", "off")])])
         self.assertTrue(accepted.get("success"), accepted)
         self.assertFalse(accepted.get("partial"), accepted)
         self.assertIn("off() on", self.page_text(accepted_id))
         custom = next(row for row in self.doc(accepted_id)["actions"] if row["value"].get("method") == "getDefinedAction")
         before_edit = self.snapshot(accepted_id)
         invalid_edit = self.update(accepted_id, [change("action", id=custom["id"], type="modeActs", subtype="getDefinedAction", fields=[
-            field("myCapab#", "enum", "Initialize"), field("devices#", "capability.switch", [switch]),
-            field("cCmd#", "enum", "off")])])
+            field("myCapab.#", "enum", "Initialize"), field("devices.#", "capability.switch", [switch]),
+            field("cCmd.#", "enum", "off")])])
         self._refused(invalid_edit)
         self.assertEqual(before_edit, self.snapshot(accepted_id))
         self.healthy(accepted_id)
@@ -614,7 +750,7 @@ class NativeRmParityLifecycleE2E(ParityCase):
         self.assertEqual(result, replay_value)
         recent = self.call("hub_get_info").get("recentWrites", [])
         mine = [row for row in recent if row.get("tool") == "hub_update_rule_document"
-                and str(row.get("appId")) == str(app_id)]
+                and str(row.get("rule_id")) == str(app_id)]
         self.assertTrue(mine, recent)
         self.assertEqual("finished", mine[0].get("status"), mine)
         self.assertIs(mine[0].get("success"), True, mine)

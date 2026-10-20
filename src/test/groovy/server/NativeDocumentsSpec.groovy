@@ -42,6 +42,11 @@ class NativeDocumentsSpec extends ToolSpecBase {
         script.metaClass.hubInternalPostFormRaw = { String path, String body, int t = 420, boolean retry = false -> events << [path: path, body: body]; lifecycle.stopped = false; lifecycle.paused = false; [status: 200] }
     }
 
+    private Map logChange() {
+        [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg',
+            fields: [[name: 'logmsg.#', type: 'textarea', value: 'Document fixture']]]]
+    }
+
     def 'read document returns native stable order typed values and locals without rendering'() {
         when:
         def result = script.executeTool('hub_get_rule_document', [rule_id: 42])
@@ -141,7 +146,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         failAction = true
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]], [part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg', fields: []]], logChange()], confirm: true])
         then:
         !result.success
         result.partial
@@ -224,7 +229,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         broken = true
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
         result.partial
@@ -324,14 +329,14 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'invalid typed scalar later in a batch cannot delete earlier actions'() {
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+        script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
             [part: 'delete', value: [part: 'action', id: '1']],
             [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg',
                 fields: [[name: 'flag.#', type: type, value: value]]]]
         ]])
         then:
-        !result.success
-        !result.partial
+        def error = thrown(IllegalArgumentException)
+        error.message.contains('flag.#')
         events.empty
         nativeState.actionList == ['3', '1']
         where:
@@ -439,8 +444,10 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         nativeState.actions.'3' = [method: 'getIfThen', rule: '1']
         nativeState.eval.'1' = ['999999']
+        nativeState.actions.'6' = [method: 'getEndIf']
+        nativeState.actionList = ['3', '1', '6']
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
         result.error.contains('unknown condition')
@@ -451,6 +458,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         nativeState.actions.'3' = [method: 'getIfThen', rule: '0']
         nativeState.inIf = true
+        nativeState.actions.'6' = [method: 'getEndIf']
+        nativeState.actionList = ['3', '1', '6']
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'variable', value: [operation: 'set', name: 'counter', value: 0]]], confirm: true])
         then:
@@ -463,7 +472,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, true) }
         when:
-        def failed = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        def failed = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
         !failed.success
         failed.error.contains('broken condition')
@@ -471,7 +480,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         when:
         events.clear()
         script.metaClass._nrHandle = { Long id -> new NativeDocumentDiagnosticChild(events, lifecycle, false) }
-        def passed = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        def passed = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
         passed.success
     }
@@ -481,7 +490,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         lifecycle.stopped = true
         lifecycle.paused = true
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
         result.success
         result.stopped
@@ -491,11 +500,59 @@ class NativeDocumentsSpec extends ToolSpecBase {
         events.count { it == 'pausRule' } == 1
     }
 
+    def 'malformed native lifecycle flags remain unknown on reads and refuse writes before mutation'() {
+        given:
+        Map health = [broken: false, stopped: false, paused: false]
+        health.put(flag, malformed)
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson(health) }
+        when:
+        def document = script.toolGetRuleDocument([rule_id: 42, sections: ['actions']])
+        then:
+        document.nativeHealth.available
+        document.nativeHealth.get(flag) == null
+        document.nativeHealth.get(flag == 'stopped' ? 'paused' : 'stopped') == false
+        events.empty
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        then:
+        !result.success
+        !result.partial
+        result.error.contains('lifecycle state is malformed')
+        events.empty
+        nativeState.actionList == ['3', '1']
+        where:
+        flag      | malformed
+        'stopped' | 'false'
+        'stopped' | null
+        'stopped' | 0
+        'paused'  | 'true'
+        'paused'  | [:]
+        'paused'  | []
+    }
+
+    def 'absent native lifecycle flags retain the platform false default'() {
+        given:
+        hubGet.register('/app/ruleBuilderJson/42') { q -> JsonOutput.toJson([broken: false]) }
+        when:
+        def document = script.toolGetRuleDocument([rule_id: 42, sections: ['actions']])
+        then:
+        document.nativeHealth.stopped == false
+        document.nativeHealth.paused == false
+        events.empty
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
+        then:
+        result.success
+        !result.stopped
+        !result.paused
+        events.any { it instanceof Map && it.body.contains('_action_update=Done') }
+    }
+
     def 'missing native health is unavailable and cannot finalize'() {
         given:
         hubGet.register('/app/ruleBuilderJson/42') { q -> '{}' }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
         !result.partial
@@ -508,7 +565,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.capabstrue = [:]
         hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([installedApp: [id: 42, installed: true], eventSubscriptions: null, scheduledJobs: null]) }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
         result.success
         result.eventSubscriptions == []
@@ -518,7 +575,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         hubGet.register('/installedapp/statusJson/42') { q -> JsonOutput.toJson([installedApp: [id: 99, installed: true], eventSubscriptions: null, scheduledJobs: null]) }
         when:
-        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [logChange()], confirm: true])
         then:
         !result.success
         result.partial
@@ -527,7 +584,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'create uses native child identity label and actual Done installation'() {
         when:
-        def result = script.executeTool('hub_create_rule_document', [parent_id: 28, name: 'New document', changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        def result = script.executeTool('hub_create_rule_document', [parent_id: 28, name: 'New document', changes: [logChange()], confirm: true])
         then:
         result.success
         result.created
@@ -577,7 +634,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
             [status: 302, location: 'Location: http://127.0.0.1:8080/installedapp/configure/42']
         }
         when:
-        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Header child', changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Header child', changes: [logChange()], confirm: true])
         then:
         result.success
         result.rule_id == 42L
@@ -587,7 +644,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         given:
         script.metaClass.getAppByAppId = { Long id -> id == 28L ? [id: 28L, appType: [namespace: 'hubitat', name: 'Rule Machine']] : [id: 42L, parentAppId: 99L, appType: [namespace: 'hubitat', name: 'Rule-5.1']] }
         when:
-        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Wrong child', changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        def result = script.toolCreateRuleDocument([parent_id: 28, name: 'Wrong child', changes: [logChange()], confirm: true])
         then:
         !result.success
         result.partial
@@ -598,7 +655,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
 
     def 'invalid parent prevents native child creation'() {
         when:
-        script.toolCreateRuleDocument([parent_id: 42, name: 'Bad parent', changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: true])
+        script.toolCreateRuleDocument([parent_id: 42, name: 'Bad parent', changes: [logChange()], confirm: true])
         then:
         thrown(IllegalArgumentException)
         events.empty
@@ -618,7 +675,7 @@ class NativeDocumentsSpec extends ToolSpecBase {
         thrown(IllegalArgumentException)
         when:
         settingsMap.enableWrite = true
-        script.executeTool('hub_update_rule_document', [rule_id: 42, changes: [[part: 'terminator', value: [subtype: 'endIf']]], confirm: false])
+        script.executeTool('hub_update_rule_document', [rule_id: 42, changes: [logChange()], confirm: false])
         then:
         thrown(IllegalArgumentException)
         events.empty

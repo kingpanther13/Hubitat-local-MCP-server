@@ -312,7 +312,7 @@ private Map _nmRejectAction(Long ruleId, String id, Map baseline, Map savedSetti
     if (prior instanceof Map && prior.rule != null) expressionIds << prior.rule.toString()
     if (current.ruleNdx != null) expressionIds << current.ruleNdx.toString()
     if (current.eval instanceof Map) expressionIds.addAll(current.eval.keySet().findAll { key -> !(baseline.eval instanceof Map) || !baseline.eval.containsKey(key) }.collect { it.toString() })
-    List keys = (['actions', 'actionList', 'capabsfalse', 'capabstrue', 'eval', 'predCapabs', 'isPredicate', 'ndx', 'actNdx', 'ruleNdx', 'waitCondNdx',
+    List keys = (['actions', 'actionList', 'capabsfalse', 'capabstrue', 'eval', 'predCapabs', 'isPredicate', 'hasPredicate', 'ndx', 'actNdx', 'ruleNdx', 'waitCondNdx',
                  'doActN', 'editAct', 'editIf', 'editToken', 'action', 'actionDone', 'actionCancel', 'hasDevice', 'hasCondition', 'hasCompleteRule',
                  'hasAll', 'hasRule', 'capabDone', 'capabActDone', 'inSimpleCond', 'simpleCond', 'inIf', 'inRepeat', 'hasWhileRule', 'needRuleButtons',
                  'needWaitButtons', 'needWaitDone', 'needWaitCancel', 'anotherWait', 'doneWaitEvents', 'moreCond', 'editCond'] + fields.collect { it.name }).unique()

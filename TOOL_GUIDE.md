@@ -26,7 +26,7 @@ Each change is {part,value}. Supported parts:
 - expression: {id,tokens}; required: {tokens}.
 - getWaitEvents actions accept events:[{capability,fields}] (1 through 16 native event rows); an edit preserves the event count. Duration fields remain native typed fields.
 - getWaitRule actions accept expression tokens, with optional native timeout/duration fields. New IF, ELSE-IF and Wait for Expression actions require expression tokens.
-- variable: {operation:create|set|delete,name,type?,value?}. Create types: integer,bigdecimal,boolean,string,datetime.
+- variable: {operation:create|set|delete,name,type?,value?}. Create types: integer,bigdecimal,boolean,string,datetime. DateTime uses native ISO text, e.g. 2026-01-01T12:30:00.000-0500; native date-only/time-only sentinels are accepted.
 - terminator: {subtype:endIf|else|endRep}.
 - delete: {part:action|condition|trigger,id}; referenced conditions must be detached first.
 - order: {ids:[native action IDs]}; a complete exact permutation is required.

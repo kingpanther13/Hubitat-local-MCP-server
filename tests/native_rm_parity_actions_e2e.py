@@ -340,6 +340,10 @@ class NativeRmParityActions(ParityCase):
                     and row.get("control_id") == "N||doAct"]
         self.assertEqual(len(controls), 1, form)
         form = self._submit(rule_id, form, control=controls[0])
+        links = [row for row in form["controls"] if row.get("kind") == "href"
+                 and row.get("page") == "doActPage"]
+        self.assertEqual(len(links), 1, form)
+        form = self._submit(rule_id, form, control=links[0])
         names = [row["name"] for row in form["fields"] if row["name"].startswith("actType.")]
         self.assertEqual(len(names), 1, form)
         return form, names[0].split(".", 1)[1]
@@ -555,7 +559,7 @@ class NativeRmParityActions(ParityCase):
              {"valType": "Boolean", "valBool": "false"}, "Return 'false'"),
             ([('valType', 'enum', 'Integer'), ('useVar', 'bool', True), ('valVar', 'enum', number)],
              {"valType": "Integer", "useVar": True, "valVar": number},
-             re.compile("Return '" + re.escape(number) + r"\(\S+\)'")),
+             re.compile("Return '" + re.escape(number) + "'")),
         ]
         self._ok(rule_id, [self._typed_action("modeActs", "getReturnValue", fields)
                            for fields, _, _ in expected])

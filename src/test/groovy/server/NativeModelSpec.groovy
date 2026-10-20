@@ -10,6 +10,12 @@ class NativeModelSpec extends ToolSpecBase {
     Expando nativeRule
     String nativeType
 
+    void setupSpec() {
+        appExecutor.toDateTime(_ as String) >> { String value ->
+            Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", value)
+        }
+    }
+
     void setup() {
         nativeType = 'Rule-5.1'
         nativeState = [keep: [unknown: true], ndx: 4, actNdx: 1,
@@ -1069,7 +1075,6 @@ class NativeModelSpec extends ToolSpecBase {
 
     def 'rejected existing trigger restores an earlier staged typed value and closes the editor'() {
         given:
-        appExecutor.toDateTime(_ as String) >> { String value -> Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", value) }
         nativeState.capabstrue = ['2': 'Timer original', '3': 'Unrelated trigger']
         nativeState.time2 = 'old native derived time'
         settings.tCapab2 = [type: 'enum', value: 'Certain Time (and optional date)']
@@ -1097,6 +1102,9 @@ class NativeModelSpec extends ToolSpecBase {
         then:
         !result.success && !result.partial && result.rolledBack
         result.error.contains('tstate2')
+        writes.findAll { it instanceof List }.collectMany { it }.any {
+            it.name == 'time2' && it.value == '2026-10-20T18:30:00.000-0400'
+        }
         settings == originalSettings
         nativeState.capabstrue == ['2': 'Timer original', '3': 'Unrelated trigger']
         nativeState.time2 == 'old native derived time'

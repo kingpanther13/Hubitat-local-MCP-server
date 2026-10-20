@@ -450,6 +450,10 @@ class NativeRmParityExpressions(ParityCase):
                  and row.get("control_id") == "N||doAct"]
         self.assertEqual(len(links), 1, form)
         form = self._submit(rule_id, form, control=links[0])
+        links = [row for row in form["controls"] if row.get("kind") == "href"
+                 and row.get("page") == "doActPage"]
+        self.assertEqual(len(links), 1, form)
+        form = self._submit(rule_id, form, control=links[0])
         names = [row["name"] for row in form["fields"] if row["name"].startswith("actType.")]
         self.assertEqual(len(names), 1, form)
         index = names[0].split(".", 1)[1]

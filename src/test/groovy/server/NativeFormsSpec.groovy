@@ -18,6 +18,7 @@ class NativeFormsSpec extends ToolSpecBase {
     }
 
     void setup() {
+        script.callerClient = null
         calls = []
         replies = []
         devices = [[id: 7, label: 'Fixture one'], [id: 8, label: 'Fixture two']]
@@ -54,6 +55,20 @@ class NativeFormsSpec extends ToolSpecBase {
             if (!replies.empty) return replies.remove(0)
             [status: 200, data: JsonOutput.toJson(path == '/installedapp/btn' ? [status: 'success'] : model)]
         }
+    }
+
+    void cleanup() { script.callerClient = null }
+
+    private Map cachedContexts() {
+        def field = script.class.getDeclaredField('NATIVE_FORM_CONTEXTS')
+        field.accessible = true
+        field.get(null) as Map
+    }
+
+    private Map busyContexts() {
+        def field = script.class.getDeclaredField('NATIVE_FORM_BUSY')
+        field.accessible = true
+        field.get(null) as Map
     }
 
     private static Map decodeForm(String encoded) {
@@ -564,6 +579,138 @@ class NativeFormsSpec extends ToolSpecBase {
         calls.empty
         where:
         step << [[kind: 'open', page: '../settings'], [kind: 'open', url: '/anything'], [kind: 'submit', fields: [:]], [kind: 'invoke', method: 'updated']]
+    }
+
+    def 'sequential explicit opens reuse one caller workflow beyond eight apps'() {
+        given:
+        List outcomes = []
+        when:
+        (42L..65L).each { id ->
+            model.app.id = id
+            outcomes << script.toolCallAppForm([app_id: id, steps: [[kind: 'open']], confirm: true])
+        }
+        calls.clear()
+        def stale = script.toolCallAppForm([app_id: 42, steps: [[kind: 'submit', expect_page: 'edit', fields: [count: 3]]], confirm: true])
+        def current = script.toolCallAppForm([app_id: 65, steps: [[kind: 'submit', expect_page: 'edit', fields: [count: 3]]], confirm: true])
+        then:
+        outcomes.every { it.success }
+        cachedContexts().size() == 1
+        cachedContexts().values().first().app_id == 65L
+        !stale.success
+        !stale.partial
+        current.success
+        calls*.path == ['/installedapp/update/json']
+    }
+
+    def 'caller contexts remain isolated when another caller opens another app'() {
+        given:
+        assert open().success
+        script.callerClient = [id: 'a']
+        model.app.id = 43
+        assert script.toolCallAppForm([app_id: 43, steps: [[kind: 'open']], confirm: true]).success
+        calls.clear()
+        when:
+        script.callerClient = [id: 'b']
+        def unbound = script.toolCallAppForm([app_id: 43, steps: [[kind: 'submit', expect_page: 'edit']], confirm: true])
+        script.callerClient = [id: 'a']
+        def wrongApp = submit()
+        def bound = script.toolCallAppForm([app_id: 43, steps: [[kind: 'submit', expect_page: 'edit']], confirm: true])
+        script.callerClient = null
+        model.app.id = 42
+        def original = submit()
+        then:
+        !unbound.success
+        !wrongApp.success
+        bound.success
+        original.success
+        cachedContexts().size() == 2
+        calls*.path == ['/installedapp/update/json', '/installedapp/update/json']
+    }
+
+    def 'full caller capacity refuses a new caller without evicting existing workflows'() {
+        given:
+        (1..8).each { id ->
+            script.callerClient = [id: id.toString()]
+            assert open().success
+        }
+        def before = new LinkedHashMap(cachedContexts())
+        when:
+        script.callerClient = [id: '9']
+        def full = open()
+        script.callerClient = [id: '1']
+        def retained = submit()
+        then:
+        !full.success
+        full.error.contains('capacity')
+        retained.success
+        cachedContexts().keySet() == before.keySet()
+    }
+
+    def 'one caller cannot replace a workflow while its native render is active'() {
+        given:
+        List errors = []
+        script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30, boolean retry = false ->
+            calls << [path: path]
+            try {
+                script.toolCallAppForm([app_id: 43, steps: [[kind: 'open']], confirm: true])
+            } catch (IllegalStateException failure) { errors << failure.message }
+            JsonOutput.toJson(model)
+        }
+        when:
+        def result = open()
+        then:
+        result.success
+        errors.size() == 1
+        errors[0].contains('active form operation')
+        calls*.path == ['/installedapp/configure/json/42']
+        busyContexts().isEmpty()
+    }
+
+    def 'per app contention releases the rejected caller lock and keeps the owner active'() {
+        given:
+        List errors = []
+        boolean nested = false
+        script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30, boolean retry = false ->
+            calls << [path: path]
+            if (!nested) {
+                nested = true
+                script.callerClient = [id: 'other']
+                try {
+                    script.toolCallAppForm([app_id: 42, steps: [[kind: 'open']], confirm: true])
+                } catch (IllegalStateException failure) { errors << failure.message }
+                finally { script.callerClient = null }
+            }
+            JsonOutput.toJson(model)
+        }
+        when:
+        def owner = open()
+        script.callerClient = [id: 'other']
+        model.app.id = 43
+        def later = script.toolCallAppForm([app_id: 43, steps: [[kind: 'open']], confirm: true])
+        then:
+        owner.success
+        errors == ['This app already has an active form operation']
+        later.success
+        busyContexts().isEmpty()
+        calls*.path == ['/installedapp/configure/json/42', '/installedapp/configure/json/43']
+    }
+
+    def 'failed explicit open discards only that callers stale workflow and releases locks'() {
+        given:
+        assert open().success
+        script.metaClass.hubInternalGet = { String path, Map query = null, int timeout = 30, boolean retry = false ->
+            throw new IOException('native render unavailable')
+        }
+        when:
+        def failure = script.toolCallAppForm([app_id: 43, steps: [[kind: 'open']], confirm: true])
+        def stale = submit()
+        then:
+        !failure.success
+        failure.partial
+        !stale.success
+        !stale.partial
+        cachedContexts().isEmpty()
+        busyContexts().isEmpty()
     }
 
     def 'tool catalog exposes one bounded mutating form surface'() {
