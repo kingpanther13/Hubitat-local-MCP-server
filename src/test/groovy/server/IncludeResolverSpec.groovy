@@ -10,6 +10,18 @@ import support.IncludeResolver
  */
 class IncludeResolverSpec extends Specification {
 
+    def 'native runtime library is included in the production app'() {
+        given:
+        def source = new File('hubitat-mcp-server.groovy').text
+        when:
+        def resolved = IncludeResolver.resolve(source, new File('libraries'))
+        then:
+        source.contains('#include mcp.McpNativeRuntimeLib')
+        resolved.contains('Map _nrWriteSettings')
+        resolved.contains('Map _nrSettings')
+        !resolved.contains('#include mcp.McpNativeRuntimeLib')
+    }
+
     @TempDir
     File tempDir
 

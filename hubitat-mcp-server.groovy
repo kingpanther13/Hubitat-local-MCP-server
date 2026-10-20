@@ -243,6 +243,7 @@ definition(
 // surface (hub_set_rule) + native-app CRUD. The shared classic-dynamicPage wizard
 // primitives stay in this file (used by other libraries).
 #include mcp.McpNativeRulesLib
+#include mcp.McpNativeRuntimeLib
 
 preferences {
     page(name: "mainPage")
