@@ -5224,6 +5224,11 @@ private boolean _rmRollbackInFlightAction(Integer appId, Integer idx, boolean co
         // Editor may already be closed; step 3 verifies. Log the cause so a failing cancel is traceable.
         mcpLog("debug", "rm-native", "_rmRollbackInFlightAction: actionCancel click failed for app ${appId} action ${idx} (${cancelExc.message ?: cancelExc.toString()})")
     }
+    // The click only flags the cancel; RM applies it when doActPage next renders, as the browser
+    // does after the button. Without the render the editor stays open and the delAct below is ignored.
+    try { _rmFetchConfigJson(appId, "doActPage") } catch (Exception renderExc) {
+        mcpLog("debug", "rm-native", "_rmRollbackInFlightAction: doActPage render after actionCancel failed for app ${appId} action ${idx} (${renderExc.message ?: renderExc.toString()})")
+    }
     // 3. If the row still persists in settings (actType.<idx> written by this call), delete it.
     try {
         // Settings, not the compiled list: an un-baked orphan row never reaches

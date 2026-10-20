@@ -5761,6 +5761,7 @@ class TestRunner:
         app_id = self._create_native_rule("SelfGwEnv", {
             "addActions": [{"capability": "log", "message": "first"}]})
         backup_policy_touched = False
+        prior_budget_mb = None
         try:
             # The normal E2E policy is recent-baseline reuse. Set it explicitly so a
             # prior interrupted strict-policy proof cannot make this run needlessly
@@ -5816,7 +5817,17 @@ class TestRunner:
                 "args": {"settings": {"backupEveryRuleWrite": True}, "confirm": True},
             })
             # Retention is proven by listing, so the shared budget must have headroom: near the
-            # limit a publish would evict the very backups asserted on below.
+            # limit a publish would evict the very backups asserted on below. Backups are evicted
+            # only past the budget, so on a long-lived hub usage settles just under it; the budget
+            # is raised for this leg and restored in finally.
+            budget = (self.client.call_tool("hub_read_apps_code", {
+                "tool": "hub_list_backups", "args": {"cursor": ""}}) or {}).get("storageBudget") or {}
+            raised = self.client.call_tool("hub_manage_mcp", {
+                "tool": "hub_update_mcp_settings",
+                "args": {"settings": {"backupBudgetMb": int(budget.get("usedBytes") or 0) // 1_048_576 + 5},
+                         "confirm": True},
+            })
+            prior_budget_mb = (raised.get("previous") or {}).get("backupBudgetMb") or 10
             budget = (self.client.call_tool("hub_read_apps_code", {
                 "tool": "hub_list_backups", "args": {"cursor": ""}}) or {}).get("storageBudget") or {}
             assert int(budget.get("limitBytes") or 0) - int(budget.get("usedBytes") or 0) > 1_000_000, \
@@ -5860,6 +5871,14 @@ class TestRunner:
                     self.client.call_tool("hub_manage_mcp", {
                         "tool": "hub_update_mcp_settings",
                         "args": {"settings": {"backupEveryRuleWrite": False}, "confirm": True},
+                    })
+                except Exception as exc:
+                    cleanup_errors.append(exc)
+            if prior_budget_mb is not None:
+                try:
+                    self.client.call_tool("hub_manage_mcp", {
+                        "tool": "hub_update_mcp_settings",
+                        "args": {"settings": {"backupBudgetMb": int(prior_budget_mb)}, "confirm": True},
                     })
                 except Exception as exc:
                     cleanup_errors.append(exc)

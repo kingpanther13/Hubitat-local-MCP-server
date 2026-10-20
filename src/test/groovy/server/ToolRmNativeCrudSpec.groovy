@@ -5390,6 +5390,31 @@ class ToolRmNativeCrudSpec extends RmNativeCrudSpecBase {
         true           | ["cancelCapab", "actionCancel"]
     }
 
+    def "rollback renders doActPage right after actionCancel, so RM applies the cancel before the row check"() {
+        // The click only flags the cancel; RM applies it on the next doActPage render. Without that
+        // render the editor stays open, RM ignores delAct, and the rollback waits on the re-click.
+        given:
+        def seq = []
+        script.metaClass.hubInternalPostForm = { String path, Map body, Integer t = 420 ->
+            if (path == "/installedapp/btn") seq << "btn:${body?.name}".toString()
+            [status: 200, location: null, data: '']
+        }
+        hubGet.register('/installedapp/configure/json/100/doActPage') { params ->
+            seq << "render:doActPage"
+            ruleConfigJson(100, "r", [[name: "actionCancel", type: "button"]])
+        }
+        hubGet.register('/installedapp/statusJson/100') { params -> seq << "status"; statusJson(100) }
+
+        when:
+        def rolledBack = script._rmRollbackInFlightAction(100, 1)
+
+        then:
+        rolledBack == true
+        def cancelAt = seq.indexOf("btn:actionCancel")
+        cancelAt >= 0 && seq[cancelAt + 1] == "render:doActPage" && seq[cancelAt + 2] == "status"
+        !seq.contains("btn:1")
+    }
+
     def "rollback falls back to the verified delAct leg when actionCancel leaves the row (deleteWorks=#deleteWorks)"() {
         // Step 3 is the settings-VERIFIED backstop: the hub answers 200 to a click that does
         // nothing, so a cancel that leaves the row must fall through to delAct. deleteWorks=true: the delete removes the row and the rollback still
