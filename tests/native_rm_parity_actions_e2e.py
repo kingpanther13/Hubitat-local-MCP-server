@@ -153,7 +153,7 @@ class NativeRmParityActions(ParityCase):
         self.assertEqual(str(action["id"]), action_id)
         self.assertEqual(self._ids(rule_id), order)
         self.assertEqual(len(slots), 2)
-        self.assertEqual(slots, original_slots + [added_slot])
+        self.assertEqual(slots, [*original_slots, added_slot])
         self._assert_event(rule_id, slots[0])
         self.assertEqual(self._value(rule_id, "tCapab" + slots[1]), "Mode")
         values = self._values(rule_id)
