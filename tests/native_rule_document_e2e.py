@@ -29,6 +29,7 @@ TOOLS = {
     "hub_get_rule_document",
     "hub_create_rule_document",
     "hub_update_rule_document",
+    "hub_call_app_form",
 }
 GAPS = (
     "required-expression removal and variable type conversion",
@@ -106,7 +107,7 @@ class HubClient:
 
     def tool(self, tool_name, **arguments):
         if tool_name not in TOOLS:
-            raise ValueError("Only the three document tools belong in this suite")
+            raise ValueError("Tool is outside the native authoring acceptance allowlist")
         self.calls[tool_name] += 1
         params = {"name": tool_name, "arguments": arguments}
         headers = {
