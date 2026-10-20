@@ -11,7 +11,7 @@ private Object _nmEntry(Map values, String id) {
 
 private List _nmFields(List fields, String id) {
     if (fields == null) throw new IllegalArgumentException('Typed fields are required')
-    fields.collect { row ->
+    List result = fields.collect { row ->
         if (!(row instanceof Map) || !(row.name instanceof String) || !row.name.contains('#') || !(row.type instanceof String) || !row.containsKey('value') || row.keySet().any { !(it in ['name', 'type', 'value']) }) {
             throw new IllegalArgumentException('Fields require native name templates containing #, type and value')
         }
@@ -28,6 +28,8 @@ private List _nmFields(List fields, String id) {
         }
         [name: row.name.replace('#', id), type: row.type, value: row.value]
     }
+    if (result.collect { it.name }.unique().size() != result.size()) throw new IllegalArgumentException('Native inputs must not be repeated')
+    result
 }
 
 private void _nmCollectInputs(Object node, Map inputs) {
@@ -80,6 +82,42 @@ Map _nmValidateInputs(Object page, List fields) {
         if (reason != null) errors << [field: row.name, error: "Native field '${row.name}': ${reason}".toString()]
     }
     [success: errors.isEmpty(), error: errors ? errors.get(0).error : null, fieldErrors: errors, verifiedFields: fields.findAll { row -> !errors.any { it.field == row.name } }.collect { it.name }]
+}
+
+private Map _nmWriteExposed(Long ruleId, List fields, List selectors, Object page, Closure render) {
+    if (fields.collect { it.name }.unique().size() != fields.size()) throw new IllegalArgumentException('Native inputs must not be repeated')
+    List pending = new ArrayList(fields)
+    while (pending) {
+        Map inputs = [:]
+        if (page instanceof Map) _nmCollectInputs(page, inputs)
+        List selectorRows = pending.findAll { it.name in selectors }
+        if (selectorRows) {
+            Map saved = _nrSettings(ruleId, selectorRows.collect { it.name })
+            for (Object row in selectorRows) {
+                if (!inputs.containsKey(row.name)) {
+                    def prior = saved.get(row.name)
+                    if (prior?.type == row.type && _nrComparableSetting(row.type, prior.value) == _nrComparableSetting(row.type, row.value)) pending.remove(row)
+                }
+            }
+            selectorRows = pending.findAll { it.name in selectors }
+        }
+        if (!pending) break
+        List batch = []
+        for (Object descriptor in inputs.values()) {
+            def row = pending.find { it.name == descriptor.name && (!selectorRows || it.name in selectors) }
+            if (row != null) {
+                batch << row
+                if (descriptor.submitOnChange == true || row.name in selectors) break
+            }
+        }
+        Map validation = _nmValidateInputs(page, batch ?: pending)
+        if (!batch || validation.success != true) return [success: false, partial: true, error: validation.error ?: 'Native inputs are not exposed; no authoring progress is possible', fieldErrors: validation.fieldErrors]
+        Map written = _nrWriteSettings(ruleId, batch)
+        if (written.success != true) return [success: false, partial: true, error: 'Native input persistence failed', settings: written]
+        pending.removeAll(batch)
+        page = render.call()
+    }
+    [success: true, page: page]
 }
 
 private void _nmTokens(List tokens, Map conditions) {
@@ -213,14 +251,12 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
     String selector = trigger ? "tCapab${id}".toString() : "rCapab_${id}".toString()
     if (fields.any { it.name == selector }) throw new IllegalArgumentException('Capability selector must not be repeated in fields')
     List settings = [[name: selector, type: 'enum', value: row.capability]] + fields
-    Map written = _nrWriteSettings(ruleId, settings)
-    if (written.success != true) return [success: false, id: id, partial: written.partial ?: false, settings: written]
     Map context = [hasAll: false]
     if (editing) context.editCond = id
     else { context.moreCond = true; context.ndx = id.toInteger() }
     _nrStatePatch(ruleId, context, editing ? ['moreCond'] : ['editCond'])
-    def page = trigger ? _nrHandle(ruleId).selectTriggers() : _nrHandle(ruleId).selectConditions([pred: false])
-    Map inputValidation = _nmValidateInputs(page, fields)
+    Closure render = { -> trigger ? _nrHandle(ruleId).selectTriggers() : _nrHandle(ruleId).selectConditions([pred: false]) }
+    Map inputValidation = _nmWriteExposed(ruleId, settings, [selector], render.call(), render)
     if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
     _nrStatePatch(ruleId, [hasAll: true])
     if (trigger) _nrHandle(ruleId).selectTriggers()
@@ -261,16 +297,14 @@ Map _nmUpsertAction(Long ruleId, Map row) {
     List fields = _nmFields(row.get('fields') as List, id)
     if (fields.any { it.name in ["actType.${id}".toString(), "actSubType.${id}".toString()] }) throw new IllegalArgumentException('Action selectors must not be repeated')
     List settings = [[name: "actType.${id}".toString(), type: 'enum', value: row.type], [name: "actSubType.${id}".toString(), type: 'enum', value: row.subtype]] + fields
-    Map written = _nrWriteSettings(ruleId, settings)
-    if (written.success != true) return [success: false, id: id, partial: written.partial ?: false, settings: written]
     String editToken = 'N'
     if (editing) {
         boolean expressionAction = prior.method in ['getIfThen', 'getElseIfThen', 'getWhile', 'getUntil']
         editToken = "${id}.${prior.cond ?: 0}.${expressionAction}".toString()
     }
     _nrStatePatch(ruleId, [doActN: editToken])
-    def page = _nrHandle(ruleId).doActPage()
-    Map inputValidation = _nmValidateInputs(page, fields)
+    Closure render = { -> _nrHandle(ruleId).doActPage() }
+    Map inputValidation = _nmWriteExposed(ruleId, settings, settings.take(2).collect { it.name }, render.call(), render)
     if (inputValidation.success != true) return [success: false, partial: true, id: id, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
     List waitIds = null
     if (waitEvents) {
@@ -316,11 +350,9 @@ private Map _nmCompileWait(Long ruleId, String actionId, List events, boolean ed
         eventIds << eventId
         Map event = events.get(position)
         List fields = [[name: "tCapab-${eventId}".toString(), type: 'enum', value: event.capability]] + _nmFields(event.get('fields') as List, "-${eventId}".toString())
-        Map written = _nrWriteSettings(ruleId, fields)
-        if (written.success != true) return [success: false, error: 'Wait event inputs did not persist', settings: written]
+        Closure render = { -> _nrHandle(ruleId).doActPage() }
+        Map inputValidation = _nmWriteExposed(ruleId, fields, [fields.get(0).name], render.call(), render)
         settings.addAll(fields)
-        def page = _nrHandle(ruleId).doActPage()
-        Map inputValidation = _nmValidateInputs(page, fields.findAll { it.name != "tCapab-${eventId}".toString() })
         if (inputValidation.success != true) return [success: false, error: inputValidation.error, fieldErrors: inputValidation.fieldErrors]
         if (!_nmWaitDuration(ruleId, eventId)) return [success: false, error: 'Native wait duration did not compile', eventId: eventId]
         if (!editing) {
