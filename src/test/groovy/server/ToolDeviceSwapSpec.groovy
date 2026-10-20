@@ -750,6 +750,16 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         result.options[0].deviceTypes == ['Graph']
     }
 
+    def "device replace list_options with new_device_id says whether the hub lists it as compatible"() {
+        given:
+        childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
+        hubGet.register('/device/getReplacementOptions/80') { params -> '[{"deviceTypes":["Switch"],"id":23,"name":"New"}]' }
+
+        expect:
+        script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', list_options: true]).compatible == true
+        script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '55', list_options: true]).compatible == false
+    }
+
     def "device replace happy path: GET /device/replace?oldId&newId, old id preserved"() {
         given:
         childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
@@ -801,18 +811,26 @@ class ToolDeviceSwapSpec extends ToolSpecBase {
         useGateways << [true, false]
     }
 
-    def "device replace surfaces a hub failure without false-greening"() {
+    @spock.lang.Unroll
+    def "device replace surfaces the hub's own answer and what it means: #answer"() {
         given:
         childDevicesList.addAll([[id: '80'], [id: '23'], [id: '55']])
         enableWriteWithBackup()
-        hubGet.register('/device/replace?oldId=80&newId=23') { params -> '{"success":false,"message":"incompatible device"}' }
+        hubGet.register('/device/replace?oldId=80&newId=23') { params -> groovy.json.JsonOutput.toJson([success: false, message: answer]) }
 
         when:
         def result = script.toolCallDeviceReplace([old_device_id: '80', new_device_id: '23', confirm: true])
 
         then:
         result.success == false
-        result.error.contains('incompatible device')
+        result.error == answer
+        result.note.contains('Nothing was replaced')
+        result.note.contains(meaning)
+
+        where:
+        answer                     || meaning
+        'Incompatible devices'     || 'share no device type'
+        'Failed to replace device' || 'its own swap of the two devices failed'
     }
 
     def "device replace rejects identical old and new device ids"() {

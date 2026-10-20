@@ -1,5 +1,7 @@
 package server
 
+import spock.lang.Shared
+import support.TestChildApp
 import support.TestDevice
 import support.ToolSpecBase
 
@@ -29,6 +31,17 @@ import support.ToolSpecBase
  * destructive backup), so no lastBackupTimestamp seeding is needed.
  */
 class ToolDeviceEditSpec extends ToolSpecBase {
+
+    @Shared private TestChildApp appStub = new TestChildApp(id: 1L, label: 'MCP')
+
+    def setupSpec() {
+        appExecutor.getApp() >> appStub
+    }
+
+    def cleanup() {
+        appStub.settingsStore.clear()
+        appStub.updateSettingFailure = null
+    }
 
     private static Map decodeForm(String body) {
         body.split('&').collectEntries { pair ->
@@ -842,6 +855,7 @@ class ToolDeviceEditSpec extends ToolSpecBase {
 
     def "toolCreateDevice creates a device from a driver-type id and applies the optional label"() {
         given:
+        settingsMap.selectedDevices = [new TestDevice(id: 1)]
         def label = 'My LAN Device'
         hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
         hubGet.register('/device/fullJson/777') { params ->
@@ -859,6 +873,9 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.label == 'Garage Bridge'
         result.deviceTypeId == '500'
         result.warnings == null
+
+        and: 'the new device joins the selected devices'
+        appStub.settingsStore.selectedDevices == [type: 'capability.*', value: ['1', '777']]
         hubGet.calls.any { it.key == '/device/updateLabel?deviceId=777&label=Garage Bridge' }
         hubGet.calls.last().path == '/device/fullJson/777'
     }
@@ -1286,6 +1303,63 @@ class ToolDeviceEditSpec extends ToolSpecBase {
         result.sourceDeviceId == '42'
         result.linkedDevice == true
         result.warnings == null
+
+        and: 'the linked device joins the selected devices'
+        appStub.settingsStore.selectedDevices == [type: 'capability.*', value: ['900']]
+    }
+
+    def "a linked device the read-back cannot tie to the requested hub is not added to the selection"() {
+        given: 'the only new local link names a different source hub'
+        def done = false
+        hubGet.register('/device/createLinked/HUB-A/42') { params -> done = true; '' }
+        hubGet.register('/hub2/hubMeshJson') { params ->
+            groovy.json.JsonOutput.toJson([
+                localLinkedDevices: done ? [[id: 901, name: 'Other Bridge', sourceHubId: 'HUB-B']] : [],
+                availableLinkedDevices: [[hubId: 'HUB-A', deviceId: 42, deviceDisplayName: 'Kitchen Bridge', linkedLocally: done]]
+            ])
+        }
+
+        when:
+        def result = script.toolCreateDevice([mesh_source_hub_id: 'HUB-A', mesh_source_device_id: '42', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == '901'
+        result.warnings.any { it.contains('could not tie it to hub HUB-A') }
+        appStub.settingsStore.selectedDevices == null
+    }
+
+    def "a created device already selected is not written again, and an empty selection gets just the new id"() {
+        when:
+        settingsMap.selectedDevices = selected
+        def warning = script._selectCreatedDevice('777')
+
+        then:
+        warning == null
+        appStub.settingsStore.selectedDevices == written
+
+        where:
+        selected                                           || written
+        [new TestDevice(id: 777)]                          || null
+        null                                               || [type: 'capability.*', value: ['777']]
+    }
+
+    def "a selection write that fails still reports the created device, with a warning"() {
+        given:
+        settingsMap.selectedDevices = [new TestDevice(id: 1)]
+        appStub.updateSettingFailure = new IllegalStateException('settings locked')
+        hubGet.register('/device/sysDriverByIdJson/500') { params -> '{"success":true,"deviceId":777}' }
+        hubGet.register('/device/fullJson/777') { params ->
+            groovy.json.JsonOutput.toJson([device: [id: 777, name: 'Generic LAN Driver', deviceTypeName: 'Generic LAN Driver', virtual: false, capabilities: ['Switch']]])
+        }
+
+        when:
+        def result = script.toolCreateDevice([deviceTypeId: '500', confirm: true])
+
+        then:
+        result.success == true
+        result.deviceId == '777'
+        result.warnings.any { it.contains('could not be added') && it.contains('settings locked') }
     }
 
     // Outcome 2 (silent no-op): the GET returns 200 but the source stays in availableLinkedDevices

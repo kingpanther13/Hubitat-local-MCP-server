@@ -1722,6 +1722,7 @@ class TestRunner:
         "in_use": ("E2E_PERM_Var_InUse", "Number", "0"),
         "mesh_share": ("E2E_PERM_Var_MeshShare", "String", "share-me"),
         "bps_write": ("E2E_PERM_Var_BpsWrite", "String", "v1"),
+        "conn_keep": ("E2E_PERM_Var_ConnKeep", "Number", "0"),
     }
 
     def _hub_variables_by_name(self) -> dict[str, dict]:
@@ -1824,7 +1825,8 @@ class TestRunner:
         # hub_create_device returns success:true WITH warnings when both label-setting paths fail on
         # some firmwares. An unlabelled device is invisible to the exact-label lookup above, so the
         # next run creates another one, forever. Fail here instead.
-        assert created.get("label") == label and not created.get("warnings"),             (f"permanent fixture created as device {dev_id} but its label did not land as '{label}' "
+        assert created.get("label") == label and not created.get("warnings"), \
+            (f"permanent fixture created as device {dev_id} but its label did not land as '{label}' "
              f"(got {created.get('label')!r}, warnings={created.get('warnings')!r}) -- a later run "
              f"would not find it and would create a duplicate")
         print(f"    [PERM FIXTURE] created '{label}' (id {dev_id}, driver-type {type_id}) -- "
@@ -2505,8 +2507,8 @@ class TestRunner:
         assert info.get("hubSecurityRetired") is True, (
             f"hub_get_info did not report the shed on firmware {fw}: {info.get('hubSecurityRetired')!r}"
         )
-        assert info.get("hubSecurityConfigured") is False, (
-            f"Hub Security still reads as configured after the shed: {info.get('hubSecurityConfigured')!r}"
+        assert "hubSecurityConfigured" not in info, (
+            f"hubSecurityConfigured is still listed after the shed: {info.get('hubSecurityConfigured')!r}"
         )
 
     @test("infrastructure")
@@ -2621,6 +2623,15 @@ class TestRunner:
         declaring = [t.get("name") for t in tools
                      if "bestPracticeKey" in ((t.get("inputSchema") or {}).get("properties") or {})]
         assert not declaring, f"schemas must not declare bestPracticeKey: {declaring}"
+        # A call without confirm is a plain validation refusal that reserves nothing (a refused call
+        # creates no backup and leaves the schedule alone), not a background write's "Tool error".
+        try:
+            refused = self.client.call_tool("hub_create_backup", {})
+        except McpToolError as exc:
+            assert "confirm=true" in str(exc) and "Tool error:" not in str(exc), \
+                f"a missing confirm must be a validation refusal: {exc}"
+        else:
+            raise AssertionError(f"hub_create_backup without confirm must be refused, got: {str(refused)[:300]}")
 
     def _get_rooms_catalog(self) -> dict:
         """The hub_read_rooms({}) gateway-catalog disclosure -- a deterministic static enumeration.
@@ -3107,6 +3118,14 @@ class TestRunner:
         assert isinstance(fut, dict) and fut.get("count") == 0 and fut.get("events") == [], \
             f"future since should yield an empty list, not: {fut}"
 
+        # Location mode also carries the hub's own events (reboots, low memory, startup), each row
+        # tagged with its kind; the hub events read must not fail.
+        loc = self.client.call_tool("hub_list_device_events", {"hoursBack": 168, "limit": 50})
+        assert isinstance(loc, dict) and loc.get("source") == "location" and "hubEventsError" not in loc, \
+            f"location events must include the hub events: {loc}"
+        assert all(e.get("kind") in ("location", "hub") for e in loc.get("events") or []), \
+            f"every location-mode row must say its kind: {loc.get('events')}"
+
         # Read the scaffold's history (relative/hoursBack mode). Also pins the
         # relative-mode envelope: sinceMode=relative, echoes hoursBack not since.
         # Settle-retry for the history path's eventual consistency.
@@ -3274,6 +3293,11 @@ class TestRunner:
             # No Matter radio on this hub -- the note must steer toward the C-8 / C-8 Pro requirement.
             assert "matter" in str(result.get("note", "")).lower(), \
                 f"sdk_only fallback missing an actionable Matter note: {result}"
+
+    def _client_source(self) -> str | None:
+        """The transport the hub saw this suite's requests arrive over: 'cloud' or 'local'."""
+        info = self.client.call_tool("hub_get_info", {})
+        return ((info.get("mcpClient") or {}).get("client") or {}).get("source")
 
     def _expect_tool_refusal(self, name: str, args: dict, needle: str) -> None:
         """A validation refusal that fires before anything is sent: an isError carrying `needle`."""
@@ -4420,6 +4444,14 @@ class TestRunner:
         if not type_id:
             print("    no 'Virtual Switch' driver-type id in catalog -- skipping create-from-driver")
             return
+        # nameFilter narrows the catalog; an argument the tool does not take is refused, not ignored.
+        narrowed = self.client.call_tool("hub_read_apps_code", {
+            "tool": "hub_list_drivers", "args": {"include": "all", "nameFilter": "virtual switch"}})
+        assert type_id in [str(d.get("id")) for d in narrowed.get("drivers") or []] and \
+            all("virtual switch" in str(d.get("name")).lower() for d in narrowed.get("drivers") or []), \
+            f"nameFilter did not narrow the driver catalog: {narrowed.get('drivers')}"
+        self._expect_tool_refusal("hub_read_apps_code", {"tool": "hub_list_drivers", "args": {"include": "all", "limit": 5}},
+                                  "does not take limit")
         # Missing confirm must be refused before anything is created.
         try:
             self.client.call_tool("hub_manage_devices", {
@@ -4428,6 +4460,7 @@ class TestRunner:
             raise AssertionError("hub_create_device created a device without confirm")
         except (McpToolError, McpError):
             pass
+        count_before = self.client.call_tool("hub_get_info", {}).get("mcpDeviceCount")
         created = self.client.call_tool("hub_manage_devices", {
             "tool": "hub_create_device",
             "args": {"deviceTypeId": type_id, "label": f"{PREFIX}FromDriver", "confirm": True},
@@ -4435,26 +4468,30 @@ class TestRunner:
         assert created.get("success") is True, f"create from driver failed: {created}"
         new_id = str(created.get("deviceId") or "")
         assert new_id, f"create from driver returned no deviceId: {created}"
-
-        # The label leg is /device/updateLabel -- and this is its only UNCONDITIONAL live proof.
-        # (The bypass-block leg that also exercises it is gated on the arbitrarily-picked device
-        # having a label, so it can skip entirely; see the [COVERAGE GAP] print there.) The envelope
-        # reports `label` as the APPLIED label, falling back to the driver's own default when the
-        # dedicated setter AND the wholesale /device/update fallback both missed -- so a requested
-        # label reading back means the leg worked, and a label warning is the tool's own admission
-        # that it did not.
-        assert created.get("label") == f"{PREFIX}FromDriver",             ("hub_create_device did not apply the requested label -- /device/updateLabel and the "
-             f"wholesale /device/update fallback both missed: label={created.get('label')!r} "
-             f"warnings={created.get('warnings')!r}")
-        assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()], \
-            f"hub_create_device warned about the label: {created.get('warnings')!r}"
         try:
-            # A freshly created REAL device is NOT MCP-selected, so the scoped hub_get_device
-            # (selected/child devices only) can't resolve it. Confirm it exists via the
-            # scope='all' list (every hub device, from the hub-wide inventory -- see test_list_devices_scope_all).
-            all_devs = self.client.call_tool("hub_list_devices", {"scope": "all"})
-            ids = {str(d.get("id")) for d in all_devs.get("devices", [])} if isinstance(all_devs, dict) else set()
-            assert new_id in ids, f"created device {new_id} not present in scope='all' listing"
+            # A created device joins the MCP device selection: the count grows and the scoped
+            # device read (selected/child devices only) resolves it.
+            count_after = self.client.call_tool("hub_get_info", {}).get("mcpDeviceCount")
+            assert count_after == count_before + 1, (
+                f"mcpDeviceCount {count_before} -> {count_after}: the created device did not join the selection "
+                f"(warnings={created.get('warnings')!r})")
+            got = self.client.call_tool("hub_read_devices", {"tool": "hub_get_device", "args": {"deviceId": new_id}})
+            assert isinstance(got, dict) and str(got.get("id")) == new_id, \
+                f"the device tools do not reach the created device {new_id}: {str(got)[:300]}"
+
+            # The label leg is /device/updateLabel -- and this is its only UNCONDITIONAL live proof.
+            # (The bypass-block leg that also exercises it is gated on the arbitrarily-picked device
+            # having a label, so it can skip entirely; see the [COVERAGE GAP] print there.) The envelope
+            # reports `label` as the APPLIED label, falling back to the driver's own default when the
+            # dedicated setter AND the wholesale /device/update fallback both missed -- so a requested
+            # label reading back means the leg worked, and a label warning is the tool's own admission
+            # that it did not.
+            assert created.get("label") == f"{PREFIX}FromDriver", (
+                "hub_create_device did not apply the requested label -- /device/updateLabel and the "
+                f"wholesale /device/update fallback both missed: label={created.get('label')!r} "
+                f"warnings={created.get('warnings')!r}")
+            assert not [w for w in (created.get("warnings") or []) if "label" in str(w).lower()], \
+                f"hub_create_device warned about the label: {created.get('warnings')!r}"
         finally:
             # Created via the catalog path (a real device, not an MCP child) -- delete by id
             # through hub_delete_device. Best-effort: the confirm gate needs a recent backup,
@@ -5016,6 +5053,21 @@ class TestRunner:
             # The window must have elapsed: elapsedMs >= stableForMs on a clean convergence.
             assert int(wf.get("elapsedMs", 0)) >= 300, f"stableForMs waitFor converged before the 300ms window: {wf}"
 
+            # Over the relay a confirmation wait ends by the request deadline (it is not dropped),
+            # and a stableForMs that cannot settle in the time left is refused before firing.
+            if self._client_source() == "cloud":
+                long_wait = self.client.call_tool("hub_call_device_command", {
+                    "deviceId": sw_id, "command": target,
+                    "waitFor": {"attribute": "switch", "expectedValue": f"{PREFIX}never", "timeoutMs": 30000},
+                })
+                lw = long_wait.get("waitFor") if isinstance(long_wait, dict) else None
+                assert isinstance(lw, dict) and lw.get("converged") is False and lw.get("budgetLimited") is True, \
+                    f"a 30 s waitFor over the relay must stop at the request deadline and say so: {long_wait}"
+                self._expect_tool_refusal("hub_call_device_command", {
+                    "deviceId": sw_id, "command": target,
+                    "waitFor": {"attribute": "switch", "expectedValue": target, "stableForMs": 20000, "timeoutMs": 30000}},
+                    "cannot settle")
+
             # stableForMs >= timeoutMs is rejected before the command fires.
             try:
                 self._native_device_command({
@@ -5317,6 +5369,12 @@ class TestRunner:
             "tool": "hub_get_dashboard", "args": {"dashboardId": dash_id}})
         assert isinstance(got, dict), f"hub_get_dashboard returned non-dict: {got}"
         assert got.get("name") == dash_name, f"dashboard name mismatch: {got}"
+        # The read reaches the hub's full dashboard list (not the id-and-name fallback), so the
+        # theme set on create comes back and a wholesale update can carry it.
+        assert got.get("theme") == "dark", f"hub_get_dashboard lost the dashboard's theme: {got}"
+        listed_all = self.client.call_tool("hub_read_dashboards", {"tool": "hub_list_dashboards", "args": {}})
+        assert listed_all.get("source") == "dashboard-all", \
+            f"hub_list_dashboards fell back to the child-app list: {listed_all.get('source')} {listed_all.get('note')}"
 
         # UPDATE (wholesale): flip a tile toggle and confirm it took -- the U in the CRUD cycle.
         # hub_get_dashboard's full config (above) is what makes the wholesale round-trip possible.
@@ -5707,7 +5765,8 @@ class TestRunner:
     def test_set_rule_self_gateway_envelope_create(self) -> None:
         # CREATE via the flat self-gateway envelope: operation='create' lifts name + the
         # bundle from args and routes to the create arm, baking a real rule on the live hub.
-        label = f"{PREFIX}SelfGwCreate"
+        # The label carries < and &, which the hub stores HTML-escaped; hub_list_rules lists it as typed.
+        label = f"{PREFIX}SelfGwCreate <67 & go"
         env = {"operation": "create",
                "args": {"name": label,
                         "addActions": [{"capability": "log", "message": "envelope-create"}]},
@@ -5729,6 +5788,10 @@ class TestRunner:
                 assert created.get("success") is not False and not created.get("partial"), \
                     f"envelope create did not fully bake: {created}"
             self._assert_rule_healthy(app_id)
+            listed = self.client.call_tool("hub_manage_rule_machine", {"tool": "hub_list_rules", "args": {}})
+            row = next((x for x in (listed.get("rules") or []) if str(x.get("id")) == str(app_id)), None)
+            assert row is not None and row.get("label") == label, \
+                f"hub_list_rules must list the rule label as typed ({label!r}): {row}"
         finally:
             self._delete_native(app_id)
 
@@ -10924,6 +10987,11 @@ class TestRunner:
                 assert changed.get("success") is True, f"literal-name pause write did not verify: {changed}"
                 own = self._get_visual_rule(app_id)
                 assert own.get("name") == expected_name and own.get("rulePaused") is paused, own
+                # The list names the rule as typed and reads paused from the hub's decoration only.
+                listed = next((r for r in (self._get_visual_rule().get("rules") or [])
+                               if str(r.get("appId")) == str(app_id)), None)
+                assert listed is not None and listed.get("name") == expected_name and listed.get("paused") is paused, \
+                    f"list mode must keep the typed name and the real pause state: {listed}"
                 if own.get("format") == "graph" and paused:
                     assert changed.get("activated") is False, changed
                     assert "PAUSED" in (changed.get("note") or ""), changed
@@ -11537,6 +11605,15 @@ class TestRunner:
                 f"read-back of editor-form rule {app_id} failed: {got}"
             assert got.get("format") == "graph", \
                 f"editor-form rule did not store as a graph: {got}"
+            # The parsed definition stands alone (no raw ruleJson copy), and runRule targets are a count
+            # unless asked for.
+            assert "ruleJson" not in got and "ruleApps" not in got, \
+                f"a graph read must not repeat the definition or list every rule: {sorted(got)}"
+            if "ruleAppCount" in got:
+                full = self.client.call_tool("hub_read_rules", {"tool": "hub_get_visual_rule",
+                                                                "args": {"appId": int(app_id), "includeRuleApps": True}})
+                assert isinstance(full.get("ruleApps"), list) and len(full["ruleApps"]) == got["ruleAppCount"], \
+                    f"includeRuleApps must list the counted runRule targets: {got.get('ruleAppCount')} vs {full.get('ruleApps')}"
             nodes = (got.get("definition") or {}).get("nodes") or []
             merge_types = [n.get("type") for n in nodes if n.get("kind") == "merge"]
             assert merge_types.count("triggerMerge") == 1, \
@@ -12493,6 +12570,23 @@ class TestRunner:
         inst = self.client.call_tool("hub_list_apps", {"scope": "instances", "cursor": ""})
         assert inst.get("apps") and all(isinstance(a.get("deprecated"), bool) for a in inst["apps"]), \
             f"app instances lack the deprecated flag: {(inst.get('apps') or [])[:3]}"
+        # nameFilter narrows both scopes to names containing the text, ignoring case.
+        # Filter on the name the instance list itself reports for this server (hubs label it differently).
+        own_label, page = "", inst
+        while True:
+            own_label = next((str(a.get("name") or "") for a in page.get("apps") or []
+                              if str(a.get("id")) == str(self.client.app_id)), "")
+            if own_label or not page.get("nextCursor"):
+                break
+            page = self.client.call_tool("hub_list_apps", {"scope": "instances", "cursor": page["nextCursor"]})
+        assert own_label, f"the instance list carries no name for the MCP server (app {self.client.app_id})"
+        own = self.client.call_tool("hub_list_apps", {"scope": "instances", "nameFilter": own_label.upper()})
+        assert any(str(a.get("id")) == str(self.client.app_id) for a in own.get("apps") or []) and \
+            all(own_label.lower() in str(a.get("name")).lower() for a in own.get("apps") or []), \
+            f"instances nameFilter {own_label!r} did not narrow to the MCP server: {own.get('apps')}"
+        own_type = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": "types", "nameFilter": "MCP Rule Server"}})
+        assert own_type.get("apps") and all("mcp rule server" in str(a.get("name")).lower() for a in own_type["apps"]), \
+            f"types nameFilter did not narrow the app types: {own_type.get('apps')}"
 
     @test("installed_app_reads")
     def test_list_app_events_structural(self) -> None:
@@ -12744,6 +12838,12 @@ class TestRunner:
             opt_count = result.get("optionCount")
             assert isinstance(opt_count, int) and opt_count == len(result["options"]), \
                 f"optionCount does not match options length: {result}"
+            if result["options"]:
+                pick = str(result["options"][0].get("id"))
+                checked = self.client.call_tool("hub_manage_devices", {
+                    "tool": "hub_call_device_replace",
+                    "args": {"old_device_id": dev_id, "new_device_id": pick, "list_options": True}})
+                assert checked.get("compatible") is True, f"a listed candidate must read compatible: {checked}"
             print(f"    DEVICE_REPLACE ok -- list_options read {opt_count} compatible candidate(s) for {dev_id}, no mutation")
         else:
             assert result.get("error"), f"list_options failure without a structured error: {result}"
@@ -13059,6 +13159,17 @@ class TestRunner:
     def test_hub_variable_connector_round_trip(self) -> None:
         # The variable's deviceId linkage is the proof of each connector write; a relay 504
         # falls back to that read-back. An unknown `force` argument fails the delete.
+        # A standing connector keeps this removal from being the hub's last. Removing the last one makes
+        # the hub also delete its Variable Connectors device, which recurses in the firmware until it logs
+        # a StackOverflowError (the hub's own Remove connector does the same); on an emulated hub that
+        # once left a database transaction open for the rest of the run.
+        keep = self._ensure_perm_variables("conn_keep")["conn_keep"]
+        keep_row = self.client.call_tool("hub_read_variables", {"tool": "hub_get_variable", "args": {"name": keep}})
+        if keep_row.get("deviceId") is None:
+            print(f"    [PERM FIXTURE] creating the standing connector on {keep} -- reused by later runs")
+            self.client.call_tool("hub_manage_variables", {"tool": "hub_create_connector", "args": {
+                "name": keep, "connectorType": "Variable", "confirm": True}})
+
         var_name = f"{PREFIX}ConnVar_{_run_artifact_suffix()}"
         self._create_hub_variable_visible(var_name, "Number", "0")
 
@@ -13084,6 +13195,8 @@ class TestRunner:
                 lambda: read().get("deviceId") is None, f"hub_delete_connector({var_name})")
             if not removed["relayDropped"]:
                 assert removed["response"].get("success") is True, f"hub_delete_connector failed: {removed}"
+                assert "last variable connector" not in str(removed["response"].get("note")), \
+                    f"the standing connector should keep this removal from being the hub's last: {removed}"
             cleared = read()
             assert cleared.get("deviceId") is None, f"connector still linked to {var_name}: {cleared}"
         finally:
@@ -13524,6 +13637,27 @@ class TestRunner:
         assert "schedule" not in src, f"scope=source should not carry a schedule block: {sorted(src.keys())}"
 
     @test("system_tools")
+    def test_restore_backup_url_refusals(self) -> None:
+        # Uploaded-backup restores that can never reach a restore, each refused with its real reason:
+        # a URL that answers 404, a host name merely starting with "0." (not this hub), a percent-encoded
+        # File Manager name on this hub (read through the File Manager, which has no such file).
+        missing_url = ("https://raw.githubusercontent.com/kingpanther13/Hubitat-local-MCP-server/main/"
+                       f"{PREFIX}no-such-backup.lzf")
+        for url, needle in ((missing_url, "404"),
+                            ("http://0.backups.invalid/x.lzf", "size check of the URL failed"),
+                            (f"http://127.0.0.1/local/{PREFIX}no%20such.lzf", f"no file named '{PREFIX}no such.lzf'")):
+            res = self.client.call_tool("hub_manage_backup", {"tool": "hub_restore_backup", "args": {
+                "scope": "hub_uploaded", "backupUrl": url, "confirm": True}})
+            assert isinstance(res, dict) and res.get("success") is False and needle in str(res.get("error")), \
+                f"restore from {url} must be refused naming {needle!r}: {res}"
+            assert "points at this hub" not in str(res.get("error")), f"{url} misread as an admin URL on this hub: {res}"
+        # On this hub only its own web port serves File Manager files, and a name must be valid percent-encoding.
+        for url, needle in ((f"http://127.0.0.1:9090/local/{PREFIX}x.lzf", "on the hub's own web port"),
+                            (f"http://127.0.0.1/local/{PREFIX}%zz.lzf", "not valid percent-encoding")):
+            self._expect_tool_refusal("hub_manage_backup", {"tool": "hub_restore_backup", "args": {
+                "scope": "hub_uploaded", "backupUrl": url, "confirm": True}}, needle)
+
+    @test("system_tools")
     def test_backup_gate_list_fallback(self) -> None:
         # Issue #361: the destructive-confirm gate must accept a real backup from the hub's OWN
         # local backup list when this app's private stamp is stale (a scheduled/UI backup is a
@@ -13658,6 +13792,64 @@ class TestRunner:
                     print(f"    [WARN] could not delete {nm}: {exc}")
 
     @test("system_tools")
+    def test_source_and_file_reads_default_to_30000_char_chunks(self) -> None:
+        # A read without `length` returns at most 30,000 characters and says there is more.
+        types = self.client.call_tool("hub_read_apps_code", {"tool": "hub_list_apps", "args": {"scope": "types", "nameFilter": "MCP Rule"}})
+        child = next((a for a in types.get("apps") or [] if a.get("name") == "MCP Rule"), None)
+        assert child, f"the MCP Rule code class is not listed: {types.get('apps')}"
+        src = self.client.call_tool("hub_read_apps_code", {"tool": "hub_get_source", "args": {"type": "app", "id": str(child["id"])}})
+        assert src.get("chunkLength", 0) <= 30000 and src.get("hasMore") is True \
+            and src.get("totalLength", 0) > 30000, \
+            f"hub_get_source default chunk: {({k: src.get(k) for k in ('chunkLength', 'hasMore', 'totalLength')})}"
+        name = f"{PREFIX}chunk.txt"
+        try:
+            wr = self.client.call_tool("hub_manage_files", {"tool": "hub_write_file", "args": {
+                "fileName": name, "content": "x" * 40000, "confirm": True}})
+            assert wr.get("success") is True, f"could not write the chunk fixture: {wr}"
+            rd = self.client.call_tool("hub_manage_files", {"tool": "hub_read_file", "args": {"fileName": name}})
+            assert len(rd.get("content") or "") == 30000 and rd.get("hasMore") is True, \
+                f"hub_read_file default chunk: {({k: rd.get(k) for k in ('chunkLength', 'hasMore', 'totalLength')})}"
+        finally:
+            try:
+                self.client.call_tool("hub_manage_files", {"tool": "hub_delete_file", "args": {"fileName": name, "confirm": True}})
+            except Exception as exc:
+                print(f"    [WARN] chunk fixture cleanup failed (delete {name}): {exc}")
+
+    @test("system_tools")
+    def test_mode_create_numeric_name_returns_its_own_id(self) -> None:
+        # A mode named like another mode's id: create must report the NEW mode's id. The cleanup
+        # deletes by that id (an id resolves before a name, so deleting by the name would hit the
+        # other mode).
+        modes = self.client.call_tool("hub_list_modes", {}).get("modes") or []
+        names = {str(m.get("name")) for m in modes}
+        taken = next((str(m.get("id")) for m in modes if str(m.get("id")) not in names), None)
+        if taken is None:
+            raise SkipTest("every mode id is also a mode name on this hub")
+        new_id = None
+        try:
+            cr = self.client.call_tool("hub_manage_mode", {"action": "create", "name": taken})
+            assert isinstance(cr, dict) and cr.get("success") is True, f"create of mode {taken!r} failed: {cr}"
+            listed = self.client.call_tool("hub_list_modes", {}).get("modes") or []
+            new_id = next((str(m.get("id")) for m in listed if str(m.get("name")) == taken), None)
+            assert new_id and new_id != taken, f"created mode {taken!r} not listed under its own id: {listed}"
+            assert str(cr.get("modeId")) == new_id, \
+                f"create of mode {taken!r} returned modeId {cr.get('modeId')!r}, not the new mode's id {new_id}"
+        finally:
+            if not new_id:
+                # The read-back failed: find the created mode by its exact name, never the id-taken one.
+                try:
+                    again = self.client.call_tool("hub_list_modes", {}).get("modes") or []
+                    new_id = next((str(m.get("id")) for m in again
+                                   if str(m.get("name")) == taken and str(m.get("id")) != taken), None)
+                except Exception as exc:
+                    print(f"    [WARN] numeric-name mode cleanup could not list modes: {exc}")
+            if new_id:
+                try:
+                    self.client.call_tool("hub_manage_mode", {"action": "delete", "mode": new_id, "confirm": True})
+                except Exception as exc:
+                    print(f"    [WARN] numeric-name mode cleanup failed (delete id {new_id}): {exc}")
+
+    @test("system_tools")
     def test_mode_lifecycle(self) -> None:
         # FULL live coverage of the mode surface on the sacrificial e2e hub -- proves every
         # capability of hub_manage_mode / hub_list_modes / hub_set_mode_manager by e2e alone
@@ -13726,6 +13918,8 @@ class TestRunner:
             assert created is not None, f"created mode not in hub_list_modes: {listed.get('modes')}"
             assert created.get("icon") == "fa-moon", f"create icon did not round-trip via /modes/json: {created}"
             created_id = str(created.get("id"))
+            assert str(cr.get("modeId")) == created_id, \
+                f"create must return the new mode's id ({created_id}): {cr}"
             mm = listed.get("modeManager")
             assert isinstance(mm, dict), f"hub_list_modes missing the modeManager block: {sorted(listed.keys())}"
             assert mm.get("selected") in settable_managers, f"modeManager.selected not a valid manager: {mm}"
@@ -13865,6 +14059,11 @@ class TestRunner:
             assert pu.get("availableVersion"), f"available=true but no availableVersion: {pu}"
         assert "safeMode" in result, f"hub_get_info missing safeMode: {sorted(result)}"
         assert "healthAlerts" not in result, "healthAlerts must be absent without includeHealthAlerts=true"
+        # Readings are numbers, and the database size carries the hub's own unit (MB).
+        assert isinstance(result.get("freeMemoryKB"), int), f"freeMemoryKB must be a number: {result.get('freeMemoryKB')!r}"
+        assert isinstance(result.get("databaseSizeMB"), int) and "databaseSizeKB" not in result, \
+            f"database size must be databaseSizeMB, a number: {result.get('databaseSizeMB')!r}"
+        assert isinstance(result.get("mcpDeviceCount"), int), f"mcpDeviceCount must be a number: {result.get('mcpDeviceCount')!r}"
         # Client identity is derived from THIS request and nothing is persisted, so the record
         # handed back describes the very call that fetched it. Shape only here -- the
         # name/version capture is proved in the protocol group, which controls what the
@@ -14345,6 +14544,15 @@ class TestRunner:
         # (a formatted timestamp, or "never").
         assert isinstance(au.get("checkInProgress"), bool), f"checkInProgress not a bool: {au}"
         assert isinstance(au.get("lastChecked"), str), f"lastChecked not a string: {au}"
+        # The follow-up the description asks for settles: once a check has completed, calls in the
+        # next five minutes report it without starting another, so checkInProgress turns false.
+        settled = au
+        for _ in range(8):
+            if settled.get("checkInProgress") is False:
+                break
+            time.sleep(3)
+            settled = self.client.call_tool("hub_get_info", {"includeAppUpdate": True}).get("appUpdate") or {}
+        assert settled.get("checkInProgress") is False, f"checkInProgress never settled to false: {settled}"
         # updateAvailable is derived from the versions shown, so it can never contradict them: if an
         # update is flagged available, latestVersion must actually differ from installedVersion (the
         # bug being guarded was a stale updateAvailable:true reading as available when latest==installed).
@@ -14389,6 +14597,16 @@ class TestRunner:
         assert "healthAlerts" in res, f"hub_get_metrics missing healthAlerts: {sorted(res)}"
         ha = res["healthAlerts"]
         assert ha is not None and "active" in ha and "safeMode" in ha, f"healthAlerts shape wrong: {redact_hub_payload(ha, 'healthAlerts')}"
+        # Alert messages arrive as text, without the hub's link markup.
+        assert all("<a " not in str(item.get("message")) for item in (ha.get("items") or [])), \
+            f"alert messages still carry HTML: {redact_hub_payload(ha, 'healthAlerts')}"
+        # The current readings are numbers; an empty or day-old trend says so instead of passing as history.
+        cur = res.get("current") or {}
+        assert isinstance(cur.get("freeMemoryKB"), int) and isinstance(cur.get("databaseSizeMB"), int), \
+            f"current readings must be numbers, database size in MB: {cur}"
+        trends = res.get("trends") or []
+        if not trends:
+            assert "recordSnapshot=true" in str(res.get("trendNote")), f"an empty trend must say why: {res.get('trendNote')!r}"
 
     @test("system_tools")
     def test_get_memory_history(self) -> None:
@@ -16809,6 +17027,10 @@ class TestRunner:
                     args["sections"] = ["identity"]
                 detail = self.client.call_tool("hub_read_devices", {"tool": "hub_get_device", "args": args})
                 assert detail.get("mode") == mode, f"keyless {mode} read failed under the BPS gate: {detail}"
+            # A package dryRun only plans, so it passes the gate keyless too.
+            plan = self.client.call_tool("hub_update_package", {"ref": "main", "dryRun": True})
+            assert plan.get("success") is True and plan.get("dryRun") is True, \
+                f"keyless hub_update_package dryRun blocked under the BPS gate: {plan}"
         finally:
             self._set_bps(enableMandatoryBPS=False)
 
@@ -16912,6 +17134,7 @@ class TestRunner:
         assert not first.get("response_too_large"), f"full-guide call still trips the size guard: {first!r}"
         assert first.get("success") is True, f"full-guide call failed: {first!r}"
         assert len(first.get("content", "")) > 1000, "first page carried no real content"
+        assert len(first["content"]) <= 30000, f"full-guide first page is {len(first['content'])} chars, over 30000"
         assert "Acknowledgment keys are published only when a single section is read." in first["content"]
         assert not re.search(r"I-HAVE-READ-THE-GUIDE-\w+-[0-9a-f]{8}", first["content"]), \
             "the full-guide read published a key"
@@ -17011,6 +17234,19 @@ class TestRunner:
         assert result.get("finalValue") == current, f"Switch changed during the timeout probe: {result}"
         # Wall clock should reflect roughly the timeout (within 1 second of variance)
         assert elapsed_wall >= 1800, f"Wall clock too short ({elapsed_wall:.0f}ms); poll may not have blocked"
+        # A poll longer than the cloud relay keeps a request open waits only the budget left and
+        # says so, instead of being dropped by the relay; on LAN (no budget) it is not shortened.
+        long_poll = self.client.call_tool("hub_get_device_attribute", {
+            "deviceId": dev_id, "attribute": "switch", "expectedValue": expected, "timeoutMs": 25000,
+        }) if self._client_source() == "cloud" else None
+        if long_poll is not None:
+            assert long_poll.get("timedOut") is True and long_poll.get("budgetLimited") is True \
+                and long_poll.get("requestedTimeoutMs") == 25000 and long_poll.get("timeoutMs", 25000) < 25000, \
+                f"a 25 s poll over the relay must stop at the budget and say so: {long_poll}"
+            # A stableForMs that cannot settle in the time left is refused before anything is read.
+            self._expect_tool_refusal("hub_get_device_attribute", {
+                "deviceId": dev_id, "attribute": "switch", "expectedValue": expected,
+                "timeoutMs": 40000, "stableForMs": 30000}, "cannot settle")
 
     @test("poll_until_attribute")
     def test_poll_multi_device(self) -> None:

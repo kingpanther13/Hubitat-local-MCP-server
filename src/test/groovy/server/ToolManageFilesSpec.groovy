@@ -346,12 +346,12 @@ class ToolManageFilesSpec extends ToolSpecBase {
         def result = script.toolReadFile([fileName: 'big.txt'])
 
         then:
-        result.chunkLength == 60000
+        result.chunkLength == 30000
         result.totalLength == 70000
         result.hasMore == true
-        result.nextOffset == 60000
-        result.remainingChars == 10000
-        result.hint.contains('offset: 60000')
+        result.nextOffset == 30000
+        result.remainingChars == 40000
+        result.hint.contains('offset: 30000')
     }
 
     def "hub_read_file honours an explicit offset + length"() {
