@@ -342,7 +342,8 @@ def _getAllToolDefinitions_partNativeForms() {
         kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], expect_page: [type: 'string'],
         fields: [type: 'object'], activate: [type: 'string', description: 'Exact control_id returned by the current form.']
     ], required: ['kind']]
-    [[name: 'hub_call_app_form',
+    return [[
+      name: 'hub_call_app_form',
       description: 'Open or submit built-in native app forms using returned field/control names. Rendering executes app code and can change state. Requires confirm=true and a recent backup. Ordered batches may partially apply; never automatically retry buttons. Browser extensions are reported unsupported.',
       inputSchema: [type: 'object', additionalProperties: false, properties: [app_id: [type: 'integer', minimum: 1],
         steps: [type: 'array', minItems: 1, maxItems: 16, items: step], options_for: [type: 'array', maxItems: 32, items: [type: 'string']], confirm: [type: 'boolean']],

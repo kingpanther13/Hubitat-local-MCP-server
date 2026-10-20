@@ -36,8 +36,8 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
         (first.payload.content as String).length() > 0
 
         and: 'discovering the key space -- the documented purpose -- is served on the very first page'
-        (first.payload.availableSections as List).contains('set_rule_reference')
-        (first.payload.availableSubSections['set_rule_reference'] as List).contains('set_rule_reference_conditions')
+        (first.payload.availableSections as List).contains('hub_admin_write')
+        (first.payload.availableSubSections['hub_admin_write'] as List).contains('hub_admin_write_devices')
 
         and: 'the caller is told there is more, and how to get it'
         first.payload.nextCursor != null
@@ -104,11 +104,11 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
     }
 
     def "a section that fits one page is unchanged -- no cursor, no pagination bookkeeping"() {
-        when: 'the largest section, comfortably inside one page'
-        def result = dispatch([section: 'set_rule_reference'])
+        when: 'a named section that fits one page'
+        def result = dispatch([section: 'hub_admin_write'])
 
         then: 'whole section (behind its acknowledgment key), and none of the pagination fields'
-        (result.payload.content as String) == script._guideSectionServed('set_rule_reference', script.getToolGuideSections()['set_rule_reference'] as String)
+        (result.payload.content as String) == script._guideSectionServed('hub_admin_write', script.getToolGuideSections()['hub_admin_write'] as String)
         !(result.payload as Map).containsKey('nextCursor')
         !(result.payload as Map).containsKey('offset')
         !(result.payload as Map).containsKey('totalChars')
@@ -132,7 +132,7 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
 
     def "a cursor aimed at a payload that was never paged is refused, not silently served headless"() {
         when: 'a cursor carried over from a full-guide walk, pointed at a section that fits one page'
-        def result = dispatch([section: 'set_rule_reference', cursor: '5000'])
+        def result = dispatch([section: 'hub_admin_write', cursor: '5000'])
 
         then: 'refused as a caller error -- serving chars 5000.. would drop the head of the section with no signal'
         result.envelope.error == null
@@ -156,21 +156,17 @@ class ToolGuidePaginationSpec extends ToolSpecBase {
         (mcpDriver.parseInner(far.envelope).error as String).contains('out of range')
     }
 
-    def "guide:true returns the whole section, never a page a hub_set_rule caller cannot redeem"() {
-        // hub_set_rule has no cursor parameter, so if set_rule_reference ever crosses a page the
-        // inline meta-call would hand back a nextCursor with no way to spend it. It concatenates.
+    def "native form guide is fetched explicitly through the public guide tool"() {
         when:
-        def inline = script.executeTool('hub_set_rule', [guide: true])
+        def result = dispatch([section: 'native_app_forms'])
 
         then:
-        inline.success == true
-        (inline.content as String) == script._guideSectionServed('set_rule_reference', script.getToolGuideSections()['set_rule_reference'] as String)
-        !(inline as Map).containsKey('nextCursor')
-        !(inline as Map).containsKey('offset')
-        !(inline as Map).containsKey('totalChars')
-
-        and: 'it still names the narrower keys, so the caller can go straight to one next time'
-        (inline.subSections as List).contains('set_rule_reference_conditions')
+        result.payload.success == true
+        result.payload.content == script._guideSectionServed('native_app_forms', script.getToolGuideSections()['native_app_forms'] as String)
+        !(result.payload as Map).containsKey('nextCursor')
+        !(result.payload as Map).containsKey('offset')
+        !(result.payload as Map).containsKey('totalChars')
+        (result.payload.content as String).contains('hub_call_app_form')
     }
 
     def "an empty cursor is the documented first page"() {

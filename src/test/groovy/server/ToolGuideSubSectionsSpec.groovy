@@ -2,18 +2,7 @@ package server
 
 import support.ToolSpecBase
 
-/**
- * Issue #392: hub_get_tool_guide's four biggest sections (set_rule_reference,
- * builtin_app_tools, hub_admin_write, performance) carry ~70% of the guide, so a caller
- * after one fact -- the wire shape of a Mode condition, say -- had to pull all 57 KB of
- * set_rule_reference. getToolGuideSubSections() splits those four into narrower keys the
- * same `section` parameter accepts; the parent keys are untouched.
- *
- * The load-bearing property is that the split is LOSSLESS and UNAMBIGUOUS: every "### "
- * block of a parent is claimed by exactly one sub-key, so no reference material becomes
- * unreachable and none is served twice. A "### " heading added later without a home fails
- * here rather than silently disappearing from the sub-section surface.
- */
+/** Each parent block must belong to exactly one discoverable sub-section. */
 class ToolGuideSubSectionsSpec extends ToolSpecBase {
 
     private String headingOf(String block) {
@@ -99,8 +88,8 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
 
     def "each sub-key serves the block it is named for, and not a sibling's -- #subKey"() {
         // The losslessness test proves every block has exactly ONE owner; it cannot prove the owner
-        // is the RIGHT one. Moving hub_call_zwave from _radios to _devices, or the addAction guards
-        // back into _triggers, would keep every structural assertion green while the library
+        // is the RIGHT one. Moving hub_call_zwave from _radios to _devices would keep
+        // every structural assertion green while the library
         // pointers send callers to a sub-key that does not answer them. This is that check: one
         // sentinel it MUST carry, one a sibling owns that it MUST NOT.
         given:
@@ -125,71 +114,59 @@ class ToolGuideSubSectionsSpec extends ToolSpecBase {
         'builtin_app_tools_apps'        | '### hub_list_hpm_packages'                                   | '### hub_set_native_app'
         'builtin_app_tools_rules'       | '### hub_get_rule_health'                                     | '### hub_list_drivers'
         'builtin_app_tools_crud'        | '### Safety model for native CRUD'                            | '### hub_get_rule_health'
-        'set_rule_reference_overview'   | '## `hub_set_rule` capability reference'                      | '### `addTrigger` capability families'
-        'set_rule_reference_triggers'   | '### `addTrigger` capability families'                        | '### `addAction` capability families'
-        'set_rule_reference_actions'    | '### `addAction` capability families'                         | '### `addTrigger` capability families'
-        'set_rule_reference_conditions' | '### `addRequiredExpression` STPage capability list'          | '### `walkStep` schema-aware wizard walker'
-        'set_rule_reference_walkstep'   | '### `walkStep` schema-aware wizard walker'                   | '### `addRequiredExpression` STPage capability list'
-        'set_rule_reference_responses'  | '### Partial-success and trailing-updateRule response slots'  | '### Raw `settings`/`button` mode'
-        'set_rule_reference_guards'     | '### Did-you-mean on unknown capability names'                | '### `addTrigger` capability families'
     }
 
-    def "the fail-loud shape guards each land with the shortcut they steer -- the pointers promise it"() {
-        // The addAction guards used to sit inside the addTrigger block, so retargeting addAction's
-        // description at _actions would have sent a caller whose write just failed to a page that
-        // did not contain its own recovery rule.
+    def "native authoring guides describe the public document and form surfaces"() {
         expect:
-        (script.toolGetToolGuide('set_rule_reference_actions').content as String)
-            .contains('### Fail-loud `addAction` shape guards')
-        (script.toolGetToolGuide('set_rule_reference_triggers').content as String)
-            .contains('### Fail-loud `addTrigger` shape guards')
+        (script.toolGetToolGuide('native_rule_documents').content as String).contains('hub_update_rule_document')
+        (script.toolGetToolGuide('native_app_forms').content as String).contains('hub_call_app_form')
     }
 
     def "toolGetToolGuide serves a sub-section with its parent named, and the parent still serves the whole section"() {
         when: 'a sub-key goes through the live dispatcher'
-        def sub = script.toolGetToolGuide('set_rule_reference_conditions')
+        def sub = script.toolGetToolGuide('hub_admin_write_devices')
 
-        then: 'success envelope carries the parent pointer and the condition reference only'
+        then: 'success envelope carries the parent pointer and the device reference only'
         sub.success == true
-        sub.section == 'set_rule_reference_conditions'
-        sub.parentSection == 'set_rule_reference'
-        (sub.note as String).contains("section='set_rule_reference'")
-        (sub.content as String).contains('`addRequiredExpression` STPage capability list')
-        (sub.content as String).contains('Extended per-capability spec shapes')
-        !(sub.content as String).contains('`addTrigger` capability families')
+        sub.section == 'hub_admin_write_devices'
+        sub.parentSection == 'hub_admin_write'
+        (sub.note as String).contains("section='hub_admin_write'")
+        (sub.content as String).contains('### hub_call_device_command')
+        (sub.content as String).contains('### hub_create_device')
+        !(sub.content as String).contains('### hub_call_zwave')
 
         when: 'the parent key goes through the same dispatcher'
-        def parent = script.toolGetToolGuide('set_rule_reference')
+        def parent = script.toolGetToolGuide('hub_admin_write')
 
         then: 'whole section behind its acknowledgment key, no parentSection -- and it advertises its sub-keys'
         parent.success == true
-        parent.section == 'set_rule_reference'
+        parent.section == 'hub_admin_write'
         parent.parentSection == null
-        (parent.content as String) == script._guideSectionServed('set_rule_reference', script.getToolGuideSections()['set_rule_reference'] as String)
-        (parent.content as String).endsWith(script.getToolGuideSections()['set_rule_reference'] as String)
-        (parent.subSections as List).contains('set_rule_reference_conditions')
+        (parent.content as String) == script._guideSectionServed('hub_admin_write', script.getToolGuideSections()['hub_admin_write'] as String)
+        (parent.content as String).endsWith(script.getToolGuideSections()['hub_admin_write'] as String)
+        (parent.subSections as List).contains('hub_admin_write_devices')
 
         and: 'every block of the sub-section body is verbatim parent text (the served key header is not body), and the sub-section costs under half of it'
-        script.guideSectionBlocks(script.guideSubSectionLookup('set_rule_reference_conditions').content).every { (parent.content as String).contains(it as String) }
+        script.guideSectionBlocks(script.guideSubSectionLookup('hub_admin_write_devices').content).every { (parent.content as String).contains(it as String) }
         (sub.content as String).length() < (parent.content as String).length() / 2
     }
 
     def "section normalization reaches a sub-key through the dotted form used in issue 392 too"() {
         // toolGetToolGuide folds case and maps every non [a-z_] char to '_', so the
-        // `set_rule_reference.conditions` spelling lands on the same key.
+        // `hub_admin_write.devices` spelling lands on the same key.
         expect:
-        script.toolGetToolGuide('set_rule_reference.conditions').section == 'set_rule_reference_conditions'
-        script.toolGetToolGuide('SET_RULE_REFERENCE_TRIGGERS').section == 'set_rule_reference_triggers'
+        script.toolGetToolGuide('hub_admin_write.devices').section == 'hub_admin_write_devices'
+        script.toolGetToolGuide('HUB_ADMIN_WRITE_RADIOS').section == 'hub_admin_write_radios'
     }
 
     def "an unknown section lists the sub-sections alongside the sections"() {
         when:
-        def result = script.toolGetToolGuide('set_rule_reference_nope')
+        def result = script.toolGetToolGuide('hub_admin_write_nope')
 
         then: 'the error hands the caller both levels of the key space'
         result.success == false
-        (result.availableSections as List).contains('set_rule_reference')
-        (result.availableSubSections['set_rule_reference'] as List).contains('set_rule_reference_triggers')
+        (result.availableSections as List).contains('hub_admin_write')
+        (result.availableSubSections['hub_admin_write'] as List).contains('hub_admin_write_radios')
     }
 
     def "the preamble sub-key serves the section intro and none of the ### blocks"() {
