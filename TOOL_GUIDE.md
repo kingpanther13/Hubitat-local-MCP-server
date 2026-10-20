@@ -6,7 +6,7 @@ Detailed reference for MCP Rule Server tools, the same text `hub_get_tool_guide`
 
 ## Set Rule Reference
 
-Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level rule_id identifies the target; args cannot override it or confirm.
+Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level rule_id identifies the target; args cannot override it or confirm. When mandatory guide acknowledgment is enabled, pass its key as top-level bestPracticeKey alongside operation, rule_id, args and confirm.
 
 Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 
@@ -106,13 +106,13 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_call_zwave -> hub_admin_write_radios
 - hub_set_zigbee -> hub_admin_write_radios
 - hub_set_zwave -> hub_admin_write_radios
-- hub_set_rule -> set_rule_reference
 - hub_clone_custom_rule -> rules
 - hub_create_custom_rule -> rules
 - hub_delete_custom_rule -> rules
 - hub_export_custom_rule -> rules
 - hub_import_custom_rule -> rules
 - hub_update_custom_rule -> rules
+- hub_set_rule -> set_rule_reference
 - hub_update_device -> update_device
 - hub_manage_virtual_device -> virtual_devices
 - hub_delete_visual_rule -> visual_rule_reference
