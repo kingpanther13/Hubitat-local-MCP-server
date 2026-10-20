@@ -1,8 +1,11 @@
 package server
 
 import support.ToolSpecBase
+import support.TestLocation
+import spock.lang.Shared
 
 class NativeModelSpec extends ToolSpecBase {
+    @Shared TestLocation sharedLocation = new TestLocation()
     Map nativeState
     Map locals
     Map settings
@@ -11,12 +14,14 @@ class NativeModelSpec extends ToolSpecBase {
     String nativeType
 
     void setupSpec() {
+        appExecutor.getLocation() >> sharedLocation
         appExecutor.toDateTime(_ as String) >> { String value ->
             Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", value)
         }
     }
 
     void setup() {
+        sharedLocation.timeZone = TimeZone.getTimeZone('UTC')
         nativeType = 'Rule-5.1'
         nativeState = [keep: [unknown: true], ndx: 4, actNdx: 1,
                        capabsfalse: ['1': 'Switch A on', '2': 'Switch B off'], eval: ['0': ['1']]]
@@ -25,6 +30,10 @@ class NativeModelSpec extends ToolSpecBase {
         writes = []
         nativeRule = new Expando()
         nativeRule.checkTokens = { Object id -> '' }
+        nativeRule.thisActionLabel = { Object actionId -> 'Native action ' + actionId }
+        nativeRule.actionLabelText = { -> '' }
+        nativeRule.broken = { -> nativeState.broken = false; false }
+        nativeRule.selectActions = { Map params -> nativeState.broken = false; nativeForm([]) }
         nativeRule.getLocalVar = { String name -> locals.get(name) }
         nativeRule.getAllLocalVars = { -> locals.collectEntries { localName, variable -> [(localName): [type: variable.type, value: variable.value]] } }
         nativeRule.createLocalVar = { String name, Object value, String type -> locals.put(name, [name: name, value: value, type: type]) }
@@ -51,6 +60,7 @@ class NativeModelSpec extends ToolSpecBase {
         script.metaClass._nrSettings = { Long id, List names -> settings.subMap(names) }
         script.metaClass.hubInternalGet = { String path, Map query = null ->
             if (path == '/device/listJson') return query?.capability == 'capability.temperatureMeasurement' ? [[id: 9]] : (query?.capability == 'capability.switch' ? [[id: 7], [id: 8]] : [])
+            if (path.startsWith('/app/ruleBuilderJson/')) return [broken: nativeState.broken == true]
             [settings: settings.collect { name, row ->
                 [name: name, type: row.type, value: row.value, multiple: row.multiple, deviceList: row.deviceList]
             }]
@@ -1244,6 +1254,148 @@ class NativeModelSpec extends ToolSpecBase {
         !nativeState.containsKey('doActN')
         !nativeState.containsKey('actionDone')
         buttons == ['actionCancel']
+    }
+
+
+    def 'an edited action with empty native label rolls back its original target and recomputes native health'() {
+        given:
+        nativeState.actions = ['1': [method: 'getRuleActions', indent: '']]
+        nativeState.actionList = ['1']
+        nativeState.broken = false
+        settings.put('actType.1', [type: 'enum', value: 'rulesActs'])
+        settings.put('actSubType.1', [type: 'enum', value: 'getRuleActions'])
+        settings.put('ruleAct.1', [type: 'enum', multiple: true, value: ['8']])
+        Map original = [:] + settings
+        int rowChecks = 0
+        int pageValidations = 0
+        nativeRule.removeSetting = { String name -> settings.remove(name) }
+        script.metaClass._nrWriteSettings = { Long id, List rows ->
+            rows.each { setting -> settings.put(setting.name, [type: setting.type, multiple: true, value: setting.value]) }
+            [success: true]
+        }
+        nativeRule.doActPage = { ->
+            if (nativeState.actionCancel) nativeState.remove('actionCancel')
+            nativeForm([[name: 'ruleAct.1', type: 'enum', multiple: true, options: ['8'], submitOnChange: true]])
+        }
+        nativeRule.appButtonHandler = { String name ->
+            if (name == 'actionCancel') nativeState.actionCancel = true
+        }
+        nativeRule.thisActionLabel = { Object actionId ->
+            rowChecks++
+            nativeState.broken = settings.get('ruleAct.1').value.isEmpty()
+            nativeState.nestedLabel = ['temporary label scope']
+            nativeState.actLabelIndent = 'changed by label render'
+            nativeState.broken ? "<span style='color:red'>**Broken Action**</span>" : 'Run Actions: target'
+        }
+        nativeRule.broken = { ->
+            pageValidations++
+            nativeState.broken = settings.get('ruleAct.1').value.isEmpty() || unhealthyAfterRestore
+            nativeState.broken
+        }
+        when:
+        def result = script._nmUpsertAction(42L, [id: '1', type: 'rulesActs', subtype: 'getRuleActions',
+            fields: [[name: 'ruleAct.#', type: 'enum', value: []]]])
+        then:
+        !result.success
+        result.error.contains('label')
+        result.partial == unhealthyAfterRestore
+        result.rolledBack == !unhealthyAfterRestore
+        settings == original
+        nativeState.actionList == ['1']
+        nativeState.actions.'1'.method == 'getRuleActions'
+        nativeState.broken == unhealthyAfterRestore
+        !nativeState.containsKey('nestedLabel')
+        !nativeState.containsKey('actLabelIndent')
+        rowChecks == 1
+        pageValidations == 1
+        if (unhealthyAfterRestore) assert result.cleanupError.contains('health was not restored')
+        where:
+        unhealthyAfterRestore << [false, true]
+    }
+
+    def 'rejected dependent fields recover stale broken health through native validation rather than a state flag patch'() {
+        given:
+        nativeState.actions = ['1': [method: 'getLogMsg', indent: '']]
+        nativeState.actionList = ['1']
+        nativeState.broken = false
+        settings.put('actType.1', [type: 'enum', value: 'messageActs'])
+        settings.put('actSubType.1', [type: 'enum', value: 'getLogMsg'])
+        settings.put('logmsg.1', [type: 'text', value: 'original'])
+        Map original = [:] + settings
+        int validations = 0
+        nativeRule.removeSetting = { String name -> settings.remove(name) }
+        nativeRule.appButtonHandler = { String name -> nativeState.actionCancel = true }
+        nativeRule.doActPage = { ->
+            if (nativeState.actionCancel) nativeState.remove('actionCancel')
+            else nativeState.broken = true
+            nativeForm([[name: 'logmsg.1', type: 'text', multiple: false, submitOnChange: true]])
+        }
+        nativeRule.broken = { ->
+            validations++
+            assert settings == original
+            assert nativeState.broken == true
+            nativeState.broken = false
+            false
+        }
+        when:
+        def result = script._nmUpsertAction(42L, [id: '1', type: 'messageActs', subtype: 'getLogMsg', fields: [
+            [name: 'logmsg.#', type: 'text', value: 'staged'],
+            [name: 'hidden.#', type: 'number', value: 40]]])
+        then:
+        !result.success && !result.partial && result.rolledBack
+        result.error.contains('hidden.1')
+        settings == original
+        !nativeState.broken
+        validations == 1
+        !writes.any { it instanceof Map && it.containsKey('broken') }
+    }
+
+    def 'cleanup health uses fresh native readback even when the wrapper state snapshot remains stale'() {
+        given:
+        nativeState.broken = true
+        List validations = []
+        nativeRule.actionLabelText = { -> validations << 'labels'; 'Original valid action' }
+        nativeRule.broken = { -> validations << 'broken'; false }
+        script.metaClass.hubInternalGet = { String path ->
+            assert path == '/app/ruleBuilderJson/42'
+            validations << 'readback'
+            [broken: false]
+        }
+        when:
+        script._nmRefreshHealth(42L, [broken: false])
+        then:
+        validations == ['labels', 'broken', 'readback']
+        nativeState.broken
+        writes.empty
+    }
+
+    def 'successful row label validation preserves formatting context and avoids a complete native page render'() {
+        given:
+        List stack = ['existing block']
+        nativeState.nestedLabel = stack
+        nativeState.actLabelIndent = '\t'
+        nativeState.inIf = true
+        nativeRule.doActPage = { -> authorForm([[name: 'logmsg.1', type: 'text', multiple: false]]) }
+        nativeRule.appButtonHandler = { String name ->
+            nativeState.actions = ['1': [method: 'getLogMsg']]
+            nativeState.actionList = ['1']
+        }
+        nativeRule.thisActionLabel = { Object actionId ->
+            nativeState.nestedLabel.pop()
+            nativeState.inIf = false
+            nativeState.actLabelIndent = ''
+            'Log: valid'
+        }
+        nativeRule.selectActions = { Map params -> assert false: 'No complete page render should be needed for a valid row' }
+        nativeRule.broken = { -> assert false: 'No whole-rule validation should be needed for a valid row' }
+        nativeRule.actionLabelText = { -> assert false: 'Only the edited row should be rendered on success' }
+        when:
+        def result = script._nmUpsertAction(42L, [type: 'messageActs', subtype: 'getLogMsg', fields: [[name: 'logmsg.#', type: 'text', value: 'valid']]])
+        then:
+        result.success
+        nativeState.nestedLabel == ['existing block']
+        nativeState.actLabelIndent == '\t'
+        nativeState.inIf
     }
 
 

@@ -579,6 +579,23 @@ class NativeRmParityActions(ParityCase):
                 self.assertRegex(page, text)
             elif text is not None:
                 self.assertIn(text, page)
+        original_order = self._ids(rule_id)
+        form, descriptor_id = self._new_editor(rule_id)
+        for name, value in ((f"actType.{descriptor_id}", "modeActs"),
+                            (f"actSubType.{descriptor_id}", "getReturnValue"),
+                            (f"valType.{descriptor_id}", "Integer"),
+                            (f"useVar.{descriptor_id}", True)):
+            form = self._submit(rule_id, form, fields={name: value})
+        picker = next(row for row in form["fields"] if row["name"] == f"valVar.{descriptor_id}")
+        self.assertEqual(picker["type"], "enum")
+        offered = {row["value"] for row in picker["options"]}
+        self.assertIn(number, offered)
+        self.assertNotIn(string, offered)
+        form = self._submit(rule_id, form, fields={picker["name"]: number})
+        self._submit(rule_id, form, control=self._control(form, name="actionDone"))
+        self.assertEqual(self._value(rule_id, f"valVar.{descriptor_id}"), number)
+        self._ok(rule_id, [{"part": "delete", "value": {"part": "action", "id": descriptor_id}}])
+        self.assertEqual(self._ids(rule_id), original_order)
         refused = self._refuse_unchanged(rule_id, [self._typed_action("modeActs", "getReturnValue", [
             ("valType", "enum", "Integer"), ("useVar", "bool", True),
             ("valVar", "enum", string)])])

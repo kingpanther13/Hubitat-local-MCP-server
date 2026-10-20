@@ -289,9 +289,9 @@ class NativeRmParityLifecycleE2E(ParityCase):
         # masquerade as proof of the intended restriction.
         with self.subTest(case="location event requires a selected name"):
             target = self.create([change("trigger", capability="Location Event", fields=[
-                field("tstate#", "enum", "mode")]), log_action("location baseline")])
+                field("tstate#", "enum", "systemStart")]), log_action("location baseline")])
             slot = next(iter(self.doc(target)["triggers"]))
-            self.assertEqual("mode", self._values(target)["tstate" + slot])
+            self.assertEqual("systemStart", self._values(target)["tstate" + slot])
             before = self.snapshot(target)
             refused = self.update(target, [change("trigger", id=slot, capability="Location Event",
                                                   fields=[field("tstate#", "enum", "")])])
@@ -342,9 +342,10 @@ class NativeRmParityLifecycleE2E(ParityCase):
         referenced = self.create([log_action("referenced rule")])
         with self.subTest(case="rule paused condition has no changed comparator"):
             target = self.create([change("condition", capability="Rule paused", fields=[
-                field("rDev_#", "enum", [self._values(referenced)["origLabel"]]), field("state_#", "enum", "true")])])
+                field("rDev_#", "enum", [str(referenced)])])])
             slot = next(iter(self.doc(target)["conditions"]))
-            self.assertEqual("true", str(self._values(target)["state_" + slot]).lower())
+            self.assertEqual([str(referenced)], list(map(str, self._values(target)["rDev_" + slot])))
+            self.assertIn(self._values(referenced)["origLabel"], self.doc(target)["conditions"][slot])
             before = self.snapshot(target)
             refused = self.update(target, [change("condition", id=slot, capability="Rule paused",
                                                   fields=[field("RelrDev_#", "enum", "*changed*")])])

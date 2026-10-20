@@ -257,6 +257,27 @@ private void _nmRestoreSettings(Long ruleId, Map savedSettings) {
     if (restore && _nrWriteSettings(ruleId, restore).success != true) throw new IllegalStateException('Native setting restoration failed')
 }
 
+private void _nmRefreshHealth(Long ruleId, Map baseline) {
+    def labels = _nrHandle(ruleId).actionLabelText()
+    def validated = _nrHandle(ruleId).broken()
+    if (!(labels instanceof String) || !(validated instanceof Boolean)) throw new IllegalStateException('Native row health could not be validated after cancellation')
+    def raw = hubInternalGet("/app/ruleBuilderJson/${ruleId}")
+    def health = raw instanceof Map ? raw : new groovy.json.JsonSlurper().parseText(raw?.toString() ?: '{}')
+    if (!(health instanceof Map) || !(health.broken instanceof Boolean)) throw new IllegalStateException('Native row health could not be verified after cancellation')
+    if (validated != (baseline.broken == true) || health.broken != validated) throw new IllegalStateException('Native row health was not restored after cancellation')
+}
+
+private boolean _nmActionLabel(Long ruleId, String id) {
+    Map before = _nrState(ruleId)
+    List keys = ['actLabelIndent', 'nestedLabel', 'inIf', 'inRepeat']
+    Map format = before.findAll { key, value -> key in keys }
+    if (format.nestedLabel instanceof List) format.put('nestedLabel', new ArrayList(format.nestedLabel))
+    def label
+    try { label = _nrHandle(ruleId).thisActionLabel(id) }
+    finally { _nrStatePatch(ruleId, format, keys.findAll { !format.containsKey(it) }) }
+    label instanceof String && label.trim() && !(label =~ /(?is)<span\b[^>]*color\s*:\s*red[^>]*>[^<]*\*\*Broken [^*]+\*\*/)
+}
+
 private Map _nmRejectEdit(Long ruleId, String id, Map baseline, Map savedSettings, List keys, Map entries, Closure cancel, Map failure) {
     String cleanupError = null
     boolean verified = false
@@ -278,6 +299,7 @@ private Map _nmRejectEdit(Long ruleId, String id, Map baseline, Map savedSetting
             else remove << name
         }
         _nrStatePatch(ruleId, values, remove)
+        _nmRefreshHealth(ruleId, baseline)
         Map fresh = _nrState(ruleId)
         verified = consumed && _nmSettingsInventory(ruleId) == savedSettings && keys.every { key -> fresh.containsKey(key) == baseline.containsKey(key) && fresh.get(key) == baseline.get(key) } && entries.every { name, targets ->
             Map actual = fresh.get(name) instanceof Map ? fresh.get(name) : [:]
@@ -469,6 +491,7 @@ Map _nmUpsertAction(Long ruleId, Map row) {
         Map echoed = _nrSettings(ruleId, settings.collect { it.name })
         boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
         if (!(listed && ordered && compiled && persisted && expressionVerified && waitsVerified && conditionVerified)) return reject.call([error: 'Native action compilation or input verification failed', settingsVerified: persisted, expressionVerified: expressionVerified, waitsVerified: waitsVerified, conditionVerified: conditionVerified])
+        if (!_nmActionLabel(ruleId, id)) return reject.call([error: 'Native action label is missing or broken'])
         [success: true, id: id, action: action, partial: false, settingsVerified: true, expressionVerified: true, waitsVerified: true, conditionVerified: true, verificationNeeded: true]
     } catch (Exception failure) { reject.call([error: failure.message ?: 'Native action authoring failed']) }
 }
