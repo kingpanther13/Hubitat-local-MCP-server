@@ -23395,6 +23395,27 @@ private List _rmLiveActionIndicesFromSettings(Map status) {
     }
     return live.keySet().sort()
 }
+Boolean _rmIsAppDisabled(Integer appId) {
+    String why
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) { try { pauseExecution(250) } catch (Exception ignore) { } }
+        why = null
+        try {
+            def txt = hubInternalGet("/installedapp/json/${appId}")
+            if (!txt) {
+                why = "empty /installedapp/json body"
+            } else {
+                def parsed = new groovy.json.JsonSlurper().parseText(txt)
+                if (parsed instanceof Map && parsed.containsKey("disabled")) return parsed.disabled == true
+                why = "/installedapp/json carried no 'disabled' key"
+            }
+        } catch (Exception e) {
+            why = "read failed (${e.message})"
+        }
+    }
+    mcpLog("warn", "rm-native", "_rmIsAppDisabled(${appId}): ${why} on two attempts -- disabled state UNKNOWN, proceeding")
+    return null
+}
 void _rmRejectDisabledAppEdit(Integer appId, String opName) {
     if (_rmIsAppDisabled(appId) != true) return
     throw new IllegalArgumentException("${opName} blocked: rule ${appId} is DISABLED. Hubitat does not allow editing a disabled app -- its configuration page renders only \"App is disabled\", so there is no wizard to drive. This is intended platform behavior, not an error in the rule. To edit it: hub_set_app_disabled(appId=${appId}, disabled=false), make the change, then disable it again if you want it left parked. RM is not touched.")
@@ -25734,6 +25755,7 @@ Map toolUpdateRuleDocument(Map args) {
     Long id = _ndId(args.rule_id)
     List changes = _ndChanges(args.changes)
     requireDestructiveConfirm(args.confirm)
+    _requireUnprotectedAppMutation(id, 'edit native rule document')
     _nrHandle(id)
     if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
     try { _ndPreflight(id, changes) }
@@ -25747,6 +25769,7 @@ Map toolCreateRuleDocument(Map args) {
     String name = requestedName.trim()
     List changes = _ndChanges(args.changes)
     requireDestructiveConfirm(args.confirm)
+    _requireUnprotectedAppMutation(parentId, 'create native rule child')
     def parent = getAppByAppId(parentId)
     if (parent?.appType?.namespace != 'hubitat' || parent?.appType?.name != 'Rule Machine') throw new IllegalArgumentException('parent_id must identify native Rule Machine')
     Long id = null
@@ -25842,7 +25865,7 @@ private List _nfOptions(Object options) {
 private Map _nfAttrs(String html) {
     Map attrs = [:]
     def matches = html =~ /([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/
-    while (matches.find()) attrs[matches.group(1).toLowerCase()] = _nfEntities(matches.group(2) != null ? matches.group(2) : matches.group(3))
+    while (matches.find()) attrs.put(matches.group(1).toLowerCase(), _nfEntities(matches.group(2) != null ? matches.group(2) : matches.group(3)))
     attrs
 }
 private void _nfHtml(String html, Map controls, List unsupported) {
@@ -25869,7 +25892,7 @@ private void _nfHtml(String html, Map controls, List unsupported) {
             }
             if (known && paired) {
                 Map control = [name: button.name, kind: 'button', title: attrs['aria-label'] ?: attrs.title ?: _nfText(click.group(3)), disabled: attrs.containsKey('disabled') || (click.group(2) =~ /(?i)(?:^|\s)disabled(?:\s|$)/).find(),
-                               stateAttribute: attrs['data-stateattribute'], submit_on_change: (attrs['class'] ?: '').tokenize().contains('submitOnChange')]
+                               stateAttribute: attrs['data-stateattribute'], submit_on_change: (attrs.get('class') ?: '').tokenize().contains('submitOnChange')]
                 if (attrs['data-confirm']) control.confirmation = attrs['data-confirm']
                 _nfControl(controls, control)
                 found = true
@@ -25884,7 +25907,7 @@ private void _nfControl(Map controls, Map control) {
     String key = [control.name, control.value ?: '', control.stateAttribute ?: ''].collect { _nfEncode(it) }.join('|')
     control.control_id = key
     if (controls.containsKey(key) && controls[key] != control) throw new IllegalStateException('Native form contains ambiguous controls')
-    controls[key] = control
+    controls.put(key, control)
 }
 private void _nfWalk(Object node, Map fields, Map controls, List messages, List unsupported, Map model, int position = 0) {
     if (node instanceof List) { node.eachWithIndex { item, index -> _nfWalk(item, fields, controls, messages, unsupported, model, index) }; return }
@@ -25915,7 +25938,7 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
                 field.ignore = (node.ignoreDevices instanceof List ? node.ignoreDevices : (node.ignoreDevices?.toString()?.tokenize(',') ?: [])).collect { it.toString() }
             }
             if (fields.containsKey(name) && fields[name] != field) throw new IllegalStateException('Native form contains ambiguous fields')
-            fields[name] = field
+            fields.put(name, field)
             if (!supported) unsupported << "Input type: ${type}"
         }
     } else if (node.element == 'app' && node.namespace == 'hubitat' && node.appName instanceof String && node.appName && node.name && node.appId?.toString() == model.app?.id?.toString()) {
@@ -25972,13 +25995,13 @@ private String _nfReloadPath(Long id, Map context) {
 private void _nfCache(String key, Map context) {
     Map cached = [page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
                   fields: [:], controls: [:]]
-    context.fields.each { name, field ->
+    context.get('fields').each { name, field ->
         Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
-        cached.fields[name] = descriptor
+        cached.get('fields').put(name, descriptor)
     }
     context.controls.each { name, control ->
-        cached.controls[name] = control.findAll { k, v -> k in ['name', 'value', 'kind', 'stateAttribute', 'submit_on_change', 'params', 'disabled'] }
+        cached.controls.put(name, control.findAll { k, v -> k in ['name', 'value', 'kind', 'stateAttribute', 'submit_on_change', 'params', 'disabled'] })
     }
     int size = groovy.json.JsonOutput.toJson(cached).getBytes('UTF-8').length
     if (size > 24576) throw new IllegalStateException('Native execution descriptors exceed the 24 KiB per-app context bound')
@@ -25987,7 +26010,7 @@ private void _nfCache(String key, Map context) {
         NATIVE_FORM_CONTEXTS.entrySet().findAll { entry -> entry.value.expires < now() }.each { entry -> NATIVE_FORM_CONTEXTS.remove(entry.key) }
         int total = NATIVE_FORM_CONTEXTS.findAll { k, v -> k != key }.values().sum { it.bytes } ?: 0
         if (total + size > 98304 || (!NATIVE_FORM_CONTEXTS.containsKey(key) && NATIVE_FORM_CONTEXTS.size() >= 8)) throw new IllegalStateException('Native form context capacity reached; inactive contexts expire after five minutes')
-        NATIVE_FORM_CONTEXTS[key] = cached
+        NATIVE_FORM_CONTEXTS.put(key, cached)
     }
 }
 private List _nfDevices(Map field) {
@@ -26011,7 +26034,7 @@ private String _nfValue(Map field, Object value) {
     value.toString()
 }
 private Map _nfPublic(Map context, List optionsFor) {
-    List fields = context.fields.values().collect { field ->
+    List fields = context.get('fields').values().collect { field ->
         Map result = [:] + field
         result.remove('device'); result.remove('ignore'); result.remove('capability'); result.remove('present')
         if (field.type == 'password') result.redacted = true
@@ -26033,11 +26056,12 @@ Map toolCallAppForm(Map args) {
         List keys = step.kind == 'open' ? ['kind', 'page'] : ['kind', 'expect_page', 'fields', 'activate']
         if (step.keySet().any { !(it in keys) }) throw new IllegalArgumentException('Unknown form step property')
         if (step.kind == 'open' && step.page != null && (!(step.page instanceof String) || !(step.page ==~ /[A-Za-z_][A-Za-z0-9_.-]*/))) throw new IllegalArgumentException('A registered native page name is required')
-        if (step.kind == 'submit' && (!(step.expect_page instanceof String) || (step.fields != null && !(step.fields instanceof Map)))) throw new IllegalArgumentException('Submit requires expect_page and an optional fields object')
+        if (step.kind == 'submit' && (!(step.expect_page instanceof String) || (step.get('fields') != null && !(step.get('fields') instanceof Map)))) throw new IllegalArgumentException('Submit requires expect_page and an optional fields object')
         if (step.activate != null && !(step.activate instanceof String)) throw new IllegalArgumentException('activate requires a returned control_id string')
     }
     requireDestructiveConfirm(args.confirm)
     Long id = args.app_id.toString().toLong()
+    _requireUnprotectedAppMutation(id, 'edit native form')
     def nativeApp = getAppByAppId(id)
     if (nativeApp?.appType?.namespace != 'hubitat') throw new IllegalArgumentException('app_id must identify a built-in native app')
     if (nativeApp.disabled == true) throw new IllegalArgumentException('Enable the native app before editing its form')
@@ -26058,8 +26082,8 @@ Map toolCallAppForm(Map args) {
                 if (!context) throw new IllegalArgumentException('Open the native form first; its context has expired or is unavailable')
                 if (step.expect_page != context.page.name) throw new IllegalArgumentException('expect_page does not match the last returned native page')
                 Map body = [:] + context.envelope
-                (step.fields ?: [:]).each { name, value ->
-                    Map field = context.fields[name]
+                (step.get('fields') ?: [:]).each { name, value ->
+                    Map field = context.get('fields').get(name)
                     if (!field) throw new IllegalArgumentException("Field is not present on the current native page: ${name}")
                     body["settings[${name}]".toString()] = _nfValue(field, value)
                     body["${name}.type".toString()] = field.type
@@ -26071,12 +26095,12 @@ Map toolCallAppForm(Map args) {
                     control = context.controls[step.activate]
                     if (!control) throw new IllegalArgumentException('Choose one exact returned native control_id')
                     if (control.disabled) throw new IllegalArgumentException('The native control is disabled')
-                    if (control.kind == 'create_child' && step.fields) throw new IllegalArgumentException('Submit parent fields separately before creating a child')
-                    if (control.kind == 'button' && !control.submit_on_change && step.fields) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
+                    if (control.kind == 'create_child' && step.get('fields')) throw new IllegalArgumentException('Submit parent fields separately before creating a child')
+                    if (control.kind == 'button' && !control.submit_on_change && step.get('fields')) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
                     if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
                     if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
-                        List missing = context.fields.values().findAll { field -> field.required && !field.disabled &&
-                            !((step.fields ?: [:]).containsKey(field.name) ? body["settings[${field.name}]".toString()] != '' && body["settings[${field.name}]".toString()] != '[]' : field.present) }*.name
+                        List missing = context.get('fields').values().findAll { field -> field.required && !field.disabled &&
+                            !((step.get('fields') ?: [:]).containsKey(field.name) ? body["settings[${field.name}]".toString()] != '' && body["settings[${field.name}]".toString()] != '[]' : field.present) }*.name
                         if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
                     }
                 }
@@ -26096,7 +26120,7 @@ Map toolCallAppForm(Map args) {
                     _nfPost('/installedapp/btn', button)
                     if (!control.submit_on_change) model = _nfJson(hubInternalGet(reloadPath))
                 } else if (control) {
-                    body[control.name] = control.value ?: ''
+                    body.put(control.name, control.value ?: '')
                     if (control.params != null) body["params_for${control.name}".toString()] = _nfEncode(groovy.json.JsonOutput.toJson(control.params))
                 }
                 if (model == null) model = _nfPost('/installedapp/update/json', body)
@@ -28356,6 +28380,9 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs, boo
         if (!hubBpsKeyAccepted(bpsSection, bpsKey)) {
             throw new IllegalArgumentException(_bpsBlockMessage(bpsSection, bpsKey))
         }
+    }
+    if (checkKey && leaf in ["hub_create_rule_document", "hub_update_rule_document", "hub_call_app_form"]) {
+        requireDestructiveConfirm(leafArgs?.confirm)
     }
 }
 private Map _mrtrBinding(outerToolName, leafToolName, Map args) {
