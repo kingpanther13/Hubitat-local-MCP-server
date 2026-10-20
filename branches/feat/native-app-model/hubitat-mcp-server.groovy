@@ -2566,8 +2566,8 @@ private Map _vrbNotVisualRuleError(Integer appId) {
     return [success: false, appId: appId, appName: info.name, appType: info.type,
             error: "App ${appId} ('${info.name}') is type '${info.type}', not a Visual Rules Builder rule.",
             note: info.type?.toString()?.startsWith("Rule") ?
-                "For Rule Machine rules use hub_update_rule_document or hub_call_app_form; use hub_delete_native_app to delete." :
-                "Use hub_call_app_form to edit classic apps or hub_delete_native_app to delete."]
+                "For Rule Machine rules use hub_set_rule; use hub_delete_native_app to delete." :
+                "Use the native app editor to edit classic apps or hub_delete_native_app to delete."]
 }
 def toolGetVisualRule(args) {
     if (args?.appId == null) {
@@ -3063,7 +3063,7 @@ private Map _vrbRestoreFromSnapshot(Map snapshot, String fileName) {
 private String _vrbGuideSection() {
     return '''## Visual Rules Builder reference (`hub_get_visual_rule` / `hub_set_visual_rule` / `hub_delete_visual_rule`)
 
-Visual Rules Builder (VRB) is the PRIMARY rule engine for new automations; each rule is stored as ONE clean JSON definition (no wizard, no settings[] protocol). A VRB rule is: one or more trigger events (OR semantics — any one of them fires the rule), a condition gate, and then/else action branches; VRB 2.0 adds AND **or** OR condition gates and a common action tail that runs after whichever branch was taken. For Rule Machine structures use hub_update_rule_document within its supported contract, or hub_call_app_form for native editor fields and controls. Inspect unsupported complex variants in the native editor before authoring them.
+Visual Rules Builder (VRB) is the PRIMARY rule engine for new automations; each rule is stored as ONE clean JSON definition (no wizard, no settings[] protocol). A VRB rule is: one or more trigger events (OR semantics — any one of them fires the rule), a condition gate, and then/else action branches; VRB 2.0 adds AND **or** OR condition gates and a common action tail that runs after whichever branch was taken. For Rule Machine structures and native editor controls use hub_set_rule. Inspect unsupported complex variants in the native editor before authoring them.
 
 One installed VRB app holds exactly ONE connected rule; independent workflows go in separate rules.
 
@@ -3278,7 +3278,7 @@ def _getAllToolDefinitions_partVisualRules() {
         ],
         [
             name: "hub_set_visual_rule",
-            description: "Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_update_rule_document for supported Rule Machine structures or hub_call_app_form for native editor controls. On create the definition's shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). Editor and graph definitions are structurally pre-flight validated before anything is created or saved, so a malformed 2.0 rule never strands an empty shell; a classic definition is saved as-is and validated by the hub.[[/FLAT_TRIM]] Omit appId to create (name + definition required). On EDIT two refusals (isError validation results, nothing written): a 2.0 type name this build does not know unless the rule already uses it, and a classic key outside whenNodes/thenNodes/elseNodes. Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').",
+            description: "Create or update a Visual Rules Builder rule.[[FLAT_TRIM]] VRB is the PRIMARY rule engine for new automations; VRB 2.0 adds AND/OR condition gates, then/else branches and a shared action tail. Most automations fit it; use hub_set_rule for Rule Machine structures and native editor controls. On create the definition's shape picks the builder version (editor/graph -> 2.0, classic -> 1.0). Editor and graph definitions are structurally pre-flight validated before anything is created or saved, so a malformed 2.0 rule never strands an empty shell; a classic definition is saved as-is and validated by the hub.[[/FLAT_TRIM]] Omit appId to create (name + definition required). On EDIT two refusals (isError validation results, nothing written): a 2.0 type name this build does not know unless the rule already uses it, and a classic key outside whenNodes/thenNodes/elseNodes. Pre-flight: backup within 24h + confirm=true. Schemas + worked example: hub_get_tool_guide(section='visual_rule_reference').",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -16346,7 +16346,7 @@ def toolUpdateRule(ruleId, args, String customEngineMode = "full") {
     if (customEngineMode == "readonly") {
         def structuralKeys = (args?.keySet() ?: []).findAll { it != "enabled" && it != "ruleId" }
         if (!structuralKeys.isEmpty()) {
-            throw new IllegalArgumentException("In read-only mode (Custom Rule Engine toggle OFF), only the 'enabled' field can be updated. Structural fields provided: ${structuralKeys.sort().join(', ')}. To modify rule structure (triggers/conditions/actions), turn ON the Custom Rule Engine toggle in MCP server settings. The custom rule engine is legacy -- for new rule structure work, use hub_manage_rule_machine hub_update_rule_document instead.")
+            throw new IllegalArgumentException("In read-only mode (Custom Rule Engine toggle OFF), only the 'enabled' field can be updated. Structural fields provided: ${structuralKeys.sort().join(', ')}. To modify rule structure (triggers/conditions/actions), turn ON the Custom Rule Engine toggle in MCP server settings. The custom rule engine is legacy -- for new rule structure work, use hub_manage_rule_machine hub_set_rule instead.")
         }
     }
     if (args.triggers != null) {
@@ -16521,7 +16521,7 @@ private String findRuleAppRedirect(ruleId, String verb) {
             return "Rule ${idStr} is a Hubitat built-in ${appTypeName} app. " +
                 "Use `hub_read_apps_code -> hub_get_app_config(appId=${idStr})` for read-only inspection. " +
                 "`hub_update_custom_rule` only handles MCP's own rule engine, not Hubitat built-in apps. " +
-                "Use `hub_manage_rule_machine -> hub_update_rule_document(rule_id=${idStr})` to modify it programmatically " +
+                "Use `hub_manage_rule_machine -> hub_set_rule(rule_id=${idStr})` to modify it programmatically " +
                 "(requires the Write master)."
         }
     } catch (Exception e) {
@@ -16798,7 +16798,7 @@ def _getAllToolDefinitions_partCustomRules() {
         ],
         [
             name: "hub_create_custom_rule",
-            description: """*** LEGACY (MCP sandbox engine): for "create a Rule Machine rule" / "Hubitat rule" / anything the user wants visible in Hubitat's RM UI, use hub_manage_rule_machine hub_update_rule_document instead. ***
+            description: """*** LEGACY (MCP sandbox engine): for "create a Rule Machine rule" / "Hubitat rule" / anything the user wants visible in Hubitat's RM UI, use hub_manage_rule_machine hub_set_rule instead. ***
 
 Create a new automation rule (MCP sandbox engine). The custom MCP rule engine is now considered legacy. Existing custom rules continue to fire and this engine will receive bug fixes if reported, but new feature work goes to native Rule Machine. THIS tool creates MCP-managed sandbox rules that fire as installed apps but are NOT visible in Hubitat's RM UI; only use when explicitly asked for that or for backward compatibility with existing custom_* rules. Call `hub_get_tool_guide(section='rules')` for the trigger/condition/action type lists, per-type fields, structure, syntax, and examples.
 
@@ -21328,7 +21328,7 @@ def toolCloneNativeApp(args) {
         _appClonerCommitImportRule(clonerAppId, sourceAppId, newName, referrer, configUrl)
         Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, sourceLabel, newName)
         String note = newAppId
-            ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_update_rule_document for RM structures or hub_call_app_form for native editor fields and controls."
+            ? "Cloned source ${sourceAppId} -> new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_set_rule to edit RM rules; use the native editor for other apps."
             : "Clone fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
         def result = [
             success: newAppId != null,
@@ -21422,7 +21422,7 @@ Map _appClonerExportJson(Integer sourceAppId) {
                     "Known cause: if the source rule has a Required Expression, appCloner export currently fails for it -- " +
                     "delete the Required Expression in the Rule Machine UI, export, then re-add it (no MCP tool removes a " +
                     "Required Expression: replaceRequiredExpression only swaps one for another); or edit the rule in place " +
-                    "via hub_call_app_form instead of export/import. " +
+                    "via hub_set_rule instead of export/import. " +
                     "If the rule has NO Required Expression, the cloner wire format may have changed"
             }
             throw new IllegalStateException("appCloner export fired but ${reason} for cloner ${clonerAppId}")
@@ -21524,7 +21524,7 @@ def toolImportNativeApp(args) {
         _appClonerCommitImportRule(clonerAppId, originalSourceId, newName, referrer, configUrl)
         Integer newAppId = _appClonerDiscoverNewChild(parentAppId, preIds, originalLabel, newName)
         String note = newAppId
-            ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_update_rule_document for RM structures or hub_call_app_form for native editor fields and controls."
+            ? "Imported '${originalLabel ?: 'app'}' as new app ${newAppId}${newName ? " (renamed to '${newName}')" : ""}. Use hub_set_rule to edit RM rules; use the native editor for other apps."
             : "Import fired but no new child appeared under parent ${parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
         def result = [
             success: newAppId != null,
@@ -21991,8 +21991,8 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             note: (step == "settings replay"
                 ? "Rule ${ruleId} exists but may have incomplete settings. Inspect with hub_get_app_config(appId=${ruleId}) and compare against hub_get_backup(backupKey) before retrying."
                 : (commitButton == "updateRule"
-                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or open hub_call_app_form(app_id=${ruleId}, steps=[{kind:'open'}], confirm=true), then activate the returned Update Rule control_id."
-                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or open hub_call_app_form(app_id=${ruleId}, steps=[{kind:'open'}], confirm=true), then activate the returned native control_id.")).toString()
+                    ? "The settings were replayed but the rule's updateRule did not fire, so its subscriptions may still reflect the pre-restore state. Open the rule and click Update Rule, or open hub_set_rule(operation:'form', rule_id:${ruleId}, args:[steps:[[kind:'open']]], confirm:true), then activate the returned Update Rule control_id."
+                    : "The settings were replayed but the app's ${commitButton ?: 'Done'} did not run, so its subscriptions may still reflect the pre-restore state. Open the app and click ${commitButton ?: 'Done'}, or open hub_set_rule(operation:'form', rule_id:${ruleId}, args:[steps:[[kind:'open']]], confirm:true), then activate the returned native control_id.")).toString()
         ]
     }
     def out = [
@@ -22029,7 +22029,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
     }
     if (skippedDevices) {
         out.partial = true
-        out.note = "${out.note} Device(s) deleted since the backup were left out: ${skippedDevices.collect { "${it.key} (${it.ids.join(', ')})" }.join(', ')}. Pick replacements using the native device choices returned by hub_call_app_form if the rule needs them.".toString()
+        out.note = "${out.note} Device(s) deleted since the backup were left out: ${skippedDevices.collect { "${it.key} (${it.ids.join(', ')})" }.join(', ')}. Pick replacements using the native device choices returned by hub_set_rule if the rule needs them.".toString()
     }
     if (skippedMaps) {
         out.partial = true
@@ -22060,7 +22060,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         out.success = false
         out.partial = true
         out.error = "Settings were restored, but the rule's triggers/actions do not match the backup: ${structure.structureError}".toString()
-        out.note = "${out.note} Triggers and actions live in Rule Machine state, which a settings replay cannot rebuild -- rebuild the missing structures with hub_update_rule_document trigger/action changes, checking hub_get_app_config(appId=${ruleId}) against hub_get_backup.".toString()
+        out.note = "${out.note} Triggers and actions live in Rule Machine state, which a settings replay cannot rebuild -- rebuild the missing structures with hub_set_rule trigger/action changes, checking hub_get_app_config(appId=${ruleId}) against hub_get_backup.".toString()
     } else if (structure?.removedTriggers || structure?.removedActions || structure?.removedConditionIds) {
         out.note = "${out.note} Removed what the backup did not have (triggers ${structure.removedTriggers ?: []}, actions ${structure.removedActions ?: []}, conditions ${structure.removedConditionIds ?: []}).".toString()
     }
@@ -22068,7 +22068,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
         out.success = false
         out.partial = true
         out.error = [out.error, "Settings were restored, but the rule's Required Expression does not match the backup: ${reOutcome.requiredExpressionError}"].findAll { it }.join(" ").toString()
-        out.note = "${out.note} The Required Expression was NOT restored -- inspect it with hub_get_app_config(appId=${ruleId}) and rebuild it with hub_update_rule_document required tokens.".toString()
+        out.note = "${out.note} The Required Expression was NOT restored -- inspect it with hub_get_app_config(appId=${ruleId}) and rebuild it with hub_set_rule required tokens.".toString()
     } else if (reOutcome?.requiredExpressionRemoved == true) {
         out.note = "${out.note} The backup had no Required Expression, so the rule's expression was removed.".toString()
     } else if (reOutcome?.requiredExpressionRestored == true) {
@@ -22119,7 +22119,7 @@ def _getAllToolDefinitions_partAppCloner() {
     return [
         [
             name: "hub_clone_native_app",
-            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner, then edit RM structures via hub_update_rule_document or native fields and controls via hub_call_app_form.[[FLAT_TRIM]] A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that has the shape you want. Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure). The clone completes in tens of seconds for typical rules.[[/FLAT_TRIM]] Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
+            description: """Clone any classic native automation app (RM rule, Room Lighting, Button Controller, Basic Rule, Notifier, etc.) using Hubitat's first-party appCloner, then edit RM rules via hub_set_rule or other apps in their native editor.[[FLAT_TRIM]] A lower-overhead alternative to rebuilding via the wizard: clone an existing rule that has the shape you want. Preserves the full rule shape (conditions, expressions, IF/THEN/ELSE structure). The clone completes in tens of seconds for typical rules.[[/FLAT_TRIM]] Returns newAppId on success. Requires the Write master + confirm=true (+ a recent backup).""",
             inputSchema: [
                 type: "object",
                 properties: [
@@ -22226,7 +22226,7 @@ private Map _mrtrCloneNativeAppSlice(Map rec, Map outerArgs) {
             Integer newAppId = _appClonerDiscoverNewChild(cp.parentAppId as Integer,
                 (cp.preIds ?: []) as Set, cp.sourceLabel?.toString(), cp.newName?.toString())
             String note = newAppId
-                ? "Cloned source ${cp.sourceAppId} -> new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_update_rule_document for RM structures or hub_call_app_form for native editor fields and controls."
+                ? "Cloned source ${cp.sourceAppId} -> new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_set_rule to edit RM rules; use the native editor for other apps."
                 : "Clone fired but no new child appeared under parent ${cp.parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
             def baseResult = [success: newAppId != null, sourceAppId: cp.sourceAppId,
                               clonerAppId: clonerAppId, newAppId: newAppId, note: note]
@@ -22331,7 +22331,7 @@ private Map _mrtrImportNativeAppSlice(Map rec, Map outerArgs) {
             Integer newAppId = _appClonerDiscoverNewChild(cp.parentAppId as Integer,
                 (cp.preIds ?: []) as Set, cp.originalLabel?.toString(), cp.newName?.toString())
             String note = newAppId
-                ? "Imported '${cp.originalLabel ?: 'app'}' as new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_update_rule_document for RM structures or hub_call_app_form for native editor fields and controls."
+                ? "Imported '${cp.originalLabel ?: 'app'}' as new app ${newAppId}${cp.newName ? " (renamed to '${cp.newName}')" : ""}. Use hub_set_rule to edit RM rules; use the native editor for other apps."
                 : "Import fired but no new child appeared under parent ${cp.parentAppId}. Re-check via hub_list_apps (scope='instances') shortly."
             def baseResult = [success: newAppId != null, clonerAppId: clonerAppId,
                               newAppId: newAppId, originalSourceId: cp.originalSourceId,
@@ -22700,7 +22700,7 @@ def _getAllToolDefinitions_partDiscovery() {
             inputSchema: [
                 type: "object",
                 properties: [
-                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["native_app_forms", "native_rule_documents", "device_authorization", "best_practice_reference", "tool_access", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
+                    section: [type: "string", description: "One section key from the enum. Omit to get the key list plus the first page of the full guide.", enum: ["set_rule_reference", "device_authorization", "best_practice_reference", "tool_access", "hub_admin_write", "hub_admin_write_overview", "hub_admin_write_destructive", "hub_admin_write_radios", "hub_admin_write_devices", "hub_admin_write_code", "hub_admin_write_system", "virtual_devices", "update_device", "rules", "backup", "file_manager", "performance", "performance_overview", "performance_devices", "performance_diagnostics", "builtin_app_tools", "builtin_app_tools_overview", "builtin_app_tools_apps", "builtin_app_tools_rules", "builtin_app_tools_crud", "visual_rule_reference", "variables", "dashboards", "bundles", "rooms", "slow_ops"]],
                     cursor: [type: "string", description: "Continue a paged payload: pass the prior call's nextCursor. Omit otherwise -- a cursor is rejected on a payload that fit one response."],
                     platform_api_search: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: search the hub's Groovy API docs, e.g. 'eventsBetween'.[[/FLAT_TRIM]]"],
                     platform_api_page: [type: "string", description: "[[FLAT_TRIM]]Instead of a section: one API docs class page by pageId.[[/FLAT_TRIM]]"]
@@ -23277,8 +23277,8 @@ private String _rmSendActionErrorNote(String rmAction, List<Integer> ruleIds, St
     if (message && message.toLowerCase().contains(_rmExcessiveLoadMarker())) {
         if (rmAction == "pauseRule" || rmAction == "resumeRule") {
             def verb = (rmAction == "resumeRule") ? "resume" : "pause"
-            def perRule = (ruleIds.size() == 1) ? "hub_call_app_form(app_id=${ruleIds[0]}, steps:[{kind:'open'}], confirm:true), then use the returned pause control"
-                                                : "hub_call_app_form(app_id=<id>, steps:[{kind:'open'}], confirm:true), then use the returned pause control per rule (${ruleIds.join(', ')}) -- CHECK EACH RULE'S CURRENT STATE FIRST via hub_list_rules: the batch went out in one RMUtils dispatch and part of it may already have been actioned, and pausRule is a toggle, so clicking it on a rule the batch already ${verb}d UNDOES that rule"
+            def perRule = (ruleIds.size() == 1) ? "hub_set_rule(operation:'form', rule_id:${ruleIds[0]}, args:[steps:[[kind:'open']]], confirm:true), then use the returned pause control"
+                                                : "hub_set_rule(operation:'form', rule_id:<id>, args:[steps:[[kind:'open']]], confirm:true), then use the returned pause control per rule (${ruleIds.join(', ')}) -- CHECK EACH RULE'S CURRENT STATE FIRST via hub_list_rules: the batch went out in one RMUtils dispatch and part of it may already have been actioned, and pausRule is a toggle, so clicking it on a rule the batch already ${verb}d UNDOES that rule"
             return "RMUtils hit the hub's per-app load limiter (sticky -- retrying does not clear it; an app disable/enable clears only the block on the app instance and the platform's load counters can re-trip it at once, so only a hub reboot fully resets it). To ${verb} the rule now, drive the page button directly with ${perRule}, which bypasses RMUtils and is load-immune (pausRule is a single toggle -- clicking it on a paused rule resumes it). ${base}"
         }
         return "RMUtils hit the hub's per-app load limiter. It is sticky -- it does NOT lift when load drains and an immediate retry fails the same way. An app disable/enable clears the block on the app instance but not the platform's load counters, so it can re-trip immediately; a hub reboot is what resets them. Clear it, then reissue. ${base}"
@@ -26030,32 +26030,94 @@ Map toolCreateRuleDocument(Map args) {
         [success: false, partial: true, rule_id: verifiedChild ? id : null, created: verifiedChild, error: failure.message?.toString()]
     }
 }
+boolean _isRuleReadCall(String toolName, args) {
+    toolName == 'hub_set_rule' && args instanceof Map && (!args.containsKey('operation') || args.operation == 'read' || args.confirm != true)
+}
+private Map _ndOperationSchema(String operation) {
+    def changes = [type: 'array', minItems: operation == 'create' ? 0 : 1, maxItems: 100,
+        items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator', 'delete', 'order']], value: [type: 'object']], required: ['part', 'value']]]
+    Map properties = [:]
+    List required = []
+    if (operation == 'read') {
+        properties.sections = [type: 'array', items: [type: 'string', enum: ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']]]
+    } else if (operation == 'create') {
+        properties = [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes]
+        required = ['parent_id', 'name', 'changes']
+    } else if (operation == 'update') {
+        properties.changes = changes
+        required = ['changes']
+    } else if (operation == 'form') {
+        properties = [steps: [type: 'array', minItems: 1, maxItems: 16, items: [type: 'object', additionalProperties: false,
+            properties: [kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], expect_page: [type: 'string'], fields: [type: 'object'], activate: [type: 'string']], required: ['kind']]],
+            options_for: [type: 'array', maxItems: 32, items: [type: 'string']]]
+        required = ['steps']
+    } else throw new IllegalArgumentException('Unknown rule operation; use read, create, update or form')
+    [type: 'object', additionalProperties: false, properties: properties, required: required]
+}
+private void _ndValidateSchema(Object value, Map schema, String path, boolean complete) {
+    boolean valid = schema.type == 'object' ? value instanceof Map : schema.type == 'array' ? value instanceof List :
+        schema.type == 'string' ? value instanceof String : schema.type == 'boolean' ? value instanceof Boolean :
+        schema.type == 'integer' ? value instanceof Number && value.toString().isLong() : true
+    if (!valid || (schema.enum != null && !(value in schema.enum))) throw new IllegalArgumentException("Invalid ${path}")
+    if (schema.type == 'object') {
+        if (schema.additionalProperties == false && value.keySet().any { !schema.properties.containsKey(it) }) throw new IllegalArgumentException("Unknown ${path} property")
+        if (complete && schema.required?.any { !value.containsKey(it) }) throw new IllegalArgumentException("Missing required ${path} property")
+        value.each { key, item -> if (schema.properties?.containsKey(key)) _ndValidateSchema(item, schema.properties[key], "${path}.${key}".toString(), complete) }
+    } else if (schema.type == 'array') {
+        if ((schema.minItems != null && value.size() < schema.minItems) || (schema.maxItems != null && value.size() > schema.maxItems)) throw new IllegalArgumentException("Invalid ${path} length")
+        value.each { item -> _ndValidateSchema(item, schema.items, path, complete) }
+    } else if (schema.type == 'string') {
+        if ((schema.minLength != null && value.trim().size() < schema.minLength) || (schema.maxLength != null && value.size() > schema.maxLength)) throw new IllegalArgumentException("Invalid ${path} length")
+    } else if (schema.minimum != null && value < schema.minimum) throw new IllegalArgumentException("Invalid ${path}")
+}
+Map toolSetRule(Map request) {
+    if (request.keySet().any { !(it in ['operation', 'rule_id', 'args', 'confirm', 'bestPracticeKey']) }) throw new IllegalArgumentException('Unknown hub_set_rule property')
+    if (request.containsKey('confirm') && !(request.confirm instanceof Boolean)) throw new IllegalArgumentException('confirm must be boolean')
+    if (request.containsKey('rule_id')) _ndValidateSchema(request.rule_id, [type: 'integer', minimum: 1], 'rule_id', true)
+    if (request.containsKey('args') && !(request.args instanceof Map)) throw new IllegalArgumentException('args must be an object')
+    if (!request.containsKey('operation')) {
+        if (request.args) throw new IllegalArgumentException('Choose an operation before supplying args')
+        return [operations: ['read', 'create', 'update', 'form'], usage: 'Choose operation for its schema. Writes return schema until confirm=true. See set_rule_reference.']
+    }
+    if (!(request.operation instanceof String)) throw new IllegalArgumentException('operation must be a string')
+    String operation = request.operation
+    Map schema = _ndOperationSchema(operation)
+    Map arguments = request.args ?: [:]
+    boolean execute = operation == 'read' || request.confirm == true
+    _ndValidateSchema(arguments, schema, 'args', execute)
+    if (operation == 'create' && request.containsKey('rule_id')) throw new IllegalArgumentException('create uses args.parent_id, not rule_id')
+    if (!execute) {
+        Map properties = [operation: [type: 'string', enum: [operation]], args: schema, confirm: [type: 'boolean']]
+        List required = ['operation', 'args', 'confirm']
+        if (operation != 'create') { properties.rule_id = [type: 'integer', minimum: 1]; required << 'rule_id' }
+        return [operation: operation, confirm_required: true, inputSchema: [type: 'object', additionalProperties: false, properties: properties, required: required],
+            usage: 'Supply these arguments with confirm=true and a recent backup to execute. See set_rule_reference.']
+    }
+    if (operation != 'create' && !request.containsKey('rule_id')) throw new IllegalArgumentException('rule_id is required')
+    if (operation == 'read') return toolGetRuleDocument(arguments + [rule_id: request.rule_id])
+    if (operation == 'create') return toolCreateRuleDocument(arguments + [confirm: true])
+    if (operation == 'update') return toolUpdateRuleDocument(arguments + [rule_id: request.rule_id, confirm: true])
+    Long id = _ndId(request.rule_id)
+    def target = getAppByAppId(id)
+    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || !(target?.appType?.name in ['Rule-5.1', 'Rule Machine'])) throw new IllegalArgumentException('rule_id must identify native Rule-5.1 or Rule Machine')
+    toolCallAppForm(arguments + [app_id: request.rule_id, confirm: true])
+}
 def _getAllToolDefinitions_partNativeDocuments() {
-    def changes = [type: 'array', minItems: 1, maxItems: 100, items: [type: 'object', additionalProperties: false, properties: [part: [type: 'string', enum: ['condition', 'trigger', 'action', 'expression', 'required', 'variable', 'terminator', 'delete', 'order']], value: [type: 'object']], required: ['part', 'value']]]
-    def warning = ' confirm=true and recent hub backup required. Preflight: read native_rule_documents guide/document; verify IDs and fields. Partial changes can remain.'
-    return [
-        [
-            name: 'hub_get_rule_document', description: 'Read native rule structure, typed settings and current local variables; no editor renders.', inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], sections: [type: 'array', items: [type: 'string', enum: ['actions', 'conditions', 'triggers', 'expressions', 'variables', 'settings']]]], required: ['rule_id']]],
-        [
-            name: 'hub_update_rule_document', description: 'Update a native rule with ordered {part,value} changes.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [rule_id: [type: 'integer', minimum: 1], changes: changes, confirm: [type: 'boolean']], required: ['rule_id', 'changes', 'confirm']]],
-        [
-            name: 'hub_create_rule_document', description: 'Create/install a native rule with ordered {part,value} changes; [] creates an empty rule.' + warning, inputSchema: [type: 'object', additionalProperties: false, properties: [parent_id: [type: 'integer', minimum: 1], name: [type: 'string', minLength: 1, maxLength: 200], changes: changes + [minItems: 0], confirm: [type: 'boolean']], required: ['parent_id', 'name', 'changes', 'confirm']]]
-    ]
+    [[name: 'hub_set_rule', description: 'Read, create or update native Rule Machine rules, or use their native forms. Omit operation for help; select a write operation without confirm for its schema. Writes require confirm=true and a recent backup; partial changes can remain. Guide: set_rule_reference.',
+      inputSchema: [type: 'object', additionalProperties: false, properties: [operation: [type: 'string', enum: ['read', 'create', 'update', 'form']], rule_id: [type: 'integer', minimum: 1], args: [type: 'object'], confirm: [type: 'boolean']]]]]
 }
-def _readOnlyToolNames_partNativeDocuments() {
-    return ["hub_get_rule_document"]
-}
+def _readOnlyToolNames_partNativeDocuments() { [] }
 def _toolDisplayMeta_partNativeDocuments() {
-    return [hub_get_rule_document: [title: 'Get Native Rule Document', summary: 'Read native rule actions, expressions, conditions, triggers, variables and typed settings.'],
-     hub_update_rule_document: [title: 'Update Native Rule Document', summary: 'Compile ordered changes into an existing native Rule Machine rule.'],
-     hub_create_rule_document: [title: 'Create Native Rule Document', summary: 'Create and install a native Rule Machine rule from ordered changes.']]
+    [hub_set_rule: [title: 'Set Native Rule', summary: 'Read, create and update native rules or use their native editor forms.']]
 }
 String _ndGuide() {
-    return '''## Native Rule Documents
+    return '''## Set Rule Reference
 
-Read hub_get_rule_document(rule_id, sections?) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
+Call hub_set_rule without operation for help, or choose a write operation without confirm to inspect its schema without changing the rule. Top-level rule_id identifies the target; args cannot override it or confirm.
 
-Writes require confirm=true and a recent hub backup. hub_update_rule_document(rule_id, changes, confirm) applies changes in order. hub_create_rule_document(parent_id, name, changes, confirm) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
+Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
+
+Writes require confirm=true and a recent hub backup. hub_set_rule(operation:"update",rule_id,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parent_id,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.
@@ -26068,9 +26130,19 @@ Each change is {part,value}. Supported parts:
 - delete: {part:action|condition|trigger,id}; referenced conditions must be detached first.
 - order: {ids:[native action IDs]}; a complete exact permutation is required.
 
-Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; wait expressions and every capability-specific variant are not yet supported. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback, native editor diagnostics, expression-reference checks and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
+Typed fields use exact native names containing # for the allocated ID, for example logmsg.#. Expressions use existing native condition IDs and (, ), NOT, AND, OR, XOR. Omit an id to append; provide an existing native id to edit. Field names and capability/action variants require verified native contracts; not every capability-specific variant is supported. Discover native options through operation:"form" when a document contract is unavailable. Unknown fields cannot be assumed to compile correctly merely because a setting persists. A successful result establishes native model checks, typed readback, native editor diagnostics, expression-reference checks and nonbroken health with activation status; independently verify device behavior and native UI editing for the intended automation.
 
-Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state and are never part of document reads.'''
+Example changes: [{part:"action",value:{type:"messageActs",subtype:"getLogMsg",fields:[{name:"logmsg.#",type:"textarea",value:"Document action"}]}}]. Writes render the native trigger/action/main pages, check health, submit native Done, and read subscriptions plus a fresh document. These pages can mutate native state and are never part of document reads.
+
+## Native Rule Forms
+
+Use hub_set_rule(operation:"form",rule_id,args:{steps:[{kind:"open"}]},confirm:true) to operate an enabled Rule-5.1 rule or its Rule Machine parent. Select operation:"form" without confirmation to inspect the schema. Discover native action variants, input names and option values through the returned forms rather than guessing a static catalogue. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
+
+Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}. Omit activate to save the supplied fields and refresh the current page. Control IDs distinguish native buttons sharing a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. Defaults are shown but are not automatically submitted; supply a required default explicitly before navigating. Use args.options_for:["device field name"] to expand device choices on the final returned page.
+
+Batches contain 1 through 16 ordered steps. Each step uses the form returned by the preceding step, so dependent fields require another submit after they appear. A button handler runs before that step's fields are saved, as in the native browser; submit fields in a preceding step when the handler needs them. A button without submitOnChange reloads and requires a separate field submission.
+
+The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight caller workflows. Opening another app replaces only that caller's previous context; reopen the previous app before submitting it again. Other callers' contexts are retained. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. A verified local native link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true; open that target separately. No script is evaluated. App-authored JavaScript, custom HTML inputs, uploads, external links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
 }
 @groovy.transform.Field static final Map NATIVE_FORM_CONTEXTS = new java.util.concurrent.ConcurrentHashMap()
 @groovy.transform.Field static final Map NATIVE_FORM_BUSY = new java.util.concurrent.ConcurrentHashMap()
@@ -26442,32 +26514,9 @@ Map toolCallAppForm(Map args) {
          reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
     } finally { NATIVE_FORM_BUSY.remove(appKey); NATIVE_FORM_BUSY.remove(key) }
 }
-def _getAllToolDefinitions_partNativeForms() {
-    def step = [type: 'object', additionalProperties: false, properties: [
-        kind: [type: 'string', enum: ['open', 'submit']], page: [type: 'string'], expect_page: [type: 'string'],
-        fields: [type: 'object'], activate: [type: 'string', description: 'Exact control_id returned by the current form.']
-    ], required: ['kind']]
-    return [[
-      name: 'hub_call_app_form',
-      description: 'Open or submit built-in native app forms using returned field/control names. Rendering executes app code and can change state. Requires confirm=true and a recent backup. Ordered batches may partially apply; never automatically retry buttons. Browser extensions are reported unsupported.',
-      inputSchema: [type: 'object', additionalProperties: false, properties: [app_id: [type: 'integer', minimum: 1],
-        steps: [type: 'array', minItems: 1, maxItems: 16, items: step], options_for: [type: 'array', maxItems: 32, items: [type: 'string']], confirm: [type: 'boolean']],
-        required: ['app_id', 'steps', 'confirm']]]]
-}
-def _toolDisplayMeta_partNativeForms() {
-    [hub_call_app_form: [title: 'Call Native App Form', summary: 'Inspect and submit native classic forms, including page links and buttons.']]
-}
-String _nfGuide() {
-    return '''## Native App Forms
-
-Use hub_call_app_form(app_id,steps,confirm:true) to operate an enabled built-in native app's classic editor. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
-
-Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}. Omit activate to save the supplied fields and refresh the current page. Control IDs distinguish native buttons sharing a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. Defaults are shown but are not automatically submitted; supply a required default explicitly before navigating. Use options_for:["device field name"] to expand device choices on the final returned page.
-
-Batches contain 1 through 16 ordered steps. Each step uses the form returned by the preceding step, so dependent fields require another submit after they appear. A button handler runs before that step's fields are saved, as in the native browser; submit fields in a preceding step when the handler needs them. A button without submitOnChange reloads and requires a separate field submission.
-
-The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight caller workflows. Opening another app replaces only that caller's previous context; reopen the previous app before submitting it again. Other callers' contexts are retained. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. A verified local native link or script navigation to the same app or its direct child returns navigated_app_id and navigated_page with closed:true; open that target separately. No script is evaluated. App-authored JavaScript, custom HTML inputs, uploads, external links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
-}
+def _getAllToolDefinitions_partNativeForms() { [] }
+def _toolDisplayMeta_partNativeForms() { [:] }
+String _nfGuide() { _ndGuide() }
 preferences {
     page(name: "mainPage")
     page(name: "confirmDeletePage")
@@ -26602,7 +26651,7 @@ def mainPage() {
                 paragraph "<b>NOTICE: ${existingRuleCount} existing custom MCP rule(s)</b><br>" +
                           "Your ${existingRuleCount} custom MCP rule(s) still fire and work normally. The Custom Rule Engine setting used to be ON by default; it now defaults OFF because the custom MCP rule engine is legacy -- it will continue to receive bug fixes but new feature work goes to native Rule Machine.<br>" +
                           "<b>Current state (toggle OFF):</b>${readonlyNote} Recommended: leave OFF if you have migrated to native Rule Machine. Turn ON only if you actively use your AI to fully manage these rules.<br>" +
-                          "For new rule creation, prefer <code>hub_manage_rule_machine</code> hub_create_rule_document -- those rules are visible in Hubitat's Rule Machine app list and web UI."
+                          "For new rule creation, prefer <code>hub_manage_rule_machine</code> hub_set_rule(operation='create') -- those rules are visible in Hubitat's Rule Machine app list and web UI."
             }
             input "enableCustomRuleEngine", "bool", title: "Enable Custom Rule Engine (legacy)",
                   description: "Controls the legacy MCP-managed rule engine (custom_* tools). OFF + Read master ON = read-only mode: hub_get_custom_rule (list/get/diagnostics modes), hub_update_custom_rule(enabled only), hub_test_custom_rule are visible; create/delete/export/import/clone are hidden. OFF + Read master OFF = all custom_* tools hidden. ON = all custom_* tools shown (full mode). The native Hubitat Rule Machine (governed by the Read/Write masters) is independent of this. Note: Hubitat firmware upgrades may briefly reset Boolean toggles -- verify this stays OFF after each firmware upgrade if you've migrated to native Rule Machine.",
@@ -26799,7 +26848,7 @@ private Set _installedAppTargetTools() {
             "hub_delete_native_app", "hub_set_app_disabled",
             "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule",
             "hub_set_visual_rule", "hub_delete_visual_rule", "hub_call_rule", "hub_set_rule_paused",
-            "hub_set_rule_private_boolean", "hub_call_app_form", "hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document"] as Set
+            "hub_set_rule_private_boolean", "hub_set_rule"] as Set
 }
 private boolean _targetsThisApp(Map args) {
     String self = app?.id?.toString()
@@ -26978,11 +27027,12 @@ String _clientToolDenial(String toolName, args = null) {
         return "${ext} is not enabled for ${who}. Ask the hub owner to enable it under Per-client access tokens in the MCP Rule Server app."
     }
     Map a = (args instanceof Map) ? args as Map : [:]
-    if (_installedAppTargetTools().contains(toolName) && _targetsThisApp(a)) {
+    if (_installedAppTargetTools().contains(toolName) && (_targetsThisApp(a) ||
+            (toolName == "hub_set_rule" && a.args instanceof Map && _targetsThisApp(a.args as Map)))) {
         return "${ext} cannot target the MCP Rule Server app itself from ${who}."
     }
     if (_alwaysGrantedToolNames().contains(toolName)) return null
-    boolean isRead = getReadOnlyToolNames().contains(toolName) || _isDeviceReplaceOptionsOnlyCall(toolName, a)
+    boolean isRead = getReadOnlyToolNames().contains(toolName) || _isDeviceReplaceOptionsOnlyCall(toolName, a) || _isRuleReadCall(toolName, a)
     if (isRead && !_clientAllows(id, "clientRead")) return "Read tools are disabled for ${who}, so ${ext} cannot run."
     if (!isRead && !_clientAllows(id, "clientWrite")) return "Write tools are disabled for ${who}, so ${ext} cannot run."
     return null
@@ -26996,7 +27046,8 @@ private Set _clientHiddenTools() {
     boolean noRead = !_clientAllows(id, "clientRead")
     boolean noWrite = !_clientAllows(id, "clientWrite")
     return _toolCatalogIndexes().names.findAll { name ->
-        !allowed.contains(name) || (!always.contains(name) && (readOnly.contains(name) ? noRead : noWrite))
+        !allowed.contains(name) || (!always.contains(name) &&
+            (name == "hub_set_rule" ? (noRead && noWrite) : (readOnly.contains(name) ? noRead : noWrite)))
     } as Set
 }
 Map _clientAccessInfo() {
@@ -28382,7 +28433,7 @@ def _budgetAwareTools() {
             "hub_get_device", "hub_list_devices", "hub_get_device_health", "hub_list_libraries"] as Set
 }
 def _mrtrWriteTools() {
-    return ["hub_call_app_form", "hub_create_rule_document", "hub_update_rule_document", "hub_call_rule",
+    return ["hub_set_rule", "hub_call_rule",
             "hub_clone_native_app", "hub_import_native_app",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
             "hub_delete_debug_logs", "hub_manage_virtual_device", "hub_update_device",
@@ -28405,7 +28456,7 @@ def _mrtrReadContinuationActive() {
     return (_isCloudRequest() ? _relayBudgetMs() : _lanBudgetMs()) > 0L
 }
 private Set _mrtrDetachedWorkerTools() {
-    return ["hub_call_app_form", "hub_create_rule_document", "hub_update_rule_document",
+    return ["hub_set_rule",
             "hub_create_driver", "hub_update_driver", "hub_delete_item",
             "hub_manage_virtual_device", "hub_update_device", "hub_restore_backup", "hub_create_backup"] as Set
 }
@@ -28419,6 +28470,7 @@ def _mrtrEligibleCall(outerToolName, leafToolName, args) {
             !(getGatewayConfig()[outer]?.tools?.contains(leaf)))) return false
     def leafArgs = _mrtrLeafArguments(outerToolName?.toString(), leaf, args as Map)
     if (!(leafArgs instanceof Map)) return false
+    if (_isRuleReadCall(leaf, leafArgs)) return false
     if (leaf == "hub_delete_item") return leafArgs.type?.toString() == "driver"
     if (leaf == "hub_restore_backup") {
         return (leafArgs.scope == null || leafArgs.scope.toString() == "source") &&
@@ -28441,7 +28493,7 @@ private boolean _isActualWriteCall(outerToolName, leafToolName, args) {
     if (leaf == "hub_get_metrics") return safeArgs.recordSnapshot == true
     if (leaf == "hub_update_firmware" && safeArgs.statusOnly == true) return false
     if (getReadOnlyToolNames().contains(leaf)) return false
-    if (_isDeviceReplaceOptionsOnlyCall(leaf, safeArgs)) return false
+    if (_isDeviceReplaceOptionsOnlyCall(leaf, safeArgs) || _isRuleReadCall(leaf, safeArgs)) return false
     if (leaf == "hub_update_package" && safeArgs.dryRun == true) return false
     return true
 }
@@ -28681,7 +28733,7 @@ private void _mrtrValidateAccess(outerToolName, leafToolName, Map outerArgs, boo
             throw new IllegalArgumentException(_bpsBlockMessage(bpsSection, bpsKey))
         }
     }
-    if (checkKey && leaf in ["hub_create_rule_document", "hub_update_rule_document", "hub_call_app_form"]) {
+    if (checkKey && leaf in ["hub_set_rule"]) {
         requireDestructiveConfirm(leafArgs?.confirm)
     }
 }
@@ -30305,9 +30357,8 @@ def getGatewayConfig() {
         ],
         hub_read_rules: [
             description: "Read-only inspection of automation rules: list/inspect MCP custom rules (legacy engine), list native Rule Machine rules + check rule health, and list/read Visual Rules Builder rules. All operations are read-only; rule writes live in hub_manage_custom_rules, hub_manage_rule_machine, and hub_manage_native_rules_and_apps.",
-            tools: ["hub_get_rule_document", "hub_get_custom_rule", "hub_test_custom_rule", "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule"],
+            tools: ["hub_get_custom_rule", "hub_test_custom_rule", "hub_list_rules", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_get_visual_rule"],
             summaries: [
-                hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
                 hub_get_custom_rule: "List MCP custom rules (omit ruleId) or get one rule's detail; detailed=true (with ruleId) adds diagnostics. Args: ruleId?, detailed?, cursor?",
                 hub_test_custom_rule: "Dry-run an MCP custom rule without executing actions. Args: ruleId",
                 hub_list_rules: "List all native Rule Machine rules (RM 4.x + 5.x) with IDs and labels",
@@ -30316,7 +30367,6 @@ def getGatewayConfig() {
                 hub_get_visual_rule: "List Visual Rules Builder rules (omit appId) or read one rule's full JSON definition + format. Args: appId?"
             ],
             searchHints: [
-                hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
                 hub_get_custom_rule: "read fetch inspect list show custom mcp sandbox rule automation diagnostics",
                 hub_test_custom_rule: "simulate preview validate check automation custom dry run",
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
@@ -30326,13 +30376,10 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_native_rules_and_apps: [
-            description: "Native classic-app forms, CRUD and Rule Machine runtime control. Use hub_call_app_form for ordered native open/submit steps; opening can mutate state. Native RM authoring uses hub_manage_rule_machine: hub_create_rule_document / hub_update_rule_document. Also delete/clone/export/import apps and list/run/pause/resume RM rules; not the custom_* engine. Mutating form/document calls need confirm=true plus a recent hub backup. Inspect partial outcomes and native health; use hub_get_app_config for configuration diagnostics before retrying.",
-            tools: ["hub_call_app_form", "hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
+            description: "Native app lifecycle and Rule Machine control. Use hub_set_rule for native RM read/create/update/form operations, and the dedicated tools to delete/clone/export/import apps or run/pause rules. Confirmed writes require a recent hub backup; inspect partial outcomes and native health before retrying.",
+            tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_set_app_disabled", "hub_delete_native_app", "hub_clone_native_app", "hub_export_native_app", "hub_import_native_app", "hub_get_rule_health"],
             summaries: [
-                hub_call_app_form: "Operate native app forms with ordered open/submit steps. Rendering can mutate app state. Args: app_id, steps, options_for?, confirm.",
-                hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
-                hub_create_rule_document: "Create and install a native Rule Machine child. Args: parent_id, name, changes, confirm.",
-                hub_update_rule_document: "Compile ordered semantic changes in place. Args: rule_id, changes, confirm.",
+                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (uses RMUtils — RM only)",
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule). rule uses RMUtils; actions clicks runAction; stop/start toggle stopRule (start resets private boolean).",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call (RMUtils). Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
@@ -30345,10 +30392,7 @@ def getGatewayConfig() {
                 hub_get_rule_health: "Inspect a rule (Rule Machine OR Visual Rules Builder) for broken state — compiled `broken` boolean / graph validationErrors, label *BROKEN*, **Broken Trigger** markers, configPage errors, multiple-flag corruption. Args: appId, source. Returns {ok, broken, source, ruleFormat, issues, ...}. Native documents perform independent compilation checks; visual writes attach health too."
             ],
             searchHints: [
-                hub_call_app_form: "Operate native app forms with ordered open/submit steps. Rendering can mutate app state. Args: app_id, steps, options_for?, confirm.",
-                hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
-                hub_create_rule_document: "Create and install a native Rule Machine child. Args: parent_id, name, changes, confirm.",
-                hub_update_rule_document: "Compile ordered semantic changes in place. Args: rule_id, changes, confirm.",
+                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
                 hub_list_rules: "rule machine rules native builtin automation list enumerate",
                 hub_call_rule: "trigger fire execute native rule machine rule",
                 hub_set_rule_paused: "pause resume disable enable stop unpause temporarily rule machine rule",
@@ -30460,12 +30504,10 @@ def getGatewayConfig() {
             ]
         ],
         hub_manage_rule_machine: [
-            description: "Native Rule Machine document authoring and runtime control. Use hub_get_rule_document to read without editor renders, hub_create_rule_document to create, and hub_update_rule_document for supported native actions, triggers, conditions, expressions and variables. Validate native UI and runtime behavior for each capability; unsupported variants are reported. Visual Rules Builder uses hub_set_visual_rule / hub_get_visual_rule / hub_delete_visual_rule. Delete native rules with hub_delete_native_app. For other classic apps and native editor forms use hub_manage_native_rules_and_apps. Read-only rule views are in hub_read_rules.",
-            tools: ["hub_get_rule_document", "hub_create_rule_document", "hub_update_rule_document", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
+            description: "Native Rule Machine authoring and runtime control. hub_set_rule provides read/create/update/form operations; call without operation for help or without confirm for a write-operation schema. Confirmed writes require a recent hub backup. Use hub_delete_native_app to delete a rule. Visual Rules Builder has dedicated tools; read-only rule diagnostics are in hub_read_rules.",
+            tools: ["hub_set_rule", "hub_list_rules", "hub_call_rule", "hub_set_rule_paused", "hub_set_rule_private_boolean", "hub_get_rule_health", "hub_list_rule_local_variables", "hub_delete_native_app", "hub_get_visual_rule", "hub_set_visual_rule", "hub_delete_visual_rule"],
             summaries: [
-                hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
-                hub_create_rule_document: "Create and install a native Rule Machine child. Args: parent_id, name, changes, confirm.",
-                hub_update_rule_document: "Compile ordered semantic changes in place. Args: rule_id, changes, confirm.",
+                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
                 hub_list_rules: "List all Rule Machine rules (RM 4.x + 5.x) with IDs and labels (RMUtils — RM only)",
                 hub_call_rule: "Trigger an RM rule lifecycle verb. Args: ruleId (id or array of ids), action (rule/actions/stop/start, default rule)",
                 hub_set_rule_paused: "Pause or resume one or more RM rules in one call. Args: ruleId (id or array of ids), paused (true=pause, false=resume)",
@@ -30478,9 +30520,7 @@ def getGatewayConfig() {
                 hub_delete_visual_rule: "Delete a Visual Rules Builder rule (type-gated; returns the pre-delete definition for recovery). Args: appId, confirm."
             ],
             searchHints: [
-                hub_get_rule_document: "Read native ordered actions, expressions, triggers, conditions, variables and typed settings without editor renders. Args: rule_id, sections?.",
-                hub_create_rule_document: "Create and install a native Rule Machine child. Args: parent_id, name, changes, confirm.",
-                hub_update_rule_document: "Compile ordered semantic changes in place. Args: rule_id, changes, confirm.",
+                hub_set_rule: "Read, create, update or use native Rule Machine forms. Args: operation?, rule_id?, args?, confirm?. Omit operation for help; unconfirmed writes return schemas.",
                 hub_list_rules: "rule machine rules native builtin automation list enumerate RM",
                 hub_call_rule: "trigger fire execute run native rule machine rule stop start",
                 hub_set_rule_paused: "pause resume disable enable stop unpause rule machine rule",
@@ -30546,7 +30586,9 @@ def getHiddenToolNames() {
     def readOnly = getReadOnlyToolNames()
     if (settings.enableRead == false) hide.addAll(readOnly)
     if (settings.enableWrite == false) {
-        _toolCatalogIndexes().names.each { if (!readOnly.contains(it)) hide << it }
+        _toolCatalogIndexes().names.each {
+            if (!readOnly.contains(it) && !(it == "hub_set_rule" && settings.enableRead != false)) hide << it
+        }
     }
     def mode = getCustomEngineMode()
     if (mode == "off") {
@@ -30961,10 +31003,10 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
     }
     def isGatewayName = getGatewayConfig().containsKey(toolName)
     if (!isGatewayName) {
-        boolean isReadShapedWrite = _isDeviceReplaceOptionsOnlyCall(toolName, args)
+        boolean isReadShapedWrite = _isDeviceReplaceOptionsOnlyCall(toolName, args) || _isRuleReadCall(toolName, args)
         if (isReadShapedWrite) {
             if (settings.enableRead == false) {
-                throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName}'s options read.")
+                throw new IllegalArgumentException("Read tools are disabled. Enable 'Read Tools' in MCP Rule Server app settings to use ${toolName} for this read operation.")
             }
         } else if (getReadOnlyToolNames().contains(toolName)) {
             if (settings.enableRead == false) {
@@ -30980,6 +31022,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
             && !getReadOnlyToolNames().contains(toolName)
             && !(toolName in ['hub_get_tool_guide', 'hub_update_mcp_settings'])
             && !_isDeviceReplaceOptionsOnlyCall(toolName, args ?: [:])
+            && !_isRuleReadCall(toolName, args ?: [:])
             && !bpsChecked) {
         String bpsSection = _bpsSectionForTool(toolName)
         def bpsKey = hubBpsKeyFromArgs(args)
@@ -31109,10 +31152,7 @@ def executeTool(toolName, args, boolean bpsChecked = false) {
         case "hub_create_room": return toolCreateRoom(args)
         case "hub_delete_room": return toolDeleteRoom(args)
         case "hub_update_room": return toolRenameRoom(args)
-        case "hub_call_app_form": return toolCallAppForm(args)
-        case "hub_get_rule_document": return toolGetRuleDocument(args)
-        case "hub_create_rule_document": return toolCreateRuleDocument(args)
-        case "hub_update_rule_document": return toolUpdateRuleDocument(args)
+        case "hub_set_rule": return toolSetRule(args)
         case "hub_get_app_config": return toolGetAppConfig(args)
         case "hub_list_app_pages": return toolListAppPages(args)
         case "hub_get_source": return toolGetSource(args)
@@ -33462,7 +33502,7 @@ private List _rmStructuralIssuesFromSequence(List<Map> sequence) {
         def aType = entry?.actType?.toString()
         def sType = entry?.actSubType?.toString()
         if (entry?.partial == true || (aType in ["condActs", "repeatActs"] && (sType == null || sType == ""))) {
-            issues << ("action ${idx} is in a partial-commit state (actType set, actSubType missing) — likely from an interrupted wizard write where the actType landed but the actSubType did not. The walker treats this as an opaque block boundary; restore from a recent backup or inspect and finish the native editor via hub_call_app_form.".toString())
+            issues << ("action ${idx} is in a partial-commit state (actType set, actSubType missing) — likely from an interrupted wizard write where the actType landed but the actSubType did not. The walker treats this as an opaque block boundary; restore from a recent backup or inspect and finish the native editor via hub_set_rule(operation='form').".toString())
             return
         }
         if (aType == "condActs") {
@@ -33667,7 +33707,7 @@ Map _rmCheckRuleHealth(Integer appId, String source = "auto") {
             }
             if (cfg?.settings?.useST?.toString() == "true") {
                 if (ruleFormat == "rm" && requiredExpressionTokens == 0) {
-                    issues << "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED. Rebuild it with hub_update_rule_document required changes, or turn useST off if no gate is wanted.".toString()
+                    issues << "Required Expression is enabled (useST) but no expression is committed — the rule runs UNGATED. Rebuild it with hub_set_rule(operation='update') required changes, or turn useST off if no gate is wanted.".toString()
                 } else if (requiredExpressionTokens == null) {
                     checkErrors << "Required Expression is enabled (useST) but the committed expression was not read, so an ungated rule is not ruled out -- re-check it, or read its expression with hub_get_app_config.".toString()
                 }
@@ -34048,8 +34088,7 @@ String _guideSectionServed(String key, String body) {
 }
 def _guideSectionForTool(toolName) {
     def t = (toolName ?: '').toString()
-    if (t == 'hub_call_app_form') return 'native_app_forms'
-    if (t in ['hub_get_rule_document', 'hub_create_rule_document', 'hub_update_rule_document']) return 'native_rule_documents'
+    if (t == 'hub_set_rule') return 'set_rule_reference'
     if (t == 'hub_set_visual_rule' || t == 'hub_delete_visual_rule') return 'visual_rule_reference'
     if (t.endsWith('_custom_rule')) return 'rules'
     if (t in ['hub_delete_native_app', 'hub_clone_native_app',
@@ -34087,8 +34126,7 @@ def _applyReactiveBpsWarning(toolName, args, result) {
 }
 def getToolGuideSections() {
     return [
-        native_app_forms: _nfGuide(),
-        native_rule_documents: _ndGuide(),
+        set_rule_reference: _ndGuide(),
         device_authorization: '''## Device Authorization (CRITICAL)
 
 **Exact match rule:**
@@ -34157,9 +34195,7 @@ If you are calling one of these tools, you must read its section for that sectio
 - hub_call_zwave -> hub_admin_write_radios
 - hub_set_zigbee -> hub_admin_write_radios
 - hub_set_zwave -> hub_admin_write_radios
-- hub_call_app_form -> native_app_forms
-- hub_create_rule_document -> native_rule_documents
-- hub_update_rule_document -> native_rule_documents
+- hub_set_rule -> set_rule_reference
 - hub_clone_custom_rule -> rules
 - hub_create_custom_rule -> rules
 - hub_delete_custom_rule -> rules
@@ -34177,7 +34213,7 @@ pointer to THAT tool's own guide section -- follow it for the failing tool's ref
 
 ### Write-tool best practices
 
-- Rules: prefer native Rule Machine (hub_create_rule_document / hub_update_rule_document) over the
+- Rules: prefer native Rule Machine (hub_set_rule(operation='create') / hub_set_rule(operation='update')) over the
   legacy custom_* MCP rule engine for new automation work -- the custom engine is legacy and
   closed to new feature work.
 - Devices: resolve the exact target with hub_list_devices before acting; device IDs compare as
@@ -34674,7 +34710,7 @@ Read the current mesh state (shared/linked/available lists, per-device `appsUsin
 ''',
         rules: '''## Rule Structure Reference
 
-NOTE: this section describes the LEGACY custom MCP rule engine (custom_* tools). Native Rule Machine rules use native_rule_documents and native_app_forms; their native field contracts differ.
+NOTE: this section describes the LEGACY custom MCP rule engine (custom_* tools). Native Rule Machine rules use set_rule_reference; their native field contracts differ.
 
 ### Rule JSON Structure
 {"name": "Rule name", "description": "Optional", "enabled": true, "triggers": [...], "conditions": [...], "conditionLogic": "all|any", "actions": [...]}
@@ -34738,7 +34774,7 @@ NOTE: this section describes the LEGACY custom MCP rule engine (custom_* tools).
 
 Read-only inspect of an existing custom rule. It stays usable when the Custom Rule Engine toggle is OFF (read-only mode): you can still list and inspect existing custom rules, while create/modify/delete are hidden.
 
-If a custom-rule tool that takes a rule id (get, export, clone, update, delete, test) is given the id of a Hubitat built-in rule app (Rule Machine, Room Lighting, Basic Rules, Visual Rules Builder), its "Rule not found" error names the app type and points at the native tool: hub_get_app_config to read it, hub_update_rule_document or hub_call_app_form to modify it, hub_delete_native_app to delete it, and, for Rule Machine only, hub_call_rule to run it. The hint is best-effort: if the hub's app list can't be read, you get a plain "Rule not found".
+If a custom-rule tool that takes a rule id (get, export, clone, update, delete, test) is given the id of a Hubitat built-in rule app (Rule Machine, Room Lighting, Basic Rules, Visual Rules Builder), its "Rule not found" error names the app type and points at the native tool: hub_get_app_config to read it, hub_set_rule(operation='update') or hub_set_rule(operation='form') to modify it, hub_delete_native_app to delete it, and, for Rule Machine only, hub_call_rule to run it. The hint is best-effort: if the hub's app list can't be read, you get a plain "Rule not found".
 
 ### hub_create_custom_rule
 
@@ -35115,7 +35151,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
     - **Rule Machine** — first-class, always-inspectable mode restriction + "Mode" conditions (use the RM tools).
     Community (non-built-in) apps are case-by-case: type='mode' inputs surface via modeInputs when used; otherwise reading the app source is the only signal.
   - summary=true is a fast identity-only mode: the hub's thin app record (id, name, type, disabled, user) with no config-page render -- use it for existence/identity checks on expensive apps
-  - Multi-page apps expose sub-pages via pageName. Native editor navigation and supported controls use hub_call_app_form; rendering can mutate app state.
+  - Multi-page apps expose sub-pages via pageName. Native editor navigation and supported controls use hub_set_rule(operation='form'); rendering can mutate app state.
   - includeSettings=true adds the raw internal settings map (large apps: 500-1000 keys with app-specific encoding)
   - Workflow: hub_list_apps (scope='instances'; or hub_list_rules for RM rules specifically -- note that hub_get_custom_rule handles only MCP-native rules, not Hubitat's built-in Rule Machine) to find appId, then hub_get_app_config to inspect. For multi-page apps, consider hub_list_app_pages first.
 
@@ -35139,7 +35175,7 @@ A single tool can also be switched off under **Advanced: Per-tool Overrides**. A
   - Data-quality warning types in dataQualityWarnings[]: heid-whitespace-normalized (padded heID normalized; component KEPT), heid-non-scalar-dropped (non-scalar heID; component DROPPED), empty-heid, skipped-malformed-component
   - Limitation: heID-presence-only; HPM stores no source hashes so post-install edits via hub_update_app are not detectable
 
-### hub_manage_native_rules_and_apps (14 tools) — read, trigger, AND full CRUD on native RM rules
+### hub_manage_native_rules_and_apps (11 tools) — read, trigger, AND full CRUD on native RM rules
 
 RMUtils-based control surface (hub_list_rules = Read master; trigger/pause/private-boolean = Write master):
 (These four tools and hub_get_rule_health are also in hub_manage_rule_machine. The reads, hub_list_rules and hub_get_rule_health, are also in hub_read_rules.)
@@ -35169,7 +35205,7 @@ Native CRUD (hub admin-layer, additionally requires the Write master):
 - Clone/import require a readable parent child-app snapshot before creation; a refusal says nothing was created and can be retried after restoring access. Discovery never guesses among ambiguous new children. If modern staging reaches its continuation limit, the terminal error retains newAppId, stagedDisabled, stageFailures and stageRemaining from the last slice. Disable the remaining/failed apps directly; do not repeat creation.
 - **hub_get_rule_health** — read-only health check on any installed app (Rule Machine AND Visual Rules Builder). Args: appId, source (auto|ruleBuilderJson|configPage, default auto). Prefers the compiled-state verdict: the classic RM `broken` boolean (/app/ruleBuilderJson) or a graph Visual Rule's validationErrors (/app/ruleBuilder20Json); for classic RM the HTML render scan is retained as cross-check + fallback. Returns ok / broken / source / ruleFormat / label / paused / stopped / configPageError / brokenMarkers / multipleFlagPoison / structuralIssues / orphanedActionRows (leftover actType/actSubType rows that are not among the rule's actions -- diagnostic only, never affects ok) / validationErrors / issues (+ predicate when read). Pause state comes from the rule's compiled Boolean or status state; tagged runtime decoration is a fallback. `paused:null` means unknown. Explicit stopped state outranks config-page markup. Literal `(Paused)` and `(Stopped)` name suffixes are preserved; Visual Rule labels come from their own document unless configPage is forced. Embedded write-response health carries compiled paused only; the standalone read adds status/markup fallbacks, stopped, and live subscription/job counts.
 
-For reading a native RM rule without editor renders, use hub_get_rule_document. hub_get_app_config remains available for native configuration diagnostics.
+For reading a native RM rule without editor renders, use hub_set_rule(operation='read'). hub_get_app_config remains available for native configuration diagnostics.
 
 For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub_read_apps_code) + **hub_restore_backup** (in hub_manage_backup) — RM rule snapshots have type="rm-rule" in those tools' output and hub_restore_backup auto-dispatches the rule-restore path.
 
@@ -35180,7 +35216,7 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 4. delete is soft by default. Pass force=true only when you know the rule has children you also want gone.
 
 ### CRUD workflow example
-  hub_create_rule_document(parent_id=<Rule Machine parent>, name="BAT-RM-demo", changes=[<supported native changes>], confirm=true)
+  hub_set_rule(operation="create", args={parent_id:<Rule Machine parent>, name:"BAT-RM-demo", changes:[<native changes>]}, confirm=true)
   hub_get_app_config(appId=974, includeSettings=true) → input schema + current settings
 
 
@@ -35189,7 +35225,7 @@ For BACKUP enumeration and restore, use the unified **hub_list_backups** (in hub
 
 ### hub_get_app_config (deferred internals: embeddedActions wire-format, disabled RM actions, includeSettings key encoding)
 
-- **embeddedActions in RM 5.1**: configuration diagnostics may expose native clickable controls; hub_call_app_form supplies supported control IDs for editor operations.
+- **embeddedActions in RM 5.1**: configuration diagnostics may expose native clickable controls; hub_set_rule(operation='form') supplies supported control IDs for editor operations.
 - **Disabled RM actions**: native configuration diagnostics expose disabled row markers. Use only returned native form controls to toggle a specific row; toggles must not be replayed after an uncertain response. hub_set_app_disabled disables the whole app.
 - **includeSettings raw-key encoding example**: large apps' raw app-internal settings keys use app-specific encoding — e.g. Room Lighting encodes per-device-per-scene keys as `dm~<deviceId>~<scene>`. (Set `includeSettings=true` only for power-user inspection; large apps can have 500-1000 such keys.)
 
@@ -35248,7 +35284,7 @@ The report surfaces the compiled-state broken verdict, validationErrors, config-
 
 List a Rule Machine rule's LOCAL variables (per-rule, distinct from hub globals). Requires the Read master.
 
-- Hub globals are covered by hub_list_variables; native locals are read/written through hub_get_rule_document / hub_update_rule_document variable changes.
+- Hub globals are covered by hub_list_variables; native locals are read/written through hub_set_rule(operation='read') / hub_set_rule(operation='update') variable changes.
 - Reads the rule's `statusJson` appState: names and types from `allLocalVars`, current values from each variable's live `lv_<name>` entry (`allLocalVars` keeps the old value after an action sets the variable until someone opens the rule's page).
 - Pure read -- no wizard, no mutation.
 - Returns `{appId, localVariables:[{name, type, value}], total}`. `type` is the hub's internal token, not the `addLocalVariable` enum. Map it back before reuse: integer→Number, bigdecimal→Decimal, string→String, boolean→Boolean, datetime→DateTime.
@@ -35516,7 +35552,7 @@ Hubitat's cloud relay can end one HTTP request while hub-side work continues. MC
 
 ### Automatic request-to-request continuation
 
-The modern path applies to `hub_create_rule_document`, `hub_update_rule_document`, `hub_call_app_form`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, `hub_update_device`, and `hub_restore_backup` for a rule backup (`scope=source` with an `rm-rule_` key). When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
+The modern path applies to `hub_set_rule(operation='create')`, `hub_set_rule(operation='update')`, `hub_set_rule(operation='form')`, multi-rule stop/start batches through `hub_call_rule`, `hub_clone_native_app`, `hub_import_native_app`, the slow driver-code lifecycle writes `hub_create_driver`, `hub_update_driver`, and `hub_delete_item(type="driver")`, `hub_delete_debug_logs`, `hub_manage_virtual_device`, `hub_update_device`, and `hub_restore_backup` for a rule backup (`scope=source` with an `rm-rule_` key). When the transport carries a time budget, device, log and diagnostic reads also continue as described below.
 
 The first write request reserves the operation and starts its first slice at once; a write that finishes within that request's wait budget returns an ordinary `resultType: "complete"` result in one round trip, so a client that never echoes `requestState` still completes fast writes. Only work still running at the budget returns `resultType: "input_required"` with an opaque `requestState`; compatible MCP clients repeat the same tool call with that state, subject to their retry limit. A resumed request either advances work or observes an internal worker within the request's wait budget. Detached workers use a separate 120-second cooperative target at safe batch boundaries; individual wizard operations may exceed it. A terminal `resultType: "complete"` describes the operation's outcome; neither successful completion nor completion within a particular client's retry limit is guaranteed.
 
