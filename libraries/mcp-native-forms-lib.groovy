@@ -226,7 +226,7 @@ private String _nfReloadPath(Long id, Map context) {
 private void _nfCache(String key, Map context) {
     // Retain only execution descriptors. Titles, messages, values and option labels stay in the current response.
     Map cached = [app_id: context.app_id, page: [name: context.page.name], envelope: context.envelope, expires: context.expires,
-                  fields: [:], controls: [:]]
+                  fields: [:], controls: [:], backup: context.backup]
     context.get('fields').each { name, field ->
         Map descriptor = field.findAll { k, v -> k in ['name', 'type', 'multiple', 'required', 'supported', 'device', 'disabled', 'present', 'capability', 'ignore', 'range', 'min', 'max', 'step'] }
         descriptor.option_keys = field.options == null ? null : field.options*.value
@@ -314,15 +314,19 @@ Map toolCallAppForm(Map args) {
     Long createdId = null
     Map navigation = null
     Map context = NATIVE_FORM_CONTEXTS[key]
+    Map backup = null
     try {
         if (context && context.expires < now()) { NATIVE_FORM_CONTEXTS.remove(key); context = null }
         if (context && context.app_id != id) context = null
+        backup = args.steps[0].kind == 'open' ? null : context?.backup
         args.steps.eachWithIndex { step, index ->
             Map model
             if (step.kind == 'open') {
                 // An explicit open starts this caller's next workflow, even if rendering fails.
                 NATIVE_FORM_CONTEXTS.remove(key)
                 context = null
+                if (backup == null) backup = nativeApp?.appType?.name == 'Rule Machine' ?
+                    [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow'] : _ndEditBackup(id, 'pre-native-form')
                 attempted = true
                 model = _nfJson(hubInternalGet("/installedapp/configure/json/${id}" + (step.page ? "/${_nfEncode(step.page)}" : '')))
             } else {
@@ -352,6 +356,8 @@ Map toolCallAppForm(Map args) {
                         if (missing) throw new IllegalArgumentException("Complete required native fields before navigating: ${missing.join(', ')}")
                     }
                 }
+                if (backup == null) backup = nativeApp?.appType?.name == 'Rule Machine' ?
+                    [skipped: true, reason: 'Parent creation/navigation has no existing child state to restore; opening a child starts its own protected workflow'] : _ndEditBackup(id, 'pre-native-form')
                 attempted = true
                 if (control?.kind == 'local_app') {
                     navigation = _nfVerifyNavigation(id, [app_id: control.value.toString().toLong(), page: control.stateAttribute])
@@ -384,16 +390,17 @@ Map toolCallAppForm(Map args) {
                 if (index + 1 < args.steps.size()) throw new IllegalStateException('Native navigation ended the form; remaining steps were not executed')
             } else {
                 context = _nfContext(id, model)
+                context.backup = backup
                 _nfCache(key, context)
                 completed << [kind: step.kind, page: context.page.name]
             }
         }
-        [success: true, app_id: id, completed: completed] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true])
+        [success: true, app_id: id, completed: completed, backup: backup] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page] : [:]) + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true])
     } catch (Exception failure) {
         // A lost response can follow a successful write; stale controls must never be replayed automatically.
         if (attempted) NATIVE_FORM_CONTEXTS.remove(key)
         [success: false, app_id: id, partial: attempted, completed: completed, error: failure.message?.toString(),
-         reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
+         reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + (backup == null ? [:] : [backup: backup]) + (navigation ? [navigated_app_id: navigation.app_id, navigated_page: navigation.page, closed: true] : [:]) + (createdId == null ? [:] : [created_app_id: createdId])
     } finally { NATIVE_FORM_BUSY.remove(appKey); NATIVE_FORM_BUSY.remove(key) }
 }
 

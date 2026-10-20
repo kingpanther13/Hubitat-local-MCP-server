@@ -589,23 +589,24 @@ class ToolUpdateMcpSettingsSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "writes backupEveryRuleWrite=#value as the strict rule-backup policy toggle"() {
+    def "writes native rule backup setting #key=#value"() {
         given:
         enableDeveloperModeAndAdminWrite()
 
         when:
         def result = script.toolUpdateMcpSettings([
-            settings: [backupEveryRuleWrite: value],
+            settings: [(key): value],
             confirm: true
         ])
 
         then:
         result.success == true
-        result.updated == [backupEveryRuleWrite: value]
-        sharedAppStub.settingsStore['backupEveryRuleWrite'] == [type: 'bool', value: value]
+        result.updated == [(key): value]
+        sharedAppStub.settingsStore[key] == [type: 'bool', value: value]
 
         where:
-        value << [true, false]
+        [key, value] << [['backupBeforeRuleEdits', true], ['backupBeforeRuleEdits', false],
+                        ['backupEveryRuleWrite', true], ['backupEveryRuleWrite', false]]
     }
 
     @spock.lang.Unroll

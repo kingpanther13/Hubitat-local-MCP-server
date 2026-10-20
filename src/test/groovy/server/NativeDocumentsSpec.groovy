@@ -21,6 +21,8 @@ class NativeDocumentsSpec extends ToolSpecBase {
                        capabsfalse: ['4': 'Switch is on'], capabstrue: ['5': 'Switch changed'], eval: ['0': ['4']],
                        allLocalVars: [counter: [type: 'integer', value: 0]]]
         settingsMap.enableMandatoryBPS = false
+        // Snapshot behavior has dedicated NativeRuleEditBackupSpec coverage.
+        settingsMap.backupBeforeRuleEdits = false
         stateMap.lastBackupTimestamp = 1234567890000L
         script.metaClass.getAppByAppId = { Long id -> id == 28L ? [id: 28L, appType: [namespace: 'hubitat', name: 'Rule Machine']] : [id: 42L, parentAppId: 28L, appType: [namespace: 'hubitat', name: 'Rule-5.1'], installed: true] }
         script.metaClass.hubInternalGetRaw = { String path, Map q = null, int t = 30, boolean retry = false -> events << 'create'; [status: 302, location: '/installedapp/configure/42'] }

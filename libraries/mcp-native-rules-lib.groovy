@@ -2129,9 +2129,57 @@ private def _rmRecentRuleBackup(Map mfst, Integer ruleId, long nowMs) {
     }.max { a, b -> (a.value.timestamp as Long) <=> (b.value.timestamp as Long) }
 }
 
-Map _rmBackupRuleSnapshot(Integer ruleId, String reason) {
-    def built = _rmBuildRuleSnapshot(ruleId, reason)
-    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map) }
+private String _rmCaptureRuleExport(Integer ruleId) {
+    def raw = _nrHandle(ruleId.toLong()).exportAppData([ruleId.toLong()])
+    _rmDecodeRuleExport(ruleId, raw)
+    raw
+}
+
+private Map _rmDecodeRuleExport(Integer ruleId, Object raw) {
+    if (!(raw instanceof String) || !raw) throw new IllegalStateException('Native recovery export is unavailable')
+    def payload = new groovy.json.JsonSlurper().parseText(raw)
+    def identity = payload instanceof Map && payload.appReplacements instanceof Map ? payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }?.value : null
+    def data = payload instanceof Map && payload.appData instanceof Map ? payload.appData.find { key, value -> key.toString() == ruleId.toString() }?.value : null
+    if (!(identity instanceof Map) || identity.appTypeNamespace != 'hubitat' || identity.appTypeName != 'Rule-5.1' ||
+        !identity.parentAppInstalledAppId?.toString()?.isLong() || identity.parentAppInstalledAppId.toString().toLong() <= 0L ||
+        !(payload.deviceReplacements instanceof Map) || !(data instanceof Map) || !(data.state instanceof Map) ||
+        ['actions', 'capabstrue', 'capabsfalse', 'eval'].any { data.state.get(it) != null && !(data.state.get(it) instanceof Map) } ||
+        (data.state.actionList != null && !(data.state.actionList instanceof List)) ||
+        data.state.keySet().any { !(it instanceof String) || !it } ||
+        ['stopped', 'paused'].any { data.state.containsKey(it) && !(data.state.get(it) instanceof Boolean) } ||
+        !(data.appSettings instanceof List) || !(data.subscriptions instanceof List) ||
+        data.appSettings.any { !(it instanceof Map) || !(it.name instanceof String) || !it.name || !(it.type instanceof String) || !it.type } ||
+        data.appSettings.collect { it.name }.unique().size() != data.appSettings.size()) {
+        throw new IllegalStateException('Native recovery export does not identify a complete Rule-5.1 configuration')
+    }
+    _rmNativeSettingPlan(data.appSettings)
+    payload
+}
+
+Map _rmBackupRuleSnapshot(Integer ruleId, String reason, boolean requireNativeExport = false, String protectedKey = null) {
+    // Strict edit capture never renders the editor before its recovery point is saved.
+    def built = requireNativeExport ? _rmBuildNativeEditSnapshot(ruleId, reason, _rmCaptureRuleExport(ruleId)) : _rmBuildRuleSnapshot(ruleId, reason)
+    return _withBackupLock("rule ${ruleId} snapshot (${reason})") { _rmWriteRuleSnapshotLocked(ruleId, reason, built.snapshot as Map, built.config as Map, protectedKey) }
+}
+
+private Map _rmBuildNativeEditSnapshot(Integer ruleId, String reason, String nativeExport) {
+    Map payload = new groovy.json.JsonSlurper().parseText(nativeExport) as Map
+    Map identity = payload.appReplacements.find { key, value -> key.toString() == ruleId.toString() }.value as Map
+    Map data = payload.appData.find { key, value -> key.toString() == ruleId.toString() }.value as Map
+    Map savedSettings = [:]
+    List settingRows = data.appSettings.collect { row ->
+        savedSettings.put(row.name, row.deviceList instanceof Map && row.deviceList ? row.deviceList : row.value)
+        [:] + row + [deviceIdsForDeviceList: row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() } : []]
+    }
+    Map config = [app: [id: ruleId, label: identity.appLabel, trueLabel: identity.appLabel,
+        appType: [name: identity.appTypeName, namespace: identity.appTypeNamespace]], settings: savedSettings,
+        configPage: [name: 'mainPage', sections: [[input: settingRows.collect { row -> [element: 'input', name: row.name, type: row.type, multiple: row.multiple == true] }]]]]
+    long capturedAt = now()
+    Map snapshot = [schemaVersion: 1, captureFormat: 'native-rule-edit-v1', ruleId: ruleId, appId: ruleId, appType: 'rule_machine', reason: reason,
+        timestamp: capturedAt, timestampIso: formatTimestamp(capturedAt), appLabel: stripAppConfigHtml(identity.appLabel),
+        nativeExport: nativeExport, configJson: config,
+        statusJson: [appSettings: settingRows, appState: data.state.collect { key, value -> [name: key, value: value] }]]
+    [snapshot: snapshot, config: config]
 }
 
 private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
@@ -2279,12 +2327,12 @@ private Map _rmBuildRuleSnapshot(Integer ruleId, String reason) {
     return [snapshot: snapshot, config: config]
 }
 
-private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config) {
+private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapshot, Map config, String protectedKey = null) {
     // Under strict per-write backups an edit inside an editing session is a rolling step. The
     // session's first snapshot, and a delete's or Required Expression replacement's recovery
     // point, stay pinned. Decided under the lock, against the committed index.
     boolean editStep = settings?.backupEveryRuleWrite == true &&
-        !(reason in ["pre-delete", "pre-forcedelete", "pre-replaceRequiredExpression"])
+        !(reason in ["pre-delete", "pre-forcedelete", "pre-replaceRequiredExpression", "pre-native-restore"])
     String retention = editStep && _rmRecentRuleBackup(_itemBackupManifest(), ruleId, now()) != null ? "rolling" : "pinned"
     def ts = new Date(now()).format("yyyyMMdd-HHmmss-SSS")
     String namePrefix = "mcp-rm-backup-${ruleId}-"
@@ -2299,7 +2347,14 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
     }
     try {
         uploadHubFile(fileName, jsonBytes)
+        if (snapshot.captureFormat == 'native-rule-edit-v1') {
+            def savedBytes = downloadHubFile(fileName)
+            if (savedBytes == null || new String(savedBytes as byte[], 'UTF-8') != new String(jsonBytes, 'UTF-8')) throw new IllegalStateException('Uploaded recovery snapshot did not match its readback')
+        }
     } catch (Exception e) {
+        if (snapshot.captureFormat == 'native-rule-edit-v1') {
+            try { deleteHubFile(fileName) } catch (Exception ignored) { }
+        }
         throw new IllegalArgumentException("Cannot save backup file '${fileName}' for rule ${ruleId}: ${e.message}")
     }
 
@@ -2317,7 +2372,7 @@ private Map _rmWriteRuleSnapshotLocked(Integer ruleId, String reason, Map snapsh
         sizeBytes: jsonBytes.length,
         retention: retention
     ]
-    _publishUploadedItemBackup(backupKey, entry)
+    _publishUploadedItemBackup(backupKey, entry, protectedKey)
 
     mcpLog("info", "rm-native", "Backed up rule ${ruleId} (${reason}) to ${fileName} (${jsonBytes.length} bytes)")
     // brokenBefore: the rule's pre-write broken state, derived from the config this snapshot

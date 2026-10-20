@@ -347,7 +347,17 @@ Map toolUpdateRuleDocument(Map args) {
     if (getAppByAppId(id)?.disabled == true) throw new IllegalArgumentException('Enable the native rule before editing its document')
     try { _ndPreflight(id, changes) }
     catch (IllegalArgumentException failure) { return [success: false, partial: false, rule_id: id, error: failure.message?.toString()] }
-    _ndApply(id, changes, false)
+    Map backup
+    try { backup = _ndEditBackup(id, 'pre-document-update') }
+    catch (Exception failure) { return [success: false, partial: false, rule_id: id, error: "Pre-edit backup failed; no document changes were applied: ${failure.message}".toString()] }
+    _ndApply(id, changes, false) + [backup: backup]
+}
+
+private Map _ndEditBackup(Long id, String reason) {
+    if (settings.backupBeforeRuleEdits == false) return [skipped: true, reason: 'Automatic pre-edit backups are disabled']
+    Map backup = _rmBackupRuleSnapshot(id.toString().toInteger(), reason, true)
+    if (!(backup?.backupKey instanceof String) || !backup.backupKey) throw new IllegalStateException('No recovery handle was returned')
+    backup
 }
 
 Map toolCreateRuleDocument(Map args) {
@@ -474,7 +484,7 @@ Call hub_set_rule without operation for help, or choose a write operation withou
 
 Read hub_set_rule(operation:"read",rule_id,args:{sections:[...]}) before editing an existing native rule. Reads use native state and typed settings without rendering its editor. Sections: actions, conditions, triggers, expressions, variables, settings. Action IDs and order are native IDs, preserved for in-place edits; omitted parts and unknown settings remain native-owned.
 
-Writes require confirm=true and a recent hub backup. hub_set_rule(operation:"update",rule_id,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parent_id,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
+Writes require confirm=true and a recent hub backup. Automatic pre-edit recovery is enabled by default: an update captures one recovery point for its whole changes batch, and a rule form captures one before its first render and reuses it through that workflow. Recovery metadata is returned as backup, including after partial failure; capture failure stops the requested edit. Rule Machine parent creation/navigation has no existing child configuration to recover; opening the child starts its own protected workflow. hub_set_rule(operation:"update",rule_id,args:{changes:[...]},confirm:true) applies changes in order. hub_set_rule(operation:"create",args:{parent_id,name,changes:[...]},confirm:true) creates a Rule-5.1 child under native Rule Machine. A failed creation can leave a native child: inspect returned rule_id and parent before retrying. A partial update can leave preceding changes committed; inspect before resubmitting.
 
 Each change is {part,value}. Supported parts:
 - condition or trigger: {id?,capability,fields:[{name,type,value}]}.

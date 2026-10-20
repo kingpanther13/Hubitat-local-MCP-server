@@ -39,6 +39,8 @@ class NativeFormsSpec extends ToolSpecBase {
             ]]]]
         ]
         settingsMap.enableMandatoryBPS = false
+        // Snapshot behavior has dedicated NativeRuleEditBackupSpec coverage.
+        settingsMap.backupBeforeRuleEdits = false
         stateMap.lastBackupTimestamp = 1234567890000L
         script.metaClass.getAppByAppId = { Long id -> [id: id, appType: [namespace: 'hubitat'], disabled: false] }
         ['NATIVE_FORM_CONTEXTS', 'NATIVE_FORM_BUSY'].each { name ->

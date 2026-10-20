@@ -1001,6 +1001,19 @@ String _rmNativeCopyMismatch(Integer copyId, Map snapshot) {
     def copy = _rmReadRuleState(copyId)
     if (!copy) return "app ${copyId}'s state could not be read".toString()
     if (copy.broken == true) return "app ${copyId} reads as broken".toString()
+    if (snapshot.captureFormat == 'native-rule-edit-v1') {
+        try {
+            Map payload = _rmDecodeRuleExport(_ndId(snapshot.ruleId).toString().toInteger(), snapshot.nativeExport)
+            Map data = payload.appData.find { key, value -> key.toString() == snapshot.ruleId.toString() }.value as Map
+            def expected = _rmNativeModelSignature(data.state)
+            def actual = _rmNativeModelSignature(copy).findAll { key, value -> expected.containsKey(key) }
+            if (_rmNativeComparable(actual) != _rmNativeComparable(expected)) return 'the compiled native configuration differs from recovery'
+            if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(copyId.toLong()))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) return 'the native settings differ from recovery'
+            def locals = _nrHandle(copyId.toLong()).getAllLocalVars().collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
+            if (_rmNativeComparable(locals) != _rmNativeComparable(_rmNativeLocalSignature(data.state))) return 'the native local variables differ from recovery'
+            return null
+        } catch (Exception failure) { return "the native recovery configuration could not be verified: ${failure.message}".toString() }
+    }
     def keys = { m -> (m instanceof Map) ? (m as Map).keySet().collect { it.toString() }.sort() : [] }
     def list = { l -> (l instanceof List) ? (l as List).collect { it.toString() } : [] }
     def problems = []
@@ -1027,9 +1040,142 @@ void _rmRecordNativeRestore(String backupKey, Integer newId, boolean keepDisable
     }
 }
 
+private Object _rmNativeComparable(Object value) {
+    if (value instanceof Map) return value.collectEntries { key, item -> [(key.toString()): _rmNativeComparable(item)] }
+    if (value instanceof List) return value.collect { item -> _rmNativeComparable(item) }
+    if (value instanceof Number) return new BigDecimal(value.toString()).stripTrailingZeros()
+    value
+}
+
+private List _rmNativeSettingPlan(List rows) {
+    List plan = []
+    rows.each { row ->
+        if (!(row instanceof Map) || !(row.name instanceof String) || !row.name || !(row.type instanceof String) || !row.type ||
+            (row.multiple != null && !(row.multiple instanceof Boolean))) throw new IllegalArgumentException('Invalid native recovery setting')
+        if (row.type == 'button') {
+            if (row.value != null && row.value != '') throw new IllegalArgumentException('Recovery contains an unfinished native button operation')
+        } else {
+            boolean device = row.type == 'capability' || row.type.startsWith('capability.')
+            def value = row.value
+            if (device) {
+                if (row.deviceList != null && !(row.deviceList instanceof Map)) throw new IllegalArgumentException('Invalid recovery device selection')
+                List ids = row.deviceList instanceof Map ? row.deviceList.keySet().collect { it.toString() } : []
+                if (ids.any { !it.isLong() || it.toLong() <= 0L } || (row.multiple != true && ids.size() > 1)) throw new IllegalArgumentException('Invalid recovery device IDs')
+                value = ids ? (row.multiple == true ? ids : ids[0]) : null
+            } else if (row.multiple == true && value instanceof String) value = new groovy.json.JsonSlurper().parseText(value)
+            if (value != null) {
+                if (row.multiple == true && !(value instanceof List)) throw new IllegalArgumentException('Recovery setting requires a list')
+                List values = value instanceof List ? value : [value]
+                if (values.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Recovery settings require scalar values')
+                _nrComparableSetting(row.type, value)
+                plan << [name: row.name, type: row.type, multiple: row.multiple == true, value: value]
+            }
+        }
+    }
+    if (rows.collect { it.name }.unique().size() != rows.size()) throw new IllegalArgumentException('Duplicate recovery setting')
+    plan
+}
+
+private Map _rmNativeSettingsSignature(List rows) {
+    _rmNativeSettingPlan(rows).collectEntries { row -> [(row.name): [type: row.type, multiple: row.multiple, value: _nrComparableSetting(row.type, row.value)]] }
+}
+
+private List _rmNativeCurrentSettings(Long id) {
+    _nmSettingsInventory(id).collect { name, row -> [name: name] + row }
+}
+
+private Map _rmNativeModelSignature(Map state) {
+    // Compare complete compiled records and references, not just row membership.
+    def keys = ['actions', 'actionList', 'capabstrue', 'capabsfalse', 'eval', 'disabledActions', 'disabledTriggers',
+                'actNdx', 'ndx', 'ruleNdx', 'waitCondNdx', 'predCapabs', 'hasPredicate']
+    Map result = state.findAll { key, value -> key in keys }
+    ['actions', 'capabstrue', 'capabsfalse', 'eval'].each { key -> result[key] = state.get(key) instanceof Map ? state.get(key) : [:] }
+    result.actionList = state.actionList instanceof List ? state.actionList : []
+    result
+}
+
+private Map _rmNativeLocalSignature(Map state) {
+    Map locals = state.allLocalVars instanceof Map ? [:] + state.allLocalVars : [:]
+    state.each { key, value -> if (key.toString().startsWith('lv_') && value instanceof Map) locals.put(key.toString().substring(3), value) }
+    locals.collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
+}
+
+private void _rmNativeRestoreFlags(Long id, Map savedState) {
+    Map live = _nrState(id)
+    if ((live.stopped == true) != (savedState.stopped == true)) _nrHandle(id).appButtonHandler('stopRule')
+    live = _nrState(id)
+    if ((live.paused == true) != (savedState.paused == true)) _nrHandle(id).appButtonHandler('pausRule')
+}
+
+private Map _rmRestoreNativeEdit(Map snapshot, String sourceBackupKey) {
+    Long id = _ndId(snapshot.ruleId)
+    Map payload = _rmDecodeRuleExport(id.toString().toInteger(), snapshot.nativeExport)
+    Map identity = payload.appReplacements.find { key, value -> key.toString() == id.toString() }.value as Map
+    Map data = payload.appData.find { key, value -> key.toString() == id.toString() }.value as Map
+    def target = getAppByAppId(id)
+    _requireUnprotectedAppMutation(id, 'restore native rule configuration')
+    if (target?.id?.toString() != id.toString() || target?.appType?.namespace != 'hubitat' || target?.appType?.name != 'Rule-5.1' ||
+        target.parentAppId?.toString() != identity.parentAppInstalledAppId?.toString()) throw new IllegalArgumentException('Recovery target must be the original native rule under its original parent')
+    if (target.disabled == true) throw new IllegalArgumentException('Enable the native rule before restoring its configuration')
+    Map expectedState = data.state as Map
+    if (_ndStructuralIssues(expectedState, data.appSettings.any { it.name == 'useST' && it.value?.toString() == 'true' }) ||
+        _nmValidateStructure(id, expectedState).success != true) throw new IllegalArgumentException('Recovery contains an unfinished native rule model')
+    List plan = _rmNativeSettingPlan(data.appSettings)
+    def deviceIds = payload.deviceReplacements.keySet().collect { it.toString() }
+    plan.findAll { it.type == 'capability' || it.type.startsWith('capability.') }.each { row -> deviceIds.addAll(row.value instanceof List ? row.value : [row.value]) }
+    if (deviceIds) {
+        def raw = hubInternalGet('/device/listJson')
+        def devices = raw instanceof List ? raw : new groovy.json.JsonSlurper().parseText(raw?.toString() ?: '')
+        if (!(devices instanceof List) || deviceIds.any { wanted -> !devices.any { it instanceof Map && it.id?.toString() == wanted.toString() } }) throw new IllegalArgumentException('Recovery device references could not all be verified; nothing was restored')
+    }
+    Map undo = _rmBackupRuleSnapshot(id.toString().toInteger(), 'pre-native-restore', true, sourceBackupKey)
+    if (!(undo?.backupKey instanceof String) || !undo.backupKey) throw new IllegalStateException('Pre-restore recovery capture returned no handle')
+    boolean attempted = false
+    try {
+        attempted = true
+        if (_nrState(id).stopped != true) _nrHandle(id).appButtonHandler('stopRule')
+        def wantedNames = plan.collect { it.name }
+        _rmNativeCurrentSettings(id).each { row -> if (!(row.name in wantedNames) || !plan.any { it.name == row.name && it.type == row.type && it.multiple == (row.multiple == true) }) _nrHandle(id).removeSetting(row.name) }
+        plan.each { row -> _nrHandle(id).updateSetting(row.name, [type: row.type, value: row.value]) }
+        if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(id))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native typed settings did not restore exactly')
+        Map restoreState = [:] + expectedState + [stopped: true]
+        _nrStatePatch(id, restoreState, _nrState(id).keySet().findAll { !restoreState.containsKey(it) }.collect { it.toString() })
+        if (_rmNativeComparable(_nrState(id)) != _rmNativeComparable(restoreState)) throw new IllegalStateException('Complete native state did not persist exactly')
+        _nrHandle(id).updateLabel(identity.appLabel)
+        _nrHandle(id).appButtonHandler('updateRule')
+        _rmNativeRestoreFlags(id, expectedState)
+        Map rebuilt = _ndApply(id, [], false)
+        if (rebuilt.success != true || rebuilt.broken != false) throw new IllegalStateException(rebuilt.error?.toString() ?: 'Native rule rebuild failed')
+        Map actual = _nrState(id)
+        def expectedModel = _rmNativeModelSignature(expectedState)
+        def actualModel = _rmNativeModelSignature(actual).findAll { key, value -> expectedModel.containsKey(key) }
+        if (_rmNativeComparable(actualModel) != _rmNativeComparable(expectedModel)) throw new IllegalStateException('Rebuilt native actions, triggers, conditions or expressions differ from recovery')
+        Map actualLocals = _nrHandle(id).getAllLocalVars().collectEntries { name, row -> [(name.toString()): [type: row.type, value: row.value]] }
+        if (_rmNativeComparable(actualLocals) != _rmNativeComparable(_rmNativeLocalSignature(expectedState))) throw new IllegalStateException('Native local variables differ from recovery')
+        if (_rmNativeComparable(_rmNativeSettingsSignature(_rmNativeCurrentSettings(id))) != _rmNativeComparable(_rmNativeSettingsSignature(data.appSettings))) throw new IllegalStateException('Native rebuild changed restored settings')
+        if ((actual.stopped == true) != (expectedState.stopped == true) || (actual.paused == true) != (expectedState.paused == true) ||
+            (_nrHandle(id).label ?: '') != (identity.appLabel ?: '')) throw new IllegalStateException('Native label or lifecycle state differs from recovery')
+        [success: true, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
+         stateVerified: true, settingsVerified: true, localVariablesVerified: true, broken: rebuilt.broken, stopped: rebuilt.stopped, paused: rebuilt.paused,
+         eventSubscriptions: rebuilt.eventSubscriptions, scheduledJobs: rebuilt.scheduledJobs]
+    } catch (Exception failure) {
+        [success: false, partial: attempted, type: 'rm-rule', ruleId: id, originalRuleId: id, restoredVia: 'nativeStateReplay', backup: undo,
+         error: failure.message?.toString(), note: 'Restore did not pass complete verification. Inspect the native rule; the pre-restore backup is available for recovery.']
+    }
+}
+
 private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean preserveRuleId = true, String backupKey = null) {
     def fileName = entry.fileName
     Map snapshot = preparedSnapshot != null ? preparedSnapshot : _rmReadBackupSnapshot(entry)
+    if (snapshot.containsKey('captureFormat')) {
+        if (snapshot.captureFormat != 'native-rule-edit-v1') throw new IllegalArgumentException('Unsupported native recovery format')
+        _rmDecodeRuleExport(_ndId(snapshot.ruleId).toString().toInteger(), snapshot.nativeExport)
+        if (preserveRuleId) {
+            if (getAppByAppId(_ndId(snapshot.ruleId)) != null) return _rmRestoreNativeEdit(snapshot, backupKey)
+            def inventory = _collectLiveApps()
+            if (!(inventory instanceof Map) || inventory.keySet().any { it.toString() == snapshot.ruleId.toString() }) throw new IllegalArgumentException('The original native rule could not be confirmed absent; nothing was restored')
+        }
+    }
     def savedId = snapshot.ruleId as Integer
     def savedSettings = (snapshot?.configJson?.settings ?: [:]) as Map
     def savedLabel = snapshot?.appLabel
@@ -1075,6 +1221,7 @@ private Map _rmRestoreFromBackup(Map entry, Map preparedSnapshot = null, boolean
             nativeSkipped = "App Cloner restore is used for Rule Machine rules only"
         } else {
             def nativeOut = _rmRestoreViaNativeImport(snapshot, savedId, exists, fileName?.toString(), backupKey)
+            if (nativeOut?.fallback && snapshot.captureFormat == 'native-rule-edit-v1') return [success: false, type: 'rm-rule', originalRuleId: savedId, error: "Exact native recovery is unavailable: ${nativeOut.fallback}".toString()]
             if (nativeOut?.fallback) nativeSkipped = nativeOut.fallback.toString()
             else return nativeOut
         }
