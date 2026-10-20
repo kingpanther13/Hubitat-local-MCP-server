@@ -257,14 +257,17 @@ class NativeRuleDocumentE2E(unittest.TestCase):
         rule_id = str(result["rule_id"])
         native = self.status(rule_id)["installedApp"]
         self.assertEqual(str(native["id"]), rule_id)
-        self.assertEqual(native.get("label") or native.get("name"), name)
+        self.assertEqual(native.get("trueLabel") or native.get("label") or native.get("name"), name)
         return rule_id
 
     def remove_rule(self, rule_id, expected_name):
         native = self.status(rule_id, missing_ok=True).get("installedApp")
         if not native:
             return
-        self.assertEqual(native.get("label") or native.get("name"), expected_name)
+        self.assertEqual(
+            native.get("trueLabel") or native.get("label") or native.get("name"),
+            expected_name,
+        )
         self.assertTrue(expected_name.startswith(self.prefix + "_"))
         self.client.native("/installedapp/update/json", "POST", form={
             "id": rule_id, "_action_remove": "Remove",
