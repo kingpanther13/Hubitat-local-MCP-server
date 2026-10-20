@@ -11,8 +11,8 @@ import re
 import time
 import unittest
 
-from native_rm_parity_support import ParityCase, change, field, log_action
 import native_rm_parity_expressions_e2e as expression_helpers
+from native_rm_parity_support import ParityCase, change, field, log_action
 
 
 class NativeRmParityActions(ParityCase):
@@ -61,7 +61,7 @@ class NativeRmParityActions(ParityCase):
         if stays is not None:
             fields += [field("stays#", "bool", True),
                        *[field(name + "#", "number", value)
-                         for name, value in zip(("SHours", "SMins", "SSecs"), stays)]]
+                         for name, value in zip(("SHours", "SMins", "SSecs"), stays, strict=True)]]
         return {"capability": "Switch", "fields": fields}
 
     def _wait_row(self, rule_id):
@@ -336,8 +336,8 @@ class NativeRmParityActions(ParityCase):
 
     def _new_editor(self, rule_id):
         form = self._form(rule_id, {"kind": "open", "page": "selectActions"})
-        controls = [row for row in form["controls"] if row.get("kind") == "href"
-                    and "doActPage" in str(row)]
+        controls = [row for row in form["controls"] if row.get("kind") == "button"
+                    and row.get("control_id") == "N||doAct"]
         self.assertEqual(len(controls), 1, form)
         form = self._submit(rule_id, form, control=controls[0])
         names = [row["name"] for row in form["fields"] if row["name"].startswith("actType.")]
@@ -456,7 +456,7 @@ class NativeRmParityActions(ParityCase):
         self.assertEqual(len(rows), len(expected))
         values = self._values(rule_id)
         page = html.unescape(re.sub(r"<[^>]+>", "", self.page_text(rule_id)))
-        for action, (_, stored, text) in zip(rows, expected):
+        for action, (_, stored, text) in zip(rows, expected, strict=True):
             slot = "." + str(action["id"])
             for key, wanted in stored.items():
                 actual = values[key + slot]
@@ -496,7 +496,7 @@ class NativeRmParityActions(ParityCase):
             ("toner", "capability.tone", devices["tone"])]),
             {"toner": devices["tone"]}, "Beep: " + labels["tone"]))
         self._catalog(doors)
-        variable_pattern = re.escape(variable) + r"\(\S+\)"
+        variable_pattern = re.escape(variable) + r"(?![A-Za-z0-9_])"
         media = [
             (self._typed_action("sceneActs", "getBlindTilt", [
                 ("blindTilt", "capability.windowBlind", devices["blind"]),
@@ -562,7 +562,7 @@ class NativeRmParityActions(ParityCase):
         self.assertEqual(len(self._ids(rule_id)), 5)
         values = self._values(rule_id)
         page = html.unescape(re.sub(r"<[^>]+>", "", self.page_text(rule_id)))
-        for index, (_, stored, text) in zip(self._ids(rule_id), expected):
+        for index, (_, stored, text) in zip(self._ids(rule_id), expected, strict=True):
             for name, wanted in stored.items():
                 actual = values[name + "." + index]
                 if isinstance(wanted, bool):
@@ -626,7 +626,7 @@ class NativeRmParityActions(ParityCase):
             self._typed_action("modeActs", "getSetVariable", [
                 ("xVarV", "enum", variable), ("numOp", "enum", "number"), ("valNumber", "number", 1)]),
             self._typed_action("switchActs", "getPushButton", [
-                ("pushButton", "capability.pushableButton", [str(self.fixtures["button"])]),
+                ("pushButton", "capability.pushableButton", str(self.fixtures["button"])),
                 ("pushButNo", "number", 1), ("pushButOp", "enum", "hold")]),
             self._typed_action("sceneActs", "getBlindTilt", [
                 ("blindTilt", "capability.windowBlind", [str(self.fixtures["blind"])]),
@@ -645,7 +645,7 @@ class NativeRmParityActions(ParityCase):
         for index, type_name, subtype, fields in (
             (mode, "modeActs", "getSetMode", [("mode", "enum", "999999")]),
             (var, "modeActs", "getSetVariable", [("xVarV", "enum", self.prefix + "_missing_var")]),
-            (button, "switchActs", "getPushButton", [("pushButton", "capability.pushableButton", [str(self.fixtures["switch"])])]),
+            (button, "switchActs", "getPushButton", [("pushButton", "capability.pushableButton", str(self.fixtures["switch"]))]),
             (button, "switchActs", "getPushButton", [("pushButOp", "enum", "squeeze")]),
         ):
             with self.subTest(invalid=fields):

@@ -9,6 +9,11 @@ private Object _ndJson(Object value) {
     value instanceof Map || value instanceof List ? value : new groovy.json.JsonSlurper().parseText(value?.toString() ?: '{}')
 }
 
+private Boolean _ndNativeFlag(Map health, String name) {
+    if (!health.containsKey(name)) return false
+    health.get(name) instanceof Boolean ? health.get(name) : null
+}
+
 private List _ndSettings(Long id) {
     def response = _ndJson(hubInternalGet("/installedapp/settings/${id}"))
     if (!(response instanceof Map) || !(response.settings instanceof List)) throw new IllegalStateException('Native settings are unavailable')
@@ -20,19 +25,13 @@ private List _ndSettings(Long id) {
     }
 }
 
-private List _ndStructuralIssues(Map nativeState, boolean requiredEnabled) {
+private List _ndBlockIssues(List order, Map actions) {
     def issues = []
-    def actions = nativeState.actions instanceof Map ? nativeState.actions : [:]
-    def conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
-    def expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
-    def expressionIds = []
     def blocks = []
-    if (nativeState.inIf == true) issues << 'Native editor has an unfinished IF block'
-    (nativeState.actionList instanceof List ? nativeState.actionList : []).each { id ->
+    order.each { id ->
         def action = _nmEntry(actions, id.toString())
         if (!(action instanceof Map)) issues << 'Native action order references a missing action'
         else {
-            if (action.rule != null) expressionIds << action.rule.toString()
             if (action.method == 'getIfThen') blocks << 'if'
             else if (action.method in ['getElse', 'getElseIf', 'getElseIfThen']) {
                 if (!blocks || blocks.last() != 'if') issues << 'Native ELSE has no matching IF'
@@ -43,6 +42,21 @@ private List _ndStructuralIssues(Map nativeState, boolean requiredEnabled) {
         }
     }
     if (blocks) issues << 'Native IF block has no END-IF'
+    issues
+}
+
+private List _ndStructuralIssues(Map nativeState, boolean requiredEnabled) {
+    def actions = nativeState.actions instanceof Map ? nativeState.actions : [:]
+    def order = nativeState.actionList instanceof List ? nativeState.actionList : []
+    def conditions = nativeState.capabsfalse instanceof Map ? nativeState.capabsfalse : [:]
+    def expressions = nativeState.eval instanceof Map ? nativeState.eval : [:]
+    def expressionIds = []
+    def issues = _ndBlockIssues(order, actions)
+    if (nativeState.inIf == true) issues << 'Native editor has an unfinished IF block'
+    order.each { id ->
+        def action = _nmEntry(actions, id.toString())
+        if (action instanceof Map && action.rule != null) expressionIds << action.rule.toString()
+    }
     if (requiredEnabled) expressionIds << '0'
     expressionIds.unique().each { id ->
         def tokens = _nmEntry(expressions, id)
@@ -88,7 +102,7 @@ Map toolGetRuleDocument(Map args) {
     try {
         def health = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
         if (health instanceof Map) document.validation.structuralIssues = _ndStructuralIssues(nativeState + health, requiredEnabled)
-        document.nativeHealth = health instanceof Map && health.broken instanceof Boolean ? [available: true, broken: health.broken, stopped: health.stopped == true, paused: health.paused == true] : [available: false]
+        document.nativeHealth = health instanceof Map && health.broken instanceof Boolean ? [available: true, broken: health.broken, stopped: _ndNativeFlag(health, 'stopped'), paused: _ndNativeFlag(health, 'paused')] : [available: false]
     } catch (Exception failure) { document.nativeHealth = [available: false, error: failure.message?.toString()] }
     if ('actions' in sections) document.actions = (nativeState.actionList instanceof List ? nativeState.actionList : []).collect { actionId ->
         [id: actionId.toString(), value: nativeState.actions instanceof Map ? _nmEntry(nativeState.actions, actionId.toString()) : null]
@@ -121,7 +135,7 @@ private List _ndChanges(Object changes, boolean allowEmpty = false) {
                 if (row.value instanceof List && !(device || row.type in ['enum', 'mode'])) throw new IllegalArgumentException('Unsupported list field')
                 if (values.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Typed fields require scalar values')
                 if (device && values.any { !it.toString().isLong() || it.toString().toLong() <= 0L }) throw new IllegalArgumentException('Typed device fields require positive IDs')
-
+                _nrValidateScalar(row, row.value)
             }
         }
         if (change.part in ['condition', 'trigger']) {
@@ -170,6 +184,9 @@ private void _ndPreflight(Long id, List changes) {
     boolean allocatedConditions = false
     def pendingExpressions = []
     List actionOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
+    Map projectedActions = before.actions instanceof Map ? before.actions.collectEntries { key, value -> [(key.toString()): value] } : [:]
+    List projectedOrder = new ArrayList(actionOrder)
+    int newAction = 0
     boolean allocatedActions = false
     Map locals = null
     changes.each { change ->
@@ -192,11 +209,19 @@ private void _ndPreflight(Long id, List changes) {
             }
         }
         if ((change.part == 'action' && !value.containsKey('id')) || change.part == 'terminator') allocatedActions = true
+        if (change.part in ['action', 'terminator']) {
+            String actionId = value.containsKey('id') ? value.id.toString() : "new:${newAction++}".toString()
+            if (!value.containsKey('id')) projectedOrder << actionId
+            String method = change.part == 'terminator' ? [endIf: 'getEndIf', else: 'getElse', endRep: 'getEndRepeat'].get(value.subtype) : value.subtype
+            projectedActions.put(actionId, [method: method])
+        }
         if (change.part == 'order' && !allocatedActions) {
             List requested = value.ids.collect { it.toString() }
             if (requested.sort(false) != actionOrder.sort(false)) throw new IllegalArgumentException('Action order must be an exact permutation of existing action IDs')
             actionOrder = requested
+            projectedOrder = new ArrayList(requested)
         }
+        if (change.part == 'delete' && value.part == 'action') projectedOrder = projectedOrder.findAll { it != value.id.toString() }
         if (change.part == 'delete' && value.part == 'action' && !allocatedActions) {
             if (!actionOrder.contains(value.id.toString())) throw new IllegalArgumentException('Native action does not exist')
             actionOrder = actionOrder.findAll { it != value.id.toString() }
@@ -226,6 +251,8 @@ private void _ndPreflight(Long id, List changes) {
             conditions.keySet().findAll { it.toString() == target }.each { conditions.remove(it) }
         }
     }
+    List blockIssues = _ndBlockIssues(projectedOrder, projectedActions)
+    if (blockIssues) throw new IllegalArgumentException(blockIssues.join('; '))
 }
 
 private Map _ndApply(Long id, List changes, boolean created) {
@@ -234,8 +261,9 @@ private Map _ndApply(Long id, List changes, boolean created) {
     try {
         def beforeHealth = _ndJson(hubInternalGet("/app/ruleBuilderJson/${id}"))
         if (!(beforeHealth instanceof Map) || !(beforeHealth.broken instanceof Boolean)) throw new IllegalStateException('Native rule health is unavailable before changes')
-        boolean wasStopped = beforeHealth.stopped == true
-        boolean wasPaused = beforeHealth.paused == true
+        if (_ndNativeFlag(beforeHealth, 'stopped') == null || _ndNativeFlag(beforeHealth, 'paused') == null) throw new IllegalStateException('Native rule lifecycle state is malformed')
+        boolean wasStopped = _ndNativeFlag(beforeHealth, 'stopped')
+        boolean wasPaused = _ndNativeFlag(beforeHealth, 'paused')
         Map pages = _nrRulePages(id)
         Map beforeState = _nrState(id)
         if (pages.actions == 'selectActionsX' && beforeState.actNdx == null && !beforeState.actions && !beforeState.actionList) {
@@ -386,7 +414,7 @@ Each change is {part,value}. Supported parts:
 - expression: {id,tokens}; required: {tokens}.
 - getWaitEvents actions accept events:[{capability,fields}] (1 through 16 native event rows); an edit preserves the event count. Duration fields remain native typed fields.
 - getWaitRule actions accept expression tokens, with optional native timeout/duration fields. New IF, ELSE-IF and Wait for Expression actions require expression tokens.
-- variable: {operation:create|set|delete,name,type?,value?}. Create types: integer,bigdecimal,boolean,string,datetime.
+- variable: {operation:create|set|delete,name,type?,value?}. Create types: integer,bigdecimal,boolean,string,datetime. DateTime uses native ISO text, e.g. 2026-01-01T12:30:00.000-0500; native date-only/time-only sentinels are accepted.
 - terminator: {subtype:endIf|else|endRep}.
 - delete: {part:action|condition|trigger,id}; referenced conditions must be detached first.
 - order: {ids:[native action IDs]}; a complete exact permutation is required.

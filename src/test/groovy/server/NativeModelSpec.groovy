@@ -199,6 +199,8 @@ class NativeModelSpec extends ToolSpecBase {
         ' bad'  | ''    | 'string'
         'bad%'  | ''    | 'string'
         null    | ''    | 'string'
+        'value' | -1L   | 'datetime'
+        'value' | '2026-02-30T12:30:00.000-0500' | 'datetime'
     }
 
     def 'incomplete typed field rows and zero collection identities refuse before writes'() {
@@ -232,7 +234,9 @@ class NativeModelSpec extends ToolSpecBase {
         0     | 'integer'
         ''    | 'string'
         1.25G | 'bigdecimal'
-        0L    | 'datetime'
+        '2026-01-01T12:30:00.000-0500' | 'datetime'
+        '2026-01-01T99:99:99.999-9999' | 'datetime'
+        '9999-99-99T12:30:00.000-0500' | 'datetime'
     }
 
     def 'swallowed local write cannot report success and duplicate create cannot overwrite'() {
@@ -429,13 +433,15 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.actionList = []
         int completionRenders = 0
         nativeRule.doActPage = { ->
-            if (nativeState.actionDone) completionRenders++
+            if (nativeState.actionCancel) nativeState.remove('actionCancel')
+            else if (nativeState.actionDone) completionRenders++
             nativeForm([[name: 'actType.1', type: 'enum', options: ['delayActs']],
                         [name: 'actSubType.1', type: 'enum', options: ['getWaitRule']]])
         }
         nativeRule.appButtonHandler = { String name ->
-            assert name == 'hasRule'
-            nativeState.actionDone = true
+            assert name in ['hasRule', 'actionCancel']
+            if (name == 'hasRule') nativeState.actionDone = true
+            else nativeState.actionCancel = true
         }
         when:
         def result = script._nmUpsertAction(42L, [type: 'delayActs', subtype: 'getWaitRule', expression: ['2'], fields: []])
@@ -480,7 +486,7 @@ class NativeModelSpec extends ToolSpecBase {
         then:
         result.success == persist
         result.conditionVerified == persist
-        buttons == (editing ? ['actionDone'] : ['hasAll', 'actionDone'])
+        buttons == (editing ? ['actionDone'] : ['hasAll', 'actionDone']) + (persist ? [] : ['actionCancel'])
         nativeState.actionList == ['1']
         editing || settings.'useCondNdx.1'.value == '2'
         !editing || nativeState.doActN == '1.2.false'
@@ -859,7 +865,7 @@ class NativeModelSpec extends ToolSpecBase {
         !result.success && result.partial
         result.error.contains(fieldTemplate.replace('#', '1'))
         !settings.containsKey(fieldTemplate.replace('#', '1'))
-        buttons.empty
+        buttons == ['actionCancel']
         !nativeState.actions
         !nativeState.actionList
         where:
@@ -902,8 +908,8 @@ class NativeModelSpec extends ToolSpecBase {
         result.error.contains('xVar3.1')
         settings.get('numOp.1').value == 'variable'
         !settings.containsKey('xVar3.1')
-        buttons.empty
-        renders == 4
+        buttons == ['actionCancel']
+        renders == 5
         writes.findAll { it instanceof List }.collectMany { it }.every { it.value != 'staleChoice' }
     }
 
@@ -943,12 +949,12 @@ class NativeModelSpec extends ToolSpecBase {
         when:
         def result = script._nmUpsertAction(42L, [id: '1', type: 'modeActs', subtype: 'getLogMsg', fields: [[name: 'logmsg.#', type: 'text', value: 'must not write']]])
         then:
-        !result.success && result.partial
+        !result.success && !result.partial && result.rolledBack
         result.error.contains('actType.1')
         !writes.any { it instanceof List }
         !settings.containsKey('logmsg.1')
         settings.get('actType.1').value == 'messageActs'
-        buttons.empty
+        buttons == ['actionCancel']
     }
 
     def 'invalid exposed capability selector never reaches settings or native completion'() {
@@ -1063,6 +1069,7 @@ class NativeModelSpec extends ToolSpecBase {
 
     def 'rejected existing trigger restores an earlier staged typed value and closes the editor'() {
         given:
+        appExecutor.toDateTime(_ as String) >> { String value -> Date.parse("yyyy-MM-dd'T'HH:mm:ss.SSSZ", value) }
         nativeState.capabstrue = ['2': 'Timer original', '3': 'Unrelated trigger']
         nativeState.time2 = 'old native derived time'
         settings.tCapab2 = [type: 'enum', value: 'Certain Time (and optional date)']
@@ -1124,6 +1131,111 @@ class NativeModelSpec extends ToolSpecBase {
         result.verificationNeeded
         settings.containsKey('tCapab4')
         nativeState.capabstrue == [:]
+    }
+
+
+    def 'new action rejection restores selectors and compiler scratch while retaining earlier actions and runtime events'() {
+        given:
+        nativeState.actions = ['1': [method: 'getLogMsg', indent: '']]
+        nativeState.actionList = ['1']
+        nativeState.actNdx = 2
+        nativeState.ruleNdx = 1
+        nativeState.firstR = ['0': false, '9': false]
+        nativeState.waitDone = ['.9': ['7': false]]
+        settings.put('logmsg.1', [type: 'textarea', value: 'successful prefix'])
+        Map originalSettings = [:] + settings
+        nativeRule.removeSetting = { String name -> if (!ignoreRemoval) settings.remove(name) }
+        List buttons = []
+        nativeRule.appButtonHandler = { String name -> buttons << name; nativeState.actionCancel = true }
+        nativeRule.doActPage = { ->
+            if (nativeState.actionCancel) {
+                nativeState.remove('actionCancel')
+                nativeState.actionDone = true
+                settings.remove('actType.2')
+                nativeState.firstR.put('9', true)
+                nativeState.waitDone.get('.9').put('7', true)
+                nativeState.runtimeEvent = 'arrived during cancellation'
+                return nativeForm([])
+            }
+            nativeState.capabsfalse.put('6', '')
+            nativeState.ndx = 7
+            settings.generated2 = [type: 'number', value: '1']
+            if (settings.containsKey('actType.2')) {
+                if (renderThrows) throw new IllegalStateException('native action render failed')
+                return nativeForm([[name: 'actSubType.2', type: 'enum', multiple: false,
+                                    options: ['getSetVariable'], submitOnChange: true]])
+            }
+            nativeForm([[name: 'actType.2', type: 'enum', multiple: false,
+                         options: ['modeActs'], submitOnChange: true]])
+        }
+        when:
+        def result = script._nmUpsertAction(42L, [type: 'modeActs', subtype: 'getReturnValue', fields: []])
+        then:
+        !result.success
+        result.partial == ignoreRemoval
+        result.rolledBack == !ignoreRemoval
+        result.error.contains(renderThrows ? 'native action render failed' : 'actSubType.2')
+        buttons == ['actionCancel']
+        nativeState.actions == ['1': [method: 'getLogMsg', indent: '']]
+        nativeState.actionList == ['1']
+        nativeState.capabsfalse == ['1': 'Switch A on', '2': 'Switch B off']
+        nativeState.ndx == 4
+        nativeState.actNdx == 2
+        nativeState.ruleNdx == 1
+        nativeState.eval == ['0': ['1']]
+        nativeState.firstR == ['0': false, '9': true]
+        nativeState.waitDone == ['.9': ['7': true]]
+        nativeState.runtimeEvent == 'arrived during cancellation'
+        !nativeState.containsKey('doActN')
+        !nativeState.containsKey('actionDone')
+        !nativeState.containsKey('actionCancel')
+        if (ignoreRemoval) {
+            assert settings.generated2.value == '1'
+            assert result.cleanupError
+        } else assert settings == originalSettings
+        where:
+        ignoreRemoval | renderThrows
+        false         | false
+        false         | true
+        true          | false
+    }
+
+    def 'rejected existing action restores staged typed value and deep compiled row without restoring runtime state'() {
+        given:
+        nativeState.actions = ['1': [method: 'getLogMsg', indent: '', label: 'old']]
+        nativeState.actionList = ['1']
+        settings.put('actType.1', [type: 'enum', value: 'messageActs'])
+        settings.put('actSubType.1', [type: 'enum', value: 'getLogMsg'])
+        settings.put('logmsg.1', [type: 'text', value: 'old'])
+        Map originalSettings = [:] + settings
+        nativeRule.removeSetting = { String name -> settings.remove(name) }
+        List buttons = []
+        nativeRule.appButtonHandler = { String name -> buttons << name; nativeState.actionCancel = true }
+        nativeRule.doActPage = { ->
+            nativeState.runtimeEvents = (nativeState.runtimeEvents ?: 0) + 1
+            if (nativeState.actionCancel) {
+                nativeState.remove('actionCancel')
+                nativeState.actionDone = true
+                return nativeForm([])
+            }
+            nativeState.actions.get('1').label = settings.get('logmsg.1').value
+            nativeForm([[name: 'logmsg.1', type: 'text', multiple: false, submitOnChange: true]])
+        }
+        when:
+        def result = script._nmUpsertAction(42L, [id: '1', type: 'messageActs', subtype: 'getLogMsg', fields: [
+            [name: 'logmsg.#', type: 'text', value: 'new'],
+            [name: 'noSuchField.#', type: 'enum', value: 'on']]])
+        then:
+        !result.success && !result.partial && result.rolledBack
+        result.error.contains('noSuchField.1')
+        settings == originalSettings
+        nativeState.actions == ['1': [method: 'getLogMsg', indent: '', label: 'old']]
+        nativeState.actionList == ['1']
+        nativeState.runtimeEvents == 3
+        nativeState.keep == [unknown: true]
+        !nativeState.containsKey('doActN')
+        !nativeState.containsKey('actionDone')
+        buttons == ['actionCancel']
     }
 
 

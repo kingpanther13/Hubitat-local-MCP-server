@@ -170,13 +170,19 @@ class NativeRmParityExpressions(ParityCase):
         self.assertEqual(self.doc(rule_id)["variables"]["fields"]["value"], 0)
         self._refuse_unchanged(rule_id, [change(
             "variable", operation="create", name="fields", type="integer", value=10)])
-        # The public native document uses epoch milliseconds for DateTime locals.
-        timestamp = 1767270600000
+        # DateTime locals retain the native date/time string used by its editor.
+        timestamp = "2026-01-01T12:30:00.000-0500"
         self._ok(rule_id, [change("variable", operation="create", name="seenAt",
                                  type="datetime", value=timestamp)])
         local = self.doc(rule_id)["variables"]["seenAt"]
         self.assertEqual(local["type"], "datetime")
-        self.assertEqual(int(local["value"]), timestamp)
+        self.assertEqual(local["value"], timestamp)
+        self.assertIn("seenAt", self.page_text(rule_id))
+        self.healthy(rule_id)
+        self._refuse_unchanged(rule_id, [change(
+            "variable", operation="create", name="seenEpoch", type="datetime", value=1767270600000)])
+        self._refuse_unchanged(rule_id, [change(
+            "variable", operation="create", name="seenInvalidDate", type="datetime", value="2026-02-30T12:30:00.000-0500")])
         self._refuse_unchanged(rule_id, [change(
             "variable", operation="create", name="seenBad", type="datetime", value="tomorrow")])
         self._ok(rule_id, [
@@ -284,7 +290,7 @@ class NativeRmParityExpressions(ParityCase):
     def test_set_rule_setvariable_from_device_and_math(self):
         target = self.create_hub_variable("math_number", "Number", 0)
         source = self.create_hub_variable("math_source", "Number", 7)
-        string = self.create_hub_variable("math_string", "String", "")
+        string = self.create_hub_variable("math_string", "String", "initial")
         string_source = self.create_hub_variable("math_text_source", "String", "copied")
         boolean = self.create_hub_variable("math_bool", "Boolean", False)
         device_fields = [
@@ -440,8 +446,8 @@ class NativeRmParityExpressions(ParityCase):
         condition = self._switch_condition(rule_id)
         self._required(rule_id, [condition])
         form = self._form(rule_id, {"kind": "open", "page": "selectActions"})
-        links = [row for row in form["controls"] if row.get("kind") == "href"
-                 and "doActPage" in str(row)]
+        links = [row for row in form["controls"] if row.get("kind") == "button"
+                 and row.get("control_id") == "N||doAct"]
         self.assertEqual(len(links), 1, form)
         form = self._submit(rule_id, form, control=links[0])
         names = [row["name"] for row in form["fields"] if row["name"].startswith("actType.")]

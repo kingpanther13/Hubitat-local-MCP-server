@@ -60,7 +60,58 @@ class ToolRuleHealthSpec extends ToolSpecBase {
     }
 
     @spock.lang.Unroll
-    def "public health preserves a literal pause suffix without positive state evidence (useGateways=#useGateways)"() {
+    def "native compiled pause defaults only for an absent flag on a recognizable RM state (#stored)"() {
+        given:
+        seedHealthy(100)
+        hubGet.register('/app/ruleBuilderJson/100') { ruleBuilderJson(stored) }
+
+        when:
+        def health = script.toolCheckRuleHealth([appId: 100, source: 'ruleBuilderJson'])
+
+        then:
+        health.paused == expected
+        hubGet.calls.count { it.path == '/app/ruleBuilderJson/100' } == 1
+        hubGet.calls.every { !it.path.startsWith('/installedapp/configure/json/') }
+
+        where:
+        stored            | expected
+        [:]               | false
+        [paused: true]    | true
+        [paused: false]   | false
+        [paused: null]    | null
+        [paused: 'invalid']| null
+        [capabstrue: null] | null
+        [broken: 'invalid']| null
+    }
+
+    def "an unrelated compiled map with a broken flag does not establish native pause absence"() {
+        given:
+        seedHealthy(100)
+        hubGet.register('/app/ruleBuilderJson/100') { JsonOutput.toJson([broken: false]) }
+
+        when:
+        def health = script.toolCheckRuleHealth([appId: 100, source: 'ruleBuilderJson'])
+
+        then:
+        health.paused == null
+    }
+
+    def "unreadable native pause state remains unknown"() {
+        given:
+        seedHealthy(100)
+        hubGet.register('/app/ruleBuilderJson/100') { throw new IOException('compiled state unavailable') }
+        hubGet.register('/installedapp/statusJson/100') { throw new IOException('status unavailable') }
+
+        when:
+        def health = script.toolCheckRuleHealth([appId: 100, source: 'ruleBuilderJson'])
+
+        then:
+        health.paused == null
+        health.ok == false
+    }
+
+    @spock.lang.Unroll
+    def "public health reports never-paused native state and preserves a literal pause suffix (useGateways=#useGateways)"() {
         given:
         settingsMap.useGateways = useGateways
         seedHealthy(100)
@@ -73,7 +124,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         then:
         response.error == null
         health.ok == true
-        health.paused == null
+        health.paused == false
         health.label == 'Living Room (Paused)'
 
         where:
@@ -170,7 +221,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
         hubGet.register('/installedapp/statusJson/100') { throw new IOException('status unavailable') }
 
         when:
-        def health = script.toolCheckRuleHealth([appId: 100])
+        def health = script.toolCheckRuleHealth([appId: 100, source: 'configPage'])
 
         then:
         health.label == expected
@@ -221,7 +272,7 @@ class ToolRuleHealthSpec extends ToolSpecBase {
 
         then:
         health.stopped == expected
-        health.paused == null
+        health.paused == false
         health.label == 'Literal (Stopped)'
 
         where:

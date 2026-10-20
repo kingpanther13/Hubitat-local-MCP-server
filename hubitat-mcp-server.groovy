@@ -9983,8 +9983,12 @@ private Map _ruleCompiledState(Integer appId) {
                 // are IF expressions in actions). An eval map without "0" has no committed expression;
                 // no eval map at all leaves it unknown (null), never a false "empty".
                 def reTokens = (parsed.eval instanceof Map) ? ((parsed.eval["0"] instanceof List) ? (parsed.eval["0"] as List).size() : 0) : null
+                // Native RM treats a never-written pause flag as false. Keep malformed
+                // flags and unrelated broken-only maps unknown rather than guessing.
+                Boolean nativePaused = parsed.paused instanceof Boolean ? parsed.paused :
+                    (!parsed.containsKey("paused") && parsed.broken instanceof Boolean && parsed.capabstrue instanceof Map && parsed.capabsfalse instanceof Map ? false : null)
                 return [ruleFormat: "rm", broken: parsed.broken == true, validationErrors: [],
-                        paused: parsed.paused instanceof Boolean ? parsed.paused : null,
+                        paused: nativePaused,
                         predicate: pred, requiredExpressionTokens: reTokens,
                         actionList: (parsed.actionList instanceof List ? parsed.actionList : null),
                         endpoint: "ruleBuilderJson"]

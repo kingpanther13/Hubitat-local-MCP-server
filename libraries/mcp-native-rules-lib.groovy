@@ -3198,8 +3198,9 @@ def toolCheckRuleHealth(args) {
         rawLabel = rawLabel.substring(0, decoration.start()).trim()
     }
     // Explicit state outranks older display markup; unreadable state still uses it.
-    // A readable status with no stopped flag means never stopped. An absent paused
-    // flag remains unknown, so only stopped gains a false default after the fallback.
+    // A readable status with no stopped flag means never stopped. Pause absence
+    // is resolved only by the recognizable native RM compiled-state reader;
+    // other missing or malformed pause evidence remains unknown here.
     if (stoppedVerdict == null && status != null) stoppedVerdict = false
     result.stopped = stoppedVerdict
     result.paused = pausedVerdict

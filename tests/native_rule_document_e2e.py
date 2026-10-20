@@ -24,7 +24,6 @@ import urllib.parse
 import urllib.request
 import uuid
 
-
 TOOLS = {
     "hub_get_rule_document",
     "hub_create_rule_document",

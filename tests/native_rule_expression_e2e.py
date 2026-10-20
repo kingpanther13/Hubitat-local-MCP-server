@@ -15,7 +15,6 @@ import unittest
 import native_rule_document_e2e as document_helpers
 import native_rule_runtime_e2e as runtime_helpers
 
-
 field = document_helpers.field
 change = document_helpers.change
 log_action = document_helpers.log_action

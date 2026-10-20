@@ -196,6 +196,16 @@ private List _nrDeviceChoices(Map field) {
     devices.findAll { device -> device instanceof Map && device.id && !(device.id.toString() in excluded) }
 }
 
+private void _nrValidateScalar(Map field, Object value, boolean allowClear = false) {
+    if (field.type == 'bool' && !(value instanceof Boolean)) throw new IllegalArgumentException("Boolean required for ${field.name}")
+    if (field.type == 'time' && !(allowClear && value == '')) {
+        if (!(value instanceof String)) throw new IllegalArgumentException("Native time string required for ${field.name}")
+        try { if (toDateTime(value) == null) throw new IllegalArgumentException('Unparseable time') }
+        catch (Exception ignored) { throw new IllegalArgumentException("Invalid native time for ${field.name}") }
+    }
+    if (field.type in ['number', 'decimal'] && !(allowClear && value.toString() == '') && !value.toString().isBigDecimal()) throw new IllegalArgumentException("Numeric value required for ${field.name}")
+}
+
 private void _nrValidateInput(Map field, Object value, boolean allowClear = false) {
     if (value == null) throw new IllegalArgumentException("Use an empty string or list to clear ${field.name}")
     if (field.multiple != (value instanceof List)) throw new IllegalArgumentException("Incorrect cardinality for ${field.name}")
@@ -206,14 +216,8 @@ private void _nrValidateInput(Map field, Object value, boolean allowClear = fals
     List options = device ? _nrDeviceChoices(field).collect { it.id.toString() } : (field.containsKey('option_keys') ? field.option_keys : _nrChoiceKeys(field.options))
     if ((device || field.type in ['enum', 'mode']) && options == null) throw new IllegalArgumentException("Native choices are unavailable for ${field.name}")
     if (options != null && values.any { !(allowClear && it.toString() == '') && !(it.toString() in options) }) throw new IllegalArgumentException("Invalid native choice for ${field.name}")
-    if (field.type == 'bool' && !(value instanceof Boolean)) throw new IllegalArgumentException("Boolean required for ${field.name}")
-    if (field.type == 'time' && !(allowClear && value == '')) {
-        if (!(value instanceof String)) throw new IllegalArgumentException("Native time string required for ${field.name}")
-        try { if (toDateTime(value) == null) throw new IllegalArgumentException('Unparseable time') }
-        catch (Exception ignored) { throw new IllegalArgumentException("Invalid native time for ${field.name}") }
-    }
+    _nrValidateScalar(field, value, allowClear)
     if (field.type in ['number', 'decimal'] && !(allowClear && value.toString() == '')) {
-        if (!value.toString().isBigDecimal()) throw new IllegalArgumentException("Numeric value required for ${field.name}")
         BigDecimal number = value.toString().toBigDecimal()
         List range = field.range?.toString()?.split(/\.\./)?.toList() ?: []
         def minimum = field.min != null ? field.min : (range.size() == 2 ? range.get(0) : null)

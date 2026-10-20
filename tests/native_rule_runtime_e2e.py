@@ -138,7 +138,7 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
         parameters = definitions[0].get("parameters") or []
         self.assertEqual(len(parameters), len(values))
         args = [{"type": parameter["type"], "value": value}
-                for parameter, value in zip(parameters, values)]
+                for parameter, value in zip(parameters, values, strict=True)]
         if remember:
             self.remember_fixture(key)
         headers = {"Content-Type": "application/json"}
@@ -167,10 +167,10 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
             try:
                 if key == "temperature":
                     self.command(key, "setTemperature", [float(value)], remember=False)
-                    self.wait_for(lambda: float(self.attribute(key, "temperature")) == float(value))
+                    self.wait_for(lambda key=key, value=value: float(self.attribute(key, "temperature")) == float(value))
                 else:
                     self.command(key, value, remember=False)
-                    self.wait_for(lambda: self.attribute(key, "switch") == value)
+                    self.wait_for(lambda key=key, value=value: self.attribute(key, "switch") == value)
             except Exception as exc:
                 failures.append(f"{key}: {type(exc).__name__}: {exc}")
         self.assertEqual(failures, [], "Fixture restoration failed")
@@ -363,15 +363,15 @@ class NativeRuleRuntimeE2E(unittest.TestCase):
             with self.subTest(input=input_state):
                 self.command("switch", input_state)
                 self.command("switch2", initial_output)
-                self.wait_for(lambda: self.attribute("switch", "switch") == input_state)
-                self.wait_for(lambda: self.attribute("switch2", "switch") == initial_output)
+                self.wait_for(lambda input_state=input_state: self.attribute("switch", "switch") == input_state)
+                self.wait_for(lambda initial_output=initial_output: self.attribute("switch2", "switch") == initial_output)
                 self.run_actions(rule_id)
-                self.wait_for(lambda: self.attribute("switch2", "switch") == expected)
+                self.wait_for(lambda expected=expected: self.attribute("switch2", "switch") == expected)
 
     def test_two_device_action_persists_and_controls_both_devices(self):
         for key in ("switch", "switch2"):
             self.command(key, "off")
-            self.wait_for(lambda: self.attribute(key, "switch") == "off")
+            self.wait_for(lambda key=key: self.attribute(key, "switch") == "off")
         rule_id = self.create_rule([self.switch_action(["switch", "switch2"], True)])
         action_id = str(self.document(rule_id)["actions"][0]["id"])
         expected_ids = {str(self.fixtures["switch"]), str(self.fixtures["switch2"])}

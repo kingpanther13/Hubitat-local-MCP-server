@@ -1,7 +1,7 @@
 """Shared fixtures for opt-in RM goal parity; all authoring uses public tools."""
 
-import json
 import hashlib
+import json
 import os
 import time
 import urllib.parse
@@ -9,7 +9,10 @@ import urllib.request
 import uuid
 
 import native_rule_document_e2e as documents
-from native_rule_document_e2e import change, field, log_action
+
+change = documents.change
+field = documents.field
+log_action = documents.log_action
 
 
 documents.TOOLS.update({
@@ -191,7 +194,7 @@ class ParityCase(documents.unittest.TestCase):
         request = urllib.request.Request(self.client.base + "/device/runmethod",
             data=json.dumps({"id": int(self.fixtures[key]), "method": method,
                              "args": [{"type": p["type"], "value": v}
-                                      for p, v in zip(params, values)]}).encode(),
+                                      for p, v in zip(params, values, strict=True)]}).encode(),
             headers=headers, method="POST")
         self.client.calls["native_http"] += 1
         self.client.calls["fixture_commands"] += 1
@@ -202,7 +205,8 @@ class ParityCase(documents.unittest.TestCase):
         for (key, attribute), (value, setter) in self.original_values.items():
             method = setter or ("close" if value == "closed" else value)
             self.command(key, method, [float(value)] if setter else (), remember=False)
-            self.wait_for(lambda: str(self.attribute(key, attribute)) == str(value)
+            self.wait_for(lambda key=key, attribute=attribute, value=value, setter=setter:
+                          str(self.attribute(key, attribute)) == str(value)
                           or (setter and float(self.attribute(key, attribute)) == float(value)))
 
     def wait_for(self, predicate, timeout=5):

@@ -322,6 +322,49 @@ class NativeDocumentsSpec extends ToolSpecBase {
         nativeState.actionList == ['3', '1']
     }
 
+    def 'invalid typed scalar later in a batch cannot delete earlier actions'() {
+        when:
+        def result = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            [part: 'delete', value: [part: 'action', id: '1']],
+            [part: 'action', value: [type: 'messageActs', subtype: 'getLogMsg',
+                fields: [[name: 'flag.#', type: type, value: value]]]]
+        ]])
+        then:
+        !result.success
+        !result.partial
+        events.empty
+        nativeState.actionList == ['3', '1']
+        where:
+        type      | value
+        'bool'    | 'blink'
+        'number'  | 'many'
+        'decimal' | true
+        'time'    | 12345
+    }
+
+    def 'removing one structural boundary is refused before writes but removing the entire block is allowed'() {
+        given:
+        nativeState.actionList = ['1', '2', '3']
+        nativeState.actions = ['1': [method: 'getIfThen'], '2': [method: 'getLogMsg'], '3': [method: 'getEndIf']]
+        when:
+        def refused = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            [part: 'delete', value: [part: 'action', id: '3']]
+        ]])
+        then:
+        !refused.success
+        !refused.partial
+        refused.error.contains('END-IF')
+        events.empty
+        when:
+        def accepted = script.toolUpdateRuleDocument([rule_id: 42, confirm: true, changes: [
+            [part: 'delete', value: [part: 'action', id: '1']],
+            [part: 'delete', value: [part: 'action', id: '3']]
+        ]])
+        then:
+        accepted.success
+        events[0..1] == ['delete:action:1', 'delete:action:3']
+    }
+
     def 'unknown expression operands are refused before any change or render'() {
         when:
         def result = script.toolUpdateRuleDocument([rule_id: 42, changes: [[part: 'required', value: [tokens: ['999999']]]], confirm: true])

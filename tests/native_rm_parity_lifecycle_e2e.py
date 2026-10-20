@@ -127,14 +127,14 @@ class NativeRmParityLifecycleE2E(ParityCase):
         for paused, label in ((True, "paused"), (False, "active")):
             result = self.call("hub_set_rule_paused", ruleId=app_id, paused=paused)
             self.assertIsNot(result.get("success"), False, result)
-            self.wait_for(lambda: self._listed(app_id).get("status") == label)
+            self.wait_for(lambda label=label: self._listed(app_id).get("status") == label)
             health = self._health(app_id)
             self.assertIs(health.get("paused"), paused, health)
             self.assertEqual(expected_label, health.get("label"), health)
         for action, stopped in (("stop", True), ("start", False)):
             result = self.call("hub_call_rule", ruleId=app_id, action=action)
             self.assertIsNot(result.get("success"), False, result)
-            self.wait_for(lambda: self._health(app_id).get("stopped") is stopped)
+            self.wait_for(lambda stopped=stopped: self._health(app_id).get("stopped") is stopped)
             health = self._health(app_id)
             self.assertIs(health.get("stopped"), stopped, health)
             for key in ("eventSubscriptionCount", "scheduledJobCount"):
@@ -344,7 +344,7 @@ class NativeRmParityLifecycleE2E(ParityCase):
             self.assertFalse(result.get("partial"), result)
             self.assertFalse(result.get("failedRuleIds"), result)
         for app_id in ids:
-            self.wait_for(lambda: self._health(app_id).get("stopped") is True)
+            self.wait_for(lambda app_id=app_id: self._health(app_id).get("stopped") is True)
 
     def test_set_rule_walkstep_introspect(self):
         app_id = self.create([log_action("introspect")])
@@ -543,8 +543,15 @@ class NativeRmParityLifecycleE2E(ParityCase):
         import time
 
         app_id = self.create([log_action("MRTR base")])
-        messages = ["MRTR regular E2E proof " + str(i) for i in range(100)]
-        arguments = {"rule_id": int(app_id), "changes": [log_action(message) for message in messages], "confirm": True}
+        messages = ["MRTR regular E2E proof " + str(i) for i in range(32)]
+        # Real condition compilation exercises dependency renders as well as
+        # persistence; fast log-only batches need not cross a request budget.
+        conditions = [change("condition", capability="Temperature", fields=[
+            field("rDev_#", "capability.temperatureMeasurement", [str(self.fixtures["temperature"])]),
+            field("RelrDev_#", "enum", ">"), field("state_#", "decimal", 60 + index)])
+            for index in range(68)]
+        changes = [*conditions, *[log_action(message) for message in messages]]
+        arguments = {"rule_id": int(app_id), "changes": changes, "confirm": True}
         headers = {"MCP-Protocol-Version": "2026-07-28", "Mcp-Method": "tools/call",
                    "Mcp-Name": "hub_update_rule_document"}
         params = {"name": "hub_update_rule_document", "arguments": arguments}
@@ -581,12 +588,12 @@ class NativeRmParityLifecycleE2E(ParityCase):
         self.assertTrue(result.get("success"), result)
         self.assertFalse(result.get("partial"), result)
         rows = result.get("results", [])
-        self.assertEqual(len(messages), len(rows), result)
+        self.assertEqual(len(changes), len(rows), result)
         self.assertTrue(all(row.get("result", {}).get("success") for row in rows), result)
         self.assertLess(max(legs), 10.0, {"legs": legs, "elapsed": elapsed})
         for index, replacement in enumerate((None, False, 0)):
             altered = json.loads(json.dumps(arguments))
-            altered["changes"][0]["value"]["fields"][0]["value"] = replacement
+            altered["changes"][-1]["value"]["fields"][0]["value"] = replacement
             changed = self.client.request(self.client.mcp_url, "POST", {
                 "jsonrpc": "2.0", "id": 63000 + index, "method": "tools/call",
                 "params": {"name": "hub_update_rule_document", "arguments": altered,
@@ -613,6 +620,10 @@ class NativeRmParityLifecycleE2E(ParityCase):
         self.assertIs(mine[0].get("success"), True, mine)
         persisted = [value for key, value in self._values(app_id).items() if key.startswith("logmsg.")]
         self.assertEqual(sorted(["MRTR base", *messages]), sorted(persisted))
+        self.assertEqual(68, len(self.doc(app_id)["conditions"]))
+        persisted_thresholds = sorted(float(value) for key, value in self._values(app_id).items()
+                                      if key.startswith("state_"))
+        self.assertEqual([float(60 + index) for index in range(68)], persisted_thresholds)
         self.healthy(app_id)
 
 
