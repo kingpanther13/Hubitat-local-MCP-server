@@ -282,6 +282,45 @@ class NativeFormsSpec extends ToolSpecBase {
         calls[0].body._action_update == 'Done'
     }
 
+    def 'native child creation uses the returned parent control and verifies child identity'() {
+        given:
+        model.configPage.sections[0].input << [element: 'app', name: 'children', namespace: 'hubitat',
+                                               appName: 'Example Child', appId: 42, title: 'Create child']
+        def opened = open()
+        def control = opened.controls.find { it.kind == 'create_child' }
+        calls.clear()
+        script.metaClass.hubInternalGetRaw = { String path ->
+            calls << [path: path]
+            [status: 302, location: 'Location: http://127.0.0.1:8080/installedapp/configure/43']
+        }
+        script.metaClass.getAppByAppId = { Long id ->
+            [id: id, parentAppId: id == 43L ? 42 : null, disabled: false,
+             appType: [namespace: 'hubitat', name: id == 43L ? 'Example Child' : 'Example Parent']]
+        }
+        when:
+        def result = submit([:], control.control_id)
+        then:
+        result.success
+        result.closed
+        result.app_id == 42L
+        result.created_app_id == 43L
+        calls*.path == ['/installedapp/createchild/hubitat/Example%20Child/parent/42']
+    }
+
+    def 'child creation refuses accompanying fields before the native request'() {
+        given:
+        model.configPage.sections[0].input << [element: 'app', name: 'children', namespace: 'hubitat',
+                                               appName: 'Example Child', appId: 42]
+        def opened = open()
+        calls.clear()
+        when:
+        def result = submit([count: 1], opened.controls.find { it.kind == 'create_child' }.control_id)
+        then:
+        !result.success
+        !result.partial
+        calls.empty
+    }
+
     def 'native required field blocks Done until supplied including through cached context'() {
         given:
         model.configPage.sections[0].input << [element: 'input', name: 'requiredDevice', type: 'capability.switch', required: true]

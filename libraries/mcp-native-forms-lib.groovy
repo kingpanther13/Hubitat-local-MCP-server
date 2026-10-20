@@ -119,6 +119,8 @@ private void _nfWalk(Object node, Map fields, Map controls, List messages, List 
             fields[name] = field
             if (!supported) unsupported << "Input type: ${type}"
         }
+    } else if (node.element == 'app' && node.namespace == 'hubitat' && node.appName instanceof String && node.appName && node.name && node.appId?.toString() == model.app?.id?.toString()) {
+        _nfControl(controls, [name: node.name.toString(), value: node.appName, kind: 'create_child', title: _nfText(node.title)])
     } else if (node.element == 'href') {
         if (node.page && !node.url) {
             String name = "_action_href_${node.name ?: 'name'}|${node.page}|${position + 1}"
@@ -253,6 +255,7 @@ Map toolCallAppForm(Map args) {
     if (NATIVE_FORM_BUSY.putIfAbsent(key, true) != null) throw new IllegalStateException('This app already has an active form operation')
     List completed = []
     boolean attempted = false
+    Long createdId = null
     Map context = NATIVE_FORM_CONTEXTS[key]
     try {
         if (context && context.expires < now()) { NATIVE_FORM_CONTEXTS.remove(key); context = null }
@@ -278,6 +281,7 @@ Map toolCallAppForm(Map args) {
                     control = context.controls[step.activate]
                     if (!control) throw new IllegalArgumentException('Choose one exact returned native control_id')
                     if (control.disabled) throw new IllegalArgumentException('The native control is disabled')
+                    if (control.kind == 'create_child' && step.fields) throw new IllegalArgumentException('Submit parent fields separately before creating a child')
                     if (control.kind == 'button' && !control.submit_on_change && step.fields) throw new IllegalArgumentException('Submit fields separately before a button that reloads the native page')
                     if (control.kind == 'button' && !control.submit_on_change) reloadPath = _nfReloadPath(id, context)
                     if (control.kind in ['href', 'navigation'] && control.value != 'Cancel') {
@@ -287,7 +291,14 @@ Map toolCallAppForm(Map args) {
                     }
                 }
                 attempted = true
-                if (control?.kind == 'button') {
+                if (control?.kind == 'create_child') {
+                    String childName = _nfEncode(control.value).replace('+', '%20')
+                    createdId = _nrCreatedAppId(hubInternalGetRaw("/installedapp/createchild/hubitat/${childName}/parent/${id}"))
+                    if (createdId == null) throw new IllegalStateException('Native child creation did not return an app ID; inspect the parent before retrying')
+                    def child = getAppByAppId(createdId)
+                    if (child?.parentAppId?.toString() != id.toString() || child?.appType?.namespace != 'hubitat' || child?.appType?.name != control.value) throw new IllegalStateException('Created app did not match the native parent and child type')
+                    model = [location: 'child_created']
+                } else if (control?.kind == 'button') {
                     Map button = [id: id, name: control.name]
                     button["settings[${control.name}]".toString()] = 'clicked'
                     button["${control.name}.type".toString()] = 'button'
@@ -310,12 +321,12 @@ Map toolCallAppForm(Map args) {
                 completed << [kind: step.kind, page: context.page.name]
             }
         }
-        [success: true, app_id: id, completed: completed] + (context ? _nfPublic(context, optionsFor) : [closed: true])
+        [success: true, app_id: id, completed: completed] + (createdId == null ? [:] : [created_app_id: createdId]) + (context ? _nfPublic(context, optionsFor) : [closed: true])
     } catch (Exception failure) {
         // A lost response can follow a successful write; stale controls must never be replayed automatically.
         if (attempted) NATIVE_FORM_CONTEXTS.remove(key)
         [success: false, app_id: id, partial: attempted, completed: completed, error: failure.message?.toString(),
-         reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()]
+         reopen_required: attempted, remaining_steps: args.steps.size() - completed.size()] + (createdId == null ? [:] : [created_app_id: createdId])
     } finally { NATIVE_FORM_BUSY.remove(key) }
 }
 
@@ -339,11 +350,11 @@ def _toolDisplayMeta_partNativeForms() {
 String _nfGuide() {
     return '''## Native App Forms
 
-Use hub_call_app_form(app_id,steps,confirm:true) to operate an enabled built-in native app's classic editor. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. App removal uses the dedicated deletion tool.
+Use hub_call_app_form(app_id,steps,confirm:true) to operate an enabled built-in native app's classic editor. Even open renders execute app code and can change state or cause side effects. Start with steps:[{kind:"open"}]; an optional page names a registered native page. Follow returned controls for page parameters and breadcrumbs. A create_child control creates the native child type exposed by its parent, returns created_app_id and closes the parent context. Open that child separately to configure it; creation alone does not prove configuration is complete. App removal uses the dedicated deletion tool.
 
 Submit with {kind:"submit",expect_page:"last returned page",fields:{"native field name":value},activate:"returned control_id"}. Omit activate to save the supplied fields and refresh the current page. Control IDs distinguish native buttons sharing a name, such as editing and deleting the same variable. Native enum keys, device IDs, booleans and single/multiple cardinality are checked before the request. Only supplied settings are posted; native page code can still change its own settings. Defaults are shown but are not automatically submitted; supply a required default explicitly before navigating. Use options_for:["device field name"] to expand device choices on the final returned page.
 
 Batches contain 1 through 16 ordered steps. Each step uses the form returned by the preceding step, so dependent fields require another submit after they appear. A button handler runs before that step's fields are saved, as in the native browser; submit fields in a preceding step when the handler needs them. A button without submitOnChange reloads and requires a separate field submission.
 
-The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight apps. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. App-authored JavaScript, custom HTML inputs, uploads, external/child links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
+The execution context expires after five minutes and is lost on app reload. It retains no field values, messages or option labels; limits are 24 KiB of serialized descriptors per app, 96 KiB total, and eight apps. expect_page guards the latest tool context, not concurrent edits in another browser. Avoid concurrent editing. Errors can leave completed operations or an uncertain final operation; inspect the app and reopen instead of replaying buttons. Terminal navigation closes the context without following redirects. App-authored JavaScript, custom HTML inputs, uploads, external links and unsupported browser controls are reported in unsupported; they are never silently executed. Success means the native form operation returned, not that the app's intended runtime behavior was independently verified.'''
 }

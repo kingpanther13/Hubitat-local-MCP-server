@@ -5,6 +5,8 @@ All calls use the new document/form tools or independent native UI endpoints.
 Existing fixture devices receive no commands. Run this file explicitly.
 """
 
+import json
+import os
 import time
 import unittest
 
@@ -75,6 +77,43 @@ class NativeAppFormE2E(unittest.TestCase):
                 "variable", operation="create", name="Counter", type="integer", value=0,
             ),
         ])
+
+    def remove_native_child(self, child_id, parent_id, app_name):
+        status = self.status(child_id, missing_ok=True)
+        child = status.get("installedApp")
+        if not child:
+            return
+        self.assertEqual(str(child["id"]), child_id)
+        self.assertEqual(str(child["parentAppId"]), str(parent_id))
+        self.assertEqual(child["appType"]["namespace"], "hubitat")
+        self.assertEqual(child["appType"]["name"], app_name)
+        self.client.native("/installedapp/update/json", "POST", form={
+            "id": child_id, "_action_remove": "Remove",
+        })
+        self.assertNotIn("installedApp", self.status(child_id, missing_ok=True))
+
+    def test_create_native_children_from_their_parent_controls(self):
+        parents = json.loads(os.environ.get("NATIVE_APP_FORM_PARENT_IDS", "{}"))
+        self.assertEqual(set(parents), {"button_controller", "room_lighting"},
+                         "Supply the two disposable native parent IDs")
+        for parent_id in parents.values():
+            with self.subTest(parent_id=parent_id):
+                parent = self.open_form(parent_id)
+                control = self.control(parent, kind="create_child")
+                result = self.submit(parent_id, parent["page"]["name"], control=control)
+                child_id = str(result.get("created_app_id", ""))
+                if child_id.isdigit():
+                    self.addCleanup(self.remove_native_child, child_id, parent_id, control["value"])
+                self.assertIs(result.get("success"), True, result)
+                self.assertTrue(child_id.isdigit(), result)
+                self.assertIs(result.get("closed"), True)
+                child = self.status(child_id)["installedApp"]
+                self.assertEqual(str(child["parentAppId"]), str(parent_id))
+                self.assertEqual(child["appType"]["namespace"], "hubitat")
+                self.assertEqual(child["appType"]["name"], control["value"])
+                opened = self.open_form(child_id)
+                self.assertTrue(opened["page"]["name"])
+                self.assertTrue(opened["fields"] or opened["controls"])
 
     def test_form_and_native_ui_edits_preserve_existing_device_selection(self):
         rule_id = self.create_multidevice_rule()

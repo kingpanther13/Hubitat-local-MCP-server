@@ -1,5 +1,12 @@
 library(name: "McpNativeRuntimeLib", namespace: "mcp", author: "kingpanther13", description: "Native rule runtime primitives.")
 
+private Long _nrCreatedAppId(Object response) {
+    String location = response?.location?.toString()?.trim()?.replaceFirst(/(?i)^Location:\s*/, '')
+    location = location?.replaceFirst(/(?i)^https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::[0-9]+)?(?=\/)/, '')
+    def match = location =~ /^\/installedapp\/configure\/(\d+)(?:\?.*)?$/
+    match.find() && match.group(1).isLong() && match.group(1).toLong() > 0L ? match.group(1).toLong() : null
+}
+
 def _nrHandle(Long ruleId) {
     if (ruleId == null || ruleId <= 0L) throw new IllegalArgumentException('A positive rule ID is required')
     def target = getAppByAppId(ruleId)
