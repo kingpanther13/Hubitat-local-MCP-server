@@ -290,4 +290,107 @@ class NativeModelSpec extends ToolSpecBase {
         nativeState.doActN == '1.0.false'
         nativeState.actNdx == 1
     }
+
+    private void configureWaitNative(boolean derive) {
+        nativeRule.doActPage = { ->
+            if (!(nativeState.waitNdx instanceof Map)) nativeState.waitNdx = ['.1': [7]]
+            if (!(nativeState.waitDone instanceof Map)) nativeState.waitDone = ['.1': [:]]
+            if (nativeState.anotherWait == true) {
+                def ids = nativeState.waitNdx.get('.1')
+                ids.add(ids.last() + 1)
+                nativeState.remove('anotherWait')
+            }
+            if (derive) {
+                nativeState.waitNdx.get('.1').each { eventId ->
+                    def hours = settings.get("SHours-${eventId}".toString())?.value ?: 0
+                    def minutes = settings.get("SMins-${eventId}".toString())?.value ?: 0
+                    def seconds = settings.get("SSecs-${eventId}".toString())?.value ?: 0
+                    nativeState.put("SHours-${eventId}".toString(), hours)
+                    nativeState.put("SMins-${eventId}".toString(), minutes)
+                    nativeState.put("SSecs-${eventId}".toString(), seconds)
+                    nativeState.put("hhmmss-${eventId}".toString(), "${hours}:${minutes}:${seconds}".toString())
+                }
+            }
+        }
+        nativeRule.appButtonHandler = { String name ->
+            if (name == 'hasAll') nativeState.waitDone.get('.1').put(nativeState.waitNdx.get('.1').last().toString(), true)
+            if (name == 'actionDone') {
+                nativeState.actions = ['1': [method: 'getWaitEvents', indent: '', wait: new ArrayList(nativeState.waitNdx.get('.1'))]]
+                if (!(nativeState.actionList instanceof List)) nativeState.actionList = ['1']
+            }
+        }
+    }
+
+    def 'wait events allocate offset native IDs and render duration before committing all events'() {
+        given:
+        configureWaitNative(true)
+        when:
+        def result = script._nmUpsertAction(42L, [type: 'delayActs', subtype: 'getWaitEvents', fields: [], events: [
+                [capability: 'Switch', fields: [[name: 'tstate#', type: 'enum', value: 'on'], [name: 'stays#', type: 'bool', value: true], [name: 'SMins#', type: 'number', value: 1], [name: 'SSecs#', type: 'number', value: 5]]],
+                [capability: 'Switch', fields: [[name: 'tstate#', type: 'enum', value: 'off']]]]])
+        then:
+        result.success
+        result.waitsVerified
+        nativeState.actions.get('1').wait == [7, 8]
+        nativeState.get('SSecs-7') == 5
+        nativeState.get('SMins-7') == 1
+        settings.get('tCapab-7').value == 'Switch'
+        settings.get('tstate-8').value == 'off'
+        nativeState.keep == [unknown: true]
+    }
+
+    def 'persisted wait settings without native derived duration cannot report success'() {
+        given:
+        configureWaitNative(false)
+        nativeState.put('SSecs-7', 0)
+        when:
+        def result = script._nmUpsertAction(42L, [type: 'delayActs', subtype: 'getWaitEvents', fields: [], events: [
+                [capability: 'Switch', fields: [[name: 'stays#', type: 'bool', value: true], [name: 'SSecs#', type: 'number', value: 5]]]]])
+        then:
+        !result.success
+        result.partial
+        result.waitEvents.error.contains('duration')
+        settings.get('SSecs-7').value == 5
+        !nativeState.actions
+    }
+
+    def 'same-count wait edits preserve native identities and recompute derived duration'() {
+        given:
+        configureWaitNative(true)
+        nativeState.actions = ['1': [method: 'getWaitEvents', indent: '', wait: [7]]]
+        nativeState.actionList = ['1']
+        nativeState.waitNdx = ['.1': [7]]
+        nativeState.waitDone = ['.1': ['7': true]]
+        when:
+        def result = script._nmUpsertAction(42L, [id: '1', type: 'delayActs', subtype: 'getWaitEvents', fields: [], events: [
+                [capability: 'Switch', fields: [[name: 'stays#', type: 'bool', value: true], [name: 'SSecs#', type: 'number', value: 9]]]]])
+        then:
+        result.success
+        nativeState.doActN == '1.0.false'
+        nativeState.actionList == ['1']
+        nativeState.actions.get('1').wait == [7]
+        nativeState.get('SSecs-7') == 9
+    }
+
+    def 'invalid later wait events refuse before any earlier action or event write'() {
+        when:
+        script._nmUpsertAction(42L, [type: 'delayActs', subtype: 'getWaitEvents', fields: [], events: [
+                [capability: 'Switch', fields: [[name: 'tstate#', type: 'enum', value: 'on']]],
+                [capability: 'Switch', fields: [[name: 'tDev#', type: 'capability.switch', value: [0]]]]]])
+        then:
+        thrown(IllegalArgumentException)
+        writes.empty
+        settings.empty
+    }
+
+    def 'changing wait event count is refused before writing existing action'() {
+        given:
+        nativeState.actions = ['1': [method: 'getWaitEvents', wait: [7, 8]]]
+        when:
+        script._nmUpsertAction(42L, [id: '1', type: 'delayActs', subtype: 'getWaitEvents', fields: [], events: [[capability: 'Switch', fields: []]]])
+        then:
+        thrown(IllegalArgumentException)
+        writes.empty
+        settings.empty
+    }
 }

@@ -15,6 +15,17 @@ private List _nmFields(List fields, String id) {
         if (!(row instanceof Map) || !(row.name instanceof String) || !row.name.contains('#') || !(row.type instanceof String) || !row.containsKey('value') || row.keySet().any { !(it in ['name', 'type', 'value']) }) {
             throw new IllegalArgumentException('Fields require native name templates containing #, type and value')
         }
+        boolean device = row.type == 'capability' || row.type.startsWith('capability.')
+        if (!(row.type in ['text', 'textarea', 'password', 'enum', 'mode', 'bool', 'number', 'decimal', 'time']) && !device) throw new IllegalArgumentException('Unsupported native setting type')
+        if (row.value == null) throw new IllegalArgumentException('Null native setting values are unsupported')
+        if (row.value instanceof List) {
+            if (!device && !(row.type in ['enum', 'mode'])) throw new IllegalArgumentException('Setting lists require enum, mode or capability type')
+            if (row.value.any { !(it instanceof String || it instanceof Number || it instanceof Boolean) }) throw new IllegalArgumentException('Setting lists require scalar values')
+        } else if (!(row.value instanceof String || row.value instanceof Number || row.value instanceof Boolean)) throw new IllegalArgumentException('Native settings require scalar values')
+        if (device) {
+            List ids = row.value instanceof List ? row.value : [row.value]
+            if (ids.any { !it.toString().isLong() || it.toString().toLong() <= 0L }) throw new IllegalArgumentException('Capability settings require positive device IDs')
+        }
         [name: row.name.replace('#', id), type: row.type, value: row.value]
     }
 }
@@ -169,14 +180,24 @@ Map _nmUpsertCondition(Long ruleId, boolean trigger, Map row) {
 }
 
 Map _nmUpsertAction(Long ruleId, Map row) {
-    if (row == null || row.keySet().any { !(it in ['id', 'type', 'subtype', 'fields', 'expression']) } || !(row.type instanceof String) || !row.type.trim() || !(row.subtype instanceof String) || !row.subtype.trim()) throw new IllegalArgumentException('Action type, subtype and typed fields are required')
-    if (row.subtype.toString().toLowerCase().contains('wait')) throw new IllegalArgumentException('Complex waits require a verified native sequence')
+    if (row == null || row.keySet().any { !(it in ['id', 'type', 'subtype', 'fields', 'expression', 'events']) } || !(row.type instanceof String) || !row.type.trim() || !(row.subtype instanceof String) || !row.subtype.trim()) throw new IllegalArgumentException('Action type, subtype and typed fields are required')
+    boolean waitEvents = row.subtype == 'getWaitEvents'
+    if (row.subtype.toString().toLowerCase().contains('wait') && !waitEvents) throw new IllegalArgumentException('Wait expressions require a verified native sequence')
+    if (waitEvents) {
+        if (!(row.events instanceof List) || row.events.empty || row.events.size() > 16) throw new IllegalArgumentException('Wait actions require between one and sixteen events')
+        row.events.each { event ->
+            if (!(event instanceof Map) || event.keySet().any { !(it in ['capability', 'fields']) } || !(event.capability instanceof String) || !event.capability.trim()) throw new IllegalArgumentException('Wait events require a capability and typed fields')
+            List preview = _nmFields(event.fields as List, '-1')
+            if (preview.any { it.name == 'tCapab-1' } || preview.collect { it.name }.unique().size() != preview.size()) throw new IllegalArgumentException('Wait fields must not repeat selectors or native inputs')
+        }
+    } else if (row.containsKey('events')) throw new IllegalArgumentException('Only Wait for Events accepts event rows')
     Map before = _nrState(ruleId)
     List priorOrder = before.actionList instanceof List ? before.actionList.collect { it.toString() } : []
     boolean editing = row.containsKey('id')
     String id = _nmId(editing ? row.id : before.actNdx)
     def prior = _nmEntry(before.actions instanceof Map ? before.actions : [:], id)
     if (editing && !(prior instanceof Map)) throw new IllegalArgumentException('Native action does not exist')
+    if (waitEvents && editing && (!(prior.wait instanceof List) || prior.wait.size() != row.events.size())) throw new IllegalArgumentException('Editing waits currently requires the existing event count')
     if (!editing && row.subtype in ['getIfThen', 'getElseIf'] && !row.containsKey('expression')) throw new IllegalArgumentException('New conditional actions require expression tokens')
     String expectedExpressionId = null
     if (row.containsKey('expression')) {
@@ -195,6 +216,13 @@ Map _nmUpsertAction(Long ruleId, Map row) {
     }
     _nrStatePatch(ruleId, [doActN: editToken])
     _nrHandle(ruleId).doActPage()
+    List waitIds = null
+    if (waitEvents) {
+        Map waits = _nmCompileWait(ruleId, id, row.events as List, editing)
+        if (waits.success != true) return [success: false, id: id, partial: true, waitEvents: waits]
+        waitIds = waits.eventIds
+        settings.addAll(waits.settings)
+    }
     if (row.containsKey('expression')) {
         String expressionId = _nmId(editing && prior.rule != null ? prior.rule : _nrState(ruleId).ruleNdx, true)
         expectedExpressionId = expressionId
@@ -205,6 +233,7 @@ Map _nmUpsertAction(Long ruleId, Map row) {
     }
     _nrHandle(ruleId).appButtonHandler('actionDone')
     _nrHandle(ruleId).doActPage()
+    if (waitEvents) _nrHandle(ruleId).selectTriggers()
     Map after = _nrState(ruleId)
     def action = _nmEntry(after.actions instanceof Map ? after.actions : [:], id)
     boolean listed = after.actionList instanceof List && after.actionList.any { it.toString() == id }
@@ -212,9 +241,68 @@ Map _nmUpsertAction(Long ruleId, Map row) {
     boolean ordered = after.actionList instanceof List && after.actionList.collect { it.toString() } == expectedOrder
     boolean compiled = action instanceof Map && action.method == row.subtype
     boolean expressionVerified = expectedExpressionId == null || (action instanceof Map && action.rule?.toString() == expectedExpressionId && _nmEntry(after.eval instanceof Map ? after.eval : [:], expectedExpressionId) == row.expression)
+    boolean waitsVerified = waitIds == null || (action instanceof Map && action.wait instanceof List && action.wait.collect { it.toString() } == waitIds)
     Map echoed = _nrSettings(ruleId, settings.collect { it.name })
     boolean persisted = settings.every { echoed.get(it.name)?.type?.toString() == it.type && _nrComparableSetting(it.type, echoed.get(it.name)?.value) == _nrComparableSetting(it.type, it.value) }
-    [success: listed && ordered && compiled && persisted && expressionVerified, id: id, action: action, partial: !(listed && ordered && compiled && persisted && expressionVerified), settingsVerified: persisted, expressionVerified: expressionVerified, verificationNeeded: true]
+    [success: listed && ordered && compiled && persisted && expressionVerified && waitsVerified, id: id, action: action, partial: !(listed && ordered && compiled && persisted && expressionVerified && waitsVerified), settingsVerified: persisted, expressionVerified: expressionVerified, waitsVerified: waitsVerified, verificationNeeded: true]
+}
+
+private Map _nmCompileWait(Long ruleId, String actionId, List events, boolean editing) {
+    String key = ".${actionId}".toString()
+    List settings = []
+    List eventIds = []
+    for (int position = 0; position < events.size(); position++) {
+        Map fresh = _nrState(ruleId)
+        def allocated = fresh.waitNdx instanceof Map ? fresh.waitNdx.get(key) : null
+        if (!(allocated instanceof List) || allocated.size() <= position) return [success: false, error: 'Native wait event allocation failed']
+        String eventId = _nmId(allocated.get(position))
+        if (eventIds.contains(eventId)) return [success: false, error: 'Native wait event identity was repeated']
+        eventIds << eventId
+        Map event = events.get(position)
+        List fields = [[name: "tCapab-${eventId}".toString(), type: 'enum', value: event.capability]] + _nmFields(event.fields as List, "-${eventId}".toString())
+        Map written = _nrWriteSettings(ruleId, fields)
+        if (written.success != true) return [success: false, error: 'Wait event inputs did not persist', settings: written]
+        settings.addAll(fields)
+        _nrHandle(ruleId).doActPage()
+        if (!_nmWaitDuration(ruleId, eventId)) return [success: false, error: 'Native wait duration did not compile', eventId: eventId]
+        if (!editing) {
+            _nrHandle(ruleId).appButtonHandler('hasAll')
+            _nrHandle(ruleId).doActPage()
+            Map completed = _nrState(ruleId)
+            def done = completed.waitDone instanceof Map ? completed.waitDone.get(key) : null
+            if (!(done instanceof Map) || done.get(eventId) != true) return [success: false, error: 'Native wait event did not complete', eventId: eventId]
+            if (position + 1 < events.size()) {
+                _nrStatePatch(ruleId, [anotherWait: true])
+                _nrHandle(ruleId).doActPage()
+            }
+        }
+    }
+    _nrStatePatch(ruleId, [doneWaitEvents: true])
+    _nrHandle(ruleId).doActPage()
+    [success: true, eventIds: eventIds, settings: settings]
+}
+
+private boolean _nmWaitDuration(Long ruleId, String eventId) {
+    String suffix = "-${eventId}".toString()
+    Map values = _nrSettings(ruleId, ["stays${suffix}".toString(), "SHours${suffix}".toString(), "SMins${suffix}".toString(), "SSecs${suffix}".toString()])
+    if (_nrComparableSetting('bool', values.get("stays${suffix}".toString())?.value) != 'true') return true
+    Map nativeState = _nrState(ruleId)
+    List expected = []
+    for (String component in ['SHours', 'SMins', 'SSecs']) {
+        def value = values.get("${component}${suffix}".toString())?.value
+        if (value != null && !value.toString().isBigDecimal()) return false
+        BigDecimal amount = value == null ? 0G : new BigDecimal(value.toString())
+        if (amount < 0G) return false
+        expected << amount
+        if (value != null) {
+            def derived = nativeState.get("${component}${suffix}".toString())
+            if (derived == null || !derived.toString().isBigDecimal() || new BigDecimal(derived.toString()) != amount) return false
+        }
+    }
+    def formatted = nativeState.get("hhmmss${suffix}".toString())
+    if (!(formatted instanceof String)) return false
+    List parts = formatted.tokenize(':')
+    parts.size() == 3 && parts.every { it.isBigDecimal() } && parts.collect { new BigDecimal(it) } == expected
 }
 
 Map _nmAddTerminator(Long ruleId, String subtype) {
